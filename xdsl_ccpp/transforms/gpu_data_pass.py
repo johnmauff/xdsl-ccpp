@@ -6,7 +6,12 @@ from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp, AccDataEndOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    AccDataBeginOp,
+    AccDataEndOp,
+    OmpTargetDataBeginOp,
+    OmpTargetDataEndOp,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 
 
@@ -28,6 +33,9 @@ class GPUDataPass(ModulePass):
     """
 
     name = "generate-gpu-data"
+
+    # GPU directive backend: "acc" for OpenACC, "omp" for OpenMP target offload.
+    directive: str = "acc"
 
     def _find_ccpp_module(self, ops):
         """Return the named @ccpp ModuleOp from the given op list, or None."""
@@ -164,17 +172,27 @@ class GPUDataPass(ModulePass):
         if not copyin_refs:
             return
 
-        Rewriter.insert_op(
-            AccDataBeginOp(
-                copyin=copyin_refs,
-                copyout=copyin_refs,
-            ),
-            InsertPoint.before(first_if),
-        )
-        Rewriter.insert_op(
-            AccDataEndOp(),
-            InsertPoint.after(last_if),
-        )
+        if self.directive == "omp":
+            Rewriter.insert_op(
+                OmpTargetDataBeginOp(tofrom=copyin_refs),
+                InsertPoint.before(first_if),
+            )
+            Rewriter.insert_op(
+                OmpTargetDataEndOp(),
+                InsertPoint.after(last_if),
+            )
+        else:  # acc (default)
+            Rewriter.insert_op(
+                AccDataBeginOp(
+                    copyin=copyin_refs,
+                    copyout=copyin_refs,
+                ),
+                InsertPoint.before(first_if),
+            )
+            Rewriter.insert_op(
+                AccDataEndOp(),
+                InsertPoint.after(last_if),
+            )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = self._find_ccpp_module(op.body.block.ops)

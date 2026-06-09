@@ -36,6 +36,10 @@ from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataBeginOp as CCPPOmpTargetDataBeginOp
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp    as CCPPOmpTargetDataEndOp
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp   as CCPPOmpTargetUpdateToOp
 
 
 _MAX_LINE_LEN = 99
@@ -502,6 +506,24 @@ class ftnPrintContext:
             case CCPPAccUpdateDeviceOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_acc_directive("update", [("device", var_names)])
+            case CCPPOmpTargetDataBeginOp():
+                tofrom_names = [self._get_variable_name_for(v) for v in op.tofrom_arrays]
+                alloc_names  = [self._get_variable_name_for(v) for v in op.alloc_arrays]
+                if not tofrom_names and not alloc_names:
+                    self.print("!$omp target data")
+                else:
+                    self._emit_omp_directive("target data", [
+                        ("map(tofrom:", tofrom_names),
+                        ("map(alloc:",  alloc_names),
+                    ])
+            case CCPPOmpTargetDataEndOp():
+                self.print("!$omp end target data")
+            case CCPPOmpTargetUpdateFromOp():
+                var_names = [self._get_variable_name_for(v) for v in op.arrays]
+                self._emit_omp_directive("target update", [("from", var_names)])
+            case CCPPOmpTargetUpdateToOp():
+                var_names = [self._get_variable_name_for(v) for v in op.arrays]
+                self._emit_omp_directive("target update", [("to", var_names)])
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(
         {
@@ -869,7 +891,7 @@ class ftnPrintContext:
 
     @contextmanager
     def _emit_acc_directive(
-        self, keyword: str, clauses: list[tuple[str, list[str]]]
+        self, keyword: str, clauses: list[tuple[str, list[str]]], *, sentinel: str = "!$acc"
     ) -> None:
         """Emit an OpenACC directive with proper continuation at variable boundaries.
 
@@ -892,8 +914,8 @@ class ftnPrintContext:
             !$acc data copyin(var1, var2, var3, &
             !$acc      var4, var5) copyout(var6)
         """
-        acc_start = self._prefix + "!$acc " + keyword
-        acc_cont  = self._prefix + "!$acc     "
+        acc_start = self._prefix + sentinel + " " + keyword
+        acc_cont  = self._prefix + sentinel + "     "
 
         current = acc_start
         output_lines: list[str] = []
@@ -920,6 +942,10 @@ class ftnPrintContext:
         output_lines.append(current)
         for line in output_lines:
             print(line, file=self.output)
+    def _emit_omp_directive(
+        self, keyword: str, clauses: list[tuple[str, list[str]]]
+    ) -> None:
+        self._emit_acc_directive(keyword, clauses, sentinel="!$omp")
 
     @contextmanager
     def descend(self, block_start: str = None, block_end: str = None):

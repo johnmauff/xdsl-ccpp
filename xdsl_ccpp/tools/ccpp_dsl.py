@@ -91,6 +91,13 @@ class ccppMain:
             "ccpp.table_properties are merged into the ccpp module before "
             "the optimizer runs",
         )
+        parser.add_argument(
+            "--directive",
+            default="acc",
+            choices=["acc", "omp"],
+            help="GPU directive backend: 'acc' for OpenACC (default), "
+                 "'omp' for OpenMP target offload",
+        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -282,9 +289,12 @@ class ccppMain:
         ccpp_cap_pass = "generate-ccpp-cap"
         if self.options_db.get("host_name"):
             ccpp_cap_pass += f"{{host_name={self.options_db['host_name']}}}"
+        directive = self.options_db.get("directive", "acc")
+        gpu_data_pass      = f"generate-gpu-data{{directive={directive}}}"
+        gpu_ccpp_cap_pass  = f"generate-gpu-ccpp-cap{{directive={directive}}}"
         cmd = (
             f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
-            f" -p generate-meta-cap,generate-host-match,generate-meta-kinds,generate-suite-cap,generate-gpu-data,{ccpp_cap_pass},generate-gpu-ccpp-cap,generate-kinds,strip-ccpp"
+            f" -p generate-meta-cap,generate-host-match,generate-meta-kinds,generate-suite-cap,{gpu_data_pass},{ccpp_cap_pass},{gpu_ccpp_cap_pass},generate-kinds,strip-ccpp"
             f' -t ftn > "{ftn_out}"'
         )
         self.print_verbose_message(

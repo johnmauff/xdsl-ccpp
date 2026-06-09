@@ -372,6 +372,46 @@ class AccUpdateDeviceOp(IRDLOperation):
 
     def __init__(self, array_refs):
         super().__init__(operands=[list(array_refs)])
+@irdl_op_definition
+class OmpTargetDataBeginOp(IRDLOperation):
+    """Emit !$omp target data map(tofrom:...) map(alloc:...) directive."""
+    name = "ccpp_utils.omp_target_data_begin"
+    tofrom_arrays = var_operand_def()   # copy both ways (equivalent to copyin+copyout)
+    alloc_arrays  = var_operand_def()   # already on device (equivalent to present)
+
+    irdl_options = [AttrSizedOperandSegments()]
+
+    def __init__(self, tofrom=None, alloc=None):
+        super().__init__(operands=[
+            list(tofrom or []),
+            list(alloc  or []),
+        ])
+
+@irdl_op_definition
+class OmpTargetDataEndOp(IRDLOperation):
+    """Emit !$omp end target data directive."""
+    name = "ccpp_utils.omp_target_data_end"
+
+    def __init__(self):
+        super().__init__()
+
+@irdl_op_definition
+class OmpTargetUpdateFromOp(IRDLOperation):
+    """Emit !$omp target update from(...) — copies variables from GPU to CPU."""
+    name = "ccpp_utils.omp_target_update_from"
+    arrays = var_operand_def()
+
+    def __init__(self, array_refs):
+        super().__init__(operands=[list(array_refs)])
+  
+@irdl_op_definition
+class OmpTargetUpdateToOp(IRDLOperation):
+    """Emit !$omp target update to(...) — copies variables from CPU to GPU."""
+    name = "ccpp_utils.omp_target_update_to"
+    arrays = var_operand_def()
+
+    def __init__(self, array_refs):
+        super().__init__(operands=[list(array_refs)])
 
 CCPPUtils = Dialect(
     "ccpp_utils",
@@ -385,9 +425,13 @@ CCPPUtils = Dialect(
         SetStringOp,
         KeywordCallOp,
         AccDataBeginOp,
-	AccDataEndOp,
+        AccDataEndOp,
         AccUpdateSelfOp,
         AccUpdateDeviceOp,
+        OmpTargetDataBeginOp,
+        OmpTargetDataEndOp,
+        OmpTargetUpdateFromOp,
+        OmpTargetUpdateToOp,
     ],
     [RealKindType, DerivedType],
 )

@@ -13,6 +13,10 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateSelfOp,
     ArraySectionOp,
     HostVarRefOp,
+    OmpTargetDataBeginOp,
+    OmpTargetDataEndOp,
+    OmpTargetUpdateFromOp,
+    OmpTargetUpdateToOp,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -55,6 +59,11 @@ class GPUCcppCapPass(ModulePass):
     """
 
     name = "generate-gpu-ccpp-cap"
+
+    # GPU directive backend: "acc" for OpenACC, "omp" for OpenMP target offload.
+    # Usage: generate-gpu-ccpp-cap            (default: OpenACC)
+    #        generate-gpu-ccpp-cap{directive=omp}  (OpenMP target)
+    directive: str = "acc"
 
     def _find_ccpp_module(self, ops):
         for op in ops:
@@ -213,50 +222,66 @@ class GPUCcppCapPass(ModulePass):
                     update_vars.append(var_name)
 
             # Data region directives wrap the entire inner scf.IfOp.
-            # copyin/copyout: use array sections for efficiency
-            #   e.g. copyin(temp_midpoints(col_start:col_end, 1:pver))
-            # present: use base variable names — semantically correct because the
-            #   host put the whole array on device, not just the active columns
-            #   e.g. present(temp_interfaces)
+            # copyin/copyout / tofrom: use array sections for efficiency.
+            # present / alloc: use base variable names — the host put the
+            #   whole array on device, not just the active columns.
             if present_vars or copyin_out_vars:
-                copyin_refs  = self._resolve_array_refs(
+                section_refs = self._resolve_array_refs(
                     true_block, set(copyin_out_vars), use_sections=True
                 )
-                present_refs = self._resolve_array_refs(
+                base_refs = self._resolve_array_refs(
                     true_block, set(present_vars), use_sections=False
                 )
-                Rewriter.insert_op(
-                    AccDataBeginOp(
-                        copyin=copyin_refs,
-                        copyout=copyin_refs,
-                        present=present_refs,
-                    ),
-                    InsertPoint.before(inner_if),
-                )
-                Rewriter.insert_op(
-                    AccDataEndOp(),
-                    InsertPoint.after(inner_if),
-                )
+                if self.directive == "omp":
+                    Rewriter.insert_op(
+                        OmpTargetDataBeginOp(
+                            tofrom=section_refs,
+                            alloc=base_refs,
+                        ),
+                        InsertPoint.before(inner_if),
+                    )
+                    Rewriter.insert_op(
+                        OmpTargetDataEndOp(),
+                        InsertPoint.after(inner_if),
+                    )
+                else:  # acc (default)
+                    Rewriter.insert_op(
+                        AccDataBeginOp(
+                            copyin=section_refs,
+                            copyout=section_refs,
+                            present=base_refs,
+                        ),
+                        InsertPoint.before(inner_if),
+                    )
+                    Rewriter.insert_op(
+                        AccDataEndOp(),
+                        InsertPoint.after(inner_if),
+                    )
 
             # Update directives go inside the inner scf.IfOp's true region,
             # bracketing the actual suite physics call.
-            # Use array section SSA values where available so the printer
-            # emits the correct section notation, e.g.:
-            #   !$acc update self(temp_midpoints(col_start:col_end, 1:pver))
-            # rather than the whole array:
-            #   !$acc update self(temp_midpoints)
             if update_vars and suite_call is not None:
                 update_refs = self._resolve_array_refs(
                     true_block, update_vars
                 )
-                Rewriter.insert_op(
-                    AccUpdateSelfOp(array_refs=update_refs),
-                    InsertPoint.before(suite_call),
-                )
-                Rewriter.insert_op(
-                    AccUpdateDeviceOp(array_refs=update_refs),
-                    InsertPoint.after(suite_call),
-                )
+                if self.directive == "omp":
+                    Rewriter.insert_op(
+                        OmpTargetUpdateFromOp(array_refs=update_refs),
+                        InsertPoint.before(suite_call),
+                    )
+                    Rewriter.insert_op(
+                        OmpTargetUpdateToOp(array_refs=update_refs),
+                        InsertPoint.after(suite_call),
+                    )
+                else:  # acc (default)
+                    Rewriter.insert_op(
+                        AccUpdateSelfOp(array_refs=update_refs),
+                        InsertPoint.before(suite_call),
+                    )
+                    Rewriter.insert_op(
+                        AccUpdateDeviceOp(array_refs=update_refs),
+                        InsertPoint.after(suite_call),
+                    )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = self._find_ccpp_module(op.body.block.ops)
