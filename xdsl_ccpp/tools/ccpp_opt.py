@@ -15,6 +15,7 @@ from xdsl_ccpp.transforms.suite_kinds import MetaKind
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
+from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 
 class CCPPOptMain(xDSLOptMain):
     def register_all_passes(self):
@@ -29,6 +30,7 @@ class CCPPOptMain(xDSLOptMain):
         self.register_pass("fir-to-meta", lambda: FIRToMeta)
         self.register_pass("generate-gpu-data", lambda: GPUDataPass)
         self.register_pass("generate-host-match", lambda: HostVariableMatchPass)
+        self.register_pass("generate-gpu-ccpp-cap", lambda: GPUCcppCapPass)
 
     def register_all_targets(self):
         super().register_all_targets()

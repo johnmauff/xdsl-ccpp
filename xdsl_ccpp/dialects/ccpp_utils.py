@@ -333,17 +333,20 @@ class KeywordCallOp(IRDLOperation):
 
 @irdl_op_definition 
 class AccDataBeginOp(IRDLOperation):
-    """Emit !$acc data copyin(...) copyout(...) directive."""
+    """Emit !$acc data copyin(...) copyout(...) present(...) directive."""
     name = "ccpp_utils.acc_data_begin"
     copyin  = opt_prop_def(ArrayAttr)   # variables to copy host → device
     copyout = opt_prop_def(ArrayAttr)   # variables to copy device → host
+    present = opt_prop_def(ArrayAttr)   # variables already on device
 
-    def __init__(self, copyin=None, copyout=None):
+    def __init__(self, copyin=None, copyout=None, present=None):
         props = {}
         if copyin:
             props["copyin"]  = ArrayAttr([StringAttr(v) for v in copyin])
         if copyout:
             props["copyout"] = ArrayAttr([StringAttr(v) for v in copyout])
+        if present:
+            props["present"] = ArrayAttr([StringAttr(v) for v in present])
         super().__init__(properties=props)
 
 @irdl_op_definition
@@ -353,6 +356,28 @@ class AccDataEndOp(IRDLOperation):
 
     def __init__(self):
         super().__init__()
+@irdl_op_definition
+class AccUpdateSelfOp(IRDLOperation):
+    """Emit !$acc update self(...) — copies variables from GPU to CPU."""
+    name = "ccpp_utils.acc_update_self"
+    variables = prop_def(ArrayAttr)
+
+    def __init__(self, variables):
+        super().__init__(properties={
+            "variables": ArrayAttr([StringAttr(v) for v in variables])
+        })
+
+
+@irdl_op_definition
+class AccUpdateDeviceOp(IRDLOperation):
+    """Emit !$acc update device(...) — copies variables from CPU to GPU."""
+    name = "ccpp_utils.acc_update_device"
+    variables = prop_def(ArrayAttr)
+
+    def __init__(self, variables):
+        super().__init__(properties={
+            "variables": ArrayAttr([StringAttr(v) for v in variables])
+        })
 
 CCPPUtils = Dialect(
     "ccpp_utils",
@@ -367,6 +392,8 @@ CCPPUtils = Dialect(
         KeywordCallOp,
         AccDataBeginOp,
 	AccDataEndOp,
+        AccUpdateSelfOp,
+        AccUpdateDeviceOp,
     ],
     [RealKindType, DerivedType],
 )

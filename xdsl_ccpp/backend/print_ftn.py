@@ -34,6 +34,9 @@ from xdsl_ccpp.dialects.ccpp_utils import TrimOp as CCPPTrimOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
+from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
+from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
+
 
 _MAX_LINE_LEN = 99
 
@@ -482,16 +485,24 @@ class ftnPrintContext:
             case CCPPAccDataBeginOp():
                 copyin_vars  = [s.data for s in op.copyin.data]  if op.copyin  else []
                 copyout_vars = [s.data for s in op.copyout.data] if op.copyout else []
+                present_vars = [s.data for s in op.present.data] if op.present else []
                 clauses = []
                 if copyin_vars:
                     clauses.append(f"copyin({', '.join(copyin_vars)})")
                 if copyout_vars:
                     clauses.append(f"copyout({', '.join(copyout_vars)})")
+                if present_vars:
+                    clauses.append(f"present({', '.join(present_vars)})")
                 clause_str = " " + " ".join(clauses) if clauses else ""
                 self.print(f"!$acc data{clause_str}")
             case CCPPAccDataEndOp():
                 self.print("!$acc end data")
-
+            case CCPPAccUpdateSelfOp():
+                 var_names = [s.data for s in op.variables.data]
+                 self.print(f"!$acc update self({', '.join(var_names)})")
+            case CCPPAccUpdateDeviceOp():
+                 var_names = [s.data for s in op.variables.data]
+                 self.print(f"!$acc update device({', '.join(var_names)})")
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(
         {

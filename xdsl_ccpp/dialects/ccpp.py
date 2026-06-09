@@ -232,6 +232,7 @@ class ArgumentOp(IRDLOperation):
     memory_space = opt_prop_def(StringAttr)  # values: "host", "device", "unified"
     host_var_name     = opt_prop_def(StringAttr)   # matched host local variable name
     host_module_name  = opt_prop_def(StringAttr)   # module containing the host variable
+    model_var_memory_space = opt_prop_def(StringAttr) # memory space declared by the host model
     optional = opt_prop_def(UnitAttr)
 
     # All keys recognised by __init__. Used externally to warn on unrecognised keys.

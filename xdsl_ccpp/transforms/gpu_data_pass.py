@@ -130,18 +130,16 @@ class GPUDataPass(ModulePass):
         if not gpu_calls:
             return
 
-        # Union of scheme-local names across all GPU calls in the group.
-        # Directives use scheme-local names because those are the variables
-        # in scope at the suite_cap level.  The corresponding host variable
-        # name (where available) is noted alongside for future ccpp_cap work.
+        # Only emit suite_cap level directives for variables that have NO host
+        # variable match.  Variables with a host match are handled at the
+        # ccpp_cap level by GPUCcppCapPass, which uses the host variable name
+        # directly.  Emitting directives at both levels would create nested
+        # !$acc data regions with redundant data movement.
         all_local_vars = set()
         for _, device_vars in gpu_calls:
             for local_name, host_var in device_vars.items():
-                all_local_vars.add(local_name)
-                if host_var:
-                    # host_var is available for when directives move to ccpp_cap level
-                    # e.g. local 'temp_layer' → host 'temp_midpoints' in 'hello_world_mod'
-                    pass
+                if host_var is None:
+                    all_local_vars.add(local_name)
 
         first_if = gpu_calls[0][0]
         last_if  = gpu_calls[-1][0]
