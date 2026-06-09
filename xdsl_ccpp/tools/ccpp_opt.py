@@ -13,7 +13,7 @@ from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 from xdsl_ccpp.transforms.suite_kinds import MetaKind
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
-
+from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
 
 class CCPPOptMain(xDSLOptMain):
     def register_all_passes(self):
@@ -26,6 +26,7 @@ class CCPPOptMain(xDSLOptMain):
         self.register_pass("strip-ccpp", lambda: StripCCPP)
         self.register_pass("lower-ccpp-utils", lambda: LowerCCPPUtils)
         self.register_pass("fir-to-meta", lambda: FIRToMeta)
+        self.register_pass("generate-gpu-data", lambda: GPUDataPass)
 
     def register_all_targets(self):
         super().register_all_targets()

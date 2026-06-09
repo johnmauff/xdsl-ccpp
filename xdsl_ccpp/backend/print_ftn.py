@@ -32,6 +32,8 @@ from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
 from xdsl_ccpp.dialects.ccpp_utils import TrimOp as CCPPTrimOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
+from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
+from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
 
 _MAX_LINE_LEN = 99
 
@@ -477,6 +479,18 @@ class ftnPrintContext:
                 # to the same variable name as the corresponding input operand.
                 for result, operand in zip(op.results, op.inputs):
                     self.variables[result] = self._get_variable_name_for(operand)
+            case CCPPAccDataBeginOp():
+                copyin_vars  = [s.data for s in op.copyin.data]  if op.copyin  else []
+                copyout_vars = [s.data for s in op.copyout.data] if op.copyout else []
+                clauses = []
+                if copyin_vars:
+                    clauses.append(f"copyin({', '.join(copyin_vars)})")
+                if copyout_vars:
+                    clauses.append(f"copyout({', '.join(copyout_vars)})")
+                clause_str = " " + " ".join(clauses) if clauses else ""
+                self.print(f"!$acc data{clause_str}")
+            case CCPPAccDataEndOp():
+                self.print("!$acc end data")
 
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(

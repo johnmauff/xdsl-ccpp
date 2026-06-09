@@ -331,6 +331,28 @@ class KeywordCallOp(IRDLOperation):
             result_types=[out_types],
         )
 
+@irdl_op_definition 
+class AccDataBeginOp(IRDLOperation):
+    """Emit !$acc data copyin(...) copyout(...) directive."""
+    name = "ccpp_utils.acc_data_begin"
+    copyin  = opt_prop_def(ArrayAttr)   # variables to copy host → device
+    copyout = opt_prop_def(ArrayAttr)   # variables to copy device → host
+
+    def __init__(self, copyin=None, copyout=None):
+        props = {}
+        if copyin:
+            props["copyin"]  = ArrayAttr([StringAttr(v) for v in copyin])
+        if copyout:
+            props["copyout"] = ArrayAttr([StringAttr(v) for v in copyout])
+        super().__init__(properties=props)
+
+@irdl_op_definition
+class AccDataEndOp(IRDLOperation):
+    """Emit !$acc end data directive."""
+    name = "ccpp_utils.acc_data_end"
+
+    def __init__(self):
+        super().__init__()
 
 CCPPUtils = Dialect(
     "ccpp_utils",
@@ -343,6 +365,8 @@ CCPPUtils = Dialect(
         KindDefOp,
         SetStringOp,
         KeywordCallOp,
+        AccDataBeginOp,
+	AccDataEndOp,
     ],
     [RealKindType, DerivedType],
 )
