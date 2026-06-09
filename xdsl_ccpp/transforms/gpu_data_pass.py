@@ -14,13 +14,17 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 class GPUDataPass(ModulePass):
     """Insert OpenACC data directives around GPU-capable scheme calls.
 
-    Reads memory_space annotations from CCPP metadata and wraps consecutive
-    GPU-capable scheme calls in !$acc data regions inside _physics subroutines.
+    Reads memory_space and host_var_name annotations from CCPP metadata
+    (populated by generate-host-match) and wraps consecutive GPU-capable
+    scheme calls in !$acc data regions inside _physics subroutines.
 
-    Limitations (simplified — no host variable matching):
-    - Directives are inserted at the suite_cap level, not ccpp_cap level.
-    - Always generates copyin+copyout (no 'present' optimisation).
-    - Variable names are scheme-local, not host module names.
+    Directives are inserted at the suite_cap level using scheme-local variable
+    names, which are the variables in scope at that level.  The host_var_name
+    mapping is available for each device-resident argument and will be used
+    when directives are moved to the ccpp_cap level in future work.
+
+    Remaining limitation:
+    - Always generates copyin+copyout (no 'present' optimisation yet).
     """
 
     name = "generate-gpu-data"
@@ -49,15 +53,19 @@ class GPUDataPass(ModulePass):
         return None
 
     def _get_device_args(self, scheme_name, meta_data):
-        """Return the set of local variable names annotated memory_space=device
-        in the scheme's _run argument table.
+        """Return a dict mapping scheme-local name → host variable name for
+        all device-resident arguments in the scheme's _run argument table.
+
+        The host variable name comes from the host_var_name annotation set by
+        generate-host-match.  It is None when no host match was found (e.g.
+        a device-resident scratch array local to the scheme).
         """
         if scheme_name not in meta_data:
-            return set()
+            return {}
         table_name = scheme_name + "_run"
         if table_name not in meta_data[scheme_name].arg_tables:
-            return set()
-        device_args = set()
+            return {}
+        device_args = {}
         for arg in (
             meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
         ):
@@ -65,7 +73,12 @@ class GPUDataPass(ModulePass):
                 arg.hasAttr("memory_space")
                 and arg.getAttr("memory_space") == "device"
             ):
-                device_args.add(arg.name)
+                host_var = (
+                    arg.getAttr("host_var_name")
+                    if arg.hasAttr("host_var_name")
+                    else None
+                )
+                device_args[arg.name] = host_var
         return device_args
 
     def _find_call_in_if(self, if_op):
@@ -96,7 +109,8 @@ class GPUDataPass(ModulePass):
 
         block = fn_op.body.blocks[0]
 
-        # Collect (scf.IfOp, device_vars) for each GPU-capable scheme call
+        # Collect (scf.IfOp, device_vars) for each GPU-capable scheme call.
+        # device_vars is a dict: scheme_local_name → host_var_name (or None)
         gpu_calls = []
         for op in block.ops:
             if not isa(op, scf.IfOp):
@@ -116,18 +130,27 @@ class GPUDataPass(ModulePass):
         if not gpu_calls:
             return
 
-        # Union of all device variables across the group.
-        # Conservative: copyin and copyout the same set.
-        # Refined once host variable matching is added.
-        all_vars = set()
+        # Union of scheme-local names across all GPU calls in the group.
+        # Directives use scheme-local names because those are the variables
+        # in scope at the suite_cap level.  The corresponding host variable
+        # name (where available) is noted alongside for future ccpp_cap work.
+        all_local_vars = set()
         for _, device_vars in gpu_calls:
-            all_vars.update(device_vars)
+            for local_name, host_var in device_vars.items():
+                all_local_vars.add(local_name)
+                if host_var:
+                    # host_var is available for when directives move to ccpp_cap level
+                    # e.g. local 'temp_layer' → host 'temp_midpoints' in 'hello_world_mod'
+                    pass
 
         first_if = gpu_calls[0][0]
         last_if  = gpu_calls[-1][0]
 
         Rewriter.insert_op(
-            AccDataBeginOp(copyin=sorted(all_vars), copyout=sorted(all_vars)),
+            AccDataBeginOp(
+                copyin=sorted(all_local_vars),
+                copyout=sorted(all_local_vars),
+            ),
             InsertPoint.before(first_if),
         )
         Rewriter.insert_op(

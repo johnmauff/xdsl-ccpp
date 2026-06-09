@@ -230,6 +230,8 @@ class ArgumentOp(IRDLOperation):
     intent = opt_prop_def(StringAttr)
     units = opt_prop_def(StringAttr)
     memory_space = opt_prop_def(StringAttr)  # values: "host", "device", "unified"
+    host_var_name     = opt_prop_def(StringAttr)   # matched host local variable name
+    host_module_name  = opt_prop_def(StringAttr)   # module containing the host variable
     optional = opt_prop_def(UnitAttr)
 
     # All keys recognised by __init__. Used externally to warn on unrecognised keys.
