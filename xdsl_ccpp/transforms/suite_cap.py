@@ -78,7 +78,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         Returns None if the scheme has no entry for subroutine_name (optional
         entry points such as _finalize may be absent).
         """
-        assert scheme_name in self.meta_data
+        if scheme_name not in self.meta_data:
+            raise ValueError(
+                f"No metadata found for scheme '{scheme_name}'. "
+                f"Did you include its .meta file in --scheme-files?\n"
+                f"Known schemes: {sorted(self.meta_data.keys())}"
+            )
         arg_tables = self.meta_data[scheme_name].arg_tables
         return arg_tables.get(subroutine_name)
 

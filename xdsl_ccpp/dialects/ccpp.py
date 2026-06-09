@@ -39,7 +39,7 @@ class TableTypeKind(StrEnum):
 
 @irdl_attr_definition
 class TableTypeKindAttr(EnumAttribute[TableTypeKind], SpacedOpaqueSyntaxAttribute):
-    name = "ccp.table_type_kind"
+    name = "ccpp.table_type_kind"
 
 
 @irdl_op_definition
