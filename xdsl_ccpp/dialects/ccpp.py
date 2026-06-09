@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from enum import StrEnum, auto
+from typing import ClassVar
 
 from xdsl.dialects.builtin import (
     DictionaryAttr,
@@ -228,7 +229,14 @@ class ArgumentOp(IRDLOperation):
     kind = opt_prop_def(StringAttr)
     intent = opt_prop_def(StringAttr)
     units = opt_prop_def(StringAttr)
+    memory_space = opt_prop_def(StringAttr)  # values: "host", "device", "unified"
     optional = opt_prop_def(UnitAttr)
+
+    # All keys recognised by __init__. Used externally to warn on unrecognised keys.
+    KNOWN_PROPS: ClassVar[frozenset] = frozenset([
+        "type", "dimensions", "standard_name", "long_name",
+        "kind", "intent", "units", "memory_space", "optional",
+    ])
 
     def __init__(
         self, arg_name: str | StringAttr, arg_type: str | StringAttr, attributes
@@ -264,7 +272,7 @@ class ArgumentOp(IRDLOperation):
                 properties["dim_names"] = StringAttr(",".join(parsed_dims))
             prop_keys.remove("dimensions")
 
-        known_props = ["standard_name", "long_name", "kind", "intent", "units"]
+        known_props = ["standard_name", "long_name", "kind", "intent", "units", "memory_space"]
         for prop in known_props:
             if prop in attributes:
                 properties[prop] = StringAttr(attributes[prop])

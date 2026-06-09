@@ -1,4 +1,5 @@
 import argparse
+import sys
 import xml.etree.ElementTree as ET
 from enum import Enum, StrEnum, auto
 
@@ -460,6 +461,14 @@ class ccppXML:
             args = []
             # Build an ArgumentOp for each argument in this entry point
             for fn_arg in table.getFunctionArguments():
+                unknown = set(fn_arg.getAttrs().keys()) - ArgumentOp.KNOWN_PROPS
+                if unknown:
+                    print(
+                        f"Warning: argument '{fn_arg.name}' in "
+                        f"'{table.getAttr('name')}' has unrecognised keys: "
+                        f"{sorted(unknown)}",
+                        file=sys.stderr,
+                    )
                 args.append(
                     ArgumentOp(fn_arg.name, fn_arg.getAttr("type"), fn_arg.getAttrs())
                 )

@@ -279,7 +279,7 @@ class BuildMetaDataDescriptions(Visitor):
         arg = CCPPArgument(arg_op.arg_name.data)
 
         # Copy well-known string properties from the IR op into the descriptor
-        known_props = ["standard_name", "long_name", "kind", "intent", "units", "type"]
+        known_props = ["standard_name", "long_name", "kind", "intent", "units", "type", "memory_space"]
         for kp in known_props:
             if kp in arg_op.properties:
                 arg.setAttr(kp, arg_op.properties[kp].data)
