@@ -17,7 +17,7 @@ class HostVariableMatchPass(ModulePass):
 
     Builds a standard_name → (local_var_name, module_name, memory_space) index
     from HOST and MODULE metadata, then walks all SCHEME argument tables and
-    sets host_var_name, host_module_name, and model_var_memory_space on each
+    sets model_var_name, model_module_name, and model_var_memory_space on each
     arg op whose standard_name appears in the index.
 
     The memory_space value ('host' or 'device') on the matched model variable
@@ -27,7 +27,7 @@ class HostVariableMatchPass(ModulePass):
     Required scheme arguments with no host model match are collected and reported
     together as a ValueError rather than failing on the first mismatch.
 
-    Naming note: 'host_var_name' and 'host_module_name' refer to the host MODEL
+    Naming note: 'model_var_name' and 'model_module_name' refer to the host MODEL
     (the atmospheric model that calls CCPP), not CPU host memory.
     'model_var_memory_space' is used where ambiguity with OpenACC's 'host'
     memory space would otherwise arise.
@@ -118,8 +118,8 @@ class HostVariableMatchPass(ModulePass):
                         local_name, module_name, model_memory_space = (
                             model_var_index[std_name]
                         )
-                        arg_op.properties["host_var_name"]    = StringAttr(local_name)
-                        arg_op.properties["host_module_name"] = StringAttr(module_name)
+                        arg_op.properties["model_var_name"]    = StringAttr(local_name)
+                        arg_op.properties["model_module_name"] = StringAttr(module_name)
                         # Propagate model's memory space so GPU passes can
                         # determine the correct OpenACC clause without a
                         # second lookup.  Only set when the model variable

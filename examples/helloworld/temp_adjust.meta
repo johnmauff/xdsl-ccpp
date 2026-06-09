@@ -22,7 +22,7 @@
   dimensions = (horizontal_loop_extent, vertical_layer_dimension)
   type = real
   kind = kind_phys
-  memory_space = device
+  memory_space = host
   intent = inout
 [ timestep ]
   standard_name = time_step_for_physics

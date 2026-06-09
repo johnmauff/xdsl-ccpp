@@ -14,12 +14,12 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 class GPUDataPass(ModulePass):
     """Insert OpenACC data directives around GPU-capable scheme calls.
 
-    Reads memory_space and host_var_name annotations from CCPP metadata
+    Reads memory_space and model_var_name annotations from CCPP metadata
     (populated by generate-host-match) and wraps consecutive GPU-capable
     scheme calls in !$acc data regions inside _physics subroutines.
 
     Directives are inserted at the suite_cap level using scheme-local variable
-    names, which are the variables in scope at that level.  The host_var_name
+    names, which are the variables in scope at that level.  The model_var_name
     mapping is available for each device-resident argument and will be used
     when directives are moved to the ccpp_cap level in future work.
 
@@ -56,7 +56,7 @@ class GPUDataPass(ModulePass):
         """Return a dict mapping scheme-local name → host variable name for
         all device-resident arguments in the scheme's _run argument table.
 
-        The host variable name comes from the host_var_name annotation set by
+        The host variable name comes from the model_var_name annotation set by
         generate-host-match.  It is None when no host match was found (e.g.
         a device-resident scratch array local to the scheme).
         """
@@ -74,8 +74,8 @@ class GPUDataPass(ModulePass):
                 and arg.getAttr("memory_space") == "device"
             ):
                 host_var = (
-                    arg.getAttr("host_var_name")
-                    if arg.hasAttr("host_var_name")
+                    arg.getAttr("model_var_name")
+                    if arg.hasAttr("model_var_name")
                     else None
                 )
                 device_args[arg.name] = host_var
@@ -110,7 +110,7 @@ class GPUDataPass(ModulePass):
         block = fn_op.body.blocks[0]
 
         # Collect (scf.IfOp, device_vars) for each GPU-capable scheme call.
-        # device_vars is a dict: scheme_local_name → host_var_name (or None)
+        # device_vars is a dict: scheme_local_name → model_var_name (or None)
         gpu_calls = []
         for op in block.ops:
             if not isa(op, scf.IfOp):

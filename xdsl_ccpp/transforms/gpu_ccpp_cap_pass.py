@@ -46,7 +46,7 @@ class GPUCcppCapPass(ModulePass):
 
         scheme=host   + model=host    → no directive (CPU path, default)
 
-    Naming note: 'host_var_name' refers to the host MODEL variable name,
+    Naming note: 'model_var_name' refers to the host MODEL variable name,
     not a CPU-memory variable.  'host'/'device' in memory_space follow
     OpenACC conventions (CPU vs GPU).
 
@@ -72,7 +72,7 @@ class GPUCcppCapPass(ModulePass):
         with model_var_memory_space (propagated by generate-host-match) to
         determine which OpenACC clause each variable needs.
 
-        Returns: {host_var_name: "present" | "copyin_copyout" | "skip"}
+        Returns: {model_var_name: "present" | "copyin_copyout" | "skip"}
             "present"       — both scheme and model agree on device memory
             "copyin_copyout" — scheme wants device, model provides host memory
             "skip"          — scheme is host-only but model is on device
@@ -81,17 +81,17 @@ class GPUCcppCapPass(ModulePass):
         bmdd = BuildMetaDataDescriptions()
         bmdd.traverse(ccpp_mod)
 
-        clause_map = {}  # host_var_name → clause type
+        clause_map = {}  # model_var_name → clause type
 
         for props in bmdd.meta_data.values():
             if props.getAttr("type") != CCPPType.SCHEME:
                 continue
             for table in props.arg_tables.values():
                 for arg in table.getFunctionArguments():
-                    if not arg.hasAttr("host_var_name"):
+                    if not arg.hasAttr("model_var_name"):
                         continue
 
-                    host_var = arg.getAttr("host_var_name")
+                    host_var = arg.getAttr("model_var_name")
                     scheme_space = (
                         arg.getAttr("memory_space")
                         if arg.hasAttr("memory_space")
