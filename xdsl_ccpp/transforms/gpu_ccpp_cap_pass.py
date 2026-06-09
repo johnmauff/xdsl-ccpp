@@ -11,6 +11,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AccDataEndOp,
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
+    ArraySectionOp,
     HostVarRefOp,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -130,6 +131,45 @@ class GPUCcppCapPass(ModulePass):
                     return op, inner_op
         return None, None
 
+    def _resolve_array_refs(self, true_block, var_names, use_sections=True):
+        """For each variable name in var_names, return the best SSA value to
+        use in an !$acc update directive — preferring the ArraySectionOp result
+        (which carries the full section expression) over the bare HostVarRefOp
+        result (which carries only the base variable name).
+
+        For a 2D host array temp_midpoints(horizontal_dimension, vertical_layer_dimension),
+        ccpp_cap.py generates:
+            HostVarRefOp(temp_midpoints)  → %ref
+            ArraySectionOp(%ref, col_start, col_end, 1, pver) → %section
+
+        Passing %section to AccUpdateSelfOp causes the printer to emit:
+            !$acc update self(temp_midpoints(col_start:col_end, 1:pver))
+
+        Passing %ref would only emit:
+            !$acc update self(temp_midpoints)
+
+        For scalar variables with no ArraySectionOp, %ref is used directly.
+        """
+        # Build map: HostVarRefOp.res → ArraySectionOp.res (if one exists)
+        section_for_ref = {}
+        if use_sections:
+            for op in true_block.ops:
+                if isa(op, ArraySectionOp):
+                    section_for_ref[op.source] = op.res
+
+        # For each variable, find its HostVarRefOp and resolve to the best SSA value
+        refs = []
+        for op in true_block.ops:
+            if not isa(op, HostVarRefOp):
+                continue
+            if op.var_name.data not in var_names:
+                continue
+            # use_sections=True: prefer array section (efficiency for copyin/copyout/update)
+            # use_sections=False: use bare ref (correct semantics for present)
+            best = section_for_ref.get(op.res, op.res)
+            refs.append(best)
+        return refs
+
     def _process_run_fn(self, fn_op, clause_map):
         """Insert acc directives around and inside the suite-part dispatch.
 
@@ -172,13 +212,24 @@ class GPUCcppCapPass(ModulePass):
                 elif clause == "update":
                     update_vars.append(var_name)
 
-            # Data region directives wrap the entire inner scf.IfOp
+            # Data region directives wrap the entire inner scf.IfOp.
+            # copyin/copyout: use array sections for efficiency
+            #   e.g. copyin(temp_midpoints(col_start:col_end, 1:pver))
+            # present: use base variable names — semantically correct because the
+            #   host put the whole array on device, not just the active columns
+            #   e.g. present(temp_interfaces)
             if present_vars or copyin_out_vars:
+                copyin_refs  = self._resolve_array_refs(
+                    true_block, set(copyin_out_vars), use_sections=True
+                )
+                present_refs = self._resolve_array_refs(
+                    true_block, set(present_vars), use_sections=False
+                )
                 Rewriter.insert_op(
                     AccDataBeginOp(
-                        copyin=sorted(copyin_out_vars),
-                        copyout=sorted(copyin_out_vars),
-                        present=sorted(present_vars),
+                        copyin=copyin_refs,
+                        copyout=copyin_refs,
+                        present=present_refs,
                     ),
                     InsertPoint.before(inner_if),
                 )
@@ -189,13 +240,21 @@ class GPUCcppCapPass(ModulePass):
 
             # Update directives go inside the inner scf.IfOp's true region,
             # bracketing the actual suite physics call.
+            # Use array section SSA values where available so the printer
+            # emits the correct section notation, e.g.:
+            #   !$acc update self(temp_midpoints(col_start:col_end, 1:pver))
+            # rather than the whole array:
+            #   !$acc update self(temp_midpoints)
             if update_vars and suite_call is not None:
+                update_refs = self._resolve_array_refs(
+                    true_block, update_vars
+                )
                 Rewriter.insert_op(
-                    AccUpdateSelfOp(variables=sorted(update_vars)),
+                    AccUpdateSelfOp(array_refs=update_refs),
                     InsertPoint.before(suite_call),
                 )
                 Rewriter.insert_op(
-                    AccUpdateDeviceOp(variables=sorted(update_vars)),
+                    AccUpdateDeviceOp(array_refs=update_refs),
                     InsertPoint.after(suite_call),
                 )
 

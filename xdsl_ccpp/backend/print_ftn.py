@@ -483,26 +483,25 @@ class ftnPrintContext:
                 for result, operand in zip(op.results, op.inputs):
                     self.variables[result] = self._get_variable_name_for(operand)
             case CCPPAccDataBeginOp():
-                copyin_vars  = [s.data for s in op.copyin.data]  if op.copyin  else []
-                copyout_vars = [s.data for s in op.copyout.data] if op.copyout else []
-                present_vars = [s.data for s in op.present.data] if op.present else []
-                clauses = []
-                if copyin_vars:
-                    clauses.append(f"copyin({', '.join(copyin_vars)})")
-                if copyout_vars:
-                    clauses.append(f"copyout({', '.join(copyout_vars)})")
-                if present_vars:
-                    clauses.append(f"present({', '.join(present_vars)})")
-                clause_str = " " + " ".join(clauses) if clauses else ""
-                self.print(f"!$acc data{clause_str}")
+                copyin_names  = [self._get_variable_name_for(v) for v in op.copyin_arrays]
+                copyout_names = [self._get_variable_name_for(v) for v in op.copyout_arrays]
+                present_names = [self._get_variable_name_for(v) for v in op.present_arrays]
+                if not copyin_names and not copyout_names and not present_names:
+                    self.print("!$acc data")
+                else:
+                    self._emit_acc_directive("data", [
+                        ("copyin",  copyin_names),
+                        ("copyout", copyout_names),
+                        ("present", present_names),
+                    ])
             case CCPPAccDataEndOp():
                 self.print("!$acc end data")
             case CCPPAccUpdateSelfOp():
-                 var_names = [s.data for s in op.variables.data]
-                 self.print(f"!$acc update self({', '.join(var_names)})")
+                var_names = [self._get_variable_name_for(v) for v in op.arrays]
+                self._emit_acc_directive("update", [("self", var_names)])
             case CCPPAccUpdateDeviceOp():
-                 var_names = [s.data for s in op.variables.data]
-                 self.print(f"!$acc update device({', '.join(var_names)})")
+                var_names = [self._get_variable_name_for(v) for v in op.arrays]
+                self._emit_acc_directive("update", [("device", var_names)])
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(
         {
@@ -869,6 +868,60 @@ class ftnPrintContext:
             inner.print_block(bdy.block)
 
     @contextmanager
+    def _emit_acc_directive(
+        self, keyword: str, clauses: list[tuple[str, list[str]]]
+    ) -> None:
+        """Emit an OpenACC directive with proper continuation at variable boundaries.
+
+        Builds the directive token by token.  When adding the next token would
+        push the current line past _MAX_LINE_LEN, the line is flushed with a
+        Fortran continuation marker ' &' and a new line is started with the
+        OpenACC sentinel prefix '!$acc     '.
+
+        This handles both inter-clause breaks (between copyin/copyout/present)
+        and intra-clause breaks within a long variable list, making it suitable
+        for suites with 40+ variables per clause.
+
+        Args:
+            keyword:  The OpenACC directive keyword, e.g. 'data' or 'update'.
+            clauses:  List of (clause_name, [var_name_strings]) pairs.
+                      Pairs with empty variable lists are skipped.
+
+        Example output for a long copyin list::
+
+            !$acc data copyin(var1, var2, var3, &
+            !$acc      var4, var5) copyout(var6)
+        """
+        acc_start = self._prefix + "!$acc " + keyword
+        acc_cont  = self._prefix + "!$acc     "
+
+        current = acc_start
+        output_lines: list[str] = []
+
+        for clause_name, var_names in clauses:
+            if not var_names:
+                continue
+            # Build tokens: first includes the clause opener, last closes the paren.
+            # e.g. ["copyin(var1,", "var2,", "var3)"]
+            tokens = []
+            for i, var in enumerate(var_names):
+                prefix = f"{clause_name}(" if i == 0 else ""
+                suffix = ")" if i == len(var_names) - 1 else ","
+                tokens.append(prefix + var + suffix)
+
+            for token in tokens:
+                candidate = current + " " + token
+                if len(candidate) <= _MAX_LINE_LEN:
+                    current = candidate
+                else:
+                    output_lines.append(current + " &")
+                    current = acc_cont + " " + token
+
+        output_lines.append(current)
+        for line in output_lines:
+            print(line, file=self.output)
+
+    @contextmanager
     def descend(self, block_start: str = None, block_end: str = None):
         """Return a child context with one extra level of indentation.
 
@@ -921,16 +974,33 @@ class ftnPrintContext:
     def _write_with_continuation(self, line: str, cont_prefix: str):
         """Write line, inserting Fortran continuation markers at commas if needed.
 
-        If line exceeds _MAX_LINE_LEN characters, the last comma at or before
-        position _MAX_LINE_LEN - 2 is used as the split point: the first part
-        is written with a trailing ' &' and the remainder is written on the
-        next line starting with cont_prefix.  Recurses until the remainder fits.
+        If line exceeds _MAX_LINE_LEN characters, the last comma at parenthesis
+        depth zero at or before position _MAX_LINE_LEN - 2 is used as the split
+        point: the first part is written with a trailing ' &' and the remainder
+        is written on the next line starting with cont_prefix.  Recurses until
+        the remainder fits.
+
+        Only commas at depth zero are considered so that array subscript
+        expressions such as arr(col_start:col_end, 1:pver) are never split
+        in the middle.
         """
         if len(line) <= _MAX_LINE_LEN:
             print(line, file=self.output)
             return
-        # Search for the last comma that leaves room for ' &' within the limit
-        split_pos = line.rfind(",", 0, _MAX_LINE_LEN - 2)
+        # Find the last comma at paren depth ≤ 1 within the line limit.
+        # Depth 0: top-level commas.
+        # Depth 1: commas between function/subroutine arguments — valid break points.
+        # Depth > 1: commas inside nested subscript expressions such as
+        #   arr(col_start:col_end, 1:pver) — never break inside these.
+        split_pos = -1
+        depth = 0
+        for i, ch in enumerate(line[: _MAX_LINE_LEN - 2]):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == "," and depth <= 1:
+                split_pos = i
         if split_pos == -1:
             # No valid split point — emit as-is rather than produce invalid Fortran
             print(line, file=self.output)

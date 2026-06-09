@@ -141,13 +141,33 @@ class GPUDataPass(ModulePass):
                 if host_var is None:
                     all_local_vars.add(local_name)
 
+        if not all_local_vars:
+            return
+
         first_if = gpu_calls[0][0]
         last_if  = gpu_calls[-1][0]
 
+        # At the suite_cap level the variables are function block arguments —
+        # assumed-shape arrays that already represent the active column slice.
+        # No further subsectioning is needed; just pass the block arg SSA values.
+        arg_by_name = {
+            arg.name_hint: arg
+            for arg in block.args
+            if arg.name_hint is not None
+        }
+        copyin_refs = [
+            arg_by_name[name]
+            for name in sorted(all_local_vars)
+            if name in arg_by_name
+        ]
+
+        if not copyin_refs:
+            return
+
         Rewriter.insert_op(
             AccDataBeginOp(
-                copyin=sorted(all_local_vars),
-                copyout=sorted(all_local_vars),
+                copyin=copyin_refs,
+                copyout=copyin_refs,
             ),
             InsertPoint.before(first_if),
         )

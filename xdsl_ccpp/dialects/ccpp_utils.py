@@ -335,19 +335,18 @@ class KeywordCallOp(IRDLOperation):
 class AccDataBeginOp(IRDLOperation):
     """Emit !$acc data copyin(...) copyout(...) present(...) directive."""
     name = "ccpp_utils.acc_data_begin"
-    copyin  = opt_prop_def(ArrayAttr)   # variables to copy host → device
-    copyout = opt_prop_def(ArrayAttr)   # variables to copy device → host
-    present = opt_prop_def(ArrayAttr)   # variables already on device
+    copyin_arrays  = var_operand_def()   # arrays to copy host → device
+    copyout_arrays = var_operand_def()   # arrays to copy device → host
+    present_arrays = var_operand_def()   # arrays asserted already on device
 
+    irdl_options = [AttrSizedOperandSegments()]
+  
     def __init__(self, copyin=None, copyout=None, present=None):
-        props = {}
-        if copyin:
-            props["copyin"]  = ArrayAttr([StringAttr(v) for v in copyin])
-        if copyout:
-            props["copyout"] = ArrayAttr([StringAttr(v) for v in copyout])
-        if present:
-            props["present"] = ArrayAttr([StringAttr(v) for v in present])
-        super().__init__(properties=props)
+        super().__init__(operands=[
+            list(copyin  or []),
+            list(copyout or []), 
+            list(present or []),
+        ])
 
 @irdl_op_definition
 class AccDataEndOp(IRDLOperation):
@@ -360,24 +359,19 @@ class AccDataEndOp(IRDLOperation):
 class AccUpdateSelfOp(IRDLOperation):
     """Emit !$acc update self(...) — copies variables from GPU to CPU."""
     name = "ccpp_utils.acc_update_self"
-    variables = prop_def(ArrayAttr)
+    arrays = var_operand_def()   # SSA values from HostVarRefOp or ArraySectionOp
 
-    def __init__(self, variables):
-        super().__init__(properties={
-            "variables": ArrayAttr([StringAttr(v) for v in variables])
-        })
-
+    def __init__(self, array_refs):
+        super().__init__(operands=[list(array_refs)])
 
 @irdl_op_definition
 class AccUpdateDeviceOp(IRDLOperation):
     """Emit !$acc update device(...) — copies variables from CPU to GPU."""
     name = "ccpp_utils.acc_update_device"
-    variables = prop_def(ArrayAttr)
+    arrays = var_operand_def()   # SSA values from HostVarRefOp or ArraySectionOp
 
-    def __init__(self, variables):
-        super().__init__(properties={
-            "variables": ArrayAttr([StringAttr(v) for v in variables])
-        })
+    def __init__(self, array_refs):
+        super().__init__(operands=[list(array_refs)])
 
 CCPPUtils = Dialect(
     "ccpp_utils",
