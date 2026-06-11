@@ -234,12 +234,24 @@ class ArgumentOp(IRDLOperation):
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
     model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model
     model_var_kind_mismatch = opt_prop_def(StringAttr)  # set when scheme/host kinds differ: "scheme_kind:host_kind"
-    optional = opt_prop_def(UnitAttr)
+    model_var_is_ddt = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
+    allocatable = opt_prop_def(UnitAttr)
+    advected    = opt_prop_def(UnitAttr)
+    constituent = opt_prop_def(UnitAttr)  # CCPP constituent framework variable
+    protected            = opt_prop_def(UnitAttr)    # read-only from the framework's perspective
+    state_variable       = opt_prop_def(UnitAttr)    # conserved physics state quantity
+    default_value        = opt_prop_def(StringAttr)  # framework initializes to this value if host doesn't provide
+    diagnostic_name       = opt_prop_def(StringAttr)  # name used by the diagnostic output system
+    diagnostic_name_fixed = opt_prop_def(StringAttr)  # fixed diagnostic name regardless of suite instance
+    active                = opt_prop_def(StringAttr)  # Fortran logical expression controlling when variable is active
+    optional             = opt_prop_def(UnitAttr)
 
     # All keys recognised by __init__. Used externally to warn on unrecognised keys.
     KNOWN_PROPS: ClassVar[frozenset] = frozenset([
         "type", "dimensions", "standard_name", "long_name",
         "kind", "intent", "units", "memory_space", "optional",
+        "allocatable", "advected", "constituent", "protected", "state_variable",
+        "default_value", "diagnostic_name", "diagnostic_name_fixed", "active",
     ])
 
     def __init__(
@@ -276,7 +288,8 @@ class ArgumentOp(IRDLOperation):
                 properties["dim_names"] = StringAttr(",".join(parsed_dims))
             prop_keys.remove("dimensions")
 
-        known_props = ["standard_name", "long_name", "kind", "intent", "units", "memory_space"]
+        known_props = ["standard_name", "long_name", "kind", "intent", "units", "memory_space",
+                       "default_value", "diagnostic_name", "diagnostic_name_fixed", "active"]
         for prop in known_props:
             if prop in attributes:
                 properties[prop] = StringAttr(attributes[prop])
@@ -287,7 +300,32 @@ class ArgumentOp(IRDLOperation):
                 properties["optional"] = UnitAttr()
                 prop_keys.remove("optional")
 
-        # Silently ignore unrecognised keys (e.g. state_variable, allocatable)
+        if "allocatable" in attributes:
+            if attributes["allocatable"]:
+                properties["allocatable"] = UnitAttr()
+                prop_keys.remove("allocatable")
+
+        if "advected" in attributes:
+            if attributes["advected"]:
+                properties["advected"] = UnitAttr()
+                prop_keys.remove("advected")
+
+        if "constituent" in attributes:
+            if attributes["constituent"]:
+                properties["constituent"] = UnitAttr()
+                prop_keys.remove("constituent")
+
+        if "protected" in attributes:
+            if attributes["protected"]:
+                properties["protected"] = UnitAttr()
+            prop_keys.remove("protected")
+
+        if "state_variable" in attributes:
+            if attributes["state_variable"]:
+                properties["state_variable"] = UnitAttr()
+            prop_keys.remove("state_variable")
+
+        # Silently ignore unrecognised keys
 
         super().__init__(properties=properties)
 

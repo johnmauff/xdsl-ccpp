@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from xdsl.context import Context
 from xdsl.dialects import builtin
-from xdsl.dialects.builtin import StringAttr
+from xdsl.dialects.builtin import StringAttr, UnitAttr
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
 
@@ -51,11 +51,16 @@ class HostVariableMatchPass(ModulePass):
     # Standard names managed by the CCPP framework itself, or derived/computed
     # by the generated cap rather than provided directly as a named model variable.
     _CCPP_INTERNAL: ClassVar[frozenset] = frozenset([
+        # CCPP error handling — always provided by the framework
         "ccpp_error_message",
         "ccpp_error_code",
         # Computed by suite_cap.py as (col_end - col_start + 1) rather than
         # provided directly by the host model as a named variable.
         "horizontal_loop_extent",
+        # CCPP constituent transport arrays — managed by the framework, not
+        # provided as named host model variables in the metadata.
+        "ccpp_constituents",
+        "ccpp_constituent_tendencies",
     ])
 
     # Dimension standard names that the framework transforms automatically.
@@ -217,18 +222,24 @@ class HostVariableMatchPass(ModulePass):
 
         # ── Step 1: build model variable index ────────────────────────────
         # standard_name → (local_var_name, module_name, memory_space|None,
-        #                   host_arg_op)
+        #                   host_arg_op, is_ddt)
         # host_arg_op is stored so compatibility checking can read its
         # type/kind/dimensions/intent without a second IR walk.
+        # is_ddt is True when the variable is a member of a DDT type rather
+        # than a flat module variable.  DDT members are indexed here so the
+        # matching step does not raise "no matching host model variable" errors,
+        # but they are flagged so downstream code generation can handle them
+        # differently (DDT member access requires instance%member notation).
         model_var_index: dict = {}
 
         for table_prop_op in ccpp_mod.body.ops:
             if not isa(table_prop_op, ccpp.TablePropertiesOp):
                 continue
             if table_prop_op.table_type.data not in (
-                TableTypeKind.Module, TableTypeKind.Host
+                TableTypeKind.Module, TableTypeKind.Host, TableTypeKind.DDT
             ):
                 continue
+            is_ddt = table_prop_op.table_type.data == TableTypeKind.DDT
             for arg_table_op in table_prop_op.body.ops:
                 if not isa(arg_table_op, ccpp.ArgumentTableOp):
                     continue
@@ -246,6 +257,7 @@ class HostVariableMatchPass(ModulePass):
                             table_prop_op.table_name.data,
                             memory_space,
                             arg_op,        # host_arg_op for compatibility checking
+                            is_ddt,
                         )
 
         # ── Step 2: match scheme arguments and validate compatibility ──────
@@ -269,9 +281,25 @@ class HostVariableMatchPass(ModulePass):
                     std_name = arg_op.standard_name.data
                     if std_name in self._CCPP_INTERNAL:
                         continue
+                    # Allocatable variables are dynamically allocated by the
+                    # CCPP framework itself — they are not provided by the host
+                    # model and do not need a host variable match.
+                    if arg_op.allocatable is not None:
+                        continue
+                    # Advected variables are constituent mixing ratios transported
+                    # by the dynamical core.  They live inside the host model's
+                    # constituent array and are accessed through the constituent
+                    # framework mechanism, not as directly named host variables.
+                    if arg_op.advected is not None:
+                        continue
+                    # Constituent variables (tendencies, diagnostics) are managed
+                    # by the CCPP constituent framework, not provided as directly
+                    # named host model variables.
+                    if arg_op.constituent is not None:
+                        continue
 
                     if std_name in model_var_index:
-                        local_name, module_name, model_memory_space, host_arg_op = (
+                        local_name, module_name, model_memory_space, host_arg_op, is_ddt = (
                             model_var_index[std_name]
                         )
                         # Annotate with match information
@@ -281,6 +309,10 @@ class HostVariableMatchPass(ModulePass):
                             arg_op.properties["model_var_memory_space"] = StringAttr(
                                 model_memory_space
                             )
+                        if is_ddt:
+                            # Mark as DDT member so code generation can emit
+                            # instance%member notation rather than a plain USE.
+                            arg_op.properties["model_var_is_ddt"] = UnitAttr()
 
                         # Validate compatibility — collect errors and warnings
                         errors, warnings = self._check_compatibility(
@@ -290,7 +322,7 @@ class HostVariableMatchPass(ModulePass):
                         for w in warnings:
                             print(f"Warning: {w}", file=sys.stderr)
 
-                    elif arg_op.optional is None:
+                    elif arg_op.optional is None and arg_op.default_value is None:
                         all_errors.append(
                             f"  Scheme '{scheme_name}': argument "
                             f"'{arg_op.arg_name.data}' "

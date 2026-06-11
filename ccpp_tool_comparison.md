@@ -45,8 +45,8 @@ is designed to close these gaps.
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
-| Compiled Fortran execution tests | ✅ | ✅ | ✅ | ❌ FileCheck only |
-| Unit test depth | Moderate | Moderate | 1300+ tests | FileCheck only |
+| Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 19 pytest + 1 Fortran |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ helloworld only |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -67,13 +67,41 @@ is designed to close these gaps.
 
 † **Host variable matching (Partial):** The matching step — finding which host
 model variable corresponds to each scheme argument by standard name — is
-functionally working via `HostVariableMatchPass`. It is marked Partial because:
-(1) DDT member access is not yet handled (host variables nested inside derived
-data types such as `physics_state%temperature`); (2) `ccpp_cap.py` contains a
-parallel independent matching implementation that is not yet unified with the
-pass; (3) only flat module variables have been tested (helloworld only).
-This is distinct from the separate "Variable compatibility validation" row,
-which covers type/kind/dims/intent checking after a match is found.
+functionally working via `HostVariableMatchPass`. It is marked Partial because
+of the following remaining gaps:
+
+*What now works:*
+- Flat module variables (helloworld, fully tested with Fortran compilation)
+- DDT member variables (e.g. `physics_state%temperature`) — indexing implemented
+- Nine CCPP metadata attributes parsed and stored in the IR: `allocatable`,
+  `advected`, `constituent`, `protected`, `state_variable`, `default_value`,
+  `diagnostic_name`, `diagnostic_name_fixed`, `active`
+- Framework-managed variables (`allocatable`, `advected`, `constituent`) skip
+  the host match requirement correctly
+- Exercised against capgen, advection, and ddthost examples from ccpp-framework
+  with all warnings eliminated
+
+*Still missing:*
+- Interstitial variables (produced by `_init`, consumed by `_run`) — requires
+  new framework support for variables that flow between lifecycle phases
+- DDT type instances (e.g. a scheme requesting a whole DDT as a single argument)
+- CCPP promotion variables (`promote_this_variable_to_suite` etc.)
+- Allocation code generation for `allocatable`/`advected`/`constituent` variables
+  — the match is skipped but the framework doesn't yet allocate storage
+- `ccpp_cap.py` contains a parallel independent matching implementation not yet
+  unified with `HostVariableMatchPass`
+
+This is distinct from the "Variable compatibility validation" row, which covers
+type/kind/dims/intent checking after a match is found.
+
+§ **Compiled Fortran execution tests (Partial):** One end-to-end test exists:
+the HelloWorld example compiles with gfortran inside a Docker container, links
+against real CCPP scheme implementations from ccpp-framework, runs, and verifies
+correct physics results (`compare_temp()` passes). Three calling-convention bugs
+were found and fixed during this process. No tests yet for capgen, advection,
+var_compatibility, or ddthost scenarios. A Docker-based Makefile
+(`examples/helloworld/Makefile`) and pytest unit test suite (`tests/unit/`)
+provide the testing infrastructure for future expansion.
 
 ‡ **Variable compatibility validation (Partial):** Four checks are implemented
 in `HostVariableMatchPass`: type mismatch (hard error), dimension rank mismatch
@@ -101,16 +129,34 @@ test coverage (1300+). Does not add GPU support and cannot practically do so
 without an architectural rethink — it is a text-templating Fortran generator
 throughout.
 
+### xdsl-ccpp correctness fixes made during development
+Three calling-convention bugs were found and fixed during Fortran compilation
+testing — bugs that would have prevented any real CCPP physics from running:
+1. **`inout` double-passing** — MLIR's SSA model was splitting `intent(inout)`
+   arguments into separate in/out actual arguments. Fixed to pass once by
+   reference, matching standard Fortran/CCPP convention.
+2. **Module naming inconsistency** — the generated dispatcher module used
+   snake_case (`hello_world_ccpp_cap`) while subroutine names used CamelCase
+   (`HelloWorld_ccpp_physics_run`). Fixed to use CamelCase throughout.
+3. **Missing scheme USE statements** — the suite cap called scheme subroutines
+   as external procedures without `use scheme_module` statements, causing link
+   failures against real CCPP scheme implementations. Fixed to generate correct
+   USE statements for each scheme's module.
+
+These were only caught by compiling and running real Fortran — not by FileCheck.
+
 ### xdsl-ccpp functional gap vs capgen-ng
 The most significant missing capabilities are:
 1. Unit conversion
-2. Variable compatibility validation (type/kind/dims/intent)
-3. Optional argument handling
-4. Chunked data layout
-5. Build system integration
-6. Host model integration beyond helloworld
+2. Optional argument handling
+3. Chunked data layout
+4. Build system integration
+5. Host model integration beyond helloworld
 
-Rough estimate to close parity: ~30–40 weeks of focused work.
+Variable compatibility validation is now Partial‡ — type, kind, dimension rank,
+and intent checks are implemented.
+
+Rough estimate to close parity: ~25–35 weeks of focused work.
 
 ### xdsl-ccpp unique advantages
 No other CCPP tool has GPU support. xdsl-ccpp generates correct `!$acc data` and

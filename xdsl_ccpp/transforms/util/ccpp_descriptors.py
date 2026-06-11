@@ -281,7 +281,8 @@ class BuildMetaDataDescriptions(Visitor):
         # Copy well-known string properties from the IR op into the descriptor
         known_props = ["standard_name", "long_name", "kind", "intent", "units", "type",
                        "memory_space", "model_var_name", "model_module_name",
-                       "model_var_memory_space", "model_var_kind_mismatch"]
+                       "model_var_memory_space", "model_var_kind_mismatch",
+                       "model_var_is_ddt"]
         for kp in known_props:
             if kp in arg_op.properties:
                 arg.setAttr(kp, arg_op.properties[kp].data)
