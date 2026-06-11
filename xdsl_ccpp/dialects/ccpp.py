@@ -232,7 +232,8 @@ class ArgumentOp(IRDLOperation):
     memory_space = opt_prop_def(StringAttr)  # values: "host", "device", "unified"
     model_var_name    = opt_prop_def(StringAttr)   # matched host model variable name
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
-    model_var_memory_space = opt_prop_def(StringAttr) # memory space declared by the host model
+    model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model
+    model_var_kind_mismatch = opt_prop_def(StringAttr)  # set when scheme/host kinds differ: "scheme_kind:host_kind"
     optional = opt_prop_def(UnitAttr)
 
     # All keys recognised by __init__. Used externally to warn on unrecognised keys.

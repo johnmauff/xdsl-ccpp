@@ -32,8 +32,8 @@ is designed to close these gaps.
 | Old embedded-comment format | ✅ | ❌ | ❌ | ❌ |
 | New `.meta` file format | ❌ | ✅ | ✅ | ✅ |
 | **Variable handling** | | | | |
-| Host variable matching | ✅ | ✅ | ✅ | ✅ (partial) |
-| Variable compatibility validation | ✅ | ✅ | ✅ | ❌ |
+| Host variable matching | ✅ | ✅ | ✅ | Partial† |
+| Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
 | Unit conversion | ✅ | ✅ | ✅ | ❌ |
 | Optional argument handling | ✅ | Partial | ✅ | ❌ |
 | Chunked data layout | ✅ | ❌ | ✅ | ❌ |
@@ -60,6 +60,28 @@ is designed to close these gaps.
 | **Architecture** | | | | |
 | MLIR IR (inspectable, composable) | ❌ | ❌ | ❌ | ✅ |
 | Multi-language host model path | ❌ | ❌ | ❌ | ✅ (architecture ready) |
+
+---
+
+## Notes
+
+† **Host variable matching (Partial):** The matching step — finding which host
+model variable corresponds to each scheme argument by standard name — is
+functionally working via `HostVariableMatchPass`. It is marked Partial because:
+(1) DDT member access is not yet handled (host variables nested inside derived
+data types such as `physics_state%temperature`); (2) `ccpp_cap.py` contains a
+parallel independent matching implementation that is not yet unified with the
+pass; (3) only flat module variables have been tested (helloworld only).
+This is distinct from the separate "Variable compatibility validation" row,
+which covers type/kind/dims/intent checking after a match is found.
+
+‡ **Variable compatibility validation (Partial):** Four checks are implemented
+in `HostVariableMatchPass`: type mismatch (hard error), dimension rank mismatch
+(hard error), intent mismatch covering all four incompatible access combinations
+(hard error with specific messages), and kind mismatch (warning + IR annotation
+for the future unit conversion pass). Not yet covered: dimension name
+compatibility beyond the `horizontal_loop_extent` → `horizontal_dimension`
+framework substitution, unit compatibility checking, and DDT member matching.
 
 ---
 
