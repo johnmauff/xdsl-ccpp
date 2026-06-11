@@ -41,7 +41,7 @@ class CCPPCAP(ModulePass):
     # Optional override for the CamelCase host name prefix applied to all
     # generated lifecycle subroutines.  When absent, the prefix is derived
     # automatically from the first suite name (e.g. hello_world_suite → HelloWorld).
-    host_name: str | None = None
+    host_name: str = ""
 
     def find_ccpp_module(self, ops):
         """Return the named 'ccpp' ModuleOp from the given op list, or None."""
@@ -736,16 +736,14 @@ class CCPPCAP(ModulePass):
 
         camel_name = (
             self.host_name
-            if self.host_name is not None
+            if self.host_name
             else self._derive_camel_case_name(all_suite_names[0])
         )
 
-        if self.host_name is not None:
-            mod_name = self.host_name + "_ccpp_cap"
-        else:
-            first = all_suite_names[0]
-            mod_base = first[:-6] if first.endswith("_suite") else first
-            mod_name = mod_base + "_ccpp_cap"
+        # Module name uses the same CamelCase prefix as the subroutine names
+        # so that 'module HelloWorld_ccpp_cap' matches 'use HelloWorld_ccpp_cap'
+        # in host model files.  --host-name can still override when needed.
+        mod_name = camel_name + "_ccpp_cap"
 
         char_base = TypeConversions.getBaseType("character")
         int_base = TypeConversions.getBaseType("integer")

@@ -119,17 +119,17 @@ class MetaCAP(ModulePass):
                 elif fn_arg.getAttr("intent") == "out":
                     out_args.append(arg_type)
                 elif fn_arg.getAttr("intent") == "inout":
-                    # inout arguments appear in both the input and output positions
+                    # inout: passed by reference in Fortran — the callee reads and
+                    # modifies the argument in-place through the reference.
+                    # Only appears in the input list; no separate return value needed.
                     in_args.append(arg_type)
-                    out_args.append(arg_type)
                 else:
                     raise AssertionError(
                         f"Unexpected intent: {fn_arg.getAttr('intent')}"
                     )
             else:
-                # No intent specified — default to inout
+                # No intent specified — treat as inout: passed by reference, in-place.
                 in_args.append(arg_type)
-                out_args.append(arg_type)
 
         return func.FuncOp.external(arg_table.getAttr("name"), in_args, out_args)
 

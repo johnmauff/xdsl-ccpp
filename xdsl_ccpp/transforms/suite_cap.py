@@ -193,7 +193,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                         in_ssa.append(val)
                     in_names.append(arg.name)
                 in_idx += 1
-            if intent == "out" or intent == "inout":
+            if intent == "out":
+                # intent(out): value is produced by the callee and returned.
+                # intent(inout) is NOT listed here — inout args are passed by
+                # reference and modified in-place, so no return value is needed.
                 if not is_overridden:
                     val = data_ops[arg.name]
                     expected_out_type = (
@@ -639,7 +642,25 @@ class GenerateSuiteSubroutine(RewritePattern):
             if state_string is not None:
                 state_strings_used.add(state_string)
 
-        fn_sigs = self.clone_func_defs(list(fn_sigs_by_name.values()))
+        # Build a mapping from subroutine name → scheme module name so the
+        # printer can emit 'use hello_scheme, only: hello_scheme_run' etc.
+        # By CCPP convention the module name matches the scheme base name.
+        scheme_entries = self.getSchemeNames(suite_description)
+        sub_to_module: dict[str, str] = {}
+        for scheme_name, _ in scheme_entries:
+            for postfix in ("_run", "_init", "_finalize",
+                            "_timestep_init", "_timestep_final"):
+                sub_to_module[scheme_name + postfix] = scheme_name
+
+        fn_sigs = []
+        for fd in fn_sigs_by_name.values():
+            cloned = func.FuncOp.external(
+                fd.sym_name.data, fd.function_type.inputs, fd.function_type.outputs
+            )
+            module_name = sub_to_module.get(fd.sym_name.data)
+            if module_name:
+                cloned.attributes["module"] = StringAttr(module_name)
+            fn_sigs.append(cloned)
 
         # Mutable global holding the current lifecycle state of the suite
         ccpp_suite_state_global = llvm.GlobalOp(
