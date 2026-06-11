@@ -167,10 +167,11 @@ class HostVariableMatchPass(ModulePass):
             for i, (s_dim, h_dim) in enumerate(
                 zip(scheme_dim_names, host_dim_names)
             ):
-                if s_dim == h_dim:
+                # CCPP standard names are case-insensitive
+                if s_dim.lower() == h_dim.lower():
                     continue
                 # Check if this is a known framework-managed substitution
-                if self._VALID_DIM_SUBSTITUTIONS.get(s_dim) == h_dim:
+                if self._VALID_DIM_SUBSTITUTIONS.get(s_dim.lower()) == h_dim.lower():
                     continue
                 errors.append(
                     f"  {ctx}: dimension {i + 1} name mismatch — "
@@ -252,7 +253,8 @@ class HostVariableMatchPass(ModulePass):
                             if arg_op.memory_space is not None
                             else None
                         )
-                        model_var_index[arg_op.standard_name.data] = (
+                        # Use lowercase key — CCPP standard names are case-insensitive
+                        model_var_index[arg_op.standard_name.data.lower()] = (
                             arg_op.arg_name.data,
                             table_prop_op.table_name.data,
                             memory_space,
@@ -278,7 +280,8 @@ class HostVariableMatchPass(ModulePass):
                         continue
                     if arg_op.standard_name is None:
                         continue
-                    std_name = arg_op.standard_name.data
+                    # Normalise to lowercase — CCPP standard names are case-insensitive
+                    std_name = arg_op.standard_name.data.lower()
                     if std_name in self._CCPP_INTERNAL:
                         continue
                     # Allocatable variables are dynamically allocated by the

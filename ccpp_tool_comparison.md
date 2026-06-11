@@ -81,13 +81,20 @@ of the following remaining gaps:
 - Exercised against capgen, advection, and ddthost examples from ccpp-framework
   with all warnings eliminated
 
+*Also now works:*
+- Allocation code generation for `advected` real arrays — suite cap declares
+  module-level `allocatable`, lazily allocates in `_suite_physics` with
+  correct dimensions and `default_value` initialization, safely deallocates
+  in `_timestep_final`. Verified with Fortran compilation in Docker.
+- Case-insensitive standard name and dimension name matching
+  (e.g. `vertical_LAYER_dimension` matches `vertical_layer_dimension`)
+
 *Still missing:*
-- Interstitial variables (produced by `_init`, consumed by `_run`) — requires
-  new framework support for variables that flow between lifecycle phases
+- Interstitial variables (produced by `_init`, consumed by `_run`) — the
+  single remaining blocker for advection, capgen, and ddthost tests
 - DDT type instances (e.g. a scheme requesting a whole DDT as a single argument)
 - CCPP promotion variables (`promote_this_variable_to_suite` etc.)
-- Allocation code generation for `allocatable`/`advected`/`constituent` variables
-  — the match is skipped but the framework doesn't yet allocate storage
+- `allocatable` code generation for non-real types (e.g. `ccpp_constituent_properties_t`)
 - `ccpp_cap.py` contains a parallel independent matching implementation not yet
   unified with `HostVariableMatchPass`
 

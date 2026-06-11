@@ -282,7 +282,7 @@ class BuildMetaDataDescriptions(Visitor):
         known_props = ["standard_name", "long_name", "kind", "intent", "units", "type",
                        "memory_space", "model_var_name", "model_module_name",
                        "model_var_memory_space", "model_var_kind_mismatch",
-                       "model_var_is_ddt"]
+                       "model_var_is_ddt", "default_value"]
         for kp in known_props:
             if kp in arg_op.properties:
                 arg.setAttr(kp, arg_op.properties[kp].data)
@@ -298,6 +298,14 @@ class BuildMetaDataDescriptions(Visitor):
         # 'optional' is a flag attribute — store as a boolean rather than a string
         if "optional" in arg_op.properties:
             arg.setAttr("optional", True)
+
+        # 'advected' is a field that points to an existing data-structure
+        if "advected" in arg_op.properties:
+            arg.setAttr("advected", True)
+
+        # 'allocatable' is an allocated variable managed by CCPP
+        if "allocatable" in arg_op.properties:
+            arg.setAttr("allocatable", True)
 
         # Surface the completed argument to the parent traversal via self.arg_token
         self.arg_token = arg

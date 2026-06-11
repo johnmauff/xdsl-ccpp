@@ -413,6 +413,74 @@ class OmpTargetUpdateToOp(IRDLOperation):
     def __init__(self, array_refs):
         super().__init__(operands=[list(array_refs)])
 
+@irdl_op_definition
+class AllocatableModVarOp(IRDLOperation):
+    """Declare a module-level allocatable real array in the suite cap.
+
+    Emitted in the module spec section before CONTAINS:
+        real(kind=kind_phys), allocatable :: var_name(:, :)
+
+    The rank determines the number of deferred-shape dimensions.
+    """
+
+    name = "ccpp_utils.allocatable_mod_var"
+    var_name  = prop_def(StringAttr)
+    kind_name = prop_def(StringAttr)
+    rank      = prop_def(IntegerAttr)
+
+    def __init__(self, var_name: str, kind_name: str, rank: int):
+        super().__init__(properties={
+            "var_name":  StringAttr(var_name),
+            "kind_name": StringAttr(kind_name),
+            "rank":      IntegerAttr.from_int_and_width(rank, 64),
+        })
+
+
+@irdl_op_definition
+class LazyAllocOp(IRDLOperation):
+    """Allocate a module-level array on its first use and initialize it.
+
+    Emitted inside _suite_physics before the first scheme call:
+        if (.not. allocated(var_name)) then
+          allocate(var_name(d1, d2, ...))
+          var_name = init_value
+        end if
+
+    dim_vars are SSA values whose variable names supply the dimension extents.
+    """
+
+    name = "ccpp_utils.lazy_alloc"
+    var_name   = prop_def(StringAttr)
+    kind_name  = prop_def(StringAttr)
+    init_value = opt_prop_def(StringAttr)  # Fortran literal, e.g. "0.0_kind_phys"
+    dim_vars   = var_operand_def()          # SSA values giving dimension sizes
+
+    def __init__(self, var_name: str, kind_name: str, dim_var_refs: list,
+                 init_value: str | None = None):
+        props: dict = {
+            "var_name":  StringAttr(var_name),
+            "kind_name": StringAttr(kind_name),
+        }
+        if init_value is not None:
+            props["init_value"] = StringAttr(init_value)
+        super().__init__(operands=[dim_var_refs], properties=props)
+
+
+@irdl_op_definition
+class SafeDeallocOp(IRDLOperation):
+    """Deallocate a module-level array if it is currently allocated.
+
+    Emitted inside _suite_timestep_final:
+        if (allocated(var_name)) deallocate(var_name)
+    """
+
+    name = "ccpp_utils.safe_dealloc"
+    var_name = prop_def(StringAttr)
+
+    def __init__(self, var_name: str):
+        super().__init__(properties={"var_name": StringAttr(var_name)})
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -432,6 +500,9 @@ CCPPUtils = Dialect(
         OmpTargetDataEndOp,
         OmpTargetUpdateFromOp,
         OmpTargetUpdateToOp,
+        AllocatableModVarOp,
+        LazyAllocOp,
+        SafeDeallocOp,
     ],
     [RealKindType, DerivedType],
 )

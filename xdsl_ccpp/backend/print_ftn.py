@@ -40,6 +40,9 @@ from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataBeginOp as CCPPOmpTargetD
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp    as CCPPOmpTargetDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp   as CCPPOmpTargetUpdateToOp
+from xdsl_ccpp.dialects.ccpp_utils import AllocatableModVarOp  as CCPPAllocatableModVarOp
+from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocOp
+from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
 
 
 _MAX_LINE_LEN = 99
@@ -500,6 +503,23 @@ class ftnPrintContext:
                     ])
             case CCPPAccDataEndOp():
                 self.print("!$acc end data")
+            case CCPPAllocatableModVarOp():
+                pass  # declared in _print_module preamble, not here
+            case CCPPLazyAllocOp():
+                vname = op.var_name.data
+                dim_names = [self._get_variable_name_for(v) for v in op.dim_vars]
+                dim_str = ", ".join(dim_names)
+                self.print(f"if (.not. allocated({vname})) then")
+                with self.descend() as inner:
+                    inner.print(f"allocate({vname}({dim_str}))")
+                    if op.init_value is not None:
+                        inner.print(
+                            f"{vname} = {op.init_value.data}"
+                        )
+                self.print("end if")
+            case CCPPSafeDeallocOp():
+                vname = op.var_name.data
+                self.print(f"if (allocated({vname})) deallocate({vname})")
             case CCPPAccUpdateSelfOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_acc_directive("update", [("self", var_names)])
@@ -620,6 +640,17 @@ class ftnPrintContext:
                     self.print(
                         f"character(len={char_len}) :: {name} = '{val}'", prefix="  "
                     )
+
+        # Emit module-level allocatable array declarations.
+        for op in body.ops:
+            if isa(op, CCPPAllocatableModVarOp):
+                rank = op.rank.value.data
+                shape = ", ".join([":"] * rank)
+                self.print(
+                    f"real(kind={op.kind_name.data}), allocatable :: "
+                    f"{op.var_name.data}({shape})",
+                    prefix="  ",
+                )
 
         # Emit one public :: line per subroutine definition that is marked public.
         public_procs = [

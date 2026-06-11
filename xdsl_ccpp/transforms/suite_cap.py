@@ -16,7 +16,12 @@ from xdsl.pattern_rewriter import (
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
-from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    AllocatableModVarOp,
+    KeywordCallOp,
+    LazyAllocOp,
+    SafeDeallocOp,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
@@ -382,18 +387,41 @@ class GenerateSuiteSubroutine(RewritePattern):
         # out-only scalar args are allocated locally; out array args also become block
         # arguments because the host always owns the array buffer and we cannot
         # allocate a dynamic memref without knowing the extents at compile time.
+        #
+        # Exception: framework-managed real arrays (advected, allocatable) are
+        # declared as module-level allocatables and managed by the suite cap itself.
+        # They are excluded from the block argument list and handled separately.
         def _has_dims(a):
             return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
+
+        def _is_framework_managed_real(a):
+            """True for advected/allocatable real array args the suite cap owns."""
+            if not _has_dims(a):
+                return False
+            if a.getAttr("type") != "real":
+                return False
+            return a.hasAttr("advected") or (
+                a.hasAttr("allocatable") and a.getAttr("type") == "real"
+            )
+
+        # Separate framework-managed args from regular args
+        framework_vars = {
+            a.name: a
+            for a in all_args.values()
+            if _is_framework_managed_real(a)
+        }
 
         input_arg_list = [
             a
             for a in all_args.values()
-            if a.getAttr("intent") in ("in", "inout") or _has_dims(a)
+            if (a.getAttr("intent") in ("in", "inout") or _has_dims(a))
+            and a.name not in framework_vars
         ]
         output_arg_list = [
             a
             for a in all_args.values()
             if a.getAttr("intent") == "out" and not _has_dims(a)
+            and a.name not in framework_vars
         ]
 
         loop_ext_aliases: set = set()
@@ -511,6 +539,54 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         initialisation_ops = self.generateVariableInitialisations(data_ops)
 
+        # Add framework-managed real arrays (advected/allocatable) to data_ops
+        # as module-local variable references.  These variables are declared as
+        # module-level allocatables by match_and_rewrite and are accessible in
+        # all contained subroutines without being passed as arguments.
+        framework_ref_ops = []
+        lazy_alloc_ops = []
+        if physics_mode and framework_vars:
+            for fw_arg in framework_vars.values():
+                var_type = TypeConversions.convert(
+                    fw_arg.getAttr("type"),
+                    fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else None,
+                    fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0,
+                )
+                ref_op = ccpp_utils.HostVarRefOp(fw_arg.name, "", var_type)
+                ref_op.res.name_hint = fw_arg.name
+                framework_ref_ops.append(ref_op)
+                data_ops[fw_arg.name] = ref_op
+
+                # Resolve dimension SSA values from data_ops via standard names
+                dim_names = fw_arg.getAttr("dim_names") if fw_arg.hasAttr("dim_names") else []
+                dim_var_refs = []
+                for dim_std_name in dim_names:
+                    # Find the arg in all_args whose standard_name matches
+                    matching = next(
+                        (a for a in all_args.values()
+                         if a.hasAttr("standard_name")
+                         and a.getAttr("standard_name") == dim_std_name),
+                        None,
+                    )
+                    if matching and matching.name in data_ops:
+                        dim_var_refs.append(data_ops[matching.name])
+
+                if dim_var_refs:
+                    kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else "kind_phys"
+                    init_val = (
+                        fw_arg.getAttr("default_value")
+                        if fw_arg.hasAttr("default_value")
+                        else None
+                    )
+                    lazy_alloc_ops.append(
+                        LazyAllocOp(
+                            var_name=fw_arg.name,
+                            kind_name=kind,
+                            dim_var_refs=dim_var_refs,
+                            init_value=init_val,
+                        )
+                    )
+
         call_ops = []
         fn_sigs = {}
         if tgt_subroutine_postfix is not None:
@@ -555,6 +631,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             alloc_return_vals
             + initialisation_ops
             + ncol_compute_ops
+            + framework_ref_ops
+            + lazy_alloc_ops
             + check_ops
             + call_ops
             + state_ops
@@ -676,8 +754,60 @@ class GenerateSuiteSubroutine(RewritePattern):
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)
         ]
 
+        # Collect all framework-managed real arrays across all schemes.
+        # These need module-level allocatable declarations so all lifecycle
+        # subroutines can access them.
+        seen_fw_vars: set[str] = set()
+        allocatable_mod_vars = []
+        for scheme_name, _ in scheme_entries:
+            if scheme_name not in self.meta_data:
+                continue
+            # Iterate all entry-point tables (e.g. _run, _init, _finalize)
+            for arg_table in self.meta_data[scheme_name].arg_tables.values():
+                for arg in arg_table.getFunctionArguments():
+                    if arg.name in seen_fw_vars:
+                        continue
+                    if not (arg.hasAttr("advected") or arg.hasAttr("allocatable")):
+                        continue
+                    if arg.getAttr("type") != "real":
+                        continue
+                    if not arg.hasAttr("dimensions") or arg.getAttr("dimensions") == 0:
+                        continue
+                    seen_fw_vars.add(arg.name)
+                    kind = arg.getAttr("kind") if arg.hasAttr("kind") else "kind_phys"
+                    rank = arg.getAttr("dimensions")
+                    allocatable_mod_vars.append(
+                        AllocatableModVarOp(arg.name, kind, rank)
+                    )
+
+        # SafeDeallocOp for each framework var goes into _timestep_final.
+        # Inject them by patching the generated _timestep_final FuncOp's body.
+        if allocatable_mod_vars:
+            for fn in generated_fns:
+                if not isa(fn, func.FuncOp):
+                    continue
+                if "_timestep_final" not in fn.sym_name.data:
+                    continue
+                if not fn.body.blocks:
+                    continue
+                block = fn.body.blocks[0]
+                # Insert SafeDeallocOp before the ReturnOp
+                ret_op = None
+                for bop in block.ops:
+                    if isa(bop, func.ReturnOp):
+                        ret_op = bop
+                        break
+                if ret_op is not None:
+                    from xdsl.rewriter import Rewriter, InsertPoint as IP
+                    for var_decl in allocatable_mod_vars:
+                        Rewriter.insert_op(
+                            SafeDeallocOp(var_decl.var_name.data),
+                            IP.before(ret_op),
+                        )
+
         scheme_mod = builtin.ModuleOp(
-            [ccpp_suite_state_global] + string_const_globals + generated_fns + fn_sigs,
+            [ccpp_suite_state_global] + string_const_globals
+            + allocatable_mod_vars + generated_fns + fn_sigs,
             sym_name=builtin.StringAttr(op.suite_name.data + "_cap"),
         )
 
