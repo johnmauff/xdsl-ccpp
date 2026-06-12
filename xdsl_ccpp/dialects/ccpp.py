@@ -143,6 +143,7 @@ class TableBaseOp(IRDLOperation):
         table_name: str | StringAttr,
         table_type: str | TableTypeKindAttr,
         body: Region | Sequence[Operation] | Sequence[Block],
+        attributes: dict | None = None,
     ):
 
         if isa(table_name, str):
@@ -155,7 +156,9 @@ class TableBaseOp(IRDLOperation):
             body = Region([Block(body)])
 
         super().__init__(
-            regions=[body], properties={"name": table_name, "type": table_type}
+            regions=[body],
+            properties={"name": table_name, "type": table_type},
+            attributes=attributes or {},
         )
 
 
@@ -322,12 +325,12 @@ class ArgumentOp(IRDLOperation):
                 prop_keys.remove("constituent")
 
         if "protected" in attributes:
-            if attributes["protected"]:
+            if str(attributes["protected"]).lower() == "true":
                 properties["protected"] = UnitAttr()
             prop_keys.remove("protected")
 
         if "state_variable" in attributes:
-            if attributes["state_variable"]:
+            if str(attributes["state_variable"]).lower() == "true":
                 properties["state_variable"] = UnitAttr()
             prop_keys.remove("state_variable")
 

@@ -476,14 +476,13 @@ class ccppXML:
             tables.append(
                 ArgumentTableOp(table.getAttr("name"), str(table.getAttr("type")), args)
             )
-        op = TablePropertiesOp(
+        attrs = {"source_module": StringAttr(source_module)} if source_module else {}
+        return TablePropertiesOp(
             meta.table_properties.getAttr("name"),
             str(meta.table_properties.getAttr("type")),
             tables,
+            attributes=attrs,
         )
-        if source_module:
-            op.attributes["source_module"] = StringAttr(source_module)
-        return op
 
     def run(self):
         """Parse all inputs and emit MLIR to stdout.

@@ -7,12 +7,13 @@ from xdsl.ir import Block, Region
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
 
+from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     HostVarRefOp,
     SetStringOp,
     StrCmpOp,
-    SuiteVariablesStubOp,
+    SuiteVariablesOp,
     TrimOp,
     WriteErrMsgOp,
 )
@@ -88,6 +89,164 @@ class CCPPCAP(ModulePass):
         if name.endswith("_suite"):
             name = name[:-6]
         return "".join(word.capitalize() for word in name.split("_"))
+
+    def _build_suite_variables_fn(self, suite_descriptions, ccpp_mod,
+                                   host_std_names, protected_std_names) -> "SuiteVariablesOp":
+        """Build the ccpp_physics_suite_variables subroutine for all suites.
+
+        Scans the MLIR IR directly (ArgumentOp properties) rather than going
+        through the descriptor layer, avoiding subtle descriptor-build issues.
+
+        Filtering rules (applied per ArgumentOp):
+        - Skip if is_interstitial is set (scheme-internal variable)
+        - Skip if standard_name is in _CCPP_INTERNAL (framework scalars)
+        - Skip if standard_name is in protected_std_names (dimension params)
+        - ccpp_error_code/ccpp_error_message always go to output-only
+        - Skip if standard_name not in host_std_names (no host counterpart)
+        - Arrays (dimensions > 0) go to both input and output
+        - Scalars go to input/output/both by declared intent
+        - Union across all entry points (_init, _run, _finalize, etc.)
+        """
+        _CCPP_ERR = frozenset({"ccpp_error_code", "ccpp_error_message"})
+        _INTERNAL = frozenset({
+            "horizontal_loop_extent",
+            "ccpp_constituents",
+            "ccpp_constituent_tendencies",
+        })
+        CM = 36  # character length matching cm=36 in test driver
+
+        suite_vars: dict = {}
+        for suite_name, suite_desc in suite_descriptions.items():
+            # Collect the set of scheme names belonging to this suite
+            scheme_names: set = set()
+            for group in suite_desc:
+                for scheme in group:
+                    scheme_names.add(scheme.attributes["name"])
+
+            input_vars: set = set()
+            output_vars: set = set()
+
+            # Scan scheme TablePropertiesOp nodes in the IR directly
+            for tbl_op in ccpp_mod.body.ops:
+                if not isa(tbl_op, ccpp.TablePropertiesOp):
+                    continue
+                if tbl_op.table_type.data != "scheme":
+                    continue
+                if tbl_op.table_name.data not in scheme_names:
+                    continue
+
+                # Iterate all entry-point arg tables (_init, _run, _finalize …)
+                for arg_table_op in tbl_op.body.ops:
+                    if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                        continue
+
+                    for arg_op in arg_table_op.body.ops:
+                        if not isa(arg_op, ccpp.ArgumentOp):
+                            continue
+
+                        # Read all properties directly from the dict to avoid
+                        # any issues with xDSL's formal property accessor layer.
+                        sn_prop = arg_op.properties.get("standard_name")
+                        if sn_prop is None:
+                            continue
+                        std_name = sn_prop.data.lower()
+
+                        # is_interstitial: UnitAttr when set, None when absent
+                        is_int = arg_op.properties.get("is_interstitial")
+                        if is_int is not None:
+                            continue
+                        if std_name in _INTERNAL:
+                            continue
+                        if std_name in protected_std_names:
+                            continue
+
+                        # Error flags → output-only special case
+                        if std_name in _CCPP_ERR:
+                            output_vars.add(std_name)
+                            continue
+
+                        # Exclude args with no matching host variable
+                        if std_name not in host_std_names:
+                            continue
+
+                        # intent: StringAttr when set
+                        intent_prop = arg_op.properties.get("intent")
+                        intent = intent_prop.data.lower() if intent_prop is not None else None
+
+                        # dimensions: IntAttr (0 = scalar, absent = scalar)
+                        dims_prop = arg_op.properties.get("dimensions")
+                        has_dims = (
+                            dims_prop is not None and dims_prop.data > 0
+                        )
+
+                        if has_dims:
+                            # Arrays are always pass-by-reference in Fortran
+                            input_vars.add(std_name)
+                            output_vars.add(std_name)
+                        else:
+                            if intent in ("in", "inout"):
+                                input_vars.add(std_name)
+                            if intent in ("out", "inout"):
+                                output_vars.add(std_name)
+
+            required_vars = input_vars | output_vars
+            suite_vars[suite_name] = (
+                sorted(input_vars),
+                sorted(output_vars),
+                sorted(required_vars),
+            )
+
+        # Build the complete Fortran subroutine as a Python string
+        lines: list[str] = []
+        lines.append(
+            "subroutine ccpp_physics_suite_variables"
+            "(suite_name, var_list, errmsg, errflg, input_vars, output_vars)"
+        )
+        lines.append("  character(len=*), intent(in) :: suite_name")
+        lines.append("  character(len=*), allocatable, intent(out) :: var_list(:)")
+        lines.append("  character(len=512), intent(out) :: errmsg")
+        lines.append("  integer, intent(out) :: errflg")
+        lines.append("  logical, optional, intent(in) :: input_vars")
+        lines.append("  logical, optional, intent(in) :: output_vars")
+        lines.append("  logical :: do_input, do_output")
+        lines.append("  errmsg = ''")
+        lines.append("  errflg = 0")
+        lines.append("  do_input = .true.")
+        lines.append("  do_output = .true.")
+        lines.append("  if (present(input_vars)) do_input = input_vars")
+        lines.append("  if (present(output_vars)) do_output = output_vars")
+
+        for idx, (suite_name, (in_v, out_v, req_v)) in enumerate(suite_vars.items()):
+            kw = "if" if idx == 0 else "else if"
+            lines.append(f"  {kw} (trim(suite_name) .eq. '{suite_name}') then")
+            for branch_name, var_list in (
+                ("input only",  "do_input .and. .not. do_output"),
+                ("output only", ".not. do_input .and. do_output"),
+                ("required",    None),
+            ):
+                if branch_name == "input only":
+                    lines.append(f"    if ({var_list}) then")
+                    vlist = in_v
+                elif branch_name == "output only":
+                    lines.append(f"    else if ({var_list}) then")
+                    vlist = out_v
+                else:
+                    lines.append("    else")
+                    vlist = req_v
+                lines.append(f"      allocate(var_list({len(vlist)}))")
+                for j, v in enumerate(vlist):
+                    lines.append(f"      var_list({j + 1}) = '{v:<{CM}}'")
+            lines.append("    end if")
+
+        lines.append("  else")
+        lines.append(
+            '    write(errmsg, \'(3a)\') "No suite named ", trim(suite_name), " found"'
+        )
+        lines.append("    errflg = 1")
+        lines.append("  end if")
+        lines.append("end subroutine ccpp_physics_suite_variables")
+
+        return SuiteVariablesOp("\n".join(lines))
 
     def _get_suite_lifecycle_return_types(self, scheme_names, meta_data, table_postfix):
         """Derive the ordered return types of a suite lifecycle subroutine."""
@@ -727,7 +886,9 @@ class CCPPCAP(ModulePass):
         )
         return suite_part_list_fn, part_global_ops
 
-    def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns):
+    def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns,
+                                   ddt_source_module=None, protected_std_names=None,
+                                   host_std_names=None, ccpp_mod=None):
         """Build a single combined CCPP cap ModuleOp for all suites.
 
         Generates one module whose lifecycle subroutines use nested if/else chains
@@ -898,7 +1059,36 @@ class CCPPCAP(ModulePass):
         )
         all_globals.extend(part_global_ops)
         all_definitions.append(suite_part_list_fn)
-        all_definitions.append(SuiteVariablesStubOp())
+        suite_vars_op = self._build_suite_variables_fn(
+            suite_descriptions, ccpp_mod,
+            host_std_names or set(),
+            protected_std_names or set(),
+        )
+        all_definitions.append(suite_vars_op)
+
+        # Emit USE-association stubs for DDT types used in any scheme across all suites.
+        if ddt_source_module:
+            primitive_types = {"real", "integer", "character", "logical", "complex"}
+            seen_type_imports: set[str] = set()
+            for props in meta_data.values():
+                for arg_table in props.arg_tables.values():
+                    for arg in arg_table.getFunctionArguments():
+                        if not arg.hasAttr("type"):
+                            continue
+                        arg_type = arg.getAttr("type")
+                        if arg_type in primitive_types or arg_type in seen_type_imports:
+                            continue
+                        mod = ddt_source_module.get(arg_type)
+                        if mod is None:
+                            continue
+                        seen_type_imports.add(arg_type)
+                        stub = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(0, i8),
+                            arg_type,
+                            "internal",
+                        )
+                        stub.attributes["module"] = StringAttr(mod)
+                        all_globals.append(stub)
 
         module_ops = all_globals + all_definitions + all_declarations
 
@@ -924,8 +1114,62 @@ class CCPPCAP(ModulePass):
         # Collect public functions from suite cap modules already in the IR
         public_fns = self._collect_public_suite_functions(op.body.block.ops)
 
+        # Build DDT-type-name → Fortran-module-name map (same as suite_cap.py)
+        ddt_source_module: dict[str, str] = {}
+        for tbl_op in ccpp_mod.body.ops:
+            if not isa(tbl_op, ccpp.TablePropertiesOp):
+                continue
+            if tbl_op.table_type.data != "ddt":
+                continue
+            src = tbl_op.attributes.get("source_module")
+            if src is not None:
+                ddt_source_module[tbl_op.table_name.data] = src.data
+
+        # Build set of ALL standard_names provided by the host model (from
+        # non-scheme tables in the IR).  Used in _build_suite_variables_fn to
+        # exclude scheme-internal args that have no host counterpart.
+        host_std_names: set[str] = set()
+        for tbl_op in ccpp_mod.body.ops:
+            if not isa(tbl_op, ccpp.TablePropertiesOp):
+                continue
+            if tbl_op.table_type.data == "scheme":
+                continue
+            for arg_table_op in tbl_op.body.ops:
+                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                    continue
+                for arg_op in arg_table_op.body.ops:
+                    if not isa(arg_op, ccpp.ArgumentOp):
+                        continue
+                    if arg_op.standard_name is not None:
+                        host_std_names.add(arg_op.standard_name.data.lower())
+
+        # Build set of protected host-variable standard_names.
+        # Protected variables (e.g. vertical_layer_dimension, horizontal_dimension)
+        # are framework-managed and excluded from ccpp_physics_suite_variables lists.
+        protected_std_names: set[str] = set()
+        for tbl_op in ccpp_mod.body.ops:
+            if not isa(tbl_op, ccpp.TablePropertiesOp):
+                continue
+            if tbl_op.table_type.data not in ("module", "host", "ddt"):
+                continue
+            for arg_table_op in tbl_op.body.ops:
+                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                    continue
+                for arg_op in arg_table_op.body.ops:
+                    if not isa(arg_op, ccpp.ArgumentOp):
+                        continue
+                    if (arg_op.properties.get("protected") is not None
+                            and arg_op.standard_name is not None):
+                        protected_std_names.add(
+                            arg_op.standard_name.data.lower()
+                        )
+
         # Generate ONE combined CCPP cap module for all suites
         cap_mod = self._generate_ccpp_cap_module(
-            suite_descriptions, meta_data_descriptions, public_fns
+            suite_descriptions, meta_data_descriptions, public_fns,
+            ddt_source_module=ddt_source_module,
+            protected_std_names=protected_std_names,
+            host_std_names=host_std_names,
+            ccpp_mod=ccpp_mod,
         )
         op.body.block.add_op(cap_mod)

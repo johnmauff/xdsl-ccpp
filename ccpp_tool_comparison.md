@@ -46,7 +46,7 @@ is designed to close these gaps.
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 19 pytest + 1 Fortran |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 19 pytest + 2 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ helloworld only |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -101,20 +101,32 @@ of the following remaining gaps:
   `constituent`, `protected`, `state_variable`, `default_value`,
   `diagnostic_name`, `diagnostic_name_fixed`, `active`
 
+*Also now works:*
+- **Variable promotion** — scheme 1D, host 2D: suite cap generates a
+  `do vertical_layer_index = 1, lev` loop with `RankReducingSliceOp` producing
+  `temp_layer(col_start:col_end, vertical_layer_index)` slices. Verified against
+  capgen and ddthost examples.
+- **DDT type imports** — suite cap and top-level cap generate `use make_ddt, only: vmr_type`
+  and `use host_ccpp_ddt, only: ccpp_info_t` automatically from source_module
+  tracking added to the frontend
+- **`ccpp_physics_suite_variables` proper implementation** — replaced stub with
+  full per-suite variable lists (input, output, required), computed by direct IR
+  scan across all scheme entry points, matching the expected test values exactly
+- **Fortran calling-convention fix** — all `intent(out)` args (arrays and scalars)
+  now passed positionally rather than as MLIR return values, preserving the
+  scheme's meta-file argument order when scalars and arrays are interspersed
+- **ddthost suite caps compile** — `ddt_suite_cap.F90` and `temp_suite_cap.F90`
+  compile cleanly; Makefile at `examples/ddthost/Makefile.suite_only`
+
 *Still missing:*
-- **Variable promotion** — when a scheme declares a variable with fewer
-  dimensions than the host (e.g. scheme 1D `temp_layer(ncol)`, host 2D
-  `temp_midpoints(ncols,pver)`), the suite cap must generate a loop over the
-  promoted dimension and pass array slices. Confirmed via capgen output:
-  `do vertical_layer_index = 1, pver; call scheme_run(temp_layer(:,vertical_layer_index)...)`
-  This is the single remaining blocker for capgen and ddthost.
-- `_initialize` allocation for interstitial arrays — currently arrays produced
-  by `_init` schemes are unallocated when the scheme tries to write them;
-  proper fix requires adding dimension arguments to `_initialize`
-- DDT type instances (e.g. a scheme requesting a whole DDT as a single argument)
-- `allocatable` code generation for non-real types (e.g. `ccpp_constituent_properties_t`)
-- `ccpp_cap.py` contains a parallel independent matching implementation not yet
-  unified with `HostVariableMatchPass`
+- `_initialize` allocation for interstitial arrays — arrays produced by `_init`
+  schemes are unallocated when the scheme tries to write them
+- **Top-level lifecycle cap** (`test_host_ccpp_cap`): `_initialize` and `_finalize`
+  generate `_tmp_N` placeholder arguments instead of real host variables; also
+  `_tmp_N` names are invalid Fortran (start with underscore)
+- DDT type instances (whole DDT as single scheme argument) — partial support
+- `allocatable` code generation for non-real types (`ccpp_constituent_properties_t`)
+- `ccpp_cap.py` parallel matching implementation not yet unified with `HostVariableMatchPass`
 
 This is distinct from the "Variable compatibility validation" row, which covers
 type/kind/dims/intent checking after a match is found.

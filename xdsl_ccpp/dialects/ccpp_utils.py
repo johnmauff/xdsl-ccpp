@@ -590,10 +590,19 @@ class PromotionLoopOp(IRDLOperation):
 
 
 @irdl_op_definition
-class SuiteVariablesStubOp(IRDLOperation):
-    """Stub for ccpp_physics_suite_variables — emitted verbatim by the Fortran printer."""
+class SuiteVariablesOp(IRDLOperation):
+    """Carries the generated ccpp_physics_suite_variables Fortran text.
 
-    name = "ccpp_utils.suite_variables_stub"
+    The `body` attribute holds the complete pre-built Fortran subroutine as a
+    string; the printer emits it verbatim inside the module's CONTAINS section.
+    """
+
+    name = "ccpp_utils.suite_variables"
+
+    body = prop_def(StringAttr, prop_name="body")
+
+    def __init__(self, body: str):
+        super().__init__(properties={"body": StringAttr(body)})
 
 
 CCPPUtils = Dialect(
@@ -620,7 +629,7 @@ CCPPUtils = Dialect(
         SafeDeallocOp,
         RankReducingSliceOp,
         PromotionLoopOp,
-        SuiteVariablesStubOp,
+        SuiteVariablesOp,
     ],
     [RealKindType, DerivedType],
 )

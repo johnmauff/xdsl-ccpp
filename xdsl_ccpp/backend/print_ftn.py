@@ -45,7 +45,7 @@ from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocO
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
 from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp       as CCPPPromotionLoopOp
-from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesStubOp  as CCPPSuiteVariablesStubOp
+from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
 
 
 _MAX_LINE_LEN = 99
@@ -531,26 +531,11 @@ class ftnPrintContext:
                 with self.descend() as inner:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
-            case CCPPSuiteVariablesStubOp():
-                self.print(
-                    "subroutine ccpp_physics_suite_variables"
-                    "(suite_name, var_list, errmsg, errflg, input_vars, output_vars)"
-                )
-                with self.descend() as inner:
-                    inner.print("character(len=*), intent(in) :: suite_name")
-                    inner.print(
-                        "character(len=*), allocatable, intent(out) :: var_list(:)"
-                    )
-                    inner.print("character(len=512), intent(out) :: errmsg")
-                    inner.print("integer, intent(out) :: errflg")
-                    inner.print("logical, optional, intent(in) :: input_vars")
-                    inner.print("logical, optional, intent(in) :: output_vars")
-                    inner.print("allocate(var_list(0))")
-                    inner.print("errmsg = ''")
-                    inner.print("errflg = 0")
-                self.print(
-                    "end subroutine ccpp_physics_suite_variables"
-                )
+            case CCPPSuiteVariablesOp():
+                # The body text is the complete pre-built Fortran subroutine.
+                # Emit each line with the current indentation prefix.
+                for line in op.body.data.splitlines():
+                    self.print(line)
             case CCPPRankReducingSliceOp():
                 # Register the Fortran array-section expression for the result.
                 # Scan dim_pattern left-to-right, consuming range pairs and
@@ -732,7 +717,7 @@ class ftnPrintContext:
         ] + [
             "ccpp_physics_suite_variables"
             for op in body.ops
-            if isa(op, CCPPSuiteVariablesStubOp)
+            if isa(op, CCPPSuiteVariablesOp)
         ]
         for proc in public_procs:
             self.print(f"public :: {proc}", prefix="  ")
@@ -740,7 +725,7 @@ class ftnPrintContext:
         # Only emit CONTAINS when there are subroutine definitions to print
         has_func_defs = any(
             (isa(op, func.FuncOp) and not op.is_declaration)
-            or isa(op, CCPPSuiteVariablesStubOp)
+            or isa(op, CCPPSuiteVariablesOp)
             for op in body.ops
         )
         if has_func_defs:
