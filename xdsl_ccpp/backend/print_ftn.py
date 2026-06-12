@@ -43,6 +43,9 @@ from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp   as CCPPOmpTarget
 from xdsl_ccpp.dialects.ccpp_utils import AllocatableModVarOp  as CCPPAllocatableModVarOp
 from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
+from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
+from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp       as CCPPPromotionLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesStubOp  as CCPPSuiteVariablesStubOp
 
 
 _MAX_LINE_LEN = 99
@@ -189,6 +192,7 @@ class ftnPrintContext:
                 return True
             case _:
                 return False
+
 
     def mlir_type_to_ftn_type(self, type_attr: Attribute) -> str:
         """Convert an MLIR type attribute to its Fortran type declaration string.
@@ -520,6 +524,62 @@ class ftnPrintContext:
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
+            case CCPPPromotionLoopOp():
+                loop_name  = self._get_variable_name_for(op.loop_var)
+                upper_name = self._get_variable_name_for(op.upper_bound)
+                self.print(f"do {loop_name} = 1, {upper_name}")
+                with self.descend() as inner:
+                    inner.print_block(op.body.blocks[0])
+                self.print("end do")
+            case CCPPSuiteVariablesStubOp():
+                self.print(
+                    "subroutine ccpp_physics_suite_variables"
+                    "(suite_name, var_list, errmsg, errflg, input_vars, output_vars)"
+                )
+                with self.descend() as inner:
+                    inner.print("character(len=*), intent(in) :: suite_name")
+                    inner.print(
+                        "character(len=*), allocatable, intent(out) :: var_list(:)"
+                    )
+                    inner.print("character(len=512), intent(out) :: errmsg")
+                    inner.print("integer, intent(out) :: errflg")
+                    inner.print("logical, optional, intent(in) :: input_vars")
+                    inner.print("logical, optional, intent(in) :: output_vars")
+                    inner.print("allocate(var_list(0))")
+                    inner.print("errmsg = ''")
+                    inner.print("errflg = 0")
+                self.print(
+                    "end subroutine ccpp_physics_suite_variables"
+                )
+            case CCPPRankReducingSliceOp():
+                # Register the Fortran array-section expression for the result.
+                # Scan dim_pattern left-to-right, consuming range pairs and
+                # scalar indices to build subscript strings like:
+                #   "RS" → source(lower:upper, scalar)
+                #   "SR" → source(scalar, lower:upper)
+                #   "RSS" → source(lower:upper, scalar1, scalar2)
+                source_name = self._get_variable_name_for(op.source)
+                pattern = op.dim_pattern.data
+                r_lowers = list(op.range_lowers)
+                r_uppers = list(op.range_uppers)
+                scalars  = list(op.scalar_indices)
+                r_idx = 0
+                s_idx = 0
+                subscripts = []
+                for ch in pattern:
+                    if ch == "R":
+                        lo = self._value_to_expr_str(r_lowers[r_idx])
+                        hi = self._value_to_expr_str(r_uppers[r_idx])
+                        subscripts.append(f"{lo}:{hi}")
+                        r_idx += 1
+                    else:  # 'S'
+                        subscripts.append(
+                            self._get_variable_name_for(scalars[s_idx])
+                        )
+                        s_idx += 1
+                self.variables[op.res] = (
+                    f"{source_name}({', '.join(subscripts)})"
+                )
             case CCPPAccUpdateSelfOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_acc_directive("update", [("self", var_names)])
@@ -641,16 +701,23 @@ class ftnPrintContext:
                         f"character(len={char_len}) :: {name} = '{val}'", prefix="  "
                     )
 
-        # Emit module-level allocatable array declarations.
+        # Emit module-level allocatable array / scalar declarations.
         for op in body.ops:
             if isa(op, CCPPAllocatableModVarOp):
                 rank = op.rank.value.data
-                shape = ", ".join([":"] * rank)
-                self.print(
-                    f"real(kind={op.kind_name.data}), allocatable :: "
-                    f"{op.var_name.data}({shape})",
-                    prefix="  ",
-                )
+                if rank == 0:
+                    # Scalar interstitial variable — no allocatable needed
+                    self.print(
+                        f"real(kind={op.kind_name.data}) :: {op.var_name.data}",
+                        prefix="  ",
+                    )
+                else:
+                    shape = ", ".join([":"] * rank)
+                    self.print(
+                        f"real(kind={op.kind_name.data}), allocatable :: "
+                        f"{op.var_name.data}({shape})",
+                        prefix="  ",
+                    )
 
         # Emit one public :: line per subroutine definition that is marked public.
         public_procs = [
@@ -662,13 +729,19 @@ class ftnPrintContext:
                 and op.sym_visibility is not None
                 and op.sym_visibility.data == "public"
             )
+        ] + [
+            "ccpp_physics_suite_variables"
+            for op in body.ops
+            if isa(op, CCPPSuiteVariablesStubOp)
         ]
         for proc in public_procs:
             self.print(f"public :: {proc}", prefix="  ")
 
         # Only emit CONTAINS when there are subroutine definitions to print
         has_func_defs = any(
-            isa(op, func.FuncOp) and not op.is_declaration for op in body.ops
+            (isa(op, func.FuncOp) and not op.is_declaration)
+            or isa(op, CCPPSuiteVariablesStubOp)
+            for op in body.ops
         )
         if has_func_defs:
             self.print("\nCONTAINS")
@@ -795,9 +868,11 @@ class ftnPrintContext:
         than the default intent(in).  Pure output arguments come from AllocaOp
         results also present in the return list.
         """
-        # Collect input arg names from block arg name hints
+        # Collect input arg names from block arg name hints.
+        # Strip the __alloc suffix (added for allocatable args) from the Fortran name.
         input_names = [
-            arg.name_hint if arg.name_hint is not None else f"arg_{idx}"
+            (arg.name_hint[:-7] if arg.name_hint and arg.name_hint.endswith("__alloc")
+             else (arg.name_hint if arg.name_hint is not None else f"arg_{idx}"))
             for idx, arg in enumerate(bdy.block.args)
         ]
 
@@ -879,11 +954,17 @@ class ftnPrintContext:
             # Exception: memref<memref<?xi8>> is an allocatable character array
             # passed intent(out) — the callee allocates and fills it.
             for arg, arg_name in zip(bdy.block.args, input_names):
+                # Check the original name_hint for the __alloc suffix
+                is_alloc = (arg.name_hint is not None
+                            and arg.name_hint.endswith("__alloc"))
                 type_str = inner.mlir_type_to_ftn_type(arg.type)
                 dim_suffix = inner._ftn_dim_suffix(arg.type)
                 if ftnPrintContext._is_allocatable_char(arg.type):
                     type_str = type_str + ", allocatable"
                     intent = "out"
+                elif is_alloc:
+                    type_str = type_str + ", allocatable"
+                    intent = "inout"
                 elif dim_suffix:
                     intent = "inout"
                 elif arg in inout_block_args:

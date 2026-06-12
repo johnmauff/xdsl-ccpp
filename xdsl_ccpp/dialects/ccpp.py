@@ -162,6 +162,9 @@ class TableBaseOp(IRDLOperation):
 @irdl_op_definition
 class TablePropertiesOp(TableBaseOp):
     name = "ccpp.table_properties"
+    # source_module is set dynamically via properties dict (not declared as ClassVar
+    # because xDSL requires ClassVar names to be uppercase).
+    # It holds the stem of the .meta file = the Fortran module name for this table.
 
 
 @irdl_op_definition
@@ -234,7 +237,10 @@ class ArgumentOp(IRDLOperation):
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
     model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model
     model_var_kind_mismatch = opt_prop_def(StringAttr)  # set when scheme/host kinds differ: "scheme_kind:host_kind"
-    model_var_is_ddt = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
+    model_var_is_ddt   = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
+    is_interstitial    = opt_prop_def(UnitAttr)   # set when var flows between lifecycle phases
+    is_promoted        = opt_prop_def(UnitAttr)   # set when scheme rank < host rank (promotion)
+    promoted_dim       = opt_prop_def(StringAttr) # standard name of the dimension being promoted over
     allocatable = opt_prop_def(UnitAttr)
     advected    = opt_prop_def(UnitAttr)
     constituent = opt_prop_def(UnitAttr)  # CCPP constituent framework variable

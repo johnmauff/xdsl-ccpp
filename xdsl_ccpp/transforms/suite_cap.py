@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
-from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, StringAttr, i8
+from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, MemRefType, StringAttr, i8
 from xdsl.ir import Block, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
@@ -20,6 +20,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AllocatableModVarOp,
     KeywordCallOp,
     LazyAllocOp,
+    PromotionLoopOp,
+    RankReducingSliceOp,
     SafeDeallocOp,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -54,11 +56,14 @@ class GenerateSuiteSubroutine(RewritePattern):
     and manages the ccpp_suite_state lifecycle string.
     """
 
-    def __init__(self, suite_descriptions, meta_data, meta_fn_sigs, top_level_module):
+    def __init__(self, suite_descriptions, meta_data, meta_fn_sigs, top_level_module,
+                 ddt_source_module=None):
         self.suite_descriptions = suite_descriptions
         self.meta_data = meta_data
         self.meta_fn_sigs = meta_fn_sigs
         self.top_level_module = top_level_module
+        # Maps DDT type name → Fortran module that defines it (from source_module attr).
+        self.ddt_source_module: dict[str, str] = ddt_source_module or {}
 
     def getSchemeNames(self, suite_description):
         """Return a flat list of (scheme_name, overrides) pairs from all groups.
@@ -76,6 +81,111 @@ class GenerateSuiteSubroutine(RewritePattern):
                     )
                 )
         return result
+
+    def _scheme_has_promoted_args(self, arg_table) -> bool:
+        """Return True if any argument in arg_table is marked is_promoted."""
+        for arg in arg_table.getFunctionArguments():
+            if arg.hasAttr("is_promoted"):
+                return True
+        return False
+
+    def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops):
+        """Find the SSA value to use as the promotion loop's upper bound.
+
+        Searches all_args for an integer argument whose standard_name matches
+        promoted_dim (e.g. 'vertical_layer_dimension' → 'lev').  Returns the
+        corresponding data_ops entry, or None if not found.
+        """
+        for arg in all_args.values():
+            if (
+                arg.hasAttr("standard_name")
+                and arg.getAttr("standard_name").lower() == promoted_dim.lower()
+                and arg.getAttr("type") == "integer"
+                and arg.name in data_ops
+            ):
+                return data_ops[arg.name]
+        return None
+
+    def _build_promoted_call_ops(
+        self,
+        subroutine_name,
+        arg_table,
+        data_ops,
+        loop_var_memref,
+        overrides=None,
+    ):
+        """Build scheme call ops for a promoted scheme inside the loop body.
+
+        For arguments marked is_promoted, replaces the raw 2D data_ops value
+        with a RankReducingSliceOp that slices out the current level.
+        The dim_pattern is constructed from the promoted_dim annotation.
+        """
+        promoted_data_ops = dict(data_ops)  # shallow copy to override promoted args
+
+        rr_slice_ops = []
+        for arg in arg_table.getFunctionArguments():
+            needs_slice = arg.hasAttr("is_promoted")
+            # Also slice interstitial vars where the module-level allocation rank
+            # exceeds the scheme's declared rank (e.g. to_promote allocated 2D but
+            # the consuming scheme expects 1D).
+            if not needs_slice and arg.hasAttr("is_interstitial") and arg.name in data_ops:
+                val = data_ops[arg.name]
+                actual_type = val.type if isinstance(val, SSAValue) else val.results[0].type
+                if isinstance(actual_type, MemRefType):
+                    actual_rank = len(actual_type.shape.data)
+                    scheme_rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
+                    needs_slice = (actual_rank > scheme_rank > 0)
+            if not needs_slice:
+                continue
+            if arg.name not in data_ops:
+                continue
+            # Build the dimension pattern.
+            # For is_promoted args: use dim_names + promoted_dim annotation.
+            # For interstitial rank-mismatch: infer pattern from actual vs scheme rank.
+            # Pattern: 'R' = range (col_start:col_end), 'S' = scalar (loop var index).
+            pattern = ""
+            range_lowers = []
+            range_uppers = []
+            scalar_indices_list = []
+
+            if arg.hasAttr("is_promoted"):
+                dim_names = arg.getAttr("dim_names") if arg.hasAttr("dim_names") else []
+                for dim in dim_names:
+                    pattern += "R"
+                    range_lowers.append(data_ops.get("col_start", loop_var_memref))
+                    range_uppers.append(data_ops.get("col_end", loop_var_memref))
+                # Promoted dimension(s) appended as scalar index
+                pattern += "S"
+                scalar_indices_list.append(loop_var_memref)
+            else:
+                # Interstitial rank mismatch: scheme_rank 'R' dims + extra 'S' dims
+                scheme_rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
+                val = data_ops[arg.name]
+                actual_type = val.type if isinstance(val, SSAValue) else val.results[0].type
+                actual_rank = len(actual_type.shape.data) if isinstance(actual_type, MemRefType) else scheme_rank
+                for _ in range(scheme_rank):
+                    pattern += "R"
+                    range_lowers.append(data_ops.get("col_start", loop_var_memref))
+                    range_uppers.append(data_ops.get("col_end", loop_var_memref))
+                for _ in range(actual_rank - scheme_rank):
+                    pattern += "S"
+                    scalar_indices_list.append(loop_var_memref)
+
+            if pattern and ("S" in pattern):
+                slice_op = RankReducingSliceOp(
+                    source=data_ops[arg.name],
+                    dim_pattern=pattern,
+                    range_lowers=range_lowers,
+                    range_uppers=range_uppers,
+                    scalar_indices=scalar_indices_list,
+                )
+                rr_slice_ops.append(slice_op)
+                promoted_data_ops[arg.name] = slice_op
+
+        call_ops = self.generateSchemeSubroutineCallOps(
+            subroutine_name, arg_table, promoted_data_ops, overrides or {}
+        )
+        return rr_slice_ops + call_ops
 
     def getArgumentTable(self, scheme_name, subroutine_name):
         """Look up the argument table for a specific scheme subroutine.
@@ -199,24 +309,29 @@ class GenerateSuiteSubroutine(RewritePattern):
                     in_names.append(arg.name)
                 in_idx += 1
             if intent == "out":
-                # intent(out): value is produced by the callee and returned.
-                # intent(inout) is NOT listed here — inout args are passed by
-                # reference and modified in-place, so no return value is needed.
+                # Fortran passes ALL arguments by reference, including intent(out).
+                # Treating out args as return values breaks positional order when
+                # scalars and arrays are interspersed. Pass everything by reference.
                 if not is_overridden:
                     val = data_ops[arg.name]
-                    expected_out_type = (
-                        callee_out_types[out_idx]
-                        if out_idx < len(callee_out_types)
-                        else (
-                            val.type
-                            if isinstance(val, SSAValue)
-                            else val.results[0].type
-                        )
+                    actual_type = (
+                        val.type if isinstance(val, SSAValue) else val.results[0].type
                     )
-                    out_types.append(expected_out_type)
-                    out_names.append(arg.name)
-                    out_tracking.append(val)
-                out_idx += 1
+                    expected_type = (
+                        callee_in_types[in_idx]
+                        if in_idx < len(callee_in_types)
+                        else actual_type
+                    )
+                    if actual_type != expected_type:
+                        cast = builtin.UnrealizedConversionCastOp(
+                            operands=[[val]], result_types=[[expected_type]]
+                        )
+                        cast_ops.append(cast)
+                        in_ssa.append(cast.results[0])
+                    else:
+                        in_ssa.append(val)
+                    in_names.append(arg.name)
+                in_idx += 1
 
         assert len(out_types) == len(out_tracking)
         if overrides:
@@ -395,14 +510,15 @@ class GenerateSuiteSubroutine(RewritePattern):
             return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
 
         def _is_framework_managed_real(a):
-            """True for advected/allocatable real array args the suite cap owns."""
-            if not _has_dims(a):
-                return False
+            """True for advected/allocatable/interstitial real args the suite cap owns."""
             if a.getAttr("type") != "real":
                 return False
-            return a.hasAttr("advected") or (
-                a.hasAttr("allocatable") and a.getAttr("type") == "real"
-            )
+            # Interstitial scalars (dimensions=0) are also framework-managed
+            if a.hasAttr("is_interstitial"):
+                return True
+            if not _has_dims(a):
+                return False
+            return a.hasAttr("advected") or a.hasAttr("allocatable")
 
         # Separate framework-managed args from regular args
         framework_vars = {
@@ -465,11 +581,24 @@ class GenerateSuiteSubroutine(RewritePattern):
                 ]
             )
 
+        def _arg_dims(a):
+            """Return the dimension count to use for the block arg type.
+
+            For promoted args, use scheme_rank + 1 so the suite physics
+            subroutine receives the full host 2D array (e.g. temp_layer(:,:))
+            rather than the scheme's 1D slice declaration (temp_layer(:)).
+            """
+            base = a.getAttr("dimensions") if a.hasAttr("dimensions") else 0
+            if a.hasAttr("is_promoted"):
+                # One extra dimension per promoted level (currently always 1)
+                return base + 1
+            return base
+
         input_arg_types = [
             TypeConversions.convert(
                 a.getAttr("type"),
                 a.getAttr("kind") if a.hasAttr("kind") else None,
-                a.getAttr("dimensions") if a.hasAttr("dimensions") else 0,
+                _arg_dims(a),
             )
             for a in input_arg_list
         ]
@@ -477,9 +606,14 @@ class GenerateSuiteSubroutine(RewritePattern):
         new_block = Block(arg_types=input_arg_types)
 
         data_ops = {}
-        # Map each input argument name to its block argument SSA value
+        # Map each input argument name to its block argument SSA value.
+        # Allocatable args get a __alloc suffix on the name_hint so the printer
+        # can add the ALLOCATABLE attribute to the Fortran declaration.
         for idx, fn_arg in enumerate(input_arg_list):
-            new_block.args[idx].name_hint = fn_arg.name
+            hint = fn_arg.name
+            if fn_arg.hasAttr("allocatable"):
+                hint = fn_arg.name + "__alloc"
+            new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
 
         alloc_ops = {}
@@ -543,9 +677,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         # as module-local variable references.  These variables are declared as
         # module-level allocatables by match_and_rewrite and are accessible in
         # all contained subroutines without being passed as arguments.
+        # Refs are added in ALL lifecycle phases so scheme calls can find them.
+        # Lazy allocation (ensuring storage exists) is only emitted in physics
+        # mode where ncol/lev are already in scope.
+        # TODO: for _initialize, allocate before _init calls using host module dims.
         framework_ref_ops = []
         lazy_alloc_ops = []
-        if physics_mode and framework_vars:
+        if framework_vars:
             for fw_arg in framework_vars.values():
                 var_type = TypeConversions.convert(
                     fw_arg.getAttr("type"),
@@ -571,7 +709,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                     if matching and matching.name in data_ops:
                         dim_var_refs.append(data_ops[matching.name])
 
-                if dim_var_refs:
+                # Only emit lazy allocation in physics mode where ncol/lev
+                # are in scope.  _initialize allocation is a TODO (needs
+                # host module dimension variables in that subroutine).
+                if physics_mode and dim_var_refs:
                     kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else "kind_phys"
                     init_val = (
                         fw_arg.getAttr("default_value")
@@ -590,18 +731,104 @@ class GenerateSuiteSubroutine(RewritePattern):
         call_ops = []
         fn_sigs = {}
         if tgt_subroutine_postfix is not None:
-            # Emit a guarded call for each scheme that has this entry point (in suite order)
+            # Determine which schemes are promoted (have is_promoted args).
+            # Consecutive promoted schemes sharing the same promoted_dim are
+            # grouped into a single loop for cache efficiency.
+            non_promoted_calls: list = []
+            promoted_groups: list = []  # list of (promoted_dim, [(scheme_name, arg_table)])
+            current_group_dim: str | None = None
+            current_group: list = []
+
             for scheme_name in arg_tables:
+                tbl = arg_tables[scheme_name]
+                if physics_mode and self._scheme_has_promoted_args(tbl):
+                    # Find the promoted dimension for this scheme
+                    pdim = next(
+                        (
+                            arg.getAttr("promoted_dim").lower()
+                            for arg in tbl.getFunctionArguments()
+                            if arg.hasAttr("is_promoted")
+                            and arg.hasAttr("promoted_dim")
+                        ),
+                        None,
+                    )
+                    if pdim == current_group_dim:
+                        current_group.append((scheme_name, tbl))
+                    else:
+                        if current_group:
+                            promoted_groups.append((current_group_dim, current_group))
+                        current_group = [(scheme_name, tbl)]
+                        current_group_dim = pdim
+                else:
+                    # Non-promoted: flush any open group, then add directly
+                    if current_group:
+                        promoted_groups.append((current_group_dim, current_group))
+                        current_group = []
+                        current_group_dim = None
+                    non_promoted_calls.append((scheme_name, tbl))
+
+            if current_group:
+                promoted_groups.append((current_group_dim, current_group))
+
+            # Emit non-promoted scheme calls as before
+            for scheme_name, tbl in non_promoted_calls:
                 full_name = scheme_name + tgt_subroutine_postfix
                 assert full_name in self.meta_fn_sigs
                 call_ops += self.generateSchemeSubroutineCallOps(
-                    full_name,
-                    arg_tables[scheme_name],
-                    data_ops,
+                    full_name, tbl, data_ops,
                     scheme_overrides.get(scheme_name, {}),
                 )
                 if full_name not in fn_sigs:
                     fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+
+            # Emit one merged promotion loop per group of promoted schemes
+            for group_dim, group_schemes in promoted_groups:
+                # Find the loop upper bound from an existing integer arg
+                upper_bound_ref = (
+                    self._find_loop_upper_bound(group_dim, all_args, data_ops)
+                    if group_dim
+                    else None
+                )
+                if upper_bound_ref is None:
+                    # Fallback: no explicit integer arg for this dimension —
+                    # emit promoted calls without a loop (TODO: look up host module)
+                    for scheme_name, tbl in group_schemes:
+                        full_name = scheme_name + tgt_subroutine_postfix
+                        assert full_name in self.meta_fn_sigs
+                        call_ops += self.generateSchemeSubroutineCallOps(
+                            full_name, tbl, data_ops,
+                            scheme_overrides.get(scheme_name, {}),
+                        )
+                        if full_name not in fn_sigs:
+                            fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+                    continue
+
+                # Declare the loop index variable (alloca, type=integer)
+                loop_var_alloc = memref.AllocaOp.get(
+                    TypeConversions.getBaseType("integer"), shape=[]
+                )
+                loop_var_alloc.memref.name_hint = "vertical_layer_index"
+
+                # Build body ops: scheme calls with RankReducingSliceOp refs
+                body_ops_list: list = []
+                for scheme_name, tbl in group_schemes:
+                    full_name = scheme_name + tgt_subroutine_postfix
+                    assert full_name in self.meta_fn_sigs
+                    body_ops_list += self._build_promoted_call_ops(
+                        full_name, tbl, data_ops,
+                        loop_var_alloc.memref,   # pass the alloca memref
+                        scheme_overrides.get(scheme_name, {}),
+                    )
+                    if full_name not in fn_sigs:
+                        fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+
+                # PromotionLoopOp takes the alloca and the upper bound memref
+                loop_op = PromotionLoopOp(
+                    loop_var=loop_var_alloc.memref,
+                    upper_bound=upper_bound_ref,   # the memref, printer reads name
+                    body_ops=body_ops_list,
+                )
+                call_ops += [loop_var_alloc, loop_op]
 
         # Scalar inout block args are returned so the caller receives the updated value.
         # Array inout args are modified in-place through the host's buffer, so they
@@ -740,6 +967,35 @@ class GenerateSuiteSubroutine(RewritePattern):
                 cloned.attributes["module"] = StringAttr(module_name)
             fn_sigs.append(cloned)
 
+        # Emit USE-association stubs for DDT types referenced by scheme args.
+        # The printer turns these into 'use <module>, only: <type_name>' lines.
+        seen_type_imports: set[str] = set()
+        type_import_globals = []
+        primitive_types = {"real", "integer", "character", "logical", "complex"}
+        for scheme_name, _ in scheme_entries:
+            if scheme_name not in self.meta_data:
+                continue
+            for arg_table in self.meta_data[scheme_name].arg_tables.values():
+                for arg in arg_table.getFunctionArguments():
+                    if not arg.hasAttr("type"):
+                        continue
+                    arg_type = arg.getAttr("type")
+                    if arg_type in primitive_types:
+                        continue
+                    if arg_type in seen_type_imports:
+                        continue
+                    mod = self.ddt_source_module.get(arg_type)
+                    if mod is None:
+                        continue
+                    seen_type_imports.add(arg_type)
+                    stub = llvm.GlobalOp(
+                        llvm.LLVMArrayType.from_size_and_type(0, i8),
+                        arg_type,
+                        "internal",
+                    )
+                    stub.attributes["module"] = StringAttr(mod)
+                    type_import_globals.append(stub)
+
         # Mutable global holding the current lifecycle state of the suite
         ccpp_suite_state_global = llvm.GlobalOp(
             llvm.LLVMArrayType.from_size_and_type(16, i8),
@@ -757,7 +1013,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         # Collect all framework-managed real arrays across all schemes.
         # These need module-level allocatable declarations so all lifecycle
         # subroutines can access them.
-        seen_fw_vars: set[str] = set()
+        # Dedup is case-insensitive: Fortran is case-insensitive, so O3 and o3
+        # are the same variable even when different schemes use different cases.
+        seen_fw_vars: set[str] = set()  # lowercase keys
         allocatable_mod_vars = []
         for scheme_name, _ in scheme_entries:
             if scheme_name not in self.meta_data:
@@ -765,17 +1023,20 @@ class GenerateSuiteSubroutine(RewritePattern):
             # Iterate all entry-point tables (e.g. _run, _init, _finalize)
             for arg_table in self.meta_data[scheme_name].arg_tables.values():
                 for arg in arg_table.getFunctionArguments():
-                    if arg.name in seen_fw_vars:
-                        continue
-                    if not (arg.hasAttr("advected") or arg.hasAttr("allocatable")):
+                    if arg.name.lower() in seen_fw_vars:
                         continue
                     if arg.getAttr("type") != "real":
                         continue
-                    if not arg.hasAttr("dimensions") or arg.getAttr("dimensions") == 0:
+                    is_fw = (
+                        arg.hasAttr("advected")
+                        or arg.hasAttr("allocatable")
+                        or arg.hasAttr("is_interstitial")
+                    )
+                    if not is_fw:
                         continue
-                    seen_fw_vars.add(arg.name)
+                    seen_fw_vars.add(arg.name.lower())
                     kind = arg.getAttr("kind") if arg.hasAttr("kind") else "kind_phys"
-                    rank = arg.getAttr("dimensions")
+                    rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                     allocatable_mod_vars.append(
                         AllocatableModVarOp(arg.name, kind, rank)
                     )
@@ -800,14 +1061,16 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if ret_op is not None:
                     from xdsl.rewriter import Rewriter, InsertPoint as IP
                     for var_decl in allocatable_mod_vars:
-                        Rewriter.insert_op(
-                            SafeDeallocOp(var_decl.var_name.data),
-                            IP.before(ret_op),
-                        )
+                        # Only deallocate arrays (rank>0); scalars are not allocatable
+                        if var_decl.rank.value.data > 0:
+                            Rewriter.insert_op(
+                                SafeDeallocOp(var_decl.var_name.data),
+                                IP.before(ret_op),
+                            )
 
         scheme_mod = builtin.ModuleOp(
             [ccpp_suite_state_global] + string_const_globals
-            + allocatable_mod_vars + generated_fns + fn_sigs,
+            + type_import_globals + allocatable_mod_vars + generated_fns + fn_sigs,
             sym_name=builtin.StringAttr(op.suite_name.data + "_cap"),
         )
 
@@ -858,11 +1121,25 @@ class SuiteCAP(ModulePass):
         bsd.traverse(ccpp_mod)
         scheme_descriptions = bsd.schemes
 
+        # Build DDT-type-name → Fortran-module-name map from source_module attributes.
+        # The frontend stores the meta file's stem on each TablePropertiesOp; for DDT
+        # tables that stem IS the Fortran module that defines the type.
+        ddt_source_module: dict[str, str] = {}
+        for tbl_op in ccpp_mod.body.ops:
+            if not isa(tbl_op, ccpp.TablePropertiesOp):
+                continue
+            if tbl_op.table_type.data != "ddt":
+                continue
+            src = tbl_op.attributes.get("source_module")
+            if src is not None:
+                ddt_source_module[tbl_op.table_name.data] = src.data
+
         PatternRewriteWalker(
             GreedyRewritePatternApplier(
                 [
                     GenerateSuiteSubroutine(
-                        scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op
+                        scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,
+                        ddt_source_module=ddt_source_module,
                     ),
                 ]
             ),

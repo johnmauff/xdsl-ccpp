@@ -88,12 +88,30 @@ of the following remaining gaps:
   in `_timestep_final`. Verified with Fortran compilation in Docker.
 - Case-insensitive standard name and dimension name matching
   (e.g. `vertical_LAYER_dimension` matches `vertical_layer_dimension`)
+- Interstitial variable detection and partial support:
+  - Variables produced by `_init` and consumed by `_run` are detected and
+    marked `is_interstitial` — no longer raise "no matching host model variable"
+  - Variables produced by one scheme's `_run` and consumed by another scheme's
+    `_run` (run-to-run interstitials) also detected
+  - Module-level scalar declarations generated for scalar interstitials (e.g. `tcld`)
+  - Module-level allocatable declarations generated for array interstitials
+  - Advection test pipeline now completes successfully; capgen/ddthost blocked
+    only by variable promotion (see below)
+- Nine CCPP metadata attributes now parsed: `allocatable`, `advected`,
+  `constituent`, `protected`, `state_variable`, `default_value`,
+  `diagnostic_name`, `diagnostic_name_fixed`, `active`
 
 *Still missing:*
-- Interstitial variables (produced by `_init`, consumed by `_run`) — the
-  single remaining blocker for advection, capgen, and ddthost tests
+- **Variable promotion** — when a scheme declares a variable with fewer
+  dimensions than the host (e.g. scheme 1D `temp_layer(ncol)`, host 2D
+  `temp_midpoints(ncols,pver)`), the suite cap must generate a loop over the
+  promoted dimension and pass array slices. Confirmed via capgen output:
+  `do vertical_layer_index = 1, pver; call scheme_run(temp_layer(:,vertical_layer_index)...)`
+  This is the single remaining blocker for capgen and ddthost.
+- `_initialize` allocation for interstitial arrays — currently arrays produced
+  by `_init` schemes are unallocated when the scheme tries to write them;
+  proper fix requires adding dimension arguments to `_initialize`
 - DDT type instances (e.g. a scheme requesting a whole DDT as a single argument)
-- CCPP promotion variables (`promote_this_variable_to_suite` etc.)
 - `allocatable` code generation for non-real types (e.g. `ccpp_constituent_properties_t`)
 - `ccpp_cap.py` contains a parallel independent matching implementation not yet
   unified with `HostVariableMatchPass`

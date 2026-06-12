@@ -282,7 +282,7 @@ class BuildMetaDataDescriptions(Visitor):
         known_props = ["standard_name", "long_name", "kind", "intent", "units", "type",
                        "memory_space", "model_var_name", "model_module_name",
                        "model_var_memory_space", "model_var_kind_mismatch",
-                       "model_var_is_ddt", "default_value"]
+                       "default_value", "promoted_dim"]
         for kp in known_props:
             if kp in arg_op.properties:
                 arg.setAttr(kp, arg_op.properties[kp].data)
@@ -306,6 +306,18 @@ class BuildMetaDataDescriptions(Visitor):
         # 'allocatable' is an allocated variable managed by CCPP
         if "allocatable" in arg_op.properties:
             arg.setAttr("allocatable", True)
+
+        # 'model_var_is_ddt' marks DDT member variables
+        if "model_var_is_ddt" in arg_op.properties:
+            arg.setAttr("model_var_is_ddt", True)
+
+        # 'is_interstitial' marks variables that flow between lifecycle phases
+        if "is_interstitial" in arg_op.properties:
+            arg.setAttr("is_interstitial", True)
+
+        # 'is_promoted' marks variables where scheme rank < host rank
+        if "is_promoted" in arg_op.properties:
+            arg.setAttr("is_promoted", True)
 
         # Surface the completed argument to the parent traversal via self.arg_token
         self.arg_token = arg

@@ -117,7 +117,10 @@ class MetaCAP(ModulePass):
                 if fn_arg.getAttr("intent") == "in":
                     in_args.append(arg_type)
                 elif fn_arg.getAttr("intent") == "out":
-                    out_args.append(arg_type)
+                    # Fortran always passes arguments by reference; intent(out) means the
+                    # callee writes the value, but the ABI is still pass-by-reference.
+                    # Put all out args in in_args so scheme calls preserve positional order.
+                    in_args.append(arg_type)
                 elif fn_arg.getAttr("intent") == "inout":
                     # inout: passed by reference in Fortran — the callee reads and
                     # modifies the argument in-place through the reference.

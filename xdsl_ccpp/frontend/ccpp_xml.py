@@ -1,9 +1,10 @@
 import argparse
 import sys
+from pathlib import Path
 import xml.etree.ElementTree as ET
 from enum import Enum, StrEnum, auto
 
-from xdsl.dialects.builtin import ModuleOp
+from xdsl.dialects.builtin import ModuleOp, StringAttr
 
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
@@ -446,7 +447,7 @@ class ccppXML:
             suite.attributes["version"] if "version" in suite.attributes else None,
         )
 
-    def build_meta_ir(self, meta):
+    def build_meta_ir(self, meta, source_module: str = ""):
         """Convert parsed `MetaData` into CCPP dialect IR ops.
 
         Walks the arg-tables and their arguments, creating `ArgumentOp`s inside
@@ -475,11 +476,14 @@ class ccppXML:
             tables.append(
                 ArgumentTableOp(table.getAttr("name"), str(table.getAttr("type")), args)
             )
-        return TablePropertiesOp(
+        op = TablePropertiesOp(
             meta.table_properties.getAttr("name"),
             str(meta.table_properties.getAttr("type")),
             tables,
         )
+        if source_module:
+            op.attributes["source_module"] = StringAttr(source_module)
+        return op
 
     def run(self):
         """Parse all inputs and emit MLIR to stdout.
@@ -497,19 +501,22 @@ class ccppXML:
         for suite_file in self.options_db["suites"]:
             ir_ops.append(self.build_suite_ir(XMLSuite(suite_file)))
 
-        # Parse each scheme metadata file and emit a TablePropertiesOp
+        # Parse each scheme metadata file and emit a TablePropertiesOp.
+        # The file stem is the Fortran module name and is stored as source_module.
         schemes = {}
         for scheme_file in self.options_db["scheme_files"]:
+            stem = Path(scheme_file).stem
             for c in self.parse_metadata_file(scheme_file, True):
                 schemes[c.table_properties.getAttr("name")] = c
-                ir_ops.append(self.build_meta_ir(c))
+                ir_ops.append(self.build_meta_ir(c, source_module=stem))
 
-        # Parse each host metadata file and emit a TablePropertiesOp
+        # Parse each host metadata file and emit a TablePropertiesOp.
         hosts = {}
         for host_file in self.options_db["host_files"]:
+            stem = Path(host_file).stem
             for c in self.parse_metadata_file(host_file, False):
                 hosts[c.table_properties.getAttr("name")] = c
-                ir_ops.append(self.build_meta_ir(c))
+                ir_ops.append(self.build_meta_ir(c, source_module=stem))
 
         print(ModuleOp(ir_ops))
 

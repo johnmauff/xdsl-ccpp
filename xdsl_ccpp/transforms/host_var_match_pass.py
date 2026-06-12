@@ -141,11 +141,59 @@ class HostVariableMatchPass(ModulePass):
             else 0
         )
         if scheme_rank != host_rank:
-            errors.append(
-                f"  {ctx}: dimension rank mismatch — "
-                f"scheme has {scheme_rank} dimension(s), "
-                f"host has {host_rank} dimension(s)"
-            )
+            if scheme_rank < host_rank and scheme_rank > 0:
+                # Possible promotion case: scheme has fewer dimensions than host.
+                # Check that the scheme's dimensions form a valid prefix of the
+                # host's dimensions (with framework substitutions allowed).
+                # The extra host dimensions become the "promoted" dimensions that
+                # the suite cap will loop over.
+                scheme_dim_names = [
+                    d.strip()
+                    for d in (
+                        scheme_arg_op.dim_names.data.split(",")
+                        if scheme_arg_op.dim_names is not None
+                        else []
+                    )
+                ]
+                host_dim_names = [
+                    d.strip()
+                    for d in (
+                        host_arg_op.dim_names.data.split(",")
+                        if host_arg_op.dim_names is not None
+                        else []
+                    )
+                ]
+                prefix_ok = True
+                for s_dim, h_dim in zip(scheme_dim_names, host_dim_names):
+                    if s_dim.lower() == h_dim.lower():
+                        continue
+                    if self._VALID_DIM_SUBSTITUTIONS.get(s_dim.lower()) == h_dim.lower():
+                        continue
+                    prefix_ok = False
+                    break
+
+                if prefix_ok and len(host_dim_names) > len(scheme_dim_names):
+                    # Valid promotion — mark the arg and record which dimension(s)
+                    # will be looped over in the suite cap.
+                    promoted_dims = host_dim_names[len(scheme_dim_names):]
+                    scheme_arg_op.properties["is_promoted"] = UnitAttr()
+                    # Store the first promoted dimension (vertical loop dimension).
+                    # Multiple promoted dims are a future extension.
+                    scheme_arg_op.properties["promoted_dim"] = StringAttr(
+                        promoted_dims[0]
+                    )
+                else:
+                    errors.append(
+                        f"  {ctx}: dimension rank mismatch — "
+                        f"scheme has {scheme_rank} dimension(s), "
+                        f"host has {host_rank} dimension(s)"
+                    )
+            else:
+                errors.append(
+                    f"  {ctx}: dimension rank mismatch — "
+                    f"scheme has {scheme_rank} dimension(s), "
+                    f"host has {host_rank} dimension(s)"
+                )
         elif scheme_rank > 0:
             # Check individual dimension names, allowing known valid substitutions
             scheme_dim_names = [
@@ -262,6 +310,45 @@ class HostVariableMatchPass(ModulePass):
                             is_ddt,
                         )
 
+        # ── Step 1b: build interstitial variable index ────────────────────
+        # Collect standard_names that are produced (intent=out or inout) by
+        # any scheme's _init or _timestep_init entry point.  Variables that
+        # are produced in init and consumed in run, but have no host model
+        # match, are interstitial — they flow between lifecycle phases inside
+        # the suite cap and are managed by the framework, not the host model.
+        #
+        # key:   standard_name (lowercase)
+        # value: (arg_op, scheme_name, entry_point_name)
+        produced_in_init: dict = {}
+        # Include _run as a producer suffix: variables produced by one scheme's
+        # _run and consumed by another scheme's _run (with no host match) are
+        # also interstitial — they flow between scheme calls within the suite.
+        _INIT_SUFFIXES = ("_init", "_timestep_init", "_register", "_run")
+
+        for table_prop_op in ccpp_mod.body.ops:
+            if not isa(table_prop_op, ccpp.TablePropertiesOp):
+                continue
+            if table_prop_op.table_type.data != TableTypeKind.Scheme:
+                continue
+            scheme_nm = table_prop_op.table_name.data
+            for arg_table_op in table_prop_op.body.ops:
+                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                    continue
+                ep_name = arg_table_op.table_name.data
+                if not any(ep_name.endswith(s) for s in _INIT_SUFFIXES):
+                    continue
+                for arg_op in arg_table_op.body.ops:
+                    if not isa(arg_op, ccpp.ArgumentOp):
+                        continue
+                    if arg_op.standard_name is None:
+                        continue
+                    intent = (
+                        arg_op.intent.data if arg_op.intent is not None else None
+                    )
+                    if intent in ("out", "inout"):
+                        sn = arg_op.standard_name.data.lower()
+                        produced_in_init[sn] = (arg_op, scheme_nm, ep_name)
+
         # ── Step 2: match scheme arguments and validate compatibility ──────
         all_errors: list[str] = []
 
@@ -326,12 +413,20 @@ class HostVariableMatchPass(ModulePass):
                             print(f"Warning: {w}", file=sys.stderr)
 
                     elif arg_op.optional is None and arg_op.default_value is None:
-                        all_errors.append(
-                            f"  Scheme '{scheme_name}': argument "
-                            f"'{arg_op.arg_name.data}' "
-                            f"(standard_name='{std_name}') has no matching "
-                            f"host model variable"
-                        )
+                        # Check if this is an interstitial variable — one that
+                        # is produced by a scheme's _init entry point and consumed
+                        # by a scheme's _run entry point within the same suite.
+                        # These flow between lifecycle phases inside the suite cap
+                        # and are managed by the framework rather than the host model.
+                        if std_name in produced_in_init:
+                            arg_op.properties["is_interstitial"] = UnitAttr()
+                        else:
+                            all_errors.append(
+                                f"  Scheme '{scheme_name}': argument "
+                                f"'{arg_op.arg_name.data}' "
+                                f"(standard_name='{std_name}') has no matching "
+                                f"host model variable"
+                            )
 
         if all_errors:
             raise ValueError(

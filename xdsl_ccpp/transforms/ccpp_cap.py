@@ -12,6 +12,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     HostVarRefOp,
     SetStringOp,
     StrCmpOp,
+    SuiteVariablesStubOp,
     TrimOp,
     WriteErrMsgOp,
 )
@@ -897,6 +898,7 @@ class CCPPCAP(ModulePass):
         )
         all_globals.extend(part_global_ops)
         all_definitions.append(suite_part_list_fn)
+        all_definitions.append(SuiteVariablesStubOp())
 
         module_ops = all_globals + all_definitions + all_declarations
 

@@ -1,5 +1,6 @@
 from xdsl.dialects.builtin import (
     ArrayAttr,
+    DYNAMIC_INDEX,
     DictionaryAttr,
     IntegerAttr,
     IntegerType,
@@ -25,10 +26,13 @@ from xdsl.irdl import (
     opt_prop_def,
     param_def,
     prop_def,
+    region_def,
     result_def,
+    traits_def,
     var_operand_def,
     var_result_def,
 )
+from xdsl.traits import NoTerminator
 
 
 @irdl_attr_definition
@@ -481,6 +485,117 @@ class SafeDeallocOp(IRDLOperation):
         super().__init__(properties={"var_name": StringAttr(var_name)})
 
 
+@irdl_op_definition
+class RankReducingSliceOp(IRDLOperation):
+    """General rank-reducing Fortran array section.
+
+    Each dimension of the source array is described by the ``dim_pattern``
+    property as either a range (``'R'``) or a scalar index (``'S'``):
+
+    - ``'R'`` — dimension is kept as a range ``lower:upper`` (rank preserved)
+    - ``'S'`` — dimension is fixed to a scalar index (rank reduced by 1)
+
+    Operands are grouped into two variadic lists, matched left-to-right as
+    the pattern is scanned:
+    - ``range_lowers`` / ``range_uppers`` — one pair per ``'R'`` in pattern
+    - ``scalar_indices``                  — one value per ``'S'`` in pattern
+
+    Examples::
+
+        dim_pattern="RS", range=(col_start,col_end), scalar=(lev,)
+            → source(col_start:col_end, lev)          2D→1D (common CCPP case)
+
+        dim_pattern="SR", scalar=(lev,), range=(col_start,col_end)
+            → source(lev, col_start:col_end)          2D→1D (reversed axes)
+
+        dim_pattern="RSS", range=(col_start,col_end), scalar=(lev,spec)
+            → source(col_start:col_end, lev, spec)    3D→1D
+
+        dim_pattern="RSR", range=(cs,ce,ss,se), scalar=(lev,)
+            → source(cs:ce, lev, ss:se)               3D→2D
+
+    The result rank equals the number of ``'R'`` entries in ``dim_pattern``.
+    """
+
+    name = "ccpp_utils.rank_reducing_slice"
+
+    source        = operand_def(MemRefType)
+    range_lowers  = var_operand_def(MemRefType)   # lower bound per 'R' dimension
+    range_uppers  = var_operand_def(MemRefType)   # upper bound per 'R' dimension
+    scalar_indices = var_operand_def(MemRefType)  # scalar index per 'S' dimension
+    # e.g. "RS" = first dim is range, second dim is scalar
+    dim_pattern   = prop_def(StringAttr)
+    res           = result_def(MemRefType)
+
+    irdl_options = [AttrSizedOperandSegments()]
+
+    def __init__(
+        self,
+        source,
+        dim_pattern: str,
+        range_lowers: list,
+        range_uppers: list,
+        scalar_indices: list,
+    ):
+        source_val = SSAValue.get(source)
+        src_type = source_val.type
+        # Result rank = number of 'R' entries; each retained dimension is dynamic.
+        result_rank = dim_pattern.count("R")
+        if isinstance(src_type, MemRefType):
+            result_type = MemRefType(
+                src_type.element_type, [DYNAMIC_INDEX] * result_rank
+            )
+        else:
+            result_type = src_type
+        super().__init__(
+            operands=[source, list(range_lowers), list(range_uppers),
+                      list(scalar_indices)],
+            properties={"dim_pattern": StringAttr(dim_pattern)},
+            result_types=[result_type],
+        )
+
+
+@irdl_op_definition
+class PromotionLoopOp(IRDLOperation):
+    """Fortran do loop for CCPP variable promotion.
+
+    Generates::
+
+        do {loop_var_name} = 1, upper_bound_val
+          ... body ...
+        end do
+
+    ``loop_var`` is a scalar integer alloca whose name_hint becomes the
+    Fortran loop variable name.  ``upper_bound`` is the integer value to
+    loop to (inclusive), e.g. the SSA value of ``pver``.
+
+    The body region contains scheme call ops.  Inside those calls,
+    RankReducingSliceOp operands reference ``loop_var`` (via LoadOp) to
+    produce column-slice expressions like ``arr(col_start:col_end, lev_idx)``.
+    """
+
+    name = "ccpp_utils.promotion_loop"
+
+    loop_var    = operand_def(MemRefType)  # integer alloca; name_hint = loop var name
+    upper_bound = operand_def(MemRefType)  # integer value giving loop upper bound
+    body        = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, loop_var, upper_bound, body_ops):
+        super().__init__(
+            operands=[loop_var, upper_bound],
+            regions=[body_ops],
+        )
+
+
+@irdl_op_definition
+class SuiteVariablesStubOp(IRDLOperation):
+    """Stub for ccpp_physics_suite_variables — emitted verbatim by the Fortran printer."""
+
+    name = "ccpp_utils.suite_variables_stub"
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -503,6 +618,9 @@ CCPPUtils = Dialect(
         AllocatableModVarOp,
         LazyAllocOp,
         SafeDeallocOp,
+        RankReducingSliceOp,
+        PromotionLoopOp,
+        SuiteVariablesStubOp,
     ],
     [RealKindType, DerivedType],
 )
