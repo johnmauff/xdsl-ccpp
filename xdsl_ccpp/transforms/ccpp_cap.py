@@ -545,9 +545,16 @@ class CCPPCAP(ModulePass):
             copy_pre_ops = []  # CapVarRefOps / HostVarRefOps placed before the call
             for idx, (ret_type, _arg_name, std_name) in enumerate(ret_info):
                 result = call_op.results[idx]
-                if std_name == CCPP_ERROR_MESSAGE:
+                # Match errmsg/errflg by standard_name when available (init/finalize),
+                # or fall back to type matching for timestep functions where
+                # ret_info has std_name=None (built from call_ret_types only).
+                if std_name == CCPP_ERROR_MESSAGE or (
+                    std_name is None and ret_type == errmsg_type
+                ):
                     copy_ops.append(memref.CopyOp(result, errmsg_alloc))
-                elif std_name == CCPP_ERROR_CODE:
+                elif std_name == CCPP_ERROR_CODE or (
+                    std_name is None and ret_type == errflg_type
+                ):
                     copy_ops.append(memref.CopyOp(result, errflg_alloc))
                 elif std_name and std_name in _cap_var_map:
                     # Cap-owned interstitial: copy to module-level var

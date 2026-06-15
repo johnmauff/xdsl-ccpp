@@ -17,6 +17,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp_utils import (
+    ArraySectionOp,
     ModuleVarOp,
     KeywordCallOp,
     LazyAllocOp,
@@ -33,6 +34,8 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_KIND_PHYS,
+    CCPP_LOOP_BEGIN_STD_NAME,
+    CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_HORIZ_DIM_STD_NAME,
 )
@@ -482,6 +485,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         arg_tables = {}
         scheme_overrides: dict[str, dict[str, str]] = {}
         all_args = {}
+        std_name_alias: dict = {}  # alias local name → canonical local name
         if tgt_subroutine_postfix is not None:
             # Fetch the argument table for each scheme's target subroutine;
             # schemes that don't have this entry point (e.g. no _finalize) are skipped.
@@ -494,15 +498,33 @@ class GenerateSuiteSubroutine(RewritePattern):
                     arg_tables[scheme_name] = table
                     scheme_overrides[scheme_name] = overrides
 
-            # Collect unique args across all schemes, preserving first-seen order
+            # Collect unique args across all schemes, preserving first-seen order.
+            # Also build a standard_name alias map so that two args with the same
+            # standard_name but different local names (e.g. 'temp' and 'temp_layer'
+            # both for potential_temperature) share the same data_ops SSA value.
+            # This avoids Fortran aliasing when the host passes the same actual
+            # array to both positions.
+            seen_std_names: dict = {}  # lowercase std_name → canonical local name
+            std_name_alias: dict = {}  # alias local name → canonical local name
             for scheme_name in arg_tables:
                 for fn_arg in arg_tables[scheme_name].getFunctionArguments():
+                    std_name = (
+                        fn_arg.getAttr("standard_name").lower()
+                        if fn_arg.hasAttr("standard_name")
+                        else None
+                    )
                     if fn_arg.name in all_args:
                         assert fn_arg.getAttr("type") == all_args[fn_arg.name].getAttr(
                             "type"
                         )
                     else:
                         all_args[fn_arg.name] = fn_arg
+                        if std_name:
+                            if std_name in seen_std_names:
+                                # Same standard_name, different local name — record alias
+                                std_name_alias[fn_arg.name] = seen_std_names[std_name]
+                            else:
+                                seen_std_names[std_name] = fn_arg.name
 
         # in/inout args become block arguments (input parameters to the cap subroutine).
         # out-only scalar args are allocated locally; out array args also become block
@@ -538,12 +560,14 @@ class GenerateSuiteSubroutine(RewritePattern):
             for a in all_args.values()
             if (a.getAttr("intent") in ("in", "inout") or _has_dims(a))
             and a.name not in framework_vars
+            and a.name not in std_name_alias  # aliases share the canonical block arg
         ]
         output_arg_list = [
             a
             for a in all_args.values()
             if a.getAttr("intent") == "out" and not _has_dims(a)
             and a.name not in framework_vars
+            and a.name not in std_name_alias
         ]
 
         loop_ext_aliases: set = set()
@@ -629,6 +653,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 hint = fn_arg.name + "__alloc"
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
+
 
         alloc_ops = {}
         # Allocate local storage for each output-only argument
@@ -717,6 +742,35 @@ class GenerateSuiteSubroutine(RewritePattern):
                 framework_ref_ops.append(ref_op)
                 data_ops[fw_arg.name] = ref_op
 
+                # In physics mode, 1D framework arrays are allocated at horizontal_dimension
+                # scope but schemes receive a horizontal_loop_extent slice (col_begin:col_end).
+                # Locate the loop-begin/end SSA values by standard_name since the
+                # local arg names differ across suites (cols/cole vs col_start/col_end).
+                _dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
+                if physics_mode and _dims == 1:
+                    _col_begin_ssa = next(
+                        (data_ops[a.name] for a in all_args.values()
+                         if a.hasAttr("standard_name")
+                         and a.getAttr("standard_name").lower() == CCPP_LOOP_BEGIN_STD_NAME
+                         and a.name in data_ops),
+                        data_ops.get("col_start"),
+                    )
+                    _col_end_ssa = next(
+                        (data_ops[a.name] for a in all_args.values()
+                         if a.hasAttr("standard_name")
+                         and a.getAttr("standard_name").lower() == CCPP_LOOP_END_STD_NAME
+                         and a.name in data_ops),
+                        data_ops.get("col_end"),
+                    )
+                    if _col_begin_ssa is not None and _col_end_ssa is not None:
+                        section = ArraySectionOp(
+                            ref_op.res,
+                            [_col_begin_ssa],
+                            [_col_end_ssa],
+                        )
+                        framework_ref_ops.append(section)
+                        data_ops[fw_arg.name] = section
+
                 # Resolve dimension SSA values from data_ops via standard names
                 dim_names = fw_arg.getAttr("dim_names") if fw_arg.hasAttr("dim_names") else []
                 dim_var_refs = []
@@ -731,10 +785,9 @@ class GenerateSuiteSubroutine(RewritePattern):
                     if matching and matching.name in data_ops:
                         dim_var_refs.append(data_ops[matching.name])
 
-                # Only emit lazy allocation in physics mode where ncol/lev
-                # are in scope.  _initialize allocation is a TODO (needs
-                # host module dimension variables in that subroutine).
-                if physics_mode and dim_var_refs:
+                # Emit lazy allocation whenever dimension SSA values are available
+                # (in-scope args include nbox/ncol in both _init and _run).
+                if dim_var_refs:
                     kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
                     init_val = (
                         fw_arg.getAttr("default_value")
@@ -749,6 +802,12 @@ class GenerateSuiteSubroutine(RewritePattern):
                             init_value=init_val,
                         )
                     )
+
+        # Resolve standard_name aliases now that all data_ops entries are final
+        # (ncol_compute_ops, errflg/errmsg, and framework refs are all set).
+        for alias_name, canonical_name in std_name_alias.items():
+            if alias_name not in data_ops and canonical_name in data_ops:
+                data_ops[alias_name] = data_ops[canonical_name]
 
         call_ops = []
         fn_sigs = {}
@@ -1039,6 +1098,10 @@ class GenerateSuiteSubroutine(RewritePattern):
         # are the same variable even when different schemes use different cases.
         seen_fw_vars: set[str] = set()  # lowercase keys
         allocatable_mod_vars = []
+        # Track is_interstitial vars separately: they persist from _init through
+        # all _run calls and must NOT be deallocated in _timestep_final (only
+        # advected/allocatable vars get refreshed each timestep).
+        interstitial_var_names: set[str] = set()  # lowercase
         for scheme_name, _ in scheme_entries:
             if scheme_name not in self.meta_data:
                 continue
@@ -1057,6 +1120,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                     if not is_fw:
                         continue
                     seen_fw_vars.add(arg.name.lower())
+                    if arg.hasAttr("is_interstitial"):
+                        interstitial_var_names.add(arg.name.lower())
                     kind = arg.getAttr("kind") if arg.hasAttr("kind") else CCPP_KIND_PHYS
                     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                     allocatable_mod_vars.append(
@@ -1083,8 +1148,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if ret_op is not None:
                     from xdsl.rewriter import Rewriter, InsertPoint as IP
                     for var_decl in allocatable_mod_vars:
-                        # Only deallocate arrays (rank>0); scalars are not allocatable
-                        if var_decl.rank.value.data > 0:
+                        # Only deallocate arrays (rank>0); scalars are not allocatable.
+                        # Skip is_interstitial vars — they persist from _init across
+                        # all timesteps and should only be freed at _finalize.
+                        if var_decl.rank.value.data > 0 and \
+                                var_decl.var_name.data.lower() not in interstitial_var_names:
                             Rewriter.insert_op(
                                 SafeDeallocOp(var_decl.var_name.data),
                                 IP.before(ret_op),
