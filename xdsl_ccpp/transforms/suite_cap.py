@@ -30,6 +30,11 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_KIND_PHYS,
+    CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_HORIZ_DIM_STD_NAME,
+)
 from xdsl_ccpp.util.visitor import Visitor
 
 
@@ -541,25 +546,33 @@ class GenerateSuiteSubroutine(RewritePattern):
         ]
 
         loop_ext_aliases: set = set()
-        if physics_mode and any(a.name == "ncol" for a in input_arg_list):
-            ncol_meta = next(a for a in input_arg_list if a.name == "ncol")
-            ncol_idx = next(i for i, a in enumerate(input_arg_list) if a.name == "ncol")
-
-            # Collect other args sharing ncol's standard_name (e.g. 'nbox' in
-            # temp_adjust_run also has standard_name = horizontal_loop_extent).
-            # These are aliases for the column count and should not become block args.
-            ncol_std_name = (
-                ncol_meta.getAttr("standard_name").lower()
-                if ncol_meta.hasAttr("standard_name")
-                else None
+        # Find the column-count arg by standard_name, not local name — different
+        # schemes use 'ncol', 'foo', 'nbox', etc. for horizontal_loop_extent.
+        _has_loop_extent = any(
+            a.hasAttr("standard_name")
+            and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
+            for a in input_arg_list
+        )
+        if physics_mode and _has_loop_extent:
+            ncol_meta = next(
+                a for a in input_arg_list
+                if a.hasAttr("standard_name")
+                and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
             )
+            ncol_idx = next(
+                i for i, a in enumerate(input_arg_list)
+                if a.hasAttr("standard_name")
+                and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
+            )
+
+            # Collect other args with the same standard_name — all are aliases for
+            # the column count and should not become separate block args.
             loop_ext_aliases = {
                 a.name
                 for a in input_arg_list
-                if a.name != "ncol"
-                and ncol_std_name
+                if a.name != ncol_meta.name
                 and a.hasAttr("standard_name")
-                and a.getAttr("standard_name").lower() == ncol_std_name
+                and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
             }
 
             def _make_col_arg(name):
@@ -647,6 +660,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             data_ops["errmsg"] = alloc_op
 
         ncol_compute_ops = []
+        # The synthetic col_start/col_end args always carry these names — the host
+        # provides loop bounds under horizontal_loop_begin/end standard names and
+        # _make_col_arg above fixes the local names to col_start/col_end.
         if physics_mode and "col_start" in data_ops and "col_end" in data_ops:
             ncol_alloc = memref.AllocaOp.get(
                 TypeConversions.getBaseType("integer"), shape=[]
@@ -713,7 +729,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # are in scope.  _initialize allocation is a TODO (needs
                 # host module dimension variables in that subroutine).
                 if physics_mode and dim_var_refs:
-                    kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else "kind_phys"
+                    kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
                     init_val = (
                         fw_arg.getAttr("default_value")
                         if fw_arg.hasAttr("default_value")
@@ -1035,7 +1051,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     if not is_fw:
                         continue
                     seen_fw_vars.add(arg.name.lower())
-                    kind = arg.getAttr("kind") if arg.hasAttr("kind") else "kind_phys"
+                    kind = arg.getAttr("kind") if arg.hasAttr("kind") else CCPP_KIND_PHYS
                     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                     allocatable_mod_vars.append(
                         AllocatableModVarOp(arg.name, kind, rank)

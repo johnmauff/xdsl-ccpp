@@ -28,6 +28,9 @@ from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_STD_NAMES,
     CCPP_FRAMEWORK_STD_NAMES,
+    CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_LOOP_BEGIN_STD_NAME,
+    CCPP_LOOP_END_STD_NAME,
 )
 
 
@@ -906,14 +909,20 @@ class CCPPCAP(ModulePass):
                 if not host_var_desc.hasAttr("dim_names"):
                     continue
                 dim_names_list = host_var_desc.getAttr("dim_names")
-                if not dim_names_list or dim_names_list[0].lower() != "horizontal_dimension":
+                if not dim_names_list or dim_names_list[0].lower() != CCPP_HORIZ_DIM_STD_NAME:
                     continue
 
-                if "col_start" not in block_arg_map or "col_end" not in block_arg_map:
+                # Find the canonical block arg names for loop begin/end via
+                # standard_name, since different schemes use different local names.
+                col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                if not col_begin_key or not col_end_key:
+                    continue
+                if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
                     continue
 
-                lowers = [block_arg_map["col_start"]]
-                uppers = [block_arg_map["col_end"]]
+                lowers = [block_arg_map[col_begin_key]]
+                uppers = [block_arg_map[col_end_key]]
 
                 valid = True
                 for dim_std_name in dim_names_list[1:]:

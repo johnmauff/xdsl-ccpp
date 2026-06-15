@@ -37,6 +37,14 @@ CCPP_DIM_SUBSTITUTIONS: dict = {
     "horizontal_loop_extent": "horizontal_dimension",
 }
 
+# ── Loop bound and dimension standard names ────────────────────────────────
+# Match by these standard names rather than local variable names (which vary:
+# 'ncol', 'foo', 'nbox' all map to horizontal_loop_extent across different schemes).
+CCPP_LOOP_EXTENT_STD_NAME = "horizontal_loop_extent"   # column count
+CCPP_LOOP_BEGIN_STD_NAME  = "horizontal_loop_begin"    # first column index
+CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
+CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
+
 # ── Kind (precision) mappings ───────────────────────────────────────────────
 # Maps CCPP kind names to ISO_FORTRAN_ENV named constants.
 CCPP_KIND_TO_ISO: dict = {
