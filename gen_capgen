@@ -1,0 +1,8 @@
+#!/bin/bash
+
+export SUITESF='examples/capgen/ddt_suite.xml,examples/capgen/temp_suite.xml'
+export SCHEMEF='examples/capgen/make_ddt.meta,examples/capgen/environ_conditions.meta,examples/capgen/setup_coeffs.meta,examples/capgen/temp_set.meta,examples/capgen/temp_calc_adjust.meta,examples/capgen/temp_adjust.meta'
+export HOSTF='examples/capgen/test_host_data.meta,examples/capgen/test_host_mod.meta,examples/capgen/test_host.meta'
+
+ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF --host-name test_host -o examples/capgen/
+#ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF --host-name test_host -o examples/capgen/ --debug

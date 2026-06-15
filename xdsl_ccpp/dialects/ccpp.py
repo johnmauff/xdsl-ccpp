@@ -304,35 +304,16 @@ class ArgumentOp(IRDLOperation):
                 properties[prop] = StringAttr(attributes[prop])
                 prop_keys.remove(prop)
 
-        if "optional" in attributes:
-            if attributes["optional"]:
-                properties["optional"] = UnitAttr()
-                prop_keys.remove("optional")
+        def _flag_is_true(val) -> bool:
+            """Return True for any recognised truthy boolean: True/true/.true."""
+            return str(val).strip().lower() in ("true", ".true.")
 
-        if "allocatable" in attributes:
-            if attributes["allocatable"]:
-                properties["allocatable"] = UnitAttr()
-                prop_keys.remove("allocatable")
-
-        if "advected" in attributes:
-            if attributes["advected"]:
-                properties["advected"] = UnitAttr()
-                prop_keys.remove("advected")
-
-        if "constituent" in attributes:
-            if attributes["constituent"]:
-                properties["constituent"] = UnitAttr()
-                prop_keys.remove("constituent")
-
-        if "protected" in attributes:
-            if str(attributes["protected"]).lower() == "true":
-                properties["protected"] = UnitAttr()
-            prop_keys.remove("protected")
-
-        if "state_variable" in attributes:
-            if str(attributes["state_variable"]).lower() == "true":
-                properties["state_variable"] = UnitAttr()
-            prop_keys.remove("state_variable")
+        for flag in ("optional", "allocatable", "advected", "constituent",
+                     "protected", "state_variable"):
+            if flag in attributes:
+                if _flag_is_true(attributes[flag]):
+                    properties[flag] = UnitAttr()
+                prop_keys.remove(flag)
 
         # Silently ignore unrecognised keys
 

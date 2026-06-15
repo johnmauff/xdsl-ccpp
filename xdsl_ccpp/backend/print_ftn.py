@@ -46,6 +46,8 @@ from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallo
 from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
 from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp       as CCPPPromotionLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
+from xdsl_ccpp.dialects.ccpp_utils import ModuleTypeVarOp       as CCPPModuleTypeVarOp
+from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
 
 
 _MAX_LINE_LEN = 99
@@ -470,9 +472,19 @@ class ftnPrintContext:
                         self.print(f"{arr_name} = ", end="")
                     self.print_expr(val.owner)
                     self.print("")
-            case CCPPHostVarRefOp():
-                # Register the host variable name for the result — no Fortran emitted
+            case CCPPCapVarRefOp():
+                # Register the cap module variable name — no Fortran code emitted
                 self.variables[op.res] = op.var_name.data
+            case CCPPHostVarRefOp():
+                # Register the host variable name for the result — no Fortran emitted.
+                # When member_name is set the reference is var_name%member_name (DDT).
+                member = op.attributes.get("member_name")
+                ref_name = (
+                    f"{op.var_name.data}%{member.data}"
+                    if member is not None
+                    else op.var_name.data
+                )
+                self.variables[op.res] = ref_name
             case CCPPWriteErrMsgOp():
                 dest_name = self._get_variable_name_for(op.dest)
                 self.print(f"write({dest_name}, '(3a)') \"{op.prefix.data}\", ", end="")
@@ -685,6 +697,13 @@ class ftnPrintContext:
                     self.print(
                         f"character(len={char_len}) :: {name} = '{val}'", prefix="  "
                     )
+
+        # Emit module-level non-real type variable declarations (e.g. DDT instances).
+        for op in body.ops:
+            if isa(op, CCPPModuleTypeVarOp):
+                self.print(
+                    f"{op.fortran_type.data} :: {op.var_name.data}", prefix="  "
+                )
 
         # Emit module-level allocatable array / scalar declarations.
         for op in body.ops:
@@ -916,7 +935,7 @@ class ftnPrintContext:
                     hint = (
                         res.name_hint
                         if res.name_hint
-                        else f"_tmp_{len(untracked_call_results)}"
+                        else f"ccpp_tmp_{len(untracked_call_results)}"
                     )
                     untracked_call_results.append((res, hint))
 

@@ -1,0 +1,8 @@
+#!/bin/bash
+
+export SUITESF='examples/ddthost/ddt_suite.xml,examples/ddthost/temp_suite.xml'
+export SCHEMEF='examples/ddthost/make_ddt.meta,examples/ddthost/environ_conditions.meta,examples/ddthost/setup_coeffs.meta,examples/ddthost/temp_set.meta,examples/ddthost/temp_calc_adjust.meta,examples/ddthost/temp_adjust.meta'
+export HOSTF='examples/ddthost/test_host_data.meta,examples/ddthost/test_host_mod.meta,examples/ddthost/host_ccpp_ddt.meta,examples/ddthost/test_host.meta'
+
+ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF --host-name test_host -o examples/ddthost/
+#ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF -o examples/ddthost/ --debug

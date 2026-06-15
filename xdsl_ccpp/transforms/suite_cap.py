@@ -549,7 +549,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             # temp_adjust_run also has standard_name = horizontal_loop_extent).
             # These are aliases for the column count and should not become block args.
             ncol_std_name = (
-                ncol_meta.getAttr("standard_name")
+                ncol_meta.getAttr("standard_name").lower()
                 if ncol_meta.hasAttr("standard_name")
                 else None
             )
@@ -559,7 +559,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if a.name != "ncol"
                 and ncol_std_name
                 and a.hasAttr("standard_name")
-                and a.getAttr("standard_name") == ncol_std_name
+                and a.getAttr("standard_name").lower() == ncol_std_name
             }
 
             def _make_col_arg(name):
@@ -699,11 +699,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                 dim_names = fw_arg.getAttr("dim_names") if fw_arg.hasAttr("dim_names") else []
                 dim_var_refs = []
                 for dim_std_name in dim_names:
-                    # Find the arg in all_args whose standard_name matches
+                    # Find the arg in all_args whose standard_name matches (case-insensitive)
                     matching = next(
                         (a for a in all_args.values()
                          if a.hasAttr("standard_name")
-                         and a.getAttr("standard_name") == dim_std_name),
+                         and a.getAttr("standard_name").lower() == dim_std_name.lower()),
                         None,
                     )
                     if matching and matching.name in data_ops:

@@ -135,6 +135,10 @@ class HostVarRefOp(IRDLOperation):
     `var_name` as the variable name for the result so that downstream ops
     (e.g. call arguments) print the correct host variable name.
 
+    When `member_name` is set the variable is a DDT member accessed as
+    ``var_name%member_name`` (e.g. ``phys_state%ps``).  The USE statement
+    is still generated for `var_name` (the DDT instance), not the member.
+
     A corresponding llvm.GlobalOp stub (with a 'module' attribute) is placed
     at the enclosing module level to drive 'use module, only: var' generation.
     """
@@ -143,10 +147,13 @@ class HostVarRefOp(IRDLOperation):
 
     var_name = prop_def(StringAttr)
     module_name = prop_def(StringAttr)
+    # member_name is stored in the attributes dict (not a formal property) when
+    # this op references a DDT member: reference emitted as var_name%member_name.
     res = result_def()  # type set at construction to match callee expectation
 
     def __init__(
-        self, var_name: str | StringAttr, module_name: str | StringAttr, result_type
+        self, var_name: str | StringAttr, module_name: str | StringAttr,
+        result_type, member_name: str | None = None,
     ):
         if isinstance(var_name, str):
             var_name = StringAttr(var_name)
@@ -156,6 +163,8 @@ class HostVarRefOp(IRDLOperation):
             properties={"var_name": var_name, "module_name": module_name},
             result_types=[result_type],
         )
+        if member_name is not None:
+            self.attributes["member_name"] = StringAttr(member_name)
 
 
 @irdl_op_definition
@@ -605,6 +614,44 @@ class SuiteVariablesOp(IRDLOperation):
         super().__init__(properties={"body": StringAttr(body)})
 
 
+@irdl_op_definition
+class ModuleTypeVarOp(IRDLOperation):
+    """Declares a module-level variable of a non-real type (e.g. a DDT instance).
+    The printer emits '{fortran_type} :: {var_name}' in the module preamble."""
+
+    name = "ccpp_utils.module_type_var"
+
+    var_name = prop_def(StringAttr)
+    fortran_type = prop_def(StringAttr)
+
+    def __init__(self, var_name: str, fortran_type: str):
+        super().__init__(properties={
+            "var_name": StringAttr(var_name),
+            "fortran_type": StringAttr(fortran_type),
+        })
+
+
+@irdl_op_definition
+class CapVarRefOp(IRDLOperation):
+    """Reference to a module-level variable declared in the same cap module.
+
+    Like HostVarRefOp but no USE statement is generated — the variable is
+    in the current module.  The printer registers the variable name so that
+    downstream ops emit it correctly.
+    """
+
+    name = "ccpp_utils.cap_var_ref"
+
+    var_name = prop_def(StringAttr)
+    res = result_def()
+
+    def __init__(self, var_name: str, result_type):
+        super().__init__(
+            properties={"var_name": StringAttr(var_name)},
+            result_types=[result_type],
+        )
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -630,6 +677,8 @@ CCPPUtils = Dialect(
         RankReducingSliceOp,
         PromotionLoopOp,
         SuiteVariablesOp,
+        ModuleTypeVarOp,
+        CapVarRefOp,
     ],
     [RealKindType, DerivedType],
 )
