@@ -427,26 +427,43 @@ class OmpTargetUpdateToOp(IRDLOperation):
         super().__init__(operands=[list(array_refs)])
 
 @irdl_op_definition
-class AllocatableModVarOp(IRDLOperation):
-    """Declare a module-level allocatable real array in the suite cap.
+class ModuleVarOp(IRDLOperation):
+    """Unified module-level variable declaration.
 
-    Emitted in the module spec section before CONTAINS:
-        real(kind=kind_phys), allocatable :: var_name(:, :)
+    Replaces the former ``AllocatableModVarOp`` (real vars) and
+    ``ModuleTypeVarOp`` (DDT vars) with a single consistent representation.
 
-    The rank determines the number of deferred-shape dimensions.
+    Printer emits in the module spec section before CONTAINS:
+        rank=0: ``{fortran_type} :: {var_name}``
+        rank>0: ``{fortran_type}, allocatable :: {var_name}(:, :, ...)``
+
+    Examples::
+
+        ModuleVarOp("temp_layer", "real(kind=kind_phys)", rank=2)
+        → real(kind=kind_phys), allocatable :: temp_layer(:, :)
+
+        ModuleVarOp("vmr_cap_ddt_suite", "type(vmr_type)", rank=0)
+        → type(vmr_type) :: vmr_cap_ddt_suite
     """
 
-    name = "ccpp_utils.allocatable_mod_var"
-    var_name  = prop_def(StringAttr)
-    kind_name = prop_def(StringAttr)
-    rank      = prop_def(IntegerAttr)
+    name = "ccpp_utils.module_var"
+    var_name     = prop_def(StringAttr)
+    fortran_type = prop_def(StringAttr)   # e.g. "real(kind=kind_phys)", "type(vmr_type)"
+    rank         = prop_def(IntegerAttr)  # 0 = scalar, >0 = allocatable array
 
-    def __init__(self, var_name: str, kind_name: str, rank: int):
+    def __init__(self, var_name: str, fortran_type: str, rank: int = 0):
         super().__init__(properties={
-            "var_name":  StringAttr(var_name),
-            "kind_name": StringAttr(kind_name),
-            "rank":      IntegerAttr.from_int_and_width(rank, 64),
+            "var_name":     StringAttr(var_name),
+            "fortran_type": StringAttr(fortran_type),
+            "rank":         IntegerAttr.from_int_and_width(rank, 64),
         })
+
+
+# Legacy aliases — kept temporarily so external callers see a clear deprecation path.
+# Use ModuleVarOp directly for new code.
+def AllocatableModVarOp(var_name: str, kind_name: str, rank: int) -> "ModuleVarOp":  # type: ignore[misc]
+    """Deprecated: use ModuleVarOp('real(kind={kind_name})', rank=rank) instead."""
+    return ModuleVarOp(var_name, f"real(kind={kind_name})", rank)
 
 
 @irdl_op_definition
@@ -614,21 +631,9 @@ class SuiteVariablesOp(IRDLOperation):
         super().__init__(properties={"body": StringAttr(body)})
 
 
-@irdl_op_definition
-class ModuleTypeVarOp(IRDLOperation):
-    """Declares a module-level variable of a non-real type (e.g. a DDT instance).
-    The printer emits '{fortran_type} :: {var_name}' in the module preamble."""
-
-    name = "ccpp_utils.module_type_var"
-
-    var_name = prop_def(StringAttr)
-    fortran_type = prop_def(StringAttr)
-
-    def __init__(self, var_name: str, fortran_type: str):
-        super().__init__(properties={
-            "var_name": StringAttr(var_name),
-            "fortran_type": StringAttr(fortran_type),
-        })
+def ModuleTypeVarOp(var_name: str, fortran_type: str) -> "ModuleVarOp":  # type: ignore[misc]
+    """Deprecated: use ModuleVarOp(var_name, fortran_type) instead."""
+    return ModuleVarOp(var_name, fortran_type, rank=0)
 
 
 @irdl_op_definition
@@ -671,13 +676,12 @@ CCPPUtils = Dialect(
         OmpTargetDataEndOp,
         OmpTargetUpdateFromOp,
         OmpTargetUpdateToOp,
-        AllocatableModVarOp,
+        ModuleVarOp,
         LazyAllocOp,
         SafeDeallocOp,
         RankReducingSliceOp,
         PromotionLoopOp,
         SuiteVariablesOp,
-        ModuleTypeVarOp,
         CapVarRefOp,
     ],
     [RealKindType, DerivedType],

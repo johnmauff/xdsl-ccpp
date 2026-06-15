@@ -40,13 +40,12 @@ from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataBeginOp as CCPPOmpTargetD
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp    as CCPPOmpTargetDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp   as CCPPOmpTargetUpdateToOp
-from xdsl_ccpp.dialects.ccpp_utils import AllocatableModVarOp  as CCPPAllocatableModVarOp
+from xdsl_ccpp.dialects.ccpp_utils import ModuleVarOp           as CCPPModuleVarOp
 from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
 from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp       as CCPPPromotionLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
-from xdsl_ccpp.dialects.ccpp_utils import ModuleTypeVarOp       as CCPPModuleTypeVarOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
 
 
@@ -519,7 +518,7 @@ class ftnPrintContext:
                     ])
             case CCPPAccDataEndOp():
                 self.print("!$acc end data")
-            case CCPPAllocatableModVarOp():
+            case CCPPModuleVarOp():
                 pass  # declared in _print_module preamble, not here
             case CCPPLazyAllocOp():
                 vname = op.var_name.data
@@ -698,28 +697,19 @@ class ftnPrintContext:
                         f"character(len={char_len}) :: {name} = '{val}'", prefix="  "
                     )
 
-        # Emit module-level non-real type variable declarations (e.g. DDT instances).
+        # Emit module-level variable declarations (unified ModuleVarOp).
+        # rank=0: scalar, rank>0: allocatable array with that many deferred dimensions.
         for op in body.ops:
-            if isa(op, CCPPModuleTypeVarOp):
-                self.print(
-                    f"{op.fortran_type.data} :: {op.var_name.data}", prefix="  "
-                )
-
-        # Emit module-level allocatable array / scalar declarations.
-        for op in body.ops:
-            if isa(op, CCPPAllocatableModVarOp):
+            if isa(op, CCPPModuleVarOp):
                 rank = op.rank.value.data
+                ftn_type = op.fortran_type.data
+                var_name = op.var_name.data
                 if rank == 0:
-                    # Scalar interstitial variable — no allocatable needed
-                    self.print(
-                        f"real(kind={op.kind_name.data}) :: {op.var_name.data}",
-                        prefix="  ",
-                    )
+                    self.print(f"{ftn_type} :: {var_name}", prefix="  ")
                 else:
                     shape = ", ".join([":"] * rank)
                     self.print(
-                        f"real(kind={op.kind_name.data}), allocatable :: "
-                        f"{op.var_name.data}({shape})",
+                        f"{ftn_type}, allocatable :: {var_name}({shape})",
                         prefix="  ",
                     )
 
@@ -775,19 +765,34 @@ class ftnPrintContext:
         Input arguments are printed by variable name.  Output arguments are
         resolved through the CopyOp use-chain to find the destination variable
         that will receive each result.
+
+        Inout-echo returns are suppressed: when the suite cap returns a scalar
+        inout arg as an SSA value (MLIR SSA convention), the resolved destination
+        name is the same variable already printed as an input.  Printing it again
+        would produce an invalid duplicate argument in the Fortran call.
         """
         self.print(f"call {tgt.string_value()}(", end="")
-        # Print input (in / inout) arguments by their variable names
-        for idx, arg in enumerate(args):
-            if idx > 0:
+
+        # Collect input variable names to detect inout-echo returns.
+        input_var_names = {self._get_variable_name_for(arg) for arg in args}
+
+        # Print input arguments
+        printed = 0
+        for arg in args:
+            if printed > 0:
                 self.print(", ", end="", use_prefix=False)
             self.print(self._get_variable_name_for(arg), end="", use_prefix=False)
+            printed += 1
 
-        # Print output argument destinations, resolved via CopyOp uses
-        for idx, res in enumerate(results, start=len(args)):
-            if idx > 0:
+        # Print output argument destinations, skipping inout echoes
+        for res in results:
+            ret_name = self.get_call_result_var_ssa(res)
+            if ret_name is not None and ret_name in input_var_names:
+                continue  # inout echo — already in the input list, skip
+            if printed > 0:
                 self.print(", ", end="", use_prefix=False)
-            self.print(self.get_call_result_var_ssa(res), end="", use_prefix=False)
+            self.print(ret_name, end="", use_prefix=False)
+            printed += 1
 
         self.print(")", use_prefix=False)
 

@@ -17,7 +17,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp_utils import (
-    AllocatableModVarOp,
+    ModuleVarOp,
     KeywordCallOp,
     LazyAllocOp,
     PromotionLoopOp,
@@ -1055,7 +1055,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     kind = arg.getAttr("kind") if arg.hasAttr("kind") else CCPP_KIND_PHYS
                     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                     allocatable_mod_vars.append(
-                        AllocatableModVarOp(arg.name, kind, rank)
+                        ModuleVarOp(arg.name, f"real(kind={kind})", rank)
                     )
 
         # SafeDeallocOp for each framework var goes into _timestep_final.
