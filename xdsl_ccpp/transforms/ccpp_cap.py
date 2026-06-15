@@ -440,6 +440,16 @@ class CCPPCAP(ModulePass):
                     hoisted_alloc_ops.append(alloc_op)
                     call_inputs.append(alloc_op.memref)
 
+            # ── Verify argument count matches callee signature ─────────────────
+            if len(call_inputs) != len(callee_input_types):
+                import sys
+                raise ValueError(
+                    f"Signature mismatch for '{suite_callee}': "
+                    f"generated {len(call_inputs)} input arg(s) but callee expects "
+                    f"{len(callee_input_types)}.\n"
+                    f"  Callee inputs: {callee_input_names}"
+                )
+
             # Build the call, then handle each return value:
             #   errmsg/errflg  → copy to the function's errmsg/errflg allocas
             #   cap-owned DDT  → copy to the module-level cap variable
@@ -531,6 +541,7 @@ class CCPPCAP(ModulePass):
         public_fns,
         meta_data,
         cap_var_map=None,
+        seen_host_globals=None,
     ):
         """Build the combined CCPP cap physics run FuncOp dispatching over all suites.
 
@@ -564,6 +575,20 @@ class CCPPCAP(ModulePass):
                 if var.hasAttr("standard_name"):
                     host_var_map[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
 
+        # host_block_std_names: standard_names in HOST-type tables.
+        # These are ephemeral values the host passes directly (e.g. col_start/col_end
+        # from protected loop-bound variables).  They correctly become block args and
+        # should NOT trigger an "unmatched" warning.
+        host_block_std_names: set = set()
+        for tbl_name, props in meta_data.items():
+            if props.getAttr("type") != CCPPType.HOST:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if var.hasAttr("standard_name"):
+                    host_block_std_names.add(var.getAttr("standard_name").lower())
+
         # ddt_member_map: standard_name → (member_name, ddt_type_name)
         # Built from DDT-type tables in the host metadata.
         ddt_member_map = {}
@@ -577,27 +602,29 @@ class CCPPCAP(ModulePass):
                     ddt_member_map[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
 
         # ddt_instance_map: ddt_type_name → (instance_var_name, module_name)
-        # Identifies which MODULE variable holds an instance of each DDT type.
+        # Identifies which MODULE or HOST variable holds an instance of each DDT type.
+        # HOST-type tables are included because some hosts store DDT instances there
+        # (e.g. ccpp_info_t in test_host.meta for the ddthost example).
+        ddt_type_names = {m[1] for m in ddt_member_map.values()}
         ddt_instance_map = {}
         for tbl_name, props in meta_data.items():
-            if props.getAttr("type") != CCPPType.MODULE:
+            if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
                 continue
             if tbl_name not in props.arg_tables:
                 continue
             for var in props.getArgTable(tbl_name).getFunctionArguments():
                 if var.hasAttr("type"):
                     var_type = var.getAttr("type")
-                    if var_type in ddt_member_map or any(
-                        var_type == dtt for dtt in {
-                            m[1] for m in ddt_member_map.values()
-                        }
-                    ):
+                    if var_type in ddt_type_names:
                         ddt_instance_map[var_type] = (var.name, tbl_name)
 
         # ── Per-suite information ──────────────────────────────────────────────
         per_suite = []
         all_host_global_ops: list = []
-        seen_host_globals: set = set()
+        # Use the caller-provided seen_host_globals set so GlobalOps are deduplicated
+        # across all functions (lifecycle + run) in the same cap module.
+        if seen_host_globals is None:
+            seen_host_globals = set()
 
         for suite_name, suite_part, suite_callee, scheme_names in suite_run_entries:
             (
@@ -668,11 +695,28 @@ class CCPPCAP(ModulePass):
                             ("ddt_member", instance_var, instance_module, member_name)
                         )
                     else:
+                        import sys
+                        print(
+                            f"Warning: '{suite_callee}' arg '{arg_name}' "
+                            f"(standard_name='{std_name}') matched DDT type "
+                            f"'{ddt_type_name}' but no module-level instance was "
+                            f"found — treating as a host-caller block argument.",
+                            file=sys.stderr,
+                        )
                         physics_arg_sources.append(("block",))
                 elif std_name and cap_var_map and std_name in cap_var_map:
                     # Cap-owned module variable (e.g. vmr interstitial DDT)
                     physics_arg_sources.append(("cap_var", std_name))
                 else:
+                    if std_name and std_name not in host_block_std_names:
+                        import sys
+                        print(
+                            f"Warning: '{suite_callee}' arg '{arg_name}' "
+                            f"(standard_name='{std_name}') has no host variable "
+                            f"match — treating as a host-caller block argument. "
+                            f"Check that the host metadata provides this variable.",
+                            file=sys.stderr,
+                        )
                     physics_arg_sources.append(("block",))
 
             non_host_args = [
@@ -993,6 +1037,17 @@ class CCPPCAP(ModulePass):
                     key = canonical if canonical in block_arg_map else arg_name
                     call_args.append(block_arg_map[key])
 
+            # ── Verify argument count matches callee signature ─────────────────
+            if len(call_args) != len(callee_input_types):
+                import sys
+                raise ValueError(
+                    f"Signature mismatch for '{suite_callee}': "
+                    f"generated {len(call_args)} input arg(s) but callee expects "
+                    f"{len(callee_input_types)}.\n"
+                    f"  Callee inputs:   {callee_input_names}\n"
+                    f"  Generated args:  {[str(a) for a in call_args]}"
+                )
+
             # ── Inner if for suite_part ────────────────────────────────────────
             trim_suite_part = TrimOp(suite_part_arg)
             suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
@@ -1244,8 +1299,10 @@ class CCPPCAP(ModulePass):
         all_globals: list = []
         all_definitions: list = []
         all_declarations: list = []
-        # Shared across all lifecycle function calls to avoid duplicate GlobalOps
-        lc_seen_host_globals: set = set()
+        # Shared across ALL function calls (lifecycle AND run) to avoid duplicate GlobalOps.
+        # Both lifecycle and run functions can reference the same host variables (e.g.
+        # a DDT instance used in the run function may also appear in lifecycle functions).
+        shared_seen_host_globals: set = set()
 
         # ── Build cap_var_map: interstitial DDT values returned from lifecycle ──
         # These need module-level storage in the cap so they persist between calls.
@@ -1323,6 +1380,7 @@ class CCPPCAP(ModulePass):
                     suite_run_entries=suite_run_entries,
                     meta_data=meta_data,
                     cap_var_map=cap_var_map,
+                    seen_host_globals=shared_seen_host_globals,
                     **common,
                 )
                 all_globals.extend(host_global_ops)
@@ -1363,7 +1421,7 @@ class CCPPCAP(ModulePass):
                     fn_name=camel_name + fn_suffix,
                     suite_entries=suite_entries,
                     meta_data=meta_data,
-                    seen_host_globals=lc_seen_host_globals,
+                    seen_host_globals=shared_seen_host_globals,
                     cap_var_map=cap_var_map,
                     host_var_map_lc=host_var_map_lc,
                     **common,
