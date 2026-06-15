@@ -23,6 +23,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
     CCPPType,
+    collect_ddt_source_modules,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
@@ -253,6 +254,34 @@ class CCPPCAP(ModulePass):
 
         return SuiteVariablesOp("\n".join(lines))
 
+    def _build_host_var_map(self, meta_data, include_host: bool = True) -> dict:
+        """Build a standard_name → (var_name, table_name) map from host metadata.
+
+        Args:
+            meta_data:    descriptor dict from BuildMetaDataDescriptions.
+            include_host: when True (default) includes both MODULE and HOST type
+                          tables.  When False, only MODULE type tables are scanned.
+                          HOST-type variables are ephemeral values passed directly
+                          by the host caller; MODULE-type variables are accessible
+                          via USE statements.
+
+        Returns:
+            dict mapping lowercase standard_name → (local_var_name, table_name).
+        """
+        table_types = (
+            (CCPPType.MODULE, CCPPType.HOST) if include_host else (CCPPType.MODULE,)
+        )
+        result: dict = {}
+        for tbl_name, props in meta_data.items():
+            if props.getAttr("type") not in table_types:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if var.hasAttr("standard_name"):
+                    result[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+        return result
+
     @staticmethod
     def _extract_subscript_vars(member_name: str) -> list:
         """Extract identifier names from a DDT member subscript expression.
@@ -339,16 +368,8 @@ class CCPPCAP(ModulePass):
                 f"functions; available: {sorted(public_fns)}"
             )
 
-        # Build host variable map from MODULE and HOST tables (same as _generate_run_fn)
-        host_var_map = {}
-        for tbl_name, props in meta_data.items():
-            if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if var.hasAttr("standard_name"):
-                    host_var_map[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+        # MODULE + HOST: lifecycle functions need access to both kinds of host vars.
+        host_var_map = self._build_host_var_map(meta_data, include_host=True)
 
         errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
         errmsg_alloc.memref.name_hint = "errmsg"
@@ -564,16 +585,10 @@ class CCPPCAP(ModulePass):
         suite_part_type = suite_name_type
 
         # ── Build host variable maps from metadata ─────────────────────────────
-        # host_var_map: standard_name → (var_name, module_name)  [flat MODULE vars]
-        host_var_map = {}
-        for tbl_name, props in meta_data.items():
-            if props.getAttr("type") != CCPPType.MODULE:
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if var.hasAttr("standard_name"):
-                    host_var_map[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+        # MODULE only: run functions access host vars via USE statements, so only
+        # MODULE-type variables are directly referenceable.  HOST-type vars (e.g.
+        # loop bounds) are passed as block args by the caller instead.
+        host_var_map = self._build_host_var_map(meta_data, include_host=False)
 
         # host_block_std_names: standard_names in HOST-type tables.
         # These are ephemeral values the host passes directly (e.g. col_start/col_end
@@ -589,23 +604,15 @@ class CCPPCAP(ModulePass):
                 if var.hasAttr("standard_name"):
                     host_block_std_names.add(var.getAttr("standard_name").lower())
 
-        # ddt_member_map: standard_name → (member_name, ddt_type_name)
-        # Built from DDT-type tables in the host metadata.
-        ddt_member_map = {}
-        for tbl_name, props in meta_data.items():
-            if props.getAttr("type") != CCPPType.DDT:
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if var.hasAttr("standard_name"):
-                    ddt_member_map[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
-
         # ddt_instance_map: ddt_type_name → (instance_var_name, module_name)
-        # Identifies which MODULE or HOST variable holds an instance of each DDT type.
-        # HOST-type tables are included because some hosts store DDT instances there
-        # (e.g. ccpp_info_t in test_host.meta for the ddthost example).
-        ddt_type_names = {m[1] for m in ddt_member_map.values()}
+        # Maps each DDT type name to the MODULE/HOST variable that holds an instance.
+        # The set of DDT type names is derived directly from DDT table names — no need
+        # to scan DDT member args separately.
+        ddt_type_names = {
+            tbl_name
+            for tbl_name, props in meta_data.items()
+            if props.getAttr("type") == CCPPType.DDT
+        }
         ddt_instance_map = {}
         for tbl_name, props in meta_data.items():
             if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
@@ -669,41 +676,63 @@ class CCPPCAP(ModulePass):
                             std_name_of[bare] = var.getAttr("standard_name").lower()
                             break
 
-            # Classify each callee input arg: host module var, DDT member, or block arg.
+            # Build local_name → (host_var, host_module, is_ddt) from the match pass
+            # results stored in descriptor objects.  HostVariableMatchPass already
+            # computed model_var_name / model_module_name for every matched scheme arg
+            # and stored them as properties on the IR ops; BuildMetaDataDescriptions
+            # copies those into the CCPPArgument descriptors via known_props.
+            # Using this avoids re-deriving the same information from raw metadata.
+            local_to_host_info: dict = {}
+            for scheme_name in scheme_names:
+                table_name = scheme_name + "_run"
+                if scheme_name not in meta_data:
+                    continue
+                if table_name not in meta_data[scheme_name].arg_tables:
+                    continue
+                for fn_arg in (
+                    meta_data[scheme_name]
+                    .getArgTable(table_name)
+                    .getFunctionArguments()
+                ):
+                    bare_name = fn_arg.name.replace("__alloc", "")
+                    if bare_name not in local_to_host_info and fn_arg.hasAttr(
+                        "model_var_name"
+                    ):
+                        local_to_host_info[bare_name] = (
+                            fn_arg.getAttr("model_var_name"),
+                            fn_arg.getAttr("model_module_name"),
+                            fn_arg.hasAttr("model_var_is_ddt"),
+                        )
+
+            # Classify each callee input arg using match pass results as primary source.
             physics_arg_sources = []
             for arg_name in callee_input_names:
                 bare = arg_name.replace("__alloc", "")
                 std_name = std_name_of.get(bare) or std_name_of.get(arg_name)
-                if std_name and std_name in host_var_map:
-                    host_var_name, host_module_name = host_var_map[std_name]
-                    assert host_var_name in (
-                        meta_data[host_module_name]
-                        .arg_tables[host_module_name]
-                        .function_arguments
-                    ), (
-                        f"Host variable '{host_var_name}' not found in "
-                        f"'{host_module_name}' arg table"
-                    )
-                    physics_arg_sources.append(
-                        ("host", host_var_name, host_module_name)
-                    )
-                elif std_name and std_name in ddt_member_map:
-                    member_name, ddt_type_name = ddt_member_map[std_name]
-                    if ddt_type_name in ddt_instance_map:
-                        instance_var, instance_module = ddt_instance_map[ddt_type_name]
-                        physics_arg_sources.append(
-                            ("ddt_member", instance_var, instance_module, member_name)
-                        )
+
+                if bare in local_to_host_info:
+                    host_var, host_mod, is_ddt = local_to_host_info[bare]
+                    if is_ddt:
+                        # DDT member: model_module_name is the DDT table/type name.
+                        # Find the Fortran instance variable via ddt_instance_map.
+                        ddt_type_name = host_mod
+                        if ddt_type_name in ddt_instance_map:
+                            instance_var, instance_module = ddt_instance_map[ddt_type_name]
+                            physics_arg_sources.append(
+                                ("ddt_member", instance_var, instance_module, host_var)
+                            )
+                        else:
+                            import sys
+                            print(
+                                f"Warning: '{suite_callee}' arg '{arg_name}' "
+                                f"(standard_name='{std_name}') matched DDT type "
+                                f"'{ddt_type_name}' but no module-level instance was "
+                                f"found — treating as a host-caller block argument.",
+                                file=sys.stderr,
+                            )
+                            physics_arg_sources.append(("block",))
                     else:
-                        import sys
-                        print(
-                            f"Warning: '{suite_callee}' arg '{arg_name}' "
-                            f"(standard_name='{std_name}') matched DDT type "
-                            f"'{ddt_type_name}' but no module-level instance was "
-                            f"found — treating as a host-caller block argument.",
-                            file=sys.stderr,
-                        )
-                        physics_arg_sources.append(("block",))
+                        physics_arg_sources.append(("host", host_var, host_mod))
                 elif std_name and cap_var_map and std_name in cap_var_map:
                     # Cap-owned module variable (e.g. vmr interstitial DDT)
                     physics_arg_sources.append(("cap_var", std_name))
@@ -1309,15 +1338,9 @@ class CCPPCAP(ModulePass):
         # Format: standard_name → (var_name, mlir_type, fortran_type_str)
         # Also build host_var_map_lc for identifying host-var returns (write-back).
         cap_var_map: dict = {}
-        host_var_map_lc: dict = {}
-        for tbl_name, props in meta_data.items():
-            if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if var.hasAttr("standard_name"):
-                    host_var_map_lc[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+        # MODULE + HOST: cap_var_map building needs to identify all host-provided
+        # vars (including HOST-type write-back targets like num_model_times).
+        host_var_map_lc = self._build_host_var_map(meta_data, include_host=True)
 
         errmsg_type_tmp = memref.MemRefType(
             TypeConversions.getBaseType("character"), [512]
@@ -1551,16 +1574,8 @@ class CCPPCAP(ModulePass):
         # Collect public functions from suite cap modules already in the IR
         public_fns = self._collect_public_suite_functions(op.body.block.ops)
 
-        # Build DDT-type-name → Fortran-module-name map (same as suite_cap.py)
-        ddt_source_module: dict[str, str] = {}
-        for tbl_op in ccpp_mod.body.ops:
-            if not isa(tbl_op, ccpp.TablePropertiesOp):
-                continue
-            if tbl_op.table_type.data != "ddt":
-                continue
-            src = tbl_op.attributes.get("source_module")
-            if src is not None:
-                ddt_source_module[tbl_op.table_name.data] = src.data
+        # Build DDT-type-name → Fortran-module-name map (shared utility).
+        ddt_source_module = collect_ddt_source_modules(ccpp_mod)
 
         # Build set of ALL standard_names provided by the host model (from
         # non-scheme tables in the IR).  Used in _build_suite_variables_fn to

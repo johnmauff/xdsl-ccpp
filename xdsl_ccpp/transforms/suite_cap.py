@@ -28,6 +28,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
     CCPPArgument,
+    collect_ddt_source_modules,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
@@ -1137,18 +1138,8 @@ class SuiteCAP(ModulePass):
         bsd.traverse(ccpp_mod)
         scheme_descriptions = bsd.schemes
 
-        # Build DDT-type-name → Fortran-module-name map from source_module attributes.
-        # The frontend stores the meta file's stem on each TablePropertiesOp; for DDT
-        # tables that stem IS the Fortran module that defines the type.
-        ddt_source_module: dict[str, str] = {}
-        for tbl_op in ccpp_mod.body.ops:
-            if not isa(tbl_op, ccpp.TablePropertiesOp):
-                continue
-            if tbl_op.table_type.data != "ddt":
-                continue
-            src = tbl_op.attributes.get("source_module")
-            if src is not None:
-                ddt_source_module[tbl_op.table_name.data] = src.data
+        # Build DDT-type-name → Fortran-module-name map (shared utility).
+        ddt_source_module = collect_ddt_source_modules(ccpp_mod)
 
         PatternRewriteWalker(
             GreedyRewritePatternApplier(

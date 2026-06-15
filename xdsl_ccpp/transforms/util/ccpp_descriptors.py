@@ -1,7 +1,38 @@
 from enum import StrEnum, auto
 
+from xdsl.utils.hints import isa
+
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.util.visitor import Visitor
+
+
+def collect_ddt_source_modules(ccpp_mod) -> dict:
+    """Return a mapping of DDT type name → Fortran module name.
+
+    Scans the CCPP module IR for DDT ``TablePropertiesOp`` nodes and reads the
+    ``source_module`` attribute set by the frontend (the stem of the ``.meta``
+    file the DDT was parsed from, which equals the Fortran module name by CCPP
+    convention).
+
+    Used by both ``SuiteCAP`` and ``CCPPCAP`` passes to generate correct
+    ``use <module>, only: <type>`` statements for DDT types.
+
+    Args:
+        ccpp_mod: the named ``builtin.ModuleOp`` with ``sym_name = "ccpp"``.
+
+    Returns:
+        dict mapping lowercase DDT table name → source module name string.
+    """
+    result: dict = {}
+    for tbl_op in ccpp_mod.body.ops:
+        if not isa(tbl_op, ccpp.TablePropertiesOp):
+            continue
+        if tbl_op.table_type.data != "ddt":
+            continue
+        src = tbl_op.attributes.get("source_module")
+        if src is not None:
+            result[tbl_op.table_name.data] = src.data
+    return result
 
 
 class CCPPType(StrEnum):
