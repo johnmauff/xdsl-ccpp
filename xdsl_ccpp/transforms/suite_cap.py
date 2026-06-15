@@ -676,6 +676,11 @@ class GenerateSuiteSubroutine(RewritePattern):
             add_op = arith.AddiOp(sub_op, one_const)
             store_ncol = memref.StoreOp.get(add_op, ncol_alloc, [])
             data_ops["ncol"] = ncol_alloc
+            # Also map the original ncol_meta arg name in case it differs from "ncol"
+            # (e.g. 'nbox' when processing a single group whose only loop-extent arg
+            # was renamed to col_start/col_end in input_arg_list).
+            if ncol_meta.name != "ncol":
+                data_ops[ncol_meta.name] = ncol_alloc
             for alias in loop_ext_aliases:
                 data_ops[alias] = ncol_alloc
             ncol_compute_ops = [

@@ -27,6 +27,8 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERROR_CODE,
+    CCPP_ERROR_MESSAGE,
     CCPP_ERROR_STD_NAMES,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
@@ -283,19 +285,35 @@ class CCPPCAP(ModulePass):
         return result
 
     @staticmethod
-    def _extract_subscript_vars(member_name: str) -> list:
-        """Extract identifier names from a DDT member subscript expression.
+    def _resolve_member_subscripts(member_name: str, host_var_map: dict) -> tuple:
+        """Resolve standard_name tokens in a DDT member subscript to local var names.
 
-        For 'q(:,:,index_of_water_vapor)' returns ['index_of_water_vapor'].
-        Colons and integer literals are ignored; only word tokens are returned.
+        For 'q(:,:,index_of_water_vapor_specific_humidity)' with a host_var_map that
+        maps the standard_name to ('index_qv', 'test_host_mod'), returns
+        ('q(:,:,index_qv)', [('index_qv', 'test_host_mod')]).
+
+        Bare colons and integer literals are passed through unchanged.
         """
-        import re
         paren = member_name.find("(")
         if paren < 0:
-            return []
-        subscript = member_name[paren + 1 : member_name.rfind(")")]
-        tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", subscript)
-        return tokens
+            return member_name, []
+        base = member_name[:paren]
+        subscript = member_name[paren + 1: member_name.rfind(")")]
+        resolved_tokens = []
+        sub_vars = []
+        for token in subscript.split(","):
+            t = token.strip()
+            if t == ":" or t.isdigit():
+                resolved_tokens.append(t)
+            else:
+                t_lower = t.lower()
+                if t_lower in host_var_map:
+                    local_name, module_name = host_var_map[t_lower]
+                    resolved_tokens.append(local_name)
+                    sub_vars.append((local_name, module_name))
+                else:
+                    resolved_tokens.append(t)
+        return f"{base}({', '.join(resolved_tokens)})", sub_vars
 
     def _get_suite_lifecycle_return_types(self, scheme_names, meta_data, table_postfix):
         """Derive the ordered return types of a suite lifecycle subroutine."""
@@ -365,6 +383,7 @@ class CCPPCAP(ModulePass):
         seen_host_globals=None,
         cap_var_map=None,
         host_var_map_lc=None,
+        **kwargs,
     ):
         """Build one combined CCPP cap lifecycle FuncOp dispatching over all suites.
 
@@ -388,16 +407,35 @@ class CCPPCAP(ModulePass):
                 f"functions; available: {sorted(public_fns)}"
             )
 
-        # MODULE + HOST: lifecycle functions need access to both kinds of host vars.
-        host_var_map = self._build_host_var_map(meta_data, include_host=True)
+        # MODULE only: lifecycle input arg lookups use USE statements, which only
+        # work for MODULE-type tables.  HOST-type tables are caller-provided args
+        # (not Fortran modules) so they must not generate USE stubs.
+        host_var_map = self._build_host_var_map(meta_data, include_host=False)
 
-        errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
-        errmsg_alloc.memref.name_hint = "errmsg"
-        errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
-        errflg_alloc.memref.name_hint = "errflg"
+        ccpp_info_type = kwargs.get("ccpp_info_type")
+        ccpp_info_module = kwargs.get("ccpp_info_module")
 
-        new_block = Block(arg_types=[suite_name_type])
-        new_block.args[0].name_hint = "suite_name"
+        if ccpp_info_type is not None:
+            # ccpp_info_t pattern: single inout arg bundles errmsg/errflg.
+            # Use HostVarRefOps (member access) in place of AllocaOps so the
+            # printer emits ccpp_info%errmsg / ccpp_info%errflg everywhere.
+            new_block = Block(arg_types=[suite_name_type, ccpp_info_type])
+            new_block.args[0].name_hint = "suite_name"
+            new_block.args[1].name_hint = "ccpp_info"
+            errmsg_alloc = HostVarRefOp(
+                "ccpp_info", ccpp_info_module, errmsg_type, member_name="errmsg"
+            )
+            errflg_alloc = HostVarRefOp(
+                "ccpp_info", ccpp_info_module, errflg_type, member_name="errflg"
+            )
+        else:
+            # capgen pattern: function returns errmsg/errflg as separate outputs.
+            errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
+            errmsg_alloc.memref.name_hint = "errmsg"
+            errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
+            errflg_alloc.memref.name_hint = "errflg"
+            new_block = Block(arg_types=[suite_name_type])
+            new_block.args[0].name_hint = "suite_name"
 
         err_const = arith.ConstantOp.from_int_and_width(0, 32)
         store_errflg = memref.StoreOp.get(err_const, errflg_alloc, [])
@@ -470,6 +508,13 @@ class CCPPCAP(ModulePass):
                         )
                         glob.attributes["module"] = StringAttr(host_module_name)
                         all_host_global_ops.append(glob)
+                elif (
+                    ccpp_info_type is not None
+                    and std_name == "host_standard_ccpp_type"
+                ):
+                    # The ccpp_info_t block arg IS the CCPP framework handle — pass
+                    # it directly to callees that expect host_standard_ccpp_type.
+                    call_inputs.append(new_block.args[1])
                 else:
                     # Not host-matched (e.g. optional arg with default_value).
                     # Hoist the alloca to function scope so Fortran can declare it
@@ -500,9 +545,9 @@ class CCPPCAP(ModulePass):
             copy_pre_ops = []  # CapVarRefOps / HostVarRefOps placed before the call
             for idx, (ret_type, _arg_name, std_name) in enumerate(ret_info):
                 result = call_op.results[idx]
-                if ret_type == errmsg_type:
+                if std_name == CCPP_ERROR_MESSAGE:
                     copy_ops.append(memref.CopyOp(result, errmsg_alloc))
-                elif ret_type == errflg_type:
+                elif std_name == CCPP_ERROR_CODE:
                     copy_ops.append(memref.CopyOp(result, errflg_alloc))
                 elif std_name and std_name in _cap_var_map:
                     # Cap-owned interstitial: copy to module-level var
@@ -540,7 +585,19 @@ class CCPPCAP(ModulePass):
             current_false_ops = [strcmp_op, if_op, scf.YieldOp()]
 
         main_chain_ops = current_false_ops[:-1]
-        ret_op = func.ReturnOp(errmsg_alloc, errflg_alloc)
+
+        if ccpp_info_type is not None:
+            ret_op = func.ReturnOp(new_block.args[1])  # return ccpp_info as inout
+            fn_type = builtin.FunctionType.from_lists(
+                [suite_name_type, ccpp_info_type],
+                [ccpp_info_type],
+            )
+        else:
+            ret_op = func.ReturnOp(errmsg_alloc, errflg_alloc)
+            fn_type = builtin.FunctionType.from_lists(
+                [suite_name_type],
+                [errmsg_type, errflg_type],
+            )
 
         new_block.add_ops(
             [
@@ -557,11 +614,6 @@ class CCPPCAP(ModulePass):
 
         body = Region()
         body.add_block(new_block)
-
-        fn_type = builtin.FunctionType.from_lists(
-            [suite_name_type],
-            [errmsg_type, errflg_type],
-        )
         cap_fn = func.FuncOp(fn_name, fn_type, body, visibility="public")
 
         for suite_name, suite_callee, call_ret_types, scheme_names, entry_postfix, _ri \
@@ -586,6 +638,7 @@ class CCPPCAP(ModulePass):
         meta_data,
         cap_var_map=None,
         seen_host_globals=None,
+        **kwargs,
     ):
         """Build the combined CCPP cap physics run FuncOp dispatching over all suites.
 
@@ -733,7 +786,12 @@ class CCPPCAP(ModulePass):
                 bare = arg_name.replace("__alloc", "")
                 std_name = std_name_of.get(bare) or std_name_of.get(arg_name)
 
-                if bare in local_to_host_info:
+                if bare in local_to_host_info and not (
+                    std_name and std_name in host_block_std_names
+                ):
+                    # local_to_host_info has a match, AND it is not a protected
+                    # HOST-type block arg (those are passed by the caller, not
+                    # accessed via a USE statement).
                     host_var, host_mod, is_ddt = local_to_host_info[bare]
                     if is_ddt:
                         # DDT member: model_module_name is the DDT table/type name.
@@ -741,9 +799,19 @@ class CCPPCAP(ModulePass):
                         ddt_type_name = host_mod
                         if ddt_type_name in ddt_instance_map:
                             instance_var, instance_module = ddt_instance_map[ddt_type_name]
-                            physics_arg_sources.append(
-                                ("ddt_member", instance_var, instance_module, host_var)
-                            )
+                            # Skip DDT instances whose instance variable lives in a HOST-type
+                            # table (e.g. ccpp_info_t accessed through 'ccpp' in test_host).
+                            # HOST-type tables are caller-provided interfaces, not Fortran
+                            # modules — their contents become block args, not USE stubs.
+                            if (
+                                instance_module in meta_data
+                                and meta_data[instance_module].getAttr("type") == CCPPType.HOST
+                            ):
+                                physics_arg_sources.append(("block",))
+                            else:
+                                physics_arg_sources.append(
+                                    ("ddt_member", instance_var, instance_module, host_var)
+                                )
                         else:
                             import sys
                             print(
@@ -842,29 +910,117 @@ class CCPPCAP(ModulePass):
                         seen_non_host_std_names[std_name] = arg_name
                         non_host_std_to_canonical[std_name] = arg_name
 
+        ccpp_info_type = kwargs.get("ccpp_info_type")
+        ccpp_info_module = kwargs.get("ccpp_info_module")
+
+        # When the host uses the ccpp_info_t pattern, loop bounds (col_start/col_end)
+        # come from ccpp_info%col_start/col_end — exclude them from the block args.
+        if ccpp_info_type is not None:
+            # Collect all member names of the ccpp_info_t DDT from meta_data.
+            # These are fields provided by ccpp_info, not separate block args.
+            _ccpp_ddt_name = ccpp_info_type.element_type.type_name.data
+            _ccpp_member_names: set = set()
+            _ccpp_member_std_names: set = {CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME}
+            for _mn, _mp in meta_data.items():
+                if _mn != _ccpp_ddt_name:
+                    continue
+                if _mn not in _mp.arg_tables:
+                    continue
+                for _mv in _mp.getArgTable(_mn).getFunctionArguments():
+                    _ccpp_member_names.add(_mv.name)
+                    if _mv.hasAttr("standard_name"):
+                        _ccpp_member_std_names.add(_mv.getAttr("standard_name").lower())
+
+            # Also collect canonical arg names for loop-begin/end std_names.
+            _ccpp_provided_canonicals = {
+                non_host_std_to_canonical[s]
+                for s in _ccpp_member_std_names
+                if s in non_host_std_to_canonical
+            }
+            # Filter: remove args whose arg_name matches a ccpp_info member OR
+            # whose canonical name maps to a ccpp_info-provided std_name.
+            union_non_host_args = {
+                k: v for k, v in union_non_host_args.items()
+                if k not in _ccpp_member_names and k not in _ccpp_provided_canonicals
+            }
+
         n_non_host = len(union_non_host_args)
-        all_block_types = (
-            [suite_name_type, suite_part_type]
-            + list(union_non_host_args.values())
-            + [errmsg_type, errflg_type]
-        )
+
+        if ccpp_info_type is not None:
+            all_block_types = (
+                [suite_name_type, suite_part_type, ccpp_info_type]
+                + list(union_non_host_args.values())
+            )
+        else:
+            all_block_types = (
+                [suite_name_type, suite_part_type]
+                + list(union_non_host_args.values())
+                + [errmsg_type, errflg_type]
+            )
         new_block = Block(arg_types=all_block_types)
 
         suite_name_arg = new_block.args[0]
         suite_name_arg.name_hint = "suite_name"
         suite_part_arg = new_block.args[1]
-        suite_part_arg.name_hint = "suite_part"
 
-        block_arg_map = {}
-        for i, arg_name in enumerate(union_non_host_args):
-            ba = new_block.args[2 + i]
-            ba.name_hint = arg_name
-            block_arg_map[arg_name] = ba
+        if ccpp_info_type is not None:
+            ccpp_info_block_arg = new_block.args[2]
+            ccpp_info_block_arg.name_hint = "ccpp_info"
+            suite_part_arg.name_hint = "suite_part"
 
-        errmsg_arg = new_block.args[2 + n_non_host]
-        errmsg_arg.name_hint = "errmsg"
-        errflg_arg = new_block.args[2 + n_non_host + 1]
-        errflg_arg.name_hint = "errflg"
+            block_arg_map = {}
+            for i, arg_name in enumerate(union_non_host_args):
+                ba = new_block.args[3 + i]
+                ba.name_hint = arg_name
+                block_arg_map[arg_name] = ba
+
+            # Loop bounds from ccpp_info%col_start / col_end
+            int_type = memref.MemRefType(int_base, [])
+            col_start_ref = HostVarRefOp(
+                "ccpp_info", ccpp_info_module, int_type, member_name="col_start"
+            )
+            col_end_ref = HostVarRefOp(
+                "ccpp_info", ccpp_info_module, int_type, member_name="col_end"
+            )
+            col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+            col_end_key = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+            if col_begin_key:
+                block_arg_map[col_begin_key] = col_start_ref.res
+            if col_end_key:
+                block_arg_map[col_end_key] = col_end_ref.res
+            # Also map the ccpp_info_t member names directly so callee arg
+            # lookup works even when the callee uses member names with no std_name.
+            block_arg_map["col_start"] = col_start_ref.res
+            block_arg_map["col_end"] = col_end_ref.res
+
+            # errmsg/errflg from ccpp_info members (no separate block args)
+            errmsg_alloc = HostVarRefOp(
+                "ccpp_info", ccpp_info_module, errmsg_type, member_name="errmsg"
+            )
+            errflg_alloc = HostVarRefOp(
+                "ccpp_info", ccpp_info_module, errflg_type, member_name="errflg"
+            )
+            errmsg_arg = errmsg_alloc.res
+            errflg_arg = errflg_alloc.res
+            # Map member names for errmsg/errflg so callee arg lookup works.
+            block_arg_map["errmsg"] = errmsg_alloc.res
+            block_arg_map["errflg"] = errflg_alloc.res
+        else:
+            suite_part_arg.name_hint = "suite_part"
+            block_arg_map = {}
+            for i, arg_name in enumerate(union_non_host_args):
+                ba = new_block.args[2 + i]
+                ba.name_hint = arg_name
+                block_arg_map[arg_name] = ba
+
+            errmsg_arg = new_block.args[2 + n_non_host]
+            errmsg_arg.name_hint = "errmsg"
+            errflg_arg = new_block.args[2 + n_non_host + 1]
+            errflg_arg.name_hint = "errflg"
+            col_start_ref = None
+            col_end_ref = None
+            errmsg_alloc = None
+            errflg_alloc = None
 
         # ── Main block setup ───────────────────────────────────────────────────
         err_const = arith.ConstantOp.from_int_and_width(0, 32)
@@ -887,280 +1043,281 @@ class CCPPCAP(ModulePass):
             scf.YieldOp(),
         ]
         all_decls = []
+        seen_callees: set = set()  # deduplicate external decls when groups share a callee
 
-        for info in reversed(per_suite):
-            suite_name = info["suite_name"]
-            suite_part = info["suite_part"]
-            suite_callee = info["suite_callee"]
-            callee_module = info["callee_module"]
-            callee_output_types = info["callee_output_types"]
-            callee_input_types = info["callee_input_types"]
-            callee_input_names = info["callee_input_names"]
-            physics_arg_sources = info["physics_arg_sources"]
-            std_name_of = info["std_name_of"]
+        # Group per_suite entries by suite_name (preserving first-seen order).
+        per_suite_grouped: dict = {}
+        for _info in per_suite:
+            _sn = _info["suite_name"]
+            if _sn not in per_suite_grouped:
+                per_suite_grouped[_sn] = []
+            per_suite_grouped[_sn].append(_info)
 
-            # ── HostVarRefOps for this suite (placed inside the suite's true branch) ──
-            host_var_ref_ops = []
-            host_var_ref_results = {}
-            host_name_to_ref_result = {}
+        for suite_name, suite_infos in reversed(list(per_suite_grouped.items())):
+            # trim_suite_part is created once and shared across all parts of this suite.
+            trim_suite_part = TrimOp(suite_part_arg)
 
-            for i, (arg_name, arg_type) in enumerate(
-                zip(callee_input_names, callee_input_types)
-            ):
-                src = physics_arg_sources[i]
-                if src[0] == "host":
-                    _, host_var_name, host_module_name = src
-                    ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
-                    host_var_ref_ops.append(ref_op)
-                    host_var_ref_results[arg_name] = ref_op.res
-                    host_name_to_ref_result[host_var_name] = ref_op.res
-                elif src[0] == "ddt_member":
-                    _, instance_var, instance_module, member_name = src
-                    ref_op = HostVarRefOp(
-                        instance_var, instance_module, arg_type,
-                        member_name=member_name,
-                    )
-                    host_var_ref_ops.append(ref_op)
-                    host_var_ref_results[arg_name] = ref_op.res
-                    host_name_to_ref_result[f"{instance_var}%{member_name}"] = ref_op.res
-                    # Emit USE stubs for any variables embedded in the subscript
-                    # (e.g. 'q(:,:,index_of_water_vapor)' needs index_of_water_vapor)
-                    for sub_var in self._extract_subscript_vars(member_name):
-                        # Look up this identifier in all module/host tables
-                        for tbl, props in meta_data.items():
-                            if props.getAttr("type") not in (
-                                CCPPType.MODULE, CCPPType.HOST
-                            ):
+            # Innermost false branch: no suite_part matched.
+            write_part_err = WriteErrMsgOp(
+                errmsg_arg, trim_suite_part.res,
+                "No suite part named ", f" found in suite {suite_name}",
+            )
+            one_part_err = arith.ConstantOp.from_int_and_width(1, 32)
+            store_part_err = memref.StoreOp.get(one_part_err, errflg_arg, [])
+            part_inner_false = [write_part_err, one_part_err, store_part_err, scf.YieldOp()]
+
+            for info in reversed(suite_infos):
+                suite_part = info["suite_part"]
+                suite_callee = info["suite_callee"]
+                callee_module = info["callee_module"]
+                callee_output_types = info["callee_output_types"]
+                callee_input_types = info["callee_input_types"]
+                callee_input_names = info["callee_input_names"]
+                physics_arg_sources = info["physics_arg_sources"]
+                std_name_of = info["std_name_of"]
+
+                # ── HostVarRefOps ─────────────────────────────────────────────
+                host_var_ref_ops = []
+                host_var_ref_results = {}
+                host_name_to_ref_result = {}
+
+                for i, (arg_name, arg_type) in enumerate(
+                    zip(callee_input_names, callee_input_types)
+                ):
+                    src = physics_arg_sources[i]
+                    if src[0] == "host":
+                        _, host_var_name, host_module_name = src
+                        ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
+                        host_var_ref_ops.append(ref_op)
+                        host_var_ref_results[arg_name] = ref_op.res
+                        host_name_to_ref_result[host_var_name] = ref_op.res
+                    elif src[0] == "ddt_member":
+                        _, instance_var, instance_module, member_name = src
+                        # Resolve std_name tokens in subscript to local variable names
+                        resolved_member, sub_vars = self._resolve_member_subscripts(
+                            member_name, host_var_map
+                        )
+                        ref_op = HostVarRefOp(
+                            instance_var, instance_module, arg_type,
+                            member_name=resolved_member,
+                        )
+                        host_var_ref_ops.append(ref_op)
+                        host_var_ref_results[arg_name] = ref_op.res
+                        host_name_to_ref_result[f"{instance_var}%{resolved_member}"] = ref_op.res
+                        # Emit USE stubs for subscript variables (already resolved to local names)
+                        for local_name, module_name in sub_vars:
+                            key = (local_name, module_name)
+                            if key not in seen_host_globals:
+                                seen_host_globals.add(key)
+                                sv_glob = llvm.GlobalOp(
+                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                    local_name, "external",
+                                )
+                                sv_glob.attributes["module"] = StringAttr(module_name)
+                                all_host_global_ops.append(sv_glob)
+                    elif src[0] == "cap_var":
+                        _, std_name_cv = src
+                        cv_name, cv_type, _ftn = cap_var_map[std_name_cv]
+                        cap_ref = CapVarRefOp(cv_name, arg_type)
+                        host_var_ref_ops.append(cap_ref)
+                        host_var_ref_results[arg_name] = cap_ref.res
+
+                # ── ArraySectionOps ───────────────────────────────────────────
+                array_section_pre_ops = []
+                array_section_extra_ops = []
+                array_section_main_ops = []
+                one_const_for_sections = None
+
+                for i, (arg_name, arg_type) in enumerate(
+                    zip(callee_input_names, callee_input_types)
+                ):
+                    src = physics_arg_sources[i]
+                    if src[0] == "host":
+                        _, host_var_name, host_module_name = src
+                        lookup_var, lookup_mod = host_var_name, host_module_name
+                    elif src[0] == "ddt_member":
+                        _, instance_var, instance_module, member_name = src
+                        lookup_var, lookup_mod = member_name, instance_module
+                    else:
+                        continue
+
+                    # Look up the var descriptor; for DDT members, search the DDT table
+                    host_var_name = lookup_var
+                    host_module_name = lookup_mod
+                    try:
+                        # Try the module table first, then DDT tables
+                        if lookup_mod in meta_data and lookup_mod in meta_data[lookup_mod].arg_tables:
+                            mod_arg_table = meta_data[lookup_mod].getArgTable(lookup_mod)
+                            host_var_desc = mod_arg_table.getFunctionArgument(lookup_var)
+                        else:
+                            # DDT member: search all DDT tables for the member
+                            raise AssertionError("not found in module, try DDT")
+                    except (KeyError, AssertionError):
+                        # Try DDT tables
+                        found = False
+                        for tbl_name, props in meta_data.items():
+                            if props.getAttr("type") != CCPPType.DDT:
                                 continue
-                            if tbl not in props.arg_tables:
+                            if tbl_name not in props.arg_tables:
                                 continue
                             try:
-                                _ = props.getArgTable(tbl).getFunctionArgument(sub_var)
-                                key = (sub_var, tbl)
-                                if key not in seen_host_globals:
-                                    seen_host_globals.add(key)
-                                    sv_glob = llvm.GlobalOp(
-                                        llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                        sub_var, "external",
-                                    )
-                                    sv_glob.attributes["module"] = StringAttr(tbl)
-                                    all_host_global_ops.append(sv_glob)
+                                host_var_desc = props.getArgTable(tbl_name).getFunctionArgument(lookup_var)
+                                found = True
                                 break
                             except (KeyError, AssertionError):
                                 continue
-                elif src[0] == "cap_var":
-                    _, std_name_cv = src
-                    cv_name, cv_type, _ftn = cap_var_map[std_name_cv]
-                    cap_ref = CapVarRefOp(cv_name, arg_type)
-                    host_var_ref_ops.append(cap_ref)
-                    host_var_ref_results[arg_name] = cap_ref.res
-
-            # ── ArraySectionOps for this suite ────────────────────────────────
-            array_section_pre_ops = []
-            array_section_extra_ops = []
-            array_section_main_ops = []
-            one_const_for_sections = None
-
-            for i, (arg_name, arg_type) in enumerate(
-                zip(callee_input_names, callee_input_types)
-            ):
-                src = physics_arg_sources[i]
-                if src[0] == "host":
-                    _, host_var_name, host_module_name = src
-                    lookup_var, lookup_mod = host_var_name, host_module_name
-                elif src[0] == "ddt_member":
-                    _, instance_var, instance_module, member_name = src
-                    lookup_var, lookup_mod = member_name, instance_module
-                else:
-                    continue
-
-                # Look up the var descriptor; for DDT members, search the DDT table
-                host_var_name = lookup_var
-                host_module_name = lookup_mod
-                try:
-                    # Try the module table first, then DDT tables
-                    if lookup_mod in meta_data and lookup_mod in meta_data[lookup_mod].arg_tables:
-                        mod_arg_table = meta_data[lookup_mod].getArgTable(lookup_mod)
-                        host_var_desc = mod_arg_table.getFunctionArgument(lookup_var)
-                    else:
-                        # DDT member: search all DDT tables for the member
-                        raise AssertionError("not found in module, try DDT")
-                except (KeyError, AssertionError):
-                    # Try DDT tables
-                    found = False
-                    for tbl_name, props in meta_data.items():
-                        if props.getAttr("type") != CCPPType.DDT:
+                        if not found:
                             continue
-                        if tbl_name not in props.arg_tables:
-                            continue
-                        try:
-                            host_var_desc = props.getArgTable(tbl_name).getFunctionArgument(lookup_var)
-                            found = True
-                            break
-                        except (KeyError, AssertionError):
-                            continue
-                    if not found:
+
+                    if not host_var_desc.hasAttr("dim_names"):
+                        continue
+                    dim_names_list = host_var_desc.getAttr("dim_names")
+                    if not dim_names_list or dim_names_list[0].lower() != CCPP_HORIZ_DIM_STD_NAME:
                         continue
 
-                if not host_var_desc.hasAttr("dim_names"):
-                    continue
-                dim_names_list = host_var_desc.getAttr("dim_names")
-                if not dim_names_list or dim_names_list[0].lower() != CCPP_HORIZ_DIM_STD_NAME:
-                    continue
+                    # Find the canonical block arg names for loop begin/end via
+                    # standard_name, since different schemes use different local names.
+                    col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                    col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                    if not col_begin_key or not col_end_key:
+                        continue
+                    if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
+                        continue
 
-                # Find the canonical block arg names for loop begin/end via
-                # standard_name, since different schemes use different local names.
-                col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                if not col_begin_key or not col_end_key:
-                    continue
-                if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
-                    continue
+                    lowers = [block_arg_map[col_begin_key]]
+                    uppers = [block_arg_map[col_end_key]]
 
-                lowers = [block_arg_map[col_begin_key]]
-                uppers = [block_arg_map[col_end_key]]
-
-                valid = True
-                for dim_std_name in dim_names_list[1:]:
-                    if dim_std_name not in host_var_map:
-                        valid = False
-                        break
-                    dim_var_name, dim_module_name = host_var_map[dim_std_name]
-
-                    if dim_var_name in host_name_to_ref_result:
-                        dim_upper_ref = host_name_to_ref_result[dim_var_name]
-                    else:
-                        dim_ref_op = HostVarRefOp(
-                            dim_var_name,
-                            dim_module_name,
-                            TypeConversions.getBaseType("integer"),
-                        )
-                        array_section_extra_ops.append(dim_ref_op)
-                        host_name_to_ref_result[dim_var_name] = dim_ref_op.res
-                        dim_upper_ref = dim_ref_op.res
-
-                        key = (dim_var_name, dim_module_name)
-                        if key not in seen_host_globals:
-                            seen_host_globals.add(key)
-                            dim_glob = llvm.GlobalOp(
-                                llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                dim_var_name,
-                                "external",
-                            )
-                            dim_glob.attributes["module"] = StringAttr(dim_module_name)
-                            all_host_global_ops.append(dim_glob)
-
-                    if one_const_for_sections is None:
-                        one_const_for_sections = arith.ConstantOp.from_int_and_width(
-                            1, 32
-                        )
-                        array_section_pre_ops.append(one_const_for_sections)
-
-                    lowers.append(one_const_for_sections.result)
-                    uppers.append(dim_upper_ref)
-
-                if not valid or len(lowers) < 2:
-                    continue
-
-                section = ArraySectionOp(
-                    host_var_ref_results[arg_name],
-                    lowers,
-                    uppers,
-                )
-                array_section_main_ops.append(section)
-                host_var_ref_results[arg_name] = section.res
-
-            array_section_ops = (
-                array_section_pre_ops + array_section_extra_ops + array_section_main_ops
-            )
-
-            # ── Build call args in callee order ───────────────────────────────
-            call_args = []
-            for i, arg_name in enumerate(callee_input_names):
-                src = physics_arg_sources[i]
-                if src[0] in ("host", "ddt_member", "cap_var"):
-                    call_args.append(host_var_ref_results[arg_name])
-                else:
-                    # Block arg: use canonical name if this arg was deduplicated
-                    bare = arg_name.replace("__alloc", "")
-                    std = std_name_of.get(bare, bare)
-                    canonical = non_host_std_to_canonical.get(std, arg_name)
-                    # Fall back to arg_name if canonical not in block_arg_map
-                    key = canonical if canonical in block_arg_map else arg_name
-                    call_args.append(block_arg_map[key])
-
-            # ── Verify argument count matches callee signature ─────────────────
-            if len(call_args) != len(callee_input_types):
-                import sys
-                raise ValueError(
-                    f"Signature mismatch for '{suite_callee}': "
-                    f"generated {len(call_args)} input arg(s) but callee expects "
-                    f"{len(callee_input_types)}.\n"
-                    f"  Callee inputs:   {callee_input_names}\n"
-                    f"  Generated args:  {[str(a) for a in call_args]}"
-                )
-
-            # ── Inner if for suite_part ────────────────────────────────────────
-            trim_suite_part = TrimOp(suite_part_arg)
-            suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
-
-            call_op = func.CallOp(suite_callee, call_args, callee_output_types)
-
-            # CapVarRefOps for inout-echo returns must be placed BEFORE the call
-            # so the printer can resolve their names when processing return positions.
-            cap_var_inout_refs: list = []
-            copy_ops = []
-            for idx, ret_type in enumerate(callee_output_types):
-                result = call_op.results[idx]
-                if ret_type == errmsg_type:
-                    copy_ops.append(memref.CopyOp(result, errmsg_arg))
-                elif ret_type == errflg_type:
-                    copy_ops.append(memref.CopyOp(result, errflg_arg))
-                else:
-                    # Check for a cap_var input of the same type — this is an inout
-                    # echo: the suite cap returns the scalar cap_var after modifying it.
-                    # Adding a CopyOp lets the printer resolve the return name so it
-                    # can suppress the echo in _print_call.
-                    for i, (a_name, a_type) in enumerate(
-                        zip(callee_input_names, callee_input_types)
-                    ):
-                        if a_type == ret_type and physics_arg_sources[i][0] == "cap_var":
-                            _, std_name_cv = physics_arg_sources[i]
-                            cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                            cap_ref = CapVarRefOp(cv_name, a_type)
-                            cap_var_inout_refs.append(cap_ref)
-                            copy_ops.append(memref.CopyOp(result, cap_ref.res))
+                    valid = True
+                    for dim_std_name in dim_names_list[1:]:
+                        if dim_std_name not in host_var_map:
+                            valid = False
                             break
+                        dim_var_name, dim_module_name = host_var_map[dim_std_name]
 
-            inner_if_true = cap_var_inout_refs + [call_op] + copy_ops
+                        if dim_var_name in host_name_to_ref_result:
+                            dim_upper_ref = host_name_to_ref_result[dim_var_name]
+                        else:
+                            dim_ref_op = HostVarRefOp(
+                                dim_var_name,
+                                dim_module_name,
+                                TypeConversions.getBaseType("integer"),
+                            )
+                            array_section_extra_ops.append(dim_ref_op)
+                            host_name_to_ref_result[dim_var_name] = dim_ref_op.res
+                            dim_upper_ref = dim_ref_op.res
 
-            write_suite_part = WriteErrMsgOp(
-                errmsg_arg,
-                trim_suite_part.res,
-                "No suite part named ",
-                f" found in suite {suite_name}",
-            )
-            one_inner = arith.ConstantOp.from_int_and_width(1, 32)
-            store_errflg_inner = memref.StoreOp.get(one_inner, errflg_arg, [])
+                            key = (dim_var_name, dim_module_name)
+                            if key not in seen_host_globals:
+                                seen_host_globals.add(key)
+                                dim_glob = llvm.GlobalOp(
+                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                    dim_var_name,
+                                    "external",
+                                )
+                                dim_glob.attributes["module"] = StringAttr(dim_module_name)
+                                all_host_global_ops.append(dim_glob)
 
-            inner_if = scf.IfOp(
-                suite_part_eq.res,
-                [],
-                inner_if_true + [scf.YieldOp()],
-                [write_suite_part, one_inner, store_errflg_inner, scf.YieldOp()],
-            )
+                        if one_const_for_sections is None:
+                            one_const_for_sections = arith.ConstantOp.from_int_and_width(
+                                1, 32
+                            )
+                            array_section_pre_ops.append(one_const_for_sections)
 
-            # True branch ops for this suite's outer if
-            true_branch_ops = [
-                *host_var_ref_ops,
-                *array_section_ops,
-                trim_suite_part,
-                suite_part_eq,
-                inner_if,
-                scf.YieldOp(),
-            ]
+                        lowers.append(one_const_for_sections.result)
+                        uppers.append(dim_upper_ref)
 
-            # Outer if for suite_name
+                    if not valid or len(lowers) < 2:
+                        continue
+
+                    section = ArraySectionOp(
+                        host_var_ref_results[arg_name],
+                        lowers,
+                        uppers,
+                    )
+                    array_section_main_ops.append(section)
+                    host_var_ref_results[arg_name] = section.res
+
+                array_section_ops = (
+                    array_section_pre_ops + array_section_extra_ops + array_section_main_ops
+                )
+
+                # ── Build call args in callee order ───────────────────────────
+                call_args = []
+                for i, arg_name in enumerate(callee_input_names):
+                    src = physics_arg_sources[i]
+                    if src[0] in ("host", "ddt_member", "cap_var"):
+                        call_args.append(host_var_ref_results[arg_name])
+                    else:
+                        # Block arg: use canonical name if this arg was deduplicated
+                        bare = arg_name.replace("__alloc", "")
+                        std = std_name_of.get(bare, bare)
+                        canonical = non_host_std_to_canonical.get(std, arg_name)
+                        # Fall back to arg_name if canonical not in block_arg_map
+                        key = canonical if canonical in block_arg_map else arg_name
+                        call_args.append(block_arg_map[key])
+
+                # ── Verify argument count matches callee signature ─────────────
+                if len(call_args) != len(callee_input_types):
+                    import sys
+                    raise ValueError(
+                        f"Signature mismatch for '{suite_callee}': "
+                        f"generated {len(call_args)} input arg(s) but callee expects "
+                        f"{len(callee_input_types)}.\n"
+                        f"  Callee inputs:   {callee_input_names}\n"
+                        f"  Generated args:  {[str(a) for a in call_args]}"
+                    )
+
+                # ── Inner if for suite_part ───────────────────────────────────
+                suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
+
+                call_op = func.CallOp(suite_callee, call_args, callee_output_types)
+
+                # CapVarRefOps for inout-echo returns must be placed BEFORE the call
+                # so the printer can resolve their names when processing return positions.
+                cap_var_inout_refs: list = []
+                copy_ops = []
+                for idx, ret_type in enumerate(callee_output_types):
+                    result = call_op.results[idx]
+                    if ret_type == errmsg_type:
+                        copy_ops.append(memref.CopyOp(result, errmsg_arg))
+                    elif ret_type == errflg_type:
+                        copy_ops.append(memref.CopyOp(result, errflg_arg))
+                    else:
+                        # Check for a cap_var input of the same type — this is an inout
+                        # echo: the suite cap returns the scalar cap_var after modifying it.
+                        # Adding a CopyOp lets the printer resolve the return name so it
+                        # can suppress the echo in _print_call.
+                        for i, (a_name, a_type) in enumerate(
+                            zip(callee_input_names, callee_input_types)
+                        ):
+                            if a_type == ret_type and physics_arg_sources[i][0] == "cap_var":
+                                _, std_name_cv = physics_arg_sources[i]
+                                cv_name, cv_type, _ = cap_var_map[std_name_cv]
+                                cap_ref = CapVarRefOp(cv_name, a_type)
+                                cap_var_inout_refs.append(cap_ref)
+                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
+                                break
+
+                inner_if_true = cap_var_inout_refs + [call_op] + copy_ops
+
+                inner_if = scf.IfOp(
+                    suite_part_eq.res,
+                    [],
+                    [*host_var_ref_ops, *array_section_ops, *inner_if_true, scf.YieldOp()],
+                    part_inner_false,
+                )
+                part_inner_false = [suite_part_eq, inner_if, scf.YieldOp()]
+
+                if suite_callee not in seen_callees:
+                    seen_callees.add(suite_callee)
+                    decl = func.FuncOp.external(
+                        suite_callee, callee_input_types, callee_output_types
+                    )
+                    decl.attributes["module"] = StringAttr(callee_module)
+                    all_decls.append(decl)
+
+            # Outer if for suite_name (after processing all groups)
+            true_branch_ops = [trim_suite_part, *part_inner_false[:-1], scf.YieldOp()]
             strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite_name)
             if_op = scf.IfOp(
                 strcmp_op.res,
@@ -1170,19 +1327,26 @@ class CCPPCAP(ModulePass):
             )
             current_false_ops = [strcmp_op, if_op, scf.YieldOp()]
 
-            decl = func.FuncOp.external(
-                suite_callee, callee_input_types, callee_output_types
-            )
-            decl.attributes["module"] = StringAttr(callee_module)
-            all_decls.append(decl)
-
         # Strip trailing YieldOp — main block ends with ReturnOp
         main_chain_ops = current_false_ops[:-1]
 
-        ret_op = func.ReturnOp(errmsg_arg, errflg_arg)
+        if ccpp_info_type is not None:
+            ret_op = func.ReturnOp(ccpp_info_block_arg)  # ccpp_info is inout
+            fn_type = builtin.FunctionType.from_lists(
+                all_block_types, [ccpp_info_type]
+            )
+            # Place col_start/col_end/errmsg/errflg HostVarRefOps before dispatch
+            preamble_ops = [col_start_ref, col_end_ref, errmsg_alloc, errflg_alloc]
+        else:
+            ret_op = func.ReturnOp(errmsg_arg, errflg_arg)
+            fn_type = builtin.FunctionType.from_lists(
+                all_block_types, [errmsg_type, errflg_type]
+            )
+            preamble_ops = []
 
         new_block.add_ops(
             [
+                *preamble_ops,
                 err_const,
                 store_errflg,
                 trim_suite_name,
@@ -1193,11 +1357,6 @@ class CCPPCAP(ModulePass):
 
         body = Region()
         body.add_block(new_block)
-
-        fn_type = builtin.FunctionType.from_lists(
-            all_block_types,
-            [errmsg_type, errflg_type],
-        )
         cap_fn = func.FuncOp(fn_name, fn_type, body, visibility="public")
         return cap_fn, all_decls, all_host_global_ops
 
@@ -1366,7 +1525,8 @@ class CCPPCAP(ModulePass):
             ("_ccpp_physics_finalize", "_finalize", "_suite_finalize", None),
             ("_ccpp_physics_timestep_initial", None, "_suite_timestep_initial", None),
             ("_ccpp_physics_timestep_final", None, "_suite_timestep_final", None),
-            ("_ccpp_physics_run", None, "_suite_physics", "physics"),
+            # Run: one dispatch entry per XML group, all calling the combined _suite_physics.
+            ("_ccpp_physics_run", None, "_suite_physics", "__per_group__"),
         ]
 
         all_globals: list = []
@@ -1382,9 +1542,40 @@ class CCPPCAP(ModulePass):
         # Format: standard_name → (var_name, mlir_type, fortran_type_str)
         # Also build host_var_map_lc for identifying host-var returns (write-back).
         cap_var_map: dict = {}
-        # MODULE + HOST: cap_var_map building needs to identify all host-provided
-        # vars (including HOST-type write-back targets like num_model_times).
-        host_var_map_lc = self._build_host_var_map(meta_data, include_host=True)
+        # MODULE only: write-back targets (like num_model_times) live in MODULE
+        # tables.  HOST-type tables are caller-provided interfaces, not modules.
+        host_var_map_lc = self._build_host_var_map(meta_data, include_host=False)
+
+        # Detect the ccpp_info_t pattern: HOST table contains a variable with
+        # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
+        # lifecycle and run functions accept a single ccpp_info_t inout arg that
+        # bundles errmsg/errflg and (for run) col_start/col_end.
+        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DerivedType
+        ccpp_info_type = None
+        ccpp_info_module_name = None
+        for _tbl, _props in meta_data.items():
+            if _props.getAttr("type") != CCPPType.HOST:
+                continue
+            if _tbl not in _props.arg_tables:
+                continue
+            for _var in _props.getArgTable(_tbl).getFunctionArguments():
+                if (
+                    _var.hasAttr("standard_name")
+                    and _var.getAttr("standard_name").lower() == "host_standard_ccpp_type"
+                    and _var.hasAttr("type")
+                ):
+                    _ddt_type_name = _var.getAttr("type")
+                    _src = (ddt_source_module or {}).get(_ddt_type_name)
+                    if _src:
+                        ccpp_info_type = memref.MemRefType(
+                            _DerivedType(_ddt_type_name), []
+                        )
+                        ccpp_info_module_name = _src
+                        # The USE stub for ccpp_info_t is emitted by the DDT
+                        # type loop below (it scans all arg table types).
+                    break
+            if ccpp_info_type is not None:
+                break
 
         errmsg_type_tmp = memref.MemRefType(
             TypeConversions.getBaseType("character"), [512]
@@ -1424,20 +1615,27 @@ class CCPPCAP(ModulePass):
 
         for fn_suffix, table_postfix, callee_suffix, suite_part in lifecycle_specs:
             if suite_part is not None:
-                # Run function: collect per-suite run entries
+                # Run function: one dispatch entry per XML group, all pointing to
+                # the combined _suite_physics callee.  This correctly maps each
+                # group name (e.g. 'physics1', 'physics2') to the same combined
+                # function while keeping per-group state intact at module scope.
                 suite_run_entries = []
                 for suite_name, suite_desc in suite_descriptions.items():
                     suite_callee = suite_name + callee_suffix
                     if suite_callee not in public_fns:
                         continue
-                    scheme_names = [
+                    # All scheme names from the full suite (needed to match the
+                    # combined callee's full argument list).
+                    all_scheme_names = [
                         scheme.attributes["name"]
                         for group in suite_desc
                         for scheme in group
                     ]
-                    suite_run_entries.append(
-                        (suite_name, suite_part, suite_callee, scheme_names)
-                    )
+                    for group in suite_desc:
+                        group_name = group.attributes["name"]
+                        suite_run_entries.append(
+                            (suite_name, group_name, suite_callee, all_scheme_names)
+                        )
 
                 if not suite_run_entries:
                     continue
@@ -1448,6 +1646,8 @@ class CCPPCAP(ModulePass):
                     meta_data=meta_data,
                     cap_var_map=cap_var_map,
                     seen_host_globals=shared_seen_host_globals,
+                    ccpp_info_type=ccpp_info_type,
+                    ccpp_info_module=ccpp_info_module_name,
                     **common,
                 )
                 all_globals.extend(host_global_ops)
@@ -1491,12 +1691,40 @@ class CCPPCAP(ModulePass):
                     seen_host_globals=shared_seen_host_globals,
                     cap_var_map=cap_var_map,
                     host_var_map_lc=host_var_map_lc,
+                    ccpp_info_type=ccpp_info_type,
+                    ccpp_info_module=ccpp_info_module_name,
                     **common,
                 )
                 all_globals.extend(lc_host_ops)
                 all_declarations.extend(decls)
 
             all_definitions.append(cap_fn)
+
+        # Generate a stub register function (no suite-level register entry point exists,
+        # but host code calls it before initialize to allow future pre-init setup).
+        # Pattern matches other lifecycle functions: errmsg/errflg are AllocaOps
+        # returned as intent(out) rather than block args.
+        register_block = Block(arg_types=[suite_name_type])
+        register_block.args[0].name_hint = "suite_name"
+        reg_errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
+        reg_errmsg_alloc.memref.name_hint = "errmsg"
+        reg_errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
+        reg_errflg_alloc.memref.name_hint = "errflg"
+        reg_err_const = arith.ConstantOp.from_int_and_width(0, 32)
+        reg_store = memref.StoreOp.get(reg_err_const, reg_errflg_alloc.memref, [])
+        register_block.add_ops([
+            reg_errmsg_alloc, reg_errflg_alloc, reg_err_const, reg_store,
+            func.ReturnOp(reg_errmsg_alloc.memref, reg_errflg_alloc.memref),
+        ])
+        register_region = Region()
+        register_region.add_block(register_block)
+        register_fn = func.FuncOp(
+            camel_name + "_ccpp_physics_register",
+            builtin.FunctionType.from_lists([suite_name_type], [errmsg_type, errflg_type]),
+            register_region,
+            visibility="public",
+        )
+        all_definitions.append(register_fn)
 
         # Generate ccpp_physics_suite_list listing ALL suite names.
         inner_char_type = memref.MemRefType(i8, [DYNAMIC_INDEX])
@@ -1545,11 +1773,11 @@ class CCPPCAP(ModulePass):
         )
         all_definitions.append(suite_list_fn)
 
-        # Generate ccpp_physics_suite_part_list for all suites.
-        part_names = list(
-            dict.fromkeys(sp for _, _, _, sp in lifecycle_specs if sp is not None)
-        )
-        suite_part_entries = [(sn, part_names) for sn in all_suite_names]
+        # Generate ccpp_physics_suite_part_list — use actual XML group names per suite.
+        suite_part_entries = [
+            (sn, [grp.attributes["name"] for grp in suite_descriptions[sn]])
+            for sn in all_suite_names
+        ]
 
         suite_part_list_fn, part_global_ops = self._generate_suite_part_list_fn(
             suite_part_entries=suite_part_entries,

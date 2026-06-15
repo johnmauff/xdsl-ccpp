@@ -498,7 +498,30 @@ class ftnPrintContext:
                     lower_str = self._value_to_expr_str(lower)
                     upper_str = self._value_to_expr_str(upper)
                     parts.append(f"{lower_str}:{upper_str}")
-                self.variables[op.res] = f"{source_name}({', '.join(parts)})"
+                # If source already has subscripts (e.g. a DDT member with a
+                # constituent-index subscript like q(:,:,index_qv)), merge the
+                # section dims INTO those subscripts by replacing ':' placeholders
+                # in order, rather than appending a second set of parens.
+                paren_pos = source_name.find("(")
+                if paren_pos >= 0:
+                    base = source_name[:paren_pos]
+                    existing = source_name[paren_pos + 1: source_name.rfind(")")]
+                    section_iter = iter(parts)
+                    merged = []
+                    fixed = []
+                    for tok in existing.split(","):
+                        t = tok.strip()
+                        if t == ":":
+                            try:
+                                merged.append(next(section_iter))
+                            except StopIteration:
+                                merged.append(":")
+                        else:
+                            fixed.append(t)
+                    merged.extend(fixed)
+                    self.variables[op.res] = f"{base}({', '.join(merged)})"
+                else:
+                    self.variables[op.res] = f"{source_name}({', '.join(parts)})"
             case builtin.UnrealizedConversionCastOp():
                 # Type annotation cast — transparent to Fortran; map each result
                 # to the same variable name as the corresponding input operand.
