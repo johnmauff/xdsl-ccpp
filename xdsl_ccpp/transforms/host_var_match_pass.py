@@ -10,6 +10,10 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import TableTypeKind
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_INTERNAL_STD_NAMES,
+    CCPP_DIM_SUBSTITUTIONS,
+)
 
 
 @dataclass(frozen=True)
@@ -48,27 +52,11 @@ class HostVariableMatchPass(ModulePass):
 
     name = "generate-host-match"
 
-    # Standard names managed by the CCPP framework itself, or derived/computed
-    # by the generated cap rather than provided directly as a named model variable.
-    _CCPP_INTERNAL: ClassVar[frozenset] = frozenset([
-        # CCPP error handling — always provided by the framework
-        "ccpp_error_message",
-        "ccpp_error_code",
-        # Computed by suite_cap.py as (col_end - col_start + 1) rather than
-        # provided directly by the host model as a named variable.
-        "horizontal_loop_extent",
-        # CCPP constituent transport arrays — managed by the framework, not
-        # provided as named host model variables in the metadata.
-        "ccpp_constituents",
-        "ccpp_constituent_tendencies",
-    ])
+    # Standard names managed by the CCPP framework — see ccpp_conventions.py.
+    _CCPP_INTERNAL: ClassVar[frozenset] = CCPP_INTERNAL_STD_NAMES
 
-    # Dimension standard names that the framework transforms automatically.
-    # Key: scheme-side name, Value: host-side name it maps to.
-    # These are valid substitutions, not errors.
-    _VALID_DIM_SUBSTITUTIONS: ClassVar[dict] = {
-        "horizontal_loop_extent": "horizontal_dimension",
-    }
+    # Dimension substitutions — see ccpp_conventions.py.
+    _VALID_DIM_SUBSTITUTIONS: ClassVar[dict] = CCPP_DIM_SUBSTITUTIONS
 
     def _find_ccpp_module(self, ops):
         for op in ops:

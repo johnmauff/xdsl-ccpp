@@ -7,6 +7,7 @@ from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
+from xdsl_ccpp.util.ccpp_conventions import CCPP_KIND_TO_ISO
 
 
 @dataclass(frozen=True)
@@ -71,9 +72,7 @@ class MetaKind(ModulePass):
         # Build one ccpp.kind op per unique kind name.
         # Known kind names are mapped to their ISO_FORTRAN_ENV equivalents;
         # unrecognised kinds fall back to using the kind name as the value.
-        _KIND_VALUES = {
-            "kind_phys": "REAL64",
-        }
+        _KIND_VALUES = CCPP_KIND_TO_ISO
         kind_ops = [
             ccpp.KindOp(kind_name, _KIND_VALUES.get(kind_name, kind_name))
             for kind_name in kind_names

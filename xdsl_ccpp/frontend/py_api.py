@@ -8,9 +8,9 @@ Minimal example::
 
     from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, emit_ir
 
-    errmsg = Arg("errmsg", standard_name="ccpp_error_message",
+    errmsg = Arg("errmsg", standard_name=CCPP_ERROR_MESSAGE,
                  type="character", kind="len=512", intent="out", units="none")
-    errflg = Arg("errflg", standard_name="ccpp_error_code",
+    errflg = Arg("errflg", standard_name=CCPP_ERROR_CODE,
                  type="integer", intent="out", units="1")
 
     @ccpp_scheme
@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 
 from xdsl.dialects.builtin import ModuleOp
 
+from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_MESSAGE, CCPP_ERROR_CODE
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,

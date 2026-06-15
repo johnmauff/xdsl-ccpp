@@ -25,6 +25,10 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERROR_STD_NAMES,
+    CCPP_FRAMEWORK_STD_NAMES,
+)
 
 
 @dataclass(frozen=True)
@@ -109,12 +113,8 @@ class CCPPCAP(ModulePass):
         - Scalars go to input/output/both by declared intent
         - Union across all entry points (_init, _run, _finalize, etc.)
         """
-        _CCPP_ERR = frozenset({"ccpp_error_code", "ccpp_error_message"})
-        _INTERNAL = frozenset({
-            "horizontal_loop_extent",
-            "ccpp_constituents",
-            "ccpp_constituent_tendencies",
-        })
+        _CCPP_ERR = CCPP_ERROR_STD_NAMES
+        _INTERNAL = CCPP_FRAMEWORK_STD_NAMES
         CM = 36  # character length matching cm=36 in test driver
 
         suite_vars: dict = {}
