@@ -44,159 +44,6 @@ from xdsl_ccpp.util.ccpp_conventions import (
 from xdsl_ccpp.util.visitor import Visitor
 
 
-# ---------------------------------------------------------------------------
-# GroupBoundaryContext
-# ---------------------------------------------------------------------------
-
-@dataclass
-class _FWVarInfo:
-    """Per-variable data collected by GroupBoundaryContext."""
-    standard_name: str
-    local_name: str         # canonical local name (from highest-rank producer)
-    module_rank: int        # max rank across all producers — used for module decl
-    dim_names: list         # dim_names from the highest-rank producer
-    kind: str               # Fortran kind (e.g. 'kind_phys')
-    allocating_group: str   # first group (in XML order) that writes this var
-    is_cross_group: bool    # True: consumed by a group that doesn't produce it
-
-
-class GroupBoundaryContext:
-    """Models which framework variables cross group boundaries in a suite.
-
-    For a suite with groups G1, G2, ..., Gn, a framework variable (real,
-    advected/allocatable/is_interstitial) is **cross-group** when it is
-    written by schemes in one group and read by schemes in a *different*
-    group.  Cross-group variables must live at module scope and persist
-    across group physics calls.
-
-    Answers three questions that previously required ad-hoc patches:
-      1. module_rank(std_name)       — rank for the module-level declaration
-      2. should_allocate(grp, sn)    — which group emits the LazyAllocOp
-      3. is_cross_group(std_name)    — skip ArraySectionOp; sliced in prom loop
-    """
-
-    def __init__(self, vars: dict):
-        self._vars: dict[str, _FWVarInfo] = vars
-
-    # ── Public API ──────────────────────────────────────────────────────────
-
-    def module_rank(self, std_name: str) -> int | None:
-        """Max rank seen across all producers, or None if not a tracked var."""
-        info = self._vars.get(std_name)
-        return info.module_rank if info else None
-
-    def should_allocate(self, group_name: str, std_name: str) -> bool:
-        """True when *group_name* is responsible for the LazyAllocOp."""
-        info = self._vars.get(std_name)
-        return info is not None and info.allocating_group == group_name
-
-    def is_cross_group(self, std_name: str) -> bool:
-        """True when the variable crosses at least one group boundary."""
-        info = self._vars.get(std_name)
-        return info.is_cross_group if info else False
-
-    def dim_names_for(self, std_name: str) -> list:
-        """Dimension names from the highest-rank producer (for allocation)."""
-        info = self._vars.get(std_name)
-        return info.dim_names if info else []
-
-    # ── Factory ─────────────────────────────────────────────────────────────
-
-    @classmethod
-    def build(cls, suite_description, meta_data: dict,
-              std_key_fn, kind_phys: str) -> "GroupBoundaryContext":
-        """Build the context by scanning all _run arg tables in the suite."""
-        # producers[sn] = list of group names that write this var
-        # consumers[sn] = list of group names that read this var
-        producers: dict[str, list[str]] = {}
-        consumers: dict[str, list[str]] = {}
-        raw: dict[str, dict] = {}  # sn -> best-rank info dict
-
-        for group in suite_description:
-            group_name = group.attributes["name"]
-            for scheme in group:
-                scheme_name = scheme.attributes["name"]
-                if scheme_name not in meta_data:
-                    continue
-                tbl_name = scheme_name + "_run"
-                if tbl_name not in meta_data[scheme_name].arg_tables:
-                    continue
-                for arg in (meta_data[scheme_name]
-                            .getArgTable(tbl_name)
-                            .getFunctionArguments()):
-                    # Only real framework-managed vars
-                    if arg.getAttr("type") != "real":
-                        continue
-                    if not (arg.hasAttr("advected") or
-                            arg.hasAttr("allocatable") or
-                            arg.hasAttr("is_interstitial")):
-                        continue
-                    if not arg.hasAttr("standard_name"):
-                        continue
-
-                    sn = std_key_fn(arg)
-                    intent = arg.getAttr("intent") if arg.hasAttr("intent") else ""
-                    dims = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-                    # dim_names is stored as a list in the descriptor
-                    _raw_dn = arg.getAttr("dim_names") if arg.hasAttr("dim_names") else []
-                    if isinstance(_raw_dn, list):
-                        dim_names = [d.strip() for d in _raw_dn if d.strip()]
-                    else:
-                        dim_names = [d.strip() for d in str(_raw_dn).split(",") if d.strip()]
-
-                    if intent in ("out", "inout"):
-                        if sn not in producers:
-                            producers[sn] = []
-                        if group_name not in producers[sn]:
-                            producers[sn].append(group_name)
-
-                    if intent in ("in", "inout"):
-                        if sn not in consumers:
-                            consumers[sn] = []
-                        if group_name not in consumers[sn]:
-                            consumers[sn].append(group_name)
-
-                    # Keep info from highest-rank occurrence (the authoritative
-                    # shape for the module-level declaration).
-                    if sn not in raw or dims > raw[sn]["rank"]:
-                        raw[sn] = {
-                            "local_name": arg.name,
-                            "rank": dims,
-                            "dim_names": dim_names,
-                            "kind": (arg.getAttr("kind")
-                                     if arg.hasAttr("kind") else kind_phys),
-                        }
-
-        # Determine allocating group and cross-group status
-        vars_out: dict[str, _FWVarInfo] = {}
-        for sn, writer_groups in producers.items():
-            reader_groups = consumers.get(sn, [])
-            is_cross = any(g not in writer_groups for g in reader_groups)
-
-            # First writer in XML suite order = the group that allocates
-            allocating_group = ""
-            for group in suite_description:
-                gn = group.attributes["name"]
-                if gn in writer_groups:
-                    allocating_group = gn
-                    break
-
-            if sn not in raw:
-                continue
-            info = raw[sn]
-            vars_out[sn] = _FWVarInfo(
-                standard_name=sn,
-                local_name=info["local_name"],
-                module_rank=info["rank"],
-                dim_names=info["dim_names"],
-                kind=info["kind"],
-                allocating_group=allocating_group,
-                is_cross_group=is_cross,
-            )
-
-        return cls(vars_out)
-
-
 class GatherMetaFunctionSignatures(Visitor):
     """Collects all external func.FuncOp declarations from the ccpp module.
 
@@ -676,7 +523,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         state_string: str | None = None,
         check_string: str | None = None,
         physics_mode: bool = False,
-        boundary_ctx: "GroupBoundaryContext | None" = None,
         group_name: str = "",
         suite_model=None,
     ):
@@ -924,14 +770,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                 _scheme_dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
 
                 # Determine the rank of the module-level variable.
-                # SuiteVariableModel is authoritative when present; fall back to
-                # GroupBoundaryContext (legacy) or the scheme's own declared rank.
+                # SuiteVariableModel is authoritative; fall back to the scheme's
+                # own declared rank when no model is provided.
                 if suite_model is not None:
                     _entry = suite_model.get(_fw_std_key)
                     _rank = _entry.rank if _entry is not None else _scheme_dims
                 else:
-                    _rank = (boundary_ctx.module_rank(_fw_std_key)
-                             if boundary_ctx else None) or _scheme_dims
+                    _rank = _scheme_dims
 
                 var_type = TypeConversions.convert(
                     fw_arg.getAttr("type"),
@@ -969,12 +814,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                         _has_horiz_first_dim = (
                             _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
                         )
-                else:
-                    # Legacy fallback: suppress for cross-group vars only
-                    _has_horiz_first_dim = not (
-                        boundary_ctx is not None
-                        and boundary_ctx.is_cross_group(_fw_std_key)
-                    )
                 _dims = _rank
                 if physics_mode and _dims == 1 and _has_horiz_first_dim:
                     _col_begin_ssa = next(
