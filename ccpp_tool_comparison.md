@@ -73,10 +73,23 @@
 - Fortran source cross-validation against `.F90` files (metadata-only today)
 
 § **Compiled Fortran execution tests:**
-- **helloworld**, **capgen**, **ddthost**: compile, run, and pass all correctness checks ✅
-  (helloworld exercises kind conversion `kind_phys`↔`kind_dyn` and unit conversion K↔degC)
-- **advection**: caps generate and compile; full end-to-end test blocked on missing
-  constituent registration infrastructure (`ccpp_register_constituents` etc.)
+
+| | helloworld | capgen | ddthost | advection | CCPP-SCM (GFS) |
+|---|---|---|---|---|---|
+| Suites | 1 | 2 | 2 | 1 | varies |
+| Schemes | 2 | 6 | 6 | 4 (5 calls) | ~60 |
+| Variables | ~12 | ~30 | ~30 | ~25 | ~800+ |
+| Optional args | 0 | 1 | 0 | 0 | ~550 |
+| Constituents | 0 | 0 | 0 | yes | many |
+| Groups | 1 | 3 | 3 | 1 | ~10 |
+| xdsl-ccpp status | ✅ passes | ✅ passes | ✅ passes | ⚠ blocked | ❌ not yet |
+
+Notes:
+- **helloworld**: exercises kind conversion (`kind_phys`↔`kind_dyn`) and unit conversion (K↔degC)
+- **capgen**: two suites (`temp_suite` + `ddt_suite`), 3 groups, 1 optional arg in `temp_adjust`
+- **ddthost**: same suites as capgen; primary purpose is testing DDT host variables and Python-defined host interface (`ddthost_py.py`)
+- **advection**: caps generate and compile; full end-to-end test blocked on missing constituent registration infrastructure (`ccpp_register_constituents` etc.)
+- **Variables**: unique standard names across all scheme `.meta` files in the example
 
 ---
 
