@@ -32,7 +32,7 @@ is designed to close these gaps.
 | Old embedded-comment format | ✅ | ❌ | ❌ | ❌ |
 | New `.meta` file format | ❌ | ✅ | ✅ | ✅ |
 | **Variable handling** | | | | |
-| Host variable matching | ✅ | ✅ | ✅ | Partial† |
+| Host variable matching | ✅ | ✅ | ✅ | Mostly†  |
 | Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
 | Unit conversion | ✅ | ✅ | ✅ | ❌ |
 | Optional argument handling | ✅ | Partial | ✅ | ❌ |
@@ -45,7 +45,7 @@ is designed to close these gaps.
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
-| Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
+| Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
 | Unit test depth | Moderate | Moderate | 1300+ tests | 19 pytest + 4 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ helloworld only |
@@ -107,19 +107,35 @@ of the following remaining gaps:
 - `ccpp_info_t` pattern for ddthost: lifecycle/run functions accept a single
   `type(ccpp_info_t), intent(inout)` argument bundling errmsg/errflg/col_start/col_end
 - timestep_initial/final correctly propagate errmsg/errflg to the top-level cap
-- `physics_register` stub generated (required by some host drivers)
 - `ccpp_physics_suite_part_list` returns actual XML group names
+- **Per-group physics dispatch** (`SuiteVariableModel`) — each XML group
+  (`physics1`, `physics2`, `data_prep`) dispatches to its own suite cap function
+  running only that group's schemes. Physics correctness verified across
+  helloworld, capgen, and ddthost.
+- **`_register` lifecycle phase** — generated and calls scheme `_register`
+  functions (e.g. `temp_adjust_register` to enable physics via module flags)
+- **Suite-owned variable allocation with full domain dimensions** — framework
+  interstitials (e.g. `to_promote`, `temp_calc`, `O3`) allocated in
+  `_initialize` with `ncols × pver`, not lazily in physics with loop extent.
+  Fixes out-of-bounds access on the second column batch.
+- **Canonical name resolution for interstitials** — consuming scheme's local
+  name (e.g. `temp_inc` in `_timestep_initialize`) correctly resolved to the
+  producing scheme's canonical name (`temp_inc_set` from `_init`)
+- **1-based indexing for block-arg promotion loops** — `temp_layer(1:ncol, k)`
+  for function block args (passed as sections, 1-based within the function) vs
+  `to_promote(col_start:col_end, k)` for module-level vars (full domain).
+  Prevents buffer overflow in second column batch.
 
 *Still missing / known gaps:*
-- **Per-group physics dispatch** (see Architectural Gaps below) — currently all
-  XML groups in a suite dispatch to the same combined `_suite_physics` function,
-  which runs ALL schemes for every group call. This is semantically incorrect
-  for multi-group suites and causes physics correctness failures.
 - `allocatable` code generation for non-real types (`ccpp_constituent_properties_t`)
-- Integer `is_interstitial` scalars handled incorrectly (would generate invalid
-  allocatable declarations — currently no test case exercises this)
+- Integer `is_interstitial` scalars (no test case exercises this; would generate
+  invalid allocatable declarations)
 - DDT member `is_interstitial` not validated (potential latent bug if a DDT
   member is marked interstitial but the DDT instance is a block arg)
+- DDT interstitials (e.g. `vmr_type`) still managed by top-level cap as
+  `vmr_cap_ddt_suite` rather than as a suite cap module variable — architecturally
+  the suite cap should own them, but migration is deferred pending fuller DDT
+  interstitial support
 
 This is distinct from the "Variable compatibility validation" row, which covers
 type/kind/dims/intent checking after a match is found.
@@ -131,37 +147,44 @@ type/kind/dims/intent checking after a match is found.
 - **advection**: suite caps compile; top-level cap not yet attempted
 - Makefiles exist at `examples/helloworld/`, `examples/capgen/`, `examples/ddthost/`
 
-‡ **Variable compatibility validation (Partial):** Four checks are implemented
-in `HostVariableMatchPass`: type mismatch (hard error), dimension rank mismatch
-(hard error), intent mismatch covering all four incompatible access combinations
-(hard error with specific messages), and kind mismatch (warning + IR annotation
-for the future unit conversion pass). Not yet covered: dimension name
-compatibility beyond the `horizontal_loop_extent` → `horizontal_dimension`
-framework substitution, unit compatibility checking, and DDT member matching.
+‡ **Variable compatibility validation (Partial):** The following checks are
+implemented:
+
+*Implemented in `HostVariableMatchPass`:*
+- Type mismatch (hard error)
+- Dimension rank mismatch (hard error)
+- Intent mismatch — all four incompatible access combinations (hard error with
+  specific messages)
+- Kind mismatch (warning + IR annotation for the future unit conversion pass)
+
+*Implemented in `SuiteVariableModel`:*
+- **Suite provision checking** — Case 3 of the four-case algorithm: a scheme
+  variable that has no host match and no prior suite provider (used before
+  provided) is reported as an error. This catches missing interstitial chains
+  at code-generation time rather than at Fortran compile time.
+
+*Not yet covered:*
+- Dimension name compatibility beyond the `horizontal_loop_extent` →
+  `horizontal_dimension` framework substitution (other dimension names are
+  resolved but not cross-validated)
+- Unit compatibility checking
+- DDT member type/rank/kind validation (DDT members are matched by standard_name
+  but their individual field types are not re-validated)
+- Fortran source cross-validation — capgen-ng has a separate `ccpp_validator.py`
+  that checks metadata against actual `.F90` files (per-argument intent, type,
+  kind, rank); xdsl-ccpp only validates metadata-to-metadata
 
 ---
 
 ## Architectural Gaps in xdsl-ccpp
 
-The following are fundamental architectural issues, not individual bugs:
+### 1. ~~Per-group physics dispatch~~ — **RESOLVED**
 
-### 1. Per-group physics dispatch (HIGH PRIORITY)
-
-**Problem:** For a suite with groups `physics1` (schemes A+B) and `physics2`
-(schemes C+D), the current top-level cap dispatches BOTH group names to the
-same combined `_suite_physics` function that runs ALL schemes (A+B+C+D).
-This means each scheme runs twice per timestep, producing wrong physics values.
-
-**Root cause of earlier fix:** We previously attempted per-group suite cap
-functions (`_suite_physics1`, `_suite_physics2`) but hit an interstitial variable
-problem — variables produced in one group and consumed in another (e.g. `O3`
-allocated in `_init` and read in `_run`) are declared at module scope in the
-combined suite cap. Splitting the physics function requires careful handling of
-which interstitials are alive at each group boundary.
-
-**Required fix:** Generate true per-group suite cap functions where interstitials
-shared across group boundaries are accessed from module scope, and interstitials
-private to a single group are handled locally.
+Per-group dispatch is now implemented via `SuiteVariableModel`. Each XML group
+calls its own suite cap function. Framework variables (interstitials, promoted
+arrays) are correctly classified as suite-owned (allocated in `_initialize`
+with full domain dimensions) or group-local. Physics correctness verified
+across all three test cases.
 
 ### 2. MLIR layer debugging overhead
 
