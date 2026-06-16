@@ -35,7 +35,7 @@
   units = K
   dimensions = (ccpp_constant_one:horizontal_loop_extent, vertical_interface_dimension)
   type = real
-  kind = kind_phys
+  kind = kind_dyn
   intent = inout
 [ temp_layer ]
   standard_name = potential_temperature

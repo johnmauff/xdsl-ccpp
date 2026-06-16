@@ -18,13 +18,15 @@
   standard_name = vertical_interface_dimension
   type = integer
   units = count
+  intent = inout
   dimensions = ()
 [ temp_midpoints ]
   standard_name = potential_temperature
-  units = K
+  units = degC
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
   memory_space = host
+  intent = inout
 [ temp_interfaces ]
   standard_name = potential_temperature_at_interface
   units = K
@@ -36,3 +38,9 @@
   units = s
   dimensions = ()
   type = real | kind = kind_phys
+[ kind_dyn_val ]
+  standard_name = kind_dyn_precision
+  units = 1
+  dimensions = ()
+  type = real
+  kind = kind_dyn

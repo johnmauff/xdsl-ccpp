@@ -62,11 +62,9 @@
 
 † **Host variable matching — remaining gaps:**
 - `allocatable` code generation for non-real types (`ccpp_constituent_properties_t`
-  arrays) — type compiles but constituent registration infrastructure is missing
-- Integer `is_interstitial` scalars not handled (no test case; would produce invalid declarations)
-- DDT interstitials (e.g. `vmr_type`) managed by the top-level cap instead of the
-  suite cap module — architecturally the suite should own them
-- DDT member `is_interstitial` not validated
+  arrays) — the type is declared correctly but constituent registration infrastructure
+  (`ccpp_register_constituents` etc.) is not generated. This is the same gap as
+  "Constituent registration" in the capability table above.
 
 ‡ **Variable compatibility validation — remaining gaps:**
 - Dimension name cross-validation beyond `horizontal_loop_extent` →
