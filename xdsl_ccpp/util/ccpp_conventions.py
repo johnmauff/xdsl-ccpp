@@ -45,6 +45,43 @@ CCPP_LOOP_BEGIN_STD_NAME  = "horizontal_loop_begin"    # first column index
 CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
 
+# ── Unit conversion table ────────────────────────────────────────────────────
+# Maps (scheme_units, host_units) → (to_scheme_expr, to_host_expr).
+#
+# Each expression is appended to the source variable name to form the RHS of
+# a Fortran assignment, e.g. "source_var + 273.15" or "source_var * 100.0".
+# An empty string means no conversion expression is emitted (intent=out only).
+#
+# Units are matched after lowercasing and stripping whitespace.
+UNIT_CONVERSIONS: dict = {
+    # Temperature
+    ("k",    "degc"): ("+ 273.15", "- 273.15"),
+    ("degc", "k"):    ("- 273.15", "+ 273.15"),
+    # Pressure
+    ("pa",   "hpa"):  ("* 100.0",  "* 0.01"),
+    ("hpa",  "pa"):   ("* 0.01",   "* 100.0"),
+    # Length
+    ("m",    "cm"):   ("* 0.01",   "* 100.0"),
+    ("cm",   "m"):    ("* 100.0",  "* 0.01"),
+    # Mixing ratio
+    ("kg kg-1", "g g-1"):  ("* 0.001",  "* 1000.0"),
+    ("g g-1",   "kg kg-1"): ("* 1000.0", "* 0.001"),
+    # Speed
+    ("m s-1",  "cm s-1"): ("* 0.01",  "* 100.0"),
+    ("cm s-1", "m s-1"):  ("* 100.0", "* 0.01"),
+}
+
+# Unit strings that are all considered dimensionless — mutually compatible.
+CCPP_DIMENSIONLESS_UNITS: frozenset = frozenset(
+    {"1", "none", "count", "frac", "nondimensional", "fraction", ""}
+)
+
+def normalize_units(units: str | None) -> str:
+    """Return a canonical lowercase-stripped unit string for comparison."""
+    if units is None:
+        return ""
+    return units.strip().lower()
+
 # ── Kind (precision) mappings ───────────────────────────────────────────────
 # Maps CCPP kind names to ISO_FORTRAN_ENV named constants.
 CCPP_KIND_TO_ISO: dict = {

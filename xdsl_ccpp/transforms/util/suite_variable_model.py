@@ -219,6 +219,15 @@ class SuiteVariableModel:
             if std_name in self._suite_owned:
                 continue
 
+            # Framework-managed arrays (advected/allocatable) are always
+            # suite-owned — the suite cap allocates them regardless of whether
+            # the first scheme entry writes (out) or reads/writes (inout) them.
+            if arg.hasAttr("advected") or arg.hasAttr("allocatable"):
+                self._suite_owned[std_name] = self._make_entry(
+                    arg, std_name, phase, group_name
+                )
+                continue
+
             # Case 2: first occurrence is intent(out) → suite-owned.
             if intent == "out":
                 self._suite_owned[std_name] = self._make_entry(

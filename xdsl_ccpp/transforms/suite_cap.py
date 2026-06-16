@@ -18,12 +18,17 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
+    ClearStringOp,
+    KindCastOp,
+    KindWriteBackOp,
     ModuleVarOp,
     KeywordCallOp,
     LazyAllocOp,
     PromotionLoopOp,
     RankReducingSliceOp,
     SafeDeallocOp,
+    UnitConvertOp,
+    UnitWriteBackOp,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -40,6 +45,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_HORIZ_DIM_STD_NAME,
+    UNIT_CONVERSIONS,
 )
 from xdsl_ccpp.util.visitor import Visitor
 
@@ -303,12 +309,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         return alloc_ops
 
     def generateVariableInitialisations(self, data_ops):
-        """Emit ops that zero-initialise errflg at the start of a subroutine."""
+        """Emit ops that zero-initialise errflg and clear errmsg at subroutine entry."""
         err_const = arith.ConstantOp.from_int_and_width(0, 32)
-
         store_op = memref.StoreOp.get(err_const, data_ops["errflg"], [])
-
-        return [err_const, store_op]
+        clear_errmsg = ClearStringOp(data_ops["errmsg"])
+        return [err_const, store_op, clear_errmsg]
 
     def generateSchemeSubroutineCallOps(
         self, subroutine_name, arg_table, data_ops, overrides=None
@@ -583,13 +588,19 @@ class GenerateSuiteSubroutine(RewritePattern):
         def _has_dims(a):
             return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
 
-        def _is_framework_managed_real(a):
-            """True for advected/allocatable/interstitial real args the suite cap owns."""
-            if a.getAttr("type") != "real":
-                return False
-            # Interstitial scalars (dimensions=0) are also framework-managed
+        def _is_framework_managed(a):
+            """True for suite-cap-owned variables: interstitials of any type,
+            and advected/allocatable real arrays.
+
+            is_interstitial is checked first so integer (and DDT) interstitials
+            are not accidentally excluded by the 'real only' guard below.
+            """
+            # Interstitials of any type — real, integer, or DDT
             if a.hasAttr("is_interstitial"):
                 return True
+            # Advected/allocatable framework arrays — real only
+            if a.getAttr("type") != "real":
+                return False
             if not _has_dims(a):
                 return False
             return a.hasAttr("advected") or a.hasAttr("allocatable")
@@ -598,7 +609,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         framework_vars = {
             a.name: a
             for a in all_args.values()
-            if _is_framework_managed_real(a)
+            if _is_framework_managed(a)
         }
 
         input_arg_list = [
@@ -653,12 +664,19 @@ class GenerateSuiteSubroutine(RewritePattern):
                 return base + 1
             return base
 
+        def _block_arg_kind(a):
+            """Return the kind to use for the suite function block arg.
+
+            For kind-mismatched args the host provides the value in its own
+            kind, so the block arg is declared in the HOST kind.  The suite
+            function body then creates a temp in the SCHEME kind and converts.
+            """
+            if a.hasAttr("model_var_kind_mismatch"):
+                return a.getAttr("model_var_kind_mismatch").split(":")[1]
+            return a.getAttr("kind") if a.hasAttr("kind") else None
+
         input_arg_types = [
-            TypeConversions.convert(
-                a.getAttr("type"),
-                a.getAttr("kind") if a.hasAttr("kind") else None,
-                _arg_dims(a),
-            )
+            TypeConversions.convert(a.getAttr("type"), _block_arg_kind(a), _arg_dims(a))
             for a in input_arg_list
         ]
 
@@ -675,6 +693,59 @@ class GenerateSuiteSubroutine(RewritePattern):
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
 
+        # For kind-mismatched args: create a KindCastOp that converts the block
+        # arg (host kind) to a local temp (scheme kind).  The scheme call will
+        # use the temp; inout/out args get a write-back after the call.
+        kind_cast_ops: list = []
+        kind_writeback_pairs: list = []  # (block_arg_ssa, cast_res, host_kind)
+        for idx, fn_arg in enumerate(input_arg_list):
+            if not fn_arg.hasAttr("model_var_kind_mismatch"):
+                continue
+            scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
+            block_arg_ssa = new_block.args[idx]
+            scheme_type = TypeConversions.convert(
+                fn_arg.getAttr("type"), scheme_kind, _arg_dims(fn_arg)
+            )
+            cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
+            cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
+            kind_cast_ops.append(cast_op)
+            data_ops[fn_arg.name] = cast_op  # scheme call uses the temp
+
+            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+            if intent in ("inout", "out"):
+                kind_writeback_pairs.append((cast_op.res, block_arg_ssa, host_kind))
+
+        # Unit conversion — same pattern as kind conversion.
+        # For inout/in: pre-convert host units → scheme units before the call.
+        # For out:      just allocate a temp (scheme writes into it); no pre-convert.
+        # Write-back:   convert scheme units → host units after the call (inout/out).
+        # Must be built here (before call_ops) so data_ops is updated in time.
+        unit_convert_ops: list = []
+        unit_writeback_pairs: list = []  # (conv_res, orig_dest, to_host_expr)
+        for idx, fn_arg in enumerate(input_arg_list):
+            if not fn_arg.hasAttr("model_var_unit_mismatch"):
+                continue
+            scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
+            to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+
+            block_arg_ssa = new_block.args[idx]
+            arg_type = TypeConversions.convert(
+                fn_arg.getAttr("type"),
+                fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
+                _arg_dims(fn_arg),
+            )
+
+            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+            # Pass empty string for intent=out so only the allocation is emitted
+            pre_expr = "" if intent == "out" else to_scheme_expr
+
+            conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
+            conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
+            unit_convert_ops.append(conv_op)
+            data_ops[fn_arg.name] = conv_op
+
+            if intent in ("inout", "out"):
+                unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
 
         alloc_ops = {}
         # Allocate local storage for each output-only argument
@@ -1081,14 +1152,28 @@ class GenerateSuiteSubroutine(RewritePattern):
             else []
         )
 
+        kind_writeback_ops = [
+            KindWriteBackOp(conv_res, orig_dest, orig_kind)
+            for conv_res, orig_dest, orig_kind in kind_writeback_pairs
+        ]
+
+        unit_writeback_ops = [
+            UnitWriteBackOp(conv_res, orig_dest, to_host)
+            for conv_res, orig_dest, to_host in unit_writeback_pairs
+        ]
+
         body_ops = (
             alloc_return_vals
             + initialisation_ops
             + ncol_compute_ops
             + framework_ref_ops
             + lazy_alloc_ops
+            + kind_cast_ops
+            + unit_convert_ops
             + check_ops
             + call_ops
+            + kind_writeback_ops
+            + unit_writeback_ops
             + state_ops
             + [func.ReturnOp(*inout_return_vals, *alloc_return_vals)]
         )
@@ -1277,11 +1362,14 @@ class GenerateSuiteSubroutine(RewritePattern):
         interstitial_var_names: set[str] = set()  # lowercase
         allocatable_mod_vars = []
         for entry in suite_model.suite_owned_vars():
-            # DDT-type interstitials (e.g. vmr_type) are still managed by the
-            # top-level cap's cap_var_map for now.  Declaring them here AND keeping
-            # them as block args of initialize/physics causes an unused-variable
-            # conflict.  TODO: fully migrate DDT interstitials to suite cap scope.
             if entry.is_ddt:
+                # DDT interstitials (e.g. vmr_type) are declared at suite cap
+                # module scope as non-allocatable scalars.  The suite functions
+                # access them directly by name; the top-level cap never sees them.
+                # Fortran derived-type declarations require type(...) syntax.
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, f"type({entry.fortran_type})", rank=0)
+                )
                 interstitial_var_names.add(entry.local_name.lower())
                 continue
             if entry.fortran_type == "real":

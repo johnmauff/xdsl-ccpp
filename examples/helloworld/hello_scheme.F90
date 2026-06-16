@@ -3,7 +3,7 @@
 
 MODULE hello_scheme
 
-  USE ccpp_kinds, ONLY: kind_phys
+  USE ccpp_kinds, ONLY: kind_phys, kind_dyn
 
   IMPLICIT NONE
   PRIVATE
@@ -24,7 +24,7 @@ CONTAINS
 !----------------------------------------------------------------
 
    integer,            intent(in)    :: ncol, lev, ilev
-   REAL(kind_phys),    intent(inout) :: temp_level(:, :)
+   REAL(kind_dyn),     intent(inout) :: temp_level(:, :)
    real(kind_phys),    intent(in)    :: timestep
    REAL(kind_phys),    INTENT(out)   :: temp_layer(:, :)
    character(len=512), intent(out)   :: errmsg
@@ -46,7 +46,7 @@ CONTAINS
     do col_index = 1, ncol
        do lev_index = 1, lev
           temp_layer(col_index, lev_index) = (temp_level(col_index, lev_index) &
-               + temp_level(col_index, lev_index + 1)) / 2.0_kind_phys
+               + temp_level(col_index, lev_index + 1)) / 2.0_kind_dyn
        end do
     end do
 

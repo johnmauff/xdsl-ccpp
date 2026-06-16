@@ -28,7 +28,7 @@
 | **Variable handling** | | | | |
 | Host variable matching | ✅ | ✅ | ✅ | Partial† |
 | Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
-| Unit conversion | ✅ | ✅ | ✅ | ❌ |
+| Unit/kind conversion | ✅ | ✅ | ✅ | ✅ |
 | Optional argument handling | ✅ | Partial | ✅ | ❌ |
 | Chunked data layout | ✅ | ❌ | ✅ | ❌ |
 | Constituent registration | ✅ | ✅ | ✅ | ❌ |
@@ -69,12 +69,12 @@
 ‡ **Variable compatibility validation — remaining gaps:**
 - Dimension name cross-validation beyond `horizontal_loop_extent` →
   `horizontal_dimension` (other substitutions are resolved but not checked)
-- Unit compatibility checking (kind mismatches are annotated but not converted)
 - DDT member type/rank/kind validation (members matched by standard_name only)
 - Fortran source cross-validation against `.F90` files (metadata-only today)
 
 § **Compiled Fortran execution tests:**
 - **helloworld**, **capgen**, **ddthost**: compile, run, and pass all correctness checks ✅
+  (helloworld exercises kind conversion `kind_phys`↔`kind_dyn` and unit conversion K↔degC)
 - **advection**: caps generate and compile; full end-to-end test blocked on missing
   constituent registration infrastructure (`ccpp_register_constituents` etc.)
 
@@ -92,22 +92,18 @@ Ranked by impact on real-world use:
    supported. Required for most real-world physics suites (~550 optional variables
    in CCPP-SCM).
 
-3. **Unit / kind conversion** — kind mismatches between host and scheme are detected
-   and annotated but no conversion code is emitted. Blocks integration with hosts
-   that use different precision kinds.
-
-4. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
+3. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
    standalone script and cannot be embedded in a host model build.
 
-5. **Host model integration** — only the three example test cases (helloworld, capgen,
+4. **Host model integration** — only the three example test cases (helloworld, capgen,
    ddthost). No integration with CCPP-SCM, CAM-SIMA, or UFS.
 
-6. **Chunked data layout** — column-blocked physics loops not supported.
+5. **Chunked data layout** — column-blocked physics loops not supported.
 
-7. **Fortran source cross-validation** — metadata is checked against metadata only;
+6. **Fortran source cross-validation** — metadata is checked against metadata only;
    capgen-ng validates each scheme argument against the actual `.F90` source.
 
-8. **Multi-instance support** — one suite instance per run only.
+7. **Multi-instance support** — one suite instance per run only.
 
 ---
 

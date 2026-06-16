@@ -240,6 +240,7 @@ class ArgumentOp(IRDLOperation):
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
     model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model
     model_var_kind_mismatch = opt_prop_def(StringAttr)  # set when scheme/host kinds differ: "scheme_kind:host_kind"
+    model_var_unit_mismatch = opt_prop_def(StringAttr)  # set when scheme/host units differ: "scheme_units:host_units"
     model_var_is_ddt   = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
     is_interstitial    = opt_prop_def(UnitAttr)   # set when var flows between lifecycle phases
     is_promoted        = opt_prop_def(UnitAttr)   # set when scheme rank < host rank (promotion)

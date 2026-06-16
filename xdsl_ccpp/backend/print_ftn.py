@@ -26,11 +26,16 @@ from xdsl_ccpp.dialects.ccpp_utils import ArraySectionOp as CCPPArraySectionOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
+from xdsl_ccpp.dialects.ccpp_utils import KindCastOp as CCPPKindCastOp
 from xdsl_ccpp.dialects.ccpp_utils import KindDefOp as CCPPKindDefOp
+from xdsl_ccpp.dialects.ccpp_utils import KindWriteBackOp as CCPPKindWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
+from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
 from xdsl_ccpp.dialects.ccpp_utils import TrimOp as CCPPTrimOp
+from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
@@ -222,12 +227,17 @@ class ftnPrintContext:
             case IntegerType():
                 assert cast(IntegerType, type_attr).width.data == 32
                 return "integer"
-            case MemRefType(
-                element_type=IntegerType(width=IntAttr(data=8)), shape=shape
-            ) if len(shape) == 1 and next(iter(shape)).data == DYNAMIC_INDEX:  # noqa: E501
-                # A 1-D dynamic i8 memref is an assumed-length Fortran character
-                # argument — declared as character(len=*), not character(:).
-                return "character(len=*)"
+            case MemRefType(element_type=IntegerType(width=IntAttr(data=8)), shape=shape):
+                # Character memref: the last dimension encodes the string length;
+                # preceding dimensions (if any) are array dimensions.
+                # e.g. memref<?xi8>   → character(len=*)  (scalar string)
+                #      memref<32xi8>  → character(len=32) (scalar fixed-len)
+                #      memref<?x?xi8> → character(len=*)  (1D array of strings)
+                if not shape:
+                    return "character"
+                last_dim = list(shape)[-1]
+                len_str = "*" if last_dim.data == DYNAMIC_INDEX else str(last_dim.data)
+                return f"character(len={len_str})"
             case MemRefType(element_type=Attribute() as elem_t, shape=shape):
                 if any(dim.data == DYNAMIC_INDEX for dim in shape):
                     # Dynamic-dimension array: return only the base type string.
@@ -245,6 +255,32 @@ class ftnPrintContext:
                 else:
                     return f"{type_str}({shape_str})"
 
+    def _elem_kind_name(self, type_attr: Attribute) -> str | None:
+        """Return the Fortran kind name for the element of a real memref, or None."""
+        match type_attr:
+            case MemRefType(element_type=CCPPRealKindType() as rk):
+                return rk.kind_name.data
+            case CCPPRealKindType() as rk:
+                return rk.kind_name.data
+            case _:
+                return None
+
+    @staticmethod
+    def _suffix_kind_in_expr(expr: str, kind: str | None) -> str:
+        """Append _{kind} to the numeric literal at the end of a unit-conv expression.
+
+        Converts e.g. ``"+ 273.15"`` with kind ``"kind_phys"`` →
+        ``"+ 273.15_kind_phys"`` so Fortran uses the correct precision for
+        the constant instead of defaulting to the default-real kind (REAL32).
+        """
+        if not expr or kind is None:
+            return expr
+        # expression is "<op> <number>", e.g. "+ 273.15" or "* 100.0"
+        parts = expr.rsplit(None, 1)
+        if len(parts) == 2:
+            return f"{parts[0]} {parts[1]}_{kind}"
+        return expr
+
     def _ftn_dim_suffix(self, type_attr: Attribute) -> str:
         """Return the Fortran assumed-shape array suffix for a memref type.
 
@@ -258,11 +294,13 @@ class ftnPrintContext:
         if self._is_allocatable_char(type_attr):
             return "(:)"
         match type_attr:
-            case MemRefType(
-                element_type=IntegerType(width=IntAttr(data=8)), shape=shape
-            ) if len(shape) == 1 and next(iter(shape)).data == DYNAMIC_INDEX:  # noqa: E501
-                # character(len=*) uses len= notation — no dimension suffix needed
-                return ""
+            case MemRefType(element_type=IntegerType(width=IntAttr(data=8)), shape=shape):
+                # Character memref: last dim = string length, preceding = array dims.
+                # Only the array dims (all but last) produce a '(:, ...)' suffix.
+                n_array_dims = len(shape) - 1
+                if n_array_dims <= 0:
+                    return ""
+                return "(" + ", ".join(":" for _ in range(n_array_dims)) + ")"
             case MemRefType(shape=shape) if any(
                 dim.data == DYNAMIC_INDEX for dim in shape
             ):
@@ -484,6 +522,9 @@ class ftnPrintContext:
                     else op.var_name.data
                 )
                 self.variables[op.res] = ref_name
+            case CCPPClearStringOp():
+                dest_name = self._get_variable_name_for(op.dest)
+                self.print(f"{dest_name} = ''")
             case CCPPWriteErrMsgOp():
                 dest_name = self._get_variable_name_for(op.dest)
                 self.print(f"write({dest_name}, '(3a)') \"{op.prefix.data}\", ", end="")
@@ -623,6 +664,38 @@ class ftnPrintContext:
             case CCPPOmpTargetUpdateToOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_omp_directive("target update", [("to", var_names)])
+            case CCPPKindCastOp():
+                src_name    = self._get_variable_name_for(op.source)
+                result_name = self._get_variable_name_for(op.res)
+                target_kind = op.target_kind.data
+                dim_suffix = self._ftn_dim_suffix(op.res.type)
+                if dim_suffix:
+                    # mold= requires matching kind; use explicit size() dims instead
+                    rank = dim_suffix.count(":")
+                    sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    self.print(f"allocate({result_name}({sizes}))")
+                self.print(f"{result_name} = real({src_name}, kind={target_kind})")
+            case CCPPKindWriteBackOp():
+                conv_name = self._get_variable_name_for(op.conv_result)
+                dest_name = self._get_variable_name_for(op.original_dest)
+                orig_kind = op.original_kind.data
+                self.print(f"{dest_name} = real({conv_name}, kind={orig_kind})")
+                if self._ftn_dim_suffix(op.conv_result.type):
+                    self.print(f"deallocate({conv_name})")
+            case CCPPUnitConvertOp():
+                # In-place pre-conversion (host units → scheme units).
+                # Result is aliased to source so no allocation is needed.
+                src_name   = self._get_variable_name_for(op.source)
+                scheme_kind = self._elem_kind_name(op.res.type)
+                to_expr = self._suffix_kind_in_expr(op.to_scheme_expr.data, scheme_kind)
+                if to_expr:
+                    self.print(f"{src_name} = {src_name} {to_expr}")
+            case CCPPUnitWriteBackOp():
+                # In-place post-conversion (scheme units → host units).
+                dest_name = self._get_variable_name_for(op.original_dest)
+                host_kind = self._elem_kind_name(op.original_dest.type)
+                to_expr = self._suffix_kind_in_expr(op.to_host_expr.data, host_kind)
+                self.print(f"{dest_name} = {dest_name} {to_expr}")
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(
         {
@@ -682,6 +755,34 @@ class ftnPrintContext:
             elif isa(op, llvm.GlobalOp) and "module" in op.attributes:
                 mod = op.attributes["module"].data
                 use_map.setdefault(mod, []).append(op.sym_name.data)
+        # Also emit USE statements for CCPP framework DDT types used as
+        # function argument types — e.g. ccpp_constituent_properties_t.
+        _CCPP_DDT_MODULES = {
+            "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
+            "ccpp_constituent_prop_ptr_t":   "ccpp_constituent_prop_mod",
+        }
+        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DerivedType
+        for op in body.ops:
+            if not isa(op, func.FuncOp):
+                continue
+            for blk in op.body.blocks:
+                for arg in blk.args:
+                    if not isa(arg.type, MemRefType):
+                        continue
+                    elem = cast(MemRefType, arg.type).element_type
+                    if not isa(elem, _DerivedType):
+                        continue
+                    ddt_mod = _CCPP_DDT_MODULES.get(
+                        cast(_DerivedType, elem).type_name.data
+                    )
+                    if ddt_mod:
+                        use_map.setdefault(ddt_mod, [])
+                        if cast(_DerivedType, elem).type_name.data \
+                                not in use_map[ddt_mod]:
+                            use_map[ddt_mod].append(
+                                cast(_DerivedType, elem).type_name.data
+                            )
+
         for mod, procs in sorted(use_map.items()):
             for proc in sorted(procs):
                 self.print(f"use {mod}, only: {proc}", prefix="  ")
@@ -1018,9 +1119,37 @@ class ftnPrintContext:
                     if alloca_op.memref.name_hint is not None
                     else f"local_{id(alloca_op)}"
                 )
-                inner.variables[alloca_op.memref] = var_name
+                is_alloc = var_name.endswith("__alloc")
+                ftn_name = var_name[: -len("__alloc")] if is_alloc else var_name
+                inner.variables[alloca_op.memref] = ftn_name
                 type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
-                inner.print(f"{type_str} :: {var_name}")
+                if is_alloc:
+                    rank = len(alloca_op.memref.type.shape.data)
+                    dim_suffix = "(" + ", ".join(":" for _ in range(rank)) + ")"
+                    inner.print(f"{type_str}, allocatable :: {ftn_name}{dim_suffix}")
+                else:
+                    inner.print(f"{type_str} :: {var_name}")
+
+            # Declare kind-cast and unit-convert temporaries
+            for op in bdy.block.ops:
+                if isa(op, CCPPKindCastOp):
+                    var_name = (
+                        op.res.name_hint
+                        if op.res.name_hint is not None
+                        else f"kind_cast_{id(op)}"
+                    )
+                    inner.variables[op.res] = var_name
+                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                    if dim_suffix:
+                        inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+                    else:
+                        inner.print(f"{type_str} :: {var_name}")
+                elif isa(op, CCPPUnitConvertOp):
+                    # In-place conversion: alias the result SSA to the source variable.
+                    # No temp allocation needed since host and scheme share the same kind.
+                    src_var = inner.variables.get(op.source, "")
+                    inner.variables[op.res] = src_var
 
             # Declare anonymous locals for call results that have no CopyOp consumer
             for res, var_name in untracked_call_results:

@@ -168,6 +168,18 @@ class HostVarRefOp(IRDLOperation):
 
 
 @irdl_op_definition
+class ClearStringOp(IRDLOperation):
+    """Set a character buffer to an empty string: dest = ''"""
+
+    name = "ccpp_utils.clear_string"
+
+    dest = operand_def(MemRefType)
+
+    def __init__(self, dest):
+        super().__init__(operands=[dest])
+
+
+@irdl_op_definition
 class WriteErrMsgOp(IRDLOperation):
     """Write a formatted error message into an errmsg buffer.
 
@@ -657,12 +669,159 @@ class CapVarRefOp(IRDLOperation):
         )
 
 
+@irdl_op_definition
+class KindCastOp(IRDLOperation):
+    """Convert a real variable to a different Fortran KIND for a scheme call.
+
+    Represents the statement pair::
+
+        allocate(result, mold=source)            ! arrays only
+        result = real(source, kind=target_kind)
+
+    The *result* SSA value carries the target-kind type and is declared as a
+    local allocatable in the enclosing suite-cap function.  For scalars the
+    allocate is omitted.
+
+    In the write direction (from scheme back to host) use ``KindWriteBackOp``.
+    """
+
+    name = "ccpp_utils.kind_cast"
+
+    source      = operand_def()
+    target_kind = prop_def(StringAttr)
+
+    res = result_def()
+
+    def __init__(
+        self,
+        source: "SSAValue | IRDLOperation",
+        target_kind: "str | StringAttr",
+        result_type,
+    ):
+        if isinstance(target_kind, str):
+            target_kind = StringAttr(target_kind)
+        super().__init__(
+            operands=[source],
+            properties={"target_kind": target_kind},
+            result_types=[result_type],
+        )
+
+
+@irdl_op_definition
+class UnitConvertOp(IRDLOperation):
+    """Allocate a temp and optionally apply a host→scheme unit conversion.
+
+    For ``intent(in)`` / ``intent(inout)``::
+
+        allocate(result, mold=source)
+        result = source <to_scheme_expr>   ! e.g. "source + 273.15"
+
+    For ``intent(out)`` (scheme does not read the value), pass an empty
+    ``to_scheme_expr`` and only the allocation is emitted::
+
+        allocate(result, mold=source)
+
+    The result SSA value is declared as a local allocatable in the enclosing
+    function.  Use ``UnitWriteBackOp`` to convert back after the scheme call.
+    """
+
+    name = "ccpp_utils.unit_convert"
+
+    source         = operand_def()
+    to_scheme_expr = prop_def(StringAttr)  # e.g. "+ 273.15" or "" for out-only
+
+    res = result_def()
+
+    def __init__(
+        self,
+        source: "SSAValue | IRDLOperation",
+        to_scheme_expr: "str | StringAttr",
+        result_type,
+    ):
+        if isinstance(to_scheme_expr, str):
+            to_scheme_expr = StringAttr(to_scheme_expr)
+        super().__init__(
+            operands=[source],
+            properties={"to_scheme_expr": to_scheme_expr},
+            result_types=[result_type],
+        )
+
+
+@irdl_op_definition
+class UnitWriteBackOp(IRDLOperation):
+    """Write a unit-converted value back to the original host variable.
+
+    Represents::
+
+        original_dest = conv_result <to_host_expr>   ! e.g. "conv_result - 273.15"
+        deallocate(conv_result)                       ! arrays only
+
+    Emitted after the scheme call for ``intent(inout)`` / ``intent(out)``
+    arguments that required a unit conversion.
+    """
+
+    name = "ccpp_utils.unit_write_back"
+
+    conv_result   = operand_def()
+    original_dest = operand_def()
+
+    to_host_expr = prop_def(StringAttr)   # e.g. "- 273.15"
+
+    def __init__(
+        self,
+        conv_result:   "SSAValue | IRDLOperation",
+        original_dest: "SSAValue | IRDLOperation",
+        to_host_expr:  "str | StringAttr",
+    ):
+        if isinstance(to_host_expr, str):
+            to_host_expr = StringAttr(to_host_expr)
+        super().__init__(
+            operands=[conv_result, original_dest],
+            properties={"to_host_expr": to_host_expr},
+        )
+
+
+@irdl_op_definition
+class KindWriteBackOp(IRDLOperation):
+    """Write a kind-converted value back to the original host variable.
+
+    Represents::
+
+        original_dest = real(conv_result, kind=original_kind)
+        deallocate(conv_result)                  ! arrays only
+
+    Emitted after the scheme call for ``intent(inout)`` / ``intent(out)``
+    arguments that required a kind conversion.
+    """
+
+    name = "ccpp_utils.kind_write_back"
+
+    conv_result   = operand_def()   # temp in scheme kind
+    original_dest = operand_def()   # block arg in host kind
+
+    original_kind = prop_def(StringAttr)   # host kind name
+
+    def __init__(
+        self,
+        conv_result:   "SSAValue | IRDLOperation",
+        original_dest: "SSAValue | IRDLOperation",
+        original_kind: "str | StringAttr",
+    ):
+        if isinstance(original_kind, str):
+            original_kind = StringAttr(original_kind)
+        super().__init__(
+            operands=[conv_result, original_dest],
+            properties={"original_kind": original_kind},
+        )
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
         StrCmpOp,
         TrimOp,
         HostVarRefOp,
+        ClearStringOp,
         WriteErrMsgOp,
         ArraySectionOp,
         KindDefOp,
@@ -683,6 +842,10 @@ CCPPUtils = Dialect(
         PromotionLoopOp,
         SuiteVariablesOp,
         CapVarRefOp,
+        KindCastOp,
+        KindWriteBackOp,
+        UnitConvertOp,
+        UnitWriteBackOp,
     ],
     [RealKindType, DerivedType],
 )

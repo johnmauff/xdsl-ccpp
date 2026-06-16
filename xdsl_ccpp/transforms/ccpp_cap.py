@@ -341,19 +341,16 @@ class CCPPCAP(ModulePass):
             arg_table = meta_data[scheme_name].getArgTable(table_name)
             for fn_arg in arg_table.getFunctionArguments():
                 has_dims = fn_arg.hasAttr("dimensions") and fn_arg.getAttr("dimensions") > 0
-                # Mirror suite_cap.py's _is_framework_managed_real logic:
-                # only REAL interstitials are framework-managed and excluded.
-                # Non-real (DDT) interstitials like vmr_type ARE suite cap returns.
-                real_interstitial = (
-                    fn_arg.getAttr("type") == "real"
-                    and fn_arg.hasAttr("is_interstitial")
-                )
+                # Mirror suite_cap.py's _is_framework_managed logic:
+                # interstitials of any type (real, integer, DDT) are excluded —
+                # they are stored at suite cap module scope, not returned to caller.
+                is_framework_managed = fn_arg.hasAttr("is_interstitial")
                 if (
                     fn_arg.getAttr("intent") == "out"
                     and fn_arg.name not in all_out_args
                     and not has_dims
                     and not fn_arg.hasAttr("allocatable")
-                    and not real_interstitial
+                    and not is_framework_managed
                 ):
                     all_out_args[fn_arg.name] = fn_arg
 
@@ -516,13 +513,46 @@ class CCPPCAP(ModulePass):
                     # it directly to callees that expect host_standard_ccpp_type.
                     call_inputs.append(new_block.args[1])
                 else:
-                    # Not host-matched (e.g. optional arg with default_value).
+                    # Not host-matched (e.g. optional arg or allocatable DDT arg).
                     # Hoist the alloca to function scope so Fortran can declare it
                     # at the top of the subroutine (not inside an IfOp branch).
                     elem_type = arg_type.element_type
                     shape = list(arg_type.shape.data)
-                    alloc_op = memref.AllocaOp.get(elem_type, shape=shape)
-                    alloc_op.memref.name_hint = f"lc_{bare}"
+                    n_dyn = sum(1 for d in shape if d.data == DYNAMIC_INDEX)
+                    if n_dyn > 0:
+                        # Dynamic-dim alloca requires size operands per MLIR rules.
+                        # Use zero index constants as placeholders — these are
+                        # allocatable args whose storage is managed by the callee.
+                        zero_idx = arith.ConstantOp(
+                            IntegerAttr(0, IndexType()), IndexType()
+                        )
+                        alloc_op = memref.AllocaOp.get(
+                            elem_type, shape=shape,
+                            dynamic_sizes=[zero_idx.result] * n_dyn,
+                        )
+                        alloc_op.memref.name_hint = f"lc_{bare}__alloc"
+                        hoisted_alloc_ops.append(zero_idx)
+                        # Ensure the DDT type's module appears in the USE list.
+                        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DT
+                        _CCPP_DDT_MODS = {
+                            "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
+                        }
+                        if isinstance(elem_type, _DT):
+                            _ddt_mod = _CCPP_DDT_MODS.get(elem_type.type_name.data)
+                            if _ddt_mod:
+                                _key = (elem_type.type_name.data, _ddt_mod)
+                                if _key not in seen_host_globals:
+                                    seen_host_globals.add(_key)
+                                    _g = llvm.GlobalOp(
+                                        llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                        elem_type.type_name.data,
+                                        "external",
+                                    )
+                                    _g.attributes["module"] = StringAttr(_ddt_mod)
+                                    all_host_global_ops.append(_g)
+                    else:
+                        alloc_op = memref.AllocaOp.get(elem_type, shape=shape)
+                        alloc_op.memref.name_hint = f"lc_{bare}"
                     hoisted_alloc_ops.append(alloc_op)
                     call_inputs.append(alloc_op.memref)
 
@@ -687,6 +717,18 @@ class CCPPCAP(ModulePass):
                 if var.hasAttr("standard_name"):
                     host_block_std_names.add(var.getAttr("standard_name").lower())
 
+        # constituent_std_names: standard_names of scheme args with constituent=True.
+        # The host provides these as block args (constituent/tendency arrays);
+        # they have no host metadata entry and should NOT trigger an "unmatched" warning.
+        constituent_std_names: set = set()
+        for _mod_name, props in meta_data.items():
+            if props.getAttr("type") != CCPPType.SCHEME:
+                continue
+            for arg_tbl in props.arg_tables.values():
+                for var in arg_tbl.getFunctionArguments():
+                    if var.hasAttr("constituent") and var.hasAttr("standard_name"):
+                        constituent_std_names.add(var.getAttr("standard_name").lower())
+
         # ddt_instance_map: ddt_type_name → (instance_var_name, module_name)
         # Maps each DDT type name to the MODULE/HOST variable that holds an instance.
         # The set of DDT type names is derived directly from DDT table names — no need
@@ -835,7 +877,9 @@ class CCPPCAP(ModulePass):
                     # Cap-owned module variable (e.g. vmr interstitial DDT)
                     physics_arg_sources.append(("cap_var", std_name))
                 else:
-                    if std_name and std_name not in host_block_std_names:
+                    if std_name and std_name not in host_block_std_names \
+                            and std_name not in CCPP_FRAMEWORK_STD_NAMES \
+                            and std_name not in constituent_std_names:
                         import sys
                         print(
                             f"Warning: '{suite_callee}' arg '{arg_name}' "
@@ -1607,16 +1651,9 @@ class CCPPCAP(ModulePass):
                         continue
                     if std_name in host_var_map_lc:
                         continue  # host var — will be written back, not cap-owned
-                    if std_name and std_name not in cap_var_map:
-                        # Derive Fortran type string from the MLIR element type
-                        from xdsl_ccpp.dialects.ccpp_utils import DerivedType
-                        elem = (ret_type.element_type
-                                if hasattr(ret_type, "element_type") else ret_type)
-                        if isinstance(elem, DerivedType):
-                            ftn_type = f"type({elem.type_name.data})"
-                            var_name = f"{arg_name}_cap_{suite_name}"
-                            cap_var_map[std_name] = (var_name, ret_type, ftn_type)
-                            all_globals.append(ModuleVarOp(var_name, ftn_type, rank=0))
+                    # DDT interstitials (e.g. vmr_type) are now declared at suite
+                    # cap module scope by generateSuiteModuleOp.  The top-level cap
+                    # no longer needs to track or pass them via cap_var_map.
 
         for fn_suffix, table_postfix, callee_suffix, suite_part in lifecycle_specs:
             if suite_part is not None:

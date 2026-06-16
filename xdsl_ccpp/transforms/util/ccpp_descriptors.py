@@ -313,6 +313,7 @@ class BuildMetaDataDescriptions(Visitor):
         known_props = ["standard_name", "long_name", "kind", "intent", "units", "type",
                        "memory_space", "model_var_name", "model_module_name",
                        "model_var_memory_space", "model_var_kind_mismatch",
+                       "model_var_unit_mismatch",
                        "default_value", "promoted_dim"]
         for kp in known_props:
             if kp in arg_op.properties:
@@ -337,6 +338,10 @@ class BuildMetaDataDescriptions(Visitor):
         # 'allocatable' is an allocated variable managed by CCPP
         if "allocatable" in arg_op.properties:
             arg.setAttr("allocatable", True)
+
+        # 'constituent' marks constituent/tendency variables managed by the framework
+        if "constituent" in arg_op.properties:
+            arg.setAttr("constituent", True)
 
         # 'model_var_is_ddt' marks DDT member variables
         if "model_var_is_ddt" in arg_op.properties:

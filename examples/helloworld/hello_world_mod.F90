@@ -46,7 +46,7 @@ contains
       do lev = 1, pver
          do col = 1, ncols
             avg = (temp_interfaces(col,lev) + temp_interfaces(col,lev+1))
-            avg = 1.0_kind_phys + (avg / 2.0_kind_phys)
+            avg = 1.0_kind_phys + (avg / 2.0_kind_phys) - 273.15_kind_phys
             if (temp_midpoints(col, lev) /= avg) then
                write(6, *) col, lev, temp_midpoints(col, lev), avg
                compare_temp = .false.

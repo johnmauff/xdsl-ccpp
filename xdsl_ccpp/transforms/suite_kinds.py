@@ -26,9 +26,18 @@ class MetaKind(ModulePass):
     If no real kinds are present, the ``@ccpp`` module is left unchanged.
 
     Pipeline position: generate-meta-cap → **generate-meta-kinds** → generate-suite-cap
+
+    Parameters
+    ----------
+    kind_map:
+        Optional pipe-separated ``KIND:ISO`` pairs that supplement the built-in
+        ``CCPP_KIND_TO_ISO`` table for this invocation only.
+        Example: ``kind_dyn:REAL32|kind_ext:REAL128``
     """
 
     name = "generate-meta-kinds"
+    extra_kind: str | None = None   # extra kind name, e.g. kind_dyn
+    extra_iso:  str | None = None   # matching ISO_FORTRAN_ENV constant, e.g. REAL32
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         # Locate the @ccpp named module created by generate-meta-cap
@@ -72,7 +81,9 @@ class MetaKind(ModulePass):
         # Build one ccpp.kind op per unique kind name.
         # Known kind names are mapped to their ISO_FORTRAN_ENV equivalents;
         # unrecognised kinds fall back to using the kind name as the value.
-        _KIND_VALUES = CCPP_KIND_TO_ISO
+        _KIND_VALUES = dict(CCPP_KIND_TO_ISO)  # local copy — don't mutate the module-level dict
+        if self.extra_kind and self.extra_iso:
+            _KIND_VALUES[self.extra_kind] = self.extra_iso
         kind_ops = [
             ccpp.KindOp(kind_name, _KIND_VALUES.get(kind_name, kind_name))
             for kind_name in kind_names

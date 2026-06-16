@@ -98,6 +98,15 @@ class ccppMain:
             help="GPU directive backend: 'acc' for OpenACC (default), "
                  "'omp' for OpenMP target offload",
         )
+        parser.add_argument(
+            "--kind-map",
+            action="append",
+            default=[],
+            metavar="KIND:ISO",
+            help="Extra kind-to-ISO mapping, e.g. kind_dyn:REAL32.  "
+                 "May be repeated for multiple mappings.  "
+                 "Supplements the built-in CCPP_KIND_TO_ISO table for this run only.",
+        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -292,9 +301,26 @@ class ccppMain:
         directive = self.options_db.get("directive", "acc")
         gpu_data_pass      = f"generate-gpu-data{{directive={directive}}}"
         gpu_ccpp_cap_pass  = f"generate-gpu-ccpp-cap{{directive={directive}}}"
+        meta_kinds_pass = "generate-meta-kinds"
+        kind_maps = self.options_db.get("kind_map") or []
+        if kind_maps:
+            if len(kind_maps) > 1:
+                import sys
+                print(
+                    "Warning: only the first --kind-map entry is used; "
+                    "multiple extra kinds are not yet supported.",
+                    file=sys.stderr,
+                )
+            k, iso = kind_maps[0].split(":", 1)
+            meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
+        pipeline = (
+            f"generate-meta-cap,generate-host-match,{meta_kinds_pass},"
+            f"generate-suite-cap,{gpu_data_pass},{ccpp_cap_pass},"
+            f"{gpu_ccpp_cap_pass},generate-kinds,strip-ccpp"
+        )
         cmd = (
             f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
-            f" -p generate-meta-cap,generate-host-match,generate-meta-kinds,generate-suite-cap,{gpu_data_pass},{ccpp_cap_pass},{gpu_ccpp_cap_pass},generate-kinds,strip-ccpp"
+            f' -p "{pipeline}"'
             f' -t ftn > "{ftn_out}"'
         )
         self.print_verbose_message(

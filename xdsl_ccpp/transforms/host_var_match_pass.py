@@ -11,8 +11,11 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import TableTypeKind
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_DIMENSIONLESS_UNITS,
     CCPP_INTERNAL_STD_NAMES,
     CCPP_DIM_SUBSTITUTIONS,
+    UNIT_CONVERSIONS,
+    normalize_units,
 )
 
 
@@ -116,6 +119,31 @@ class HostVariableMatchPass(ModulePass):
                 scheme_arg_op.properties["model_var_kind_mismatch"] = StringAttr(
                     f"{scheme_kind}:{host_kind}"
                 )
+
+        # ── 2b. Unit check (real variables only) ───────────────────────────
+        if scheme_type == "real":
+            scheme_units = normalize_units(
+                scheme_arg_op.units.data if scheme_arg_op.units is not None else None
+            )
+            host_units = normalize_units(
+                host_arg_op.units.data if host_arg_op.units is not None else None
+            )
+            both_dimensionless = (
+                scheme_units in CCPP_DIMENSIONLESS_UNITS
+                and host_units in CCPP_DIMENSIONLESS_UNITS
+            )
+            if scheme_units != host_units and not both_dimensionless:
+                key = (scheme_units, host_units)
+                if key in UNIT_CONVERSIONS:
+                    scheme_arg_op.properties["model_var_unit_mismatch"] = StringAttr(
+                        f"{scheme_units}:{host_units}"
+                    )
+                else:
+                    warnings.append(
+                        f"  {ctx}: unit mismatch — "
+                        f"scheme expects '{scheme_units}', host provides '{host_units}' "
+                        f"(no conversion available; passed as-is)"
+                    )
 
         # ── 3. Dimension rank check ─────────────────────────────────────────
         scheme_rank = (
@@ -407,7 +435,26 @@ class HostVariableMatchPass(ModulePass):
                         # These flow between lifecycle phases inside the suite cap
                         # and are managed by the framework rather than the host model.
                         if std_name in produced_in_init:
-                            arg_op.properties["is_interstitial"] = UnitAttr()
+                            producer_arg, producer_scheme, producer_ep = (
+                                produced_in_init[std_name]
+                            )
+                            # A DDT member cannot be an interstitial: the DDT
+                            # instance is host-owned, so its member cannot be
+                            # independently managed at suite cap module scope.
+                            # This path should be unreachable because DDT members
+                            # always have model_var_name set (they have a host match)
+                            # and therefore never reach this elif branch.
+                            if "model_var_is_ddt" in producer_arg.properties:
+                                all_errors.append(
+                                    f"  Scheme '{scheme_name}': argument "
+                                    f"'{arg_op.arg_name.data}' "
+                                    f"(standard_name='{std_name}') is a DDT member "
+                                    f"produced by '{producer_scheme}' ({producer_ep}) "
+                                    f"and cannot be treated as a suite interstitial — "
+                                    f"DDT instance is host-owned."
+                                )
+                            else:
+                                arg_op.properties["is_interstitial"] = UnitAttr()
                         else:
                             all_errors.append(
                                 f"  Scheme '{scheme_name}': argument "
