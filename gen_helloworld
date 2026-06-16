@@ -1,0 +1,8 @@
+#!/bin/bash
+
+export SUITESF='examples/helloworld/hello_world_suite.xml'
+export SCHEMEF='examples/helloworld/hello_scheme.meta,examples/helloworld/temp_adjust.meta'
+export HOSTF='examples/helloworld/hello_world_host.meta,examples/helloworld/hello_world_mod.meta'
+  
+ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF -o examples/helloworld/
+#ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF -o examples/helloworld/ --debug

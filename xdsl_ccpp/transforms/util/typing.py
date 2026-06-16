@@ -42,6 +42,7 @@ class TypeConversions:
     TEXT_TYPE_TO_MLIR_TYPE = {
         "character": builtin.i8,
         "integer": builtin.i32,
+        "logical": builtin.i1,
         "real": builtin.f64,
     }
 

@@ -29,8 +29,10 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
     CCPPArgument,
+    XMLSuite,
     collect_ddt_source_modules,
 )
+from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_KIND_PHYS,
@@ -40,6 +42,159 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_HORIZ_DIM_STD_NAME,
 )
 from xdsl_ccpp.util.visitor import Visitor
+
+
+# ---------------------------------------------------------------------------
+# GroupBoundaryContext
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _FWVarInfo:
+    """Per-variable data collected by GroupBoundaryContext."""
+    standard_name: str
+    local_name: str         # canonical local name (from highest-rank producer)
+    module_rank: int        # max rank across all producers — used for module decl
+    dim_names: list         # dim_names from the highest-rank producer
+    kind: str               # Fortran kind (e.g. 'kind_phys')
+    allocating_group: str   # first group (in XML order) that writes this var
+    is_cross_group: bool    # True: consumed by a group that doesn't produce it
+
+
+class GroupBoundaryContext:
+    """Models which framework variables cross group boundaries in a suite.
+
+    For a suite with groups G1, G2, ..., Gn, a framework variable (real,
+    advected/allocatable/is_interstitial) is **cross-group** when it is
+    written by schemes in one group and read by schemes in a *different*
+    group.  Cross-group variables must live at module scope and persist
+    across group physics calls.
+
+    Answers three questions that previously required ad-hoc patches:
+      1. module_rank(std_name)       — rank for the module-level declaration
+      2. should_allocate(grp, sn)    — which group emits the LazyAllocOp
+      3. is_cross_group(std_name)    — skip ArraySectionOp; sliced in prom loop
+    """
+
+    def __init__(self, vars: dict):
+        self._vars: dict[str, _FWVarInfo] = vars
+
+    # ── Public API ──────────────────────────────────────────────────────────
+
+    def module_rank(self, std_name: str) -> int | None:
+        """Max rank seen across all producers, or None if not a tracked var."""
+        info = self._vars.get(std_name)
+        return info.module_rank if info else None
+
+    def should_allocate(self, group_name: str, std_name: str) -> bool:
+        """True when *group_name* is responsible for the LazyAllocOp."""
+        info = self._vars.get(std_name)
+        return info is not None and info.allocating_group == group_name
+
+    def is_cross_group(self, std_name: str) -> bool:
+        """True when the variable crosses at least one group boundary."""
+        info = self._vars.get(std_name)
+        return info.is_cross_group if info else False
+
+    def dim_names_for(self, std_name: str) -> list:
+        """Dimension names from the highest-rank producer (for allocation)."""
+        info = self._vars.get(std_name)
+        return info.dim_names if info else []
+
+    # ── Factory ─────────────────────────────────────────────────────────────
+
+    @classmethod
+    def build(cls, suite_description, meta_data: dict,
+              std_key_fn, kind_phys: str) -> "GroupBoundaryContext":
+        """Build the context by scanning all _run arg tables in the suite."""
+        # producers[sn] = list of group names that write this var
+        # consumers[sn] = list of group names that read this var
+        producers: dict[str, list[str]] = {}
+        consumers: dict[str, list[str]] = {}
+        raw: dict[str, dict] = {}  # sn -> best-rank info dict
+
+        for group in suite_description:
+            group_name = group.attributes["name"]
+            for scheme in group:
+                scheme_name = scheme.attributes["name"]
+                if scheme_name not in meta_data:
+                    continue
+                tbl_name = scheme_name + "_run"
+                if tbl_name not in meta_data[scheme_name].arg_tables:
+                    continue
+                for arg in (meta_data[scheme_name]
+                            .getArgTable(tbl_name)
+                            .getFunctionArguments()):
+                    # Only real framework-managed vars
+                    if arg.getAttr("type") != "real":
+                        continue
+                    if not (arg.hasAttr("advected") or
+                            arg.hasAttr("allocatable") or
+                            arg.hasAttr("is_interstitial")):
+                        continue
+                    if not arg.hasAttr("standard_name"):
+                        continue
+
+                    sn = std_key_fn(arg)
+                    intent = arg.getAttr("intent") if arg.hasAttr("intent") else ""
+                    dims = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
+                    # dim_names is stored as a list in the descriptor
+                    _raw_dn = arg.getAttr("dim_names") if arg.hasAttr("dim_names") else []
+                    if isinstance(_raw_dn, list):
+                        dim_names = [d.strip() for d in _raw_dn if d.strip()]
+                    else:
+                        dim_names = [d.strip() for d in str(_raw_dn).split(",") if d.strip()]
+
+                    if intent in ("out", "inout"):
+                        if sn not in producers:
+                            producers[sn] = []
+                        if group_name not in producers[sn]:
+                            producers[sn].append(group_name)
+
+                    if intent in ("in", "inout"):
+                        if sn not in consumers:
+                            consumers[sn] = []
+                        if group_name not in consumers[sn]:
+                            consumers[sn].append(group_name)
+
+                    # Keep info from highest-rank occurrence (the authoritative
+                    # shape for the module-level declaration).
+                    if sn not in raw or dims > raw[sn]["rank"]:
+                        raw[sn] = {
+                            "local_name": arg.name,
+                            "rank": dims,
+                            "dim_names": dim_names,
+                            "kind": (arg.getAttr("kind")
+                                     if arg.hasAttr("kind") else kind_phys),
+                        }
+
+        # Determine allocating group and cross-group status
+        vars_out: dict[str, _FWVarInfo] = {}
+        for sn, writer_groups in producers.items():
+            reader_groups = consumers.get(sn, [])
+            is_cross = any(g not in writer_groups for g in reader_groups)
+
+            # First writer in XML suite order = the group that allocates
+            allocating_group = ""
+            for group in suite_description:
+                gn = group.attributes["name"]
+                if gn in writer_groups:
+                    allocating_group = gn
+                    break
+
+            if sn not in raw:
+                continue
+            info = raw[sn]
+            vars_out[sn] = _FWVarInfo(
+                standard_name=sn,
+                local_name=info["local_name"],
+                module_rank=info["rank"],
+                dim_names=info["dim_names"],
+                kind=info["kind"],
+                allocating_group=allocating_group,
+                is_cross_group=is_cross,
+            )
+
+        return cls(vars_out)
 
 
 class GatherMetaFunctionSignatures(Visitor):
@@ -98,12 +253,24 @@ class GenerateSuiteSubroutine(RewritePattern):
                 return True
         return False
 
-    def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops):
+    @staticmethod
+    def _std_key(arg) -> str:
+        """Return the standard_name (lowercase) if set, otherwise the local arg name."""
+        if arg.hasAttr("standard_name"):
+            return arg.getAttr("standard_name").lower()
+        return arg.name
+
+    def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops,
+                               framework_ref_ops=None, suite_use_stubs=None):
         """Find the SSA value to use as the promotion loop's upper bound.
 
-        Searches all_args for an integer argument whose standard_name matches
-        promoted_dim (e.g. 'vertical_layer_dimension' → 'lev').  Returns the
-        corresponding data_ops entry, or None if not found.
+        First searches all_args (current group's scheme args) for an integer
+        with the matching standard_name.  If not found — e.g. when a per-group
+        function needs 'vertical_layer_dimension' but no scheme in the group
+        declares it explicitly — falls back to scanning MODULE-type host tables
+        in self.meta_data.  On a hit it creates a HostVarRefOp, registers it in
+        data_ops, and appends it to framework_ref_ops so the Fortran printer sees
+        the variable before any scheme calls.
         """
         for arg in all_args.values():
             if (
@@ -113,6 +280,39 @@ class GenerateSuiteSubroutine(RewritePattern):
                 and arg.name in data_ops
             ):
                 return data_ops[arg.name]
+
+        # Not found in scheme args — try MODULE-type host tables.
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+        from xdsl_ccpp.transforms.util.typing import TypeConversions
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") != CCPPType.MODULE:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if (var.hasAttr("standard_name")
+                        and var.getAttr("standard_name").lower() == promoted_dim.lower()
+                        and var.getAttr("type") == "integer"):
+                    # Reuse existing SSA if this dim var is already in data_ops
+                    # (e.g. previously added by a prior LazyAllocOp dim lookup).
+                    if var.name in data_ops:
+                        return data_ops[var.name]
+                    # Create a new HostVarRefOp + USE stub.
+                    int_type = TypeConversions.getBaseType("integer")
+                    ref = ccpp_utils.HostVarRefOp(var.name, tbl_name,
+                                                  memref.MemRefType(int_type, []))
+                    ref.res.name_hint = var.name
+                    data_ops[var.name] = ref
+                    if framework_ref_ops is not None:
+                        framework_ref_ops.append(ref)
+                    if suite_use_stubs is not None:
+                        stub = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(1, i8),
+                            var.name, "external",
+                        )
+                        stub.attributes["module"] = StringAttr(tbl_name)
+                        suite_use_stubs.append(stub)
+                    return data_ops[var.name]
         return None
 
     def _build_promoted_call_ops(
@@ -159,10 +359,23 @@ class GenerateSuiteSubroutine(RewritePattern):
 
             if arg.hasAttr("is_promoted"):
                 dim_names = arg.getAttr("dim_names") if arg.hasAttr("dim_names") else []
+                val = data_ops[arg.name]
+                # Module-level vars (HostVarRefOp, ArraySectionOp) live in the full
+                # domain — slice with col_start:col_end.
+                # Block args are 1-based within the function (passed as sections from
+                # the host) — slice with 1:ncol instead.
+                is_module_var = not isinstance(val, SSAValue)
+                # For block args, use the pre-created ccpp_lbound_one alloca
+                # (set up in generateSubroutineCall at function scope so the
+                # Fortran printer can declare it before the promotion loop).
                 for dim in dim_names:
                     pattern += "R"
-                    range_lowers.append(data_ops.get("col_start", loop_var_memref))
-                    range_uppers.append(data_ops.get("col_end", loop_var_memref))
+                    if is_module_var:
+                        range_lowers.append(data_ops.get("col_start", loop_var_memref))
+                        range_uppers.append(data_ops.get("col_end", loop_var_memref))
+                    else:
+                        range_lowers.append(data_ops["ccpp_lbound_one"])
+                        range_uppers.append(data_ops.get("ncol", loop_var_memref))
                 # Promoted dimension(s) appended as scalar index
                 pattern += "S"
                 scalar_indices_list.append(loop_var_memref)
@@ -463,6 +676,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         state_string: str | None = None,
         check_string: str | None = None,
         physics_mode: bool = False,
+        boundary_ctx: "GroupBoundaryContext | None" = None,
+        group_name: str = "",
+        suite_model=None,
     ):
         """Build a single cap subroutine as a func.FuncOp.
 
@@ -485,7 +701,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         arg_tables = {}
         scheme_overrides: dict[str, dict[str, str]] = {}
         all_args = {}
-        std_name_alias: dict = {}  # alias local name → canonical local name
+        suite_use_stubs: list = []  # llvm.GlobalOps for host-module USE statements
         if tgt_subroutine_postfix is not None:
             # Fetch the argument table for each scheme's target subroutine;
             # schemes that don't have this entry point (e.g. no _finalize) are skipped.
@@ -498,33 +714,17 @@ class GenerateSuiteSubroutine(RewritePattern):
                     arg_tables[scheme_name] = table
                     scheme_overrides[scheme_name] = overrides
 
-            # Collect unique args across all schemes, preserving first-seen order.
-            # Also build a standard_name alias map so that two args with the same
-            # standard_name but different local names (e.g. 'temp' and 'temp_layer'
-            # both for potential_temperature) share the same data_ops SSA value.
-            # This avoids Fortran aliasing when the host passes the same actual
-            # array to both positions.
-            seen_std_names: dict = {}  # lowercase std_name → canonical local name
-            std_name_alias: dict = {}  # alias local name → canonical local name
+            # Collect unique args across all schemes, keyed by standard_name.
+            # When two schemes use different local names for the same standard_name
+            # (e.g. 'temp' and 'temp_layer' for potential_temperature), the first-seen
+            # CCPPArgument is canonical — its local name drives the block arg declaration.
             for scheme_name in arg_tables:
                 for fn_arg in arg_tables[scheme_name].getFunctionArguments():
-                    std_name = (
-                        fn_arg.getAttr("standard_name").lower()
-                        if fn_arg.hasAttr("standard_name")
-                        else None
-                    )
-                    if fn_arg.name in all_args:
-                        assert fn_arg.getAttr("type") == all_args[fn_arg.name].getAttr(
-                            "type"
-                        )
+                    std_key = self._std_key(fn_arg)
+                    if std_key in all_args:
+                        assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
                     else:
-                        all_args[fn_arg.name] = fn_arg
-                        if std_name:
-                            if std_name in seen_std_names:
-                                # Same standard_name, different local name — record alias
-                                std_name_alias[fn_arg.name] = seen_std_names[std_name]
-                            else:
-                                seen_std_names[std_name] = fn_arg.name
+                        all_args[std_key] = fn_arg
 
         # in/inout args become block arguments (input parameters to the cap subroutine).
         # out-only scalar args are allocated locally; out array args also become block
@@ -560,45 +760,24 @@ class GenerateSuiteSubroutine(RewritePattern):
             for a in all_args.values()
             if (a.getAttr("intent") in ("in", "inout") or _has_dims(a))
             and a.name not in framework_vars
-            and a.name not in std_name_alias  # aliases share the canonical block arg
         ]
         output_arg_list = [
             a
             for a in all_args.values()
             if a.getAttr("intent") == "out" and not _has_dims(a)
             and a.name not in framework_vars
-            and a.name not in std_name_alias
         ]
 
-        loop_ext_aliases: set = set()
-        # Find the column-count arg by standard_name, not local name — different
-        # schemes use 'ncol', 'foo', 'nbox', etc. for horizontal_loop_extent.
-        _has_loop_extent = any(
-            a.hasAttr("standard_name")
-            and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
-            for a in input_arg_list
-        )
+        # With standard_name keying, all_args has exactly one entry per standard_name.
+        # Look up the loop-extent arg directly — no aliases to filter.
+        ncol_meta_entry = all_args.get(CCPP_LOOP_EXTENT_STD_NAME)
+        _has_loop_extent = ncol_meta_entry is not None
         if physics_mode and _has_loop_extent:
-            ncol_meta = next(
-                a for a in input_arg_list
-                if a.hasAttr("standard_name")
-                and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
-            )
+            ncol_meta = ncol_meta_entry
             ncol_idx = next(
                 i for i, a in enumerate(input_arg_list)
-                if a.hasAttr("standard_name")
-                and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
+                if a is ncol_meta
             )
-
-            # Collect other args with the same standard_name — all are aliases for
-            # the column count and should not become separate block args.
-            loop_ext_aliases = {
-                a.name
-                for a in input_arg_list
-                if a.name != ncol_meta.name
-                and a.hasAttr("standard_name")
-                and a.getAttr("standard_name").lower() == CCPP_LOOP_EXTENT_STD_NAME
-            }
 
             def _make_col_arg(name):
                 a = CCPPArgument(name)
@@ -612,11 +791,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             input_arg_list = (
                 input_arg_list[:ncol_idx]
                 + [_make_col_arg("col_start"), _make_col_arg("col_end")]
-                + [
-                    a
-                    for a in input_arg_list[ncol_idx + 1 :]
-                    if a.name not in loop_ext_aliases
-                ]
+                + input_arg_list[ncol_idx + 1:]
             )
 
         def _arg_dims(a):
@@ -706,8 +881,18 @@ class GenerateSuiteSubroutine(RewritePattern):
             # was renamed to col_start/col_end in input_arg_list).
             if ncol_meta.name != "ncol":
                 data_ops[ncol_meta.name] = ncol_alloc
-            for alias in loop_ext_aliases:
-                data_ops[alias] = ncol_alloc
+            # Pre-create a lower-bound-1 alloca for use in promoted scheme slices.
+            # Block-arg arrays (e.g. temp_layer) are 1-based within the physics
+            # function, so RankReducingSliceOp needs a constant 1 as the lower
+            # bound.  It must live at function scope so the Fortran printer can
+            # declare it before use inside the promotion loop.
+            from xdsl_ccpp.transforms.util.typing import TypeConversions as _TC
+            _ib = _TC.getBaseType("integer")
+            lbound_one_alloc = memref.AllocaOp.get(_ib, shape=[])
+            lbound_one_alloc.memref.name_hint = "ccpp_lbound_one"
+            lbound_one_const = arith.ConstantOp.from_int_and_width(1, 32)
+            lbound_one_store = memref.StoreOp.get(lbound_one_const, lbound_one_alloc, [])
+            data_ops["ccpp_lbound_one"] = lbound_one_alloc
             ncol_compute_ops = [
                 ncol_alloc,
                 load_col_start,
@@ -716,6 +901,9 @@ class GenerateSuiteSubroutine(RewritePattern):
                 one_const,
                 add_op,
                 store_ncol,
+                lbound_one_alloc,
+                lbound_one_const,
+                lbound_one_store,
             ]
 
         initialisation_ops = self.generateVariableInitialisations(data_ops)
@@ -725,29 +913,70 @@ class GenerateSuiteSubroutine(RewritePattern):
         # module-level allocatables by match_and_rewrite and are accessible in
         # all contained subroutines without being passed as arguments.
         # Refs are added in ALL lifecycle phases so scheme calls can find them.
-        # Lazy allocation (ensuring storage exists) is only emitted in physics
-        # mode where ncol/lev are already in scope.
-        # TODO: for _initialize, allocate before _init calls using host module dims.
+        # When suite_model is provided, allocation is emitted in non-physics
+        # (initialize) mode using full-domain dimensions.  In physics mode,
+        # suite-owned arrays are never re-allocated.
         framework_ref_ops = []
         lazy_alloc_ops = []
         if framework_vars:
             for fw_arg in framework_vars.values():
+                _fw_std_key = self._std_key(fw_arg)
+                _scheme_dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
+
+                # Determine the rank of the module-level variable.
+                # SuiteVariableModel is authoritative when present; fall back to
+                # GroupBoundaryContext (legacy) or the scheme's own declared rank.
+                if suite_model is not None:
+                    _entry = suite_model.get(_fw_std_key)
+                    _rank = _entry.rank if _entry is not None else _scheme_dims
+                else:
+                    _rank = (boundary_ctx.module_rank(_fw_std_key)
+                             if boundary_ctx else None) or _scheme_dims
+
                 var_type = TypeConversions.convert(
                     fw_arg.getAttr("type"),
                     fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else None,
-                    fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0,
+                    _rank,
                 )
-                ref_op = ccpp_utils.HostVarRefOp(fw_arg.name, "", var_type)
-                ref_op.res.name_hint = fw_arg.name
+                # Use the canonical suite-owned name (from the first writer) so the
+                # Fortran emits the correct module variable name.  e.g. 'temp_inc'
+                # in a _timestep_initialize scheme maps to module var 'temp_inc_set'.
+                _suite_entry = suite_model.get(_fw_std_key) if suite_model else None
+                _var_name = (
+                    _suite_entry.local_name
+                    if _suite_entry is not None
+                    else fw_arg.name
+                )
+                ref_op = ccpp_utils.HostVarRefOp(_var_name, "", var_type)
+                ref_op.res.name_hint = _var_name
                 framework_ref_ops.append(ref_op)
                 data_ops[fw_arg.name] = ref_op
+                if _var_name != fw_arg.name:
+                    data_ops[_var_name] = ref_op
 
-                # In physics mode, 1D framework arrays are allocated at horizontal_dimension
-                # scope but schemes receive a horizontal_loop_extent slice (col_begin:col_end).
-                # Locate the loop-begin/end SSA values by standard_name since the
-                # local arg names differ across suites (cols/cole vs col_start/col_end).
-                _dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
-                if physics_mode and _dims == 1:
+                # In physics mode, apply (col_start:col_end) ArraySectionOp for
+                # 1D vars whose first allocation dimension is horizontal.  Skip vars
+                # dimensioned by non-horizontal dims (e.g. promote_pcnst(number_of_tracers))
+                # and 2D+ vars (they are handled by RankReducingSliceOp in promotion loops).
+                _horiz_std_names = {
+                    CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME,
+                    CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME,
+                }
+                _has_horiz_first_dim = False
+                if suite_model is not None:
+                    _sentry = suite_model.get(_fw_std_key)
+                    if _sentry is not None and _sentry.alloc_dim_std_names:
+                        _has_horiz_first_dim = (
+                            _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
+                        )
+                else:
+                    # Legacy fallback: suppress for cross-group vars only
+                    _has_horiz_first_dim = not (
+                        boundary_ctx is not None
+                        and boundary_ctx.is_cross_group(_fw_std_key)
+                    )
+                _dims = _rank
+                if physics_mode and _dims == 1 and _has_horiz_first_dim:
                     _col_begin_ssa = next(
                         (data_ops[a.name] for a in all_args.values()
                          if a.hasAttr("standard_name")
@@ -771,43 +1000,119 @@ class GenerateSuiteSubroutine(RewritePattern):
                         framework_ref_ops.append(section)
                         data_ops[fw_arg.name] = section
 
-                # Resolve dimension SSA values from data_ops via standard names
-                dim_names = fw_arg.getAttr("dim_names") if fw_arg.hasAttr("dim_names") else []
+                # Only emit LazyAllocOp in init/register phases — suite-owned vars  Finalize, timestep,
+                # and physics functions must not re-allocate — suite-owned vars are
+                # already live from initialize.
+                _is_alloc_phase = tgt_subroutine_postfix in ("_init", "_register")
+                if _is_alloc_phase:
+                    # Resolve dimension SSA values from data_ops via standard names,
+                    # mapping horizontal_loop_extent → horizontal_dimension for allocation.
+                    _alloc_dim_names = (
+                        suite_model.alloc_dims(_fw_std_key)
+                        if suite_model is not None
+                        else (fw_arg.getAttr("dim_names")
+                              if fw_arg.hasAttr("dim_names") else [])
+                    )
+                    dim_var_refs = []
+                    for dim_std_name in _alloc_dim_names:
+                        # Map horizontal_loop_extent → horizontal_dimension for allocation
+                        alloc_dim = (
+                            CCPP_HORIZ_DIM_STD_NAME
+                            if dim_std_name.lower() == CCPP_LOOP_EXTENT_STD_NAME
+                            else dim_std_name
+                        )
+                        matching = next(
+                            (a for a in all_args.values()
+                             if a.hasAttr("standard_name")
+                             and a.getAttr("standard_name").lower() == alloc_dim.lower()),
+                            None,
+                        )
+                        if matching and matching.name in data_ops:
+                            dim_var_refs.append(data_ops[matching.name])
+                        else:
+                            # Try host MODULE tables (e.g. horizontal_dimension declared
+                            # in a host module but not in any scheme arg table)
+                            ssa = self._find_loop_upper_bound(
+                                alloc_dim, all_args, data_ops,
+                                framework_ref_ops=framework_ref_ops,
+                                suite_use_stubs=suite_use_stubs,
+                            )
+                            if ssa is not None:
+                                dim_var_refs.append(ssa)
+
+                    if dim_var_refs:
+                        kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
+                        init_val = (
+                            fw_arg.getAttr("default_value")
+                            if fw_arg.hasAttr("default_value")
+                            else None
+                        )
+                        lazy_alloc_ops.append(
+                            LazyAllocOp(
+                                var_name=fw_arg.name,
+                                kind_name=kind,
+                                dim_var_refs=dim_var_refs,
+                                init_value=init_val,
+                            )
+                        )
+
+        # In non-physics (initialize) mode with a suite model, allocate ALL
+        # suite-owned array variables, even those not referenced in this
+        # function's arg tables.  This ensures that vars first written in _run
+        # (e.g. to_promote) are allocated before any physics call.
+        if suite_model is not None and tgt_subroutine_postfix in ("_init", "_register"):
+            already_allocated = {op.var_name.data for op in lazy_alloc_ops}
+            for entry in suite_model.suite_owned_vars():
+                if not suite_model.needs_allocation(entry.standard_name):
+                    continue
+                if entry.local_name in already_allocated:
+                    continue
                 dim_var_refs = []
-                for dim_std_name in dim_names:
-                    # Find the arg in all_args whose standard_name matches (case-insensitive)
+                for dim_std_name in entry.alloc_dim_std_names:
+                    alloc_dim = (
+                        CCPP_HORIZ_DIM_STD_NAME
+                        if dim_std_name.lower() == CCPP_LOOP_EXTENT_STD_NAME
+                        else dim_std_name
+                    )
+                    # Try current arg tables first
                     matching = next(
                         (a for a in all_args.values()
                          if a.hasAttr("standard_name")
-                         and a.getAttr("standard_name").lower() == dim_std_name.lower()),
+                         and a.getAttr("standard_name").lower() == alloc_dim.lower()),
                         None,
                     )
                     if matching and matching.name in data_ops:
                         dim_var_refs.append(data_ops[matching.name])
-
-                # Emit lazy allocation whenever dimension SSA values are available
-                # (in-scope args include nbox/ncol in both _init and _run).
+                    else:
+                        ssa = self._find_loop_upper_bound(
+                            alloc_dim, all_args, data_ops,
+                            framework_ref_ops=framework_ref_ops,
+                            suite_use_stubs=suite_use_stubs,
+                        )
+                        if ssa is not None:
+                            dim_var_refs.append(ssa)
                 if dim_var_refs:
-                    kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
-                    init_val = (
-                        fw_arg.getAttr("default_value")
-                        if fw_arg.hasAttr("default_value")
-                        else None
-                    )
+                    kind = entry.kind if entry.kind else CCPP_KIND_PHYS
                     lazy_alloc_ops.append(
                         LazyAllocOp(
-                            var_name=fw_arg.name,
+                            var_name=entry.local_name,
                             kind_name=kind,
                             dim_var_refs=dim_var_refs,
-                            init_value=init_val,
+                            init_value=None,
                         )
                     )
 
-        # Resolve standard_name aliases now that all data_ops entries are final
-        # (ncol_compute_ops, errflg/errmsg, and framework refs are all set).
-        for alias_name, canonical_name in std_name_alias.items():
-            if alias_name not in data_ops and canonical_name in data_ops:
-                data_ops[alias_name] = data_ops[canonical_name]
+        # Populate data_ops aliases so scheme calls using non-canonical local names
+        # (e.g. 'nbox' when canonical is 'ncol', 'temp_layer' when canonical is 'temp')
+        # resolve correctly.  This must run after ncol_alloc is set.
+        if tgt_subroutine_postfix is not None:
+            for _scheme_name in arg_tables:
+                for _fn_arg in arg_tables[_scheme_name].getFunctionArguments():
+                    _sk = self._std_key(_fn_arg)
+                    _canonical = all_args.get(_sk)
+                    if _canonical is not None and _fn_arg.name != _canonical.name:
+                        if _fn_arg.name not in data_ops and _canonical.name in data_ops:
+                            data_ops[_fn_arg.name] = data_ops[_canonical.name]
 
         call_ops = []
         fn_sigs = {}
@@ -866,7 +1171,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             for group_dim, group_schemes in promoted_groups:
                 # Find the loop upper bound from an existing integer arg
                 upper_bound_ref = (
-                    self._find_loop_upper_bound(group_dim, all_args, data_ops)
+                    self._find_loop_upper_bound(group_dim, all_args, data_ops,
+                                                framework_ref_ops=framework_ref_ops,
+                                                suite_use_stubs=suite_use_stubs)
                     if group_dim
                     else None
                 )
@@ -965,7 +1272,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             visibility="public",
         )
 
-        return new_func, list(fn_sigs.values())
+        return new_func, list(fn_sigs.values()), suite_use_stubs
 
     def clone_func_defs(self, func_defs):
         """Create private external declarations for a list of scheme FuncOps.
@@ -994,14 +1301,18 @@ class GenerateSuiteSubroutine(RewritePattern):
         """
         suite_description = self.suite_descriptions[op.suite_name.data]
 
+        # Build SuiteVariableModel early — it is needed by all generateSubroutineCall
+        # invocations to determine module-level ranks and allocation dimensions.
+        suite_model = SuiteVariableModel(suite_description, self.meta_data, self._std_key)
+
         # Each tuple describes one cap subroutine:
         # (scheme postfix to call, generated name postfix, state to write, state to check)
         subroutine_specs = [
+            ("_register", "_register", None, None),
             ("_init", "_initialize", "initialized", "uninitialized"),
             ("_finalize", "_finalize", "uninitialized", "initialized"),
-            ("_run", "_physics", None, "in_time_step"),
-            (None, "_timestep_initial", "in_time_step", "initialized"),
-            (None, "_timestep_final", "initialized", "in_time_step"),
+            ("_timestep_initialize", "_timestep_initial", "in_time_step", "initialized"),
+            ("_timestep_finalize", "_timestep_final", "initialized", "in_time_step"),
         ]
 
         generated_fns = []
@@ -1009,17 +1320,21 @@ class GenerateSuiteSubroutine(RewritePattern):
         check_strings_used = set()
         state_strings_used = set()
 
+        suite_host_use_stubs: list = []  # host-module USE stubs needed by per-group fns
+
         # Generate one FuncOp per subroutine spec and accumulate unique string values
         for tgt_postfix, gen_postfix, state_string, check_string in subroutine_specs:
-            fn, sigs = self.generateSubroutineCall(
+            fn, sigs, stubs = self.generateSubroutineCall(
                 suite_description,
                 tgt_postfix,
                 gen_postfix,
                 state_string=state_string,
                 check_string=check_string,
                 physics_mode=(tgt_postfix == "_run"),
+                suite_model=suite_model,
             )
             generated_fns.append(fn)
+            suite_host_use_stubs.extend(stubs)
             # Deduplicate scheme function signatures by name
             for sig in sigs:
                 fn_sigs_by_name[sig.sym_name.data] = sig
@@ -1028,6 +1343,31 @@ class GenerateSuiteSubroutine(RewritePattern):
             if state_string is not None:
                 state_strings_used.add(state_string)
 
+        # Generate one physics function per XML group.
+        for group in suite_description:
+            group_name = group.attributes["name"]
+            group_suite = XMLSuite(
+                suite_description.attributes["name"],
+                suite_description.attributes["version"],
+            )
+            group_suite.addChild(group)
+
+            fn, sigs, stubs = self.generateSubroutineCall(
+                group_suite,
+                "_run",
+                f"_{group_name}",
+                state_string=None,
+                check_string="in_time_step",
+                physics_mode=True,
+                group_name=group_name,
+                suite_model=suite_model,
+            )
+            generated_fns.append(fn)
+            suite_host_use_stubs.extend(stubs)
+            for sig in sigs:
+                fn_sigs_by_name[sig.sym_name.data] = sig
+            check_strings_used.add("in_time_step")
+
         # Build a mapping from subroutine name → scheme module name so the
         # printer can emit 'use hello_scheme, only: hello_scheme_run' etc.
         # By CCPP convention the module name matches the scheme base name.
@@ -1035,6 +1375,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         sub_to_module: dict[str, str] = {}
         for scheme_name, _ in scheme_entries:
             for postfix in ("_run", "_init", "_finalize",
+                            "_register", "_timestep_initialize", "_timestep_finalize",
                             "_timestep_init", "_timestep_final"):
                 sub_to_module[scheme_name + postfix] = scheme_name
 
@@ -1091,42 +1432,30 @@ class GenerateSuiteSubroutine(RewritePattern):
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)
         ]
 
-        # Collect all framework-managed real arrays across all schemes.
-        # These need module-level allocatable declarations so all lifecycle
-        # subroutines can access them.
-        # Dedup is case-insensitive: Fortran is case-insensitive, so O3 and o3
-        # are the same variable even when different schemes use different cases.
-        seen_fw_vars: set[str] = set()  # lowercase keys
-        allocatable_mod_vars = []
-        # Track is_interstitial vars separately: they persist from _init through
-        # all _run calls and must NOT be deallocated in _timestep_final (only
-        # advected/allocatable vars get refreshed each timestep).
+        # Generate module-level declarations for all suite-owned variables.
+        # interstitial_var_names is kept for SafeDeallocOp filtering below.
+        # suite_model was already built above (before the subroutine_specs loop).
         interstitial_var_names: set[str] = set()  # lowercase
-        for scheme_name, _ in scheme_entries:
-            if scheme_name not in self.meta_data:
+        allocatable_mod_vars = []
+        for entry in suite_model.suite_owned_vars():
+            # DDT-type interstitials (e.g. vmr_type) are still managed by the
+            # top-level cap's cap_var_map for now.  Declaring them here AND keeping
+            # them as block args of initialize/physics causes an unused-variable
+            # conflict.  TODO: fully migrate DDT interstitials to suite cap scope.
+            if entry.is_ddt:
+                interstitial_var_names.add(entry.local_name.lower())
                 continue
-            # Iterate all entry-point tables (e.g. _run, _init, _finalize)
-            for arg_table in self.meta_data[scheme_name].arg_tables.values():
-                for arg in arg_table.getFunctionArguments():
-                    if arg.name.lower() in seen_fw_vars:
-                        continue
-                    if arg.getAttr("type") != "real":
-                        continue
-                    is_fw = (
-                        arg.hasAttr("advected")
-                        or arg.hasAttr("allocatable")
-                        or arg.hasAttr("is_interstitial")
-                    )
-                    if not is_fw:
-                        continue
-                    seen_fw_vars.add(arg.name.lower())
-                    if arg.hasAttr("is_interstitial"):
-                        interstitial_var_names.add(arg.name.lower())
-                    kind = arg.getAttr("kind") if arg.hasAttr("kind") else CCPP_KIND_PHYS
-                    rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-                    allocatable_mod_vars.append(
-                        ModuleVarOp(arg.name, f"real(kind={kind})", rank)
-                    )
+            if entry.fortran_type == "real":
+                kind = entry.kind if entry.kind else CCPP_KIND_PHYS
+                ftn_type = f"real(kind={kind})"
+            elif entry.fortran_type == "integer":
+                ftn_type = "integer"
+            else:
+                ftn_type = entry.fortran_type
+            allocatable_mod_vars.append(
+                ModuleVarOp(entry.local_name, ftn_type, entry.rank)
+            )
+            interstitial_var_names.add(entry.local_name.lower())
 
         # SafeDeallocOp for each framework var goes into _timestep_final.
         # Inject them by patching the generated _timestep_final FuncOp's body.
@@ -1158,9 +1487,19 @@ class GenerateSuiteSubroutine(RewritePattern):
                                 IP.before(ret_op),
                             )
 
+        # Dedup host-module USE stubs (same var from multiple groups)
+        seen_stubs: set = set()
+        deduped_stubs = []
+        for stub in suite_host_use_stubs:
+            key = (stub.sym_name.data, stub.attributes.get("module").data
+                   if stub.attributes.get("module") else "")
+            if key not in seen_stubs:
+                seen_stubs.add(key)
+                deduped_stubs.append(stub)
+
         scheme_mod = builtin.ModuleOp(
             [ccpp_suite_state_global] + string_const_globals
-            + type_import_globals + allocatable_mod_vars + generated_fns + fn_sigs,
+            + type_import_globals + deduped_stubs + allocatable_mod_vars + generated_fns + fn_sigs,
             sym_name=builtin.StringAttr(op.suite_name.data + "_cap"),
         )
 

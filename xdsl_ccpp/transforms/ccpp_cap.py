@@ -1050,7 +1050,6 @@ class CCPPCAP(ModulePass):
             scf.YieldOp(),
         ]
         all_decls = []
-        seen_callees: set = set()  # deduplicate external decls when groups share a callee
 
         # Group per_suite entries by suite_name (preserving first-seen order).
         per_suite_grouped: dict = {}
@@ -1315,13 +1314,11 @@ class CCPPCAP(ModulePass):
                 )
                 part_inner_false = [suite_part_eq, inner_if, scf.YieldOp()]
 
-                if suite_callee not in seen_callees:
-                    seen_callees.add(suite_callee)
-                    decl = func.FuncOp.external(
-                        suite_callee, callee_input_types, callee_output_types
-                    )
-                    decl.attributes["module"] = StringAttr(callee_module)
-                    all_decls.append(decl)
+                decl = func.FuncOp.external(
+                    suite_callee, callee_input_types, callee_output_types
+                )
+                decl.attributes["module"] = StringAttr(callee_module)
+                all_decls.append(decl)
 
             # Outer if for suite_name (after processing all groups)
             true_branch_ops = [trim_suite_part, *part_inner_false[:-1], scf.YieldOp()]
@@ -1528,12 +1525,13 @@ class CCPPCAP(ModulePass):
         )
 
         lifecycle_specs = [
+            ("_ccpp_physics_register", "_register", "_suite_register", None),
             ("_ccpp_physics_initialize", "_init", "_suite_initialize", None),
             ("_ccpp_physics_finalize", "_finalize", "_suite_finalize", None),
-            ("_ccpp_physics_timestep_initial", None, "_suite_timestep_initial", None),
-            ("_ccpp_physics_timestep_final", None, "_suite_timestep_final", None),
-            # Run: one dispatch entry per XML group, all calling the combined _suite_physics.
-            ("_ccpp_physics_run", None, "_suite_physics", "__per_group__"),
+            ("_ccpp_physics_timestep_initial", "_timestep_initialize", "_suite_timestep_initial", None),
+            ("_ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final", None),
+            # Run: per-group dispatch — each group calls its own suite cap function.
+            ("_ccpp_physics_run", None, "_suite_", "__per_group__"),
         ]
 
         all_globals: list = []
@@ -1628,20 +1626,18 @@ class CCPPCAP(ModulePass):
                 # function while keeping per-group state intact at module scope.
                 suite_run_entries = []
                 for suite_name, suite_desc in suite_descriptions.items():
-                    suite_callee = suite_name + callee_suffix
-                    if suite_callee not in public_fns:
-                        continue
-                    # All scheme names from the full suite (needed to match the
-                    # combined callee's full argument list).
-                    all_scheme_names = [
-                        scheme.attributes["name"]
-                        for group in suite_desc
-                        for scheme in group
-                    ]
                     for group in suite_desc:
                         group_name = group.attributes["name"]
+                        # Per-group callee: e.g. temp_suite_suite_physics1
+                        suite_callee = suite_name + callee_suffix + group_name
+                        if suite_callee not in public_fns:
+                            continue
+                        # Only this group's scheme names — matches the per-group callee's signature
+                        group_scheme_names = [
+                            scheme.attributes["name"] for scheme in group
+                        ]
                         suite_run_entries.append(
-                            (suite_name, group_name, suite_callee, all_scheme_names)
+                            (suite_name, group_name, suite_callee, group_scheme_names)
                         )
 
                 if not suite_run_entries:
@@ -1676,6 +1672,12 @@ class CCPPCAP(ModulePass):
                             scheme_names, meta_data, table_postfix
                         )
                         call_ret_types = [t for t, _n, _s in ret_info]
+                        # If no scheme-level outputs (e.g. register when no scheme
+                        # has a _register entry), fall back to the callee's signature
+                        # so errmsg/errflg are included.
+                        if not call_ret_types:
+                            _, call_ret_types, _, _ = public_fns[suite_callee]
+                            ret_info = [(t, None, None) for t in call_ret_types]
                     else:
                         _, call_ret_types, _, _ = public_fns[suite_callee]
                         ret_info = [(t, None, None) for t in call_ret_types]
@@ -1706,32 +1708,6 @@ class CCPPCAP(ModulePass):
                 all_declarations.extend(decls)
 
             all_definitions.append(cap_fn)
-
-        # Generate a stub register function (no suite-level register entry point exists,
-        # but host code calls it before initialize to allow future pre-init setup).
-        # Pattern matches other lifecycle functions: errmsg/errflg are AllocaOps
-        # returned as intent(out) rather than block args.
-        register_block = Block(arg_types=[suite_name_type])
-        register_block.args[0].name_hint = "suite_name"
-        reg_errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
-        reg_errmsg_alloc.memref.name_hint = "errmsg"
-        reg_errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
-        reg_errflg_alloc.memref.name_hint = "errflg"
-        reg_err_const = arith.ConstantOp.from_int_and_width(0, 32)
-        reg_store = memref.StoreOp.get(reg_err_const, reg_errflg_alloc.memref, [])
-        register_block.add_ops([
-            reg_errmsg_alloc, reg_errflg_alloc, reg_err_const, reg_store,
-            func.ReturnOp(reg_errmsg_alloc.memref, reg_errflg_alloc.memref),
-        ])
-        register_region = Region()
-        register_region.add_block(register_block)
-        register_fn = func.FuncOp(
-            camel_name + "_ccpp_physics_register",
-            builtin.FunctionType.from_lists([suite_name_type], [errmsg_type, errflg_type]),
-            register_region,
-            visibility="public",
-        )
-        all_definitions.append(register_fn)
 
         # Generate ccpp_physics_suite_list listing ALL suite names.
         inner_char_type = memref.MemRefType(i8, [DYNAMIC_INDEX])
