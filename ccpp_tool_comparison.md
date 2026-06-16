@@ -46,7 +46,7 @@ is designed to close these gaps.
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 19 pytest + 2 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 19 pytest + 4 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ helloworld only |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -80,65 +80,56 @@ of the following remaining gaps:
   the host match requirement correctly
 - Exercised against capgen, advection, and ddthost examples from ccpp-framework
   with all warnings eliminated
-
-*Also now works:*
 - Allocation code generation for `advected` real arrays — suite cap declares
   module-level `allocatable`, lazily allocates in `_suite_physics` with
   correct dimensions and `default_value` initialization, safely deallocates
   in `_timestep_final`. Verified with Fortran compilation in Docker.
 - Case-insensitive standard name and dimension name matching
-  (e.g. `vertical_LAYER_dimension` matches `vertical_layer_dimension`)
-- Interstitial variable detection and partial support:
-  - Variables produced by `_init` and consumed by `_run` are detected and
-    marked `is_interstitial` — no longer raise "no matching host model variable"
-  - Variables produced by one scheme's `_run` and consumed by another scheme's
-    `_run` (run-to-run interstitials) also detected
-  - Module-level scalar declarations generated for scalar interstitials (e.g. `tcld`)
-  - Module-level allocatable declarations generated for array interstitials
-  - Advection test pipeline now completes successfully; capgen/ddthost blocked
-    only by variable promotion (see below)
-- Nine CCPP metadata attributes now parsed: `allocatable`, `advected`,
-  `constituent`, `protected`, `state_variable`, `default_value`,
-  `diagnostic_name`, `diagnostic_name_fixed`, `active`
-
-*Also now works:*
+- Interstitial variable detection: variables produced by `_init` and consumed
+  by `_run`, or passed between `_run` calls, marked `is_interstitial`
+- Module-level allocatable declarations for array interstitials; interstitial
+  arrays allocated in `_init`, persisted across timesteps (not freed in
+  `_timestep_final`), freed only at `_finalize`
 - **Variable promotion** — scheme 1D, host 2D: suite cap generates a
-  `do vertical_layer_index = 1, lev` loop with `RankReducingSliceOp` producing
-  `temp_layer(col_start:col_end, vertical_layer_index)` slices. Verified against
-  capgen and ddthost examples.
-- **DDT type imports** — suite cap and top-level cap generate `use make_ddt, only: vmr_type`
-  and `use host_ccpp_ddt, only: ccpp_info_t` automatically from source_module
-  tracking added to the frontend
-- **`ccpp_physics_suite_variables` proper implementation** — replaced stub with
-  full per-suite variable lists (input, output, required), computed by direct IR
-  scan across all scheme entry points, matching the expected test values exactly
-- **Fortran calling-convention fix** — all `intent(out)` args (arrays and scalars)
-  now passed positionally rather than as MLIR return values, preserving the
-  scheme's meta-file argument order when scalars and arrays are interspersed
-- **ddthost suite caps compile** — `ddt_suite_cap.F90` and `temp_suite_cap.F90`
-  compile cleanly; Makefile at `examples/ddthost/Makefile.suite_only`
+  `do vertical_layer_index = 1, lev` loop with `RankReducingSliceOp`
+- **DDT type imports** — `use make_ddt, only: vmr_type` etc. auto-generated
+- **`ccpp_physics_suite_variables` full implementation** — per-suite variable
+  lists (input, output, required) computed by direct IR scan
+- HOST-type table variables correctly excluded from USE statement generation
+  (they are caller-provided interfaces, not Fortran modules)
+- DDT instances accessed through HOST-type tables treated as block args
+- Standard_name aliases in suite cap — two scheme args with different local
+  names but the same standard_name (e.g. `temp` and `temp_layer`) share a
+  single block arg, preventing host aliasing with non-contiguous array sections
+- DDT member subscript standard_name resolution (e.g. `index_of_water_vapor...`
+  → local variable name `index_qv`)
+- Framework arrays sectioned to `(col_start:col_end)` in physics calls
+- `ccpp_info_t` pattern for ddthost: lifecycle/run functions accept a single
+  `type(ccpp_info_t), intent(inout)` argument bundling errmsg/errflg/col_start/col_end
+- timestep_initial/final correctly propagate errmsg/errflg to the top-level cap
+- `physics_register` stub generated (required by some host drivers)
+- `ccpp_physics_suite_part_list` returns actual XML group names
 
-*Still missing:*
-- `_initialize` allocation for interstitial arrays — arrays produced by `_init`
-  schemes are unallocated when the scheme tries to write them
-- **Top-level lifecycle cap** (`test_host_ccpp_cap`): `_initialize` and `_finalize`
-  generate `_tmp_N` placeholder arguments instead of real host variables; also
-  `_tmp_N` names are invalid Fortran (start with underscore)
-- DDT type instances (whole DDT as single scheme argument) — partial support
+*Still missing / known gaps:*
+- **Per-group physics dispatch** (see Architectural Gaps below) — currently all
+  XML groups in a suite dispatch to the same combined `_suite_physics` function,
+  which runs ALL schemes for every group call. This is semantically incorrect
+  for multi-group suites and causes physics correctness failures.
 - `allocatable` code generation for non-real types (`ccpp_constituent_properties_t`)
-- `ccpp_cap.py` parallel matching implementation not yet unified with `HostVariableMatchPass`
+- Integer `is_interstitial` scalars handled incorrectly (would generate invalid
+  allocatable declarations — currently no test case exercises this)
+- DDT member `is_interstitial` not validated (potential latent bug if a DDT
+  member is marked interstitial but the DDT instance is a block arg)
 
 This is distinct from the "Variable compatibility validation" row, which covers
 type/kind/dims/intent checking after a match is found.
 
-§ **Compiled Fortran execution tests (Partial):** One end-to-end test exists:
-the HelloWorld example compiles with gfortran inside a Docker container, links
-against real CCPP scheme implementations from ccpp-framework, runs, and verifies
-correct physics results (`compare_temp()` passes). Three calling-convention bugs
-were found and fixed during this process. No tests yet for capgen, advection,
-var_compatibility, or ddthost scenarios. A Docker-based Makefile
-(`examples/helloworld/Makefile`) and pytest unit test suite (`tests/unit/`)
-provide the testing infrastructure for future expansion.
+§ **Compiled Fortran execution tests (Partial):**
+- **helloworld**: compiles, runs, and verifies correct physics results ✅
+- **capgen**: compiles, runs, and **passes all correctness checks** (`STOP 0`) ✅
+- **ddthost**: compiles, runs, and **passes all correctness checks** ✅
+- **advection**: suite caps compile; top-level cap not yet attempted
+- Makefiles exist at `examples/helloworld/`, `examples/capgen/`, `examples/ddthost/`
 
 ‡ **Variable compatibility validation (Partial):** Four checks are implemented
 in `HostVariableMatchPass`: type mismatch (hard error), dimension rank mismatch
@@ -147,6 +138,39 @@ in `HostVariableMatchPass`: type mismatch (hard error), dimension rank mismatch
 for the future unit conversion pass). Not yet covered: dimension name
 compatibility beyond the `horizontal_loop_extent` → `horizontal_dimension`
 framework substitution, unit compatibility checking, and DDT member matching.
+
+---
+
+## Architectural Gaps in xdsl-ccpp
+
+The following are fundamental architectural issues, not individual bugs:
+
+### 1. Per-group physics dispatch (HIGH PRIORITY)
+
+**Problem:** For a suite with groups `physics1` (schemes A+B) and `physics2`
+(schemes C+D), the current top-level cap dispatches BOTH group names to the
+same combined `_suite_physics` function that runs ALL schemes (A+B+C+D).
+This means each scheme runs twice per timestep, producing wrong physics values.
+
+**Root cause of earlier fix:** We previously attempted per-group suite cap
+functions (`_suite_physics1`, `_suite_physics2`) but hit an interstitial variable
+problem — variables produced in one group and consumed in another (e.g. `O3`
+allocated in `_init` and read in `_run`) are declared at module scope in the
+combined suite cap. Splitting the physics function requires careful handling of
+which interstitials are alive at each group boundary.
+
+**Required fix:** Generate true per-group suite cap functions where interstitials
+shared across group boundaries are accessed from module scope, and interstitials
+private to a single group are handled locally.
+
+### 2. MLIR layer debugging overhead
+
+The MLIR IR is "post-hoc" — it faithfully represents the generated Fortran but
+is not used for optimization or scheduling. Every correctness bug requires tracing
+through MLIR ops (`HostVarRefOp`, `ArraySectionOp`, `CopyOp`, etc.) before the
+Fortran output can be understood. The IR adds real debugging overhead. The
+long-term benefit (composable passes, multi-language, GPU backends) justifies
+this cost, but it means fixes are slower than direct string generation would be.
 
 ---
 
@@ -167,33 +191,43 @@ without an architectural rethink — it is a text-templating Fortran generator
 throughout.
 
 ### xdsl-ccpp correctness fixes made during development
-Three calling-convention bugs were found and fixed during Fortran compilation
-testing — bugs that would have prevented any real CCPP physics from running:
+Key calling-convention and generation bugs found and fixed during Fortran
+compilation and runtime testing:
 1. **`inout` double-passing** — MLIR's SSA model was splitting `intent(inout)`
-   arguments into separate in/out actual arguments. Fixed to pass once by
-   reference, matching standard Fortran/CCPP convention.
-2. **Module naming inconsistency** — the generated dispatcher module used
-   snake_case (`hello_world_ccpp_cap`) while subroutine names used CamelCase
-   (`HelloWorld_ccpp_physics_run`). Fixed to use CamelCase throughout.
-3. **Missing scheme USE statements** — the suite cap called scheme subroutines
-   as external procedures without `use scheme_module` statements, causing link
-   failures against real CCPP scheme implementations. Fixed to generate correct
-   USE statements for each scheme's module.
+   arguments into separate in/out actual arguments.
+2. **Module naming inconsistency** — generated dispatcher used wrong case.
+3. **Missing scheme USE statements** — suite cap called schemes without `use`.
+4. **errflg/ntimes routing** — type-based matching routed `ntimes` (integer) to
+   `errflg` (also integer); fixed to use standard_name matching.
+5. **timestep errmsg/errflg** — timestep functions had `std_name=None` in
+   `ret_info`, causing errmsg/errflg to go to orphaned `ccpp_tmp_N` locals
+   instead of the cap's output arguments.
+6. **Standard_name aliasing** — two schemes using different local names for the
+   same standard_name (e.g. `temp`/`temp_layer`) generated duplicate block args,
+   causing Fortran aliasing with non-contiguous array sections.
+7. **Array subscript double-application** — DDT member subscripts like
+   `phys_state%q(:,:,index_qv)` had `(cols:cole,1:pver)` appended as a second
+   set of parentheses (invalid Fortran) instead of merged into one subscript.
 
 These were only caught by compiling and running real Fortran — not by FileCheck.
 
 ### xdsl-ccpp functional gap vs capgen-ng
 The most significant missing capabilities are:
-1. Unit conversion
-2. Optional argument handling
-3. Chunked data layout
-4. Build system integration
-5. Host model integration beyond helloworld
+1. **Per-group physics dispatch** — architecturally broken, causing correctness failures
+2. Unit conversion
+3. Optional argument handling
+4. Chunked data layout
+5. Build system integration
+6. Host model integration beyond helloworld
 
 Variable compatibility validation is now Partial‡ — type, kind, dimension rank,
 and intent checks are implemented.
 
-Rough estimate to close parity: ~25–35 weeks of focused work.
+**Revised rough estimate:**
+Physics correctness parity is now **demonstrated** across helloworld, capgen,
+and ddthost test cases. Remaining gap to full feature parity (unit conversion,
+optional args, build integration, host model integration beyond helloworld) is
+approximately 15–20 weeks.
 
 ### xdsl-ccpp unique advantages
 No other CCPP tool has GPU support. xdsl-ccpp generates correct `!$acc data` and
