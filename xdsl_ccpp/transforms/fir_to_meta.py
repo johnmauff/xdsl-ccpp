@@ -8,6 +8,7 @@ Information that can be derived from FIR:
 - Argument names (from ``fir.bindc_name`` entries in ``arg_attrs``)
 - Argument types and array dimensions (from the FIR function type)
 - Intent (from ``hlfir.declare`` ops in the function body)
+- Optional flag (from ``hlfir.declare`` ``fortran_attrs``)
 - Character length (from the type-parameter operand of ``hlfir.declare``)
 
 Information NOT available from FIR that is silently omitted:
@@ -132,6 +133,25 @@ def _get_uniq_name(op: Operation) -> str | None:
     return None
 
 
+def _get_optional_flag(op: Operation) -> bool:
+    """Return True if the hlfir.declare op carries the Fortran OPTIONAL attribute."""
+    fortran_attrs = op.properties.get("fortran_attrs")
+    if fortran_attrs is None:
+        return False
+    # Registered form: FortranVariableFlagsAttr with .flags set
+    flags = getattr(fortran_attrs, "flags", None)
+    if flags is not None:
+        for flag in flags:
+            if getattr(flag, "value", None) == "optional":
+                return True
+        return False
+    # Unregistered form: raw string in .data
+    value = getattr(fortran_attrs, "value", None)
+    if value is not None and hasattr(value, "data"):
+        return "optional" in value.data
+    return False
+
+
 def _get_intent_str(op: Operation) -> str | None:
     """Extract the intent string (``'in'``, ``'out'``, ``'inout'``) from a
     hlfir.declare op, or return None when no intent is specified.
@@ -209,6 +229,28 @@ def _build_intent_map(
     return intent_map
 
 
+def _build_optional_map(
+    func_body: Block, module_name: str, func_name: str
+) -> set[str]:
+    """Scan ``hlfir.declare`` ops to build a set of arg names with OPTIONAL."""
+    prefix = f"_QM{module_name}F{func_name}E"
+    optional_set: set[str] = set()
+
+    for op in func_body.ops:
+        if not _is_declare_op(op):
+            continue
+        uid = _get_uniq_name(op)
+        if uid is None or not uid.startswith(prefix):
+            continue
+        arg_name = uid[len(prefix) :]
+        if not arg_name:
+            continue
+        if _get_optional_flag(op):
+            optional_set.add(arg_name)
+
+    return optional_set
+
+
 def _build_char_length_map(
     func_body: Block, module_name: str, func_name: str
 ) -> dict[str, str]:
@@ -270,9 +312,11 @@ def _build_arg_table(
 
     intent_map: dict[str, str] = {}
     char_len_map: dict[str, str] = {}
+    optional_set: set[str] = set()
     if func_body is not None:
         intent_map = _build_intent_map(func_body, module_name, func_name)
         char_len_map = _build_char_length_map(func_body, module_name, func_name)
+        optional_set = _build_optional_map(func_body, module_name, func_name)
 
     arg_ops: list[Operation] = []
     for i, fir_type in enumerate(function_type.inputs):
@@ -302,6 +346,9 @@ def _build_arg_table(
         if ccpp_type == "character":
             char_len = char_len_map.get(arg_name, "len=*")
             attr_dict["kind"] = char_len
+
+        if arg_name in optional_set:
+            attr_dict["optional"] = "True"
 
         arg_ops.append(ArgumentOp(arg_name, ccpp_type, attr_dict))
 

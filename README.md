@@ -16,6 +16,12 @@ For development (linting, testing):
 pip install -e ".[dev]"
 ```
 
+For Fortran source cross-validation (`ccpp_validate`):
+
+```bash
+pip install -e ".[validate]"
+```
+
 ## Hello World Example
 
 The `examples/helloworld/` directory contains a complete example with two physics schemes (`hello_scheme` and `temp_adjust`) and a host model.
@@ -109,6 +115,23 @@ python3 examples/helloworld/helloworld_py.py | \
   -t ftn
 ```
 
+## Fortran Source Cross-Validation
+
+`ccpp_validate` checks each scheme's `.meta` file against its `.F90` source, flagging mismatches in argument existence, type, rank, intent, and optional status.
+
+```bash
+ccpp_validate examples/capgen/*.F90
+```
+
+The tool auto-detects the best available Fortran parsing backend:
+
+| Backend | Install | Notes |
+|---------|---------|-------|
+| `fparser2` | `pip install fparser` | Pure Python, no external tools required |
+| `flang` | `brew install llvm` or `conda install -c conda-forge flang` | Production Fortran compiler, more robust |
+
+Use `--backend flang` or `--backend fparser2` to select explicitly. Run with `-v` to see which backend was chosen and which files were skipped.
+
 ## Testing
 
 Tests use [pytest](https://pytest.org) with [LLVM-style FileCheck](https://llvm.org/docs/CommandGuide/FileCheck.html) via the Python `filecheck` package.
@@ -161,3 +184,158 @@ This runs the pipeline from the file's `// RUN:` line, converts the output to CH
 ruff check xdsl_ccpp/
 ruff format xdsl_ccpp/
 ```
+
+---
+
+## CCPP Tool Comparison
+
+### Tool Overview
+
+| Tool | Status | Metadata format | Primary purpose |
+|---|---|---|---|
+| `ccpp_prebuild` | Production, legacy | Old embedded-comment format | Cap generation + build integration |
+| `ccpp_capgen` | Production, current | New `.meta` file format | Cap generation + Fortran validation |
+| `ccpp_capgen-ng` | In development | New `.meta` file format | Unified successor to both above |
+| `xdsl-ccpp` | Prototype | New `.meta` file format | MLIR-based cap generation + GPU |
+
+### Capability Comparison
+
+| Capability | ccpp_prebuild | ccpp_capgen | ccpp_capgen-ng | xdsl-ccpp |
+|---|---|---|---|---|
+| **Core cap generation** | | | | |
+| Basic cap generation | ✅ | ✅ | ✅ | ✅ |
+| DDT host model support | ✅ | ✅ | ✅ | ✅ |
+| Nested suites | ❌ | ✅ | ✅ | ✅ |
+| Python API for suite definition | ❌ | ❌ | ❌ | ✅ |
+| **Metadata format** | | | | |
+| Old embedded-comment format | ✅ | ❌ | ❌ | ❌ |
+| New `.meta` file format | ❌ | ✅ | ✅ | ✅ |
+| **Variable handling** | | | | |
+| Host variable matching | ✅ | ✅ | ✅ | Partial† |
+| Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
+| Unit/kind conversion | ✅ | ✅ | ✅ | ✅ |
+| Optional argument handling | ✅ | Partial | ✅ | ❌ |
+| Chunked data layout | ✅ | ❌ | ✅ | ❌ |
+| Constituent registration | ✅ | ✅ | ✅ | ❌ |
+| **Code correctness** | | | | |
+| Fortran source cross-validation | ❌ | ✅ | ✅ | Partial¶ |
+| Multi-instance support | ❌ | ❌ | ✅ | ❌ |
+| **Build & tooling** | | | | |
+| Build system integration (CMake) | ✅ | ✅ | ✅ | ❌ |
+| Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
+| `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
+| **Testing** | | | | |
+| Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 47 pytest + 3 Makefiles |
+| **Host model integration** | | | | |
+| CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
+| CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
+| **GPU support** | | | | |
+| OpenACC data directives | ❌ | ❌ | ❌ | ✅ |
+| OpenMP target offload | ❌ | ❌ | ❌ | ✅ |
+| Array sections in GPU directives | ❌ | ❌ | ❌ | ✅ |
+| present() / map(alloc:) optimisation | ❌ | ❌ | ❌ | ✅ |
+| All four host/scheme memory combos | ❌ | ❌ | ❌ | ✅ |
+| `--directive acc\|omp` CLI option | ❌ | ❌ | ❌ | ✅ |
+| **Architecture** | | | | |
+| MLIR IR (inspectable, composable) | ❌ | ❌ | ❌ | ✅ |
+| Multi-language host model path | ❌ | ❌ | ❌ | ✅ (architecture ready) |
+
+### Notes on Partial / Missing xdsl-ccpp Capabilities
+
+† **Host variable matching — remaining gaps:**
+- `allocatable` code generation for non-real types (`ccpp_constituent_properties_t`
+  arrays) — the type is declared correctly but constituent registration infrastructure
+  (`ccpp_register_constituents` etc.) is not generated. This is the same gap as
+  "Constituent registration" in the capability table above.
+
+‡ **Variable compatibility validation — remaining gaps:**
+- Dimension name cross-validation beyond `horizontal_loop_extent` →
+  `horizontal_dimension` (other substitutions are resolved but not checked)
+- DDT member type/rank/kind validation (members matched by standard_name only)
+
+¶ **Fortran source cross-validation — what is and isn't checked:**
+
+The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme's
+`.F90` source against its `.meta` file using fparser2 (pure Python) or Flang (FIR):
+
+| Check | Validated | Notes |
+|---|---|---|
+| Argument existence | ✅ | flags args in source but not in `.meta`, and vice versa |
+| Type | ✅ | intrinsic types only (`real`, `integer`, `character`) |
+| Rank (dimension count) | ✅ | both assumed-shape `(:)` and explicit-shape `(n)` |
+| Intent | ✅ | `in`, `out`, `inout` |
+| Optional flag | ✅ | Fortran `OPTIONAL` attribute vs `.meta` `optional = True` |
+| DDT / derived types | ❌ | skipped — requires DDT definition lookup (ccpp_capgen resolves via `.meta`) |
+| Kind names | ❌ | FIR gives `f32`/`f64`; `.meta` uses `kind_phys` — not directly comparable |
+| Dimension names | ❌ | count only; semantic names (`horizontal_loop_extent` etc.) not checked |
+
+§ **Compiled Fortran execution tests:**
+
+| | helloworld | capgen | ddthost | advection | CCPP-SCM (GFS) |
+|---|---|---|---|---|---|
+| Suites | 1 | 2 | 2 | 1 | varies |
+| Schemes | 2 | 6 | 6 | 4 (5 calls) | ~60 |
+| Variables | ~12 | ~30 | ~30 | ~25 | ~800+ |
+| Optional args | 0 | 1 | 0 | 0 | ~550 |
+| Constituents | 0 | 0 | 0 | yes | many |
+| Groups | 1 | 3 | 3 | 1 | ~10 |
+| xdsl-ccpp status | ✅ passes | ✅ passes | ✅ passes | ⚠ blocked | ❌ not yet |
+
+Notes:
+- **helloworld**: exercises kind conversion (`kind_phys`↔`kind_dyn`) and unit conversion (K↔degC)
+- **capgen**: two suites (`temp_suite` + `ddt_suite`), 3 groups, 1 optional arg in `temp_adjust`
+- **ddthost**: same suites as capgen; primary purpose is testing DDT host variables and Python-defined host interface (`ddthost_py.py`)
+- **advection**: caps generate and compile; full end-to-end test blocked on missing constituent registration infrastructure (`ccpp_register_constituents` etc.)
+- **Variables**: unique standard names across all scheme `.meta` files in the example
+
+### xdsl-ccpp Gaps vs capgen-ng
+
+Ranked by impact on real-world use:
+
+1. **Constituent registration infrastructure** — `ccpp_register_constituents`,
+   `ccpp_number_constituents`, `ccpp_initialize_constituents` and related API not
+   generated. Blocks the advection test case and any suite with advected species.
+
+2. **Optional argument handling** — schemes with `optional` dummy arguments are not
+   supported. Required for most real-world physics suites (~550 optional variables
+   in CCPP-SCM).
+
+3. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
+   standalone script and cannot be embedded in a host model build.
+
+4. **Host model integration** — only the three example test cases (helloworld, capgen,
+   ddthost). No integration with CCPP-SCM, CAM-SIMA, or UFS.
+
+5. **Chunked data layout** — column-blocked physics loops not supported.
+
+6. **Multi-instance support** — one suite instance per run only.
+
+### Key Observations
+
+#### ccpp_prebuild vs ccpp_capgen
+`ccpp_prebuild` handles unit conversion, optional args, and chunked data well.
+`ccpp_capgen` adds Fortran source cross-validation and nested suites but lacks
+chunked data and optional args. Neither replaces the other — that is why
+`ccpp_capgen-ng` exists.
+
+#### ccpp_capgen-ng
+Closes all gaps between prebuild and capgen, adds multi-instance support, and has
+1300+ tests. Cannot add GPU support without an architectural rethink — it is a
+text-templating generator throughout.
+
+#### xdsl-ccpp unique advantages
+GPU support (OpenACC and OpenMP) is unique among CCPP tools. The MLIR architecture
+enables future capabilities none of the other tools can reach: multi-language host
+models, additional GPU backends, and composable transformation passes. Physics
+correctness is verified across helloworld, capgen, and ddthost.
+
+### Recommended Use Today
+
+| Use case | Recommended tool |
+|---|---|
+| Production CPU physics — old metadata format | ccpp_prebuild |
+| Production CPU physics — new metadata format | ccpp_capgen |
+| Next-gen CPU physics development | ccpp_capgen-ng |
+| GPU-enabled physics development | xdsl-ccpp |
+| Research into multi-language host models | xdsl-ccpp |

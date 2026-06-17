@@ -16,11 +16,15 @@ dev = [
     "filecheck",
     "pytest",
 ]
+validate = [
+    "fparser",
+]
 
 [project.scripts]
 ccpp_xdsl = "xdsl_ccpp.tools.ccpp_dsl:main"
 ccpp_prebuild = "xdsl_ccpp.tools.ccpp_prebuild:main"
 fir2meta = "xdsl_ccpp.tools.fir2meta:main"
+ccpp_validate = "xdsl_ccpp.tools.ccpp_validate_source:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
