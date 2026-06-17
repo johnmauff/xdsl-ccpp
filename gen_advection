@@ -1,0 +1,8 @@
+#!/bin/bash
+
+export SUITESF='examples/advection/cld_suite.xml'
+export SCHEMEF='examples/advection/const_indices.meta,examples/advection/cld_liq.meta,examples/advection/apply_constituent_tendencies.meta,examples/advection/cld_ice.meta'
+export HOSTF='examples/advection/test_host_data.meta,examples/advection/test_host_mod.meta,examples/advection/test_host.meta'
+
+ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF --host-name test_host -o examples/advection/
+#ccpp_xdsl --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF --host-name test_host -o examples/advection/ --debug
