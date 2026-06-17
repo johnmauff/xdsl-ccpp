@@ -225,7 +225,7 @@ ruff format xdsl_ccpp/
 | Chunked data layout | ✅ | ❌ | ✅ | ❌ |
 | Constituent registration | ✅ | ✅ | ✅ | ❌ |
 | **Code correctness** | | | | |
-| Fortran source cross-validation | ❌ | ✅ | ✅ | Partial¶ |
+| Fortran source cross-validation | ❌ | ✅ | ✅ | ✅¶ |
 | Multi-instance support | ❌ | ❌ | ✅ | ❌ |
 | **Build & tooling** | | | | |
 | Build system integration (CMake) | ✅ | ✅ | ✅ | ❌ |
@@ -275,7 +275,6 @@ The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme'
 | Optional flag | ✅ | Fortran `OPTIONAL` attribute vs `.meta` `optional = True` |
 | Kind names | ✅/❌ | fparser2 backend only; Flang/FIR lowers `kind_phys` to `f32`/`f64` |
 | Dimension names | ✅/❌ | requires `--host-files`; names checked against host standard names |
-| DDT member types | ❌ | members of a DDT are not individually validated |
 
 § **Compiled Fortran execution tests:**
 
