@@ -130,6 +130,13 @@ The tool auto-detects the best available Fortran parsing backend:
 | `fparser2` | `pip install fparser` | Pure Python, no external tools required |
 | `flang` | `brew install llvm` or `conda install -c conda-forge flang` | Production Fortran compiler, more robust |
 
+Pass `--host-files` to enable dimension name validation against the host model registry:
+
+```bash
+ccpp_validate --host-files examples/capgen/test_host.meta,examples/capgen/test_host_mod.meta \
+  examples/capgen/*.F90
+```
+
 Use `--backend flang` or `--backend fparser2` to select explicitly. Run with `-v` to see which backend was chosen and which files were skipped.
 
 ## Testing
@@ -226,7 +233,7 @@ ruff format xdsl_ccpp/
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 47 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 85 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -262,13 +269,13 @@ The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme'
 | Check | Validated | Notes |
 |---|---|---|
 | Argument existence | ✅ | flags args in source but not in `.meta`, and vice versa |
-| Type | ✅ | intrinsic types only (`real`, `integer`, `character`) |
+| Type | ✅ | intrinsic types (`real`, `integer`, `character`) and derived types (`type(name)`) |
 | Rank (dimension count) | ✅ | both assumed-shape `(:)` and explicit-shape `(n)` |
 | Intent | ✅ | `in`, `out`, `inout` |
 | Optional flag | ✅ | Fortran `OPTIONAL` attribute vs `.meta` `optional = True` |
-| DDT / derived types | ❌ | skipped — requires DDT definition lookup (ccpp_capgen resolves via `.meta`) |
-| Kind names | ❌ | FIR gives `f32`/`f64`; `.meta` uses `kind_phys` — not directly comparable |
-| Dimension names | ❌ | count only; semantic names (`horizontal_loop_extent` etc.) not checked |
+| Kind names | ✅/❌ | fparser2 backend only; Flang/FIR lowers `kind_phys` to `f32`/`f64` |
+| Dimension names | ✅/❌ | requires `--host-files`; names checked against host standard names |
+| DDT member types | ❌ | members of a DDT are not individually validated |
 
 § **Compiled Fortran execution tests:**
 
