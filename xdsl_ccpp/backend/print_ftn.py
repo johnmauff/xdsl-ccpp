@@ -49,7 +49,8 @@ from xdsl_ccpp.dialects.ccpp_utils import ModuleVarOp           as CCPPModuleVar
 from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
-from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp       as CCPPPromotionLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import PresentCheckOp         as CCPPPresentCheckOp
+from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp        as CCPPPromotionLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
 
@@ -599,6 +600,15 @@ class ftnPrintContext:
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
+            case CCPPPresentCheckOp():
+                var_name = op.var_name.data
+                self.print(f"if (present({var_name})) then")
+                with self.descend() as inner:
+                    inner.print_block(op.with_body.blocks[0])
+                self.print("else")
+                with self.descend() as inner:
+                    inner.print_block(op.without_body.blocks[0])
+                self.print("end if")
             case CCPPPromotionLoopOp():
                 loop_name  = self._get_variable_name_for(op.loop_var)
                 upper_name = self._get_variable_name_for(op.upper_bound)
@@ -1002,9 +1012,10 @@ class ftnPrintContext:
         results also present in the return list.
         """
         # Collect input arg names from block arg name hints.
-        # Strip the __alloc suffix (added for allocatable args) from the Fortran name.
+        # Strip __alloc (allocatable) or __opt (optional) suffix from the Fortran name.
         input_names = [
             (arg.name_hint[:-7] if arg.name_hint and arg.name_hint.endswith("__alloc")
+             else arg.name_hint[:-5] if arg.name_hint and arg.name_hint.endswith("__opt")
              else (arg.name_hint if arg.name_hint is not None else f"arg_{idx}"))
             for idx, arg in enumerate(bdy.block.args)
         ]
@@ -1087,9 +1098,11 @@ class ftnPrintContext:
             # Exception: memref<memref<?xi8>> is an allocatable character array
             # passed intent(out) — the callee allocates and fills it.
             for arg, arg_name in zip(bdy.block.args, input_names):
-                # Check the original name_hint for the __alloc suffix
+                # Check the original name_hint for the __alloc / __opt suffix
                 is_alloc = (arg.name_hint is not None
                             and arg.name_hint.endswith("__alloc"))
+                is_opt   = (arg.name_hint is not None
+                            and arg.name_hint.endswith("__opt"))
                 type_str = inner.mlir_type_to_ftn_type(arg.type)
                 dim_suffix = inner._ftn_dim_suffix(arg.type)
                 if ftnPrintContext._is_allocatable_char(arg.type):
@@ -1104,6 +1117,8 @@ class ftnPrintContext:
                     intent = "inout"
                 else:
                     intent = "in"
+                if is_opt:
+                    type_str = type_str + ", optional"
                 inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
 
             # Declare output arguments with intent(out) (always scalars)

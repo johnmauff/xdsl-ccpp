@@ -628,6 +628,39 @@ class PromotionLoopOp(IRDLOperation):
 
 
 @irdl_op_definition
+class PresentCheckOp(IRDLOperation):
+    """Fortran if (present(var)) / else / end if for optional promoted args.
+
+    Generates::
+
+        if (present({var_name})) then
+          ... with_body ...
+        else
+          ... without_body ...
+        end if
+
+    ``var_name`` is the bare Fortran variable name used in the present() test.
+    ``with_body`` contains the slice op(s) + scheme call that include the
+    optional arg.  ``without_body`` contains the scheme call that omits it.
+    """
+
+    name = "ccpp_utils.present_check"
+
+    var_name = prop_def(StringAttr)
+
+    with_body    = region_def("single_block")
+    without_body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, var_name: str, with_body_ops: list, without_body_ops: list):
+        super().__init__(
+            properties={"var_name": StringAttr(var_name)},
+            regions=[with_body_ops, without_body_ops],
+        )
+
+
+@irdl_op_definition
 class SuiteVariablesOp(IRDLOperation):
     """Carries the generated ccpp_physics_suite_variables Fortran text.
 
@@ -840,6 +873,7 @@ CCPPUtils = Dialect(
         SafeDeallocOp,
         RankReducingSliceOp,
         PromotionLoopOp,
+        PresentCheckOp,
         SuiteVariablesOp,
         CapVarRefOp,
         KindCastOp,

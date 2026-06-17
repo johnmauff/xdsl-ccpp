@@ -24,6 +24,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ModuleVarOp,
     KeywordCallOp,
     LazyAllocOp,
+    PresentCheckOp,
     PromotionLoopOp,
     RankReducingSliceOp,
     SafeDeallocOp,
@@ -184,7 +185,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         """
         promoted_data_ops = dict(data_ops)  # shallow copy to override promoted args
 
-        rr_slice_ops = []
+        # Separate slice ops by whether the source arg is optional+promoted.
+        # Optional-promoted slices live only in the with_body of PresentCheckOp.
+        # Shared slices are emitted unconditionally before any guard.
+        shared_slice_ops: list = []
+        opt_slice_ops: dict[str, object] = {}  # arg_name -> RankReducingSliceOp
+
         for arg in arg_table.getFunctionArguments():
             needs_slice = arg.hasAttr("is_promoted")
             # Also slice interstitial vars where the module-level allocation rank
@@ -254,13 +260,47 @@ class GenerateSuiteSubroutine(RewritePattern):
                     range_uppers=range_uppers,
                     scalar_indices=scalar_indices_list,
                 )
-                rr_slice_ops.append(slice_op)
                 promoted_data_ops[arg.name] = slice_op
+                is_opt_promoted = arg.hasAttr("optional") and arg.hasAttr("is_promoted")
+                if is_opt_promoted:
+                    opt_slice_ops[arg.name] = slice_op
+                else:
+                    shared_slice_ops.append(slice_op)
 
-        call_ops = self.generateSchemeSubroutineCallOps(
+        # Identify optional promoted args — these require a present() guard.
+        optional_promoted_names = [
+            arg.name
+            for arg in arg_table.getFunctionArguments()
+            if arg.hasAttr("optional") and arg.hasAttr("is_promoted")
+        ]
+
+        if not optional_promoted_names:
+            # No optional promoted args — emit a single call (non-optional path).
+            call_ops = self.generateSchemeSubroutineCallOps(
+                subroutine_name, arg_table, promoted_data_ops, overrides or {}
+            )
+            return shared_slice_ops + call_ops
+
+        optional_promoted_set = set(optional_promoted_names)
+
+        # with_body: slice ops for optional args + call including all optional args
+        with_call_ops = self.generateSchemeSubroutineCallOps(
             subroutine_name, arg_table, promoted_data_ops, overrides or {}
         )
-        return rr_slice_ops + call_ops
+        with_body_ops = list(opt_slice_ops.values()) + with_call_ops
+
+        # without_body: call omitting all optional promoted args
+        without_call_ops = self.generateSchemeSubroutineCallOps(
+            subroutine_name, arg_table, promoted_data_ops, overrides or {},
+            exclude_args=optional_promoted_set,
+        )
+
+        # Use the first optional promoted arg as the guard name (bare Fortran name).
+        # All optional promoted args in a single scheme are treated as a group.
+        # TODO: handle each independently for full generality.
+        guard_name = optional_promoted_names[0]
+        present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
+        return shared_slice_ops + [present_op]
 
     def getArgumentTable(self, scheme_name, subroutine_name):
         """Look up the argument table for a specific scheme subroutine.
@@ -316,7 +356,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         return [err_const, store_op, clear_errmsg]
 
     def generateSchemeSubroutineCallOps(
-        self, subroutine_name, arg_table, data_ops, overrides=None
+        self, subroutine_name, arg_table, data_ops, overrides=None,
+        exclude_args=frozenset(),
     ):
         """Build the IR for a single scheme subroutine call guarded by errflg.
 
@@ -361,8 +402,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         for arg in arg_table.getFunctionArguments():
             intent = arg.getAttr("intent")
             is_overridden = arg.name in overrides
+            is_excluded = arg.name in exclude_args
             if intent == "in" or intent == "inout":
-                if not is_overridden:
+                if not is_overridden and not is_excluded:
                     val = data_ops[arg.name]
                     actual_type = (
                         val.type if isinstance(val, SSAValue) else val.results[0].type
@@ -386,7 +428,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # Fortran passes ALL arguments by reference, including intent(out).
                 # Treating out args as return values breaks positional order when
                 # scalars and arrays are interspersed. Pass everything by reference.
-                if not is_overridden:
+                if not is_overridden and not is_excluded:
                     val = data_ops[arg.name]
                     actual_type = (
                         val.type if isinstance(val, SSAValue) else val.results[0].type
@@ -408,7 +450,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                 in_idx += 1
 
         assert len(out_types) == len(out_tracking)
-        if overrides:
+        has_optional = any(
+            arg.hasAttr("optional") for arg in arg_table.getFunctionArguments()
+        )
+        if overrides or has_optional:
             call_op = KeywordCallOp(
                 subroutine_name,
                 ArrayAttr([StringAttr(n) for n in in_names]),
@@ -686,10 +731,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         # Map each input argument name to its block argument SSA value.
         # Allocatable args get a __alloc suffix on the name_hint so the printer
         # can add the ALLOCATABLE attribute to the Fortran declaration.
+        # Optional args get a __opt suffix so the printer adds the OPTIONAL attribute.
         for idx, fn_arg in enumerate(input_arg_list):
             hint = fn_arg.name
             if fn_arg.hasAttr("allocatable"):
                 hint = fn_arg.name + "__alloc"
+            elif fn_arg.hasAttr("optional"):
+                hint = fn_arg.name + "__opt"
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
 

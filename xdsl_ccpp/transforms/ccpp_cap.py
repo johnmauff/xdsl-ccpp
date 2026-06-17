@@ -37,6 +37,15 @@ from xdsl_ccpp.util.ccpp_conventions import (
 )
 
 
+def _bare(name: str) -> str:
+    """Strip __alloc or __opt suffix from an arg name hint to get the bare Fortran name."""
+    if name.endswith("__alloc"):
+        return name[:-7]
+    if name.endswith("__opt"):
+        return name[:-5]
+    return name
+
+
 @dataclass(frozen=True)
 class CCPPCAP(ModulePass):
     """MLIR pass that generates a single combined CCPP physics cap dispatcher module.
@@ -476,8 +485,8 @@ class CCPPCAP(ModulePass):
                         .getArgTable(entry_name)
                         .getFunctionArguments()
                     ):
-                        # Strip __alloc suffix used for allocatable arg name_hints
-                        bare = fn_arg.name.replace("__alloc", "")
+                        # Strip __alloc/__opt suffix used for allocatable/optional name_hints
+                        bare = _bare(fn_arg.name)
                         if bare not in std_name_of and fn_arg.hasAttr("standard_name"):
                             std_name_of[bare] = fn_arg.getAttr("standard_name").lower()
 
@@ -486,7 +495,7 @@ class CCPPCAP(ModulePass):
             call_inputs: list = []
 
             for arg_name, arg_type in zip(callee_input_names, callee_input_types):
-                bare = arg_name.replace("__alloc", "")
+                bare = _bare(arg_name)
                 std_name = std_name_of.get(bare)
 
                 if std_name and std_name in host_var_map:
@@ -788,9 +797,9 @@ class CCPPCAP(ModulePass):
             # col_end) that don't appear directly in any scheme _run table but are
             # part of the suite cap's signature for loop bounds / array sectioning.
             for callee_arg in callee_input_names:
-                if callee_arg in std_name_of:
+                if _bare(callee_arg) in std_name_of:
                     continue
-                bare = callee_arg.replace("__alloc", "")
+                bare = _bare(callee_arg)
                 for tbl_name, props in meta_data.items():
                     if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
                         continue
@@ -819,7 +828,7 @@ class CCPPCAP(ModulePass):
                     .getArgTable(table_name)
                     .getFunctionArguments()
                 ):
-                    bare_name = fn_arg.name.replace("__alloc", "")
+                    bare_name = _bare(fn_arg.name)
                     if bare_name not in local_to_host_info and fn_arg.hasAttr(
                         "model_var_name"
                     ):
@@ -832,7 +841,7 @@ class CCPPCAP(ModulePass):
             # Classify each callee input arg using match pass results as primary source.
             physics_arg_sources = []
             for arg_name in callee_input_names:
-                bare = arg_name.replace("__alloc", "")
+                bare = _bare(arg_name)
                 std_name = std_name_of.get(bare) or std_name_of.get(arg_name)
 
                 if bare in local_to_host_info and not (
@@ -879,7 +888,8 @@ class CCPPCAP(ModulePass):
                 else:
                     if std_name and std_name not in host_block_std_names \
                             and std_name not in CCPP_FRAMEWORK_STD_NAMES \
-                            and std_name not in constituent_std_names:
+                            and std_name not in constituent_std_names \
+                            and not arg_name.endswith("__opt"):
                         import sys
                         print(
                             f"Warning: '{suite_callee}' arg '{arg_name}' "
@@ -892,7 +902,7 @@ class CCPPCAP(ModulePass):
 
             non_host_args = [
                 (callee_input_names[i], callee_input_types[i],
-                 std_name_of.get(callee_input_names[i].replace("__alloc", ""),
+                 std_name_of.get(_bare(callee_input_names[i]),
                                  callee_input_names[i]))
                 for i, src in enumerate(physics_arg_sources)
                 if src[0] == "block"
@@ -1293,18 +1303,20 @@ class CCPPCAP(ModulePass):
 
                 # ── Build call args in callee order ───────────────────────────
                 call_args = []
+                call_arg_bare_names = []
                 for i, arg_name in enumerate(callee_input_names):
                     src = physics_arg_sources[i]
                     if src[0] in ("host", "ddt_member", "cap_var"):
                         call_args.append(host_var_ref_results[arg_name])
                     else:
                         # Block arg: use canonical name if this arg was deduplicated
-                        bare = arg_name.replace("__alloc", "")
+                        bare = _bare(arg_name)
                         std = std_name_of.get(bare, bare)
                         canonical = non_host_std_to_canonical.get(std, arg_name)
                         # Fall back to arg_name if canonical not in block_arg_map
                         key = canonical if canonical in block_arg_map else arg_name
                         call_args.append(block_arg_map[key])
+                    call_arg_bare_names.append(_bare(arg_name))
 
                 # ── Verify argument count matches callee signature ─────────────
                 if len(call_args) != len(callee_input_types):
@@ -1320,7 +1332,29 @@ class CCPPCAP(ModulePass):
                 # ── Inner if for suite_part ───────────────────────────────────
                 suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
 
-                call_op = func.CallOp(suite_callee, call_args, callee_output_types)
+                # Use keyword-argument call when any suite cap input is optional
+                # so that Fortran correctly forwards the OPTIONAL absence status.
+                suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
+                if suite_has_optional:
+                    from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as _KWCallOp
+                    from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr
+                    # Derive result keyword names from output types
+                    _result_names = [
+                        "errmsg" if rt == errmsg_type
+                        else "errflg" if rt == errflg_type
+                        else f"_out_{_i}"
+                        for _i, rt in enumerate(callee_output_types)
+                    ]
+                    call_op = _KWCallOp(
+                        suite_callee,
+                        ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
+                        ArrayAttr([StringAttr(n) for n in _result_names]),
+                        DictionaryAttr({}),
+                        call_args,
+                        callee_output_types,
+                    )
+                else:
+                    call_op = func.CallOp(suite_callee, call_args, callee_output_types)
 
                 # CapVarRefOps for inout-echo returns must be placed BEFORE the call
                 # so the printer can resolve their names when processing return positions.

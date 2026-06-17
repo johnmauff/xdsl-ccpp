@@ -221,7 +221,7 @@ ruff format xdsl_ccpp/
 | Host variable matching | ✅ | ✅ | ✅ | Partial† |
 | Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
 | Unit/kind conversion | ✅ | ✅ | ✅ | ✅ |
-| Optional argument handling | ✅ | Partial | ✅ | ❌ |
+| Optional argument handling | ✅ | Partial | ✅ | ✅ |
 | Chunked data layout | ✅ | ❌ | ✅ | ❌ |
 | Constituent registration | ✅ | ✅ | ✅ | ❌ |
 | **Code correctness** | | | | |
@@ -233,7 +233,7 @@ ruff format xdsl_ccpp/
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 85 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 80 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -303,19 +303,15 @@ Ranked by impact on real-world use:
    `ccpp_number_constituents`, `ccpp_initialize_constituents` and related API not
    generated. Blocks the advection test case and any suite with advected species.
 
-2. **Optional argument handling** — schemes with `optional` dummy arguments are not
-   supported. Required for most real-world physics suites (~550 optional variables
-   in CCPP-SCM).
-
-3. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
+2. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
    standalone script and cannot be embedded in a host model build.
 
-4. **Host model integration** — only the three example test cases (helloworld, capgen,
+3. **Host model integration** — only the three example test cases (helloworld, capgen,
    ddthost). No integration with CCPP-SCM, CAM-SIMA, or UFS.
 
-5. **Chunked data layout** — column-blocked physics loops not supported.
+4. **Chunked data layout** — column-blocked physics loops not supported.
 
-6. **Multi-instance support** — one suite instance per run only.
+5. **Multi-instance support** — one suite instance per run only.
 
 ### Key Observations
 
