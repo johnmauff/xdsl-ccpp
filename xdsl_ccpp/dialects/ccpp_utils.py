@@ -676,6 +676,28 @@ class SuiteVariablesOp(IRDLOperation):
         super().__init__(properties={"body": StringAttr(body)})
 
 
+@irdl_op_definition
+class ConstituentApiOp(IRDLOperation):
+    """Carries generated constituent registration API Fortran text.
+
+    The `body` attribute holds the complete pre-built Fortran routines as a
+    string; the printer emits them verbatim inside the module's CONTAINS section.
+    The `public_names` attribute lists subroutine/function names to export with
+    `public ::` declarations.
+    """
+
+    name = "ccpp_utils.constituent_api"
+
+    body         = prop_def(StringAttr, prop_name="body")
+    public_names = prop_def(ArrayAttr,  prop_name="public_names")
+
+    def __init__(self, body: str, public_names_list: list):
+        super().__init__(properties={
+            "body":         StringAttr(body),
+            "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
+        })
+
+
 def ModuleTypeVarOp(var_name: str, fortran_type: str) -> "ModuleVarOp":  # type: ignore[misc]
     """Deprecated: use ModuleVarOp(var_name, fortran_type) instead."""
     return ModuleVarOp(var_name, fortran_type, rank=0)
@@ -875,6 +897,7 @@ CCPPUtils = Dialect(
         PromotionLoopOp,
         PresentCheckOp,
         SuiteVariablesOp,
+        ConstituentApiOp,
         CapVarRefOp,
         KindCastOp,
         KindWriteBackOp,

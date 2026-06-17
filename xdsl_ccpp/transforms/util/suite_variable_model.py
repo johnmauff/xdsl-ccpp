@@ -219,6 +219,16 @@ class SuiteVariableModel:
             if std_name in self._suite_owned:
                 continue
 
+            # DDT allocatable arrays (e.g. ccpp_constituent_properties_t from
+            # _register) are passed as arguments by the ccpp cap, not owned by
+            # the suite cap.  Skip them so no spurious module-level scalar var
+            # is emitted in the suite cap.
+            _arg_type_str = arg.getAttr("type") if arg.hasAttr("type") else "real"
+            _primitive_types = {"real", "integer", "character", "logical", "complex"}
+            if (arg.hasAttr("allocatable")
+                    and _arg_type_str.lower() not in _primitive_types):
+                continue
+
             # Framework-managed arrays (advected/allocatable) are always
             # suite-owned — the suite cap allocates them regardless of whether
             # the first scheme entry writes (out) or reads/writes (inout) them.

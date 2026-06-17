@@ -52,6 +52,7 @@ from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReduc
 from xdsl_ccpp.dialects.ccpp_utils import PresentCheckOp         as CCPPPresentCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp        as CCPPPromotionLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
+from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp      as CCPPConstituentApiOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
 
 
@@ -621,6 +622,9 @@ class ftnPrintContext:
                 # Emit each line with the current indentation prefix.
                 for line in op.body.data.splitlines():
                     self.print(line)
+            case CCPPConstituentApiOp():
+                for line in op.body.data.splitlines():
+                    self.print(line)
             case CCPPRankReducingSliceOp():
                 # Register the Fortran array-section expression for the result.
                 # Scan dim_pattern left-to-right, consuming range pairs and
@@ -861,6 +865,11 @@ class ftnPrintContext:
             "ccpp_physics_suite_variables"
             for op in body.ops
             if isa(op, CCPPSuiteVariablesOp)
+        ] + [
+            name.data
+            for op in body.ops
+            if isa(op, CCPPConstituentApiOp)
+            for name in op.public_names.data
         ]
         for proc in public_procs:
             self.print(f"public :: {proc}", prefix="  ")
@@ -869,6 +878,7 @@ class ftnPrintContext:
         has_func_defs = any(
             (isa(op, func.FuncOp) and not op.is_declaration)
             or isa(op, CCPPSuiteVariablesOp)
+            or isa(op, CCPPConstituentApiOp)
             for op in body.ops
         )
         if has_func_defs:
@@ -1012,10 +1022,11 @@ class ftnPrintContext:
         results also present in the return list.
         """
         # Collect input arg names from block arg name hints.
-        # Strip __alloc (allocatable) or __opt (optional) suffix from the Fortran name.
+        # Strip __alloc (allocatable), __opt (optional), or __in (intent-in array) suffix.
         input_names = [
             (arg.name_hint[:-7] if arg.name_hint and arg.name_hint.endswith("__alloc")
              else arg.name_hint[:-5] if arg.name_hint and arg.name_hint.endswith("__opt")
+             else arg.name_hint[:-4] if arg.name_hint and arg.name_hint.endswith("__in")
              else (arg.name_hint if arg.name_hint is not None else f"arg_{idx}"))
             for idx, arg in enumerate(bdy.block.args)
         ]
@@ -1098,11 +1109,13 @@ class ftnPrintContext:
             # Exception: memref<memref<?xi8>> is an allocatable character array
             # passed intent(out) — the callee allocates and fills it.
             for arg, arg_name in zip(bdy.block.args, input_names):
-                # Check the original name_hint for the __alloc / __opt suffix
+                # Check the original name_hint for the __alloc / __opt / __in suffix
                 is_alloc = (arg.name_hint is not None
                             and arg.name_hint.endswith("__alloc"))
                 is_opt   = (arg.name_hint is not None
                             and arg.name_hint.endswith("__opt"))
+                is_in    = (arg.name_hint is not None
+                            and arg.name_hint.endswith("__in"))
                 type_str = inner.mlir_type_to_ftn_type(arg.type)
                 dim_suffix = inner._ftn_dim_suffix(arg.type)
                 if ftnPrintContext._is_allocatable_char(arg.type):
@@ -1111,6 +1124,8 @@ class ftnPrintContext:
                 elif is_alloc:
                     type_str = type_str + ", allocatable"
                     intent = "inout"
+                elif is_in:
+                    intent = "in"
                 elif dim_suffix:
                     intent = "inout"
                 elif arg in inout_block_args:

@@ -223,7 +223,7 @@ ruff format xdsl_ccpp/
 | Unit/kind conversion | ✅ | ✅ | ✅ | ✅ |
 | Optional argument handling | ✅ | Partial | ✅ | ✅ |
 | Chunked data layout | ✅ | ❌ | ✅ | ❌ |
-| Constituent registration | ✅ | ✅ | ✅ | ❌ |
+| Constituent registration | ✅ | ✅ | ✅ | ✅ |
 | **Code correctness** | | | | |
 | Fortran source cross-validation | ❌ | ✅ | ✅ | ✅¶ |
 | Multi-instance support | ❌ | ❌ | ✅ | ❌ |
@@ -233,7 +233,7 @@ ruff format xdsl_ccpp/
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 80 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 101 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -251,10 +251,9 @@ ruff format xdsl_ccpp/
 ### Notes on Partial / Missing xdsl-ccpp Capabilities
 
 † **Host variable matching — remaining gaps:**
-- `allocatable` code generation for non-real types (`ccpp_constituent_properties_t`
-  arrays) — the type is declared correctly but constituent registration infrastructure
-  (`ccpp_register_constituents` etc.) is not generated. This is the same gap as
-  "Constituent registration" in the capability table above.
+- Dimension name cross-validation beyond `horizontal_loop_extent` →
+  `horizontal_dimension` (other substitutions are resolved but not checked)
+- DDT member type/rank/kind validation (members matched by standard_name only)
 
 ‡ **Variable compatibility validation — remaining gaps:**
 - Dimension name cross-validation beyond `horizontal_loop_extent` →
@@ -286,32 +285,28 @@ The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme'
 | Optional args | 0 | 1 | 0 | 0 | ~550 |
 | Constituents | 0 | 0 | 0 | yes | many |
 | Groups | 1 | 3 | 3 | 1 | ~10 |
-| xdsl-ccpp status | ✅ passes | ✅ passes | ✅ passes | ⚠ blocked | ❌ not yet |
+| xdsl-ccpp status | ✅ passes | ✅ passes | ✅ passes | ✅ cap compiles | ❌ not yet |
 
 Notes:
 - **helloworld**: exercises kind conversion (`kind_phys`↔`kind_dyn`) and unit conversion (K↔degC)
 - **capgen**: two suites (`temp_suite` + `ddt_suite`), 3 groups, 1 optional arg in `temp_adjust`
 - **ddthost**: same suites as capgen; primary purpose is testing DDT host variables and Python-defined host interface (`ddthost_py.py`)
-- **advection**: caps generate and compile; full end-to-end test blocked on missing constituent registration infrastructure (`ccpp_register_constituents` etc.)
+- **advection**: caps generate and compile including constituent registration API (`ccpp_register_constituents`, `ccpp_number_constituents`, `ccpp_initialize_constituents`, etc.)
 - **Variables**: unique standard names across all scheme `.meta` files in the example
 
 ### xdsl-ccpp Gaps vs capgen-ng
 
 Ranked by impact on real-world use:
 
-1. **Constituent registration infrastructure** — `ccpp_register_constituents`,
-   `ccpp_number_constituents`, `ccpp_initialize_constituents` and related API not
-   generated. Blocks the advection test case and any suite with advected species.
-
-2. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
+1. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
    standalone script and cannot be embedded in a host model build.
 
-3. **Host model integration** — only the three example test cases (helloworld, capgen,
-   ddthost). No integration with CCPP-SCM, CAM-SIMA, or UFS.
+2. **Host model integration** — only the four example test cases (helloworld, capgen,
+   ddthost, advection). No integration with CCPP-SCM, CAM-SIMA, or UFS.
 
-4. **Chunked data layout** — column-blocked physics loops not supported.
+3. **Chunked data layout** — column-blocked physics loops not supported.
 
-5. **Multi-instance support** — one suite instance per run only.
+4. **Multi-instance support** — one suite instance per run only.
 
 ### Key Observations
 

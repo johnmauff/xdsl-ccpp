@@ -11,6 +11,7 @@ from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     CapVarRefOp,
+    ConstituentApiOp,
     HostVarRefOp,
     ModuleVarOp,
     SetStringOp,
@@ -38,11 +39,13 @@ from xdsl_ccpp.util.ccpp_conventions import (
 
 
 def _bare(name: str) -> str:
-    """Strip __alloc or __opt suffix from an arg name hint to get the bare Fortran name."""
+    """Strip __alloc, __opt, or __in suffix from an arg name hint to get the bare Fortran name."""
     if name.endswith("__alloc"):
         return name[:-7]
     if name.endswith("__opt"):
         return name[:-5]
+    if name.endswith("__in"):
+        return name[:-4]
     return name
 
 
@@ -119,17 +122,23 @@ class CCPPCAP(ModulePass):
         through the descriptor layer, avoiding subtle descriptor-build issues.
 
         Filtering rules (applied per ArgumentOp):
-        - Skip if is_interstitial is set (scheme-internal variable)
-        - Skip if standard_name is in _CCPP_INTERNAL (framework scalars)
+        - Skip if standard_name belongs to ANY interstitial arg (producer or
+          consumer) — collected in a first pass across all scheme tables
+        - Skip if standard_name is in _INTERNAL (horizontal_loop_extent only;
+          ccpp_constituents / ccpp_constituent_tendencies are physics arrays
+          and must appear in the list)
         - Skip if standard_name is in protected_std_names (dimension params)
         - ccpp_error_code/ccpp_error_message always go to output-only
-        - Skip if standard_name not in host_std_names (no host counterpart)
-        - Arrays (dimensions > 0) go to both input and output
-        - Scalars go to input/output/both by declared intent
+        - advected=.true. args go to both input and output regardless of intent
+        - All others go to input/output by declared intent
+        - After the main scan a dimension-name sweep adds vars that appear only
+          as array dimension sizes (e.g. number_of_ccpp_constituents)
         - Union across all entry points (_init, _run, _finalize, etc.)
         """
         _CCPP_ERR = CCPP_ERROR_STD_NAMES
-        _INTERNAL = CCPP_FRAMEWORK_STD_NAMES
+        # Only the loop-extent scalar is truly framework-internal and excluded.
+        # The constituent-array names are real physics arrays and must appear.
+        _INTERNAL = frozenset({"horizontal_loop_extent"})
         CM = 36  # character length matching cm=36 in test driver
 
         suite_vars: dict = {}
@@ -140,10 +149,34 @@ class CCPPCAP(ModulePass):
                 for scheme in group:
                     scheme_names.add(scheme.attributes["name"])
 
+            # Pass 1: collect every standard_name that is marked is_interstitial
+            # on ANY occurrence.  host_var_match_pass marks the CONSUMER (_run)
+            # but not the PRODUCER (_init), so we need the full set to exclude
+            # both sides of an intra-suite interstitial (e.g. tcld).
+            interstitial_std_names: set = set()
+            for tbl_op in ccpp_mod.body.ops:
+                if not isa(tbl_op, ccpp.TablePropertiesOp):
+                    continue
+                if tbl_op.table_type.data != "scheme":
+                    continue
+                if tbl_op.table_name.data not in scheme_names:
+                    continue
+                for arg_table_op in tbl_op.body.ops:
+                    if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                        continue
+                    for arg_op in arg_table_op.body.ops:
+                        if not isa(arg_op, ccpp.ArgumentOp):
+                            continue
+                        if arg_op.properties.get("is_interstitial") is not None:
+                            sn_prop = arg_op.properties.get("standard_name")
+                            if sn_prop is not None:
+                                interstitial_std_names.add(sn_prop.data.lower())
+
             input_vars: set = set()
             output_vars: set = set()
+            all_dim_names: set = set()
 
-            # Scan scheme TablePropertiesOp nodes in the IR directly
+            # Pass 2: build input/output variable sets
             for tbl_op in ccpp_mod.body.ops:
                 if not isa(tbl_op, ccpp.TablePropertiesOp):
                     continue
@@ -161,20 +194,23 @@ class CCPPCAP(ModulePass):
                         if not isa(arg_op, ccpp.ArgumentOp):
                             continue
 
-                        # Read all properties directly from the dict to avoid
-                        # any issues with xDSL's formal property accessor layer.
                         sn_prop = arg_op.properties.get("standard_name")
                         if sn_prop is None:
                             continue
                         std_name = sn_prop.data.lower()
 
-                        # is_interstitial: UnitAttr when set, None when absent
-                        is_int = arg_op.properties.get("is_interstitial")
-                        if is_int is not None:
+                        # Collect dimension names for the post-scan sweep
+                        dim_names_prop = arg_op.properties.get("dim_names")
+                        if dim_names_prop is not None:
+                            for dn in dim_names_prop.data.split(","):
+                                dn = dn.strip().lower()
+                                # Skip bare colons and integer literals
+                                if dn and dn[0].isalpha():
+                                    all_dim_names.add(dn)
+
+                        if std_name in interstitial_std_names:
                             continue
                         if std_name in _INTERNAL:
-                            continue
-                        if std_name in protected_std_names:
                             continue
 
                         # Error flags → output-only special case
@@ -182,22 +218,21 @@ class CCPPCAP(ModulePass):
                             output_vars.add(std_name)
                             continue
 
-                        # Exclude args with no matching host variable
-                        if std_name not in host_std_names:
-                            continue
-
                         # intent: StringAttr when set
                         intent_prop = arg_op.properties.get("intent")
                         intent = intent_prop.data.lower() if intent_prop is not None else None
 
-                        # dimensions: IntAttr (0 = scalar, absent = scalar)
-                        dims_prop = arg_op.properties.get("dimensions")
-                        has_dims = (
-                            dims_prop is not None and dims_prop.data > 0
-                        )
+                        if std_name in protected_std_names:
+                            # Protected vars are blocked from input, but a scheme
+                            # may still write one as output (e.g. constituent-index
+                            # arrays like test_banana_constituent_indices).
+                            if intent in ("out", "inout"):
+                                output_vars.add(std_name)
+                            continue
 
-                        if has_dims:
-                            # Arrays are always pass-by-reference in Fortran
+                        # Advected constituents are always both input (host provides
+                        # initial values) and output (host reads updated values back)
+                        if arg_op.properties.get("advected") is not None:
                             input_vars.add(std_name)
                             output_vars.add(std_name)
                         else:
@@ -205,6 +240,18 @@ class CCPPCAP(ModulePass):
                                 input_vars.add(std_name)
                             if intent in ("out", "inout"):
                                 output_vars.add(std_name)
+
+            # Pass 3: add dimension standard names not already covered.
+            # Picks up vars like number_of_ccpp_constituents that appear only as
+            # array dimension sizes, never as explicit scheme arguments.
+            for dim_name in all_dim_names:
+                if (dim_name not in _INTERNAL
+                        and dim_name not in protected_std_names
+                        and dim_name not in interstitial_std_names
+                        and dim_name not in input_vars
+                        and dim_name not in output_vars
+                        and dim_name not in _CCPP_ERR):
+                    input_vars.add(dim_name)
 
             required_vars = input_vars | output_vars
             suite_vars[suite_name] = (
@@ -354,14 +401,22 @@ class CCPPCAP(ModulePass):
                 # interstitials of any type (real, integer, DDT) are excluded —
                 # they are stored at suite cap module scope, not returned to caller.
                 is_framework_managed = fn_arg.hasAttr("is_interstitial")
+                # Deduplicate by standard_name so different local names for the
+                # same logical arg (e.g. errflg vs errcode for ccpp_error_code)
+                # don't produce duplicate return types.
+                _dedup_key = (
+                    fn_arg.getAttr("standard_name").lower()
+                    if fn_arg.hasAttr("standard_name")
+                    else fn_arg.name
+                )
                 if (
                     fn_arg.getAttr("intent") == "out"
-                    and fn_arg.name not in all_out_args
+                    and _dedup_key not in all_out_args
                     and not has_dims
                     and not fn_arg.hasAttr("allocatable")
                     and not is_framework_managed
                 ):
-                    all_out_args[fn_arg.name] = fn_arg
+                    all_out_args[_dedup_key] = fn_arg
 
         result = []
         for arg in all_out_args.values():
@@ -374,6 +429,58 @@ class CCPPCAP(ModulePass):
             std_name = raw.lower() if raw else None
             result.append((mlir_type, arg.name, std_name))
         return result
+
+    def _collect_constituent_info(self, meta_data):
+        """Extract constituent info from scheme metadata.
+
+        Scans all SCHEME tables to find:
+          - dynamic_array_names: bare arg names in _register tables with
+            allocatable=True, type=ccpp_constituent_properties_t
+          - fixed_advected: list of (std_name, units, default_val) for args
+            with advected=.true. in non-register scheme tables
+
+        Returns (dynamic_array_names, fixed_advected).
+        """
+        dynamic_array_names: list = []
+        fixed_advected: list = []
+        seen_fixed: set = set()
+
+        for _scheme_name, props in meta_data.items():
+            if props.getAttr("type") != CCPPType.SCHEME:
+                continue
+            for table_name, arg_table in props.arg_tables.items():
+                is_register = table_name.endswith("_register")
+                for fn_arg in arg_table.getFunctionArguments():
+                    if (
+                        is_register
+                        and fn_arg.hasAttr("allocatable")
+                        and fn_arg.hasAttr("type")
+                        and fn_arg.getAttr("type") == "ccpp_constituent_properties_t"
+                    ):
+                        bare = _bare(fn_arg.name)
+                        if bare not in dynamic_array_names:
+                            dynamic_array_names.append(bare)
+                    elif (
+                        not is_register
+                        and fn_arg.hasAttr("advected")
+                        and fn_arg.hasAttr("standard_name")
+                    ):
+                        std_name = fn_arg.getAttr("standard_name").lower()
+                        units = (
+                            fn_arg.getAttr("units")
+                            if fn_arg.hasAttr("units")
+                            else "kg kg-1"
+                        )
+                        default_val = (
+                            fn_arg.getAttr("default_value")
+                            if fn_arg.hasAttr("default_value")
+                            else None
+                        )
+                        if std_name not in seen_fixed:
+                            seen_fixed.add(std_name)
+                            fixed_advected.append((std_name, units, default_val))
+
+        return dynamic_array_names, fixed_advected
 
     def _generate_lifecycle_fn(
         self,
@@ -528,7 +635,30 @@ class CCPPCAP(ModulePass):
                     elem_type = arg_type.element_type
                     shape = list(arg_type.shape.data)
                     n_dyn = sum(1 for d in shape if d.data == DYNAMIC_INDEX)
-                    if n_dyn > 0:
+                    from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DT
+                    if (
+                        isinstance(elem_type, _DT)
+                        and elem_type.type_name.data == "ccpp_constituent_properties_t"
+                        and n_dyn > 0
+                    ):
+                        # Constituent-property arrays are declared at module scope
+                        # via ModuleVarOp.  Reference them with CapVarRefOp so the
+                        # allocated values persist after physics_register returns.
+                        cap_ref = CapVarRefOp(f"lc_{bare}", arg_type)
+                        hoisted_alloc_ops.append(cap_ref)
+                        call_inputs.append(cap_ref.res)
+                        _ddt_mod = "ccpp_constituent_prop_mod"
+                        _key = (elem_type.type_name.data, _ddt_mod)
+                        if _key not in seen_host_globals:
+                            seen_host_globals.add(_key)
+                            _g = llvm.GlobalOp(
+                                llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                elem_type.type_name.data,
+                                "external",
+                            )
+                            _g.attributes["module"] = StringAttr(_ddt_mod)
+                            all_host_global_ops.append(_g)
+                    elif n_dyn > 0:
                         # Dynamic-dim alloca requires size operands per MLIR rules.
                         # Use zero index constants as placeholders — these are
                         # allocatable args whose storage is managed by the callee.
@@ -542,7 +672,6 @@ class CCPPCAP(ModulePass):
                         alloc_op.memref.name_hint = f"lc_{bare}__alloc"
                         hoisted_alloc_ops.append(zero_idx)
                         # Ensure the DDT type's module appears in the USE list.
-                        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DT
                         _CCPP_DDT_MODS = {
                             "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
                         }
@@ -559,11 +688,13 @@ class CCPPCAP(ModulePass):
                                     )
                                     _g.attributes["module"] = StringAttr(_ddt_mod)
                                     all_host_global_ops.append(_g)
+                        hoisted_alloc_ops.append(alloc_op)
+                        call_inputs.append(alloc_op.memref)
                     else:
                         alloc_op = memref.AllocaOp.get(elem_type, shape=shape)
                         alloc_op.memref.name_hint = f"lc_{bare}"
-                    hoisted_alloc_ops.append(alloc_op)
-                    call_inputs.append(alloc_op.memref)
+                        hoisted_alloc_ops.append(alloc_op)
+                        call_inputs.append(alloc_op.memref)
 
             # ── Verify argument count matches callee signature ─────────────────
             if len(call_inputs) != len(callee_input_types):
@@ -1135,6 +1266,7 @@ class CCPPCAP(ModulePass):
                 callee_input_names = info["callee_input_names"]
                 physics_arg_sources = info["physics_arg_sources"]
                 std_name_of = info["std_name_of"]
+                scheme_names = info["scheme_names"]
 
                 # ── HostVarRefOps ─────────────────────────────────────────────
                 host_var_ref_ops = []
@@ -1358,29 +1490,75 @@ class CCPPCAP(ModulePass):
 
                 # CapVarRefOps for inout-echo returns must be placed BEFORE the call
                 # so the printer can resolve their names when processing return positions.
+                #
+                # Use _get_suite_lifecycle_ret_info to get std_names for alloc returns
+                # (intent=out scalars).  Suite cap returns: inout_vals first, then
+                # alloc_vals.  Compute the offset so alloc positions are matched by
+                # standard_name rather than type, preventing false errflg matches when
+                # another intent=out scalar (e.g. const_index) has the same MLIR type.
+                _run_ret_alloc = self._get_suite_lifecycle_ret_info(
+                    scheme_names, meta_data, "_run"
+                )
+                _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
+
                 cap_var_inout_refs: list = []
                 copy_ops = []
                 for idx, ret_type in enumerate(callee_output_types):
                     result = call_op.results[idx]
-                    if ret_type == errmsg_type:
-                        copy_ops.append(memref.CopyOp(result, errmsg_arg))
-                    elif ret_type == errflg_type:
-                        copy_ops.append(memref.CopyOp(result, errflg_arg))
+                    if idx < _n_inout_ret:
+                        # inout return vals: type-match only (no positional info available)
+                        if ret_type == errmsg_type:
+                            copy_ops.append(memref.CopyOp(result, errmsg_arg))
+                        elif ret_type == errflg_type:
+                            copy_ops.append(memref.CopyOp(result, errflg_arg))
                     else:
-                        # Check for a cap_var input of the same type — this is an inout
-                        # echo: the suite cap returns the scalar cap_var after modifying it.
-                        # Adding a CopyOp lets the printer resolve the return name so it
-                        # can suppress the echo in _print_call.
-                        for i, (a_name, a_type) in enumerate(
-                            zip(callee_input_names, callee_input_types)
-                        ):
-                            if a_type == ret_type and physics_arg_sources[i][0] == "cap_var":
-                                _, std_name_cv = physics_arg_sources[i]
-                                cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                                cap_ref = CapVarRefOp(cv_name, a_type)
-                                cap_var_inout_refs.append(cap_ref)
-                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
-                                break
+                        ri_idx = idx - _n_inout_ret
+                        ret_std_name = _run_ret_alloc[ri_idx][2]
+                        ret_local_name = _run_ret_alloc[ri_idx][1]
+                        if ret_std_name == CCPP_ERROR_MESSAGE:
+                            copy_ops.append(memref.CopyOp(result, errmsg_arg))
+                        elif ret_std_name == CCPP_ERROR_CODE:
+                            copy_ops.append(memref.CopyOp(result, errflg_arg))
+                        else:
+                            # Non-error scalar out (e.g. const_index).
+                            # 1) block arg (e.g. when not host-matched)
+                            canonical = non_host_std_to_canonical.get(
+                                ret_std_name, ret_local_name
+                            ) if ret_std_name else ret_local_name
+                            if canonical and canonical in block_arg_map:
+                                copy_ops.append(
+                                    memref.CopyOp(result, block_arg_map[canonical])
+                                )
+                            elif ret_std_name and ret_std_name in host_var_map:
+                                # 2) host module var: write result back to the host.
+                                # (intent=out scalars are not in callee_input_names so
+                                # no HostVarRefOp exists yet — create one here.)
+                                hv_name, hv_module = host_var_map[ret_std_name]
+                                hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
+                                cap_var_inout_refs.append(hv_ref)
+                                copy_ops.append(memref.CopyOp(result, hv_ref.res))
+                                hv_key = (hv_name, hv_module)
+                                if hv_key not in seen_host_globals:
+                                    seen_host_globals.add(hv_key)
+                                    hv_glob = llvm.GlobalOp(
+                                        llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                        hv_name, "external",
+                                    )
+                                    hv_glob.attributes["module"] = StringAttr(hv_module)
+                                    all_host_global_ops.append(hv_glob)
+                            elif cap_var_map:
+                                # 3) cap_var inout echo: suite cap returns cap-owned scalar.
+                                for i, (a_name, a_type) in enumerate(
+                                    zip(callee_input_names, callee_input_types)
+                                ):
+                                    if (a_type == ret_type
+                                            and physics_arg_sources[i][0] == "cap_var"):
+                                        _, std_name_cv = physics_arg_sources[i]
+                                        cv_name, cv_type, _ = cap_var_map[std_name_cv]
+                                        cap_ref = CapVarRefOp(cv_name, a_type)
+                                        cap_var_inout_refs.append(cap_ref)
+                                        copy_ops.append(memref.CopyOp(result, cap_ref.res))
+                                        break
 
                 inner_if_true = cap_var_inout_refs + [call_op] + copy_ops
 
@@ -1566,6 +1744,335 @@ class CCPPCAP(ModulePass):
         )
         return suite_part_list_fn, part_global_ops
 
+    def _generate_constituent_api(
+        self,
+        camel_name: str,
+        dynamic_array_names: list,
+        fixed_advected: list,
+        scratch_vars: list | None = None,
+    ):
+        """Generate constituent registration API as raw Fortran text.
+
+        Returns (module_var_ops, constituent_api_op, global_stub_ops).
+        """
+        h = camel_name
+        dyn_lc = [f"lc_{n}" for n in dynamic_array_names]
+
+        # ── Module-level variable declarations ──────────────────────────────
+        module_var_ops: list = []
+        for n in dynamic_array_names:
+            module_var_ops.append(
+                ModuleVarOp(f"lc_{n}", "type(ccpp_constituent_properties_t)", rank=1)
+            )
+        module_var_ops.append(
+            ModuleVarOp(
+                "lc_all_constituents",
+                "type(ccpp_constituent_properties_t), target",
+                rank=1,
+            )
+        )
+        module_var_ops.append(
+            ModuleVarOp("lc_constituent_array", "real(kind=kind_phys), target", rank=3)
+        )
+        module_var_ops.append(
+            ModuleVarOp("lc_const_tend", "real(kind=kind_phys)", rank=3)
+        )
+        module_var_ops.append(
+            ModuleVarOp("lc_const_props", "type(ccpp_constituent_prop_ptr_t), target", rank=1)
+        )
+        for lc_name, rank, _alloc_dims in (scratch_vars or []):
+            module_var_ops.append(ModuleVarOp(lc_name, "real(kind=kind_phys)", rank=rank))
+
+        # ── Helper: dedup fragment ───────────────────────────────────────────
+        def _dedup_block(src_sname, src_units, src_assign, indent="    "):
+            lines = []
+            lines.append(f"{indent}lc_found = .false.")
+            lines.append(f"{indent}do lc_j = 1, lc_num")
+            lines.append(f"{indent}  if (trim(lc_tmp(lc_j)%std_name) == trim({src_sname})) then")
+            lines.append(f"{indent}    lc_found = .true.")
+            lines.append(f"{indent}    if (trim(lc_tmp(lc_j)%units) /= trim({src_units})) then")
+            lines.append(
+                f"{indent}      write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: "
+                f"Trying to add constituent ', trim({src_sname}), &"
+            )
+            lines.append(
+                f"{indent}        ' but an incompatible constituent with this name already exists'"
+            )
+            lines.append(f"{indent}      errflg = 1")
+            lines.append(f"{indent}      return")
+            lines.append(f"{indent}    end if")
+            lines.append(f"{indent}    exit")
+            lines.append(f"{indent}  end if")
+            lines.append(f"{indent}end do")
+            lines.append(f"{indent}if (.not. lc_found) then")
+            lines.append(f"{indent}  lc_num = lc_num + 1")
+            lines.append(f"{indent}  lc_tmp(lc_num) = {src_assign}")
+            lines.append(f"{indent}end if")
+            return lines
+
+        # ── 1. is_scheme_constituent ─────────────────────────────────────────
+        fixed_names_str = ", ".join(f"'{s}'" for s, _u, _d in fixed_advected)
+        isc_lines = [
+            f"  subroutine {h}_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg)",
+            f"    character(len=*), intent(in) :: std_name",
+            f"    logical, intent(out) :: is_const",
+            f"    integer, intent(out) :: errflg",
+            f"    character(len=512), intent(out) :: errmsg",
+            f"    integer :: lc_idx",
+            f"    errflg = 0",
+            f"    errmsg = ''",
+            f"    is_const = .false.",
+            f"    select case (trim(std_name))",
+        ]
+        if fixed_names_str:
+            isc_lines += [
+                f"    case ({fixed_names_str})",
+                f"      is_const = .true.",
+            ]
+        isc_lines.append(f"    case default")
+        for dyn_var in dyn_lc:
+            isc_lines += [
+                f"      if (allocated({dyn_var})) then",
+                f"        do lc_idx = 1, size({dyn_var})",
+                f"          if (trim({dyn_var}(lc_idx)%std_name) == trim(std_name)) then",
+                f"            is_const = .true.",
+                f"            return",
+                f"          end if",
+                f"        end do",
+                f"      end if",
+            ]
+        isc_lines += [
+            f"    end select",
+            f"  end subroutine {h}_ccpp_is_scheme_constituent",
+        ]
+
+        # ── 2. deallocate_dynamic_constituents ───────────────────────────────
+        da_lines = [f"  subroutine {h}_ccpp_deallocate_dynamic_constituents()"]
+        for dyn_var in dyn_lc:
+            da_lines.append(f"    if (allocated({dyn_var})) deallocate({dyn_var})")
+        da_lines += [
+            f"    if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
+            f"    if (allocated(lc_const_props)) deallocate(lc_const_props)",
+            f"    if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)",
+            f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
+        ]
+        for lc_name, _rank, _alloc_dims in (scratch_vars or []):
+            da_lines.append(f"    if (allocated({lc_name})) deallocate({lc_name})")
+        da_lines.append(f"  end subroutine {h}_ccpp_deallocate_dynamic_constituents")
+
+        # ── 3. register_constituents ─────────────────────────────────────────
+        n_fixed = len(fixed_advected)
+        rc_lines = [
+            f"  subroutine {h}_ccpp_register_constituents(host_constituents, errmsg, errflg)",
+            f"    type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)",
+            f"    character(len=512), intent(out) :: errmsg",
+            f"    integer, intent(out) :: errflg",
+            f"    integer :: lc_max, lc_num, lc_i, lc_j",
+            f"    logical :: lc_found",
+            f"    type(ccpp_constituent_properties_t), allocatable :: lc_tmp(:)",
+            f"    errflg = 0",
+            f"    errmsg = ''",
+            f"    lc_max = 0",
+        ]
+        for dyn_var in dyn_lc:
+            rc_lines.append(f"    if (allocated({dyn_var})) lc_max = lc_max + size({dyn_var})")
+        rc_lines += [
+            f"    lc_max = lc_max + {n_fixed}",
+            f"    lc_max = lc_max + size(host_constituents)",
+            f"    allocate(lc_tmp(lc_max))",
+            f"    lc_num = 0",
+        ]
+        for dyn_var in dyn_lc:
+            rc_lines += [
+                f"    if (allocated({dyn_var})) then",
+                f"      do lc_i = 1, size({dyn_var})",
+            ]
+            rc_lines += _dedup_block(
+                f"{dyn_var}(lc_i)%std_name",
+                f"{dyn_var}(lc_i)%units",
+                f"{dyn_var}(lc_i)",
+                indent="        ",
+            )
+            rc_lines += [f"      end do", f"    end if"]
+        for std_name_f, units_f, default_val_f in fixed_advected:
+            rc_lines += [
+                f"    lc_found = .false.",
+                f"    do lc_j = 1, lc_num",
+                f"      if (trim(lc_tmp(lc_j)%std_name) == '{std_name_f}') then",
+                f"        lc_found = .true.",
+                f"        if (trim(lc_tmp(lc_j)%units) /= '{units_f}') then",
+                f"          write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: "
+                f"Trying to add constituent ', '{std_name_f}', &",
+                f"            ' but an incompatible constituent with this name already exists'",
+                f"          errflg = 1",
+                f"          return",
+                f"        end if",
+                f"        exit",
+                f"      end if",
+                f"    end do",
+                f"    if (.not. lc_found) then",
+                f"      lc_num = lc_num + 1",
+            ]
+            inst_args = (
+                f"std_name='{std_name_f}', long_name='{std_name_f}', "
+                f"units='{units_f}', errcode=errflg, errmsg=errmsg, advected=.true."
+            )
+            if default_val_f is not None:
+                inst_args += f", default_value={default_val_f}"
+            rc_lines += [
+                f"      call lc_tmp(lc_num)%instantiate({inst_args})",
+                f"      if (errflg /= 0) return",
+                f"    end if",
+            ]
+        rc_lines += [f"    do lc_i = 1, size(host_constituents)"]
+        rc_lines += _dedup_block(
+            "host_constituents(lc_i)%std_name",
+            "host_constituents(lc_i)%units",
+            "host_constituents(lc_i)",
+            indent="      ",
+        )
+        rc_lines += [
+            f"    end do",
+            f"    if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
+            f"    allocate(lc_all_constituents(lc_num))",
+            f"    lc_all_constituents(1:lc_num) = lc_tmp(1:lc_num)",
+            f"    deallocate(lc_tmp)",
+            f"    if (allocated(lc_const_props)) deallocate(lc_const_props)",
+            f"    allocate(lc_const_props(lc_num))",
+            f"    do lc_i = 1, lc_num",
+            f"      lc_const_props(lc_i)%ptr => lc_all_constituents(lc_i)",
+            f"    end do",
+            f"  end subroutine {h}_ccpp_register_constituents",
+        ]
+
+        # ── 4. number_constituents ───────────────────────────────────────────
+        nc_lines = [
+            f"  subroutine {h}_ccpp_number_constituents(num_advected, errmsg, errflg)",
+            f"    integer, intent(out) :: num_advected",
+            f"    character(len=512), intent(out) :: errmsg",
+            f"    integer, intent(out) :: errflg",
+            f"    errflg = 0",
+            f"    errmsg = ''",
+            f"    if (allocated(lc_all_constituents)) then",
+            f"      num_advected = size(lc_all_constituents)",
+            f"    else",
+            f"      num_advected = 0",
+            f"    end if",
+            f"  end subroutine {h}_ccpp_number_constituents",
+        ]
+
+        # ── 5. initialize_constituents ───────────────────────────────────────
+        ic_lines = [
+            f"  subroutine {h}_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)",
+            f"    integer, intent(in) :: ncols",
+            f"    integer, intent(in) :: pver",
+            f"    integer, intent(out) :: errflg",
+            f"    character(len=512), intent(out) :: errmsg",
+            f"    integer :: lc_num",
+            f"    errflg = 0",
+            f"    errmsg = ''",
+            f"    if (.not. allocated(lc_all_constituents)) then",
+            f"      errflg = 1",
+            f"      errmsg = 'ccpp_initialize_constituents: register_constituents not called'",
+            f"      return",
+            f"    end if",
+            f"    lc_num = size(lc_all_constituents)",
+            f"    if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)",
+            f"    allocate(lc_constituent_array(ncols, pver, lc_num))",
+            f"    lc_constituent_array = 0.0_kind_phys",
+            f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
+            f"    allocate(lc_const_tend(ncols, pver, lc_num))",
+            f"    lc_const_tend = 0.0_kind_phys",
+        ]
+        for lc_name, _rank, alloc_dims in (scratch_vars or []):
+            ic_lines += [
+                f"    if (allocated({lc_name})) deallocate({lc_name})",
+                f"    allocate({lc_name}({alloc_dims}))",
+                f"    {lc_name} = 0.0_kind_phys",
+            ]
+        ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")
+
+        # ── 6. constituents_array ────────────────────────────────────────────
+        ca_lines = [
+            f"  function {h}_constituents_array() result(ptr)",
+            f"    real(kind=kind_phys), pointer :: ptr(:, :, :)",
+            f"    ptr => lc_constituent_array",
+            f"  end function {h}_constituents_array",
+        ]
+
+        # ── 7. const_get_index ───────────────────────────────────────────────
+        ci_lines = [
+            f"  subroutine {h}_const_get_index(std_name, index, errflg, errmsg)",
+            f"    character(len=*), intent(in) :: std_name",
+            f"    integer, intent(out) :: index",
+            f"    integer, intent(out) :: errflg",
+            f"    character(len=512), intent(out) :: errmsg",
+            f"    integer :: lc_i",
+            f"    errflg = 0",
+            f"    errmsg = ''",
+            f"    index = -1",
+            f"    if (.not. allocated(lc_all_constituents)) then",
+            f"      errflg = 1",
+            f"      errmsg = 'const_get_index: constituents not registered'",
+            f"      return",
+            f"    end if",
+            f"    do lc_i = 1, size(lc_all_constituents)",
+            f"      if (trim(lc_all_constituents(lc_i)%std_name) == trim(std_name)) then",
+            f"        index = lc_i",
+            f"        return",
+            f"      end if",
+            f"    end do",
+            f"    errflg = 1",
+            f"    write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'",
+            f"  end subroutine {h}_const_get_index",
+        ]
+
+        # ── 8. model_const_properties ────────────────────────────────────────
+        mp_lines = [
+            f"  function {h}_model_const_properties() result(ptr)",
+            f"    type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
+            f"    ptr => lc_const_props",
+            f"  end function {h}_model_const_properties",
+        ]
+
+        all_lines = (
+            isc_lines + [""]
+            + da_lines + [""]
+            + rc_lines + [""]
+            + nc_lines + [""]
+            + ic_lines + [""]
+            + ca_lines + [""]
+            + ci_lines + [""]
+            + mp_lines
+        )
+        body_text = "\n".join(all_lines)
+
+        public_names_list = [
+            f"{h}_ccpp_is_scheme_constituent",
+            f"{h}_ccpp_deallocate_dynamic_constituents",
+            f"{h}_ccpp_register_constituents",
+            f"{h}_ccpp_number_constituents",
+            f"{h}_ccpp_initialize_constituents",
+            f"{h}_constituents_array",
+            f"{h}_const_get_index",
+            f"{h}_model_const_properties",
+        ]
+
+        api_op = ConstituentApiOp(body_text, public_names_list)
+
+        # ── USE stubs for ccpp_constituent_prop_mod ──────────────────────────
+        global_stubs: list = []
+        for type_name in ("ccpp_constituent_properties_t", "ccpp_constituent_prop_ptr_t"):
+            _g = llvm.GlobalOp(
+                llvm.LLVMArrayType.from_size_and_type(1, i8),
+                type_name,
+                "external",
+            )
+            _g.attributes["module"] = StringAttr("ccpp_constituent_prop_mod")
+            global_stubs.append(_g)
+
+        return module_var_ops, api_op, global_stubs
+
     def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns,
                                    ddt_source_module=None, protected_std_names=None,
                                    host_std_names=None, ccpp_mod=None):
@@ -1628,6 +2135,89 @@ class CCPPCAP(ModulePass):
         # MODULE only: write-back targets (like num_model_times) live in MODULE
         # tables.  HOST-type tables are caller-provided interfaces, not modules.
         host_var_map_lc = self._build_host_var_map(meta_data, include_host=False)
+
+        # ── Pre-populate cap_var_map for framework-managed and scheme-scratch arrays ──
+        # Framework arrays (ccpp_constituents, ccpp_constituent_tendencies) are owned by
+        # the cap module.  Scheme-specific scratch arrays with no host metadata match
+        # (e.g. tendency_of_cloud_liquid_dry_mixing_ratio) are also allocated at cap
+        # module scope so they never appear as physics_run block arguments.
+        _FRAMEWORK_TO_CAP_VAR = {
+            "ccpp_constituents": "lc_constituent_array",
+            "ccpp_constituent_tendencies": "lc_const_tend",
+        }
+        _host_block_std: set = set()
+        for _tbl_cv, _props_cv in meta_data.items():
+            if _props_cv.getAttr("type") != CCPPType.HOST:
+                continue
+            if _tbl_cv not in _props_cv.arg_tables:
+                continue
+            for _var_cv in _props_cv.getArgTable(_tbl_cv).getFunctionArguments():
+                if _var_cv.hasAttr("standard_name"):
+                    _host_block_std.add(_var_cv.getAttr("standard_name").lower())
+        _DIM_TO_ALLOC = {
+            "horizontal_loop_extent": "ncols",
+            "horizontal_dimension": "ncols",
+            "vertical_layer_dimension": "pver",
+            "number_of_ccpp_constituents": "lc_num",
+        }
+        scratch_var_list: list = []
+        scratch_var_seen: set = set()
+        for _sn_cv, _sd_cv in suite_descriptions.items():
+            for _grp_cv in _sd_cv:
+                _grp_name_cv = _grp_cv.attributes["name"]
+                _callee_cv = _sn_cv + "_suite_" + _grp_name_cv
+                if _callee_cv not in public_fns:
+                    continue
+                _, _, _ci_types, _ci_names = public_fns[_callee_cv]
+                _grp_schemes = [_s.attributes["name"] for _s in _grp_cv]
+                _sno_cv: dict = {}
+                _dno_cv: dict = {}
+                _matched_cv: set = set()
+                for _scheme_cv in _grp_schemes:
+                    _run_tbl_cv = _scheme_cv + "_run"
+                    if _scheme_cv not in meta_data:
+                        continue
+                    if _run_tbl_cv not in meta_data[_scheme_cv].arg_tables:
+                        continue
+                    for _fa_cv in (
+                        meta_data[_scheme_cv].getArgTable(_run_tbl_cv).getFunctionArguments()
+                    ):
+                        _bn_cv = _bare(_fa_cv.name)
+                        if _bn_cv not in _sno_cv and _fa_cv.hasAttr("standard_name"):
+                            _sno_cv[_bn_cv] = _fa_cv.getAttr("standard_name").lower()
+                        if _bn_cv not in _dno_cv and _fa_cv.hasAttr("dim_names"):
+                            _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
+                        if _fa_cv.hasAttr("model_var_name"):
+                            _matched_cv.add(_bn_cv)
+                for _an_cv, _at_cv in zip(_ci_names, _ci_types):
+                    _bn_cv = _bare(_an_cv)
+                    if _bn_cv in _matched_cv:
+                        continue  # host-matched (including DDT members)
+                    _std_cv = _sno_cv.get(_bn_cv)
+                    if not _std_cv:
+                        continue
+                    if _std_cv in _FRAMEWORK_TO_CAP_VAR:
+                        if _std_cv not in cap_var_map:
+                            cap_var_map[_std_cv] = (_FRAMEWORK_TO_CAP_VAR[_std_cv], None, None)
+                        continue
+                    if (_std_cv in CCPP_FRAMEWORK_STD_NAMES
+                            or _std_cv in CCPP_ERROR_STD_NAMES
+                            or _std_cv in _host_block_std
+                            or _std_cv in host_var_map_lc):
+                        continue
+                    if _std_cv not in scratch_var_seen:
+                        scratch_var_seen.add(_std_cv)
+                        _lc_cv = f"lc_{_bn_cv}"
+                        _rank_cv = (
+                            len(list(_at_cv.shape.data))
+                            if hasattr(_at_cv, "shape") else 0
+                        )
+                        _dims_cv = _dno_cv.get(_bn_cv, [])
+                        _alloc_cv = ", ".join(
+                            _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
+                        ) if _dims_cv else "ncols, pver"
+                        cap_var_map[_std_cv] = (_lc_cv, None, None)
+                        scratch_var_list.append((_lc_cv, _rank_cv, _alloc_cv))
 
         # Detect the ccpp_info_t pattern: HOST table contains a variable with
         # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
@@ -1851,6 +2441,26 @@ class CCPPCAP(ModulePass):
             protected_std_names or set(),
         )
         all_definitions.append(suite_vars_op)
+
+        # Generate constituent registration API if any scheme has constituent arrays
+        # or if there are cap-owned scratch arrays (framework-managed or scheme-scratch).
+        dyn_names, fixed_adv = self._collect_constituent_info(meta_data)
+        if dyn_names or fixed_adv or scratch_var_list:
+            const_var_ops, const_api_op, const_global_stubs = self._generate_constituent_api(
+                camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list
+            )
+            for var_op in const_var_ops:
+                _key = (var_op.var_name.data, "_cap_module_var")
+                if _key not in shared_seen_host_globals:
+                    shared_seen_host_globals.add(_key)
+                    all_definitions.append(var_op)
+            for stub in const_global_stubs:
+                _key = (stub.sym_name.data,
+                        stub.attributes.get("module", StringAttr("")).data)
+                if _key not in shared_seen_host_globals:
+                    shared_seen_host_globals.add(_key)
+                    all_globals.append(stub)
+            all_definitions.append(const_api_op)
 
         # Emit USE-association stubs for DDT types used in any scheme across all suites.
         if ddt_source_module:

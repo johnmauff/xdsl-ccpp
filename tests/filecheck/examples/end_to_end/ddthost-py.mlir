@@ -74,7 +74,7 @@
 // CHECK-NEXT:    end subroutine ddt_suite_suite_initialize
 // CHECK-LABEL:   subroutine ddt_suite_suite_finalize(ntimes, model_times, errmsg, errflg)
 // CHECK:           integer, intent(in) :: ntimes
-// CHECK-NEXT:      integer, intent(inout) :: model_times(:)
+// CHECK-NEXT:      integer, intent(in) :: model_times(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
@@ -116,10 +116,10 @@
 // CHECK-LABEL:   subroutine ddt_suite_suite_data_prep(cols, cole, O3, HNO3, vmr, psurf, errmsg, errflg)
 // CHECK:           integer, intent(in) :: cols
 // CHECK-NEXT:      integer, intent(in) :: cole
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: O3(:)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: HNO3(:)
+// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: O3(:)
+// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: HNO3(:)
 // CHECK-NEXT:      type(vmr_type), intent(inout) :: vmr
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: psurf(:)
+// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: psurf(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
@@ -237,10 +237,10 @@
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      integer, intent(in) :: cols
 // CHECK-NEXT:      integer, intent(in) :: cole
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: O3(:)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: HNO3(:)
+// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: O3(:)
+// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: HNO3(:)
 // CHECK-NEXT:      type(vmr_type), intent(in) :: vmr
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: psurf(:)
+// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: psurf(:)
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK-NEXT:      type(vmr_type) :: ccpp_tmp_0
