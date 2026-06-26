@@ -80,7 +80,8 @@ class TypeConversions:
             # Other kind values (e.g. 'kind_phys') are Fortran precision specifiers
             # and have no effect on the memref shape.
             len_val = kind.split("=")[1]
-            char_len = DYNAMIC_INDEX if len_val == "*" else int(len_val)
+            # len=* means assumed-length in Fortran source; CCPP always uses 512
+            char_len = 512 if len_val == "*" else int(len_val)
             # Array dims come first; the string length is the trailing dimension.
             # e.g. character(len=32), dimension(N) → memref<?x32xi8>
             shape = [DYNAMIC_INDEX] * dimensions + [char_len]

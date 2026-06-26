@@ -53,7 +53,7 @@ class TestFrontendParsing:
 
         assert len(children) == 1
         assert isa(children[0], SubcycleOp)
-        assert children[0].loop_count.data == 2
+        assert children[0].loop_count.data == "2"
 
     def test_subcycle_contains_scheme_ops(self, build_module):
         suite_xml = two_scheme_subcycle_xml("scheme_a", "scheme_b", loop=2)
@@ -77,7 +77,7 @@ class TestFrontendParsing:
         suite_op = next(op for op in module.body.ops if isa(op, SuiteOp))
         group_op = next(op for op in suite_op.body.ops if isa(op, GroupOp))
         subcycle_op = next(op for op in group_op.body.ops if isa(op, SubcycleOp))
-        assert subcycle_op.loop_count.data == 1
+        assert subcycle_op.loop_count.data == "1"
 
     def test_mixed_flat_and_subcycled_schemes(self, build_module):
         """A group with a flat scheme before and after a subcycle block."""
@@ -100,7 +100,7 @@ class TestFrontendParsing:
         children = list(group_op.body.ops)
 
         assert isa(children[0], SchemeOp) and children[0].scheme_name.data == "pre_scheme"
-        assert isa(children[1], SubcycleOp) and children[1].loop_count.data == 3
+        assert isa(children[1], SubcycleOp) and children[1].loop_count.data == "3"
         assert isa(children[2], SchemeOp) and children[2].scheme_name.data == "post_scheme"
 
 
@@ -123,7 +123,7 @@ class TestBuildSchemeDescription:
 
         assert len(children) == 1
         assert isinstance(children[0], XMLSubcycle)
-        assert children[0].attributes["loop_count"] == 2
+        assert children[0].attributes["loop_count"] == "2"
 
     def test_subcycle_children_are_xml_schemes(self, build_module):
         suite_xml = two_scheme_subcycle_xml("scheme_a", "scheme_b", loop=2)
@@ -205,7 +205,7 @@ class TestGetSchemeNames:
         assert len(seq) == 1
         kind, loop_count, schemes = seq[0]
         assert kind == "subcycle"
-        assert loop_count == 3
+        assert loop_count == "3"
         assert [n for n, _ in schemes] == ["scheme_a", "scheme_b"]
 
     def test_call_sequence_mixed(self, build_module):
@@ -227,7 +227,7 @@ class TestGetSchemeNames:
 
         assert len(seq) == 3
         assert seq[0][0] == "scheme" and seq[0][1] == "pre_scheme"
-        assert seq[1][0] == "subcycle" and seq[1][1] == 2
+        assert seq[1][0] == "subcycle" and seq[1][1] == "2"
         assert seq[2][0] == "scheme" and seq[2][1] == "post_scheme"
 
 

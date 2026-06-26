@@ -2,7 +2,6 @@ from xdsl.dialects.builtin import (
     ArrayAttr,
     DYNAMIC_INDEX,
     DictionaryAttr,
-    IntAttr,
     IntegerAttr,
     IntegerType,
     MemRefType,
@@ -645,14 +644,14 @@ class SubcycleLoopOp(IRDLOperation):
 
     name = "ccpp_utils.subcycle_loop"
 
-    loop_count = prop_def(IntAttr)
+    loop_count = prop_def(StringAttr)
     loop_var   = operand_def(MemRefType)
 
     body = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, loop_count: int, loop_var, body_ops):
+    def __init__(self, loop_count: "int | str", loop_var, body_ops):
         if isinstance(body_ops, list):
             from xdsl.ir import Block, Region
             body = Region([Block(body_ops)])
@@ -660,7 +659,7 @@ class SubcycleLoopOp(IRDLOperation):
             body = body_ops
         super().__init__(
             operands=[loop_var],
-            properties={"loop_count": IntAttr(loop_count)},
+            properties={"loop_count": StringAttr(str(loop_count))},
             regions=[body],
         )
 

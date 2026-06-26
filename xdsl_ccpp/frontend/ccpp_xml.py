@@ -198,7 +198,7 @@ class XMLSubcycle(XMLSuiteBase):
     def __init__(self, xml_node):
         assert xml_node.tag == "subcycle"
         super().__init__(xml_node)
-        self.loop_count = int(xml_node.attrib.get("loop", 1))
+        self.loop_count = xml_node.attrib.get("loop", "1")
         for child in xml_node:
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))

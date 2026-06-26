@@ -212,8 +212,8 @@ class XMLScheme(XMLSuiteBase):
 class XMLSubcycle(XMLSuiteBase):
     """Subcycle node reconstructed from IR: contains schemes and a loop count."""
 
-    def __init__(self, loop_count: int):
-        super().__init__({"loop_count": loop_count})
+    def __init__(self, loop_count: "int | str"):
+        super().__init__({"loop_count": str(loop_count)})
 
 
 class XMLGroup(XMLSuiteBase):

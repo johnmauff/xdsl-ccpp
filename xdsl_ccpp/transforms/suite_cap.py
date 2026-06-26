@@ -49,6 +49,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_HORIZ_DIM_STD_NAME,
     UNIT_CONVERSIONS,
+    dims_compatible,
 )
 from xdsl_ccpp.util.visitor import Visitor
 
@@ -168,7 +169,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         for arg in all_args.values():
             if (
                 arg.hasAttr("standard_name")
-                and arg.getAttr("standard_name").lower() == promoted_dim.lower()
+                and dims_compatible(arg.getAttr("standard_name"), promoted_dim)
                 and arg.getAttr("type") == "integer"
                 and arg.name in data_ops
             ):
@@ -184,7 +185,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 continue
             for var in props.getArgTable(tbl_name).getFunctionArguments():
                 if (var.hasAttr("standard_name")
-                        and var.getAttr("standard_name").lower() == promoted_dim.lower()
+                        and dims_compatible(var.getAttr("standard_name"), promoted_dim)
                         and var.getAttr("type") == "integer"):
                     # Reuse existing SSA if this dim var is already in data_ops
                     # (e.g. previously added by a prior LazyAllocOp dim lookup).
@@ -1028,7 +1029,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                         matching = next(
                             (a for a in all_args.values()
                              if a.hasAttr("standard_name")
-                             and a.getAttr("standard_name").lower() == alloc_dim.lower()),
+                             and dims_compatible(a.getAttr("standard_name"), alloc_dim)),
                             None,
                         )
                         if matching and matching.name in data_ops:
@@ -1222,7 +1223,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if sn in arg_tables
                     ]
                     body_ops = _emit_ordered_list(flat)
-                    if loop_count > 1 and physics_mode and body_ops:
+                    try:
+                        _lc_int = int(loop_count)
+                    except (ValueError, TypeError):
+                        _lc_int = 2  # CCPP std name: always a real loop
+                    if _lc_int > 1 and physics_mode and body_ops:
                         sc_alloc = memref.AllocaOp.get(
                             TypeConversions.getBaseType("integer"), shape=[]
                         )

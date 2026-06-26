@@ -112,8 +112,13 @@ class SuiteVariableModel:
         scheme_groups: list[tuple[str, str]] = []
         for group in suite_description:
             gname = group.attributes["name"]
-            for scheme in group:
-                scheme_groups.append((scheme.attributes["name"], gname))
+            for child in group:
+                if "loop_count" in child.attributes:
+                    # XMLSubcycle: iterate its scheme children
+                    for scheme in child:
+                        scheme_groups.append((scheme.attributes["name"], gname))
+                else:
+                    scheme_groups.append((child.attributes["name"], gname))
 
         self._build(scheme_groups, meta_data)
 

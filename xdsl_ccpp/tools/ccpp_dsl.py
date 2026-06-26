@@ -328,10 +328,13 @@ class ccppMain:
                 )
             k, iso = kind_maps[0].split(":", 1)
             meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
+        has_host = bool(self.options_db.get("host_files"))
+        host_match_pass = "generate-host-match," if has_host else ""
+        ccpp_cap_passes = f",{ccpp_cap_pass},{gpu_ccpp_cap_pass}" if has_host else ""
         pipeline = (
-            f"generate-meta-cap,generate-host-match,{meta_kinds_pass},"
-            f"generate-suite-cap,{gpu_data_pass},{ccpp_cap_pass},"
-            f"{gpu_ccpp_cap_pass},generate-kinds,strip-ccpp"
+            f"generate-meta-cap,{host_match_pass}{meta_kinds_pass},"
+            f"generate-suite-cap,{gpu_data_pass}{ccpp_cap_passes},"
+            f"generate-kinds,strip-ccpp"
         )
         cmd = (
             f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'

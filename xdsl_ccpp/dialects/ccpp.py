@@ -133,12 +133,13 @@ class SubcycleOp(IRDLOperation):
     """A block of scheme calls that execute inside a Fortran do loop.
 
     Corresponds to ``<subcycle loop="N">`` in a suite XML file.
-    ``loop_count == 1`` means the schemes run once (no do loop emitted).
+    ``loop_count == "1"`` means the schemes run once (no do loop emitted).
+    ``loop_count`` may also be a CCPP standard name resolved at runtime.
     """
 
     name = "ccpp.subcycle"
 
-    loop_count = prop_def(IntAttr)
+    loop_count = prop_def(StringAttr)
 
     body = region_def("single_block")
 
@@ -146,14 +147,14 @@ class SubcycleOp(IRDLOperation):
 
     def __init__(
         self,
-        loop_count: int,
+        loop_count: "int | str",
         body: "Region | Sequence[Operation] | Sequence[Block]",
     ):
         if not isinstance(body, Region):
             body = Region([Block(list(body))])
         super().__init__(
             regions=[body],
-            properties={"loop_count": IntAttr(loop_count)},
+            properties={"loop_count": StringAttr(str(loop_count))},
         )
 
 
