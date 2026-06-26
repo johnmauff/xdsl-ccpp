@@ -846,10 +846,16 @@ class ftnPrintContext:
                     self.print(f"{ftn_type} :: {var_name}", prefix="  ")
                 else:
                     shape = ", ".join([":"] * rank)
-                    self.print(
-                        f"{ftn_type}, allocatable :: {var_name}({shape})",
-                        prefix="  ",
-                    )
+                    if ", pointer" in ftn_type:
+                        self.print(
+                            f"{ftn_type} :: {var_name}({shape}) => null()",
+                            prefix="  ",
+                        )
+                    else:
+                        self.print(
+                            f"{ftn_type}, allocatable :: {var_name}({shape})",
+                            prefix="  ",
+                        )
 
         # Emit one public :: line per subroutine definition that is marked public.
         public_procs = [

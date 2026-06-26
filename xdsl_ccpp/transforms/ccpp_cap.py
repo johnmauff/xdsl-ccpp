@@ -35,6 +35,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
+    CCPP_LOOP_EXTENT_STD_NAME,
 )
 
 
@@ -130,6 +131,8 @@ class CCPPCAP(ModulePass):
         - Skip if standard_name is in protected_std_names (dimension params)
         - ccpp_error_code/ccpp_error_message always go to output-only
         - advected=.true. args go to both input and output regardless of intent
+        - state_variable=true args go to both if scheme units == host units;
+          if units differ (unit conversion needed), intent-based rules apply
         - All others go to input/output by declared intent
         - After the main scan a dimension-name sweep adds vars that appear only
           as array dimension sizes (e.g. number_of_ccpp_constituents)
@@ -149,11 +152,18 @@ class CCPPCAP(ModulePass):
                 for scheme in group:
                     scheme_names.add(scheme.attributes["name"])
 
-            # Pass 1: collect every standard_name that is marked is_interstitial
+            # Pass 1a: collect every standard_name that is marked is_interstitial
             # on ANY occurrence.  host_var_match_pass marks the CONSUMER (_run)
             # but not the PRODUCER (_init), so we need the full set to exclude
             # both sides of an intra-suite interstitial (e.g. tcld).
+            #
+            # Pass 1b: collect state_variable args where ANY scheme in this
+            # suite declares the variable in different units than the host.
+            # When a unit mismatch exists, the suite cap converts the value
+            # in-place (e.g. Pa→hPa) — the host should not treat the returned
+            # value as a meaningful physics output.
             interstitial_std_names: set = set()
+            state_var_unit_mismatch: set = set()
             for tbl_op in ccpp_mod.body.ops:
                 if not isa(tbl_op, ccpp.TablePropertiesOp):
                     continue
@@ -171,6 +181,16 @@ class CCPPCAP(ModulePass):
                             sn_prop = arg_op.properties.get("standard_name")
                             if sn_prop is not None:
                                 interstitial_std_names.add(sn_prop.data.lower())
+                        if arg_op.properties.get("state_variable") is not None:
+                            sn_prop = arg_op.properties.get("standard_name")
+                            if sn_prop is not None:
+                                _sn = sn_prop.data.lower()
+                                _su = arg_op.properties.get("units")
+                                _su_str = _su.data.lower() if _su is not None else None
+                                _hu = host_std_names.get(_sn)
+                                if (_su_str is not None and _hu is not None
+                                        and _su_str != _hu):
+                                    state_var_unit_mismatch.add(_sn)
 
             input_vars: set = set()
             output_vars: set = set()
@@ -213,6 +233,16 @@ class CCPPCAP(ModulePass):
                         if std_name in _INTERNAL:
                             continue
 
+                        # Variables with a default_value that are not matched to a
+                        # host variable AND are not advected constituents are managed
+                        # internally by the cap and must not appear in the variable list.
+                        # Advected constituents (advected=true) have default_value as an
+                        # initial fill, but are still real physics arrays visible to the host.
+                        if (arg_op.properties.get("default_value") is not None
+                                and arg_op.properties.get("model_var_name") is None
+                                and arg_op.properties.get("advected") is None):
+                            continue
+
                         # Error flags → output-only special case
                         if std_name in _CCPP_ERR:
                             output_vars.add(std_name)
@@ -230,11 +260,24 @@ class CCPPCAP(ModulePass):
                                 output_vars.add(std_name)
                             continue
 
-                        # Advected constituents are always both input (host provides
-                        # initial values) and output (host reads updated values back)
+                        # Advected constituents go to both input and output.
+                        # state_variable=true args go to both ONLY when no scheme
+                        # in the suite uses different units than the host (unit
+                        # conversion would mean the suite cap rewrites the value
+                        # in-place, so the host should not treat the returned value
+                        # as a meaningful physics output in that case).
                         if arg_op.properties.get("advected") is not None:
                             input_vars.add(std_name)
                             output_vars.add(std_name)
+                        elif arg_op.properties.get("state_variable") is not None:
+                            if std_name not in state_var_unit_mismatch:
+                                input_vars.add(std_name)
+                                output_vars.add(std_name)
+                            else:
+                                if intent in ("in", "inout"):
+                                    input_vars.add(std_name)
+                                if intent in ("out", "inout"):
+                                    output_vars.add(std_name)
                         else:
                             if intent in ("in", "inout"):
                                 input_vars.add(std_name)
@@ -1268,6 +1311,22 @@ class CCPPCAP(ModulePass):
                 std_name_of = info["std_name_of"]
                 scheme_names = info["scheme_names"]
 
+                # ── Build standard_name → dim_names for cap_var sources ──────
+                cap_var_std_to_dims: dict = {}
+                for _sv_scheme in scheme_names:
+                    _sv_run_tbl = _sv_scheme + "_run"
+                    if _sv_scheme not in meta_data:
+                        continue
+                    if _sv_run_tbl not in meta_data[_sv_scheme].arg_tables:
+                        continue
+                    for _sv_fa in (
+                        meta_data[_sv_scheme].getArgTable(_sv_run_tbl).getFunctionArguments()
+                    ):
+                        if _sv_fa.hasAttr("standard_name") and _sv_fa.hasAttr("dim_names"):
+                            _sv_sn = _sv_fa.getAttr("standard_name").lower()
+                            if _sv_sn not in cap_var_std_to_dims:
+                                cap_var_std_to_dims[_sv_sn] = _sv_fa.getAttr("dim_names")
+
                 # ── HostVarRefOps ─────────────────────────────────────────────
                 host_var_ref_ops = []
                 host_var_ref_results = {}
@@ -1310,6 +1369,14 @@ class CCPPCAP(ModulePass):
                     elif src[0] == "cap_var":
                         _, std_name_cv = src
                         cv_name, cv_type, _ftn = cap_var_map[std_name_cv]
+                        _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
+                        if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
+                            _cv_rank = (
+                                len(list(arg_type.shape.data))
+                                if hasattr(arg_type, "shape") else 0
+                            )
+                            if _cv_rank > 0:
+                                cv_name = f"{cv_name}({', '.join([':'] * _cv_rank)})"
                         cap_ref = CapVarRefOp(cv_name, arg_type)
                         host_var_ref_ops.append(cap_ref)
                         host_var_ref_results[arg_name] = cap_ref.res
@@ -1330,6 +1397,25 @@ class CCPPCAP(ModulePass):
                     elif src[0] == "ddt_member":
                         _, instance_var, instance_module, member_name = src
                         lookup_var, lookup_mod = member_name, instance_module
+                    elif src[0] == "cap_var":
+                        _, std_name_cv = src
+                        _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
+                        if not _cv_dims or _cv_dims[0].lower() != CCPP_LOOP_EXTENT_STD_NAME:
+                            continue
+                        col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                        col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                        if not col_begin_key or not col_end_key:
+                            continue
+                        if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
+                            continue
+                        section = ArraySectionOp(
+                            host_var_ref_results[arg_name],
+                            [block_arg_map[col_begin_key]],
+                            [block_arg_map[col_end_key]],
+                        )
+                        array_section_main_ops.append(section)
+                        host_var_ref_results[arg_name] = section.res
+                        continue
                     else:
                         continue
 
@@ -1775,13 +1861,14 @@ class CCPPCAP(ModulePass):
             ModuleVarOp("lc_constituent_array", "real(kind=kind_phys), target", rank=3)
         )
         module_var_ops.append(
-            ModuleVarOp("lc_const_tend", "real(kind=kind_phys)", rank=3)
+            ModuleVarOp("lc_const_tend", "real(kind=kind_phys), target", rank=3)
         )
         module_var_ops.append(
             ModuleVarOp("lc_const_props", "type(ccpp_constituent_prop_ptr_t), target", rank=1)
         )
-        for lc_name, rank, _alloc_dims in (scratch_vars or []):
-            module_var_ops.append(ModuleVarOp(lc_name, "real(kind=kind_phys)", rank=rank))
+        for lc_name, rank, _alloc_dims, _cst_std in (scratch_vars or []):
+            ftype = "real(kind=kind_phys), pointer" if _cst_std else "real(kind=kind_phys)"
+            module_var_ops.append(ModuleVarOp(lc_name, ftype, rank=rank))
 
         # ── Helper: dedup fragment ───────────────────────────────────────────
         def _dedup_block(src_sname, src_units, src_assign, indent="    "):
@@ -1856,14 +1943,18 @@ class CCPPCAP(ModulePass):
             f"    if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)",
             f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
         ]
-        for lc_name, _rank, _alloc_dims in (scratch_vars or []):
-            da_lines.append(f"    if (allocated({lc_name})) deallocate({lc_name})")
+        for lc_name, _rank, _alloc_dims, _cst_std in (scratch_vars or []):
+            if _cst_std:
+                da_lines.append(f"    nullify({lc_name})")
+            else:
+                da_lines.append(f"    if (allocated({lc_name})) deallocate({lc_name})")
         da_lines.append(f"  end subroutine {h}_ccpp_deallocate_dynamic_constituents")
 
         # ── 3. register_constituents ─────────────────────────────────────────
         n_fixed = len(fixed_advected)
         rc_lines = [
             f"  subroutine {h}_ccpp_register_constituents(host_constituents, errmsg, errflg)",
+            f"    use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents",
             f"    type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)",
             f"    character(len=512), intent(out) :: errmsg",
             f"    integer, intent(out) :: errflg",
@@ -1913,8 +2004,9 @@ class CCPPCAP(ModulePass):
                 f"    if (.not. lc_found) then",
                 f"      lc_num = lc_num + 1",
             ]
+            long_name_f = std_name_f.replace('_', ' ').capitalize()
             inst_args = (
-                f"std_name='{std_name_f}', long_name='{std_name_f}', "
+                f"std_name='{std_name_f}', long_name='{long_name_f}', "
                 f"units='{units_f}', errcode=errflg, errmsg=errmsg, advected=.true."
             )
             if default_val_f is not None:
@@ -1942,6 +2034,7 @@ class CCPPCAP(ModulePass):
             f"    do lc_i = 1, lc_num",
             f"      lc_const_props(lc_i)%ptr => lc_all_constituents(lc_i)",
             f"    end do",
+            f"    call ccpp_scheme_utils_set_constituents(lc_all_constituents)",
             f"  end subroutine {h}_ccpp_register_constituents",
         ]
 
@@ -1968,7 +2061,7 @@ class CCPPCAP(ModulePass):
             f"    integer, intent(in) :: pver",
             f"    integer, intent(out) :: errflg",
             f"    character(len=512), intent(out) :: errmsg",
-            f"    integer :: lc_num",
+            f"    integer :: lc_num, lc_i",
             f"    errflg = 0",
             f"    errmsg = ''",
             f"    if (.not. allocated(lc_all_constituents)) then",
@@ -1980,16 +2073,32 @@ class CCPPCAP(ModulePass):
             f"    if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)",
             f"    allocate(lc_constituent_array(ncols, pver, lc_num))",
             f"    lc_constituent_array = 0.0_kind_phys",
+            f"    do lc_i = 1, lc_num",
+            f"      if (lc_all_constituents(lc_i)%default_val_set) then",
+            f"        lc_constituent_array(:, :, lc_i) = lc_all_constituents(lc_i)%default_val",
+            f"      end if",
+            f"    end do",
             f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
             f"    allocate(lc_const_tend(ncols, pver, lc_num))",
             f"    lc_const_tend = 0.0_kind_phys",
         ]
-        for lc_name, _rank, alloc_dims in (scratch_vars or []):
-            ic_lines += [
-                f"    if (allocated({lc_name})) deallocate({lc_name})",
-                f"    allocate({lc_name}({alloc_dims}))",
-                f"    {lc_name} = 0.0_kind_phys",
-            ]
+        for lc_name, _rank, alloc_dims, _cst_std in (scratch_vars or []):
+            if _cst_std:
+                ic_lines += [
+                    f"    nullify({lc_name})",
+                    f"    do lc_i = 1, lc_num",
+                    f"      if (trim(lc_all_constituents(lc_i)%std_name) == '{_cst_std}') then",
+                    f"        {lc_name} => lc_const_tend(:, :, lc_i)",
+                    f"        exit",
+                    f"      end if",
+                    f"    end do",
+                ]
+            else:
+                ic_lines += [
+                    f"    if (allocated({lc_name})) deallocate({lc_name})",
+                    f"    allocate({lc_name}({alloc_dims}))",
+                    f"    {lc_name} = 0.0_kind_phys",
+                ]
         ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")
 
         # ── 6. constituents_array ────────────────────────────────────────────
@@ -2172,6 +2281,7 @@ class CCPPCAP(ModulePass):
                 _grp_schemes = [_s.attributes["name"] for _s in _grp_cv]
                 _sno_cv: dict = {}
                 _dno_cv: dict = {}
+                _cno_cv: dict = {}  # bare_name → True when constituent=True
                 _matched_cv: set = set()
                 for _scheme_cv in _grp_schemes:
                     _run_tbl_cv = _scheme_cv + "_run"
@@ -2187,6 +2297,8 @@ class CCPPCAP(ModulePass):
                             _sno_cv[_bn_cv] = _fa_cv.getAttr("standard_name").lower()
                         if _bn_cv not in _dno_cv and _fa_cv.hasAttr("dim_names"):
                             _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
+                        if _fa_cv.hasAttr("constituent"):
+                            _cno_cv[_bn_cv] = True
                         if _fa_cv.hasAttr("model_var_name"):
                             _matched_cv.add(_bn_cv)
                 for _an_cv, _at_cv in zip(_ci_names, _ci_types):
@@ -2216,8 +2328,13 @@ class CCPPCAP(ModulePass):
                         _alloc_cv = ", ".join(
                             _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
                         ) if _dims_cv else "ncols, pver"
+                        # Constituent-tendency scratch vars (constituent=True in meta)
+                        # are pointer slices into lc_const_tend, not separate allocatables.
+                        _const_std_name = None
+                        if _cno_cv.get(_bn_cv) and _std_cv.startswith("tendency_of_"):
+                            _const_std_name = _std_cv[len("tendency_of_"):]
                         cap_var_map[_std_cv] = (_lc_cv, None, None)
-                        scratch_var_list.append((_lc_cv, _rank_cv, _alloc_cv))
+                        scratch_var_list.append((_lc_cv, _rank_cv, _alloc_cv, _const_std_name))
 
         # Detect the ccpp_info_t pattern: HOST table contains a variable with
         # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
@@ -2437,7 +2554,7 @@ class CCPPCAP(ModulePass):
         all_definitions.append(suite_part_list_fn)
         suite_vars_op = self._build_suite_variables_fn(
             suite_descriptions, ccpp_mod,
-            host_std_names or set(),
+            host_std_names or {},
             protected_std_names or set(),
         )
         all_definitions.append(suite_vars_op)
@@ -2513,10 +2630,12 @@ class CCPPCAP(ModulePass):
         # Build DDT-type-name → Fortran-module-name map (shared utility).
         ddt_source_module = collect_ddt_source_modules(ccpp_mod)
 
-        # Build set of ALL standard_names provided by the host model (from
-        # non-scheme tables in the IR).  Used in _build_suite_variables_fn to
-        # exclude scheme-internal args that have no host counterpart.
-        host_std_names: set[str] = set()
+        # Build dict of ALL standard_names provided by the host model (from
+        # non-scheme tables in the IR) mapped to their declared units.
+        # Used in _build_suite_variables_fn to check for unit conversions on
+        # state_variable args (a unit mismatch means the suite cap rewrites the
+        # value in-place, so it should not be listed as an output variable).
+        host_std_names: dict[str, str | None] = {}
         for tbl_op in ccpp_mod.body.ops:
             if not isa(tbl_op, ccpp.TablePropertiesOp):
                 continue
@@ -2529,7 +2648,9 @@ class CCPPCAP(ModulePass):
                     if not isa(arg_op, ccpp.ArgumentOp):
                         continue
                     if arg_op.standard_name is not None:
-                        host_std_names.add(arg_op.standard_name.data.lower())
+                        _sn = arg_op.standard_name.data.lower()
+                        _u = arg_op.properties.get("units")
+                        host_std_names[_sn] = _u.data.lower() if _u is not None else None
 
         # Build set of protected host-variable standard_names.
         # Protected variables (e.g. vertical_layer_dimension, horizontal_dimension)
