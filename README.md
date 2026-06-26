@@ -139,6 +139,47 @@ ccpp_validate --host-files examples/capgen/test_host.meta,examples/capgen/test_h
 
 Use `--backend flang` or `--backend fparser2` to select explicitly. Run with `-v` to see which backend was chosen and which files were skipped.
 
+## Variable Tracking
+
+`ccpp_track_variables` traces a CCPP standard-name variable through a suite's call tree and reports which scheme entry points use it, with intent, units, and whether a unit conversion will be applied.
+
+```bash
+ccpp_track_variables \
+  --suites      examples/advection/cld_suite.xml \
+  --scheme-files examples/advection/const_indices.meta,\
+examples/advection/cld_liq.meta,\
+examples/advection/apply_constituent_tendencies.meta,\
+examples/advection/cld_ice.meta \
+  --host-files  examples/advection/test_host_data.meta \
+  --variable    surface_air_pressure
+```
+
+Example output:
+
+```
+Suite: cld_suite
+Variable: surface_air_pressure
+
+  Group: physics
+    cld_liq_run  local=ps  intent=in  units=hpa  host=pa  [unit-converted]
+    cld_ice_run  local=ps  intent=in  units=pa   host=pa
+```
+
+The `[unit-converted]` flag means the suite cap will allocate a local copy and convert units before calling the scheme.
+
+Options:
+
+| Option | Description |
+|--------|-------------|
+| `--suites` | Comma-separated suite XML files (required) |
+| `--scheme-files` | Comma-separated scheme `.meta` files (required) |
+| `--host-files` | Comma-separated host `.meta` files (optional; needed for unit mismatch detection) |
+| `--variable` | Standard name to trace, case-insensitive (required) |
+| `--suite` | Restrict output to a single named suite |
+| `--entry-points` | Comma-separated entry-point suffixes to check (default: `run`; also accepts `init`, `finalize`) |
+
+Exit code is 0 when the variable is found in at least one scheme, 1 otherwise. Partial matches (standard names that contain the query as a substring) are listed as suggestions when no exact match is found.
+
 ## Testing
 
 Tests use [pytest](https://pytest.org) with [LLVM-style FileCheck](https://llvm.org/docs/CommandGuide/FileCheck.html) via the Python `filecheck` package.
@@ -232,7 +273,7 @@ ruff format xdsl_ccpp/
 | **Build & tooling** | | | | |
 | Build system integration (CMake) | ✅ | ✅ | ✅ | ❌ |
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
-| `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
+| `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ✅ |
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
