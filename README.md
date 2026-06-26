@@ -368,8 +368,7 @@ Ranked by impact on real-world use:
 4. **Subcycle support** — the `<subcycle loop="N">` SDF tag is not yet handled.
    capgen-ng generates a Fortran `do` loop around the enclosed scheme calls.
 
-5. **`ccpp_track_variables` utility** — no equivalent diagnostic tool for tracing
-   which schemes read or write a given standard-name variable.
+5. ~~**`ccpp_track_variables` utility**~~ — implemented; see [Variable Tracking](#variable-tracking).
 
 6. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
    `datatable.xml` for build-system queries of file lists and scheme dependencies.
@@ -408,20 +407,14 @@ any remaining gaps in host-variable matching, dimension validation, and
 `ccpp_physics_suite_variables` coverage that the four example tests do not
 exercise.
 
-#### 5. `ccpp_track_variables` equivalent
-Implement a query tool that, given a suite XML and a standard name, walks the
-suite call graph and reports which schemes read or write that variable and in
-what order.  The MLIR IR makes this straightforward — the information is already
-encoded in the `ArgumentOp` properties after the host-variable match pass.
-
-#### 6. Dimension name cross-validation
+#### 5. Dimension name cross-validation
 Complete the host-variable matching validation to check that all dimension names
 in a scheme argument's `dimensions` field are resolvable against the host model's
 registered standard names.  Currently only `horizontal_loop_extent` →
 `horizontal_dimension` is checked; other dimension substitutions are resolved
 but not validated.
 
-#### 7. Documentation and datatable generation
+#### 6. Documentation and datatable generation
 Generate an HTML variable table (standard name, long name, units, rank, type,
 kind, source module) and a `datatable.xml` suitable for CMake queries.  Low
 priority until build system integration is in place.
