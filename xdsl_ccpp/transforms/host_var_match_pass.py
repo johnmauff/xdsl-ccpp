@@ -13,8 +13,8 @@ from xdsl_ccpp.dialects.ccpp import TableTypeKind
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
     CCPP_INTERNAL_STD_NAMES,
-    CCPP_DIM_SUBSTITUTIONS,
     UNIT_CONVERSIONS,
+    dims_compatible,
     normalize_units,
 )
 
@@ -57,9 +57,6 @@ class HostVariableMatchPass(ModulePass):
 
     # Standard names managed by the CCPP framework — see ccpp_conventions.py.
     _CCPP_INTERNAL: ClassVar[frozenset] = CCPP_INTERNAL_STD_NAMES
-
-    # Dimension substitutions — see ccpp_conventions.py.
-    _VALID_DIM_SUBSTITUTIONS: ClassVar[dict] = CCPP_DIM_SUBSTITUTIONS
 
     def _find_ccpp_module(self, ops):
         for op in ops:
@@ -181,9 +178,7 @@ class HostVariableMatchPass(ModulePass):
                 ]
                 prefix_ok = True
                 for s_dim, h_dim in zip(scheme_dim_names, host_dim_names):
-                    if s_dim.lower() == h_dim.lower():
-                        continue
-                    if self._VALID_DIM_SUBSTITUTIONS.get(s_dim.lower()) == h_dim.lower():
+                    if dims_compatible(s_dim, h_dim):
                         continue
                     prefix_ok = False
                     break
@@ -231,11 +226,7 @@ class HostVariableMatchPass(ModulePass):
             for i, (s_dim, h_dim) in enumerate(
                 zip(scheme_dim_names, host_dim_names)
             ):
-                # CCPP standard names are case-insensitive
-                if s_dim.lower() == h_dim.lower():
-                    continue
-                # Check if this is a known framework-managed substitution
-                if self._VALID_DIM_SUBSTITUTIONS.get(s_dim.lower()) == h_dim.lower():
+                if dims_compatible(s_dim, h_dim):
                     continue
                 errors.append(
                     f"  {ctx}: dimension {i + 1} name mismatch — "

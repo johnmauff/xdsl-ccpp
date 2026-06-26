@@ -346,8 +346,8 @@ ruff format xdsl_ccpp/
 | Old embedded-comment format | ✅ | ❌ | ❌ | ❌ |
 | New `.meta` file format | ❌ | ✅ | ✅ | ✅ |
 | **Variable handling** | | | | |
-| Host variable matching | ✅ | ✅ | ✅ | Partial† |
-| Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
+| Host variable matching | ✅ | ✅ | ✅ | ✅ |
+| Variable compatibility validation | ✅ | ✅ | ✅ | ✅ |
 | Unit/kind conversion | ✅ | ✅ | ✅ | ✅∥ |
 | Optional argument handling | ✅ | Partial | ✅ | ✅ |
 | Chunked data layout | ✅ | ❌ | ✅ | ✅ |
@@ -363,7 +363,7 @@ ruff format xdsl_ccpp/
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 101 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 120 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -380,15 +380,10 @@ ruff format xdsl_ccpp/
 
 ### Notes on Partial / Missing xdsl-ccpp Capabilities
 
-† **Host variable matching — remaining gaps:**
-- Dimension name cross-validation beyond `horizontal_loop_extent` →
-  `horizontal_dimension` (other substitutions are resolved but not checked)
-- DDT member type/rank/kind validation (members matched by standard_name only)
-
-‡ **Variable compatibility validation — remaining gaps:**
-- Dimension name cross-validation beyond `horizontal_loop_extent` →
-  `horizontal_dimension` (other substitutions are resolved but not checked)
-- DDT member type/rank/kind validation (members matched by standard_name only)
+**Known limitation — DDT member variables:**
+Host variable matching and compatibility validation for DDT (derived data type)
+members use standard_name lookup only; type, rank, and kind are not validated for
+DDT members.  Flat module variables are fully validated.
 
 ∥ **Unit conversion — implementation note:**
 xdsl-ccpp allocates a local temporary for each unit-converted argument (e.g.
@@ -473,14 +468,7 @@ any remaining gaps in host-variable matching, dimension validation, and
 `ccpp_physics_suite_variables` coverage that the four example tests do not
 exercise.
 
-#### 3. Dimension name cross-validation
-Complete the host-variable matching validation to check that all dimension names
-in a scheme argument's `dimensions` field are resolvable against the host model's
-registered standard names.  Currently only `horizontal_loop_extent` →
-`horizontal_dimension` is checked; other dimension substitutions are resolved
-but not validated.
-
-#### 4. Documentation and datatable generation
+#### 3. Documentation and datatable generation
 Generate an HTML variable table (standard name, long name, units, rank, type,
 kind, source module) and a `datatable.xml` suitable for CMake queries.  Low
 priority until build system integration is in place.

@@ -30,11 +30,64 @@ CCPP_FRAMEWORK_STD_NAMES: frozenset = frozenset({
 # Includes both error-handling names and framework-internal names.
 CCPP_INTERNAL_STD_NAMES: frozenset = CCPP_ERROR_STD_NAMES | CCPP_FRAMEWORK_STD_NAMES
 
-# ── Dimension name substitutions ────────────────────────────────────────────
-# Maps a scheme-side dimension standard name to its host-side equivalent.
-# Used by HostVariableMatchPass and ccpp_cap.py to validate and classify dims.
+# ── Dimension semantic classes ───────────────────────────────────────────────
+# Any two dimension names within the same class are considered compatible for
+# variable matching purposes, matching capgen-ng's equivalence-class approach.
+# Includes compound range forms (ccpp_constant_one:X and begin:end notation)
+# exactly as they appear in .meta dimension strings.
+CCPP_HORIZONTAL_DIMENSIONS: frozenset = frozenset({
+    "horizontal_dimension",
+    "horizontal_loop_extent",
+    "ccpp_constant_one:horizontal_dimension",
+    "ccpp_constant_one:horizontal_loop_extent",
+    "horizontal_loop_begin:horizontal_loop_end",
+})
+
+CCPP_VERTICAL_DIMENSIONS: frozenset = frozenset({
+    "vertical_layer_dimension",
+    "vertical_interface_dimension",
+    "vertical_layer_index",
+    "vertical_interface_index",
+    "ccpp_constant_one:vertical_layer_dimension",
+    "ccpp_constant_one:vertical_interface_dimension",
+})
+
+
+def is_horizontal_dimension(dim_name: str) -> bool:
+    """Return True if dim_name is a recognized CCPP horizontal dimension."""
+    return dim_name.lower() in CCPP_HORIZONTAL_DIMENSIONS
+
+
+def is_vertical_dimension(dim_name: str) -> bool:
+    """Return True if dim_name is a recognized CCPP vertical dimension."""
+    return dim_name.lower() in CCPP_VERTICAL_DIMENSIONS
+
+
+def dims_compatible(dim1: str, dim2: str) -> bool:
+    """Return True if two CCPP dimension standard names are semantically compatible.
+
+    Compatibility means both names belong to the same CCPP dimension equivalence
+    class (horizontal or vertical), following capgen-ng's semantic equivalence
+    model.  Exact equality is also compatible.
+    """
+    d1, d2 = dim1.lower(), dim2.lower()
+    if d1 == d2:
+        return True
+    return (
+        (d1 in CCPP_HORIZONTAL_DIMENSIONS and d2 in CCPP_HORIZONTAL_DIMENSIONS)
+        or (d1 in CCPP_VERTICAL_DIMENSIONS and d2 in CCPP_VERTICAL_DIMENSIONS)
+    )
+
+
+# ── Dimension name substitutions (legacy / documentation) ───────────────────
+# Kept for reference; host_var_match_pass.py uses dims_compatible() instead.
 CCPP_DIM_SUBSTITUTIONS: dict = {
     "horizontal_loop_extent": "horizontal_dimension",
+    "horizontal_dimension":   "horizontal_loop_extent",
+    "ccpp_constant_one:horizontal_loop_extent": "ccpp_constant_one:horizontal_dimension",
+    "ccpp_constant_one:horizontal_dimension":   "ccpp_constant_one:horizontal_loop_extent",
+    "vertical_layer_dimension":     "vertical_interface_dimension",
+    "vertical_interface_dimension": "vertical_layer_dimension",
 }
 
 # ── Loop bound and dimension standard names ────────────────────────────────
