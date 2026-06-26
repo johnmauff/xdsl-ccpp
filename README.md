@@ -61,6 +61,9 @@ Optional:
                         derived from the suite name when not set
   -t, --tempdir         Temporary directory for intermediate files (default: tmp)
   -v, --verbose         Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)
+  --emit-datatable      Write datatable.xml to this path after generating caps
+  --emit-html           Write per-entry-point HTML variable tables to this directory
+                        (requires --emit-datatable)
 ```
 
 ## Examples
@@ -266,6 +269,139 @@ This configures the capgen example, generates all CCPP cap files into
 `examples/capgen/build/caps/`, compiles them alongside the pre-existing Fortran
 scheme sources, and runs the integration test.
 
+## Documentation Generation
+
+`ccpp_datatable` produces a machine-readable `datatable.xml` and optionally a set of human-readable HTML variable tables from a completed CCPP cap generation run. It serves two distinct purposes:
+
+1. **CMake file discovery** — the `<ccpp_files>` section lists every `.F90` cap file written, giving the CMake module a precise source list without relying on a glob.
+2. **Variable documentation** — the `<var_dictionaries>` section records full variable metadata (standard name, units, dimensions, type, intent) for every scheme entry point and host argument table, suitable for browsing as HTML.
+
+The tool can be run standalone (after `ccpp_xdsl` with `--debug`) or integrated directly into the `ccpp_xdsl` pipeline.
+
+### Integrated with ccpp_xdsl (recommended)
+
+Pass `--emit-datatable` to generate the datatable as part of a normal cap generation run. The MLIR intermediate is read before the temp directory is cleaned up, so no `--debug` flag is required:
+
+```bash
+ccpp_xdsl \
+  --suites       examples/capgen/ddt_suite.xml,examples/capgen/temp_suite.xml \
+  --scheme-files examples/capgen/make_ddt.meta,examples/capgen/temp_set.meta \
+  --host-files   examples/capgen/test_host.meta \
+  --host-name    test_host \
+  -o             caps/ \
+  --emit-datatable caps/datatable.xml \
+  --emit-html    caps/docs/
+```
+
+### Standalone Usage
+
+Run `ccpp_datatable` separately against an existing caps directory. The MLIR intermediate file is normally removed after `ccpp_xdsl` finishes; pass `--debug` to keep it:
+
+```bash
+# Step 1: generate caps and keep the MLIR intermediate
+ccpp_xdsl \
+  --suites       examples/capgen/ddt_suite.xml \
+  --scheme-files examples/capgen/make_ddt.meta \
+  --host-name    test_host \
+  -o             caps/ \
+  --debug
+
+# Step 2: generate datatable from the retained MLIR
+ccpp_datatable \
+  --mlir      tmp/ccpp.mlir \
+  --caps-dir  caps/ \
+  -o          caps/datatable.xml \
+  --html-dir  caps/docs/ \
+  --host-name test_host
+```
+
+### ccpp_datatable Options
+
+```
+Required:
+  --mlir FILE         Frontend MLIR file (ccpp.mlir in the --tempdir from ccpp_xdsl)
+  --caps-dir DIR      Directory containing the generated .F90 cap files
+
+Optional:
+  -o, --output FILE   Output path for datatable.xml (default: datatable.xml)
+  --html-dir DIR      Write one HTML variable table per entry point to this directory
+  --host-name NAME    Host model name written into the <datatable> root element
+```
+
+### datatable.xml Structure
+
+The output file has four top-level sections:
+
+| Section | Contents |
+|---------|----------|
+| `<ccpp_files>` | Absolute paths to every generated `.F90` cap file |
+| `<schemes>` | Each scheme with its lifecycle entry points (`init`, `run`, `finalize`, etc.) |
+| `<api>` | Suite → group → scheme call structure, matching the suite XML |
+| `<var_dictionaries>` | Full variable metadata per argument-table entry point (one `<var_dictionary>` per scheme entry point and host table) |
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<datatable host_name="test_host">
+  <ccpp_files>
+    <file path="caps/ccpp_kinds.F90"/>
+    <file path="caps/ddt_suite_cap.F90"/>
+    <file path="caps/test_host_ccpp_cap.F90"/>
+  </ccpp_files>
+  <schemes>
+    <scheme name="make_ddt">
+      <entry_point name="make_ddt_init" phase="init"/>
+      <entry_point name="make_ddt_run" phase="run"/>
+    </scheme>
+  </schemes>
+  <api>
+    <suite name="ddt_suite" version="1.0">
+      <group name="data_prep">
+        <scheme name="make_ddt"/>
+      </group>
+    </suite>
+  </api>
+  <var_dictionaries>
+    <var_dictionary source="make_ddt_run" table_type="scheme">
+      <variable local_name="O3" standard_name="ozone" long_name="Ozone mixing ratio"
+                units="ppmv" type="real" dimensions="(horizontal_loop_extent)"
+                kind="kind_phys" intent="in"/>
+    </var_dictionary>
+  </var_dictionaries>
+</datatable>
+```
+
+### HTML Variable Tables
+
+When `--html-dir` is provided, one self-contained HTML file is written per argument-table entry point. The filename matches the entry-point name (e.g. `make_ddt_run.html`, `temp_adjust_init.html`). Each page renders an 8-column table:
+
+| Column | Description |
+|--------|-------------|
+| Local name | Fortran variable name used inside the scheme |
+| Standard name | CCPP standard name (globally unique identifier) |
+| Long name | Human-readable description |
+| Units | Physical units string |
+| Type | Fortran base type (`real`, `integer`, etc.) |
+| Dimensions | Dimension list, e.g. `(horizontal_loop_extent, vertical_layer_dimension)` |
+| Kind | Fortran kind parameter (e.g. `kind_phys`) |
+| Intent | `in`, `out`, or `inout` |
+
+### CMake Integration with Datatable
+
+Pass `EMIT_DATATABLE` to `xdsl_ccpp_generate()` to enable precise file discovery. When the datatable exists, the CMake module reads the `<ccpp_files>` section instead of globbing — ensuring `TARGET_VAR` contains exactly the files that were generated, with no risk of picking up stale outputs:
+
+```cmake
+xdsl_ccpp_generate(
+    HOST_NAME      "MyHost"
+    OUTPUT_ROOT    "${CMAKE_CURRENT_BINARY_DIR}/caps"
+    TARGET_VAR     MY_CAPS
+    SUITES         "${CMAKE_CURRENT_SOURCE_DIR}/suite.xml"
+    SCHEMEFILES    "${CMAKE_CURRENT_SOURCE_DIR}/scheme.meta"
+    EMIT_DATATABLE "${CMAKE_CURRENT_BINARY_DIR}/caps/datatable.xml"
+)
+```
+
+See [CMake Integration](#cmake-integration) for the full `xdsl_ccpp_generate()` function reference.
+
 ## Testing
 
 Tests use [pytest](https://pytest.org) with [LLVM-style FileCheck](https://llvm.org/docs/CommandGuide/FileCheck.html) via the Python `filecheck` package.
@@ -358,7 +494,7 @@ ruff format xdsl_ccpp/
 | Multi-instance support | ❌ | ❌ | ✅ | ❌ |
 | **Build & tooling** | | | | |
 | Build system integration (CMake) | ✅ | ✅ | ✅ | ✅ |
-| Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
+| Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ✅ |
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ✅ |
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
@@ -443,10 +579,7 @@ Ranked by impact on real-world use:
    to 200 independent instances (e.g. ensemble members) via a per-handle
    `initialized(ccpp_instance)` flag array.
 
-3. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
-   `datatable.xml` for build-system queries of file lists and scheme dependencies.
-
-4. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
+3. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
    `.meta` stub files from Fortran source (reverse of `ccpp_validate`). xdsl-ccpp
    has only the forward direction.
 
@@ -467,11 +600,6 @@ uses a single suite with ~60 schemes and ~800 variables — passing it will expo
 any remaining gaps in host-variable matching, dimension validation, and
 `ccpp_physics_suite_variables` coverage that the four example tests do not
 exercise.
-
-#### 3. Documentation and datatable generation
-Generate an HTML variable table (standard name, long name, units, rank, type,
-kind, source module) and a `datatable.xml` suitable for CMake queries.  Low
-priority until build system integration is in place.
 
 ### Key Observations
 

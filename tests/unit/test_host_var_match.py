@@ -369,6 +369,103 @@ class TestKindMismatch:
         assert arg.model_var_kind_mismatch is None
 
 
+class TestDimensionCompatibility:
+    """Dimension names within the same CCPP equivalence class are compatible."""
+
+    def _make_pair(self, scheme_dim: str, host_dim: str) -> tuple:
+        scheme = scheme_meta("test_scheme", f"""\
+[ var_a ]
+  standard_name = some_variable
+  type = real
+  kind = kind_phys
+  intent = inout
+  dimensions = ({scheme_dim})
+  units = K
+""")
+        host = host_meta("test_mod", f"""\
+[ host_var_a ]
+  standard_name = some_variable
+  type = real
+  kind = kind_phys
+  dimensions = ({host_dim})
+  units = K
+""")
+        return scheme, host
+
+    def test_horizontal_loop_extent_to_horizontal_dimension(self, run_host_match):
+        """horizontal_loop_extent (scheme) → horizontal_dimension (host) is valid."""
+        scheme, host = self._make_pair("horizontal_loop_extent", "horizontal_dimension")
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_horizontal_dimension_to_horizontal_loop_extent(self, run_host_match):
+        """Reverse: horizontal_dimension (scheme) → horizontal_loop_extent (host) is valid."""
+        scheme, host = self._make_pair("horizontal_dimension", "horizontal_loop_extent")
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_vertical_layer_to_interface_dimension(self, run_host_match):
+        """vertical_layer_dimension ↔ vertical_interface_dimension are compatible."""
+        scheme, host = self._make_pair(
+            "vertical_layer_dimension", "vertical_interface_dimension"
+        )
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_vertical_interface_to_layer_dimension(self, run_host_match):
+        """Reverse: vertical_interface_dimension ↔ vertical_layer_dimension."""
+        scheme, host = self._make_pair(
+            "vertical_interface_dimension", "vertical_layer_dimension"
+        )
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_range_form_horizontal_compatibility(self, run_host_match):
+        """ccpp_constant_one:horizontal_loop_extent ↔ horizontal_dimension."""
+        scheme, host = self._make_pair(
+            "ccpp_constant_one:horizontal_loop_extent", "horizontal_dimension"
+        )
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_range_form_horizontal_same_class(self, run_host_match):
+        """ccpp_constant_one:horizontal_loop_extent ↔ horizontal_loop_extent."""
+        scheme, host = self._make_pair(
+            "ccpp_constant_one:horizontal_loop_extent", "horizontal_loop_extent"
+        )
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_2d_mixed_horizontal_vertical(self, run_host_match):
+        """2-D: scheme uses (horizontal_loop_extent, vertical_layer_dimension),
+        host uses (horizontal_dimension, vertical_interface_dimension)."""
+        scheme = scheme_meta("test_scheme", """\
+[ var_a ]
+  standard_name = some_variable
+  type = real
+  kind = kind_phys
+  intent = inout
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  units = K
+""")
+        host = host_meta("test_mod", """\
+[ host_var_a ]
+  standard_name = some_variable
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension, vertical_interface_dimension)
+  units = K
+""")
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_incompatible_horizontal_vs_vertical_raises(self, run_host_match):
+        """A horizontal dimension is NOT compatible with a vertical one."""
+        scheme, host = self._make_pair(
+            "horizontal_dimension", "vertical_layer_dimension"
+        )
+        with pytest.raises(ValueError, match="dimension.*mismatch"):
+            run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_exact_match_still_works(self, run_host_match):
+        """Identical dimension names on both sides remain compatible."""
+        scheme, host = self._make_pair("horizontal_dimension", "horizontal_dimension")
+        run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+
 class TestMissingVariables:
 
     def test_missing_required_var_raises(self, run_host_match):

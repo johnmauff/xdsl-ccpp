@@ -36,13 +36,26 @@
 # .meta/.xml input file and calling cmake --build with --fresh-cmake) is
 # required to pick up changes to the CCPP metadata.
 #
+# Optional: datatable-based file discovery
+#
+# If EMIT_DATATABLE is provided, xdsl_ccpp_generate() passes --emit-datatable
+# to ccpp_xdsl.  The datatable.xml records the exact set of .F90 files written,
+# so the CMake module reads it for precise file discovery (no glob needed).
+#
+# Usage with datatable:
+#
+#   xdsl_ccpp_generate(
+#       ...
+#       EMIT_DATATABLE "${CMAKE_CURRENT_BINARY_DIR}/caps/datatable.xml"
+#   )
+#
 # Requirements:
 #   - ccpp_xdsl must be on PATH (pip install -e <path/to/xdsl-ccpp>)
 
 cmake_minimum_required(VERSION 3.20)
 
 function(xdsl_ccpp_generate)
-    set(_oneValueArgs  HOST_NAME OUTPUT_ROOT TARGET_VAR)
+    set(_oneValueArgs  HOST_NAME OUTPUT_ROOT TARGET_VAR EMIT_DATATABLE)
     set(_multiValueArgs SUITES SCHEMEFILES HOSTFILES)
     cmake_parse_arguments(XDSL "" "${_oneValueArgs}" "${_multiValueArgs}" ${ARGN})
 
@@ -83,6 +96,10 @@ function(xdsl_ccpp_generate)
         list(APPEND _cmd --host-files "${_host_str}")
     endif()
 
+    if(XDSL_EMIT_DATATABLE)
+        list(APPEND _cmd --emit-datatable "${XDSL_EMIT_DATATABLE}")
+    endif()
+
     # ── run at configure time ─────────────────────────────────────────────────
     file(MAKE_DIRECTORY "${XDSL_OUTPUT_ROOT}")
     message(STATUS "xdsl_ccpp_generate: generating CCPP caps for '${XDSL_HOST_NAME}'")
@@ -100,7 +117,35 @@ function(xdsl_ccpp_generate)
     endif()
 
     # ── collect generated files ───────────────────────────────────────────────
-    file(GLOB _caps "${XDSL_OUTPUT_ROOT}/*.F90")
+    if(XDSL_EMIT_DATATABLE AND EXISTS "${XDSL_EMIT_DATATABLE}")
+        # Read the exact file list from datatable.xml — precise, no glob needed.
+        find_program(_PYTHON python3 HINTS ENV PATH)
+        if(_PYTHON)
+            execute_process(
+                COMMAND "${_PYTHON}" -c
+                    "import xml.etree.ElementTree as ET, sys; \
+t = ET.parse(sys.argv[1]); \
+print(';'.join(n.get('path','') for n in t.findall('.//ccpp_files/file')))"
+                    "${XDSL_EMIT_DATATABLE}"
+                OUTPUT_VARIABLE _caps_raw
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                RESULT_VARIABLE _py_result
+            )
+            if(_py_result EQUAL 0 AND _caps_raw)
+                string(REPLACE ";" ";" _caps "${_caps_raw}")
+            else()
+                message(WARNING
+                    "xdsl_ccpp_generate: could not parse datatable "
+                    "${XDSL_EMIT_DATATABLE}; falling back to glob.")
+                file(GLOB _caps "${XDSL_OUTPUT_ROOT}/*.F90")
+            endif()
+        else()
+            file(GLOB _caps "${XDSL_OUTPUT_ROOT}/*.F90")
+        endif()
+    else()
+        file(GLOB _caps "${XDSL_OUTPUT_ROOT}/*.F90")
+    endif()
+
     if(NOT _caps)
         message(WARNING
             "xdsl_ccpp_generate: no .F90 files found in ${XDSL_OUTPUT_ROOT} "

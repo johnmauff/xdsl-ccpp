@@ -26,6 +26,7 @@ ccpp_prebuild = "xdsl_ccpp.tools.ccpp_prebuild:main"
 fir2meta = "xdsl_ccpp.tools.fir2meta:main"
 ccpp_validate = "xdsl_ccpp.tools.ccpp_validate_source:main"
 ccpp_track_variables = "xdsl_ccpp.tools.ccpp_track_variables:main"
+ccpp_datatable = "xdsl_ccpp.tools.ccpp_datatable:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

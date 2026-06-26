@@ -107,6 +107,21 @@ class ccppMain:
                  "May be repeated for multiple mappings.  "
                  "Supplements the built-in CCPP_KIND_TO_ISO table for this run only.",
         )
+        parser.add_argument(
+            "--emit-datatable",
+            default=None,
+            metavar="FILE",
+            help="Write a datatable.xml to this path after generating caps.  "
+                 "Records generated .F90 file paths, scheme entry points, "
+                 "suite call structure, and variable metadata.",
+        )
+        parser.add_argument(
+            "--emit-html",
+            default=None,
+            metavar="DIR",
+            help="Write per-entry-point HTML variable tables into this directory "
+                 "(requires --emit-datatable).",
+        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -363,6 +378,31 @@ class ccppMain:
                     f"  -> Written '{out_path}' ({len(body)} bytes)",
                 )
 
+    def _run_datatable(self, mlir_file: str, caps_dir: str, datatable_path: str) -> None:
+        """Generate datatable.xml (and optionally HTML) from *mlir_file*."""
+        from xdsl_ccpp.tools.ccpp_datatable import build_datatable, write_datatable, write_html
+        from pathlib import Path
+
+        self.print_verbose_message(
+            f"Generating datatable: {datatable_path}",
+            f"Generating datatable from '{mlir_file}' → '{datatable_path}'",
+        )
+
+        with open(mlir_file) as f:
+            mlir_text = f.read()
+
+        cap_files = [str(p) for p in Path(caps_dir).glob("*.F90")]
+        host_name = self.options_db.get("host_name") or ""
+        root_el = build_datatable(mlir_text, cap_files, host_name=host_name)
+        write_datatable(root_el, datatable_path)
+        self.print_verbose_message(f"  -> Wrote datatable: {datatable_path}")
+
+        html_dir = self.options_db.get("emit_html")
+        if html_dir:
+            written = write_html(root_el, html_dir)
+            for path in written:
+                self.print_verbose_message(f"  -> Wrote HTML: {path}")
+
     def run(self):
         parser = self.initialise_argument_parser()
         args = parser.parse_args()
@@ -387,6 +427,10 @@ class ccppMain:
             self.merge_meta(mlir_file)
         ftn_file = self.run_opt(tmp_dir, mlir_file)
         self.split_fortran_output(ftn_file, out_dir)
+
+        datatable_path = self.options_db.get("emit_datatable")
+        if datatable_path:
+            self._run_datatable(mlir_file, out_dir, datatable_path)
 
         if not self.options_db.get("debug"):
             self.remove_file_if_exists(mlir_file, ftn_file)
