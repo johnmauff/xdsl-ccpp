@@ -214,16 +214,18 @@ ruff format xdsl_ccpp/
 | DDT host model support | ✅ | ✅ | ✅ | ✅ |
 | Nested suites | ❌ | ✅ | ✅ | ✅ |
 | Python API for suite definition | ❌ | ❌ | ❌ | ✅ |
+| Subcycle support (`loop="N"` in SDF) | ✅ | ❌ | ✅ | ❌ |
 | **Metadata format** | | | | |
 | Old embedded-comment format | ✅ | ❌ | ❌ | ❌ |
 | New `.meta` file format | ❌ | ✅ | ✅ | ✅ |
 | **Variable handling** | | | | |
 | Host variable matching | ✅ | ✅ | ✅ | Partial† |
 | Variable compatibility validation | ✅ | ✅ | ✅ | Partial‡ |
-| Unit/kind conversion | ✅ | ✅ | ✅ | ✅ |
+| Unit/kind conversion | ✅ | ✅ | ✅ | ✅∥ |
 | Optional argument handling | ✅ | Partial | ✅ | ✅ |
-| Chunked data layout | ✅ | ❌ | ✅ | ❌ |
+| Chunked data layout | ✅ | ❌ | ✅ | ✅ |
 | Constituent registration | ✅ | ✅ | ✅ | ✅ |
+| `ccpp_physics_suite_variables` | ✅ | ✅ | ✅ | ✅ |
 | **Code correctness** | | | | |
 | Fortran source cross-validation | ❌ | ✅ | ✅ | ✅¶ |
 | Multi-instance support | ❌ | ❌ | ✅ | ❌ |
@@ -231,8 +233,9 @@ ruff format xdsl_ccpp/
 | Build system integration (CMake) | ✅ | ✅ | ✅ | ❌ |
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ❌ |
+| Metadata from Fortran source | ❌ | ❌ | ✅ | ❌ |
 | **Testing** | | | | |
-| Compiled Fortran execution tests | ✅ | ✅ | ✅ | Partial§ |
+| Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
 | Unit test depth | Moderate | Moderate | 1300+ tests | 101 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
@@ -260,6 +263,19 @@ ruff format xdsl_ccpp/
   `horizontal_dimension` (other substitutions are resolved but not checked)
 - DDT member type/rank/kind validation (members matched by standard_name only)
 
+∥ **Unit conversion — implementation note:**
+xdsl-ccpp allocates a local temporary for each unit-converted argument (e.g.
+`ps_unit_conv = ps * 0.01_kind_phys`), matching capgen's approach.  The host's
+array is never modified in-place.  For `intent=in` arguments the temporary is
+discarded after the scheme call; for `intent=inout`/`intent=out` a write-back
+converts the result back to host units before returning.
+
+xdsl-ccpp also generates `ccpp_physics_suite_variables` with correct
+input/output classification. A `state_variable=true` variable is listed as
+output only when all schemes in the suite use the same units as the host (no
+unit conversion); when a mismatch exists the variable is input-only, consistent
+with the fact that the host array is never written.
+
 ¶ **Fortran source cross-validation — what is and isn't checked:**
 
 The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme's
@@ -285,13 +301,13 @@ The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme'
 | Optional args | 0 | 1 | 0 | 0 | ~550 |
 | Constituents | 0 | 0 | 0 | yes | many |
 | Groups | 1 | 3 | 3 | 1 | ~10 |
-| xdsl-ccpp status | ✅ passes | ✅ passes | ✅ passes | ✅ cap compiles | ❌ not yet |
+| xdsl-ccpp status | ✅ passes | ✅ passes | ✅ passes | ✅ passes | ❌ not yet |
 
 Notes:
 - **helloworld**: exercises kind conversion (`kind_phys`↔`kind_dyn`) and unit conversion (K↔degC)
 - **capgen**: two suites (`temp_suite` + `ddt_suite`), 3 groups, 1 optional arg in `temp_adjust`
 - **ddthost**: same suites as capgen; primary purpose is testing DDT host variables and Python-defined host interface (`ddthost_py.py`)
-- **advection**: caps generate and compile including constituent registration API (`ccpp_register_constituents`, `ccpp_number_constituents`, `ccpp_initialize_constituents`, etc.)
+- **advection**: columnar-chunked physics with constituent registration (`ccpp_register_constituents`, `ccpp_number_constituents`, `ccpp_initialize_constituents`); column-sliced arrays passed correctly to schemes
 - **Variables**: unique standard names across all scheme `.meta` files in the example
 
 ### xdsl-ccpp Gaps vs capgen-ng
@@ -304,9 +320,70 @@ Ranked by impact on real-world use:
 2. **Host model integration** — only the four example test cases (helloworld, capgen,
    ddthost, advection). No integration with CCPP-SCM, CAM-SIMA, or UFS.
 
-3. **Chunked data layout** — column-blocked physics loops not supported.
+3. **Multi-instance support** — one suite instance per run only. capgen-ng supports up
+   to 200 independent instances (e.g. ensemble members) via a per-handle
+   `initialized(ccpp_instance)` flag array.
 
-4. **Multi-instance support** — one suite instance per run only.
+4. **Subcycle support** — the `<subcycle loop="N">` SDF tag is not yet handled.
+   capgen-ng generates a Fortran `do` loop around the enclosed scheme calls.
+
+5. **`ccpp_track_variables` utility** — no equivalent diagnostic tool for tracing
+   which schemes read or write a given standard-name variable.
+
+6. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
+   `datatable.xml` for build-system queries of file lists and scheme dependencies.
+
+7. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
+   `.meta` stub files from Fortran source (reverse of `ccpp_validate`). xdsl-ccpp
+   has only the forward direction.
+
+### Next Steps to Further Match capgen-ng
+
+The following work items are ordered by impact on closing the gap with production
+capgen-ng use cases.
+
+#### 1. Subcycle support
+Add parsing of `<subcycle loop="N">` in the suite XML reader and generate a
+Fortran `do` loop around the enclosed scheme calls in the suite cap.  This is
+self-contained (no host-model changes) and unlocks real-world suites that use
+subcycled microphysics.
+
+#### 2. Build system integration
+Provide a CMake module (and optionally a Make fragment) that invokes `ccpp_xdsl`
+during the configure or build phase and adds the generated `.F90` files as
+compile targets.  This is the primary blocker for embedding xdsl-ccpp in a host
+model build such as CAM-SIMA or UFS.
+
+#### 3. Multi-instance support
+Introduce a CCPP handle type carrying a `ccpp_instance` integer.  Change the
+generated `initialized` flag from a scalar to an array indexed by
+`ccpp_instance`, matching capgen-ng's 200-slot design.  Required for ensemble
+and perturbation-parameter runs.
+
+#### 4. Host model integration (CCPP-SCM)
+Integrate with the Single Column Model as the first real-world host.  The SCM
+uses a single suite with ~60 schemes and ~800 variables — passing it will expose
+any remaining gaps in host-variable matching, dimension validation, and
+`ccpp_physics_suite_variables` coverage that the four example tests do not
+exercise.
+
+#### 5. `ccpp_track_variables` equivalent
+Implement a query tool that, given a suite XML and a standard name, walks the
+suite call graph and reports which schemes read or write that variable and in
+what order.  The MLIR IR makes this straightforward — the information is already
+encoded in the `ArgumentOp` properties after the host-variable match pass.
+
+#### 6. Dimension name cross-validation
+Complete the host-variable matching validation to check that all dimension names
+in a scheme argument's `dimensions` field are resolvable against the host model's
+registered standard names.  Currently only `horizontal_loop_extent` →
+`horizontal_dimension` is checked; other dimension substitutions are resolved
+but not validated.
+
+#### 7. Documentation and datatable generation
+Generate an HTML variable table (standard name, long name, units, rank, type,
+kind, source module) and a `datatable.xml` suitable for CMake queries.  Low
+priority until build system integration is in place.
 
 ### Key Observations
 
@@ -325,7 +402,11 @@ text-templating generator throughout.
 GPU support (OpenACC and OpenMP) is unique among CCPP tools. The MLIR architecture
 enables future capabilities none of the other tools can reach: multi-language host
 models, additional GPU backends, and composable transformation passes. Physics
-correctness is verified across helloworld, capgen, and ddthost.
+correctness is verified across all four example test cases — helloworld, capgen,
+ddthost, and advection. Unit conversion uses local temporaries (consistent with
+capgen), `ccpp_physics_suite_variables` correctly classifies input and output
+variables including constituent and state-variable handling, and column-chunked
+physics with constituent registration is fully supported.
 
 ### Recommended Use Today
 

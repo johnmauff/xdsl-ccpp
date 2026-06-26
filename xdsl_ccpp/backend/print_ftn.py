@@ -697,19 +697,30 @@ class ftnPrintContext:
                 if self._ftn_dim_suffix(op.conv_result.type):
                     self.print(f"deallocate({conv_name})")
             case CCPPUnitConvertOp():
-                # In-place pre-conversion (host units → scheme units).
-                # Result is aliased to source so no allocation is needed.
-                src_name   = self._get_variable_name_for(op.source)
+                # Local-copy pre-conversion (host units → scheme units).
+                # Allocates a local temp and copies the converted value into it;
+                # the host's array is never modified.
+                src_name    = self._get_variable_name_for(op.source)
+                result_name = self._get_variable_name_for(op.res)
                 scheme_kind = self._elem_kind_name(op.res.type)
                 to_expr = self._suffix_kind_in_expr(op.to_scheme_expr.data, scheme_kind)
+                dim_suffix = self._ftn_dim_suffix(op.res.type)
+                if dim_suffix:
+                    rank = dim_suffix.count(":")
+                    sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    self.print(f"allocate({result_name}({sizes}))")
                 if to_expr:
-                    self.print(f"{src_name} = {src_name} {to_expr}")
+                    self.print(f"{result_name} = {src_name} {to_expr}")
+                # intent(out): no pre-copy — scheme fills the local from scratch
             case CCPPUnitWriteBackOp():
-                # In-place post-conversion (scheme units → host units).
+                # Post-conversion: write local temp back to host in original units.
+                conv_name = self._get_variable_name_for(op.conv_result)
                 dest_name = self._get_variable_name_for(op.original_dest)
                 host_kind = self._elem_kind_name(op.original_dest.type)
                 to_expr = self._suffix_kind_in_expr(op.to_host_expr.data, host_kind)
-                self.print(f"{dest_name} = {dest_name} {to_expr}")
+                self.print(f"{dest_name} = {conv_name} {to_expr}")
+                if self._ftn_dim_suffix(op.conv_result.type):
+                    self.print(f"deallocate({conv_name})")
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(
         {
@@ -1182,10 +1193,19 @@ class ftnPrintContext:
                     else:
                         inner.print(f"{type_str} :: {var_name}")
                 elif isa(op, CCPPUnitConvertOp):
-                    # In-place conversion: alias the result SSA to the source variable.
-                    # No temp allocation needed since host and scheme share the same kind.
-                    src_var = inner.variables.get(op.source, "")
-                    inner.variables[op.res] = src_var
+                    # Local-copy conversion: declare a temp in the same type as source.
+                    var_name = (
+                        op.res.name_hint
+                        if op.res.name_hint is not None
+                        else f"unit_conv_{id(op)}"
+                    )
+                    inner.variables[op.res] = var_name
+                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                    if dim_suffix:
+                        inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+                    else:
+                        inner.print(f"{type_str} :: {var_name}")
 
             # Declare anonymous locals for call results that have no CopyOp consumer
             for res, var_name in untracked_call_results:

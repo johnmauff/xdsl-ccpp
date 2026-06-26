@@ -739,12 +739,11 @@ class GenerateSuiteSubroutine(RewritePattern):
             elif fn_arg.hasAttr("optional"):
                 hint = fn_arg.name + "__opt"
             elif (_has_dims(fn_arg)
-                  and fn_arg.getAttr("intent") == "in"
-                  and not fn_arg.hasAttr("model_var_unit_mismatch")):
+                  and fn_arg.getAttr("intent") == "in"):
                 # Array args that are truly intent(in) get __in so the printer
                 # emits intent(in) rather than the default intent(inout).
-                # Exclude unit-mismatched args: UnitConvertOp modifies them
-                # in-place (e.g. ps = ps * 0.01) so they must be intent(inout).
+                # Unit-mismatched args are now converted into a local copy so
+                # the host's array is never modified — intent(in) is correct.
                 hint = fn_arg.name + "__in"
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]

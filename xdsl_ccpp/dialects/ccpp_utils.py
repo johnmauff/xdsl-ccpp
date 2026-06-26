@@ -764,20 +764,22 @@ class KindCastOp(IRDLOperation):
 
 @irdl_op_definition
 class UnitConvertOp(IRDLOperation):
-    """Allocate a temp and optionally apply a host→scheme unit conversion.
+    """Allocate a local temp and optionally apply a host→scheme unit conversion.
 
     For ``intent(in)`` / ``intent(inout)``::
 
-        allocate(result, mold=source)
-        result = source <to_scheme_expr>   ! e.g. "source + 273.15"
+        allocate(result(size(source,1), ...))   ! arrays only
+        result = source <to_scheme_expr>         ! e.g. "* 0.01_kind_phys"
 
     For ``intent(out)`` (scheme does not read the value), pass an empty
     ``to_scheme_expr`` and only the allocation is emitted::
 
-        allocate(result, mold=source)
+        allocate(result(size(source,1), ...))   ! arrays only
 
-    The result SSA value is declared as a local allocatable in the enclosing
-    function.  Use ``UnitWriteBackOp`` to convert back after the scheme call.
+    The host's source array is never modified.  The result SSA value is
+    declared as a local (allocatable for arrays, plain for scalars) in the
+    enclosing function.  Use ``UnitWriteBackOp`` to write back after the
+    scheme call for ``intent(inout)`` / ``intent(out)`` arguments.
     """
 
     name = "ccpp_utils.unit_convert"
