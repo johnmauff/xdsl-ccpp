@@ -552,7 +552,7 @@ ruff format xdsl_ccpp/
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 120 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 190 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -621,6 +621,29 @@ Notes:
 - **advection**: columnar-chunked physics with constituent registration (`ccpp_register_constituents`, `ccpp_number_constituents`, `ccpp_initialize_constituents`); column-sliced arrays passed correctly to schemes
 - **Variables**: unique standard names across all scheme `.meta` files in the example
 
+#### atmospheric_physics suite cap generation
+
+The 8 main suites from the [ESCOMP/atmospheric_physics](https://github.com/ESCOMP/atmospheric_physics) repository (used by CAM-SIMA) are exercised as a scheme-only cap generation test — no host files. This validates the pipeline against the real-world scale of that library: 146 `.meta` files, 173 `.F90` scheme sources, scheme counts ranging from 1 (adiabatic) to 65+ (cam4/cam5).
+
+| Suite | Schemes | Subcycles | xdsl-ccpp status |
+|---|---|---|---|
+| `adiabatic` | 1 | none | ✅ cap generated |
+| `held_suarez_1994` | 6 | none | ✅ cap generated |
+| `tj2016` | 8 | none | ✅ cap generated |
+| `cam7` | 25 | none | ✅ cap generated |
+| `kessler` | 14 | none | ✅ cap generated |
+| `musica` | 7 | none | ✅ cap generated |
+| `cam4` | 65 | 2 (`number_of_diagnostic_subcycles`) | ✅ cap generated |
+| `cam5` | 65 | 2 (`number_of_diagnostic_subcycles`) | ✅ cap generated |
+
+Three bugs were identified and fixed during this testing:
+
+- **`dims_compatible` dimension matching** — the suite cap was using exact string equality to match dimension standard names, which failed when a scheme declared `horizontal_loop_extent` but the allocator was looking for `horizontal_dimension` (its compatible equivalent). Fixed by switching both lookup sites to `dims_compatible()`.
+- **`len=*` assumed-length character arguments** — CCPP scheme subroutines declare `errmsg` as `character(len=*)`, a valid Fortran dummy argument. The type conversion mapped this to a dynamic-length memref (`memref<?xi8>`), but the suite cap then tried to allocate it with `memref.alloca` and no dynamic dimension operand, causing an xDSL verifier error. Fixed by treating `len=*` as `len=512` (the CCPP standard errmsg length) during type conversion.
+- **CCPP standard name as subcycle loop count** — the cam4/cam5 suites use `<subcycle loop="number_of_diagnostic_subcycles">` where the loop count is a CCPP standard name resolved at runtime rather than a literal integer. The frontend was calling `int()` on this string and crashing. Fixed by storing `loop_count` as a `StringAttr` throughout the IR, and handling non-integer loop counts gracefully in the suite cap generator.
+
+These tests run without host files, so the generated caps contain scheme calls and suite lifecycle subroutines but no host-variable resolution or unit conversion.
+
 ### xdsl-ccpp Gaps vs capgen-ng
 
 Ranked by impact on real-world use:
@@ -643,12 +666,14 @@ generated `initialized` flag from a scalar to an array indexed by
 `ccpp_instance`, matching capgen-ng's 200-slot design.  Required for ensemble
 and perturbation-parameter runs.
 
-#### 2. Host model integration (CCPP-SCM)
-Integrate with the Single Column Model as the first real-world host.  The SCM
-uses a single suite with ~60 schemes and ~800 variables — passing it will expose
-any remaining gaps in host-variable matching, dimension validation, and
-`ccpp_physics_suite_variables` coverage that the four example tests do not
-exercise.
+#### 2. Host model integration (CAM-SIMA / CCPP-SCM)
+The xdsl-ccpp pipeline has been validated against all 8 main suites from the
+`atmospheric_physics` repository (CAM-SIMA's scheme library) for scheme-only cap
+generation — no host files required.  The next step is to supply the host `.meta`
+files so that host-variable resolution, dimension validation, and unit conversion
+are exercised at real-world scale (~800 variables).  After that, linking the
+generated caps into a running host model (CCPP-SCM or CAM-SIMA) will confirm
+end-to-end correctness.
 
 ### Key Observations
 

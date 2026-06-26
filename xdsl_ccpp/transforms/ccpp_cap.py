@@ -780,9 +780,12 @@ class CCPPCAP(ModulePass):
                 ):
                     copy_ops.append(memref.CopyOp(result, errflg_alloc))
                 elif std_name and std_name in _cap_var_map:
-                    # Cap-owned interstitial: copy to module-level var
+                    # Cap-owned interstitial: copy to module-level var.
+                    # Use the SSA result type; cap_var_map may store None for
+                    # framework-managed and scratch vars whose type is only
+                    # known from the actual return value.
                     var_name, var_type, _ftn = _cap_var_map[std_name]
-                    cap_ref = CapVarRefOp(var_name, var_type)
+                    cap_ref = CapVarRefOp(var_name, var_type or ret_type)
                     copy_pre_ops.append(cap_ref)
                     copy_ops.append(memref.CopyOp(result, cap_ref.res))
                 elif std_name and std_name in _host_var_map_lc:

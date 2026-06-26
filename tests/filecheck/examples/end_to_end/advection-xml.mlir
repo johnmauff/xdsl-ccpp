@@ -68,9 +68,9 @@
 // CHECK-NEXT:    end subroutine cld_suite_suite_register
 // CHECK-LABEL:   subroutine cld_suite_suite_initialize(const_std_name, num_consts, test_stdname_array,           &
 // CHECK:           const_inds, tfreeze, const_index, errmsg, errflg, tcld)
-// CHECK-NEXT:      character(len=*), intent(in) :: const_std_name
+// CHECK-NEXT:      character(len=512), intent(in) :: const_std_name
 // CHECK-NEXT:      integer, intent(in) :: num_consts
-// CHECK-NEXT:      character(len=*), intent(in) :: test_stdname_array(:)
+// CHECK-NEXT:      character(len=512), intent(in) :: test_stdname_array(:)
 // CHECK-NEXT:      integer, intent(inout) :: const_inds(:)
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tfreeze
 // CHECK-NEXT:      integer, intent(out) :: const_index
@@ -145,9 +145,9 @@
 // CHECK-LABEL:   subroutine cld_suite_suite_physics(const_std_name, num_consts, test_stdname_array, const_inds,  &
 // CHECK:           col_start, col_end, timestep, tcld, temp, qv, ps, cld_liq_tend, const_tend, const,            &
 // CHECK-NEXT:      const_index, errmsg, errflg)
-// CHECK-NEXT:      character(len=*), intent(in) :: const_std_name
+// CHECK-NEXT:      character(len=512), intent(in) :: const_std_name
 // CHECK-NEXT:      integer, intent(in) :: num_consts
-// CHECK-NEXT:      character(len=*), intent(in) :: test_stdname_array(:)
+// CHECK-NEXT:      character(len=512), intent(in) :: test_stdname_array(:)
 // CHECK-NEXT:      integer, intent(inout) :: const_inds(:)
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end
@@ -186,6 +186,9 @@
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call cld_ice_run(ncol, timestep, temp, qv, ps, cld_ice_array, errmsg, errflg)
 // CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend, const, errflg, errmsg)
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine cld_suite_suite_physics
 // CHECK-NEXT:  end module cld_suite_cap
 // CHECK:       // -----
@@ -215,7 +218,13 @@
 // CHECK-NEXT:    type(ccpp_constituent_properties_t), allocatable :: lc_dyn_const_ice(:)
 // CHECK-NEXT:    type(ccpp_constituent_properties_t), target, allocatable :: lc_all_constituents(:)
 // CHECK-NEXT:    real(kind=kind_phys), target, allocatable :: lc_constituent_array(:, :, :)
+// CHECK-NEXT:    real(kind=kind_phys), target, allocatable :: lc_const_tend(:, :, :)
 // CHECK-NEXT:    type(ccpp_constituent_prop_ptr_t), target, allocatable :: lc_const_props(:)
+// CHECK-NEXT:    real(kind=kind_phys) :: lc_tcld
+// CHECK-NEXT:    real(kind=kind_phys), allocatable :: lc_temp(:, :)
+// CHECK-NEXT:    real(kind=kind_phys), allocatable :: lc_qv(:, :)
+// CHECK-NEXT:    real(kind=kind_phys), allocatable :: lc_ps(:)
+// CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_cld_liq_tend(:, :) => null()
 // CHECK-NEXT:    public :: Cld_ccpp_physics_register
 // CHECK-NEXT:    public :: Cld_ccpp_physics_initialize
 // CHECK-NEXT:    public :: Cld_ccpp_physics_finalize
@@ -250,11 +259,10 @@
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        call cld_suite_suite_initialize(const_std_name, num_consts, std_name_array, const_inds,     &
-// CHECK-NEXT:          tfreeze, const_index, errmsg, errflg, ccpp_tmp_0)
+// CHECK-NEXT:          tfreeze, const_index, errmsg, errflg, lc_tcld)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
 // CHECK-NEXT:        errflg = 1
@@ -297,32 +305,26 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_timestep_final
 // CHECK-LABEL:   subroutine Cld_ccpp_physics_run(suite_name, suite_part, const_std_name, num_consts,             &
-// CHECK:           test_stdname_array, const_inds, col_start, col_end, timestep, tcld, temp, qv, ps,             &
-// CHECK-NEXT:      cld_liq_tend, const_tend, const, errmsg, errflg)
+// CHECK:           test_stdname_array, const_inds, col_start, col_end, timestep, errmsg, errflg)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
-// CHECK-NEXT:      character(len=*), intent(in) :: const_std_name
+// CHECK-NEXT:      character(len=512), intent(in) :: const_std_name
 // CHECK-NEXT:      integer, intent(in) :: num_consts
-// CHECK-NEXT:      character(len=*), intent(in) :: test_stdname_array(:)
+// CHECK-NEXT:      character(len=512), intent(in) :: test_stdname_array(:)
 // CHECK-NEXT:      integer, intent(inout) :: const_inds(:)
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: timestep
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tcld
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: temp(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: qv(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: ps(:)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: cld_liq_tend(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: const_tend(:, :, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: const(:, :, :)
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'physics') then
 // CHECK-NEXT:          call cld_suite_suite_physics(const_std_name, num_consts, test_stdname_array, const_inds,  &
-// CHECK-NEXT:            col_start, col_end, timestep, tcld, temp, qv, ps, cld_liq_tend, const_tend, const,      &
-// CHECK-NEXT:            const_index, errmsg, errflg)
+// CHECK-NEXT:            col_start, col_end, timestep, lc_tcld, lc_temp(col_start:col_end, :),                   &
+// CHECK-NEXT:            lc_qv(col_start:col_end, :), lc_ps(col_start:col_end),                                  &
+// CHECK-NEXT:            lc_cld_liq_tend(col_start:col_end, :), lc_const_tend(col_start:col_end, :, :),          &
+// CHECK-NEXT:            lc_constituent_array(col_start:col_end, :, :), const_index, errmsg, errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite cld_suite"
 // CHECK-NEXT:          errflg = 1
@@ -368,32 +370,57 @@
 // CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        if (do_input .and. .not. do_output) then
-// CHECK-NEXT:          allocate(var_list(6))
+// CHECK-NEXT:          allocate(var_list(13))
 // CHECK-NEXT:          var_list(1) = 'banana_array_dim                    '
-// CHECK-NEXT:          var_list(2) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(3) = 'temperature                         '
-// CHECK-NEXT:          var_list(4) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(5) = 'water_temperature_at_freezing       '
-// CHECK-NEXT:          var_list(6) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          var_list(2) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:          var_list(3) = 'ccpp_constituents                   '
+// CHECK-NEXT:          var_list(4) = 'cloud_ice_dry_mixing_ratio          '
+// CHECK-NEXT:          var_list(5) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:          var_list(6) = 'minimum_temperature_for_cloud_liquid'
+// CHECK-NEXT:          var_list(7) = 'number_of_ccpp_constituents         '
+// CHECK-NEXT:          var_list(8) = 'surface_air_pressure                '
+// CHECK-NEXT:          var_list(9) = 'temperature                         '
+// CHECK-NEXT:          var_list(10) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:          var_list(11) = 'time_step_for_physics               '
+// CHECK-NEXT:          var_list(12) = 'water_temperature_at_freezing       '
+// CHECK-NEXT:          var_list(13) = 'water_vapor_specific_humidity       '
 // CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(6))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(4) = 'temperature                         '
-// CHECK-NEXT:          var_list(5) = 'test_banana_constituent_index       '
-// CHECK-NEXT:          var_list(6) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          allocate(var_list(14))
+// CHECK-NEXT:          var_list(1) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:          var_list(2) = 'ccpp_constituents                   '
+// CHECK-NEXT:          var_list(3) = 'ccpp_error_code                     '
+// CHECK-NEXT:          var_list(4) = 'ccpp_error_message                  '
+// CHECK-NEXT:          var_list(5) = 'cloud_ice_dry_mixing_ratio          '
+// CHECK-NEXT:          var_list(6) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:          var_list(7) = 'dynamic_constituents_for_cld_ice    '
+// CHECK-NEXT:          var_list(8) = 'dynamic_constituents_for_cld_liq    '
+// CHECK-NEXT:          var_list(9) = 'minimum_temperature_for_cloud_liquid'
+// CHECK-NEXT:          var_list(10) = 'temperature                         '
+// CHECK-NEXT:          var_list(11) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:          var_list(12) = 'test_banana_constituent_index       '
+// CHECK-NEXT:          var_list(13) = 'test_banana_constituent_indices     '
+// CHECK-NEXT:          var_list(14) = 'water_vapor_specific_humidity       '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(9))
+// CHECK-NEXT:          allocate(var_list(19))
 // CHECK-NEXT:          var_list(1) = 'banana_array_dim                    '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(4) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(5) = 'temperature                         '
-// CHECK-NEXT:          var_list(6) = 'test_banana_constituent_index       '
-// CHECK-NEXT:          var_list(7) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(8) = 'water_temperature_at_freezing       '
-// CHECK-NEXT:          var_list(9) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          var_list(2) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:          var_list(3) = 'ccpp_constituents                   '
+// CHECK-NEXT:          var_list(4) = 'ccpp_error_code                     '
+// CHECK-NEXT:          var_list(5) = 'ccpp_error_message                  '
+// CHECK-NEXT:          var_list(6) = 'cloud_ice_dry_mixing_ratio          '
+// CHECK-NEXT:          var_list(7) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:          var_list(8) = 'dynamic_constituents_for_cld_ice    '
+// CHECK-NEXT:          var_list(9) = 'dynamic_constituents_for_cld_liq    '
+// CHECK-NEXT:          var_list(10) = 'minimum_temperature_for_cloud_liquid'
+// CHECK-NEXT:          var_list(11) = 'number_of_ccpp_constituents         '
+// CHECK-NEXT:          var_list(12) = 'surface_air_pressure                '
+// CHECK-NEXT:          var_list(13) = 'temperature                         '
+// CHECK-NEXT:          var_list(14) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:          var_list(15) = 'test_banana_constituent_index       '
+// CHECK-NEXT:          var_list(16) = 'test_banana_constituent_indices     '
+// CHECK-NEXT:          var_list(17) = 'time_step_for_physics               '
+// CHECK-NEXT:          var_list(18) = 'water_temperature_at_freezing       '
+// CHECK-NEXT:          var_list(19) = 'water_vapor_specific_humidity       '
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
@@ -437,8 +464,15 @@
 // CHECK-NEXT:        if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:        if (allocated(lc_const_props)) deallocate(lc_const_props)
 // CHECK-NEXT:        if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)
+// CHECK-NEXT:        if (allocated(lc_const_tend)) deallocate(lc_const_tend)
+// CHECK-NEXT:        if (allocated(lc_tcld)) deallocate(lc_tcld)
+// CHECK-NEXT:        if (allocated(lc_temp)) deallocate(lc_temp)
+// CHECK-NEXT:        if (allocated(lc_qv)) deallocate(lc_qv)
+// CHECK-NEXT:        if (allocated(lc_ps)) deallocate(lc_ps)
+// CHECK-NEXT:        nullify(lc_cld_liq_tend)
 // CHECK-NEXT:      end subroutine Cld_ccpp_deallocate_dynamic_constituents
 // CHECK:           subroutine Cld_ccpp_register_constituents(host_constituents, errmsg, errflg)
+// CHECK-NEXT:        use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
 // CHECK-NEXT:        type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
 // CHECK-NEXT:        character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:        integer, intent(out) :: errflg
@@ -518,7 +552,7 @@
 // CHECK-NEXT:        if (.not. lc_found) then
 // CHECK-NEXT:          lc_num = lc_num + 1
 // CHECK-NEXT:          call lc_tmp(lc_num)%instantiate(std_name='cloud_liquid_dry_mixing_ratio',                 &
-// CHECK-NEXT:      long_name='cloud_liquid_dry_mixing_ratio', units='kg kg-1', errcode=errflg, errmsg=errmsg,    &
+// CHECK-NEXT:      long_name='Cloud liquid dry mixing ratio', units='kg kg-1', errcode=errflg, errmsg=errmsg,    &
 // CHECK-NEXT:      advected=.true.)
 // CHECK-NEXT:          if (errflg /= 0) return
 // CHECK-NEXT:        end if
@@ -540,7 +574,7 @@
 // CHECK-NEXT:        if (.not. lc_found) then
 // CHECK-NEXT:          lc_num = lc_num + 1
 // CHECK-NEXT:          call lc_tmp(lc_num)%instantiate(std_name='cloud_ice_dry_mixing_ratio',                    &
-// CHECK-NEXT:      long_name='cloud_ice_dry_mixing_ratio', units='kg kg-1', errcode=errflg, errmsg=errmsg,       &
+// CHECK-NEXT:      long_name='Cloud ice dry mixing ratio', units='kg kg-1', errcode=errflg, errmsg=errmsg,       &
 // CHECK-NEXT:      advected=.true., default_value=0.0_kind_phys)
 // CHECK-NEXT:          if (errflg /= 0) return
 // CHECK-NEXT:        end if
@@ -574,6 +608,7 @@
 // CHECK-NEXT:        do lc_i = 1, lc_num
 // CHECK-NEXT:          lc_const_props(lc_i)%ptr => lc_all_constituents(lc_i)
 // CHECK-NEXT:        end do
+// CHECK-NEXT:        call ccpp_scheme_utils_set_constituents(lc_all_constituents)
 // CHECK-NEXT:      end subroutine Cld_ccpp_register_constituents
 // CHECK:           subroutine Cld_ccpp_number_constituents(num_advected, errmsg, errflg)
 // CHECK-NEXT:        integer, intent(out) :: num_advected
@@ -592,7 +627,7 @@
 // CHECK-NEXT:        integer, intent(in) :: pver
 // CHECK-NEXT:        integer, intent(out) :: errflg
 // CHECK-NEXT:        character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:        integer :: lc_num
+// CHECK-NEXT:        integer :: lc_num, lc_i
 // CHECK-NEXT:        errflg = 0
 // CHECK-NEXT:        errmsg = ''
 // CHECK-NEXT:        if (.not. allocated(lc_all_constituents)) then
@@ -604,6 +639,33 @@
 // CHECK-NEXT:        if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)
 // CHECK-NEXT:        allocate(lc_constituent_array(ncols, pver, lc_num))
 // CHECK-NEXT:        lc_constituent_array = 0.0_kind_phys
+// CHECK-NEXT:        do lc_i = 1, lc_num
+// CHECK-NEXT:          if (lc_all_constituents(lc_i)%default_val_set) then
+// CHECK-NEXT:            lc_constituent_array(:, :, lc_i) = lc_all_constituents(lc_i)%default_val
+// CHECK-NEXT:          end if
+// CHECK-NEXT:        end do
+// CHECK-NEXT:        if (allocated(lc_const_tend)) deallocate(lc_const_tend)
+// CHECK-NEXT:        allocate(lc_const_tend(ncols, pver, lc_num))
+// CHECK-NEXT:        lc_const_tend = 0.0_kind_phys
+// CHECK-NEXT:        if (allocated(lc_tcld)) deallocate(lc_tcld)
+// CHECK-NEXT:        allocate(lc_tcld(ncols, pver))
+// CHECK-NEXT:        lc_tcld = 0.0_kind_phys
+// CHECK-NEXT:        if (allocated(lc_temp)) deallocate(lc_temp)
+// CHECK-NEXT:        allocate(lc_temp(ncols, pver))
+// CHECK-NEXT:        lc_temp = 0.0_kind_phys
+// CHECK-NEXT:        if (allocated(lc_qv)) deallocate(lc_qv)
+// CHECK-NEXT:        allocate(lc_qv(ncols, pver))
+// CHECK-NEXT:        lc_qv = 0.0_kind_phys
+// CHECK-NEXT:        if (allocated(lc_ps)) deallocate(lc_ps)
+// CHECK-NEXT:        allocate(lc_ps(ncols))
+// CHECK-NEXT:        lc_ps = 0.0_kind_phys
+// CHECK-NEXT:        nullify(lc_cld_liq_tend)
+// CHECK-NEXT:        do lc_i = 1, lc_num
+// CHECK-NEXT:          if (trim(lc_all_constituents(lc_i)%std_name) == 'cloud_liquid_dry_mixing_ratio') then
+// CHECK-NEXT:            lc_cld_liq_tend => lc_const_tend(:, :, lc_i)
+// CHECK-NEXT:            exit
+// CHECK-NEXT:          end if
+// CHECK-NEXT:        end do
 // CHECK-NEXT:      end subroutine Cld_ccpp_initialize_constituents
 // CHECK:           function Cld_constituents_array() result(ptr)
 // CHECK-NEXT:        real(kind=kind_phys), pointer :: ptr(:, :, :)

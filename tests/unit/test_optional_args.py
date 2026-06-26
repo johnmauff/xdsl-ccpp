@@ -174,17 +174,21 @@ class TestCCPPCapSuiteCall:
         # These are always required; their presence confirms the call is present
         assert "col_start=cols" in capgen_fortran or "col_start=" in capgen_fortran
 
-    def test_ccpp_cap_declares_qv_optional(self, capgen_fortran):
-        """The ccpp cap's physics subroutine also declares qv as optional."""
+    def test_ccpp_cap_passes_qv_from_host_state(self, capgen_fortran):
+        """The ccpp cap passes qv from host state via keyword argument.
+
+        qv is not a parameter of the ccpp cap's physics function — it is
+        accessed from the host state object and forwarded by keyword to the
+        suite cap.
+        """
         lines = capgen_fortran.splitlines()
         in_ccpp_cap = False
         for line in lines:
-            # The ccpp cap file name is derived from the host name (e.g. Temp_ccpp_cap.F90)
             if "FILE:" in line and "ccpp_cap.F90" in line:
                 in_ccpp_cap = True
-            if in_ccpp_cap and "optional" in line and "qv" in line:
+            if in_ccpp_cap and "qv=" in line:
                 return
-        pytest.fail("Could not find optional qv declaration in ccpp cap")
+        pytest.fail("Could not find qv= keyword argument in ccpp cap")
 
 
 # ── Phase 2 helpers and fixtures ─────────────────────────────────────────────
