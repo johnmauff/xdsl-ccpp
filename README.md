@@ -118,6 +118,59 @@ python3 examples/helloworld/helloworld_py.py | \
   -t ftn
 ```
 
+## Metadata Skeleton Generation
+
+`ccpp_generate_meta` generates a `.meta` skeleton file from a Fortran source file. It extracts argument names, types, kinds, intents, array rank, and optional flags from subroutine signatures and fills in stub values for fields that cannot be inferred from source (`standard_name`, `units`, dimension standard names). The stubs must be replaced by the developer before the `.meta` file is used with `ccpp_xdsl`.
+
+This matches the functionality of `ccpp_fortran_to_metadata.py` from capgen-ng.
+
+```bash
+ccpp_generate_meta scheme.F90
+```
+
+Only subroutines following the CCPP entry-point naming convention are included (`_run`, `_init`, `_finalize`, `_final`, `_timestep_init`, `_timestep_final`). Other subroutines in the module are silently skipped.
+
+Example output for a scheme with a `_run` entry point:
+
+```ini
+[ccpp-table-properties]
+  name = temp_adjust
+  type = scheme
+
+[ccpp-arg-table]
+  name = temp_adjust_run
+  type = scheme
+[ ncol ]
+  standard_name = std_name_001
+  units = enter_units
+  type = integer
+  dimensions = ()
+  intent = in
+[ temp ]
+  standard_name = std_name_002
+  units = enter_units
+  type = real
+  kind = kind_phys
+  dimensions = (dim1)
+  intent = inout
+```
+
+The developer then replaces each `std_name_NNN` with the correct CCPP standard name, `enter_units` with the physical units, and `dim1`/`dim2` with the appropriate CCPP dimension standard names (e.g. `horizontal_loop_extent`, `vertical_layer_dimension`).
+
+### ccpp_generate_meta Options
+
+```
+Required:
+  FILE.F90 [...]          One or more Fortran source files to process
+
+Optional:
+  --output-dir DIR        Write .meta files here (default: same directory as each .F90)
+  --stdout                Print all output to stdout instead of writing files
+  -v, --verbose           Print the output path for each generated file
+```
+
+Requires fparser: `pip install fparser` (or `pip install -e ".[validate]"`).
+
 ## Fortran Source Cross-Validation
 
 `ccpp_validate` checks each scheme's `.meta` file against its `.F90` source, flagging mismatches in argument existence, type, rank, intent, and optional status.
@@ -496,7 +549,7 @@ ruff format xdsl_ccpp/
 | Build system integration (CMake) | ✅ | ✅ | ✅ | ✅ |
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ✅ |
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ✅ |
-| Metadata from Fortran source | ❌ | ❌ | ✅ | ❌ |
+| Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
 | Unit test depth | Moderate | Moderate | 1300+ tests | 120 pytest + 3 Makefiles |
@@ -578,10 +631,6 @@ Ranked by impact on real-world use:
 2. **Multi-instance support** — one suite instance per run only. capgen-ng supports up
    to 200 independent instances (e.g. ensemble members) via a per-handle
    `initialized(ccpp_instance)` flag array.
-
-3. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
-   `.meta` stub files from Fortran source (reverse of `ccpp_validate`). xdsl-ccpp
-   has only the forward direction.
 
 ### Next Steps to Further Match capgen-ng
 
