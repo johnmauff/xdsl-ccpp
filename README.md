@@ -180,6 +180,92 @@ Options:
 
 Exit code is 0 when the variable is found in at least one scheme, 1 otherwise. Partial matches (standard names that contain the query as a substring) are listed as suggestions when no exact match is found.
 
+## CMake Integration
+
+xdsl-ccpp provides a CMake module (`cmake/xdsl_ccpp.cmake`) that runs `ccpp_xdsl`
+at configure time and returns the list of generated `.F90` cap files for use in
+`add_library` or `add_executable` targets. This mirrors the approach used by
+`ccpp_capgen-ng`.
+
+### Requirements
+
+- CMake 3.20 or later
+- `ccpp_xdsl` on `PATH` (installed via `pip install -e .`)
+
+### Quick Start
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(my_host Fortran)
+
+include(path/to/cmake/xdsl_ccpp.cmake)
+
+xdsl_ccpp_generate(
+    HOST_NAME   "MyHost"
+    OUTPUT_ROOT "${CMAKE_CURRENT_BINARY_DIR}/ccpp_caps"
+    TARGET_VAR  MY_CAPS
+    SUITES
+        "${CMAKE_CURRENT_SOURCE_DIR}/my_suite.xml"
+    SCHEMEFILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/scheme_a.meta"
+        "${CMAKE_CURRENT_SOURCE_DIR}/scheme_b.meta"
+    HOSTFILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/host_data.meta"
+)
+
+add_executable(my_host ${MY_SRCS} ${MY_CAPS})
+target_include_directories(my_host PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/ccpp_caps")
+```
+
+After `xdsl_ccpp_generate()` returns, `MY_CAPS` contains the absolute paths of
+every `.F90` file written to `OUTPUT_ROOT`.
+
+### Function Reference
+
+```
+xdsl_ccpp_generate(
+    HOST_NAME   <name>            # CamelCase host name prefix (required)
+    OUTPUT_ROOT <dir>             # Directory to write generated .F90 files (required)
+    TARGET_VAR  <variable>        # CMake variable to populate with output paths (required)
+    SUITES      <file> [<file>…]  # Suite XML files (required)
+    SCHEMEFILES <file> [<file>…]  # Scheme .meta files (required)
+    [HOSTFILES  <file> [<file>…]] # Host model .meta files (optional)
+)
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `HOST_NAME` | yes | CamelCase prefix for generated subroutine names (e.g. `TestHost`) |
+| `OUTPUT_ROOT` | yes | Directory where `.F90` files are written; created if it does not exist |
+| `TARGET_VAR` | yes | CMake variable that receives the list of generated `.F90` paths |
+| `SUITES` | yes | One or more suite XML files (space-separated in CMake list syntax) |
+| `SCHEMEFILES` | yes | One or more scheme `.meta` files |
+| `HOSTFILES` | no | Host model `.meta` files; required for unit conversion and host variable matching |
+
+### How It Works
+
+The function runs `ccpp_xdsl` via `execute_process()` at CMake configure time,
+the same approach used by `ccpp_capgen-ng`. This means:
+
+- Cap files are available immediately for `add_library` / `add_executable`
+- Re-running `cmake` (or deleting the build directory) regenerates the caps
+- Incremental rebuilds will not automatically re-run cap generation when only
+  `.meta` or `.xml` files change — re-run `cmake` after editing those inputs
+
+### Working Example
+
+A complete working example is in `examples/capgen/CMakeLists.txt`:
+
+```bash
+cmake -S examples/capgen -B examples/capgen/build
+cmake --build examples/capgen/build
+ctest --test-dir examples/capgen/build
+```
+
+This configures the capgen example, generates all CCPP cap files into
+`examples/capgen/build/caps/`, compiles them alongside the pre-existing Fortran
+scheme sources, and runs the integration test.
+
 ## Testing
 
 Tests use [pytest](https://pytest.org) with [LLVM-style FileCheck](https://llvm.org/docs/CommandGuide/FileCheck.html) via the Python `filecheck` package.
@@ -271,7 +357,7 @@ ruff format xdsl_ccpp/
 | Fortran source cross-validation | ❌ | ✅ | ✅ | ✅¶ |
 | Multi-instance support | ❌ | ❌ | ✅ | ❌ |
 | **Build & tooling** | | | | |
-| Build system integration (CMake) | ✅ | ✅ | ✅ | ❌ |
+| Build system integration (CMake) | ✅ | ✅ | ✅ | ✅ |
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ❌ |
 | `ccpp_track_variables` utility | ✅ | ❌ | ✅ | ✅ |
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ❌ |
@@ -355,20 +441,17 @@ Notes:
 
 Ranked by impact on real-world use:
 
-1. **Build system integration** — no CMake or Make integration. xdsl-ccpp runs as a
-   standalone script and cannot be embedded in a host model build.
-
-2. **Host model integration** — only the four example test cases (helloworld, capgen,
+1. **Host model integration** — only the four example test cases (helloworld, capgen,
    ddthost, advection). No integration with CCPP-SCM, CAM-SIMA, or UFS.
 
-3. **Multi-instance support** — one suite instance per run only. capgen-ng supports up
+2. **Multi-instance support** — one suite instance per run only. capgen-ng supports up
    to 200 independent instances (e.g. ensemble members) via a per-handle
    `initialized(ccpp_instance)` flag array.
 
-4. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
+3. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
    `datatable.xml` for build-system queries of file lists and scheme dependencies.
 
-5. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
+4. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
    `.meta` stub files from Fortran source (reverse of `ccpp_validate`). xdsl-ccpp
    has only the forward direction.
 
@@ -377,33 +460,27 @@ Ranked by impact on real-world use:
 The following work items are ordered by impact on closing the gap with production
 capgen-ng use cases.
 
-#### 1. Build system integration
-Provide a CMake module (and optionally a Make fragment) that invokes `ccpp_xdsl`
-during the configure or build phase and adds the generated `.F90` files as
-compile targets.  This is the primary blocker for embedding xdsl-ccpp in a host
-model build such as CAM-SIMA or UFS.
-
-#### 3. Multi-instance support
+#### 1. Multi-instance support
 Introduce a CCPP handle type carrying a `ccpp_instance` integer.  Change the
 generated `initialized` flag from a scalar to an array indexed by
 `ccpp_instance`, matching capgen-ng's 200-slot design.  Required for ensemble
 and perturbation-parameter runs.
 
-#### 4. Host model integration (CCPP-SCM)
+#### 2. Host model integration (CCPP-SCM)
 Integrate with the Single Column Model as the first real-world host.  The SCM
 uses a single suite with ~60 schemes and ~800 variables — passing it will expose
 any remaining gaps in host-variable matching, dimension validation, and
 `ccpp_physics_suite_variables` coverage that the four example tests do not
 exercise.
 
-#### 5. Dimension name cross-validation
+#### 3. Dimension name cross-validation
 Complete the host-variable matching validation to check that all dimension names
 in a scheme argument's `dimensions` field are resolvable against the host model's
 registered standard names.  Currently only `horizontal_loop_extent` →
 `horizontal_dimension` is checked; other dimension substitutions are resolved
 but not validated.
 
-#### 6. Documentation and datatable generation
+#### 4. Documentation and datatable generation
 Generate an HTML variable table (standard name, long name, units, rank, type,
 kind, source module) and a `datatable.xml` suitable for CMake queries.  Low
 priority until build system integration is in place.
