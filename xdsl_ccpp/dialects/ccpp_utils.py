@@ -2,6 +2,7 @@ from xdsl.dialects.builtin import (
     ArrayAttr,
     DYNAMIC_INDEX,
     DictionaryAttr,
+    IntAttr,
     IntegerAttr,
     IntegerType,
     MemRefType,
@@ -628,6 +629,43 @@ class PromotionLoopOp(IRDLOperation):
 
 
 @irdl_op_definition
+class SubcycleLoopOp(IRDLOperation):
+    """Fortran do loop for CCPP subcycle blocks.
+
+    Generates::
+
+        do {loop_var_name} = 1, <loop_count>
+          ... body ...
+        end do
+
+    ``loop_var`` is a scalar integer alloca whose name_hint becomes the
+    Fortran loop variable name.  ``loop_count`` is the literal integer
+    from ``loop="N"`` in the suite XML.
+    """
+
+    name = "ccpp_utils.subcycle_loop"
+
+    loop_count = prop_def(IntAttr)
+    loop_var   = operand_def(MemRefType)
+
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, loop_count: int, loop_var, body_ops):
+        if isinstance(body_ops, list):
+            from xdsl.ir import Block, Region
+            body = Region([Block(body_ops)])
+        else:
+            body = body_ops
+        super().__init__(
+            operands=[loop_var],
+            properties={"loop_count": IntAttr(loop_count)},
+            regions=[body],
+        )
+
+
+@irdl_op_definition
 class PresentCheckOp(IRDLOperation):
     """Fortran if (present(var)) / else / end if for optional promoted args.
 
@@ -897,6 +935,7 @@ CCPPUtils = Dialect(
         SafeDeallocOp,
         RankReducingSliceOp,
         PromotionLoopOp,
+        SubcycleLoopOp,
         PresentCheckOp,
         SuiteVariablesOp,
         ConstituentApiOp,

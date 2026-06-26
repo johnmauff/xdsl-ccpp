@@ -209,6 +209,13 @@ class XMLScheme(XMLSuiteBase):
         super().__init__({"name": scheme_name, "arg_overrides": arg_overrides or {}})
 
 
+class XMLSubcycle(XMLSuiteBase):
+    """Subcycle node reconstructed from IR: contains schemes and a loop count."""
+
+    def __init__(self, loop_count: int):
+        super().__init__({"loop_count": loop_count})
+
+
 class XMLGroup(XMLSuiteBase):
     """Intermediate node representing a named group of schemes within a suite."""
 
@@ -402,18 +409,30 @@ class BuildSchemeDescription(Visitor):
     def traverse_group_op(self, group_op: ccpp.GroupOp):
         """Build an `XMLGroup` from one `ccpp.GroupOp` node.
 
-        Iterates over all child `SchemeOp` nodes, collecting the reconstructed
-        `XMLScheme` objects, then stores the result in ``self.current_group``.
+        Handles both flat `SchemeOp` children and `SubcycleOp` children.
+        Scheme traversal is done directly rather than via the visitor pattern
+        so that subcycle children are properly nested.
         """
         self.current_group = XMLGroup(group_op.group_name.data)
 
-        # Visit each child SchemeOp; after each visit self.current_scheme holds
-        # the XMLScheme for that scheme
         for op in group_op.body.ops:
-            self.traverse(op)
-            assert self.current_scheme is not None
-            self.current_group.addChild(self.current_scheme)
-            self.current_scheme = None  # reset for the next sibling
+            if isa(op, ccpp.SubcycleOp):
+                subcycle = XMLSubcycle(op.loop_count.data)
+                for child_op in op.body.ops:
+                    if isa(child_op, ccpp.SchemeOp):
+                        overrides = {}
+                        if child_op.arg_overrides is not None:
+                            overrides = {
+                                k: v.data
+                                for k, v in child_op.arg_overrides.data.items()
+                            }
+                        subcycle.addChild(XMLScheme(child_op.scheme_name.data, overrides))
+                self.current_group.addChild(subcycle)
+            elif isa(op, ccpp.SchemeOp):
+                overrides = {}
+                if op.arg_overrides is not None:
+                    overrides = {k: v.data for k, v in op.arg_overrides.data.items()}
+                self.current_group.addChild(XMLScheme(op.scheme_name.data, overrides))
 
     def traverse_scheme_op(self, scheme_op: ccpp.SchemeOp):
         """Build an `XMLScheme` leaf from one `ccpp.SchemeOp` node.

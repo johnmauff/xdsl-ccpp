@@ -51,6 +51,7 @@ from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallo
 from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
 from xdsl_ccpp.dialects.ccpp_utils import PresentCheckOp         as CCPPPresentCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp        as CCPPPromotionLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp         as CCPPSubcycleLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp      as CCPPConstituentApiOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
@@ -614,6 +615,12 @@ class ftnPrintContext:
                 loop_name  = self._get_variable_name_for(op.loop_var)
                 upper_name = self._get_variable_name_for(op.upper_bound)
                 self.print(f"do {loop_name} = 1, {upper_name}")
+                with self.descend() as inner:
+                    inner.print_block(op.body.blocks[0])
+                self.print("end do")
+            case CCPPSubcycleLoopOp():
+                loop_name = self._get_variable_name_for(op.loop_var)
+                self.print(f"do {loop_name} = 1, {op.loop_count.data}")
                 with self.descend() as inner:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")

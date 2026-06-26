@@ -128,6 +128,35 @@ class SchemeOp(IRDLOperation):
         super().__init__(properties=properties)
 
 
+@irdl_op_definition
+class SubcycleOp(IRDLOperation):
+    """A block of scheme calls that execute inside a Fortran do loop.
+
+    Corresponds to ``<subcycle loop="N">`` in a suite XML file.
+    ``loop_count == 1`` means the schemes run once (no do loop emitted).
+    """
+
+    name = "ccpp.subcycle"
+
+    loop_count = prop_def(IntAttr)
+
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        loop_count: int,
+        body: "Region | Sequence[Operation] | Sequence[Block]",
+    ):
+        if not isinstance(body, Region):
+            body = Region([Block(list(body))])
+        super().__init__(
+            regions=[body],
+            properties={"loop_count": IntAttr(loop_count)},
+        )
+
+
 class TableBaseOp(IRDLOperation):
     table_name = prop_def(StringAttr, prop_name="name")
     table_type = prop_def(TableTypeKindAttr, prop_name="type")
@@ -327,6 +356,7 @@ CCPP = Dialect(
         SuiteOp,
         GroupOp,
         SchemeOp,
+        SubcycleOp,
         KindOp,
         KindsOp,
         TablePropertiesOp,

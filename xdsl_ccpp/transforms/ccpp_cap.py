@@ -27,6 +27,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     collect_ddt_source_modules,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+from xdsl_ccpp.transforms.util.ccpp_descriptors import XMLSubcycle as _XMLSubcycle
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
@@ -37,6 +38,15 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
 )
+
+
+def _iter_schemes(group):
+    """Yield all XMLScheme leaves from a group, descending into XMLSubcycle nodes."""
+    for child in group:
+        if isinstance(child, _XMLSubcycle):
+            yield from child
+        else:
+            yield child
 
 
 def _bare(name: str) -> str:
@@ -149,7 +159,7 @@ class CCPPCAP(ModulePass):
             # Collect the set of scheme names belonging to this suite
             scheme_names: set = set()
             for group in suite_desc:
-                for scheme in group:
+                for scheme in _iter_schemes(group):
                     scheme_names.add(scheme.attributes["name"])
 
             # Pass 1a: collect every standard_name that is marked is_interstitial
@@ -2412,7 +2422,7 @@ class CCPPCAP(ModulePass):
                             continue
                         # Only this group's scheme names — matches the per-group callee's signature
                         group_scheme_names = [
-                            scheme.attributes["name"] for scheme in group
+                            scheme.attributes["name"] for scheme in _iter_schemes(group)
                         ]
                         suite_run_entries.append(
                             (suite_name, group_name, suite_callee, group_scheme_names)
@@ -2443,7 +2453,7 @@ class CCPPCAP(ModulePass):
                     scheme_names = [
                         scheme.attributes["name"]
                         for group in suite_desc
-                        for scheme in group
+                        for scheme in _iter_schemes(group)
                     ]
                     if table_postfix is not None:
                         ret_info = self._get_suite_lifecycle_ret_info(

@@ -255,7 +255,7 @@ ruff format xdsl_ccpp/
 | DDT host model support | ✅ | ✅ | ✅ | ✅ |
 | Nested suites | ❌ | ✅ | ✅ | ✅ |
 | Python API for suite definition | ❌ | ❌ | ❌ | ✅ |
-| Subcycle support (`loop="N"` in SDF) | ✅ | ❌ | ✅ | ❌ |
+| Subcycle support (`loop="N"` in SDF) | ✅ | ❌ | ✅ | ✅ |
 | **Metadata format** | | | | |
 | Old embedded-comment format | ✅ | ❌ | ❌ | ❌ |
 | New `.meta` file format | ❌ | ✅ | ✅ | ✅ |
@@ -365,15 +365,10 @@ Ranked by impact on real-world use:
    to 200 independent instances (e.g. ensemble members) via a per-handle
    `initialized(ccpp_instance)` flag array.
 
-4. **Subcycle support** — the `<subcycle loop="N">` SDF tag is not yet handled.
-   capgen-ng generates a Fortran `do` loop around the enclosed scheme calls.
-
-5. ~~**`ccpp_track_variables` utility**~~ — implemented; see [Variable Tracking](#variable-tracking).
-
-6. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
+4. **Documentation and datatable generation** — no HTML/LaTeX variable tables and no
    `datatable.xml` for build-system queries of file lists and scheme dependencies.
 
-7. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
+5. **Metadata from Fortran source** — capgen-ng's `ccpp_fortran_to_metadata` generates
    `.meta` stub files from Fortran source (reverse of `ccpp_validate`). xdsl-ccpp
    has only the forward direction.
 
@@ -382,13 +377,7 @@ Ranked by impact on real-world use:
 The following work items are ordered by impact on closing the gap with production
 capgen-ng use cases.
 
-#### 1. Subcycle support
-Add parsing of `<subcycle loop="N">` in the suite XML reader and generate a
-Fortran `do` loop around the enclosed scheme calls in the suite cap.  This is
-self-contained (no host-model changes) and unlocks real-world suites that use
-subcycled microphysics.
-
-#### 2. Build system integration
+#### 1. Build system integration
 Provide a CMake module (and optionally a Make fragment) that invokes `ccpp_xdsl`
 during the configure or build phase and adds the generated `.F90` files as
 compile targets.  This is the primary blocker for embedding xdsl-ccpp in a host

@@ -28,6 +28,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     PromotionLoopOp,
     RankReducingSliceOp,
     SafeDeallocOp,
+    SubcycleLoopOp,
     UnitConvertOp,
     UnitWriteBackOp,
 )
@@ -35,6 +36,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
     CCPPArgument,
+    XMLSubcycle,
     XMLSuite,
     collect_ddt_source_modules,
 )
@@ -86,19 +88,56 @@ class GenerateSuiteSubroutine(RewritePattern):
     def getSchemeNames(self, suite_description):
         """Return a flat list of (scheme_name, overrides) pairs from all groups.
 
+        Flattens through XMLSubcycle nodes so the result is always a plain
+        sequence of scheme entries regardless of subcycle structure.
         ``overrides`` is a plain ``{arg_name: literal_str}`` dict, empty when
         the scheme was not called with keyword argument overrides.
         """
         result = []
         for group in suite_description:
-            for scheme in group:
-                result.append(
-                    (
-                        scheme.attributes["name"],
-                        scheme.attributes.get("arg_overrides", {}),
+            for child in group:
+                if isinstance(child, XMLSubcycle):
+                    for scheme in child:
+                        result.append(
+                            (
+                                scheme.attributes["name"],
+                                scheme.attributes.get("arg_overrides", {}),
+                            )
+                        )
+                else:
+                    result.append(
+                        (
+                            child.attributes["name"],
+                            child.attributes.get("arg_overrides", {}),
+                        )
                     )
-                )
         return result
+
+    def getCallSequence(self, suite_description):
+        """Return the ordered call sequence, preserving subcycle boundaries.
+
+        Each element is one of:
+          ``('scheme',   scheme_name, overrides)``              — flat call
+          ``('subcycle', loop_count,  [(scheme_name, overrides), ...])``  — subcycle block
+        """
+        sequence = []
+        for group in suite_description:
+            for child in group:
+                if isinstance(child, XMLSubcycle):
+                    schemes = [
+                        (s.attributes["name"], s.attributes.get("arg_overrides", {}))
+                        for s in child
+                    ]
+                    sequence.append(("subcycle", child.attributes["loop_count"], schemes))
+                else:
+                    sequence.append(
+                        (
+                            "scheme",
+                            child.attributes["name"],
+                            child.attributes.get("arg_overrides", {}),
+                        )
+                    )
+        return sequence
 
     def _scheme_has_promoted_args(self, arg_table) -> bool:
         """Return True if any argument in arg_table is marked is_promoted."""
@@ -1082,106 +1121,119 @@ class GenerateSuiteSubroutine(RewritePattern):
         call_ops = []
         fn_sigs = {}
         if tgt_subroutine_postfix is not None:
-            # Determine which schemes are promoted (have is_promoted args).
-            # Consecutive promoted schemes sharing the same promoted_dim are
-            # grouped into a single loop for cache efficiency.
-            non_promoted_calls: list = []
-            promoted_groups: list = []  # list of (promoted_dim, [(scheme_name, arg_table)])
-            current_group_dim: str | None = None
-            current_group: list = []
+            call_sequence = self.getCallSequence(suite_description)
 
-            for scheme_name in arg_tables:
-                tbl = arg_tables[scheme_name]
-                if physics_mode and self._scheme_has_promoted_args(tbl):
-                    # Find the promoted dimension for this scheme
-                    pdim = next(
-                        (
-                            arg.getAttr("promoted_dim").lower()
-                            for arg in tbl.getFunctionArguments()
-                            if arg.hasAttr("is_promoted")
-                            and arg.hasAttr("promoted_dim")
-                        ),
-                        None,
-                    )
-                    if pdim == current_group_dim:
-                        current_group.append((scheme_name, tbl))
-                    else:
-                        if current_group:
-                            promoted_groups.append((current_group_dim, current_group))
-                        current_group = [(scheme_name, tbl)]
-                        current_group_dim = pdim
-                else:
-                    # Non-promoted: flush any open group, then add directly
-                    if current_group:
-                        promoted_groups.append((current_group_dim, current_group))
-                        current_group = []
-                        current_group_dim = None
-                    non_promoted_calls.append((scheme_name, tbl))
-
-            if current_group:
-                promoted_groups.append((current_group_dim, current_group))
-
-            # Emit non-promoted scheme calls as before
-            for scheme_name, tbl in non_promoted_calls:
-                full_name = scheme_name + tgt_subroutine_postfix
-                assert full_name in self.meta_fn_sigs
-                call_ops += self.generateSchemeSubroutineCallOps(
-                    full_name, tbl, data_ops,
-                    scheme_overrides.get(scheme_name, {}),
-                )
-                if full_name not in fn_sigs:
-                    fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-
-            # Emit one merged promotion loop per group of promoted schemes
-            for group_dim, group_schemes in promoted_groups:
-                # Find the loop upper bound from an existing integer arg
+            def _flush_promoted(cur_pdim, cur_pgroup):
+                """Emit a PromotionLoopOp for a pending group of promoted schemes."""
+                if not cur_pgroup:
+                    return []
                 upper_bound_ref = (
-                    self._find_loop_upper_bound(group_dim, all_args, data_ops,
-                                                framework_ref_ops=framework_ref_ops,
-                                                suite_use_stubs=suite_use_stubs)
-                    if group_dim
+                    self._find_loop_upper_bound(
+                        cur_pdim, all_args, data_ops,
+                        framework_ref_ops=framework_ref_ops,
+                        suite_use_stubs=suite_use_stubs,
+                    )
+                    if cur_pdim
                     else None
                 )
                 if upper_bound_ref is None:
-                    # Fallback: no explicit integer arg for this dimension —
-                    # emit promoted calls without a loop (TODO: look up host module)
-                    for scheme_name, tbl in group_schemes:
-                        full_name = scheme_name + tgt_subroutine_postfix
-                        assert full_name in self.meta_fn_sigs
-                        call_ops += self.generateSchemeSubroutineCallOps(
-                            full_name, tbl, data_ops,
-                            scheme_overrides.get(scheme_name, {}),
+                    # Fallback: emit without loop
+                    ops = []
+                    for sn, tbl in cur_pgroup:
+                        full_name = sn + tgt_subroutine_postfix
+                        ops += self.generateSchemeSubroutineCallOps(
+                            full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
                         )
                         if full_name not in fn_sigs:
                             fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-                    continue
-
-                # Declare the loop index variable (alloca, type=integer)
-                loop_var_alloc = memref.AllocaOp.get(
+                    return ops
+                lv_alloc = memref.AllocaOp.get(
                     TypeConversions.getBaseType("integer"), shape=[]
                 )
-                loop_var_alloc.memref.name_hint = "vertical_layer_index"
-
-                # Build body ops: scheme calls with RankReducingSliceOp refs
-                body_ops_list: list = []
-                for scheme_name, tbl in group_schemes:
-                    full_name = scheme_name + tgt_subroutine_postfix
-                    assert full_name in self.meta_fn_sigs
-                    body_ops_list += self._build_promoted_call_ops(
-                        full_name, tbl, data_ops,
-                        loop_var_alloc.memref,   # pass the alloca memref
-                        scheme_overrides.get(scheme_name, {}),
+                lv_alloc.memref.name_hint = "vertical_layer_index"
+                body_list: list = []
+                for sn, tbl in cur_pgroup:
+                    full_name = sn + tgt_subroutine_postfix
+                    body_list += self._build_promoted_call_ops(
+                        full_name, tbl, data_ops, lv_alloc.memref,
+                        scheme_overrides.get(sn, {}),
                     )
                     if full_name not in fn_sigs:
                         fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+                return [lv_alloc, PromotionLoopOp(
+                    loop_var=lv_alloc.memref,
+                    upper_bound=upper_bound_ref,
+                    body_ops=body_list,
+                )]
 
-                # PromotionLoopOp takes the alloca and the upper bound memref
-                loop_op = PromotionLoopOp(
-                    loop_var=loop_var_alloc.memref,
-                    upper_bound=upper_bound_ref,   # the memref, printer reads name
-                    body_ops=body_ops_list,
-                )
-                call_ops += [loop_var_alloc, loop_op]
+            def _emit_ordered_list(scheme_list):
+                """Emit call ops for (scheme_name, tbl) pairs in order.
+
+                Consecutive promoted schemes sharing the same promoted_dim are
+                grouped into a single PromotionLoopOp.
+                """
+                result: list = []
+                cur_pdim: str | None = None
+                cur_pgroup: list = []
+                for sn, tbl in scheme_list:
+                    full_name = sn + tgt_subroutine_postfix
+                    assert full_name in self.meta_fn_sigs
+                    if full_name not in fn_sigs:
+                        fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+                    if physics_mode and self._scheme_has_promoted_args(tbl):
+                        pdim = next(
+                            (
+                                arg.getAttr("promoted_dim").lower()
+                                for arg in tbl.getFunctionArguments()
+                                if arg.hasAttr("is_promoted")
+                                and arg.hasAttr("promoted_dim")
+                            ),
+                            None,
+                        )
+                        if pdim == cur_pdim:
+                            cur_pgroup.append((sn, tbl))
+                        else:
+                            result += _flush_promoted(cur_pdim, cur_pgroup)
+                            cur_pgroup = [(sn, tbl)]
+                            cur_pdim = pdim
+                    else:
+                        result += _flush_promoted(cur_pdim, cur_pgroup)
+                        cur_pgroup = []
+                        cur_pdim = None
+                        result += self.generateSchemeSubroutineCallOps(
+                            full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
+                        )
+                result += _flush_promoted(cur_pdim, cur_pgroup)
+                return result
+
+            for item in call_sequence:
+                if item[0] == "scheme":
+                    _, scheme_name, _ = item
+                    if scheme_name not in arg_tables:
+                        continue
+                    call_ops += _emit_ordered_list(
+                        [(scheme_name, arg_tables[scheme_name])]
+                    )
+                elif item[0] == "subcycle":
+                    _, loop_count, subcycle_scheme_list = item
+                    flat = [
+                        (sn, arg_tables[sn])
+                        for sn, _ in subcycle_scheme_list
+                        if sn in arg_tables
+                    ]
+                    body_ops = _emit_ordered_list(flat)
+                    if loop_count > 1 and physics_mode and body_ops:
+                        sc_alloc = memref.AllocaOp.get(
+                            TypeConversions.getBaseType("integer"), shape=[]
+                        )
+                        sc_alloc.memref.name_hint = "ccpp_loop_cnt"
+                        call_ops += [sc_alloc, SubcycleLoopOp(
+                            loop_count=loop_count,
+                            loop_var=sc_alloc.memref,
+                            body_ops=body_ops,
+                        )]
+                    else:
+                        call_ops += body_ops
 
         # Scalar inout block args are returned so the caller receives the updated value.
         # Array inout args are modified in-place through the host's buffer, so they

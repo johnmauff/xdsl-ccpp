@@ -11,6 +11,7 @@ from xdsl_ccpp.dialects.ccpp import (
     ArgumentTableOp,
     GroupOp,
     SchemeOp,
+    SubcycleOp,
     SuiteOp,
     TablePropertiesOp,
 )
@@ -188,20 +189,36 @@ class XMLScheme(XMLSuiteBase):
         assert len(xml_node) == 0  # scheme elements must be leaf nodes
 
 
+class XMLSubcycle(XMLSuiteBase):
+    """Intermediate node representing a ``<subcycle loop="N">`` within a group.
+
+    Parses all ``<scheme>`` children and stores them as `XMLScheme` nodes.
+    """
+
+    def __init__(self, xml_node):
+        assert xml_node.tag == "subcycle"
+        super().__init__(xml_node)
+        self.loop_count = int(xml_node.attrib.get("loop", 1))
+        for child in xml_node:
+            if child.tag == "scheme":
+                self.children.append(XMLScheme(child))
+
+
 class XMLGroup(XMLSuiteBase):
     """Intermediate node representing a named ``<group>`` within a suite.
 
-    Parses all ``<scheme>`` children and stores them as `XMLScheme` nodes.
+    Parses all ``<scheme>`` and ``<subcycle>`` children.
     """
 
     def __init__(self, xml_node):
         assert xml_node.tag == "group"
         super().__init__(xml_node)
 
-        # Parse each child scheme element into an XMLScheme node
         for child in xml_node:
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))
+            elif child.tag == "subcycle":
+                self.children.append(XMLSubcycle(child))
 
 
 class XMLSuite(XMLSuiteBase):
@@ -436,11 +453,14 @@ class ccppXML:
         groups = []
         # Build a GroupOp for each group in the suite
         for grp in suite:
-            schemes = []
-            # Build a SchemeOp for each scheme in the group
-            for scheme in grp:
-                schemes.append(SchemeOp(scheme.scheme_name))
-            groups.append(GroupOp(grp.attributes["name"], schemes))
+            group_ops = []
+            for child in grp:
+                if isinstance(child, XMLSubcycle):
+                    scheme_ops = [SchemeOp(s.scheme_name) for s in child]
+                    group_ops.append(SubcycleOp(child.loop_count, scheme_ops))
+                else:
+                    group_ops.append(SchemeOp(child.scheme_name))
+            groups.append(GroupOp(grp.attributes["name"], group_ops))
         return SuiteOp(
             suite.attributes["name"],
             groups,

@@ -27,6 +27,7 @@ from xdsl_ccpp.dialects.ccpp import (
     ArgumentTableOp,
     GroupOp,
     SchemeOp,
+    SubcycleOp,
     SuiteOp,
     TablePropertiesOp,
     TableTypeKind,
@@ -185,33 +186,40 @@ def track(
             if not isa(group_op, GroupOp):
                 continue
             group_name = group_op.group_name.data
-            for scheme_op in group_op.body.ops:
-                if not isa(scheme_op, SchemeOp):
+            for child_op in group_op.body.ops:
+                if isa(child_op, SchemeOp):
+                    scheme_ops_to_check = [child_op]
+                elif isa(child_op, SubcycleOp):
+                    scheme_ops_to_check = [
+                        s for s in child_op.body.ops if isa(s, SchemeOp)
+                    ]
+                else:
                     continue
-                base = scheme_op.scheme_name.data.lower()
-                for suffix in entry_suffixes:
-                    ep = f"{base}_{suffix}"
-                    tbl = scheme_tables.get(ep)
-                    if tbl is None:
-                        continue
-                    found = _find_variable(tbl, variable, host_unit_map)
-                    if found is not None:
-                        local_name, intent, scheme_u, host_u, mismatch = found
-                        results.append(TrackResult(
-                            suite_name=suite_name,
-                            group_name=group_name,
-                            entry_point=ep,
-                            local_name=local_name,
-                            intent=intent,
-                            scheme_units=scheme_u,
-                            host_units=host_u,
-                            unit_mismatch=mismatch,
-                        ))
-                    else:
-                        for pm in _find_partial_matches(tbl, variable):
-                            if pm not in partial_seen:
-                                partial_matches.append(pm)
-                                partial_seen.add(pm)
+                for scheme_op in scheme_ops_to_check:
+                    base = scheme_op.scheme_name.data.lower()
+                    for suffix in entry_suffixes:
+                        ep = f"{base}_{suffix}"
+                        tbl = scheme_tables.get(ep)
+                        if tbl is None:
+                            continue
+                        found = _find_variable(tbl, variable, host_unit_map)
+                        if found is not None:
+                            local_name, intent, scheme_u, host_u, mismatch = found
+                            results.append(TrackResult(
+                                suite_name=suite_name,
+                                group_name=group_name,
+                                entry_point=ep,
+                                local_name=local_name,
+                                intent=intent,
+                                scheme_units=scheme_u,
+                                host_units=host_u,
+                                unit_mismatch=mismatch,
+                            ))
+                        else:
+                            for pm in _find_partial_matches(tbl, variable):
+                                if pm not in partial_seen:
+                                    partial_matches.append(pm)
+                                    partial_seen.add(pm)
 
     return results, partial_matches
 

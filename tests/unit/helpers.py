@@ -38,3 +38,23 @@ def minimal_suite_xml(scheme_name: str, suite_name: str = "test_suite") -> str:
   </group>
 </suite>
 """
+
+
+def two_scheme_subcycle_xml(
+    scheme_a: str,
+    scheme_b: str,
+    loop: int = 2,
+    suite_name: str = "test_suite",
+) -> str:
+    """Return a suite XML string with two schemes inside a subcycle block."""
+    return f"""\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="{suite_name}" version="1.0">
+  <group name="physics">
+    <subcycle loop="{loop}">
+      <scheme>{scheme_a}</scheme>
+      <scheme>{scheme_b}</scheme>
+    </subcycle>
+  </group>
+</suite>
+"""
