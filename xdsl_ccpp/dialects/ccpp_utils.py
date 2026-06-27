@@ -1,5 +1,6 @@
 from xdsl.dialects.builtin import (
     ArrayAttr,
+    BoolAttr,
     DYNAMIC_INDEX,
     DictionaryAttr,
     IntegerAttr,
@@ -638,20 +639,23 @@ class SubcycleLoopOp(IRDLOperation):
         end do
 
     ``loop_var`` is a scalar integer alloca whose name_hint becomes the
-    Fortran loop variable name.  ``loop_count`` is the literal integer
-    from ``loop="N"`` in the suite XML.
+    Fortran loop variable name.  ``loop_count`` is either a literal integer
+    from ``loop="N"`` in the suite XML or a CCPP standard name resolved at
+    runtime; ``is_literal`` records which case applies.
     """
 
     name = "ccpp_utils.subcycle_loop"
 
     loop_count = prop_def(StringAttr)
+    is_literal = prop_def(BoolAttr)
     loop_var   = operand_def(MemRefType)
 
     body = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, loop_count: "int | str", loop_var, body_ops):
+    def __init__(self, loop_count: "int | str", loop_var, body_ops,
+                 is_literal: bool = True):
         if isinstance(body_ops, list):
             from xdsl.ir import Block, Region
             body = Region([Block(body_ops)])
@@ -659,7 +663,10 @@ class SubcycleLoopOp(IRDLOperation):
             body = body_ops
         super().__init__(
             operands=[loop_var],
-            properties={"loop_count": StringAttr(str(loop_count))},
+            properties={
+                "loop_count": StringAttr(str(loop_count)),
+                "is_literal": BoolAttr.from_bool(is_literal),
+            },
             regions=[body],
         )
 

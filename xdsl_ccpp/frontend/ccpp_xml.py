@@ -198,7 +198,13 @@ class XMLSubcycle(XMLSuiteBase):
     def __init__(self, xml_node):
         assert xml_node.tag == "subcycle"
         super().__init__(xml_node)
-        self.loop_count = xml_node.attrib.get("loop", "1")
+        raw = xml_node.attrib.get("loop", "1")
+        try:
+            int(raw)
+            self.is_literal = True
+        except ValueError:
+            self.is_literal = False
+        self.loop_count = raw
         for child in xml_node:
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))
@@ -457,7 +463,8 @@ class ccppXML:
             for child in grp:
                 if isinstance(child, XMLSubcycle):
                     scheme_ops = [SchemeOp(s.scheme_name) for s in child]
-                    group_ops.append(SubcycleOp(child.loop_count, scheme_ops))
+                    group_ops.append(SubcycleOp(child.loop_count, scheme_ops,
+                                                is_literal=child.is_literal))
                 else:
                     group_ops.append(SchemeOp(child.scheme_name))
             groups.append(GroupOp(grp.attributes["name"], group_ops))

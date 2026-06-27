@@ -2,6 +2,7 @@ from xdsl.dialects import builtin, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX
 
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType, RealKindType
+from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN
 
 
 class TypeConversions:
@@ -80,8 +81,8 @@ class TypeConversions:
             # Other kind values (e.g. 'kind_phys') are Fortran precision specifiers
             # and have no effect on the memref shape.
             len_val = kind.split("=")[1]
-            # len=* means assumed-length in Fortran source; CCPP always uses 512
-            char_len = 512 if len_val == "*" else int(len_val)
+            # len=* means assumed-length in Fortran source; CCPP always uses CCPP_ERRMSG_LEN
+            char_len = CCPP_ERRMSG_LEN if len_val == "*" else int(len_val)
             # Array dims come first; the string length is the trailing dimension.
             # e.g. character(len=32), dimension(N) → memref<?x32xi8>
             shape = [DYNAMIC_INDEX] * dimensions + [char_len]

@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 
 from xdsl.dialects.builtin import ModuleOp
 
-from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_MESSAGE, CCPP_ERROR_CODE
+from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_MESSAGE, CCPP_ERROR_CODE, CCPP_ERRMSG_LEN
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,

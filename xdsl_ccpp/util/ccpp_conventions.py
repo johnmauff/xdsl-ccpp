@@ -17,6 +17,15 @@ CCPP_ERROR_STD_NAMES: frozenset = frozenset({CCPP_ERROR_MESSAGE, CCPP_ERROR_CODE
 CCPP_ERRMSG_LOCAL = "errmsg"
 CCPP_ERRFLG_LOCAL = "errflg"
 
+# Fixed length (in characters) of the errmsg buffer in all generated caps.
+# The CCPP specification mandates 512; schemes declare character(len=512).
+CCPP_ERRMSG_LEN = 512
+
+# Sentinel used when a subcycle loop count is a CCPP standard name (a runtime
+# variable, not a literal integer). Any value > 1 causes the subcycle loop to
+# be emitted; we assume a named loop count always means "loop more than once."
+CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT = 2
+
 # ── Framework-internal standard names ──────────────────────────────────────
 # Variables managed entirely by the CCPP framework — schemes reference them
 # but they are never matched to host model variables.

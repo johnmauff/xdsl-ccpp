@@ -5,6 +5,7 @@ from enum import StrEnum, auto
 from typing import ClassVar
 
 from xdsl.dialects.builtin import (
+    BoolAttr,
     DictionaryAttr,
     IntAttr,
     StringAttr,
@@ -134,12 +135,14 @@ class SubcycleOp(IRDLOperation):
 
     Corresponds to ``<subcycle loop="N">`` in a suite XML file.
     ``loop_count == "1"`` means the schemes run once (no do loop emitted).
-    ``loop_count`` may also be a CCPP standard name resolved at runtime.
+    ``loop_count`` may also be a CCPP standard name resolved at runtime;
+    ``is_literal`` distinguishes the two cases so consumers need not guess.
     """
 
     name = "ccpp.subcycle"
 
     loop_count = prop_def(StringAttr)
+    is_literal = prop_def(BoolAttr)
 
     body = region_def("single_block")
 
@@ -149,12 +152,16 @@ class SubcycleOp(IRDLOperation):
         self,
         loop_count: "int | str",
         body: "Region | Sequence[Operation] | Sequence[Block]",
+        is_literal: bool = True,
     ):
         if not isinstance(body, Region):
             body = Region([Block(list(body))])
         super().__init__(
             regions=[body],
-            properties={"loop_count": StringAttr(str(loop_count))},
+            properties={
+                "loop_count": StringAttr(str(loop_count)),
+                "is_literal": BoolAttr.from_bool(is_literal),
+            },
         )
 
 

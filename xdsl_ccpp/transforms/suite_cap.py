@@ -43,11 +43,13 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERRMSG_LEN,
     CCPP_KIND_PHYS,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
 )
@@ -118,8 +120,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         """Return the ordered call sequence, preserving subcycle boundaries.
 
         Each element is one of:
-          ``('scheme',   scheme_name, overrides)``              — flat call
-          ``('subcycle', loop_count,  [(scheme_name, overrides), ...])``  — subcycle block
+          ``('scheme',   scheme_name, overrides)``                         — flat call
+          ``('subcycle', loop_count, is_literal, [(scheme_name, overrides), ...])``  — subcycle block
         """
         sequence = []
         for group in suite_description:
@@ -129,7 +131,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                         (s.attributes["name"], s.attributes.get("arg_overrides", {}))
                         for s in child
                     ]
-                    sequence.append(("subcycle", child.attributes["loop_count"], schemes))
+                    sequence.append(("subcycle", child.attributes["loop_count"],
+                                     child.attributes["is_literal"], schemes))
                 else:
                     sequence.append(
                         (
@@ -866,7 +869,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             data_ops["errflg"] = alloc_op
         if "errmsg" not in data_ops:
             alloc_op = memref.AllocaOp.get(
-                TypeConversions.getBaseType("character"), shape=[512]
+                TypeConversions.getBaseType("character"), shape=[CCPP_ERRMSG_LEN]
             )
             alloc_op.memref.name_hint = "errmsg"
             alloc_ops["errmsg"] = alloc_op
@@ -1216,17 +1219,15 @@ class GenerateSuiteSubroutine(RewritePattern):
                         [(scheme_name, arg_tables[scheme_name])]
                     )
                 elif item[0] == "subcycle":
-                    _, loop_count, subcycle_scheme_list = item
+                    _, loop_count, is_literal, subcycle_scheme_list = item
                     flat = [
                         (sn, arg_tables[sn])
                         for sn, _ in subcycle_scheme_list
                         if sn in arg_tables
                     ]
                     body_ops = _emit_ordered_list(flat)
-                    try:
-                        _lc_int = int(loop_count)
-                    except (ValueError, TypeError):
-                        _lc_int = 2  # CCPP std name: always a real loop
+                    _lc_int = (int(loop_count) if is_literal
+                               else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
                     if _lc_int > 1 and physics_mode and body_ops:
                         sc_alloc = memref.AllocaOp.get(
                             TypeConversions.getBaseType("integer"), shape=[]
@@ -1236,6 +1237,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                             loop_count=loop_count,
                             loop_var=sc_alloc.memref,
                             body_ops=body_ops,
+                            is_literal=is_literal,
                         )]
                     else:
                         call_ops += body_ops

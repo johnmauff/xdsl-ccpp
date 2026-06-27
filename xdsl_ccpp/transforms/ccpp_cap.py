@@ -32,6 +32,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
     CCPP_ERROR_STD_NAMES,
+    CCPP_ERRMSG_LEN,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_LOOP_BEGIN_STD_NAME,
@@ -321,7 +322,7 @@ class CCPPCAP(ModulePass):
         )
         lines.append("  character(len=*), intent(in) :: suite_name")
         lines.append("  character(len=*), allocatable, intent(out) :: var_list(:)")
-        lines.append("  character(len=512), intent(out) :: errmsg")
+        lines.append(f"  character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg")
         lines.append("  integer, intent(out) :: errflg")
         lines.append("  logical, optional, intent(in) :: input_vars")
         lines.append("  logical, optional, intent(in) :: output_vars")
@@ -596,7 +597,7 @@ class CCPPCAP(ModulePass):
             )
         else:
             # capgen pattern: function returns errmsg/errflg as separate outputs.
-            errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
+            errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
             errmsg_alloc.memref.name_hint = "errmsg"
             errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
             errflg_alloc.memref.name_hint = "errflg"
@@ -1765,7 +1766,7 @@ class CCPPCAP(ModulePass):
         new_block.args[0].name_hint = "suite_name"
         new_block.args[1].name_hint = "part_list"
 
-        errmsg_alloc = memref.AllocaOp.get(char_base, shape=[512])
+        errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
         errmsg_alloc.memref.name_hint = "errmsg"
         errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
         errflg_alloc.memref.name_hint = "errflg"
@@ -1917,7 +1918,7 @@ class CCPPCAP(ModulePass):
             f"    character(len=*), intent(in) :: std_name",
             f"    logical, intent(out) :: is_const",
             f"    integer, intent(out) :: errflg",
-            f"    character(len=512), intent(out) :: errmsg",
+            f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             f"    integer :: lc_idx",
             f"    errflg = 0",
             f"    errmsg = ''",
@@ -1969,7 +1970,7 @@ class CCPPCAP(ModulePass):
             f"  subroutine {h}_ccpp_register_constituents(host_constituents, errmsg, errflg)",
             f"    use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents",
             f"    type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)",
-            f"    character(len=512), intent(out) :: errmsg",
+            f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             f"    integer, intent(out) :: errflg",
             f"    integer :: lc_max, lc_num, lc_i, lc_j",
             f"    logical :: lc_found",
@@ -2055,7 +2056,7 @@ class CCPPCAP(ModulePass):
         nc_lines = [
             f"  subroutine {h}_ccpp_number_constituents(num_advected, errmsg, errflg)",
             f"    integer, intent(out) :: num_advected",
-            f"    character(len=512), intent(out) :: errmsg",
+            f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             f"    integer, intent(out) :: errflg",
             f"    errflg = 0",
             f"    errmsg = ''",
@@ -2073,7 +2074,7 @@ class CCPPCAP(ModulePass):
             f"    integer, intent(in) :: ncols",
             f"    integer, intent(in) :: pver",
             f"    integer, intent(out) :: errflg",
-            f"    character(len=512), intent(out) :: errmsg",
+            f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             f"    integer :: lc_num, lc_i",
             f"    errflg = 0",
             f"    errmsg = ''",
@@ -2128,7 +2129,7 @@ class CCPPCAP(ModulePass):
             f"    character(len=*), intent(in) :: std_name",
             f"    integer, intent(out) :: index",
             f"    integer, intent(out) :: errflg",
-            f"    character(len=512), intent(out) :: errmsg",
+            f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             f"    integer :: lc_i",
             f"    errflg = 0",
             f"    errmsg = ''",
@@ -2219,7 +2220,7 @@ class CCPPCAP(ModulePass):
         char_base = TypeConversions.getBaseType("character")
         int_base = TypeConversions.getBaseType("integer")
         suite_name_type = memref.MemRefType(char_base, [DYNAMIC_INDEX])
-        errmsg_type = memref.MemRefType(char_base, [512])
+        errmsg_type = memref.MemRefType(char_base, [CCPP_ERRMSG_LEN])
         errflg_type = memref.MemRefType(int_base, [])
 
         common = dict(
@@ -2381,7 +2382,7 @@ class CCPPCAP(ModulePass):
                 break
 
         errmsg_type_tmp = memref.MemRefType(
-            TypeConversions.getBaseType("character"), [512]
+            TypeConversions.getBaseType("character"), [CCPP_ERRMSG_LEN]
         )
         errflg_type_tmp = memref.MemRefType(
             TypeConversions.getBaseType("integer"), []

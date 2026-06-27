@@ -212,8 +212,8 @@ class XMLScheme(XMLSuiteBase):
 class XMLSubcycle(XMLSuiteBase):
     """Subcycle node reconstructed from IR: contains schemes and a loop count."""
 
-    def __init__(self, loop_count: "int | str"):
-        super().__init__({"loop_count": str(loop_count)})
+    def __init__(self, loop_count: "int | str", is_literal: bool = True):
+        super().__init__({"loop_count": str(loop_count), "is_literal": is_literal})
 
 
 class XMLGroup(XMLSuiteBase):
@@ -417,7 +417,7 @@ class BuildSchemeDescription(Visitor):
 
         for op in group_op.body.ops:
             if isa(op, ccpp.SubcycleOp):
-                subcycle = XMLSubcycle(op.loop_count.data)
+                subcycle = XMLSubcycle(op.loop_count.data, bool(op.is_literal.value.data))
                 for child_op in op.body.ops:
                     if isa(child_op, ccpp.SchemeOp):
                         overrides = {}

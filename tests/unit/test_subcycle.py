@@ -203,9 +203,10 @@ class TestGetSchemeNames:
         )
         seq = self._gss().getCallSequence(suite_desc)
         assert len(seq) == 1
-        kind, loop_count, schemes = seq[0]
+        kind, loop_count, is_literal, schemes = seq[0]
         assert kind == "subcycle"
         assert loop_count == "3"
+        assert is_literal is True
         assert [n for n, _ in schemes] == ["scheme_a", "scheme_b"]
 
     def test_call_sequence_mixed(self, build_module):
