@@ -646,22 +646,36 @@ class GenerateSuiteSubroutine(RewritePattern):
             assert tgt_subroutine_postfix is not None
             generated_subroutine_posfix = tgt_subroutine_postfix
 
+        # atmospheric_physics uses _timestep_init/_timestep_final; accept both forms.
+        _POSTFIX_ALIASES: dict[str, str] = {
+            "_timestep_initialize": "_timestep_init",
+            "_timestep_finalize": "_timestep_final",
+        }
+
         scheme_entries = self.getSchemeNames(suite_description)
         arg_tables = {}
         scheme_overrides: dict[str, dict[str, str]] = {}
+        actual_postfixes: dict[str, str] = {}  # actual entry-point postfix matched per scheme
         all_args = {}
         suite_use_stubs: list = []  # llvm.GlobalOps for host-module USE statements
         if tgt_subroutine_postfix is not None:
             # Fetch the argument table for each scheme's target subroutine;
             # schemes that don't have this entry point (e.g. no _finalize) are skipped.
             # First occurrence wins for duplicate scheme names.
+            # Try the canonical postfix first, then any registered alias.
+            _postfix_candidates = [tgt_subroutine_postfix]
+            if tgt_subroutine_postfix in _POSTFIX_ALIASES:
+                _postfix_candidates.append(_POSTFIX_ALIASES[tgt_subroutine_postfix])
             for scheme_name, overrides in scheme_entries:
-                table = self.getArgumentTable(
-                    scheme_name, scheme_name + tgt_subroutine_postfix
-                )
-                if table is not None and scheme_name not in arg_tables:
-                    arg_tables[scheme_name] = table
-                    scheme_overrides[scheme_name] = overrides
+                for _candidate in _postfix_candidates:
+                    table = self.getArgumentTable(
+                        scheme_name, scheme_name + _candidate
+                    )
+                    if table is not None and scheme_name not in arg_tables:
+                        arg_tables[scheme_name] = table
+                        scheme_overrides[scheme_name] = overrides
+                        actual_postfixes[scheme_name] = _candidate
+                        break
 
             # Collect unique args across all schemes, keyed by standard_name.
             # When two schemes use different local names for the same standard_name
@@ -1161,7 +1175,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     # Fallback: emit without loop
                     ops = []
                     for sn, tbl in cur_pgroup:
-                        full_name = sn + tgt_subroutine_postfix
+                        full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
                         ops += self.generateSchemeSubroutineCallOps(
                             full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
                         )
@@ -1174,7 +1188,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 lv_alloc.memref.name_hint = "vertical_layer_index"
                 body_list: list = []
                 for sn, tbl in cur_pgroup:
-                    full_name = sn + tgt_subroutine_postfix
+                    full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
                     body_list += self._build_promoted_call_ops(
                         full_name, tbl, data_ops, lv_alloc.memref,
                         scheme_overrides.get(sn, {}),
@@ -1197,7 +1211,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 cur_pdim: str | None = None
                 cur_pgroup: list = []
                 for sn, tbl in scheme_list:
-                    full_name = sn + tgt_subroutine_postfix
+                    full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
                     assert full_name in self.meta_fn_sigs
                     if full_name not in fn_sigs:
                         fn_sigs[full_name] = self.meta_fn_sigs[full_name]

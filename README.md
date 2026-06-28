@@ -61,6 +61,9 @@ Optional:
                         derived from the suite name when not set
   -t, --tempdir         Temporary directory for intermediate files (default: tmp)
   -v, --verbose         Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)
+  --directive acc|omp   GPU directive style: acc for OpenACC (default), omp for OpenMP
+                        target offload. Has no effect unless at least one scheme argument
+                        declares memory_space = device in its .meta file.
   --emit-datatable      Write datatable.xml to this path after generating caps
   --emit-html           Write per-entry-point HTML variable tables to this directory
                         (requires --emit-datatable)
@@ -79,6 +82,7 @@ The `examples/` directory contains several complete examples:
 | `helloworld/` | Two schemes (`hello_scheme`, `temp_adjust`) with XML and Python frontends |
 | `advection/` | Advection scheme example with XML frontend |
 | `ddthost/` | Example using Fortran derived data types (DDTs) and optional entry points |
+| `kessler/` | Kessler microphysics scheme with GPU directives (`memory_space = device`) |
 
 Each example can be driven via the XML frontend, the Python API (`@ccpp_suite`), or both.
 
@@ -121,6 +125,87 @@ python3 examples/helloworld/helloworld_py.py | \
   -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp \
   -t ftn
 ```
+
+## GPU Support
+
+xdsl-ccpp can generate OpenACC or OpenMP target-offload data directives around scheme physics calls. The directives are driven entirely by metadata — no changes to the scheme Fortran sources are required.
+
+### Marking Arguments as Device-Resident
+
+In a scheme `.meta` file, add `memory_space = device` to any argument that lives in GPU memory at the point of the physics call:
+
+```ini
+[ qv ]
+  standard_name = water_vapor_mixing_ratio_wrt_moist_air_and_condensed_water
+  units = kg kg-1
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+  memory_space = device
+```
+
+Arguments without `memory_space = device` default to `memory_space = host` and are unaffected.
+
+### OpenACC Clause Selection
+
+The clause used for each device-resident argument is chosen from its `intent`:
+
+| Intent | Clause | Effect |
+|--------|--------|--------|
+| `in` | `copyin()` | Copy host → device before the call; no copy back |
+| `inout` | `copy()` | Copy host → device before the call, device → host after |
+| `out` | `copyout()` | No copy in; copy device → host after the call |
+
+When the same argument appears in multiple scheme entry points within a suite with different intents, the most permissive intent is used — for example, if an argument is `intent(inout)` in `kessler_run` and `intent(in)` in `kessler_update_run`, it is placed in `copy()`.
+
+If the host model also declares the variable as device-resident (`model_var_memory_space = device` in the host `.meta` file), the variable goes into `present()` instead — no data transfer is needed because the host already manages the device copy across timesteps.
+
+### Generating a Cap with GPU Directives
+
+Pass `--directive acc` (the default) or `--directive omp`:
+
+```bash
+ccpp_xdsl \
+  --suites      examples/kessler/kessler_suite.xml \
+  --scheme-files examples/kessler/kessler.meta,examples/kessler/kessler_update.meta \
+  --host-files  examples/kessler/kessler_host_mod.meta,examples/kessler/kessler_host_sub.meta \
+  --directive   acc \
+  -o            output/
+```
+
+### Example Output
+
+For the kessler example, the generated `Kessler_ccpp_physics_run` looks like:
+
+```fortran
+if (trim(suite_name) .eq. 'kessler_suite') then
+  if (trim(suite_part) .eq. 'physics') then
+    !$acc data copy(theta(col_start:col_end, 1:nz), qv(col_start:col_end, 1:nz), &
+    !$acc      qc(col_start:col_end, 1:nz), qr(col_start:col_end, 1:nz), &
+    !$acc      temp_prev(col_start:col_end, 1:nz), ttend_t(col_start:col_end, 1:nz)) &
+    !$acc      copyin(cpair(col_start:col_end, 1:nz), rair(col_start:col_end, 1:nz), &
+    !$acc      rho(col_start:col_end, 1:nz), z(col_start:col_end, 1:nz), &
+    !$acc      exner(col_start:col_end, 1:nz)) copyout(precl, relhum(col_start:col_end, 1:nz))
+    call kessler_suite_suite_physics(...)
+    !$acc end data
+  end if
+end if
+```
+
+The `!$acc data` region opens only after the suite-part comparison is already known to be true, so no data movement occurs for unmatched suite parts. Array arguments use column-sliced sections (`col_start:col_end, 1:nz`) rather than the full host array, matching the active physics columns.
+
+### OpenMP Target Offload
+
+Pass `--directive omp` to emit OpenMP target data directives instead:
+
+```fortran
+!$omp target data map(tofrom: theta(...), qv(...), ...) map(to: cpair(...), ...) map(from: precl, ...)
+call kessler_suite_suite_physics(...)
+!$omp end target data
+```
+
+The intent-based clause mapping is the same: `inout` → `map(tofrom:)`, `in` → `map(to:)`, `out` → `map(from:)`, already-device → `map(alloc:)`.
 
 ## Metadata Skeleton Generation
 

@@ -575,13 +575,15 @@ class ftnPrintContext:
                 for result, operand in zip(op.results, op.inputs):
                     self.variables[result] = self._get_variable_name_for(operand)
             case CCPPAccDataBeginOp():
+                copy_names    = [self._get_variable_name_for(v) for v in op.copy_arrays]
                 copyin_names  = [self._get_variable_name_for(v) for v in op.copyin_arrays]
                 copyout_names = [self._get_variable_name_for(v) for v in op.copyout_arrays]
                 present_names = [self._get_variable_name_for(v) for v in op.present_arrays]
-                if not copyin_names and not copyout_names and not present_names:
+                if not copy_names and not copyin_names and not copyout_names and not present_names:
                     self.print("!$acc data")
                 else:
                     self._emit_acc_directive("data", [
+                        ("copy",    copy_names),
                         ("copyin",  copyin_names),
                         ("copyout", copyout_names),
                         ("present", present_names),

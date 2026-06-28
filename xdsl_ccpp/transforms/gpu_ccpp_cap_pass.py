@@ -40,7 +40,7 @@ class GPUCcppCapPass(ModulePass):
             Both sides agree the variable lives on the GPU.  The host model
             is responsible for managing the device copy across timesteps.
 
-        scheme=device + model=host    → copyin(var) copyout(var)
+        scheme=device + model=host    → copy(var)
             Scheme wants GPU data but model keeps it on CPU.  The framework
             creates a temporary device copy for this call.
 
@@ -78,20 +78,31 @@ class GPUCcppCapPass(ModulePass):
     def _build_model_var_clause_map(self, ccpp_mod):
         """Return a dict mapping host model variable name → OpenACC clause type.
 
-        Walks all SCHEME metadata and uses the scheme's memory_space together
-        with model_var_memory_space (propagated by generate-host-match) to
-        determine which OpenACC clause each variable needs.
+        Walks all SCHEME metadata and uses the scheme's memory_space, the host
+        model variable's memory_space, and the argument's intent to determine
+        which OpenACC clause each variable needs.
 
-        Returns: {model_var_name: "present" | "copyin_copyout" | "skip"}
-            "present"       — both scheme and model agree on device memory
-            "copyin_copyout" — scheme wants device, model provides host memory
-            "skip"          — scheme is host-only but model is on device
-                              (Phase 2: requires acc update ops, not yet implemented)
+        Returns: {model_var_name: "present" | "copyin" | "copy" | "copyout" | "update"}
+            "present"  — both sides agree on device; host manages the device copy
+            "copyin"   — scheme=device, model=host, intent=in: host→device only
+            "copy"     — scheme=device, model=host, intent=inout: both directions
+            "copyout"  — scheme=device, model=host, intent=out: device→host only
+            "update"   — scheme=host, model=device: acc update self/device around call
         """
         bmdd = BuildMetaDataDescriptions()
         bmdd.traverse(ccpp_mod)
 
-        clause_map = {}  # model_var_name → clause type
+        # Track per host-variable whether any scheme reads or writes it on device.
+        # A variable may appear in multiple scheme entry points with different
+        # intents (e.g. theta is intent(inout) in kessler_run but intent(in)
+        # in kessler_update_run).  We take the union across all entry points:
+        #   any read  (in  or inout) → needs_in
+        #   any write (out or inout) → needs_out
+        # Then: both → copy(); read only → copyin(); write only → copyout()
+        needs_in:  dict = {}  # host_var → bool
+        needs_out: dict = {}  # host_var → bool
+        present_vars: set = set()
+        update_vars:  set = set()
 
         for props in bmdd.meta_data.values():
             if props.getAttr("type") != CCPPType.SCHEME:
@@ -114,12 +125,30 @@ class GPUCcppCapPass(ModulePass):
                     )
 
                     if scheme_space == "device" and model_space == "device":
-                        clause_map[host_var] = "present"
+                        present_vars.add(host_var)
                     elif scheme_space == "device" and model_space == "host":
-                        clause_map[host_var] = "copyin_copyout"
+                        intent = arg.getAttr("intent") if arg.hasAttr("intent") else "inout"
+                        reads  = intent in ("in",  "inout")
+                        writes = intent in ("out", "inout")
+                        needs_in[host_var]  = needs_in.get(host_var,  False) or reads
+                        needs_out[host_var] = needs_out.get(host_var, False) or writes
                     elif scheme_space == "host" and model_space == "device":
-                        clause_map[host_var] = "update"
-                    # else: both host — no directive needed, don't add to map
+                        update_vars.add(host_var)
+                    # else: both host — no directive needed
+
+        clause_map = {}
+        for host_var in present_vars:
+            clause_map[host_var] = "present"
+        for host_var in update_vars:
+            clause_map[host_var] = "update"
+        for host_var, r in needs_in.items():
+            w = needs_out.get(host_var, False)
+            if r and w:
+                clause_map[host_var] = "copy"
+            elif r:
+                clause_map[host_var] = "copyin"
+            else:
+                clause_map[host_var] = "copyout"
 
         return clause_map
 
@@ -203,9 +232,11 @@ class GPUCcppCapPass(ModulePass):
                 continue
 
             # Classify HostVarRefOps in this block by OpenACC clause type
-            present_vars    = []
-            copyin_out_vars = []
-            update_vars     = []
+            present_vars  = []
+            copyin_vars   = []
+            copy_vars     = []
+            copyout_vars  = []
+            update_vars   = []
 
             for ref_op in true_block.ops:
                 if not isa(ref_op, HostVarRefOp):
@@ -216,46 +247,55 @@ class GPUCcppCapPass(ModulePass):
                 clause = clause_map[var_name]
                 if clause == "present":
                     present_vars.append(var_name)
-                elif clause == "copyin_copyout":
-                    copyin_out_vars.append(var_name)
+                elif clause == "copyin":
+                    copyin_vars.append(var_name)
+                elif clause == "copy":
+                    copy_vars.append(var_name)
+                elif clause == "copyout":
+                    copyout_vars.append(var_name)
                 elif clause == "update":
                     update_vars.append(var_name)
 
-            # Data region directives wrap the entire inner scf.IfOp.
-            # copyin/copyout / tofrom: use array sections for efficiency.
+            # Data region directives go inside the inner scf.IfOp's true
+            # region, immediately around the suite physics call.  This way the
+            # acc/omp data region only opens once the suite-part comparison is
+            # already known to be true — no wasted data movement on the wrong
+            # suite part.
+            # copy/copyin/copyout/tofrom: use array sections for efficiency.
             # present / alloc: use base variable names — the host put the
             #   whole array on device, not just the active columns.
-            if present_vars or copyin_out_vars:
-                section_refs = self._resolve_array_refs(
-                    true_block, set(copyin_out_vars), use_sections=True
-                )
-                base_refs = self._resolve_array_refs(
-                    true_block, set(present_vars), use_sections=False
-                )
+            if present_vars or copyin_vars or copy_vars or copyout_vars:
+                copy_refs    = self._resolve_array_refs(true_block, set(copy_vars),    use_sections=True)
+                copyin_refs  = self._resolve_array_refs(true_block, set(copyin_vars),  use_sections=True)
+                copyout_refs = self._resolve_array_refs(true_block, set(copyout_vars), use_sections=True)
+                base_refs    = self._resolve_array_refs(true_block, set(present_vars), use_sections=False)
                 if self.directive == "omp":
+                    # OMP uses map(tofrom:) for copy and map(to:) for copyin,
+                    # map(from:) for copyout; map(alloc:) for present.
                     Rewriter.insert_op(
                         OmpTargetDataBeginOp(
-                            tofrom=section_refs,
+                            tofrom=copy_refs + copyin_refs + copyout_refs,
                             alloc=base_refs,
                         ),
-                        InsertPoint.before(inner_if),
+                        InsertPoint.before(suite_call),
                     )
                     Rewriter.insert_op(
                         OmpTargetDataEndOp(),
-                        InsertPoint.after(inner_if),
+                        InsertPoint.after(suite_call),
                     )
                 else:  # acc (default)
                     Rewriter.insert_op(
                         AccDataBeginOp(
-                            copyin=section_refs,
-                            copyout=section_refs,
+                            copy=copy_refs,
+                            copyin=copyin_refs,
+                            copyout=copyout_refs,
                             present=base_refs,
                         ),
-                        InsertPoint.before(inner_if),
+                        InsertPoint.before(suite_call),
                     )
                     Rewriter.insert_op(
                         AccDataEndOp(),
-                        InsertPoint.after(inner_if),
+                        InsertPoint.after(suite_call),
                     )
 
             # Update directives go inside the inner scf.IfOp's true region,

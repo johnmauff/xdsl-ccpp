@@ -284,10 +284,10 @@
 // CHECK-NEXT:        %2 = "ccpp_utils.strcmp"(%1) <{literal = "kw_suite"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:        scf.if %2 {
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
-// CHECK-NEXT:          %4 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
-// CHECK-NEXT:          scf.if %4 {
-// CHECK-NEXT:            %5 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_lev"}> : () -> memref<i32>
-// CHECK-NEXT:            %6, %7 = func.call @kw_suite_suite_physics(%col_start, %col_end, %5) : (memref<i32>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>)
+// CHECK-NEXT:          %4 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_lev"}> : () -> memref<i32>
+// CHECK-NEXT:          %5 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:          scf.if %5 {
+// CHECK-NEXT:            %6, %7 = func.call @kw_suite_suite_physics(%col_start, %col_end, %4) : (memref<i32>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>)
 // CHECK-NEXT:            "memref.copy"(%6, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:            "memref.copy"(%7, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {

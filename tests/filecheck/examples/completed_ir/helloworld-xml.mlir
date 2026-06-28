@@ -305,14 +305,14 @@
 // CHECK-NEXT:        %2 = "ccpp_utils.strcmp"(%1) <{literal = "hello_world_suite"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:        scf.if %2 {
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
-// CHECK-NEXT:          %4 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
-// CHECK-NEXT:          scf.if %4 {
-// CHECK-NEXT:            %5 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_lev"}> : () -> memref<i32>
-// CHECK-NEXT:            %6 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_ilev"}> : () -> memref<i32>
-// CHECK-NEXT:            %7 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_timestep"}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %8 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_temp_level(:, :)"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>
-// CHECK-NEXT:            %9 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_temp_layer(:, :)"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %10, %11 = func.call @hello_world_suite_suite_physics(%col_start, %col_end, %5, %6, %7, %8, %9) : (memref<i32>, memref<i32>, memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>)
+// CHECK-NEXT:          %4 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_lev"}> : () -> memref<i32>
+// CHECK-NEXT:          %5 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_ilev"}> : () -> memref<i32>
+// CHECK-NEXT:          %6 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_timestep"}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %7 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_temp_level(:, :)"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>
+// CHECK-NEXT:          %8 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_temp_layer(:, :)"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %9 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:          scf.if %9 {
+// CHECK-NEXT:            %10, %11 = func.call @hello_world_suite_suite_physics(%col_start, %col_end, %4, %5, %6, %7, %8) : (memref<i32>, memref<i32>, memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>)
 // CHECK-NEXT:            "memref.copy"(%10, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:            "memref.copy"(%11, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {

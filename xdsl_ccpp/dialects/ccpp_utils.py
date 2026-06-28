@@ -359,18 +359,20 @@ class KeywordCallOp(IRDLOperation):
 
 @irdl_op_definition 
 class AccDataBeginOp(IRDLOperation):
-    """Emit !$acc data copyin(...) copyout(...) present(...) directive."""
+    """Emit !$acc data copy(...) copyin(...) copyout(...) present(...) directive."""
     name = "ccpp_utils.acc_data_begin"
-    copyin_arrays  = var_operand_def()   # arrays to copy host → device
-    copyout_arrays = var_operand_def()   # arrays to copy device → host
+    copy_arrays    = var_operand_def()   # arrays to copy both ways (inout)
+    copyin_arrays  = var_operand_def()   # arrays to copy host → device only
+    copyout_arrays = var_operand_def()   # arrays to copy device → host only
     present_arrays = var_operand_def()   # arrays asserted already on device
 
     irdl_options = [AttrSizedOperandSegments()]
-  
-    def __init__(self, copyin=None, copyout=None, present=None):
+
+    def __init__(self, copy=None, copyin=None, copyout=None, present=None):
         super().__init__(operands=[
+            list(copy    or []),
             list(copyin  or []),
-            list(copyout or []), 
+            list(copyout or []),
             list(present or []),
         ])
 

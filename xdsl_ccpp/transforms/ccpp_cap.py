@@ -647,21 +647,31 @@ class CCPPCAP(ModulePass):
             # Build {bare_arg_name → standard_name} from the scheme entry-point tables
             std_name_of: dict = {}
             if entry_postfix is not None:
+                # atmospheric_physics uses _timestep_init/_timestep_final; accept both.
+                _lc_postfix_aliases: dict[str, str] = {
+                    "_timestep_initialize": "_timestep_init",
+                    "_timestep_finalize": "_timestep_final",
+                }
+                _lc_candidates = [entry_postfix]
+                if entry_postfix in _lc_postfix_aliases:
+                    _lc_candidates.append(_lc_postfix_aliases[entry_postfix])
                 for scheme_name in scheme_names:
-                    entry_name = scheme_name + entry_postfix
                     if scheme_name not in meta_data:
                         continue
-                    if entry_name not in meta_data[scheme_name].arg_tables:
-                        continue
-                    for fn_arg in (
-                        meta_data[scheme_name]
-                        .getArgTable(entry_name)
-                        .getFunctionArguments()
-                    ):
-                        # Strip __alloc/__opt suffix used for allocatable/optional name_hints
-                        bare = _bare(fn_arg.name)
-                        if bare not in std_name_of and fn_arg.hasAttr("standard_name"):
-                            std_name_of[bare] = fn_arg.getAttr("standard_name").lower()
+                    for _lc_cand in _lc_candidates:
+                        entry_name = scheme_name + _lc_cand
+                        if entry_name not in meta_data[scheme_name].arg_tables:
+                            continue
+                        for fn_arg in (
+                            meta_data[scheme_name]
+                            .getArgTable(entry_name)
+                            .getFunctionArguments()
+                        ):
+                            # Strip __alloc/__opt suffix used for allocatable/optional name_hints
+                            bare = _bare(fn_arg.name)
+                            if bare not in std_name_of and fn_arg.hasAttr("standard_name"):
+                                std_name_of[bare] = fn_arg.getAttr("standard_name").lower()
+                        break  # found entry for this scheme; stop trying candidates
 
             # Resolve each input arg: host-mapped → HostVarRefOp, other → alloca
             true_branch_pre_ops: list = []
@@ -1386,6 +1396,15 @@ class CCPPCAP(ModulePass):
             store_part_err = memref.StoreOp.get(one_part_err, errflg_arg, [])
             part_inner_false = [write_part_err, one_part_err, store_part_err, scf.YieldOp()]
 
+            # Collect host var refs and array section ops across all suite parts so
+            # they can be placed in the outer (suite_name) if's true region.  This
+            # makes them visible to GPUCcppCapPass, which looks for HostVarRefOps in
+            # the outer true_block when building !$acc data directives.  SSA values
+            # defined in the outer block are still accessible inside the inner if's
+            # true region (dominance), so the suite physics call is unaffected.
+            suite_host_refs: list = []
+            suite_array_secs: list = []
+
             for info in reversed(suite_infos):
                 suite_part = info["suite_part"]
                 suite_callee = info["suite_callee"]
@@ -1746,10 +1765,12 @@ class CCPPCAP(ModulePass):
                 inner_if = scf.IfOp(
                     suite_part_eq.res,
                     [],
-                    [*host_var_ref_ops, *array_section_ops, *inner_if_true, scf.YieldOp()],
+                    [*inner_if_true, scf.YieldOp()],
                     part_inner_false,
                 )
                 part_inner_false = [suite_part_eq, inner_if, scf.YieldOp()]
+                suite_host_refs.extend(host_var_ref_ops)
+                suite_array_secs.extend(array_section_ops)
 
                 decl = func.FuncOp.external(
                     suite_callee, callee_input_types, callee_output_types
@@ -1757,8 +1778,10 @@ class CCPPCAP(ModulePass):
                 decl.attributes["module"] = StringAttr(callee_module)
                 all_decls.append(decl)
 
-            # Outer if for suite_name (after processing all groups)
-            true_branch_ops = [trim_suite_part, *part_inner_false[:-1], scf.YieldOp()]
+            # Outer if for suite_name (after processing all groups).
+            # suite_host_refs and suite_array_secs are placed here (before the
+            # suite-part dispatch) so GPUCcppCapPass can find them in true_block.
+            true_branch_ops = [trim_suite_part, *suite_host_refs, *suite_array_secs, *part_inner_false[:-1], scf.YieldOp()]
             strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite_name)
             if_op = scf.IfOp(
                 strcmp_op.res,
