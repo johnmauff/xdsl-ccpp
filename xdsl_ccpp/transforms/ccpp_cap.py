@@ -581,6 +581,8 @@ class CCPPCAP(ModulePass):
 
         ccpp_info_type = kwargs.get("ccpp_info_type")
         ccpp_info_module = kwargs.get("ccpp_info_module")
+        ccpp_t_type = kwargs.get("ccpp_t_type")
+        ccpp_t_var_name = kwargs.get("ccpp_t_var_name", "ccpp_data")
 
         if ccpp_info_type is not None:
             # ccpp_info_t pattern: single inout arg bundles errmsg/errflg.
@@ -595,6 +597,16 @@ class CCPPCAP(ModulePass):
             errflg_alloc = HostVarRefOp(
                 "ccpp_info", ccpp_info_module, errflg_type, member_name="errflg"
             )
+        elif ccpp_t_type is not None:
+            # ccpp_t pattern: ccpp_data is threaded as intent(inout); errmsg/errflg
+            # are still local allocas returned as intent(out) to the host.
+            new_block = Block(arg_types=[suite_name_type, ccpp_t_type])
+            new_block.args[0].name_hint = "suite_name"
+            new_block.args[1].name_hint = ccpp_t_var_name
+            errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
+            errmsg_alloc.memref.name_hint = "errmsg"
+            errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
+            errflg_alloc.memref.name_hint = "errflg"
         else:
             # capgen pattern: function returns errmsg/errflg as separate outputs.
             errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
@@ -681,6 +693,14 @@ class CCPPCAP(ModulePass):
                 ):
                     # The ccpp_info_t block arg IS the CCPP framework handle — pass
                     # it directly to callees that expect host_standard_ccpp_type.
+                    call_inputs.append(new_block.args[1])
+                elif (
+                    ccpp_t_type is not None
+                    and hasattr(arg_type, "element_type")
+                    and hasattr(arg_type.element_type, "type_name")
+                    and arg_type.element_type.type_name.data == "ccpp_t"
+                ):
+                    # The ccpp_t block arg is passed directly to suite callees.
                     call_inputs.append(new_block.args[1])
                 else:
                     # Not host-matched (e.g. optional arg or allocatable DDT arg).
@@ -805,6 +825,16 @@ class CCPPCAP(ModulePass):
                         )
                         hv_glob.attributes["module"] = StringAttr(hv_module)
                         all_host_global_ops.append(hv_glob)
+                elif (
+                    ccpp_t_type is not None
+                    and hasattr(ret_type, "element_type")
+                    and hasattr(ret_type.element_type, "type_name")
+                    and ret_type.element_type.type_name.data == "ccpp_t"
+                ):
+                    # ccpp_t is intent(inout) — mirror back to the block arg so
+                    # the printer's inout-echo detection fires and the arg is not
+                    # duplicated in the Fortran call argument list.
+                    copy_ops.append(memref.CopyOp(result, new_block.args[1]))
 
             # copy_pre_ops (CapVarRefOp/HostVarRefOp) must come BEFORE the call so
             # the printer registers their results in `variables` before _print_call
@@ -825,6 +855,12 @@ class CCPPCAP(ModulePass):
             fn_type = builtin.FunctionType.from_lists(
                 [suite_name_type, ccpp_info_type],
                 [ccpp_info_type],
+            )
+        elif ccpp_t_type is not None:
+            ret_op = func.ReturnOp(new_block.args[1], errmsg_alloc, errflg_alloc)
+            fn_type = builtin.FunctionType.from_lists(
+                [suite_name_type, ccpp_t_type],
+                [ccpp_t_type, errmsg_type, errflg_type],
             )
         else:
             ret_op = func.ReturnOp(errmsg_alloc, errflg_alloc)
@@ -1161,6 +1197,8 @@ class CCPPCAP(ModulePass):
 
         ccpp_info_type = kwargs.get("ccpp_info_type")
         ccpp_info_module = kwargs.get("ccpp_info_module")
+        ccpp_t_type = kwargs.get("ccpp_t_type")
+        ccpp_t_var_name = kwargs.get("ccpp_t_var_name", "ccpp_data")
 
         # When the host uses the ccpp_info_t pattern, loop bounds (col_start/col_end)
         # come from ccpp_info%col_start/col_end — exclude them from the block args.
@@ -1193,12 +1231,25 @@ class CCPPCAP(ModulePass):
                 if k not in _ccpp_member_names and k not in _ccpp_provided_canonicals
             }
 
+        if ccpp_t_type is not None and ccpp_t_var_name in union_non_host_args:
+            # Remove the ccpp_t variable; it is threaded at a fixed position (args[2]).
+            union_non_host_args = {
+                k: v for k, v in union_non_host_args.items()
+                if k != ccpp_t_var_name
+            }
+
         n_non_host = len(union_non_host_args)
 
         if ccpp_info_type is not None:
             all_block_types = (
                 [suite_name_type, suite_part_type, ccpp_info_type]
                 + list(union_non_host_args.values())
+            )
+        elif ccpp_t_type is not None:
+            all_block_types = (
+                [suite_name_type, suite_part_type, ccpp_t_type]
+                + list(union_non_host_args.values())
+                + [errmsg_type, errflg_type]
             )
         else:
             all_block_types = (
@@ -1254,6 +1305,27 @@ class CCPPCAP(ModulePass):
             # Map member names for errmsg/errflg so callee arg lookup works.
             block_arg_map["errmsg"] = errmsg_alloc.res
             block_arg_map["errflg"] = errflg_alloc.res
+        elif ccpp_t_type is not None:
+            # ccpp_t pattern: ccpp_data at args[2], non-host args follow, then errmsg/errflg.
+            ccpp_data_block_arg = new_block.args[2]
+            ccpp_data_block_arg.name_hint = ccpp_t_var_name
+            suite_part_arg.name_hint = "suite_part"
+
+            block_arg_map = {}
+            for i, arg_name in enumerate(union_non_host_args):
+                ba = new_block.args[3 + i]
+                ba.name_hint = arg_name
+                block_arg_map[arg_name] = ba
+            block_arg_map[ccpp_t_var_name] = ccpp_data_block_arg
+
+            errmsg_arg = new_block.args[3 + n_non_host]
+            errmsg_arg.name_hint = "errmsg"
+            errflg_arg = new_block.args[3 + n_non_host + 1]
+            errflg_arg.name_hint = "errflg"
+            col_start_ref = None
+            col_end_ref = None
+            errmsg_alloc = None
+            errflg_alloc = None
         else:
             suite_part_arg.name_hint = "suite_part"
             block_arg_map = {}
@@ -1611,6 +1683,15 @@ class CCPPCAP(ModulePass):
                             copy_ops.append(memref.CopyOp(result, errmsg_arg))
                         elif ret_type == errflg_type:
                             copy_ops.append(memref.CopyOp(result, errflg_arg))
+                        elif (
+                            ccpp_t_type is not None
+                            and hasattr(ret_type, "element_type")
+                            and hasattr(ret_type.element_type, "type_name")
+                            and ret_type.element_type.type_name.data == "ccpp_t"
+                        ):
+                            # ccpp_t is intent(inout) — mirror back to the block arg
+                            # so the printer's inout-echo detection fires.
+                            copy_ops.append(memref.CopyOp(result, ccpp_data_block_arg))
                     else:
                         ri_idx = idx - _n_inout_ret
                         ret_std_name = _run_ret_alloc[ri_idx][2]
@@ -1697,6 +1778,12 @@ class CCPPCAP(ModulePass):
             )
             # Place col_start/col_end/errmsg/errflg HostVarRefOps before dispatch
             preamble_ops = [col_start_ref, col_end_ref, errmsg_alloc, errflg_alloc]
+        elif ccpp_t_type is not None:
+            ret_op = func.ReturnOp(ccpp_data_block_arg, errmsg_arg, errflg_arg)
+            fn_type = builtin.FunctionType.from_lists(
+                all_block_types, [ccpp_t_type, errmsg_type, errflg_type]
+            )
+            preamble_ops = []
         else:
             ret_op = func.ReturnOp(errmsg_arg, errflg_arg)
             fn_type = builtin.FunctionType.from_lists(
@@ -2381,6 +2468,16 @@ class CCPPCAP(ModulePass):
             if ccpp_info_type is not None:
                 break
 
+        # Detect CcppHandleOp for ccpp_t threading through generated subroutines.
+        ccpp_t_type = None
+        ccpp_t_var_name = None
+        if ccpp_mod is not None and ccpp_info_type is None:
+            for _op in ccpp_mod.body.block.ops:
+                if isa(_op, ccpp.CcppHandleOp):
+                    ccpp_t_type = memref.MemRefType(_DerivedType("ccpp_t"), [])
+                    ccpp_t_var_name = _op.var_name.data
+                    break
+
         errmsg_type_tmp = memref.MemRefType(
             TypeConversions.getBaseType("character"), [CCPP_ERRMSG_LEN]
         )
@@ -2443,6 +2540,8 @@ class CCPPCAP(ModulePass):
                     seen_host_globals=shared_seen_host_globals,
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
+                    ccpp_t_type=ccpp_t_type,
+                    ccpp_t_var_name=ccpp_t_var_name,
                     **common,
                 )
                 all_globals.extend(host_global_ops)
@@ -2494,6 +2593,8 @@ class CCPPCAP(ModulePass):
                     host_var_map_lc=host_var_map_lc,
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
+                    ccpp_t_type=ccpp_t_type,
+                    ccpp_t_var_name=ccpp_t_var_name,
                     **common,
                 )
                 all_globals.extend(lc_host_ops)

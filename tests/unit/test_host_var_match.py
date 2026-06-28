@@ -12,7 +12,7 @@ import pytest
 
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.dialects.ccpp import ArgumentOp, TablePropertiesOp, TableTypeKind
+from xdsl_ccpp.dialects.ccpp import ArgumentOp, CcppHandleOp, TablePropertiesOp, TableTypeKind
 from xdsl.dialects.builtin import ModuleOp
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
@@ -154,6 +154,21 @@ HOST_REAL_INTENT_OUT = """\
   dimensions = ()
   units = K
 """
+
+
+# ── Helper: find the CcppHandleOp in the matched @ccpp module ────────────────
+
+def _get_ccpp_handle(module: ModuleOp):
+    """Return the CcppHandleOp emitted by HostVariableMatchPass, or None."""
+    from xdsl.dialects.builtin import ModuleOp as BuiltinModuleOp
+    for op in module.body.block.ops:
+        if not (isa(op, BuiltinModuleOp) and op.sym_name
+                and op.sym_name.data == "ccpp"):
+            continue
+        for child in op.body.ops:
+            if isa(child, CcppHandleOp):
+                return child
+    return None
 
 
 # ── Helper: find a ccpp.arg op by standard name in the matched @ccpp module ──
@@ -509,3 +524,63 @@ class TestMissingVariables:
         msg = str(exc_info.value)
         assert "missing_variable_one" in msg
         assert "missing_variable_two" in msg
+
+
+# ── ccpp_t handle recognition ──────────────────────────────────────────────────
+
+HOST_CCPP_T_VAR = """\
+[ ccpp_data ]
+  standard_name = ccpp_t_instance
+  long_name = instance of derived data type ccpp_t
+  units = DDT
+  dimensions = ()
+  type = ccpp_t
+"""
+
+
+class TestCcppHandleRecognition:
+    """HostVariableMatchPass must emit CcppHandleOp for ccpp_t host variables."""
+
+    def test_ccpp_handle_op_emitted(self, run_host_match):
+        """A host module with a ccpp_t variable produces a CcppHandleOp."""
+        module = run_host_match(
+            scheme_metas=[scheme_meta("test_scheme")],
+            host_metas=[host_meta("test_mod", HOST_CCPP_T_VAR)],
+        )
+        handle = _get_ccpp_handle(module)
+        assert handle is not None
+
+    def test_ccpp_handle_var_name(self, run_host_match):
+        """CcppHandleOp records the local variable name from the host metadata."""
+        module = run_host_match(
+            scheme_metas=[scheme_meta("test_scheme")],
+            host_metas=[host_meta("test_mod", HOST_CCPP_T_VAR)],
+        )
+        handle = _get_ccpp_handle(module)
+        assert handle.var_name.data == "ccpp_data"
+
+    def test_ccpp_handle_module_name(self, run_host_match):
+        """CcppHandleOp records the host module name."""
+        module = run_host_match(
+            scheme_metas=[scheme_meta("test_scheme")],
+            host_metas=[host_meta("test_mod", HOST_CCPP_T_VAR)],
+        )
+        handle = _get_ccpp_handle(module)
+        assert handle.module_name.data == "test_mod"
+
+    def test_no_handle_without_ccpp_t(self, run_host_match):
+        """No CcppHandleOp is emitted when the host has no ccpp_t variable."""
+        module = run_host_match(
+            scheme_metas=[scheme_meta("test_scheme", SCHEME_REAL_VAR)],
+            host_metas=[host_meta("test_mod", HOST_REAL_VAR)],
+        )
+        assert _get_ccpp_handle(module) is None
+
+    def test_ccpp_t_not_in_model_var_index(self, run_host_match):
+        """The ccpp_t variable does not cause a missing-match error for schemes."""
+        # Scheme has one matched variable; ccpp_t is in host metadata but should
+        # be silently ignored rather than appearing as an unmatched scheme arg.
+        run_host_match(
+            scheme_metas=[scheme_meta("test_scheme", SCHEME_REAL_VAR)],
+            host_metas=[host_meta("test_mod", HOST_REAL_VAR + HOST_CCPP_T_VAR)],
+        )

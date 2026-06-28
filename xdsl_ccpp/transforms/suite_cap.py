@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
-from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, MemRefType, StringAttr, i8
+from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, IntegerAttr, MemRefType, StringAttr, i32, i8
 from xdsl.ir import Block, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
@@ -16,6 +16,7 @@ from xdsl.pattern_rewriter import (
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
+from xdsl_ccpp.dialects.ccpp import CcppHandleOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     ClearStringOp,
@@ -49,6 +50,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_NUM_INSTANCES,
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
@@ -80,13 +82,17 @@ class GenerateSuiteSubroutine(RewritePattern):
     """
 
     def __init__(self, suite_descriptions, meta_data, meta_fn_sigs, top_level_module,
-                 ddt_source_module=None):
+                 ddt_source_module=None, ccpp_handle=None, num_instances=CCPP_NUM_INSTANCES):
         self.suite_descriptions = suite_descriptions
         self.meta_data = meta_data
         self.meta_fn_sigs = meta_fn_sigs
         self.top_level_module = top_level_module
         # Maps DDT type name → Fortran module that defines it (from source_module attr).
         self.ddt_source_module: dict[str, str] = ddt_source_module or {}
+        # (var_name, module_name) for the host's ccpp_t variable, or None.
+        self.ccpp_handle: "tuple[str, str] | None" = ccpp_handle
+        # Maximum number of simultaneous CCPP instances for the per-instance state array.
+        self.num_instances: int = num_instances
 
     def getSchemeNames(self, suite_description):
         """Return a flat list of (scheme_name, overrides) pairs from all groups.
@@ -563,6 +569,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         addr_const = llvm.AddressOfOp("const_" + check_string, llvm.LLVMPointerType())
         loaded_const = llvm.LoadOp(addr_const, arr_type)
         addr_state = llvm.AddressOfOp("ccpp_suite_state", llvm.LLVMPointerType())
+        if self.ccpp_handle is not None:
+            addr_state.attributes["ccpp_instance_ref"] = StringAttr(self.ccpp_handle[0])
         loaded_state = llvm.LoadOp(addr_state, arr_type)
 
         strcmp_op = ccpp_utils.StrCmpOp(loaded_const, loaded_state, len(check_string))
@@ -605,6 +613,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         addr_src = llvm.AddressOfOp("const_" + state_string, llvm.LLVMPointerType())
         loaded = llvm.LoadOp(addr_src, arr_type)
         addr_dst = llvm.AddressOfOp("ccpp_suite_state", llvm.LLVMPointerType())
+        if self.ccpp_handle is not None:
+            addr_dst.attributes["ccpp_instance_ref"] = StringAttr(self.ccpp_handle[0])
         store = llvm.StoreOp(loaded, addr_dst)
         return [addr_src, loaded, addr_dst, store]
 
@@ -768,6 +778,10 @@ class GenerateSuiteSubroutine(RewritePattern):
             for a in input_arg_list
         ]
 
+        if self.ccpp_handle is not None:
+            _ccpp_t_type = memref.MemRefType(ccpp_utils.DerivedType("ccpp_t"), [])
+            input_arg_types.append(_ccpp_t_type)
+
         new_block = Block(arg_types=input_arg_types)
 
         data_ops = {}
@@ -790,6 +804,9 @@ class GenerateSuiteSubroutine(RewritePattern):
                 hint = fn_arg.name + "__in"
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
+
+        if self.ccpp_handle is not None:
+            new_block.args[len(input_arg_list)].name_hint = self.ccpp_handle[0]
 
         # For kind-mismatched args: create a KindCastOp that converts the block
         # arg (host kind) to a local temp (scheme kind).  The scheme call will
@@ -1250,6 +1267,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             for a in input_arg_list
             if a.getAttr("intent") == "inout" and not _has_dims(a)
         ]
+        if self.ccpp_handle is not None:
+            inout_return_vals.append(new_block.args[len(input_arg_list)])
         alloc_return_vals = list(alloc_ops.values())
 
         errmsg_fn_name = (
@@ -1456,13 +1475,18 @@ class GenerateSuiteSubroutine(RewritePattern):
                     stub.attributes["module"] = StringAttr(mod)
                     type_import_globals.append(stub)
 
-        # Mutable global holding the current lifecycle state of the suite
+        # Mutable global holding the current lifecycle state of the suite.
+        # In multi-instance mode the state is tracked per instance.
         ccpp_suite_state_global = llvm.GlobalOp(
             llvm.LLVMArrayType.from_size_and_type(16, i8),
             "ccpp_suite_state",
             "internal",
             value=StringAttr("uninitialized"),
         )
+        if self.ccpp_handle is not None:
+            ccpp_suite_state_global.attributes["dimension"] = StringAttr(
+                str(self.num_instances)
+            )
 
         # One read-only global per unique state string (shared by check and assign ops)
         all_strings_used = check_strings_used | state_strings_used
@@ -1561,6 +1585,14 @@ class SuiteCAP(ModulePass):
 
     name = "generate-suite-cap"
 
+    num_instances: int = CCPP_NUM_INSTANCES
+    """Maximum simultaneous CCPP instances; controls the per-instance state array size.
+
+    Can also be supplied via ``--num-instances`` on the ``ccpp_xml`` frontend, which
+    embeds the value as a ``ccpp.num_instances`` attribute on the top-level module.
+    That attribute takes precedence over this field when both are present.
+    """
+
     def find_ccpp_module(self, ops):
         """Return the named 'ccpp' ModuleOp from the given op list, or None."""
         for op in ops:
@@ -1575,6 +1607,12 @@ class SuiteCAP(ModulePass):
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = self.find_ccpp_module(op.body.block.ops)
         assert ccpp_mod is not None
+
+        # Resolve num_instances: IR attribute from the frontend overrides the field default.
+        num_instances = self.num_instances
+        attr = op.attributes.get("ccpp.num_instances")
+        if attr is not None and isa(attr, IntegerAttr):
+            num_instances = attr.value.data
 
         # Build Python descriptor objects from the CCPP metadata IR
         bmdd = BuildMetaDataDescriptions()
@@ -1594,12 +1632,20 @@ class SuiteCAP(ModulePass):
         # Build DDT-type-name → Fortran-module-name map (shared utility).
         ddt_source_module = collect_ddt_source_modules(ccpp_mod)
 
+        ccpp_handle = None
+        for _op in ccpp_mod.body.block.ops:
+            if isa(_op, CcppHandleOp):
+                ccpp_handle = (_op.var_name.data, _op.module_name.data)
+                break
+
         PatternRewriteWalker(
             GreedyRewritePatternApplier(
                 [
                     GenerateSuiteSubroutine(
                         scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,
                         ddt_source_module=ddt_source_module,
+                        ccpp_handle=ccpp_handle,
+                        num_instances=num_instances,
                     ),
                 ]
             ),

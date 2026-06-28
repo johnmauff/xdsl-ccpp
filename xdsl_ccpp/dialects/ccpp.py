@@ -165,6 +165,32 @@ class SubcycleOp(IRDLOperation):
         )
 
 
+@irdl_op_definition
+class CcppHandleOp(IRDLOperation):
+    """Records the host model's ccpp_t variable for use by cap-generation passes.
+
+    Emitted by HostVariableMatchPass when it finds a host metadata argument
+    with ``type = ccpp_t``.  Cap-generation passes locate this op to thread
+    the ccpp_t handle through every generated subroutine signature.
+
+    ``var_name``    — local Fortran variable name (e.g. ``ccpp_data``)
+    ``module_name`` — host Fortran module that declares it (e.g. ``data``)
+    """
+
+    name = "ccpp.ccpp_handle"
+
+    var_name    = prop_def(StringAttr)
+    module_name = prop_def(StringAttr)
+
+    def __init__(self, var_name: str, module_name: str):
+        super().__init__(
+            properties={
+                "var_name":    StringAttr(var_name),
+                "module_name": StringAttr(module_name),
+            }
+        )
+
+
 class TableBaseOp(IRDLOperation):
     table_name = prop_def(StringAttr, prop_name="name")
     table_type = prop_def(TableTypeKindAttr, prop_name="type")
@@ -365,6 +391,7 @@ CCPP = Dialect(
         GroupOp,
         SchemeOp,
         SubcycleOp,
+        CcppHandleOp,
         KindOp,
         KindsOp,
         TablePropertiesOp,

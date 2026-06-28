@@ -4,7 +4,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from enum import Enum, StrEnum, auto
 
-from xdsl.dialects.builtin import ModuleOp, StringAttr
+from xdsl.dialects.builtin import IntegerAttr, ModuleOp, StringAttr, i32
 
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
@@ -285,7 +285,7 @@ class ccppXML:
         return parser
 
     def set_parser_arguments(self, parser):
-        """Register the ``--scheme-files``, ``--host-files``, and ``--suites`` CLI args."""
+        """Register the ``--scheme-files``, ``--host-files``, ``--suites``, and ``--num-instances`` CLI args."""
         parser.add_argument(
             "--scheme-files",
         )
@@ -298,6 +298,18 @@ class ccppXML:
             "--suites",
         )
 
+        parser.add_argument(
+            "--num-instances",
+            type=int,
+            default=None,
+            metavar="N",
+            help=(
+                "Maximum number of simultaneous CCPP instances (ensemble members). "
+                "When set, the suite cap generates ccpp_suite_state as a per-instance "
+                "array of length N instead of the compiled-in default."
+            ),
+        )
+
     def build_options_db_from_args(self, args):
         """Normalise parsed CLI args into a plain dict with list values.
 
@@ -306,8 +318,8 @@ class ccppXML:
         is split into a Python list here.  Missing arguments default to ``[]``.
 
         Returns:
-            A dict with keys ``scheme_files``, ``host_files``, ``suites``, each
-            holding a (possibly empty) list of file path strings.
+            A dict with keys ``scheme_files``, ``host_files``, ``suites``, and
+            optionally ``num_instances`` (int or None).
         """
         options_db = args.__dict__
 
@@ -544,7 +556,14 @@ class ccppXML:
                 hosts[c.table_properties.getAttr("name")] = c
                 ir_ops.append(self.build_meta_ir(c, source_module=stem))
 
-        print(ModuleOp(ir_ops))
+        module = ModuleOp(ir_ops)
+
+        # Embed --num-instances as an IR attribute so downstream passes can read it.
+        num_instances = self.options_db.get("num_instances")
+        if num_instances is not None:
+            module.attributes["ccpp.num_instances"] = IntegerAttr(num_instances, i32)
+
+        print(module)
 
 
 def main():

@@ -64,6 +64,10 @@ Optional:
   --emit-datatable      Write datatable.xml to this path after generating caps
   --emit-html           Write per-entry-point HTML variable tables to this directory
                         (requires --emit-datatable)
+  --num-instances N     Maximum number of simultaneous CCPP instances (ensemble members).
+                        When set, ccpp_suite_state is generated as a per-instance array
+                        of length N instead of the default (200). Also settable per-pass
+                        via ccpp_opt: -p "generate-suite-cap{num_instances=N}"
 ```
 
 ## Examples
@@ -544,7 +548,7 @@ ruff format xdsl_ccpp/
 | `ccpp_physics_suite_variables` | ✅ | ✅ | ✅ | ✅ |
 | **Code correctness** | | | | |
 | Fortran source cross-validation | ❌ | ✅ | ✅ | ✅¶ |
-| Multi-instance support | ❌ | ❌ | ✅ | ❌ |
+| Multi-instance support | ❌ | ❌ | ✅ | ✅ |
 | **Build & tooling** | | | | |
 | Build system integration (CMake) | ✅ | ✅ | ✅ | ✅ |
 | Documentation generation | ✅ HTML/LaTeX | ✅ datatable.xml | ✅ | ✅ |
@@ -552,7 +556,7 @@ ruff format xdsl_ccpp/
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 190 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 205 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -651,22 +655,12 @@ Ranked by impact on real-world use:
 1. **Host model integration** — only the four example test cases (helloworld, capgen,
    ddthost, advection). No integration with CCPP-SCM, CAM-SIMA, or UFS.
 
-2. **Multi-instance support** — one suite instance per run only. capgen-ng supports up
-   to 200 independent instances (e.g. ensemble members) via a per-handle
-   `initialized(ccpp_instance)` flag array.
-
 ### Next Steps to Further Match capgen-ng
 
 The following work items are ordered by impact on closing the gap with production
 capgen-ng use cases.
 
-#### 1. Multi-instance support
-Introduce a CCPP handle type carrying a `ccpp_instance` integer.  Change the
-generated `initialized` flag from a scalar to an array indexed by
-`ccpp_instance`, matching capgen-ng's 200-slot design.  Required for ensemble
-and perturbation-parameter runs.
-
-#### 2. Host model integration (CAM-SIMA / CCPP-SCM)
+#### 1. Host model integration (CAM-SIMA / CCPP-SCM)
 The xdsl-ccpp pipeline has been validated against all 8 main suites from the
 `atmospheric_physics` repository (CAM-SIMA's scheme library) for scheme-only cap
 generation — no host files required.  The next step is to supply the host `.meta`
@@ -697,6 +691,14 @@ ddthost, and advection. Unit conversion uses local temporaries (consistent with
 capgen), `ccpp_physics_suite_variables` correctly classifies input and output
 variables including constituent and state-variable handling, and column-chunked
 physics with constituent registration is fully supported.
+
+Multi-instance support (ensemble / perturbation-parameter runs) is now implemented
+via a `ccpp_t` derived-type handle threaded as `intent(inout)` through every
+generated subroutine. When the host provides a variable with
+`standard_name = ccpp_t_instance`, the generated `ccpp_suite_state` flag is
+declared as `dimension(N)` and indexed by `ccpp_data%ccpp_instance`. The instance
+count defaults to 200 and is configurable via `--num-instances N` on the
+`ccpp_xml` frontend or `generate-suite-cap{num_instances=N}` as a pass parameter.
 
 ### Recommended Use Today
 

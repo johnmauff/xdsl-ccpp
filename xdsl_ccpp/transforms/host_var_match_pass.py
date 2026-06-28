@@ -9,10 +9,11 @@ from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
-from xdsl_ccpp.dialects.ccpp import TableTypeKind
+from xdsl_ccpp.dialects.ccpp import CcppHandleOp, TableTypeKind
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
     CCPP_INTERNAL_STD_NAMES,
+    CCPP_T_TYPE,
     UNIT_CONVERSIONS,
     dims_compatible,
     normalize_units,
@@ -287,6 +288,9 @@ class HostVariableMatchPass(ModulePass):
         # but they are flagged so downstream code generation can handle them
         # differently (DDT member access requires instance%member notation).
         model_var_index: dict = {}
+        # If the host metadata declares a ccpp_t variable, capture it here
+        # so we can emit a CcppHandleOp after the index is fully built.
+        _ccpp_handle: "tuple[str, str] | None" = None  # (var_name, module_name)
 
         for table_prop_op in ccpp_mod.body.ops:
             if not isa(table_prop_op, ccpp.TablePropertiesOp):
@@ -308,6 +312,15 @@ class HostVariableMatchPass(ModulePass):
                             if arg_op.memory_space is not None
                             else None
                         )
+                        # Detect the ccpp_t handle variable — capture it for
+                        # CcppHandleOp emission below.  Not added to model_var_index
+                        # since no scheme arg carries standard_name = ccpp_t_instance.
+                        if arg_op.arg_type.data.lower() == CCPP_T_TYPE:
+                            _ccpp_handle = (
+                                arg_op.arg_name.data,
+                                table_prop_op.table_name.data,
+                            )
+                            continue
                         # Use lowercase key — CCPP standard names are case-insensitive
                         model_var_index[arg_op.standard_name.data.lower()] = (
                             arg_op.arg_name.data,
@@ -316,6 +329,11 @@ class HostVariableMatchPass(ModulePass):
                             arg_op,        # host_arg_op for compatibility checking
                             is_ddt,
                         )
+
+        # ── Step 1a: emit CcppHandleOp if a ccpp_t variable was found ─────
+        if _ccpp_handle is not None:
+            var_name, module_name = _ccpp_handle
+            ccpp_mod.body.block.add_op(CcppHandleOp(var_name, module_name))
 
         # ── Step 1b: build interstitial variable index ────────────────────
         # Collect standard_names that are produced (intent=out or inout) by

@@ -26,6 +26,20 @@ CCPP_ERRMSG_LEN = 512
 # be emitted; we assume a named loop count always means "loop more than once."
 CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT = 2
 
+# ── ccpp_t handle ───────────────────────────────────────────────────────────
+# The ccpp_t derived type carries per-instance state (instance index, error
+# handling, loop counters) and is threaded through every generated cap
+# subroutine.  Host .meta files declare the variable with this standard name
+# and type; the cap generator recognises it and handles it specially.
+CCPP_T_INSTANCE_STD_NAME = "ccpp_t_instance"
+CCPP_T_TYPE               = "ccpp_t"
+
+# Maximum number of simultaneous CCPP instances (ensemble members, perturbed
+# runs, thread-parallel physics).  Mirrors CCPP_NUM_INSTANCES in capgen-ng.
+# The suite cap generates a per-instance state array of this length.
+# TODO: expose via --num-instances CLI argument.
+CCPP_NUM_INSTANCES = 200
+
 # ── Framework-internal standard names ──────────────────────────────────────
 # Variables managed entirely by the CCPP framework — schemes reference them
 # but they are never matched to host model variables.
@@ -33,6 +47,7 @@ CCPP_FRAMEWORK_STD_NAMES: frozenset = frozenset({
     "horizontal_loop_extent",       # computed as col_end - col_start + 1
     "ccpp_constituents",            # constituent transport array
     "ccpp_constituent_tendencies",  # constituent tendency array
+    CCPP_T_INSTANCE_STD_NAME,       # ccpp_t handle threaded by the cap generator
 })
 
 # The full set of names the host variable match pass skips without error.

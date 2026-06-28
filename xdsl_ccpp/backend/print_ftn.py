@@ -437,8 +437,11 @@ class ftnPrintContext:
             case llvm.GlobalOp():
                 pass  # Module-level globals are declared in _print_module preamble
             case llvm.AddressOfOp():
-                # Record the global's name as the variable name for this result
-                self.variables[op.result] = op.global_name.root_reference.data
+                name = op.global_name.root_reference.data
+                if "ccpp_instance_ref" in op.attributes:
+                    instance_var = op.attributes["ccpp_instance_ref"].data
+                    name = f"{name}({instance_var}%ccpp_instance)"
+                self.variables[op.result] = name
             case llvm.LoadOp():
                 # Propagate the pointer's name to the loaded value
                 self.variables[op.dereferenced_value] = self._get_variable_name_for(
@@ -792,6 +795,7 @@ class ftnPrintContext:
         _CCPP_DDT_MODULES = {
             "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
             "ccpp_constituent_prop_ptr_t":   "ccpp_constituent_prop_mod",
+            "ccpp_t":                        "ccpp_types",
         }
         from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DerivedType
         for op in body.ops:
@@ -848,10 +852,20 @@ class ftnPrintContext:
                         prefix="  ",
                     )
                 else:
-                    # Mutable state variable (ccpp_suite_state) has no parameter
-                    self.print(
-                        f"character(len={char_len}) :: {name} = '{val}'", prefix="  "
-                    )
+                    # Mutable state variable (e.g. ccpp_suite_state).
+                    # When "dimension" attribute is set, emit a per-instance array.
+                    dim = op.attributes.get("dimension")
+                    if dim is not None:
+                        self.print(
+                            f"character(len={char_len}), dimension({dim.data})"
+                            f" :: {name} = '{val}'",
+                            prefix="  ",
+                        )
+                    else:
+                        self.print(
+                            f"character(len={char_len}) :: {name} = '{val}'",
+                            prefix="  ",
+                        )
 
         # Emit module-level variable declarations (unified ModuleVarOp).
         # rank=0: scalar, rank>0: allocatable array with that many deferred dimensions.
