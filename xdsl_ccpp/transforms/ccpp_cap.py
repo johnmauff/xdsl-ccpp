@@ -61,6 +61,38 @@ def _bare(name: str) -> str:
     return name
 
 
+def _resolve_ddt_access_path(
+    ddt_type_name: str,
+    ddt_instance_map: dict,
+    ddt_parent_map: dict,
+    _depth: int = 0,
+) -> "tuple[str, str, str] | None":
+    """Resolve a DDT type name to (instance_var, instance_module, path_prefix).
+
+    For a type that has a direct module-level instance, path_prefix is "".
+    For a nested DDT — e.g. type B is a member of type A, and A has a
+    module-level instance — path_prefix is "b_member%" so the full Fortran
+    accessor becomes ``instance_var%path_prefix%leaf_member``
+    (e.g. ``phys_state%rad%temperature``).
+
+    Returns None when no reachable module-level instance exists.
+    The depth limit guards against circular DDT type definitions.
+    """
+    if _depth > 8:
+        return None
+    if ddt_type_name in ddt_instance_map:
+        instance_var, instance_module = ddt_instance_map[ddt_type_name]
+        return instance_var, instance_module, ""
+    for member_var_name, parent_ddt_type in ddt_parent_map.get(ddt_type_name, []):
+        result = _resolve_ddt_access_path(
+            parent_ddt_type, ddt_instance_map, ddt_parent_map, _depth + 1
+        )
+        if result is not None:
+            instance_var, instance_module, parent_prefix = result
+            return instance_var, instance_module, parent_prefix + member_var_name + "%"
+    return None
+
+
 @dataclass(frozen=True)
 class CCPPCAP(ModulePass):
     """MLIR pass that generates a single combined CCPP physics cap dispatcher module.
@@ -993,6 +1025,23 @@ class CCPPCAP(ModulePass):
                     if var_type in ddt_type_names:
                         ddt_instance_map[var_type] = (var.name, tbl_name)
 
+        # ddt_parent_map: child_ddt_type → [(member_var_name, parent_ddt_type)]
+        # Records which DDT type(s) contain a member of each child DDT type,
+        # enabling recursive access path resolution for nested DDTs.
+        ddt_parent_map: dict = {}
+        for tbl_name, props in meta_data.items():
+            if props.getAttr("type") != CCPPType.DDT:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if var.hasAttr("type"):
+                    child_type = var.getAttr("type")
+                    if child_type in ddt_type_names:
+                        ddt_parent_map.setdefault(child_type, []).append(
+                            (var.name, tbl_name)
+                        )
+
         # ── Per-suite information ──────────────────────────────────────────────
         per_suite = []
         all_host_global_ops: list = []
@@ -1087,10 +1136,15 @@ class CCPPCAP(ModulePass):
                     host_var, host_mod, is_ddt = local_to_host_info[bare]
                     if is_ddt:
                         # DDT member: model_module_name is the DDT table/type name.
-                        # Find the Fortran instance variable via ddt_instance_map.
+                        # Resolve to a module-level instance, following parent DDTs
+                        # for nested types (e.g. A contains B contains x → a%b%x).
                         ddt_type_name = host_mod
-                        if ddt_type_name in ddt_instance_map:
-                            instance_var, instance_module = ddt_instance_map[ddt_type_name]
+                        result = _resolve_ddt_access_path(
+                            ddt_type_name, ddt_instance_map, ddt_parent_map
+                        )
+                        if result is not None:
+                            instance_var, instance_module, path_prefix = result
+                            full_member = path_prefix + host_var
                             # Skip DDT instances whose instance variable lives in a HOST-type
                             # table (e.g. ccpp_info_t accessed through 'ccpp' in test_host).
                             # HOST-type tables are caller-provided interfaces, not Fortran
@@ -1102,7 +1156,7 @@ class CCPPCAP(ModulePass):
                                 physics_arg_sources.append(("block",))
                             else:
                                 physics_arg_sources.append(
-                                    ("ddt_member", instance_var, instance_module, host_var)
+                                    ("ddt_member", instance_var, instance_module, full_member)
                                 )
                         else:
                             import sys
@@ -1501,7 +1555,11 @@ class CCPPCAP(ModulePass):
                         lookup_var, lookup_mod = host_var_name, host_module_name
                     elif src[0] == "ddt_member":
                         _, instance_var, instance_module, member_name = src
-                        lookup_var, lookup_mod = member_name, instance_module
+                        # For nested paths like "b%x" or "b%x(ncol)", strip the
+                        # chain prefix and any array subscripts to get the leaf
+                        # member name for the var descriptor lookup.
+                        leaf = member_name.rsplit("%", 1)[-1].split("(")[0]
+                        lookup_var, lookup_mod = leaf, instance_module
                     elif src[0] == "cap_var":
                         _, std_name_cv = src
                         _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])

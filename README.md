@@ -782,10 +782,12 @@ ruff format xdsl_ccpp/
 
 ### Notes on Partial / Missing xdsl-ccpp Capabilities
 
-**Known limitation — DDT member variables:**
-Host variable matching and compatibility validation for DDT (derived data type)
-members use standard_name lookup only; type, rank, and kind are not validated for
-DDT members.  Flat module variables are fully validated.
+**DDT member variables:**
+Host variable matching and compatibility validation (type, rank, kind, units) is
+performed for both flat module variables and single-level DDT members.  Nested
+DDTs — where a DDT member is itself of a DDT type — are fully supported: the
+generated cap produces the correct multi-level Fortran accessor
+(e.g. ``phys_state%rad%temperature``).
 
 ∥ **Unit conversion — implementation note:**
 xdsl-ccpp allocates a local temporary for each unit-converted argument (e.g.
@@ -803,17 +805,19 @@ with the fact that the host array is never written.
 ¶ **Fortran source cross-validation — what is and isn't checked:**
 
 The `ccpp_validate` tool (`pip install -e ".[validate]"`) validates each scheme's
-`.F90` source against its `.meta` file using fparser2 (pure Python) or Flang (FIR):
+`.F90` source against its `.meta` file using either fparser2 (pure Python, no
+compiler required) or Flang/FIR (higher fidelity, requires a Flang build).  The
+two backends differ in what they can check:
 
-| Check | Validated | Notes |
-|---|---|---|
-| Argument existence | ✅ | flags args in source but not in `.meta`, and vice versa |
-| Type | ✅ | intrinsic types (`real`, `integer`, `character`) and derived types (`type(name)`) |
-| Rank (dimension count) | ✅ | both assumed-shape `(:)` and explicit-shape `(n)` |
-| Intent | ✅ | `in`, `out`, `inout` |
-| Optional flag | ✅ | Fortran `OPTIONAL` attribute vs `.meta` `optional = True` |
-| Kind names | ✅/❌ | fparser2 backend only; Flang/FIR lowers `kind_phys` to `f32`/`f64` |
-| Dimension names | ✅/❌ | requires `--host-files`; names checked against host standard names |
+| Check | fparser2 | Flang/FIR | Notes |
+|---|---|---|---|
+| Argument existence | ✅ | ✅ | flags args in source but not in `.meta`, and vice versa |
+| Type | ✅ | ✅ | intrinsic types (`real`, `integer`, `character`) and derived types (`type(name)`) |
+| Rank (dimension count) | ✅ | ✅ | both assumed-shape `(:)` and explicit-shape `(n)` |
+| Intent | ✅ | ✅ | `in`, `out`, `inout` |
+| Optional flag | ✅ | ✅ | Fortran `OPTIONAL` attribute vs `.meta` `optional = True` |
+| Kind names | ✅ | ❌ | Flang/FIR lowers `kind_phys` to `f32`/`f64`; kind names not preserved in FIR |
+| Dimension names | ✅ | ❌ | requires `--host-files`; Flang/FIR does not preserve dimension standard names |
 
 § **Compiled Fortran execution tests:**
 
