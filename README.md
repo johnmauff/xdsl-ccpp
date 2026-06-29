@@ -80,9 +80,10 @@ The `examples/` directory contains several complete examples:
 | Directory | Description |
 |-----------|-------------|
 | `helloworld/` | Two schemes (`hello_scheme`, `temp_adjust`) with XML and Python frontends |
+| `capgen/` | Two suites (`temp_suite`, `ddt_suite`) with DDT host variables, optional arguments, and CMake build integration |
 | `advection/` | Advection scheme example with XML frontend |
 | `ddthost/` | Example using Fortran derived data types (DDTs) and optional entry points |
-| `kessler/` | Kessler microphysics scheme with GPU directives (`memory_space = device`) |
+| `kessler/` | Kessler microphysics scheme with OpenACC GPU directives (`memory_space = device`) |
 
 Each example can be driven via the XML frontend, the Python API (`@ccpp_suite`), or both.
 
