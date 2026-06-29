@@ -248,6 +248,115 @@ class XMLSuite(XMLSuiteBase):
 
 
 # ---------------------------------------------------------------------------
+# .meta file parser (module-level so py_api can import it without pulling in
+# the full ccppXML driver class)
+# ---------------------------------------------------------------------------
+
+
+class MetaParseState(Enum):
+    """State machine states for the line-oriented ``.meta`` file parser."""
+
+    PROPERTIES = 1  # Inside a [ccpp-table-properties] block
+    ARG_TABLE = 2   # Inside a [ccpp-arg-table] header block
+    ARG = 3         # Inside a named argument [ arg_name ] block
+    NONE = 4        # Not yet inside any block
+
+
+def parse_meta_file(filename, is_scheme):
+    """Parse a ``.meta`` file and return a list of `MetaData` objects.
+
+    A single file may contain multiple ``[ccpp-table-properties]`` blocks
+    (e.g. a DDT definition followed by the scheme that uses it).  Each block
+    produces a separate entry in the returned list.
+
+    Args:
+        filename:  Path to the ``.meta`` file.
+        is_scheme: If True, return `SchemeMetaData` instances; otherwise `HostMetaData`.
+
+    Returns:
+        A list of `SchemeMetaData` or `HostMetaData` objects, one per
+        ``[ccpp-table-properties]`` block found in the file.
+    """
+    completed = []
+    current_table_properties = None
+    current_arg_table = None
+    parse_state = MetaParseState.NONE
+    table_arg_tables = []
+    current_arg = None
+
+    def _flush_table_properties():
+        nonlocal current_table_properties, table_arg_tables
+        if current_table_properties is None:
+            return
+        cls = SchemeMetaData if is_scheme else HostMetaData
+        completed.append(cls(current_table_properties, table_arg_tables))
+        current_table_properties = None
+        table_arg_tables = []
+
+    with open(filename) as file:
+        for line in file:
+            sline = line.strip()
+
+            if not sline or sline.startswith("#"):
+                continue
+
+            if "[" in sline and "]" in sline:
+                token = sline.translate(str.maketrans("", "", "[]"))
+
+                if token in ("ccpp-table-properties", "ccpp-arg-table"):
+                    if current_arg is not None:
+                        current_arg_table.setFunctionArgument(current_arg)
+                        current_arg = None
+                    if current_arg_table is not None:
+                        table_arg_tables.append(current_arg_table)
+                        current_arg_table = None
+
+                if token == "ccpp-table-properties":
+                    _flush_table_properties()
+                    current_table_properties = CCPPTableProperties()
+                    parse_state = MetaParseState.PROPERTIES
+                elif token == "ccpp-arg-table":
+                    parse_state = MetaParseState.ARG_TABLE
+                    current_arg_table = CCPPArgumentTable()
+                elif token[0] == " " or token[-1] == " ":
+                    if current_arg is not None:
+                        current_arg_table.setFunctionArgument(current_arg)
+                    parse_state = MetaParseState.ARG
+                    current_arg = CCPPArgument(token.strip())
+                else:
+                    raise AssertionError(
+                        f"Unexpected token in arg table: {token!r}"
+                    )
+            else:
+                assert parse_state != MetaParseState.NONE
+                for part in sline.split("|"):
+                    part = part.strip()
+                    if not part:
+                        continue
+                    assert "=" in part
+                    key, value = part.split("=", 1)
+                    key, value = key.strip(), value.strip()
+                    if parse_state == MetaParseState.PROPERTIES:
+                        assert current_table_properties is not None
+                        current_table_properties.setAttr(key, value)
+                    elif parse_state == MetaParseState.ARG_TABLE:
+                        assert current_arg_table is not None
+                        current_arg_table.setAttr(key, value)
+                    elif parse_state == MetaParseState.ARG:
+                        assert current_arg is not None
+                        current_arg.setAttr(key, value)
+
+    if current_arg is not None:
+        current_arg_table.setFunctionArgument(current_arg)
+    if current_arg_table is not None:
+        table_arg_tables.append(current_arg_table)
+    _flush_table_properties()
+
+    assert completed
+    return completed
+
+
+# ---------------------------------------------------------------------------
 # Frontend driver
 # ---------------------------------------------------------------------------
 
@@ -269,14 +378,6 @@ class ccppXML:
             --suites examples/helloworld/hello_world_suite.xml \\
             --scheme-files examples/helloworld/hello_scheme.meta
     """
-
-    class MetaParseState(Enum):
-        """State machine states for the line-oriented ``.meta`` file parser."""
-
-        PROPERTIES = 1  # Inside a [ccpp-table-properties] block
-        ARG_TABLE = 2  # Inside a [ccpp-arg-table] header block
-        ARG = 3  # Inside a named argument [ arg_name ] block
-        NONE = 4  # Not yet inside any block
 
     def initialise_argument_parser(self):
         """Create and return an `argparse.ArgumentParser` for the frontend CLI."""
@@ -344,120 +445,8 @@ class ccppXML:
         return options_db
 
     def parse_metadata_file(self, filename, isScheme):
-        """Parse a ``.meta`` file and return a list of `MetaData` objects.
-
-        ``.meta`` files use a Fortran-style ini format with three kinds of
-        section headers:
-
-        - ``[ccpp-table-properties]`` — top-level properties for the scheme/module
-        - ``[ccpp-arg-table]``         — introduces an argument table for one entry point
-        - ``[ arg_name ]``             — introduces the attributes for one argument
-          (identified by at least one space inside the brackets on either side)
-
-        Lines outside headers are ``key = value`` pairs.  Multiple attributes
-        may appear on one line separated by ``|``
-        (e.g. ``type = real | kind = kind_phys``).  Blank lines are ignored.
-
-        A single file may contain multiple ``[ccpp-table-properties]`` blocks
-        (e.g. a DDT definition followed by the scheme that uses it).  Each block
-        produces a separate `MetaData` entry in the returned list.
-
-        Args:
-            filename: Path to the ``.meta`` file.
-            isScheme: If True, return `SchemeMetaData` instances; otherwise `HostMetaData`.
-
-        Returns:
-            A list of `SchemeMetaData` or `HostMetaData` objects, one per
-            ``[ccpp-table-properties]`` block found in the file.
-        """
-        completed = []
-        current_table_properties = None
-        current_arg_table = None
-        parse_state = ccppXML.MetaParseState.NONE
-        table_arg_tables = []
-        current_arg = None
-
-        def _flush_table_properties():
-            nonlocal current_table_properties, table_arg_tables
-            if current_table_properties is None:
-                return
-            cls = SchemeMetaData if isScheme else HostMetaData
-            completed.append(cls(current_table_properties, table_arg_tables))
-            current_table_properties = None
-            table_arg_tables = []
-
-        with open(filename) as file:
-            for line in file:
-                sline = line.strip()
-
-                # Ignore blank lines and comment lines
-                if not sline or sline.startswith("#"):
-                    continue
-
-                if "[" in sline and "]" in sline:
-                    # Strip brackets to get the section token
-                    token = sline.translate(str.maketrans("", "", "[]"))
-
-                    # Starting a new top-level section: flush any in-progress arg/table
-                    if token == "ccpp-table-properties" or token == "ccpp-arg-table":
-                        if current_arg is not None:
-                            current_arg_table.setFunctionArgument(current_arg)
-                            current_arg = None
-                        if current_arg_table is not None:
-                            table_arg_tables.append(current_arg_table)
-                            current_arg_table = None
-
-                    if token == "ccpp-table-properties":
-                        # Flush the previous block (if any) before starting a new one
-                        _flush_table_properties()
-                        current_table_properties = CCPPTableProperties()
-                        parse_state = ccppXML.MetaParseState.PROPERTIES
-                    elif token == "ccpp-arg-table":
-                        # Begin a new argument-table header block
-                        parse_state = ccppXML.MetaParseState.ARG_TABLE
-                        current_arg_table = CCPPArgumentTable()
-                    elif token[0] == " " or token[-1] == " ":
-                        # Argument block — token is the variable name; spaces may appear
-                        # on one or both sides (e.g. '[ ncols]' or '[ temp_level ]')
-                        if current_arg is not None:
-                            current_arg_table.setFunctionArgument(current_arg)
-                        parse_state = ccppXML.MetaParseState.ARG
-                        current_arg = CCPPArgument(token.strip())
-                    else:
-                        raise AssertionError(
-                            f"Unexpected token in arg table: {token!r}"
-                        )
-                else:
-                    # Attribute line — one or more key = value pairs separated by '|'
-                    # e.g. 'type = real | kind = kind_phys' or 'kind = len=512'
-                    assert parse_state != ccppXML.MetaParseState.NONE
-                    for part in sline.split("|"):
-                        part = part.strip()
-                        if not part:
-                            continue
-                        assert "=" in part
-                        # Split on the first '=' only to preserve values like 'len=512'
-                        key, value = part.split("=", 1)
-                        key, value = key.strip(), value.strip()
-                        if parse_state == ccppXML.MetaParseState.PROPERTIES:
-                            assert current_table_properties is not None
-                            current_table_properties.setAttr(key, value)
-                        elif parse_state == ccppXML.MetaParseState.ARG_TABLE:
-                            assert current_arg_table is not None
-                            current_arg_table.setAttr(key, value)
-                        elif parse_state == ccppXML.MetaParseState.ARG:
-                            assert current_arg is not None
-                            current_arg.setAttr(key, value)
-
-        # Flush any in-progress argument or argument table at end-of-file
-        if current_arg is not None:
-            current_arg_table.setFunctionArgument(current_arg)
-        if current_arg_table is not None:
-            table_arg_tables.append(current_arg_table)
-        _flush_table_properties()
-
-        assert completed
-        return completed
+        """Parse a ``.meta`` file; delegates to the module-level :func:`parse_meta_file`."""
+        return parse_meta_file(filename, isScheme)
 
     def build_suite_ir(self, suite):
         """Convert a parsed `XMLSuite` tree into CCPP dialect IR ops.

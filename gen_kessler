@@ -1,0 +1,7 @@
+#!/bin/bash
+
+export SUITESF='examples/kessler/kessler_suite.xml'
+export SCHEMEF='examples/kessler/kessler.meta,examples/kessler/kessler_update.meta'
+export HOSTF='examples/kessler/kessler_host_mod.meta,examples/kessler/kessler_host_sub.meta'
+
+ccpp_xdsl --directive acc --suites $SUITESF --scheme-files $SCHEMEF --host-files $HOSTF -o examples/kessler/

@@ -4,20 +4,16 @@ Users write a Python file that imports this module, declares arguments, schemes,
 DDTs, and suites using decorators, then calls :func:`emit_ir` to produce the
 same MLIR as the XML/meta frontend.
 
-Minimal example::
+There are two ways to define scheme argument metadata:
+
+**Inline** — define arguments directly in Python (no ``.meta`` file needed)::
 
     from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, emit_ir
 
-    errmsg = Arg("errmsg", standard_name=CCPP_ERROR_MESSAGE,
-                 type="character", kind="len=512", intent="out", units="none")
-    errflg = Arg("errflg", standard_name=CCPP_ERROR_CODE,
-                 type="integer", intent="out", units="1")
-
     @ccpp_scheme
     class my_scheme:
-        run      = [Arg("ncol", ...), errmsg, errflg]
-        init     = [errmsg, errflg]
-        finalize = [errmsg, errflg]
+        run = [Arg("ncol", standard_name="horizontal_loop_extent",
+                   type="integer", units="count", intent="in"), ...]
 
     @ccpp_suite("my_suite", version="1.0")
     class my_suite:
@@ -25,6 +21,23 @@ Minimal example::
 
     if __name__ == "__main__":
         emit_ir(my_suite)
+
+**From .meta files** — load existing ``.meta`` files and write only the suite
+orchestration in Python (backwards-compatible path)::
+
+    from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, emit_ir
+
+    kessler        = ccpp_scheme_from_meta("examples/kessler/kessler.meta")
+    kessler_update = ccpp_scheme_from_meta("examples/kessler/kessler_update.meta")
+
+    @ccpp_suite("kessler_suite", version="1.0")
+    class kessler_suite:
+        def run():
+            kessler()
+            kessler_update()
+
+    if __name__ == "__main__":
+        emit_ir(kessler_suite)
 
 The output can be piped directly into ``ccpp_opt``::
 
@@ -45,6 +58,7 @@ from xdsl_ccpp.dialects.ccpp import (
     ArgumentTableOp,
     GroupOp,
     SchemeOp,
+    SubcycleOp,
     SuiteOp,
     TablePropertiesOp,
 )
@@ -126,6 +140,10 @@ class Arg:
         kind:          Optional kind specifier (e.g. ``"kind_phys"``, ``"len=512"``).
         long_name:     Optional human-readable description.
         optional:      Whether the argument is optional.
+        extra:         Pass-through attributes not explicitly modeled above
+                       (e.g. ``memory_space``, ``state_variable``, ``active``).
+                       Values are forwarded as-is to
+                       :class:`~xdsl_ccpp.dialects.ccpp.ArgumentOp`.
     """
 
     name: str
@@ -137,6 +155,7 @@ class Arg:
     kind: str | None = None
     long_name: str | None = None
     optional: bool = False
+    extra: dict = field(default_factory=dict)
 
     def to_ccpp_attrs(self) -> dict:
         """Return the attribute dict expected by :class:`~xdsl_ccpp.dialects.ccpp.ArgumentOp`."""
@@ -154,6 +173,7 @@ class Arg:
         attrs["dimensions"] = "(" + ", ".join(self.dimensions) + ")"
         if self.optional:
             attrs["optional"] = True
+        attrs.update(self.extra)
         return attrs
 
 
@@ -188,13 +208,77 @@ class SuiteDescriptor:
         self,
         name: str,
         version: str,
-        groups: dict[str, list[tuple[SchemeDescriptor, dict[str, str]]]],
+        groups: "dict[str, list[tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor]]",
     ):
         self.name = name
         self.version = version
-        # Maps group name → list of (SchemeDescriptor, overrides) pairs.
-        # overrides is a {arg_name: literal_str} dict, empty when no overrides.
+        # Maps group name → list of (SchemeDescriptor, overrides) pairs or
+        # SubcycleDescriptor objects.  overrides is a {arg_name: literal_str}
+        # dict, empty when there are no overrides.
         self.groups = groups
+
+
+class SubcycleDescriptor:
+    """A block of schemes that execute inside a loop.
+
+    Produced by :func:`forLoop`.  Corresponds to
+    ``<subcycle loop="N">`` in a suite XML file.
+    """
+
+    def __init__(self, count: "int | str", schemes: "list[SchemeDescriptor]"):
+        # Integer → literal loop count baked in at IR-generation time.
+        # String → CCPP standard name resolved at runtime (is_literal=False).
+        self.count = count
+        self.schemes = schemes
+
+
+def forLoop(
+    count: "int | str",
+    schemes: "list[SchemeDescriptor]",
+) -> SubcycleDescriptor:
+    """Declare a loop block: *schemes* repeated *count* times.
+
+    Corresponds to ``<subcycle loop="N">`` in a suite XML file.  May appear
+    anywhere in a group's scheme list.
+
+    Use this function when the loop count is a **CCPP standard name** resolved
+    at runtime by the host model.  For a fixed integer count known at
+    IR-generation time, a plain Python ``for`` loop inside ``def run():`` is
+    simpler and equally correct::
+
+        # Literal count — use a for loop in def run():
+        repeats = ccpp_param("repeats", default=3)
+
+        @ccpp_suite("my_suite", version="1.0")
+        class my_suite:
+            physics = [scheme_a, scheme_b, teardown]
+            def run():
+                for i in range(repeats):
+                    scheme_a()
+                    scheme_b()
+                teardown()
+
+        # Runtime CCPP standard name — must use forLoop():
+        @ccpp_suite("rrtmgp", version="1.0")
+        class rrtmgp:
+            physics_after_coupler = [
+                rrtmgp_pre,
+                forLoop("number_of_diagnostic_subcycles", [
+                    rrtmgp_constituents,
+                    rrtmgp_sw_gas_optics,
+                    rrtmgp_sw_rte,
+                ]),
+                rrtmgp_post,
+            ]
+
+    Args:
+        count:   Loop iteration count.  Pass an ``int`` (or a value from
+                 :func:`ccpp_param`) for a literal baked in at IR-generation
+                 time, or a ``str`` CCPP standard name resolved at runtime.
+        schemes: Ordered list of :class:`SchemeDescriptor` objects forming the
+                 loop body.
+    """
+    return SubcycleDescriptor(count=count, schemes=schemes)
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +367,9 @@ def _run_groups(
     - **Scheme name** (e.g. ``hello_scheme()``) — adds that scheme to its parent
       group (the group whose list it appeared in).  Keyword arguments become
       compile-time literal overrides (e.g. ``hello_scheme(var_a=92)``).
+    - **``range(n)``** — works normally for integer counts, giving a natural
+      ``for i in range(n): scheme()`` loop syntax.  Passing a string raises a
+      clear error directing the user to :func:`forLoop` instead.
 
     All standard Python control flow (``for``, ``while``, ``if``) works as
     normal because the function body is executed directly.  Module-level
@@ -290,10 +377,14 @@ def _run_groups(
     inside ``run`` because the original ``__globals__`` dict is preserved.
     """
     # Map each scheme name to its parent group name and descriptor.
+    # SubcycleDescriptor items in group lists are skipped — forLoop() in a
+    # group list has no effect when def run(): is also present.
     scheme_to_group: dict[str, str] = {}
     all_schemes: dict[str, SchemeDescriptor] = {}
     for group_name, schemes in groups.items():
         for sd in schemes:
+            if isinstance(sd, SubcycleDescriptor):
+                continue
             scheme_to_group[sd.name] = group_name
             all_schemes[sd.name] = sd
 
@@ -331,6 +422,20 @@ def _run_groups(
             return _caller
 
         namespace[scheme_name] = _make_scheme_caller(scheme_name, sd)
+
+    # Override range() to catch the common mistake of passing a CCPP standard
+    # name string where an integer is required.
+    def _checked_range(*args):
+        for a in args:
+            if isinstance(a, str):
+                raise TypeError(
+                    f"range() does not accept a CCPP standard name '{a}'. "
+                    f"Use forLoop('{a}', [...]) in the group list instead of "
+                    f"a for loop in def run():"
+                )
+        return range(*args)
+
+    namespace["range"] = _checked_range
 
     # Execute run_fn with recording callables overlaid on its original globals.
     _types.FunctionType(run_fn.__code__, {**run_fn.__globals__, **namespace})()
@@ -397,10 +502,216 @@ def ccpp_suite(name: str, version: str = "1.0"):
         if run_fn is not None:
             groups = _run_groups(run_fn, raw_groups)
         else:
-            groups = {k: [(sd, {}) for sd in v] for k, v in raw_groups.items()}
+            groups = {
+                k: [item if isinstance(item, SubcycleDescriptor) else (item, {}) for item in v]
+                for k, v in raw_groups.items()
+            }
         return SuiteDescriptor(name, version, groups)
 
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# .meta file loaders
+# ---------------------------------------------------------------------------
+
+
+def _parse_dims(dim_str: str) -> tuple[str, ...]:
+    """Convert a ``.meta`` dimension string to a tuple of standard names.
+
+    Examples::
+
+        _parse_dims("(horizontal_loop_extent, vertical_layer_dimension)")
+            → ("horizontal_loop_extent", "vertical_layer_dimension")
+        _parse_dims("()")  → ()
+    """
+    s = dim_str.strip().strip("()")
+    if not s.strip():
+        return ()
+    return tuple(d.strip() for d in s.split(",") if d.strip())
+
+
+def _ccpp_arg_to_arg(ccpp_arg) -> "Arg":
+    """Convert a parsed ``CCPPArgument`` object to an :class:`Arg` dataclass.
+
+    Attributes explicitly modeled in :class:`Arg` are mapped directly.
+    Everything else (e.g. ``memory_space``, ``state_variable``, ``active``)
+    goes into :attr:`Arg.extra` and is forwarded verbatim to the IR.
+    """
+    attrs = ccpp_arg.getAttrs()
+    modeled = {"standard_name", "type", "intent", "units", "dimensions",
+               "kind", "long_name", "optional"}
+    extra = {k: v for k, v in attrs.items() if k not in modeled}
+    return Arg(
+        name=ccpp_arg.name,
+        standard_name=attrs.get("standard_name", ""),
+        type=attrs.get("type", ""),
+        intent=attrs.get("intent", ""),
+        units=attrs.get("units", ""),
+        dimensions=_parse_dims(attrs.get("dimensions", "()")),
+        kind=attrs.get("kind"),
+        long_name=attrs.get("long_name"),
+        optional=str(attrs.get("optional", "")).strip().lower() in ("true", ".true."),
+        extra=extra,
+    )
+
+
+def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> "SchemeDescriptor":
+    """Load a CCPP scheme descriptor from a ``.meta`` file.
+
+    Parses *filename* and returns a :class:`SchemeDescriptor` equivalent to
+    one produced by the ``@ccpp_scheme`` decorator.  The scheme name and all
+    argument metadata (standard names, types, intents, dimensions, and
+    pass-through attributes such as ``memory_space``) are taken directly from
+    the file — no duplication in Python is required.
+
+    This is the primary bridge between the existing ``.meta`` file ecosystem
+    and the Python suite API.  Use it when you want to express suite
+    orchestration logic in Python while keeping ``.meta`` files as the source
+    of truth for scheme argument metadata::
+
+        kessler        = ccpp_scheme_from_meta("examples/kessler/kessler.meta")
+        kessler_update = ccpp_scheme_from_meta("examples/kessler/kessler_update.meta")
+
+        @ccpp_suite("kessler_suite", version="1.0")
+        class kessler_suite:
+            def run():
+                kessler()
+                kessler_update()
+
+        if __name__ == "__main__":
+            emit_ir(kessler_suite)
+
+    When a ``.meta`` file contains multiple scheme definitions (e.g.
+    ``physics_tendency_updaters.meta`` defines ``apply_heating_rate``,
+    ``apply_constituent_tendencies``, etc.) pass the *name* keyword to select
+    the desired one::
+
+        apply_heating_rate = ccpp_scheme_from_meta(
+            "schemes/utilities/physics_tendency_updaters.meta",
+            name="apply_heating_rate",
+        )
+
+    Args:
+        filename: Path to a scheme ``.meta`` file.
+        name:     If given, return the scheme with this name instead of the
+                  first scheme block in the file.
+
+    Returns:
+        A :class:`SchemeDescriptor` ready for use in ``@ccpp_suite`` and
+        :func:`emit_ir`.
+    """
+    from xdsl_ccpp.frontend.ccpp_xml import parse_meta_file  # lazy to avoid circular import
+
+    meta_list = parse_meta_file(filename, is_scheme=True)
+    if name is not None:
+        meta = next(
+            (m for m in meta_list
+             if str(m.table_properties.getAttr("type")) == "scheme"
+             and str(m.table_properties.getAttr("name")) == name),
+            None,
+        )
+        if meta is None:
+            raise ValueError(f"No scheme named {name!r} in {filename!r}")
+    else:
+        # A .meta file may contain multiple [ccpp-table-properties] blocks (e.g. a
+        # DDT definition followed by the scheme that uses it).  Find the first
+        # block whose type is "scheme"; fall back to the first block if none match.
+        meta = next(
+            (m for m in meta_list
+             if str(m.table_properties.getAttr("type")) == "scheme"),
+            meta_list[0],
+        )
+    scheme_name = meta.table_properties.getAttr("name")
+    prefix = scheme_name + "_"
+
+    entry_points: dict[str, list[Arg]] = {}
+    for table in meta.arg_tables:
+        table_name = table.getAttr("name")
+        ep = table_name[len(prefix):] if table_name.startswith(prefix) else table_name
+        if ep in _ENTRY_POINTS:
+            entry_points[ep] = [_ccpp_arg_to_arg(a) for a in table.getFunctionArguments()]
+
+    return SchemeDescriptor(scheme_name, entry_points)
+
+
+def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
+    """Load CCPP host metadata from a ``.meta`` file.
+
+    Parses *filename* and returns one :class:`TableDescriptor` per
+    ``[ccpp-table-properties]`` block.  A single file may contain multiple
+    blocks (e.g. a DDT definition followed by a module), so the return value
+    is always a list.
+
+    Pass the results in the *additional* argument of :func:`emit_ir` or
+    :func:`build_ir`::
+
+        host_mod = ccpp_host_from_meta("kessler_host_mod.meta")
+        host_sub = ccpp_host_from_meta("kessler_host_sub.meta")
+
+        if __name__ == "__main__":
+            emit_ir(kessler_suite, additional=[*host_mod, *host_sub])
+
+    Args:
+        filename: Path to a host ``.meta`` file.
+
+    Returns:
+        A list of :class:`TableDescriptor` objects (one per table-properties block).
+    """
+    from xdsl_ccpp.frontend.ccpp_xml import parse_meta_file
+
+    meta_list = parse_meta_file(filename, is_scheme=False)
+    result = []
+    for meta in meta_list:
+        type_str = str(meta.table_properties.getAttr("type"))
+        arg_tables: dict[str, list[Arg]] = {
+            table.getAttr("name"): [_ccpp_arg_to_arg(a) for a in table.getFunctionArguments()]
+            for table in meta.arg_tables
+        }
+        result.append(
+            TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables)
+        )
+    return result
+
+
+def ccpp_ddt_from_meta(filename: str) -> "TableDescriptor":
+    """Load a CCPP DDT definition from a ``.meta`` file.
+
+    Parses *filename* and returns the first DDT-typed
+    ``[ccpp-table-properties]`` block as a :class:`TableDescriptor`.  Useful
+    when a ``.meta`` file contains both a DDT definition and a scheme
+    definition (e.g. ``make_ddt.meta``)::
+
+        vmr_type = ccpp_ddt_from_meta("examples/capgen/make_ddt.meta")
+        make_ddt = ccpp_scheme_from_meta("examples/capgen/make_ddt.meta")
+
+        @ccpp_suite("ddt_suite", version="1.0")
+        class ddt_suite:
+            data_prep = [make_ddt, environ_conditions]
+
+        if __name__ == "__main__":
+            emit_ir(ddt_suite, additional=[vmr_type])
+
+    Args:
+        filename: Path to a ``.meta`` file containing a DDT definition.
+
+    Returns:
+        A :class:`TableDescriptor` with ``type_str="ddt"``.
+    """
+    from xdsl_ccpp.frontend.ccpp_xml import parse_meta_file
+
+    meta_list = parse_meta_file(filename, is_scheme=False)
+    meta = next(
+        (m for m in meta_list
+         if str(m.table_properties.getAttr("type")) == "ddt"),
+        meta_list[0],
+    )
+    type_str = str(meta.table_properties.getAttr("type"))
+    arg_tables: dict[str, list[Arg]] = {
+        table.getAttr("name"): [_ccpp_arg_to_arg(a) for a in table.getFunctionArguments()]
+        for table in meta.arg_tables
+    }
+    return TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables)
 
 
 # ---------------------------------------------------------------------------
@@ -429,37 +740,56 @@ def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
     return _table_properties_op(sd.name, "scheme", entry_tables)
 
 
+def _group_item_to_op(
+    item: "tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor",
+    seen_schemes: "dict[str, SchemeDescriptor]",
+) -> "SchemeOp | SubcycleOp":
+    """Convert one group-list item to its MLIR op, registering schemes seen."""
+    if isinstance(item, SubcycleDescriptor):
+        inner_ops = []
+        for sd in item.schemes:
+            inner_ops.append(SchemeOp(sd.name, None))
+            seen_schemes.setdefault(sd.name, sd)
+        return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
+    sd, overrides = item
+    seen_schemes.setdefault(sd.name, sd)
+    return SchemeOp(sd.name, overrides or None)
+
+
 def build_ir(
-    suite: SuiteDescriptor,
+    suites: "SuiteDescriptor | list[SuiteDescriptor]",
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
 ) -> ModuleOp:
-    """Build a :class:`~xdsl.dialects.builtin.ModuleOp` from a suite descriptor.
+    """Build a :class:`~xdsl.dialects.builtin.ModuleOp` from one or more suite descriptors.
 
     Produces the same MLIR as the XML/meta frontend (:mod:`xdsl_ccpp.frontend.ccpp_xml`).
 
     Args:
-        suite:      The suite descriptor returned by ``@ccpp_suite``.
+        suites:     One :class:`SuiteDescriptor` or a list of them.  When a
+                    list is given all suites are included in the same
+                    ``ModuleOp``, matching the behaviour of the XML frontend
+                    when ``--suites`` receives a comma-separated list.
         additional: Extra DDT/module/host (or scheme) descriptors not already
-                    referenced inside the suite's groups.
+                    referenced inside any suite's groups.
 
     Returns:
         A top-level ``ModuleOp`` ready to be passed to ``ccpp_opt``.
     """
+    if isinstance(suites, SuiteDescriptor):
+        suites = [suites]
+
     ir_ops = []
-
-    # Build the SuiteOp, collecting unique SchemeDescriptors along the way.
-    group_ops = []
     seen_schemes: dict[str, SchemeDescriptor] = {}
-    for group_name, scheme_list in suite.groups.items():
-        scheme_ops = [
-            SchemeOp(sd.name, overrides or None) for sd, overrides in scheme_list
-        ]
-        group_ops.append(GroupOp(group_name, scheme_ops))
-        for sd, _ in scheme_list:
-            seen_schemes.setdefault(sd.name, sd)
-    ir_ops.append(SuiteOp(suite.name, group_ops, suite.version))
 
-    # One TablePropertiesOp per unique scheme.
+    # Build one SuiteOp per suite, collecting unique SchemeDescriptors across all.
+    for suite in suites:
+        group_ops = []
+        for group_name, scheme_list in suite.groups.items():
+            ops = [_group_item_to_op(item, seen_schemes) for item in scheme_list]
+            group_ops.append(GroupOp(group_name, ops))
+        ir_ops.append(SuiteOp(suite.name, group_ops, suite.version))
+
+    # One TablePropertiesOp per unique scheme across all suites.
     for sd in seen_schemes.values():
         ir_ops.append(_scheme_table_properties(sd))
 
@@ -476,13 +806,16 @@ def build_ir(
 
 
 def emit_ir(
-    suite: SuiteDescriptor,
+    suites: "SuiteDescriptor | list[SuiteDescriptor]",
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
 ) -> None:
-    """Build IR from *suite* and print it to stdout.
+    """Build IR from one or more suites and print it to stdout.
 
     Intended to be called inside ``if __name__ == "__main__":`` in user scripts.
     The output is identical to the XML/meta frontend and can be piped directly
     into ``ccpp_opt``.
+
+    Pass a list of :class:`SuiteDescriptor` objects to include multiple suites
+    in one IR output, matching ``ccpp_xdsl --suites a.xml,b.xml ...``.
     """
-    print(build_ir(suite, additional))
+    print(build_ir(suites, additional))
