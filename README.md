@@ -84,6 +84,7 @@ The `examples/` directory contains several complete examples:
 | `advection/` | Advection scheme example with XML frontend |
 | `ddthost/` | Example using Fortran derived data types (DDTs) and optional entry points |
 | `kessler/` | Kessler microphysics scheme with OpenACC GPU directives (`memory_space = device`) |
+| `atmospheric_physics/` | Python suite definitions for 9 suites from [ESCOMP/atmospheric_physics](https://github.com/ESCOMP/atmospheric_physics) (adiabatic, held_suarez_1994, tj2016, cam7, kessler, musica, cam4, and two test suites) |
 
 Each example can be driven via the XML frontend, the Python API (`@ccpp_suite`), or both.
 
@@ -125,6 +126,107 @@ python3 examples/helloworld/helloworld_py.py | \
   python3 -m xdsl_ccpp.tools.ccpp_opt \
   -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp \
   -t ftn
+```
+
+## Python API
+
+xdsl-ccpp provides a Python frontend (`xdsl_ccpp.frontend.py_api`) for defining suites programmatically. It replaces the suite XML file and, optionally, duplicating `.meta` argument lists in Python code.
+
+### Two Modes
+
+**Inline** — define scheme arguments directly in Python (useful when no `.meta` file exists yet):
+
+```python
+from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, emit_ir
+
+@ccpp_scheme
+class my_scheme:
+    run = [Arg("ncol", standard_name="horizontal_loop_extent",
+               type="integer", units="count", intent="in"), ...]
+
+@ccpp_suite("my_suite", version="1.0")
+class my_suite:
+    physics = [my_scheme]
+
+if __name__ == "__main__":
+    emit_ir(my_suite)
+```
+
+**From `.meta` files** — load existing `.meta` files and write only the suite orchestration in Python. This is the preferred approach when `.meta` files already exist, as it keeps them as the single source of truth:
+
+```python
+from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, emit_ir
+
+kessler        = ccpp_scheme_from_meta("examples/kessler/kessler.meta")
+kessler_update = ccpp_scheme_from_meta("examples/kessler/kessler_update.meta")
+
+@ccpp_suite("kessler_suite", version="1.0")
+class kessler_suite:
+    physics = [kessler, kessler_update]
+
+if __name__ == "__main__":
+    emit_ir(kessler_suite)
+```
+
+Three loader functions cover the three metadata block types:
+
+| Function | Loads | Returns |
+|----------|-------|---------|
+| `ccpp_scheme_from_meta(file)` | First `type=scheme` block | `SchemeDescriptor` |
+| `ccpp_scheme_from_meta(file, name="foo")` | Named scheme block (for files with multiple schemes) | `SchemeDescriptor` |
+| `ccpp_host_from_meta(file)` | All host/module blocks | `list[TableDescriptor]` |
+| `ccpp_ddt_from_meta(file)` | First `type=ddt` block | `TableDescriptor` |
+
+### Subcycles with `forLoop`
+
+Use `forLoop` when the loop count is a CCPP standard name resolved at runtime by the host model (matching `<subcycle loop="name">` in the suite XML):
+
+```python
+from xdsl_ccpp.frontend.py_api import forLoop, ccpp_scheme_from_meta, ccpp_suite, emit_ir
+
+@ccpp_suite("rrtmgp", version="1.0")
+class rrtmgp:
+    physics_after_coupler = [
+        rrtmgp_pre,
+        forLoop("number_of_diagnostic_subcycles", [
+            rrtmgp_constituents,
+            rrtmgp_sw_gas_optics,
+            rrtmgp_sw_rte,
+        ]),
+        rrtmgp_post,
+    ]
+```
+
+For a fixed integer count known at IR-generation time, a plain Python `for` loop inside `def run():` is simpler:
+
+```python
+repeats = ccpp_param("repeats", default=3)  # overridable: python3 suite.py repeats=5
+
+@ccpp_suite("my_suite", version="1.0")
+class my_suite:
+    physics = [scheme_a, scheme_b]
+    def run():
+        for i in range(repeats):
+            scheme_a()
+        scheme_b()
+```
+
+Passing a CCPP standard name string to `range()` raises a clear error directing you to `forLoop` instead.
+
+### Compile-Time Parameters
+
+`ccpp_param(name, default)` reads a `name=value` token from the command line at IR-generation time, falling back to `default`:
+
+```python
+top = ccpp_param("top", default=19)   # override: python3 suite.py top=53
+```
+
+### Multiple Suites
+
+Pass a list to `emit_ir` to include multiple suites in one IR output, matching `ccpp_xdsl --suites a.xml,b.xml`:
+
+```python
+emit_ir([ddt_suite, temp_suite], additional=[vmr_type, *host])
 ```
 
 ## GPU Support
@@ -728,12 +830,6 @@ The 8 main suites from the [ESCOMP/atmospheric_physics](https://github.com/ESCOM
 | `musica` | 7 | none | ✅ cap generated |
 | `cam4` | 65 | 2 (`number_of_diagnostic_subcycles`) | ✅ cap generated |
 | `cam5` | 65 | 2 (`number_of_diagnostic_subcycles`) | ✅ cap generated |
-
-Three bugs were identified and fixed during this testing:
-
-- **`dims_compatible` dimension matching** — the suite cap was using exact string equality to match dimension standard names, which failed when a scheme declared `horizontal_loop_extent` but the allocator was looking for `horizontal_dimension` (its compatible equivalent). Fixed by switching both lookup sites to `dims_compatible()`.
-- **`len=*` assumed-length character arguments** — CCPP scheme subroutines declare `errmsg` as `character(len=*)`, a valid Fortran dummy argument. The type conversion mapped this to a dynamic-length memref (`memref<?xi8>`), but the suite cap then tried to allocate it with `memref.alloca` and no dynamic dimension operand, causing an xDSL verifier error. Fixed by treating `len=*` as `len=512` (the CCPP standard errmsg length) during type conversion.
-- **CCPP standard name as subcycle loop count** — the cam4/cam5 suites use `<subcycle loop="number_of_diagnostic_subcycles">` where the loop count is a CCPP standard name resolved at runtime rather than a literal integer. The frontend was calling `int()` on this string and crashing. Fixed by storing `loop_count` as a `StringAttr` throughout the IR, and handling non-integer loop counts gracefully in the suite cap generator.
 
 These tests run without host files, so the generated caps contain scheme calls and suite lifecycle subroutines but no host-variable resolution or unit conversion.
 
