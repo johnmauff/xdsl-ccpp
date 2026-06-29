@@ -22,6 +22,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     CCPPType,
 )
+from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
 
 @dataclass(frozen=True)
@@ -64,16 +65,6 @@ class GPUCcppCapPass(ModulePass):
     # Usage: generate-gpu-ccpp-cap            (default: OpenACC)
     #        generate-gpu-ccpp-cap{directive=omp}  (OpenMP target)
     directive: str = "acc"
-
-    def _find_ccpp_module(self, ops):
-        for op in ops:
-            if (
-                isa(op, builtin.ModuleOp)
-                and op.sym_name is not None
-                and op.sym_name.data == "ccpp"
-            ):
-                return op
-        return None
 
     def _build_model_var_clause_map(self, ccpp_mod):
         """Return a dict mapping host model variable name → OpenACC clause type.
@@ -324,7 +315,7 @@ class GPUCcppCapPass(ModulePass):
                     )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        ccpp_mod = self._find_ccpp_module(op.body.block.ops)
+        ccpp_mod = find_ccpp_module(op.body.block.ops)
         if ccpp_mod is None:
             return
 

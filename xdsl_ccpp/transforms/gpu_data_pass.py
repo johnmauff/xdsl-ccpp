@@ -13,6 +13,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetDataEndOp,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
+from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
 
 @dataclass(frozen=True)
@@ -36,17 +37,6 @@ class GPUDataPass(ModulePass):
 
     # GPU directive backend: "acc" for OpenACC, "omp" for OpenMP target offload.
     directive: str = "acc"
-
-    def _find_ccpp_module(self, ops):
-        """Return the named @ccpp ModuleOp from the given op list, or None."""
-        for op in ops:
-            if (
-                isa(op, builtin.ModuleOp)
-                and op.sym_name is not None
-                and op.sym_name.data == "ccpp"
-            ):
-                return op
-        return None
 
     def _get_scheme_name(self, callee_name):
         """Strip lifecycle suffix to get the scheme base name.
@@ -195,7 +185,7 @@ class GPUDataPass(ModulePass):
             )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        ccpp_mod = self._find_ccpp_module(op.body.block.ops)
+        ccpp_mod = find_ccpp_module(op.body.block.ops)
         if ccpp_mod is None:
             return
 

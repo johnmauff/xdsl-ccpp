@@ -13,6 +13,7 @@ from xdsl.pattern_rewriter import (
     RewritePattern,
     op_type_rewrite_pattern,
 )
+from xdsl.rewriter import Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
@@ -41,6 +42,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     XMLSuite,
     collect_ddt_source_modules,
 )
+from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
@@ -102,6 +104,15 @@ class _BlockSignature:
     kind_writeback_pairs: list
     unit_convert_ops: list
     unit_writeback_pairs: list
+
+
+@dataclass
+class _LifecycleFnsResult:
+    generated_fns: list
+    fn_sigs_by_name: dict
+    suite_host_use_stubs: list
+    check_strings_used: set
+    state_strings_used: set
 
 
 class GenerateSuiteSubroutine(RewritePattern):
@@ -1463,54 +1474,30 @@ class GenerateSuiteSubroutine(RewritePattern):
             for fd in func_defs
         ]
 
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: ccpp.SuiteOp, rewriter: PatternRewriter):
-        """Generate the complete cap module for one ccpp.SuiteOp.
-
-        For each of the five lifecycle subroutines (initialize, finalize,
-        physics, timestep_initial, timestep_final) a func.FuncOp is built via
-        generateSubroutineCall.  String constant globals and the mutable
-        ccpp_suite_state global are created once and shared across all five.
-        The resulting ops are wrapped in a named builtin.ModuleOp and inserted
-        at the top level.
-        """
-        suite_description = self.suite_descriptions[op.suite_name.data]
-
-        # Build SuiteVariableModel early — it is needed by all generateSubroutineCall
-        # invocations to determine module-level ranks and allocation dimensions.
-        suite_model = SuiteVariableModel(suite_description, self.meta_data, self._std_key)
-
-        # Each tuple describes one cap subroutine:
-        # (scheme postfix to call, generated name postfix, state to write, state to check)
+    def _generate_lifecycle_fns(self, suite_description, suite_model) -> "_LifecycleFnsResult":
+        """Generate FuncOps for the five fixed lifecycle specs plus one per physics group."""
         subroutine_specs = [
-            ("_register", "_register", None, None),
-            ("_init", "_initialize", "initialized", "uninitialized"),
-            ("_finalize", "_finalize", "uninitialized", "initialized"),
-            ("_timestep_initialize", "_timestep_initial", "in_time_step", "initialized"),
-            ("_timestep_finalize", "_timestep_final", "initialized", "in_time_step"),
+            ("_register",            "_register",         None,            None),
+            ("_init",                "_initialize",       "initialized",   "uninitialized"),
+            ("_finalize",            "_finalize",         "uninitialized", "initialized"),
+            ("_timestep_initialize", "_timestep_initial", "in_time_step",  "initialized"),
+            ("_timestep_finalize",   "_timestep_final",   "initialized",   "in_time_step"),
         ]
 
-        generated_fns = []
-        fn_sigs_by_name = {}
-        check_strings_used = set()
-        state_strings_used = set()
+        generated_fns: list = []
+        fn_sigs_by_name: dict = {}
+        suite_host_use_stubs: list = []
+        check_strings_used: set = set()
+        state_strings_used: set = set()
 
-        suite_host_use_stubs: list = []  # host-module USE stubs needed by per-group fns
-
-        # Generate one FuncOp per subroutine spec and accumulate unique string values
         for tgt_postfix, gen_postfix, state_string, check_string in subroutine_specs:
             fn, sigs, stubs = self.generateSubroutineCall(
-                suite_description,
-                tgt_postfix,
-                gen_postfix,
-                state_string=state_string,
-                check_string=check_string,
-                physics_mode=(tgt_postfix == "_run"),
-                suite_model=suite_model,
+                suite_description, tgt_postfix, gen_postfix,
+                state_string=state_string, check_string=check_string,
+                physics_mode=(tgt_postfix == "_run"), suite_model=suite_model,
             )
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
-            # Deduplicate scheme function signatures by name
             for sig in sigs:
                 fn_sigs_by_name[sig.sym_name.data] = sig
             if check_string is not None:
@@ -1518,7 +1505,6 @@ class GenerateSuiteSubroutine(RewritePattern):
             if state_string is not None:
                 state_strings_used.add(state_string)
 
-        # Generate one physics function per XML group.
         for group in suite_description:
             group_name = group.attributes["name"]
             group_suite = XMLSuite(
@@ -1526,16 +1512,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                 suite_description.attributes["version"],
             )
             group_suite.addChild(group)
-
             fn, sigs, stubs = self.generateSubroutineCall(
-                group_suite,
-                "_run",
-                f"_{group_name}",
-                state_string=None,
-                check_string="in_time_step",
-                physics_mode=True,
-                group_name=group_name,
-                suite_model=suite_model,
+                group_suite, "_run", f"_{group_name}",
+                state_string=None, check_string="in_time_step",
+                physics_mode=True, group_name=group_name, suite_model=suite_model,
             )
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
@@ -1543,14 +1523,20 @@ class GenerateSuiteSubroutine(RewritePattern):
                 fn_sigs_by_name[sig.sym_name.data] = sig
             check_strings_used.add("in_time_step")
 
-        # Build a mapping from subroutine name → scheme module name so the
-        # printer can emit 'use hello_scheme, only: hello_scheme_run' etc.
-        # By CCPP convention the module name matches the scheme base name.
-        scheme_entries = self.getSchemeNames(suite_description)
+        return _LifecycleFnsResult(
+            generated_fns=generated_fns,
+            fn_sigs_by_name=fn_sigs_by_name,
+            suite_host_use_stubs=suite_host_use_stubs,
+            check_strings_used=check_strings_used,
+            state_strings_used=state_strings_used,
+        )
+
+    def _build_fn_signatures(self, fn_sigs_by_name: dict, scheme_entries: list) -> list:
+        """Clone collected scheme function signatures, annotating each with its module name."""
         sub_to_module: dict[str, str] = {}
         for scheme_name, _ in scheme_entries:
-            for postfix in ("_run", "_init", "_finalize",
-                            "_register", "_timestep_initialize", "_timestep_finalize",
+            for postfix in ("_run", "_init", "_finalize", "_register",
+                            "_timestep_initialize", "_timestep_finalize",
                             "_timestep_init", "_timestep_final"):
                 sub_to_module[scheme_name + postfix] = scheme_name
 
@@ -1563,12 +1549,13 @@ class GenerateSuiteSubroutine(RewritePattern):
             if module_name:
                 cloned.attributes["module"] = StringAttr(module_name)
             fn_sigs.append(cloned)
+        return fn_sigs
 
-        # Emit USE-association stubs for DDT types referenced by scheme args.
-        # The printer turns these into 'use <module>, only: <type_name>' lines.
-        seen_type_imports: set[str] = set()
-        type_import_globals = []
+    def _build_ddt_use_stubs(self, scheme_entries: list) -> list:
+        """Return llvm.GlobalOp USE-stubs for each DDT type referenced by scheme args."""
         primitive_types = {"real", "integer", "character", "logical", "complex"}
+        seen: set[str] = set()
+        stubs = []
         for scheme_name, _ in scheme_entries:
             if scheme_name not in self.meta_data:
                 continue
@@ -1577,24 +1564,23 @@ class GenerateSuiteSubroutine(RewritePattern):
                     if not arg.hasAttr("type"):
                         continue
                     arg_type = arg.getAttr("type")
-                    if arg_type in primitive_types:
-                        continue
-                    if arg_type in seen_type_imports:
+                    if arg_type in primitive_types or arg_type in seen:
                         continue
                     mod = self.ddt_source_module.get(arg_type)
                     if mod is None:
                         continue
-                    seen_type_imports.add(arg_type)
+                    seen.add(arg_type)
                     stub = llvm.GlobalOp(
                         llvm.LLVMArrayType.from_size_and_type(0, i8),
                         arg_type,
                         "internal",
                     )
                     stub.attributes["module"] = StringAttr(mod)
-                    type_import_globals.append(stub)
+                    stubs.append(stub)
+        return stubs
 
-        # Mutable global holding the current lifecycle state of the suite.
-        # In multi-instance mode the state is tracked per instance.
+    def _build_state_globals(self, all_strings_used: set):
+        """Return the mutable ccpp_suite_state global and one read-only global per state string."""
         ccpp_suite_state_global = llvm.GlobalOp(
             llvm.LLVMArrayType.from_size_and_type(16, i8),
             "ccpp_suite_state",
@@ -1605,24 +1591,19 @@ class GenerateSuiteSubroutine(RewritePattern):
             ccpp_suite_state_global.attributes["dimension"] = StringAttr(
                 str(self.num_instances)
             )
-
-        # One read-only global per unique state string (shared by check and assign ops)
-        all_strings_used = check_strings_used | state_strings_used
         string_const_globals = [
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)
         ]
+        return ccpp_suite_state_global, string_const_globals
 
-        # Generate module-level declarations for all suite-owned variables.
-        # interstitial_var_names is kept for SafeDeallocOp filtering below.
-        # suite_model was already built above (before the subroutine_specs loop).
-        interstitial_var_names: set[str] = set()  # lowercase
+    def _build_module_vars(self, suite_model):
+        """Return (allocatable_mod_vars, interstitial_var_names) for suite-owned variables."""
+        interstitial_var_names: set[str] = set()
         allocatable_mod_vars = []
         for entry in suite_model.suite_owned_vars():
             if entry.is_ddt:
-                # DDT interstitials (e.g. vmr_type) are declared at suite cap
-                # module scope as non-allocatable scalars.  The suite functions
-                # access them directly by name; the top-level cap never sees them.
-                # Fortran derived-type declarations require type(...) syntax.
+                # DDT interstitials are module-scope non-allocatable scalars; require
+                # type(...) syntax in Fortran.
                 allocatable_mod_vars.append(
                     ModuleVarOp(entry.local_name, f"type({entry.fortran_type})", rank=0)
                 )
@@ -1639,43 +1620,56 @@ class GenerateSuiteSubroutine(RewritePattern):
                 ModuleVarOp(entry.local_name, ftn_type, entry.rank)
             )
             interstitial_var_names.add(entry.local_name.lower())
+        return allocatable_mod_vars, interstitial_var_names
 
-        # SafeDeallocOp for each framework var goes into _timestep_final.
-        # Inject them by patching the generated _timestep_final FuncOp's body.
+    @staticmethod
+    def _inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names):
+        """Inject SafeDeallocOps for allocatable arrays before the return of _timestep_final."""
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp):
+                continue
+            if "_timestep_final" not in fn.sym_name.data:
+                continue
+            if not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
+            if ret_op is None:
+                continue
+            for var_decl in allocatable_mod_vars:
+                # Only arrays (rank > 0); skip interstitials that persist until _finalize.
+                if var_decl.rank.value.data > 0 and \
+                        var_decl.var_name.data.lower() not in interstitial_var_names:
+                    Rewriter.insert_op(SafeDeallocOp(var_decl.var_name.data),
+                                       InsertPoint.before(ret_op))
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ccpp.SuiteOp, rewriter: PatternRewriter):
+        """Generate the complete cap module for one ccpp.SuiteOp."""
+        suite_description = self.suite_descriptions[op.suite_name.data]
+        suite_model = SuiteVariableModel(suite_description, self.meta_data, self._std_key)
+
+        _lc = self._generate_lifecycle_fns(suite_description, suite_model)
+        generated_fns = _lc.generated_fns
+        fn_sigs_by_name = _lc.fn_sigs_by_name
+        suite_host_use_stubs = _lc.suite_host_use_stubs
+
+        scheme_entries = self.getSchemeNames(suite_description)
+        fn_sigs = self._build_fn_signatures(fn_sigs_by_name, scheme_entries)
+        type_import_globals = self._build_ddt_use_stubs(scheme_entries)
+
+        all_strings_used = _lc.check_strings_used | _lc.state_strings_used
+        ccpp_suite_state_global, string_const_globals = self._build_state_globals(all_strings_used)
+
+        allocatable_mod_vars, interstitial_var_names = self._build_module_vars(suite_model)
         if allocatable_mod_vars:
-            for fn in generated_fns:
-                if not isa(fn, func.FuncOp):
-                    continue
-                if "_timestep_final" not in fn.sym_name.data:
-                    continue
-                if not fn.body.blocks:
-                    continue
-                block = fn.body.blocks[0]
-                # Insert SafeDeallocOp before the ReturnOp
-                ret_op = None
-                for bop in block.ops:
-                    if isa(bop, func.ReturnOp):
-                        ret_op = bop
-                        break
-                if ret_op is not None:
-                    from xdsl.rewriter import Rewriter, InsertPoint as IP
-                    for var_decl in allocatable_mod_vars:
-                        # Only deallocate arrays (rank>0); scalars are not allocatable.
-                        # Skip is_interstitial vars — they persist from _init across
-                        # all timesteps and should only be freed at _finalize.
-                        if var_decl.rank.value.data > 0 and \
-                                var_decl.var_name.data.lower() not in interstitial_var_names:
-                            Rewriter.insert_op(
-                                SafeDeallocOp(var_decl.var_name.data),
-                                IP.before(ret_op),
-                            )
+            self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
 
-        # Dedup host-module USE stubs (same var from multiple groups)
         seen_stubs: set = set()
         deduped_stubs = []
         for stub in suite_host_use_stubs:
-            key = (stub.sym_name.data, stub.attributes.get("module").data
-                   if stub.attributes.get("module") else "")
+            key = (stub.sym_name.data,
+                   stub.attributes.get("module").data if stub.attributes.get("module") else "")
             if key not in seen_stubs:
                 seen_stubs.add(key)
                 deduped_stubs.append(stub)
@@ -1685,10 +1679,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             + type_import_globals + deduped_stubs + allocatable_mod_vars + generated_fns + fn_sigs,
             sym_name=builtin.StringAttr(op.suite_name.data + "_cap"),
         )
-
-        rewriter.insert_op(
-            scheme_mod, InsertPoint.at_start(self.top_level_module.body.block)
-        )
+        rewriter.insert_op(scheme_mod, InsertPoint.at_start(self.top_level_module.body.block))
 
 
 @dataclass(frozen=True)
@@ -1711,19 +1702,8 @@ class SuiteCAP(ModulePass):
     That attribute takes precedence over this field when both are present.
     """
 
-    def find_ccpp_module(self, ops):
-        """Return the named 'ccpp' ModuleOp from the given op list, or None."""
-        for op in ops:
-            if (
-                isa(op, builtin.ModuleOp)
-                and op.sym_name is not None
-                and op.sym_name.data == "ccpp"
-            ):
-                return op
-        return None
-
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        ccpp_mod = self.find_ccpp_module(op.body.block.ops)
+        ccpp_mod = find_ccpp_module(op.body.block.ops)
         assert ccpp_mod is not None
 
         # Resolve num_instances: IR attribute from the frontend overrides the field default.

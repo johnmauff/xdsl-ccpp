@@ -10,6 +10,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import CcppHandleOp, TableTypeKind
+from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
     CCPP_INTERNAL_STD_NAMES,
@@ -58,16 +59,6 @@ class HostVariableMatchPass(ModulePass):
 
     # Standard names managed by the CCPP framework — see ccpp_conventions.py.
     _CCPP_INTERNAL: ClassVar[frozenset] = CCPP_INTERNAL_STD_NAMES
-
-    def _find_ccpp_module(self, ops):
-        for op in ops:
-            if (
-                isa(op, builtin.ModuleOp)
-                and op.sym_name is not None
-                and op.sym_name.data == "ccpp"
-            ):
-                return op
-        return None
 
     def _check_compatibility(
         self,
@@ -290,7 +281,7 @@ class HostVariableMatchPass(ModulePass):
         return errors, warnings
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        ccpp_mod = self._find_ccpp_module(op.body.block.ops)
+        ccpp_mod = find_ccpp_module(op.body.block.ops)
         if ccpp_mod is None:
             return
 
