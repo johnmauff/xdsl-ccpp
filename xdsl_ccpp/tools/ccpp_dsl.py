@@ -8,7 +8,13 @@ from xdsl.parser import Parser
 from xdsl.printer import Printer
 from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP, TablePropertiesOp
+from xdsl_ccpp.dialects.ccpp import (
+    CCPP,
+    ArgumentOp,
+    ArgumentTableOp,
+    TablePropertiesOp,
+    TableTypeKind,
+)
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML
 
@@ -93,10 +99,11 @@ class ccppMain:
         )
         parser.add_argument(
             "--directive",
-            default="acc",
+            default=None,
             choices=["acc", "omp"],
-            help="GPU directive backend: 'acc' for OpenACC (default), "
-                 "'omp' for OpenMP target offload",
+            help="GPU directive style: 'acc' for OpenACC, 'omp' for OpenMP "
+                 "target offload. When omitted, no GPU data movement directives "
+                 "are generated regardless of memory_space attributes.",
         )
         parser.add_argument(
             "--kind-map",
@@ -114,6 +121,13 @@ class ccppMain:
             help="Write a datatable.xml to this path after generating caps.  "
                  "Records generated .F90 file paths, scheme entry points, "
                  "suite call structure, and variable metadata.",
+        )
+        parser.add_argument(
+            "--no-memory-space-warning",
+            action="store_true",
+            default=False,
+            help="Suppress the warning emitted when memory_space attributes are "
+                 "present but --directive is not set.",
         )
         parser.add_argument(
             "--emit-html",
@@ -308,14 +322,75 @@ class ccppMain:
             f"  -> Merged {len(table_props)} table_properties block(s)",
         )
 
+    def _check_memory_space_mismatch(self, mlir_file: str) -> None:
+        """Warn when memory_space annotations exist but --directive is not set.
+
+        Before any pass runs, all TablePropertiesOp are flat children of the
+        top-level builtin.module.  Walk them to collect args with memory_space
+        set and emit a single warning if --directive was omitted.
+        """
+        if self.options_db.get("directive"):
+            return
+        if self.options_db.get("no_memory_space_warning"):
+            return
+
+        ctx = _make_ctx()
+        with open(mlir_file) as f:
+            top_module = Parser(ctx, f.read()).parse_op()
+
+        scheme_vars: list[str] = []
+        host_vars: list[str] = []
+
+        for op in top_module.body.block.ops:
+            if not isinstance(op, TablePropertiesOp):
+                continue
+            is_scheme = op.table_type.data == TableTypeKind.Scheme
+            for arg_table_op in op.body.ops:
+                if not isinstance(arg_table_op, ArgumentTableOp):
+                    continue
+                for arg_op in arg_table_op.body.ops:
+                    if not isinstance(arg_op, ArgumentOp):
+                        continue
+                    if arg_op.memory_space is None:
+                        continue
+                    name = (
+                        arg_op.standard_name.data
+                        if arg_op.standard_name is not None
+                        else arg_op.arg_name.data
+                    )
+                    entry = f"{name} ({arg_op.memory_space.data})"
+                    if is_scheme:
+                        scheme_vars.append(entry)
+                    else:
+                        host_vars.append(entry)
+
+        if scheme_vars or host_vars:
+            print(
+                "Warning: memory_space attributes are set but --directive is not; "
+                "GPU data movement directives will not be generated.",
+                file=sys.stderr,
+            )
+            if scheme_vars:
+                print(
+                    f"  Scheme variables with memory_space: {', '.join(scheme_vars)}",
+                    file=sys.stderr,
+                )
+            if host_vars:
+                print(
+                    f"  Host variables with memory_space:   {', '.join(host_vars)}",
+                    file=sys.stderr,
+                )
+            print(
+                "  Pass --directive acc or --directive omp to generate GPU data movement directives.",
+                file=sys.stderr,
+            )
+
     def run_opt(self, tmp_dir, mlir_in):
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         ccpp_cap_pass = "generate-ccpp-cap"
         if self.options_db.get("host_name"):
             ccpp_cap_pass += f"{{host_name={self.options_db['host_name']}}}"
-        directive = self.options_db.get("directive", "acc")
-        gpu_data_pass      = f"generate-gpu-data{{directive={directive}}}"
-        gpu_ccpp_cap_pass  = f"generate-gpu-ccpp-cap{{directive={directive}}}"
+        directive = self.options_db.get("directive")
         meta_kinds_pass = "generate-meta-kinds"
         kind_maps = self.options_db.get("kind_map") or []
         if kind_maps:
@@ -329,13 +404,19 @@ class ccppMain:
             k, iso = kind_maps[0].split(":", 1)
             meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
         has_host = bool(self.options_db.get("host_files"))
-        host_match_pass = "generate-host-match," if has_host else ""
-        ccpp_cap_passes = f",{ccpp_cap_pass},{gpu_ccpp_cap_pass}" if has_host else ""
-        pipeline = (
-            f"generate-meta-cap,{host_match_pass}{meta_kinds_pass},"
-            f"generate-suite-cap,{gpu_data_pass}{ccpp_cap_passes},"
-            f"generate-kinds,strip-ccpp"
-        )
+        passes = ["generate-meta-cap"]
+        if has_host:
+            passes.append("generate-host-match")
+        passes.append(meta_kinds_pass)
+        passes.append("generate-suite-cap")
+        if directive:
+            passes.append(f"generate-gpu-data{{directive={directive}}}")
+        if has_host:
+            passes.append(ccpp_cap_pass)
+            if directive:
+                passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
+        passes += ["generate-kinds", "strip-ccpp"]
+        pipeline = ",".join(passes)
         cmd = (
             f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
             f' -p "{pipeline}"'
@@ -428,6 +509,7 @@ class ccppMain:
             mlir_file = self.run_frontend(tmp_dir)
         if self.options_db.get("meta_file"):
             self.merge_meta(mlir_file)
+        self._check_memory_space_mismatch(mlir_file)
         ftn_file = self.run_opt(tmp_dir, mlir_file)
         self.split_fortran_output(ftn_file, out_dir)
 

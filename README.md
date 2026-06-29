@@ -61,9 +61,14 @@ Optional:
                         derived from the suite name when not set
   -t, --tempdir         Temporary directory for intermediate files (default: tmp)
   -v, --verbose         Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)
-  --directive acc|omp   GPU directive style: acc for OpenACC (default), omp for OpenMP
-                        target offload. Has no effect unless at least one scheme argument
-                        declares memory_space = device in its .meta file.
+  --directive acc|omp   GPU directive style: acc for OpenACC, omp for OpenMP target
+                        offload. When omitted, no GPU data movement directives are
+                        generated regardless of memory_space attributes. A warning
+                        is emitted if any memory_space attributes are found without
+                        this flag set (suppress with --no-memory-space-warning).
+  --no-memory-space-warning
+                        Suppress the warning emitted when memory_space attributes
+                        are present but --directive is not set.
   --emit-datatable      Write datatable.xml to this path after generating caps
   --emit-html           Write per-entry-point HTML variable tables to this directory
                         (requires --emit-datatable)
@@ -264,9 +269,25 @@ When the same argument appears in multiple scheme entry points within a suite wi
 
 If the host model also declares the variable as device-resident (`model_var_memory_space = device` in the host `.meta` file), the variable goes into `present()` instead — no data transfer is needed because the host already manages the device copy across timesteps.
 
+### Memory-Space Mismatch Warning
+
+When `memory_space` attributes are present in scheme or host `.meta` files but `--directive` is not set, `ccpp_xdsl` emits a warning to stderr listing the affected variables:
+
+```
+Warning: memory_space attributes are set but --directive is not; GPU data movement directives will not be generated.
+  Scheme variables with memory_space: theta (device), qv (device), ...
+  Pass --directive acc or --directive omp to generate GPU data movement directives.
+```
+
+To suppress this warning (e.g. when intentionally omitting GPU directives for a CPU-only build):
+
+```bash
+ccpp_xdsl --no-memory-space-warning ...
+```
+
 ### Generating a Cap with GPU Directives
 
-Pass `--directive acc` (the default) or `--directive omp`:
+Pass `--directive acc` or `--directive omp`:
 
 ```bash
 ccpp_xdsl \
