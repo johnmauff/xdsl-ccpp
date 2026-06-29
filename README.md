@@ -780,14 +780,7 @@ ruff format xdsl_ccpp/
 | MLIR IR (inspectable, composable) | ❌ | ❌ | ❌ | ✅ |
 | Multi-language host model path | ❌ | ❌ | ❌ | ✅ (architecture ready) |
 
-### Notes on Partial / Missing xdsl-ccpp Capabilities
-
-**DDT member variables:**
-Host variable matching and compatibility validation (type, rank, kind, units) is
-performed for both flat module variables and single-level DDT members.  Nested
-DDTs — where a DDT member is itself of a DDT type — are fully supported: the
-generated cap produces the correct multi-level Fortran accessor
-(e.g. ``phys_state%rad%temperature``).
+### Capability Notes
 
 ∥ **Unit conversion — implementation note:**
 xdsl-ccpp allocates a local temporary for each unit-converted argument (e.g.
