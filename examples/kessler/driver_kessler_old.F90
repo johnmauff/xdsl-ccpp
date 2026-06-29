@@ -73,6 +73,16 @@ program test_kessler_driver
   end if
 
   !------------------------------------------------------
+  ! Initialize kessler_update constants (gravit)
+  !------------------------------------------------------
+  call kessler_update_init(9.80616_kind_phys, errmsg, errflg)
+
+  if (errflg /= 0) then
+     print *, 'kessler_update_init error: ', trim(errmsg)
+     stop
+  end if
+
+  !------------------------------------------------------
   ! Allocate arrays
   !------------------------------------------------------
   allocate(cpair(ncol,nz), rair(ncol,nz), rho(ncol,nz))

@@ -74,6 +74,36 @@ class GatherMetaFunctionSignatures(Visitor):
             self.meta_functions[func_op.sym_name.data] = func_op
 
 
+@dataclass
+class _ArgTableResult:
+    scheme_entries: list
+    arg_tables: dict
+    scheme_overrides: dict
+    actual_postfixes: dict
+    all_args: dict
+    suite_use_stubs: list
+
+
+@dataclass
+class _ArgClassification:
+    framework_vars: dict
+    input_arg_list: list
+    output_arg_list: list
+    ncol_meta: "object | None"
+
+
+@dataclass
+class _BlockSignature:
+    new_block: "object"
+    input_arg_types: list
+    data_ops: dict
+    alloc_ops: dict
+    kind_cast_ops: list
+    kind_writeback_pairs: list
+    unit_convert_ops: list
+    unit_writeback_pairs: list
+
+
 class GenerateSuiteSubroutine(RewritePattern):
     """Rewrites each ccpp.SuiteOp into a named ModuleOp containing the five
     CCPP cap subroutines: initialize, finalize, physics, timestep_initial, and
@@ -618,130 +648,194 @@ class GenerateSuiteSubroutine(RewritePattern):
         store = llvm.StoreOp(loaded, addr_dst)
         return [addr_src, loaded, addr_dst, store]
 
-    def generateSubroutineCall(
-        self,
-        suite_description,
-        tgt_subroutine_postfix,
-        generated_subroutine_posfix=None,
-        state_string: str | None = None,
-        check_string: str | None = None,
-        physics_mode: bool = False,
-        group_name: str = "",
-        suite_model=None,
-    ):
-        """Build a single cap subroutine as a func.FuncOp.
+    @staticmethod
+    def _has_dims(a) -> bool:
+        return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
 
-        tgt_subroutine_postfix  -- suffix appended to each scheme name to form
-                                   the called function (e.g. "_init"). None
-                                   means no scheme calls are emitted.
-        generated_subroutine_posfix -- suffix used for the generated function
-                                   name (e.g. "_initialize"). Defaults to
-                                   tgt_subroutine_postfix when not supplied.
-        state_string            -- if set, write this value into ccpp_suite_state
-                                   at the end of the subroutine.
-        check_string            -- if set, verify ccpp_suite_state equals this
-                                   value at the start of the subroutine.
+    @staticmethod
+    def _is_framework_managed(a) -> bool:
+        """True for suite-cap-owned variables: interstitials of any type,
+        and advected/allocatable real arrays."""
+        if a.hasAttr("is_interstitial"):
+            return True
+        if a.getAttr("type") != "real":
+            return False
+        if not (a.hasAttr("dimensions") and a.getAttr("dimensions") > 0):
+            return False
+        return a.hasAttr("advected") or a.hasAttr("allocatable")
+
+    @staticmethod
+    def _arg_dims(a) -> int:
+        """Return the dimension count to use for the block arg type.
+
+        For promoted args, use scheme_rank + 1 so the suite physics
+        subroutine receives the full host 2D array (e.g. temp_layer(:,:))
+        rather than the scheme's 1D slice declaration (temp_layer(:)).
         """
-        if generated_subroutine_posfix is None:
-            assert tgt_subroutine_postfix is not None
-            generated_subroutine_posfix = tgt_subroutine_postfix
+        base = a.getAttr("dimensions") if a.hasAttr("dimensions") else 0
+        if a.hasAttr("is_promoted"):
+            return base + 1
+        return base
 
-        # atmospheric_physics uses _timestep_init/_timestep_final; accept both forms.
-        _POSTFIX_ALIASES: dict[str, str] = {
-            "_timestep_initialize": "_timestep_init",
-            "_timestep_finalize": "_timestep_final",
-        }
+    @staticmethod
+    def _block_arg_kind(a):
+        """Return the kind to use for the suite function block arg.
 
-        scheme_entries = self.getSchemeNames(suite_description)
-        arg_tables = {}
-        scheme_overrides: dict[str, dict[str, str]] = {}
-        actual_postfixes: dict[str, str] = {}  # actual entry-point postfix matched per scheme
-        all_args = {}
-        suite_use_stubs: list = []  # llvm.GlobalOps for host-module USE statements
-        if tgt_subroutine_postfix is not None:
-            # Fetch the argument table for each scheme's target subroutine;
-            # schemes that don't have this entry point (e.g. no _finalize) are skipped.
-            # First occurrence wins for duplicate scheme names.
-            # Try the canonical postfix first, then any registered alias.
-            _postfix_candidates = [tgt_subroutine_postfix]
-            if tgt_subroutine_postfix in _POSTFIX_ALIASES:
-                _postfix_candidates.append(_POSTFIX_ALIASES[tgt_subroutine_postfix])
-            for scheme_name, overrides in scheme_entries:
-                for _candidate in _postfix_candidates:
-                    table = self.getArgumentTable(
-                        scheme_name, scheme_name + _candidate
-                    )
-                    if table is not None and scheme_name not in arg_tables:
-                        arg_tables[scheme_name] = table
-                        scheme_overrides[scheme_name] = overrides
-                        actual_postfixes[scheme_name] = _candidate
-                        break
+        For kind-mismatched args the host provides the value in its own
+        kind, so the block arg is declared in the HOST kind.  The suite
+        function body then creates a temp in the SCHEME kind and converts.
+        """
+        if a.hasAttr("model_var_kind_mismatch"):
+            return a.getAttr("model_var_kind_mismatch").split(":")[1]
+        return a.getAttr("kind") if a.hasAttr("kind") else None
 
-            # Collect unique args across all schemes, keyed by standard_name.
-            # When two schemes use different local names for the same standard_name
-            # (e.g. 'temp' and 'temp_layer' for potential_temperature), the first-seen
-            # CCPPArgument is canonical — its local name drives the block arg declaration.
-            for scheme_name in arg_tables:
-                for fn_arg in arg_tables[scheme_name].getFunctionArguments():
-                    std_key = self._std_key(fn_arg)
-                    if std_key in all_args:
-                        assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
-                    else:
-                        all_args[std_key] = fn_arg
+    def _build_block_signature(self, input_arg_list, output_arg_list) -> "_BlockSignature":
+        """Build the Block, populate data_ops from block args, and apply kind/unit casts."""
+        input_arg_types = [
+            TypeConversions.convert(a.getAttr("type"), self._block_arg_kind(a), self._arg_dims(a))
+            for a in input_arg_list
+        ]
+        if self.ccpp_handle is not None:
+            _ccpp_t_type = memref.MemRefType(ccpp_utils.DerivedType("ccpp_t"), [])
+            input_arg_types.append(_ccpp_t_type)
 
-        # in/inout args become block arguments (input parameters to the cap subroutine).
-        # out-only scalar args are allocated locally; out array args also become block
-        # arguments because the host always owns the array buffer and we cannot
-        # allocate a dynamic memref without knowing the extents at compile time.
-        #
-        # Exception: framework-managed real arrays (advected, allocatable) are
-        # declared as module-level allocatables and managed by the suite cap itself.
-        # They are excluded from the block argument list and handled separately.
-        def _has_dims(a):
-            return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
+        new_block = Block(arg_types=input_arg_types)
 
-        def _is_framework_managed(a):
-            """True for suite-cap-owned variables: interstitials of any type,
-            and advected/allocatable real arrays.
+        data_ops = {}
+        for idx, fn_arg in enumerate(input_arg_list):
+            hint = fn_arg.name
+            if fn_arg.hasAttr("allocatable"):
+                hint = fn_arg.name + "__alloc"
+            elif fn_arg.hasAttr("optional"):
+                hint = fn_arg.name + "__opt"
+            elif (self._has_dims(fn_arg)
+                  and fn_arg.getAttr("intent") == "in"):
+                # Array args that are truly intent(in) get __in so the printer
+                # emits intent(in) rather than the default intent(inout).
+                # Unit-mismatched args are now converted into a local copy so
+                # the host's array is never modified — intent(in) is correct.
+                hint = fn_arg.name + "__in"
+            new_block.args[idx].name_hint = hint
+            data_ops[fn_arg.name] = new_block.args[idx]
 
-            is_interstitial is checked first so integer (and DDT) interstitials
-            are not accidentally excluded by the 'real only' guard below.
-            """
-            # Interstitials of any type — real, integer, or DDT
-            if a.hasAttr("is_interstitial"):
-                return True
-            # Advected/allocatable framework arrays — real only
-            if a.getAttr("type") != "real":
-                return False
-            if not _has_dims(a):
-                return False
-            return a.hasAttr("advected") or a.hasAttr("allocatable")
+        if self.ccpp_handle is not None:
+            new_block.args[len(input_arg_list)].name_hint = self.ccpp_handle[0]
 
-        # Separate framework-managed args from regular args
+        kind_cast_ops: list = []
+        kind_writeback_pairs: list = []
+        for idx, fn_arg in enumerate(input_arg_list):
+            if not fn_arg.hasAttr("model_var_kind_mismatch"):
+                continue
+            # Character length mismatches are resolved by declaring the block arg
+            # with the host's concrete length — no runtime KindCastOp required.
+            if fn_arg.getAttr("type") == "character":
+                continue
+            scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
+            block_arg_ssa = new_block.args[idx]
+            scheme_type = TypeConversions.convert(
+                fn_arg.getAttr("type"), scheme_kind, self._arg_dims(fn_arg)
+            )
+            cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
+            cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
+            kind_cast_ops.append(cast_op)
+            data_ops[fn_arg.name] = cast_op
+
+            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+            if intent in ("inout", "out"):
+                kind_writeback_pairs.append((cast_op.res, block_arg_ssa, host_kind))
+
+        unit_convert_ops: list = []
+        unit_writeback_pairs: list = []
+        for idx, fn_arg in enumerate(input_arg_list):
+            if not fn_arg.hasAttr("model_var_unit_mismatch"):
+                continue
+            scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
+            to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+
+            block_arg_ssa = new_block.args[idx]
+            arg_type = TypeConversions.convert(
+                fn_arg.getAttr("type"),
+                fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
+                self._arg_dims(fn_arg),
+            )
+
+            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+            pre_expr = "" if intent == "out" else to_scheme_expr
+
+            conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
+            conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
+            unit_convert_ops.append(conv_op)
+            data_ops[fn_arg.name] = conv_op
+
+            if intent in ("inout", "out"):
+                unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
+
+        alloc_ops = {}
+        for fn_arg in output_arg_list:
+            arg_type = fn_arg.getAttr("type")
+            kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
+            full_type = TypeConversions.convert(arg_type, kind, 0)
+            alloc_op = memref.AllocaOp.get(
+                full_type.element_type, shape=list(full_type.shape.data)
+            )
+            alloc_op.memref.name_hint = fn_arg.name
+            alloc_ops[fn_arg.name] = alloc_op
+            data_ops[fn_arg.name] = alloc_op
+
+        if "errflg" not in data_ops:
+            alloc_op = memref.AllocaOp.get(
+                TypeConversions.getBaseType("integer"), shape=[]
+            )
+            alloc_op.memref.name_hint = "errflg"
+            alloc_ops["errflg"] = alloc_op
+            data_ops["errflg"] = alloc_op
+        if "errmsg" not in data_ops:
+            alloc_op = memref.AllocaOp.get(
+                TypeConversions.getBaseType("character"), shape=[CCPP_ERRMSG_LEN]
+            )
+            alloc_op.memref.name_hint = "errmsg"
+            alloc_ops["errmsg"] = alloc_op
+            data_ops["errmsg"] = alloc_op
+
+        return _BlockSignature(
+            new_block=new_block,
+            input_arg_types=input_arg_types,
+            data_ops=data_ops,
+            alloc_ops=alloc_ops,
+            kind_cast_ops=kind_cast_ops,
+            kind_writeback_pairs=kind_writeback_pairs,
+            unit_convert_ops=unit_convert_ops,
+            unit_writeback_pairs=unit_writeback_pairs,
+        )
+
+    def _classify_args(self, all_args, physics_mode) -> "_ArgClassification":
+        """Partition all_args into framework-managed, input, and output lists.
+
+        When physics_mode is True and the loop-extent arg is present, replaces
+        that arg in input_arg_list with synthetic col_start/col_end scalars.
+        Returns the final lists and the ncol_meta arg (or None).
+        """
         framework_vars = {
             a.name: a
             for a in all_args.values()
-            if _is_framework_managed(a)
+            if self._is_framework_managed(a)
         }
-
         input_arg_list = [
             a
             for a in all_args.values()
-            if (a.getAttr("intent") in ("in", "inout") or _has_dims(a))
+            if (a.getAttr("intent") in ("in", "inout") or self._has_dims(a))
             and a.name not in framework_vars
         ]
         output_arg_list = [
             a
             for a in all_args.values()
-            if a.getAttr("intent") == "out" and not _has_dims(a)
+            if a.getAttr("intent") == "out" and not self._has_dims(a)
             and a.name not in framework_vars
         ]
 
-        # With standard_name keying, all_args has exactly one entry per standard_name.
-        # Look up the loop-extent arg directly — no aliases to filter.
+        ncol_meta = None
         ncol_meta_entry = all_args.get(CCPP_LOOP_EXTENT_STD_NAME)
-        _has_loop_extent = ncol_meta_entry is not None
-        if physics_mode and _has_loop_extent:
+        if physics_mode and ncol_meta_entry is not None:
             ncol_meta = ncol_meta_entry
             ncol_idx = next(
                 i for i, a in enumerate(input_arg_list)
@@ -763,205 +857,292 @@ class GenerateSuiteSubroutine(RewritePattern):
                 + input_arg_list[ncol_idx + 1:]
             )
 
-        def _arg_dims(a):
-            """Return the dimension count to use for the block arg type.
+        return _ArgClassification(
+            framework_vars=framework_vars,
+            input_arg_list=input_arg_list,
+            output_arg_list=output_arg_list,
+            ncol_meta=ncol_meta,
+        )
 
-            For promoted args, use scheme_rank + 1 so the suite physics
-            subroutine receives the full host 2D array (e.g. temp_layer(:,:))
-            rather than the scheme's 1D slice declaration (temp_layer(:)).
-            """
-            base = a.getAttr("dimensions") if a.hasAttr("dimensions") else 0
-            if a.hasAttr("is_promoted"):
-                # One extra dimension per promoted level (currently always 1)
-                return base + 1
-            return base
+    def _build_arg_tables(self, suite_description, tgt_subroutine_postfix) -> "_ArgTableResult":
+        """Build argument tables, overrides, and canonical arg map for all schemes."""
+        _POSTFIX_ALIASES: dict[str, str] = {
+            "_timestep_initialize": "_timestep_init",
+            "_timestep_finalize": "_timestep_final",
+        }
+        scheme_entries = self.getSchemeNames(suite_description)
+        arg_tables = {}
+        scheme_overrides: dict[str, dict[str, str]] = {}
+        actual_postfixes: dict[str, str] = {}
+        all_args = {}
+        suite_use_stubs: list = []
+        if tgt_subroutine_postfix is not None:
+            _postfix_candidates = [tgt_subroutine_postfix]
+            if tgt_subroutine_postfix in _POSTFIX_ALIASES:
+                _postfix_candidates.append(_POSTFIX_ALIASES[tgt_subroutine_postfix])
+            for scheme_name, overrides in scheme_entries:
+                for _candidate in _postfix_candidates:
+                    table = self.getArgumentTable(
+                        scheme_name, scheme_name + _candidate
+                    )
+                    if table is not None and scheme_name not in arg_tables:
+                        arg_tables[scheme_name] = table
+                        scheme_overrides[scheme_name] = overrides
+                        actual_postfixes[scheme_name] = _candidate
+                        break
 
-        def _block_arg_kind(a):
-            """Return the kind to use for the suite function block arg.
+            for scheme_name in arg_tables:
+                for fn_arg in arg_tables[scheme_name].getFunctionArguments():
+                    std_key = self._std_key(fn_arg)
+                    if std_key in all_args:
+                        assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
+                    else:
+                        all_args[std_key] = fn_arg
 
-            For kind-mismatched args the host provides the value in its own
-            kind, so the block arg is declared in the HOST kind.  The suite
-            function body then creates a temp in the SCHEME kind and converts.
-            """
-            if a.hasAttr("model_var_kind_mismatch"):
-                return a.getAttr("model_var_kind_mismatch").split(":")[1]
-            return a.getAttr("kind") if a.hasAttr("kind") else None
+        return _ArgTableResult(
+            scheme_entries=scheme_entries,
+            arg_tables=arg_tables,
+            scheme_overrides=scheme_overrides,
+            actual_postfixes=actual_postfixes,
+            all_args=all_args,
+            suite_use_stubs=suite_use_stubs,
+        )
 
-        input_arg_types = [
-            TypeConversions.convert(a.getAttr("type"), _block_arg_kind(a), _arg_dims(a))
+    def _assemble_func(
+        self,
+        suite_description,
+        generated_subroutine_posfix,
+        check_string,
+        state_string,
+        input_arg_list,
+        input_arg_types,
+        new_block,
+        data_ops,
+        alloc_ops,
+        kind_cast_ops,
+        kind_writeback_pairs,
+        unit_convert_ops,
+        unit_writeback_pairs,
+        call_ops,
+        initialisation_ops,
+        ncol_compute_ops,
+        framework_ref_ops,
+        lazy_alloc_ops,
+    ):
+        """Assemble all op lists into the body block and return the FuncOp."""
+        inout_return_vals = [
+            data_ops[a.name]
             for a in input_arg_list
+            if a.getAttr("intent") == "inout" and not self._has_dims(a)
+        ]
+        if self.ccpp_handle is not None:
+            inout_return_vals.append(new_block.args[len(input_arg_list)])
+        alloc_return_vals = list(alloc_ops.values())
+
+        errmsg_fn_name = suite_description.attributes["name"] + generated_subroutine_posfix
+        check_ops = (
+            self.generateStateCheckOps(check_string, data_ops, errmsg_fn_name)
+            if check_string is not None
+            else []
+        )
+        state_ops = (
+            self.generateStateAssignment(state_string)
+            if state_string is not None
+            else []
+        )
+
+        kind_writeback_ops = [
+            KindWriteBackOp(conv_res, orig_dest, orig_kind)
+            for conv_res, orig_dest, orig_kind in kind_writeback_pairs
+        ]
+        unit_writeback_ops = [
+            UnitWriteBackOp(conv_res, orig_dest, to_host)
+            for conv_res, orig_dest, to_host in unit_writeback_pairs
         ]
 
-        if self.ccpp_handle is not None:
-            _ccpp_t_type = memref.MemRefType(ccpp_utils.DerivedType("ccpp_t"), [])
-            input_arg_types.append(_ccpp_t_type)
+        body_ops = (
+            alloc_return_vals
+            + initialisation_ops
+            + ncol_compute_ops
+            + framework_ref_ops
+            + lazy_alloc_ops
+            + kind_cast_ops
+            + unit_convert_ops
+            + check_ops
+            + call_ops
+            + kind_writeback_ops
+            + unit_writeback_ops
+            + state_ops
+            + [func.ReturnOp(*inout_return_vals, *alloc_return_vals)]
+        )
 
-        new_block = Block(arg_types=input_arg_types)
+        new_block.add_ops(body_ops)
+        body = Region()
+        body.add_block(new_block)
 
-        data_ops = {}
-        # Map each input argument name to its block argument SSA value.
-        # Allocatable args get a __alloc suffix on the name_hint so the printer
-        # can add the ALLOCATABLE attribute to the Fortran declaration.
-        # Optional args get a __opt suffix so the printer adds the OPTIONAL attribute.
-        for idx, fn_arg in enumerate(input_arg_list):
-            hint = fn_arg.name
-            if fn_arg.hasAttr("allocatable"):
-                hint = fn_arg.name + "__alloc"
-            elif fn_arg.hasAttr("optional"):
-                hint = fn_arg.name + "__opt"
-            elif (_has_dims(fn_arg)
-                  and fn_arg.getAttr("intent") == "in"):
-                # Array args that are truly intent(in) get __in so the printer
-                # emits intent(in) rather than the default intent(inout).
-                # Unit-mismatched args are now converted into a local copy so
-                # the host's array is never modified — intent(in) is correct.
-                hint = fn_arg.name + "__in"
-            new_block.args[idx].name_hint = hint
-            data_ops[fn_arg.name] = new_block.args[idx]
+        return_types = [v.type for v in inout_return_vals] + [
+            o.results[0].type for o in alloc_return_vals
+        ]
+        new_fn_type = builtin.FunctionType.from_lists(input_arg_types, return_types)
+        return func.FuncOp(
+            suite_description.attributes["name"] + "_suite" + generated_subroutine_posfix,
+            new_fn_type,
+            body,
+            visibility="public",
+        )
 
-        if self.ccpp_handle is not None:
-            new_block.args[len(input_arg_list)].name_hint = self.ccpp_handle[0]
+    def _build_call_ops(
+        self,
+        suite_description,
+        tgt_subroutine_postfix,
+        physics_mode,
+        all_args,
+        data_ops,
+        framework_ref_ops,
+        suite_use_stubs,
+        actual_postfixes,
+        arg_tables,
+        scheme_overrides,
+    ):
+        """Build scheme call ops and collect fn_sigs for all items in the call sequence."""
+        call_ops = []
+        fn_sigs = {}
+        if tgt_subroutine_postfix is None:
+            return call_ops, fn_sigs
 
-        # For kind-mismatched args: create a KindCastOp that converts the block
-        # arg (host kind) to a local temp (scheme kind).  The scheme call will
-        # use the temp; inout/out args get a write-back after the call.
-        kind_cast_ops: list = []
-        kind_writeback_pairs: list = []  # (block_arg_ssa, cast_res, host_kind)
-        for idx, fn_arg in enumerate(input_arg_list):
-            if not fn_arg.hasAttr("model_var_kind_mismatch"):
-                continue
-            scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
-            block_arg_ssa = new_block.args[idx]
-            scheme_type = TypeConversions.convert(
-                fn_arg.getAttr("type"), scheme_kind, _arg_dims(fn_arg)
+        call_sequence = self.getCallSequence(suite_description)
+
+        def _flush_promoted(cur_pdim, cur_pgroup):
+            if not cur_pgroup:
+                return []
+            upper_bound_ref = (
+                self._find_loop_upper_bound(
+                    cur_pdim, all_args, data_ops,
+                    framework_ref_ops=framework_ref_ops,
+                    suite_use_stubs=suite_use_stubs,
+                )
+                if cur_pdim
+                else None
             )
-            cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
-            cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
-            kind_cast_ops.append(cast_op)
-            data_ops[fn_arg.name] = cast_op  # scheme call uses the temp
-
-            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-            if intent in ("inout", "out"):
-                kind_writeback_pairs.append((cast_op.res, block_arg_ssa, host_kind))
-
-        # Unit conversion — same pattern as kind conversion.
-        # For inout/in: pre-convert host units → scheme units before the call.
-        # For out:      just allocate a temp (scheme writes into it); no pre-convert.
-        # Write-back:   convert scheme units → host units after the call (inout/out).
-        # Must be built here (before call_ops) so data_ops is updated in time.
-        unit_convert_ops: list = []
-        unit_writeback_pairs: list = []  # (conv_res, orig_dest, to_host_expr)
-        for idx, fn_arg in enumerate(input_arg_list):
-            if not fn_arg.hasAttr("model_var_unit_mismatch"):
-                continue
-            scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
-            to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
-
-            block_arg_ssa = new_block.args[idx]
-            arg_type = TypeConversions.convert(
-                fn_arg.getAttr("type"),
-                fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
-                _arg_dims(fn_arg),
-            )
-
-            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-            # Pass empty string for intent=out so only the allocation is emitted
-            pre_expr = "" if intent == "out" else to_scheme_expr
-
-            conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
-            conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
-            unit_convert_ops.append(conv_op)
-            data_ops[fn_arg.name] = conv_op
-
-            if intent in ("inout", "out"):
-                unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
-
-        alloc_ops = {}
-        # Allocate local storage for each output-only argument
-        for fn_arg in output_arg_list:
-            arg_type = fn_arg.getAttr("type")
-            kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
-            full_type = TypeConversions.convert(arg_type, kind, 0)
-            alloc_op = memref.AllocaOp.get(
-                full_type.element_type, shape=list(full_type.shape.data)
-            )
-            alloc_op.memref.name_hint = fn_arg.name
-            alloc_ops[fn_arg.name] = alloc_op
-            data_ops[fn_arg.name] = alloc_op
-
-        # errflg and errmsg must always be present regardless of whether scheme
-        # functions are called (e.g. when tgt_subroutine_postfix is None)
-        if "errflg" not in data_ops:
-            alloc_op = memref.AllocaOp.get(
+            if upper_bound_ref is None:
+                ops = []
+                for sn, tbl in cur_pgroup:
+                    full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
+                    ops += self.generateSchemeSubroutineCallOps(
+                        full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
+                    )
+                    if full_name not in fn_sigs:
+                        fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+                return ops
+            lv_alloc = memref.AllocaOp.get(
                 TypeConversions.getBaseType("integer"), shape=[]
             )
-            alloc_op.memref.name_hint = "errflg"
-            alloc_ops["errflg"] = alloc_op
-            data_ops["errflg"] = alloc_op
-        if "errmsg" not in data_ops:
-            alloc_op = memref.AllocaOp.get(
-                TypeConversions.getBaseType("character"), shape=[CCPP_ERRMSG_LEN]
-            )
-            alloc_op.memref.name_hint = "errmsg"
-            alloc_ops["errmsg"] = alloc_op
-            data_ops["errmsg"] = alloc_op
+            lv_alloc.memref.name_hint = "vertical_layer_index"
+            body_list: list = []
+            for sn, tbl in cur_pgroup:
+                full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
+                body_list += self._build_promoted_call_ops(
+                    full_name, tbl, data_ops, lv_alloc.memref,
+                    scheme_overrides.get(sn, {}),
+                )
+                if full_name not in fn_sigs:
+                    fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+            return [lv_alloc, PromotionLoopOp(
+                loop_var=lv_alloc.memref,
+                upper_bound=upper_bound_ref,
+                body_ops=body_list,
+            )]
 
-        ncol_compute_ops = []
-        # The synthetic col_start/col_end args always carry these names — the host
-        # provides loop bounds under horizontal_loop_begin/end standard names and
-        # _make_col_arg above fixes the local names to col_start/col_end.
-        if physics_mode and "col_start" in data_ops and "col_end" in data_ops:
-            ncol_alloc = memref.AllocaOp.get(
-                TypeConversions.getBaseType("integer"), shape=[]
-            )
-            ncol_alloc.memref.name_hint = "ncol"
-            load_col_start = memref.LoadOp.get(data_ops["col_start"], [])
-            load_col_end = memref.LoadOp.get(data_ops["col_end"], [])
-            sub_op = arith.SubiOp(load_col_end, load_col_start)
-            one_const = arith.ConstantOp.from_int_and_width(1, 32)
-            add_op = arith.AddiOp(sub_op, one_const)
-            store_ncol = memref.StoreOp.get(add_op, ncol_alloc, [])
-            data_ops["ncol"] = ncol_alloc
-            # Also map the original ncol_meta arg name in case it differs from "ncol"
-            # (e.g. 'nbox' when processing a single group whose only loop-extent arg
-            # was renamed to col_start/col_end in input_arg_list).
-            if ncol_meta.name != "ncol":
-                data_ops[ncol_meta.name] = ncol_alloc
-            # Pre-create a lower-bound-1 alloca for use in promoted scheme slices.
-            # Block-arg arrays (e.g. temp_layer) are 1-based within the physics
-            # function, so RankReducingSliceOp needs a constant 1 as the lower
-            # bound.  It must live at function scope so the Fortran printer can
-            # declare it before use inside the promotion loop.
-            from xdsl_ccpp.transforms.util.typing import TypeConversions as _TC
-            _ib = _TC.getBaseType("integer")
-            lbound_one_alloc = memref.AllocaOp.get(_ib, shape=[])
-            lbound_one_alloc.memref.name_hint = "ccpp_lbound_one"
-            lbound_one_const = arith.ConstantOp.from_int_and_width(1, 32)
-            lbound_one_store = memref.StoreOp.get(lbound_one_const, lbound_one_alloc, [])
-            data_ops["ccpp_lbound_one"] = lbound_one_alloc
-            ncol_compute_ops = [
-                ncol_alloc,
-                load_col_start,
-                load_col_end,
-                sub_op,
-                one_const,
-                add_op,
-                store_ncol,
-                lbound_one_alloc,
-                lbound_one_const,
-                lbound_one_store,
-            ]
+        def _emit_ordered_list(scheme_list):
+            """Emit call ops for (scheme_name, tbl) pairs in order.
 
-        initialisation_ops = self.generateVariableInitialisations(data_ops)
+            Consecutive promoted schemes sharing the same promoted_dim are
+            grouped into a single PromotionLoopOp.
+            """
+            result: list = []
+            cur_pdim: str | None = None
+            cur_pgroup: list = []
+            for sn, tbl in scheme_list:
+                full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
+                assert full_name in self.meta_fn_sigs
+                if full_name not in fn_sigs:
+                    fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+                if physics_mode and self._scheme_has_promoted_args(tbl):
+                    pdim = next(
+                        (
+                            arg.getAttr("promoted_dim").lower()
+                            for arg in tbl.getFunctionArguments()
+                            if arg.hasAttr("is_promoted")
+                            and arg.hasAttr("promoted_dim")
+                        ),
+                        None,
+                    )
+                    if pdim == cur_pdim:
+                        cur_pgroup.append((sn, tbl))
+                    else:
+                        result += _flush_promoted(cur_pdim, cur_pgroup)
+                        cur_pgroup = [(sn, tbl)]
+                        cur_pdim = pdim
+                else:
+                    result += _flush_promoted(cur_pdim, cur_pgroup)
+                    cur_pgroup = []
+                    cur_pdim = None
+                    result += self.generateSchemeSubroutineCallOps(
+                        full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
+                    )
+            result += _flush_promoted(cur_pdim, cur_pgroup)
+            return result
 
-        # Add framework-managed real arrays (advected/allocatable) to data_ops
-        # as module-local variable references.  These variables are declared as
-        # module-level allocatables by match_and_rewrite and are accessible in
-        # all contained subroutines without being passed as arguments.
-        # Refs are added in ALL lifecycle phases so scheme calls can find them.
-        # When suite_model is provided, allocation is emitted in non-physics
-        # (initialize) mode using full-domain dimensions.  In physics mode,
-        # suite-owned arrays are never re-allocated.
+        for item in call_sequence:
+            if item[0] == "scheme":
+                _, scheme_name, _ = item
+                if scheme_name not in arg_tables:
+                    continue
+                call_ops += _emit_ordered_list(
+                    [(scheme_name, arg_tables[scheme_name])]
+                )
+            elif item[0] == "subcycle":
+                _, loop_count, is_literal, subcycle_scheme_list = item
+                flat = [
+                    (sn, arg_tables[sn])
+                    for sn, _ in subcycle_scheme_list
+                    if sn in arg_tables
+                ]
+                body_ops = _emit_ordered_list(flat)
+                _lc_int = (int(loop_count) if is_literal
+                           else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
+                if _lc_int > 1 and physics_mode and body_ops:
+                    sc_alloc = memref.AllocaOp.get(
+                        TypeConversions.getBaseType("integer"), shape=[]
+                    )
+                    sc_alloc.memref.name_hint = "ccpp_loop_cnt"
+                    call_ops += [sc_alloc, SubcycleLoopOp(
+                        loop_count=loop_count,
+                        loop_var=sc_alloc.memref,
+                        body_ops=body_ops,
+                        is_literal=is_literal,
+                    )]
+                else:
+                    call_ops += body_ops
+
+        return call_ops, fn_sigs
+
+    def _build_framework_refs(
+        self,
+        framework_vars,
+        all_args,
+        data_ops,
+        suite_use_stubs,
+        suite_model,
+        tgt_subroutine_postfix,
+        physics_mode,
+        arg_tables,
+    ):
+        """Build HostVarRefOps and LazyAllocOps for framework-managed vars.
+
+        Mutates data_ops and suite_use_stubs as side effects.
+        Returns (framework_ref_ops, lazy_alloc_ops).
+        """
         framework_ref_ops = []
         lazy_alloc_ops = []
         if framework_vars:
@@ -969,9 +1150,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                 _fw_std_key = self._std_key(fw_arg)
                 _scheme_dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
 
-                # Determine the rank of the module-level variable.
-                # SuiteVariableModel is authoritative; fall back to the scheme's
-                # own declared rank when no model is provided.
                 if suite_model is not None:
                     _entry = suite_model.get(_fw_std_key)
                     _rank = _entry.rank if _entry is not None else _scheme_dims
@@ -983,9 +1161,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                     fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else None,
                     _rank,
                 )
-                # Use the canonical suite-owned name (from the first writer) so the
-                # Fortran emits the correct module variable name.  e.g. 'temp_inc'
-                # in a _timestep_initialize scheme maps to module var 'temp_inc_set'.
                 _suite_entry = suite_model.get(_fw_std_key) if suite_model else None
                 _var_name = (
                     _suite_entry.local_name
@@ -999,10 +1174,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if _var_name != fw_arg.name:
                     data_ops[_var_name] = ref_op
 
-                # In physics mode, apply (col_start:col_end) ArraySectionOp for
-                # 1D vars whose first allocation dimension is horizontal.  Skip vars
-                # dimensioned by non-horizontal dims (e.g. promote_pcnst(number_of_tracers))
-                # and 2D+ vars (they are handled by RankReducingSliceOp in promotion loops).
                 _horiz_std_names = {
                     CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME,
                     CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME,
@@ -1039,13 +1210,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                         framework_ref_ops.append(section)
                         data_ops[fw_arg.name] = section
 
-                # Only emit LazyAllocOp in init/register phases — suite-owned vars  Finalize, timestep,
-                # and physics functions must not re-allocate — suite-owned vars are
-                # already live from initialize.
                 _is_alloc_phase = tgt_subroutine_postfix in ("_init", "_register")
                 if _is_alloc_phase:
-                    # Resolve dimension SSA values from data_ops via standard names,
-                    # mapping horizontal_loop_extent → horizontal_dimension for allocation.
                     _alloc_dim_names = (
                         suite_model.alloc_dims(_fw_std_key)
                         if suite_model is not None
@@ -1054,7 +1220,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                     )
                     dim_var_refs = []
                     for dim_std_name in _alloc_dim_names:
-                        # Map horizontal_loop_extent → horizontal_dimension for allocation
                         alloc_dim = (
                             CCPP_HORIZ_DIM_STD_NAME
                             if dim_std_name.lower() == CCPP_LOOP_EXTENT_STD_NAME
@@ -1069,8 +1234,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if matching and matching.name in data_ops:
                             dim_var_refs.append(data_ops[matching.name])
                         else:
-                            # Try host MODULE tables (e.g. horizontal_dimension declared
-                            # in a host module but not in any scheme arg table)
                             ssa = self._find_loop_upper_bound(
                                 alloc_dim, all_args, data_ops,
                                 framework_ref_ops=framework_ref_ops,
@@ -1095,10 +1258,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                             )
                         )
 
-        # In non-physics (initialize) mode with a suite model, allocate ALL
-        # suite-owned array variables, even those not referenced in this
-        # function's arg tables.  This ensures that vars first written in _run
-        # (e.g. to_promote) are allocated before any physics call.
         if suite_model is not None and tgt_subroutine_postfix in ("_init", "_register"):
             already_allocated = {op.var_name.data for op in lazy_alloc_ops}
             for entry in suite_model.suite_owned_vars():
@@ -1113,7 +1272,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if dim_std_name.lower() == CCPP_LOOP_EXTENT_STD_NAME
                         else dim_std_name
                     )
-                    # Try current arg tables first
                     matching = next(
                         (a for a in all_args.values()
                          if a.hasAttr("standard_name")
@@ -1141,9 +1299,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                         )
                     )
 
-        # Populate data_ops aliases so scheme calls using non-canonical local names
-        # (e.g. 'nbox' when canonical is 'ncol', 'temp_layer' when canonical is 'temp')
-        # resolve correctly.  This must run after ncol_alloc is set.
         if tgt_subroutine_postfix is not None:
             for _scheme_name in arg_tables:
                 for _fn_arg in arg_tables[_scheme_name].getFunctionArguments():
@@ -1153,196 +1308,145 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if _fn_arg.name not in data_ops and _canonical.name in data_ops:
                             data_ops[_fn_arg.name] = data_ops[_canonical.name]
 
-        call_ops = []
-        fn_sigs = {}
-        if tgt_subroutine_postfix is not None:
-            call_sequence = self.getCallSequence(suite_description)
+        return framework_ref_ops, lazy_alloc_ops
 
-            def _flush_promoted(cur_pdim, cur_pgroup):
-                """Emit a PromotionLoopOp for a pending group of promoted schemes."""
-                if not cur_pgroup:
-                    return []
-                upper_bound_ref = (
-                    self._find_loop_upper_bound(
-                        cur_pdim, all_args, data_ops,
-                        framework_ref_ops=framework_ref_ops,
-                        suite_use_stubs=suite_use_stubs,
-                    )
-                    if cur_pdim
-                    else None
-                )
-                if upper_bound_ref is None:
-                    # Fallback: emit without loop
-                    ops = []
-                    for sn, tbl in cur_pgroup:
-                        full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
-                        ops += self.generateSchemeSubroutineCallOps(
-                            full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
-                        )
-                        if full_name not in fn_sigs:
-                            fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-                    return ops
-                lv_alloc = memref.AllocaOp.get(
-                    TypeConversions.getBaseType("integer"), shape=[]
-                )
-                lv_alloc.memref.name_hint = "vertical_layer_index"
-                body_list: list = []
-                for sn, tbl in cur_pgroup:
-                    full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
-                    body_list += self._build_promoted_call_ops(
-                        full_name, tbl, data_ops, lv_alloc.memref,
-                        scheme_overrides.get(sn, {}),
-                    )
-                    if full_name not in fn_sigs:
-                        fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-                return [lv_alloc, PromotionLoopOp(
-                    loop_var=lv_alloc.memref,
-                    upper_bound=upper_bound_ref,
-                    body_ops=body_list,
-                )]
-
-            def _emit_ordered_list(scheme_list):
-                """Emit call ops for (scheme_name, tbl) pairs in order.
-
-                Consecutive promoted schemes sharing the same promoted_dim are
-                grouped into a single PromotionLoopOp.
-                """
-                result: list = []
-                cur_pdim: str | None = None
-                cur_pgroup: list = []
-                for sn, tbl in scheme_list:
-                    full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
-                    assert full_name in self.meta_fn_sigs
-                    if full_name not in fn_sigs:
-                        fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-                    if physics_mode and self._scheme_has_promoted_args(tbl):
-                        pdim = next(
-                            (
-                                arg.getAttr("promoted_dim").lower()
-                                for arg in tbl.getFunctionArguments()
-                                if arg.hasAttr("is_promoted")
-                                and arg.hasAttr("promoted_dim")
-                            ),
-                            None,
-                        )
-                        if pdim == cur_pdim:
-                            cur_pgroup.append((sn, tbl))
-                        else:
-                            result += _flush_promoted(cur_pdim, cur_pgroup)
-                            cur_pgroup = [(sn, tbl)]
-                            cur_pdim = pdim
-                    else:
-                        result += _flush_promoted(cur_pdim, cur_pgroup)
-                        cur_pgroup = []
-                        cur_pdim = None
-                        result += self.generateSchemeSubroutineCallOps(
-                            full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
-                        )
-                result += _flush_promoted(cur_pdim, cur_pgroup)
-                return result
-
-            for item in call_sequence:
-                if item[0] == "scheme":
-                    _, scheme_name, _ = item
-                    if scheme_name not in arg_tables:
-                        continue
-                    call_ops += _emit_ordered_list(
-                        [(scheme_name, arg_tables[scheme_name])]
-                    )
-                elif item[0] == "subcycle":
-                    _, loop_count, is_literal, subcycle_scheme_list = item
-                    flat = [
-                        (sn, arg_tables[sn])
-                        for sn, _ in subcycle_scheme_list
-                        if sn in arg_tables
-                    ]
-                    body_ops = _emit_ordered_list(flat)
-                    _lc_int = (int(loop_count) if is_literal
-                               else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
-                    if _lc_int > 1 and physics_mode and body_ops:
-                        sc_alloc = memref.AllocaOp.get(
-                            TypeConversions.getBaseType("integer"), shape=[]
-                        )
-                        sc_alloc.memref.name_hint = "ccpp_loop_cnt"
-                        call_ops += [sc_alloc, SubcycleLoopOp(
-                            loop_count=loop_count,
-                            loop_var=sc_alloc.memref,
-                            body_ops=body_ops,
-                            is_literal=is_literal,
-                        )]
-                    else:
-                        call_ops += body_ops
-
-        # Scalar inout block args are returned so the caller receives the updated value.
-        # Array inout args are modified in-place through the host's buffer, so they
-        # do not need to be returned — the host observes the changes directly.
-        inout_return_vals = [
-            data_ops[a.name]
-            for a in input_arg_list
-            if a.getAttr("intent") == "inout" and not _has_dims(a)
-        ]
-        if self.ccpp_handle is not None:
-            inout_return_vals.append(new_block.args[len(input_arg_list)])
-        alloc_return_vals = list(alloc_ops.values())
-
-        errmsg_fn_name = (
-            suite_description.attributes["name"] + generated_subroutine_posfix
+    @staticmethod
+    def _build_ncol_compute_ops(physics_mode, data_ops, ncol_meta) -> list:
+        """Compute ncol = col_end - col_start + 1 and lbound_one; mutates data_ops."""
+        if not (physics_mode and "col_start" in data_ops and "col_end" in data_ops):
+            return []
+        ncol_alloc = memref.AllocaOp.get(
+            TypeConversions.getBaseType("integer"), shape=[]
         )
-        check_ops = (
-            self.generateStateCheckOps(check_string, data_ops, errmsg_fn_name)
-            if check_string is not None
-            else []
-        )
-        state_ops = (
-            self.generateStateAssignment(state_string)
-            if state_string is not None
-            else []
-        )
-
-        kind_writeback_ops = [
-            KindWriteBackOp(conv_res, orig_dest, orig_kind)
-            for conv_res, orig_dest, orig_kind in kind_writeback_pairs
+        ncol_alloc.memref.name_hint = "ncol"
+        load_col_start = memref.LoadOp.get(data_ops["col_start"], [])
+        load_col_end = memref.LoadOp.get(data_ops["col_end"], [])
+        sub_op = arith.SubiOp(load_col_end, load_col_start)
+        one_const = arith.ConstantOp.from_int_and_width(1, 32)
+        add_op = arith.AddiOp(sub_op, one_const)
+        store_ncol = memref.StoreOp.get(add_op, ncol_alloc, [])
+        data_ops["ncol"] = ncol_alloc
+        if ncol_meta.name != "ncol":
+            data_ops[ncol_meta.name] = ncol_alloc
+        _ib = TypeConversions.getBaseType("integer")
+        lbound_one_alloc = memref.AllocaOp.get(_ib, shape=[])
+        lbound_one_alloc.memref.name_hint = "ccpp_lbound_one"
+        lbound_one_const = arith.ConstantOp.from_int_and_width(1, 32)
+        lbound_one_store = memref.StoreOp.get(lbound_one_const, lbound_one_alloc, [])
+        data_ops["ccpp_lbound_one"] = lbound_one_alloc
+        return [
+            ncol_alloc,
+            load_col_start,
+            load_col_end,
+            sub_op,
+            one_const,
+            add_op,
+            store_ncol,
+            lbound_one_alloc,
+            lbound_one_const,
+            lbound_one_store,
         ]
 
-        unit_writeback_ops = [
-            UnitWriteBackOp(conv_res, orig_dest, to_host)
-            for conv_res, orig_dest, to_host in unit_writeback_pairs
-        ]
+    def generateSubroutineCall(
+        self,
+        suite_description,
+        tgt_subroutine_postfix,
+        generated_subroutine_posfix=None,
+        state_string: str | None = None,
+        check_string: str | None = None,
+        physics_mode: bool = False,
+        group_name: str = "",
+        suite_model=None,
+    ):
+        """Build a single cap subroutine as a func.FuncOp.
 
-        body_ops = (
-            alloc_return_vals
-            + initialisation_ops
-            + ncol_compute_ops
-            + framework_ref_ops
-            + lazy_alloc_ops
-            + kind_cast_ops
-            + unit_convert_ops
-            + check_ops
-            + call_ops
-            + kind_writeback_ops
-            + unit_writeback_ops
-            + state_ops
-            + [func.ReturnOp(*inout_return_vals, *alloc_return_vals)]
+        tgt_subroutine_postfix  -- suffix appended to each scheme name to form
+                                   the called function (e.g. "_init"). None
+                                   means no scheme calls are emitted.
+        generated_subroutine_posfix -- suffix used for the generated function
+                                   name (e.g. "_initialize"). Defaults to
+                                   tgt_subroutine_postfix when not supplied.
+        state_string            -- if set, write this value into ccpp_suite_state
+                                   at the end of the subroutine.
+        check_string            -- if set, verify ccpp_suite_state equals this
+                                   value at the start of the subroutine.
+        """
+        if generated_subroutine_posfix is None:
+            assert tgt_subroutine_postfix is not None
+            generated_subroutine_posfix = tgt_subroutine_postfix
+
+        _tables = self._build_arg_tables(suite_description, tgt_subroutine_postfix)
+        scheme_entries = _tables.scheme_entries
+        arg_tables = _tables.arg_tables
+        scheme_overrides = _tables.scheme_overrides
+        actual_postfixes = _tables.actual_postfixes
+        all_args = _tables.all_args
+        suite_use_stubs = _tables.suite_use_stubs
+
+        _cls = self._classify_args(all_args, physics_mode)
+        framework_vars = _cls.framework_vars
+        input_arg_list = _cls.input_arg_list
+        output_arg_list = _cls.output_arg_list
+        ncol_meta = _cls.ncol_meta
+
+        _sig = self._build_block_signature(input_arg_list, output_arg_list)
+        new_block = _sig.new_block
+        input_arg_types = _sig.input_arg_types
+        data_ops = _sig.data_ops
+        alloc_ops = _sig.alloc_ops
+        kind_cast_ops = _sig.kind_cast_ops
+        kind_writeback_pairs = _sig.kind_writeback_pairs
+        unit_convert_ops = _sig.unit_convert_ops
+        unit_writeback_pairs = _sig.unit_writeback_pairs
+
+        ncol_compute_ops = self._build_ncol_compute_ops(physics_mode, data_ops, ncol_meta)
+
+        initialisation_ops = self.generateVariableInitialisations(data_ops)
+
+        framework_ref_ops, lazy_alloc_ops = self._build_framework_refs(
+            framework_vars=framework_vars,
+            all_args=all_args,
+            data_ops=data_ops,
+            suite_use_stubs=suite_use_stubs,
+            suite_model=suite_model,
+            tgt_subroutine_postfix=tgt_subroutine_postfix,
+            physics_mode=physics_mode,
+            arg_tables=arg_tables,
         )
 
-        new_block.add_ops(body_ops)
-        body = Region()
-        body.add_block(new_block)
-
-        return_types = [v.type for v in inout_return_vals] + [
-            o.results[0].type for o in alloc_return_vals
-        ]
-
-        new_fn_type = builtin.FunctionType.from_lists(input_arg_types, return_types)
-        new_func = func.FuncOp(
-            suite_description.attributes["name"]
-            + "_suite"
-            + generated_subroutine_posfix,
-            new_fn_type,
-            body,
-            visibility="public",
+        call_ops, fn_sigs = self._build_call_ops(
+            suite_description=suite_description,
+            tgt_subroutine_postfix=tgt_subroutine_postfix,
+            physics_mode=physics_mode,
+            all_args=all_args,
+            data_ops=data_ops,
+            framework_ref_ops=framework_ref_ops,
+            suite_use_stubs=suite_use_stubs,
+            actual_postfixes=actual_postfixes,
+            arg_tables=arg_tables,
+            scheme_overrides=scheme_overrides,
         )
 
+        new_func = self._assemble_func(
+            suite_description=suite_description,
+            generated_subroutine_posfix=generated_subroutine_posfix,
+            check_string=check_string,
+            state_string=state_string,
+            input_arg_list=input_arg_list,
+            input_arg_types=input_arg_types,
+            new_block=new_block,
+            data_ops=data_ops,
+            alloc_ops=alloc_ops,
+            kind_cast_ops=kind_cast_ops,
+            kind_writeback_pairs=kind_writeback_pairs,
+            unit_convert_ops=unit_convert_ops,
+            unit_writeback_pairs=unit_writeback_pairs,
+            call_ops=call_ops,
+            initialisation_ops=initialisation_ops,
+            ncol_compute_ops=ncol_compute_ops,
+            framework_ref_ops=framework_ref_ops,
+            lazy_alloc_ops=lazy_alloc_ops,
+        )
         return new_func, list(fn_sigs.values()), suite_use_stubs
 
     def clone_func_defs(self, func_defs):

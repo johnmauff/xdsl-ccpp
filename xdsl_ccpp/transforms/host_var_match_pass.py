@@ -118,6 +118,23 @@ class HostVariableMatchPass(ModulePass):
                     f"{scheme_kind}:{host_kind}"
                 )
 
+        # ── 2b. Character length check ──────────────────────────────────────
+        # When the scheme declares len=* (assumed-length) but the host provides a
+        # concrete length, the generated block arg must use the host's length.
+        # For arrays this is mandatory (assumed-shape + assumed-length is illegal);
+        # for scalars it avoids a length mismatch error at the call site.
+        if scheme_type == "character":
+            scheme_kind = (
+                scheme_arg_op.kind.data if scheme_arg_op.kind is not None else None
+            )
+            host_kind = (
+                host_arg_op.kind.data if host_arg_op.kind is not None else None
+            )
+            if scheme_kind != host_kind and scheme_kind is not None and host_kind is not None:
+                scheme_arg_op.properties["model_var_kind_mismatch"] = StringAttr(
+                    f"{scheme_kind}:{host_kind}"
+                )
+
         # ── 2b. Unit check (real variables only) ───────────────────────────
         if scheme_type == "real":
             scheme_units = normalize_units(
