@@ -919,7 +919,7 @@ generator to know anything about Kokkos internals.
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Structured `ModuleVarOp` type attributes | ✅ Done |
-| 2 | `array_layout` metadata in host `.meta` files | Not started |
+| 2 | `array_layout` metadata in host `.meta` files | ✅ Done |
 | 3 | BIND(C) cap generation (`--interface bindC`) | Not started |
 | 4 | C++ header printer | Not started |
 | 5 | CMake `INTERFACE bindC` option | Not started |

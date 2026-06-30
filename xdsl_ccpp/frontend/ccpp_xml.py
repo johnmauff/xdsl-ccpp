@@ -103,11 +103,17 @@ class CCPPTableProperties(CCPPItem):
     def __init__(self):
         super().__init__()
 
+    _VALID_ARRAY_LAYOUTS = ("column_major", "row_major")
+
     def setAttr(self, key, value):
         # Coerce raw string 'type' values into the CCPPType enum
         if key == "type" and isinstance(value, str):
             value = CCPPType(value)
-        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path"])
+        if key == "array_layout" and value not in self._VALID_ARRAY_LAYOUTS:
+            raise ValueError(
+                f"array_layout must be one of {self._VALID_ARRAY_LAYOUTS}, got '{value}'"
+            )
+        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path", "array_layout"])
 
 
 class CCPPArgumentTable(CCPPItem):
@@ -505,6 +511,8 @@ class ccppXML:
                 ArgumentTableOp(table.getAttr("name"), str(table.getAttr("type")), args)
             )
         attrs = {"source_module": StringAttr(source_module)} if source_module else {}
+        if meta.table_properties.hasAttr("array_layout"):
+            attrs["array_layout"] = StringAttr(meta.table_properties.getAttr("array_layout"))
         return TablePropertiesOp(
             meta.table_properties.getAttr("name"),
             str(meta.table_properties.getAttr("type")),

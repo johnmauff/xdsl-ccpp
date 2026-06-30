@@ -302,6 +302,7 @@ class ArgumentOp(IRDLOperation):
     model_var_name    = opt_prop_def(StringAttr)   # matched host model variable name
     model_module_name = opt_prop_def(StringAttr)   # module containing the host model variable
     model_var_memory_space  = opt_prop_def(StringAttr)  # memory space declared by the host model
+    model_var_array_layout  = opt_prop_def(StringAttr)  # "row_major" when host table declares array_layout = row_major
     model_var_kind_mismatch = opt_prop_def(StringAttr)  # set when scheme/host kinds differ: "scheme_kind:host_kind"
     model_var_unit_mismatch = opt_prop_def(StringAttr)  # set when scheme/host units differ: "scheme_units:host_units"
     model_var_is_ddt   = opt_prop_def(UnitAttr)  # set when matched var is a DDT member

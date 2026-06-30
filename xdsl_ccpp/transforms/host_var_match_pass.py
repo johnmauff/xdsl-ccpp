@@ -302,6 +302,8 @@ class HostVariableMatchPass(ModulePass):
             ):
                 continue
             is_ddt = table_prop_op.table_type.data == TableTypeKind.DDT
+            array_layout_attr = table_prop_op.attributes.get("array_layout")
+            array_layout = array_layout_attr.data if array_layout_attr is not None else None
             for arg_table_op in table_prop_op.body.ops:
                 if not isa(arg_table_op, ccpp.ArgumentTableOp):
                     continue
@@ -327,6 +329,7 @@ class HostVariableMatchPass(ModulePass):
                             memory_space,
                             arg_op,
                             is_ddt,
+                            array_layout,
                         )
 
         if _ccpp_handle is not None:
@@ -403,7 +406,7 @@ class HostVariableMatchPass(ModulePass):
                         continue
 
                     if std_name in model_var_index:
-                        local_name, module_name, model_memory_space, host_arg_op, is_ddt = (
+                        local_name, module_name, model_memory_space, host_arg_op, is_ddt, array_layout = (
                             model_var_index[std_name]
                         )
                         arg_op.properties["model_var_name"]    = StringAttr(local_name)
@@ -414,6 +417,8 @@ class HostVariableMatchPass(ModulePass):
                             )
                         if is_ddt:
                             arg_op.properties["model_var_is_ddt"] = UnitAttr()
+                        if array_layout == "row_major":
+                            arg_op.properties["model_var_array_layout"] = StringAttr("row_major")
 
                         errors, warnings = self._check_compatibility(
                             arg_op, host_arg_op, scheme_name

@@ -50,7 +50,7 @@ import sys
 import types as _types
 from dataclasses import dataclass, field
 
-from xdsl.dialects.builtin import ModuleOp
+from xdsl.dialects.builtin import ModuleOp, StringAttr
 
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_MESSAGE, CCPP_ERROR_CODE, CCPP_ERRMSG_LEN
 from xdsl_ccpp.dialects.ccpp import (
@@ -194,11 +194,20 @@ class SchemeDescriptor:
 class TableDescriptor:
     """Descriptor produced by :func:`ccpp_ddt`, :func:`ccpp_module`, or :func:`ccpp_host`."""
 
-    def __init__(self, name: str, type_str: str, arg_tables: dict[str, list[Arg]]):
+    def __init__(
+        self,
+        name: str,
+        type_str: str,
+        arg_tables: "dict[str, list[Arg]]",
+        *,
+        array_layout: "str | None" = None,
+    ):
         self.name = name
         self.type_str = type_str  # "ddt", "module", or "host"
         # Maps arg-table name → list of Arg objects.
         self.arg_tables = arg_tables
+        # Array memory layout: "row_major" | None (= column_major, the default).
+        self.array_layout = array_layout
 
 
 class SuiteDescriptor:
@@ -668,8 +677,14 @@ def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
             table.getAttr("name"): [_ccpp_arg_to_arg(a) for a in table.getFunctionArguments()]
             for table in meta.arg_tables
         }
+        array_layout = (
+            meta.table_properties.getAttr("array_layout")
+            if meta.table_properties.hasAttr("array_layout")
+            else None
+        )
         result.append(
-            TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables)
+            TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables,
+                            array_layout=array_layout)
         )
     return result
 
@@ -726,13 +741,15 @@ def _arg_op(arg: Arg) -> ArgumentOp:
 def _table_properties_op(
     table_name: str,
     type_str: str,
-    arg_tables: dict[str, list[Arg]],
+    arg_tables: "dict[str, list[Arg]]",
+    array_layout: "str | None" = None,
 ) -> TablePropertiesOp:
     table_ops = []
     for entry_name, args in arg_tables.items():
         arg_ops = [_arg_op(a) for a in args]
         table_ops.append(ArgumentTableOp(entry_name, type_str, arg_ops))
-    return TablePropertiesOp(table_name, type_str, table_ops)
+    attrs = {"array_layout": StringAttr(array_layout)} if array_layout is not None else None
+    return TablePropertiesOp(table_name, type_str, table_ops, attributes=attrs)
 
 
 def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
@@ -799,7 +816,8 @@ def build_ir(
             ir_ops.append(_scheme_table_properties(desc))
         else:
             ir_ops.append(
-                _table_properties_op(desc.name, desc.type_str, desc.arg_tables)
+                _table_properties_op(desc.name, desc.type_str, desc.arg_tables,
+                                     array_layout=desc.array_layout)
             )
 
     return ModuleOp(ir_ops)
