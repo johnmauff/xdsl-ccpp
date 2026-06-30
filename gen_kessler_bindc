@@ -1,0 +1,33 @@
+#!/bin/bash
+# Generate BIND(C) Fortran caps and the matching C++ header for the Kessler
+# example.  Run this on any machine that has xdsl-ccpp installed; commit the
+# resulting files so the container build can compile them without needing
+# ccpp_xdsl.
+#
+# Output: examples/kessler/bindc/
+#   ccpp_kinds.F90          — kind definitions (same as standard build)
+#   kessler_suite_cap.F90   — suite cap
+#   Kessler_ccpp_cap.F90    — BIND(C) physics cap
+#   Kessler_ccpp_cap.h      — C++ extern "C" declarations
+#   ccpp_kinds.h            — C++ typedef aliases for kind constants
+#
+# Usage (from repo root):
+#   ./gen_kessler_bindc
+
+set -euo pipefail
+
+SUITESF='examples/kessler/kessler_suite.xml'
+SCHEMEF='examples/kessler/kessler.meta,examples/kessler/kessler_update.meta'
+HOSTF='examples/kessler/kessler_host_mod.meta,examples/kessler/kessler_host_sub.meta'
+OUTDIR='examples/kessler/bindc'
+
+mkdir -p "$OUTDIR"
+
+ccpp_xdsl \
+    --suites       "$SUITESF" \
+    --scheme-files "$SCHEMEF" \
+    --host-files   "$HOSTF"   \
+    --bind-c       \
+    -o             "$OUTDIR"
+
+echo "BIND(C) caps written to $OUTDIR"

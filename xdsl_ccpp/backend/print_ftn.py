@@ -1229,6 +1229,24 @@ class ftnPrintContext:
             for ret_val, out_name in zip(output_ret_vals, output_names):
                 inner.variables[ret_val] = out_name
 
+            # BIND(C) character conversion: re-map each character parameter's SSA value
+            # to a Fortran-local _f variable so that trim() and calls to non-BIND(C)
+            # suite-cap routines use a proper scalar character string instead of the
+            # raw c_char(*) assumed-size array.  Conversion loops are emitted below.
+            bind_c_char_conversions: list[tuple[str, str, str]] = []
+            if bind_c:
+                for arg, arg_name in zip(bdy.block.args, input_names):
+                    if inner.mlir_type_to_ftn_type(arg.type).startswith("character"):
+                        ftn_local = f"{arg_name}_f"
+                        inner.variables[arg] = ftn_local
+                        conv_intent = "inout" if arg in inout_block_args else "in"
+                        bind_c_char_conversions.append((arg_name, ftn_local, conv_intent))
+                for ret_val, out_name in zip(output_ret_vals, output_names):
+                    if inner.mlir_type_to_ftn_type(ret_val.type).startswith("character"):
+                        ftn_local = f"{out_name}_f"
+                        inner.variables[ret_val] = ftn_local
+                        bind_c_char_conversions.append((out_name, ftn_local, "out"))
+
             # Declare input arguments with intent(in) or intent(inout).
             # Array block args (dynamic memref) are always intent(inout): the host
             # provides the buffer and the scheme may write to it in-place.
@@ -1329,9 +1347,41 @@ class ftnPrintContext:
                 dim_suffix = inner._ftn_dim_suffix(res.type)
                 inner.print(f"{type_str} :: {var_name}{dim_suffix}")
 
+            # Declare Fortran-local character(len=512) temps + loop counter for
+            # the C↔Fortran string conversions emitted below.
+            if bind_c_char_conversions:
+                inner.print("integer :: ccpp_c2f_i")
+                for _, ftn_local, _ in bind_c_char_conversions:
+                    inner.print(f"character(len=512) :: {ftn_local}")
+
             inner.print("")
 
+            # Emit C→Fortran conversion loops for input/inout character args.
+            for c_name, ftn_local, conv_intent in bind_c_char_conversions:
+                if conv_intent in ("in", "inout"):
+                    inner.print(f"{ftn_local} = ' '")
+                    with inner.descend(
+                        f"do ccpp_c2f_i = 1, len({ftn_local})", "end do"
+                    ) as loop:
+                        loop.print(f"if ({c_name}(ccpp_c2f_i) == c_null_char) exit")
+                        loop.print(
+                            f"{ftn_local}(ccpp_c2f_i:ccpp_c2f_i) = {c_name}(ccpp_c2f_i)"
+                        )
+                else:
+                    inner.print(f"{ftn_local} = ' '")
+
             inner.print_block(bdy.block)
+
+            # Emit Fortran→C conversion loops for output/inout character args.
+            for c_name, ftn_local, conv_intent in bind_c_char_conversions:
+                if conv_intent in ("out", "inout"):
+                    with inner.descend(
+                        f"do ccpp_c2f_i = 1, len_trim({ftn_local})", "end do"
+                    ) as loop:
+                        loop.print(
+                            f"{c_name}(ccpp_c2f_i) = {ftn_local}(ccpp_c2f_i:ccpp_c2f_i)"
+                        )
+                    inner.print(f"{c_name}(len_trim({ftn_local})+1) = c_null_char")
 
     @contextmanager
     def _emit_acc_directive(

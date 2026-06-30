@@ -1,25 +1,33 @@
 # Kessler microphysics example Makefile
 #
-# Targets:
-#   make              — CCPP-cap driver (CPU, gfortran)
-#   make old          — original hand-written driver (CPU, gfortran)
-#   make ARCH=GPU     — CCPP-cap driver (OpenMP target GPU, requires FC=nvfortran)
-#   make run          — build and run the CCPP driver
-#   make run_old      — build and run the original driver
-#   make test         — run and diff against reference output
-#   make caps         — (re)generate cap .F90 files only
-#   make clean        — remove build artefacts and generated caps
+# Build targets:
+#   make [all]     — build all three drivers
+#   make ccpp      — CCPP-generated Fortran driver
+#   make hand      — hand-written Fortran driver
+#   make cxx       — plain C++ driver (BIND(C) caps)
 #
-# Usage from the repo root:
-#   make -f examples/kessler/Makefile
-#   make -f examples/kessler/Makefile old
+# Run targets:
+#   make run       — build and run all three (for easy comparison)
+#   make run-ccpp  — build and run the CCPP Fortran driver
+#   make run-hand  — build and run the hand-written driver
+#   make run-cxx   — build and run the C++ driver
+#
+# GPU (OpenMP target offload):
+#   make ARCH=GPU [FC=nvfortran]
+#
+# Code generation (laptop, requires xdsl-ccpp):
+#   ./gen_kessler        — regenerate standard Fortran caps into examples/kessler/
+#   ./gen_kessler_bindc  — regenerate BIND(C) caps + C++ header into examples/kessler/bindc/
+#
+# Utility:
+#   make caps      — regenerate standard Fortran caps only
+#   make clean     — remove build artefacts and generated caps
 
-FC      = gfortran
-ARCH   ?= CPU
-DIR     = examples/kessler
-BUILD_DIR = $(DIR)/build
+# ── Compilers & flags ─────────────────────────────────────────────────────────
+FC   = gfortran
+CXX  = g++
+ARCH ?= CPU
 
-# ── compiler flags ────────────────────────────────────────────────────────────
 ifeq ($(ARCH),GPU)
   ifeq ($(FC),nvfortran)
     FFLAGS = -g -O2 -Mfree -mp=gpu -Minfo=accel -DUSE_GPU
@@ -27,15 +35,29 @@ ifeq ($(ARCH),GPU)
     FFLAGS = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
   endif
 else
-  FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -fopenmp -cpp
+  FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -fopenmp -cpp
 endif
 
-# ── cap generation ────────────────────────────────────────────────────────────
+CXXFLAGS = -g -Wall -O2
+
+# ── Directories ───────────────────────────────────────────────────────────────
+DIR     = examples/kessler
+BUILD   = $(DIR)/build
+CXX_OBJ = $(BUILD)/cxx
+
+# ── Generated caps — standard Fortran (./gen_kessler) ────────────────────────
+GEN_KINDS     = $(DIR)/ccpp_kinds.F90
 GEN_SUITE_CAP = $(DIR)/kessler_suite_cap.F90
 GEN_CCPP_CAP  = $(DIR)/Kessler_ccpp_cap.F90
-GEN_KINDS     = $(DIR)/ccpp_kinds.F90
 
-# ── source lists (compilation order: modules before users) ───────────────────
+# ── Generated caps — BIND(C) (./gen_kessler_bindc, committed) ────────────────
+BINDC_SRC   = $(DIR)/bindc
+BINDC_KINDS = $(BINDC_SRC)/ccpp_kinds.F90
+BINDC_SUITE = $(BINDC_SRC)/kessler_suite_cap.F90
+BINDC_CAP   = $(BINDC_SRC)/Kessler_ccpp_cap.F90
+BINDC_HDR   = $(BINDC_SRC)/Kessler_ccpp_cap.h
+
+# ── Source lists (modules before their users) ─────────────────────────────────
 CCPP_SRCS = \
   $(GEN_KINDS) \
   $(DIR)/kessler_host_mod.F90 \
@@ -45,37 +67,102 @@ CCPP_SRCS = \
   $(GEN_CCPP_CAP) \
   $(DIR)/driver_kessler_ccpp.F90
 
-OLD_SRCS = \
+HAND_SRCS = \
+  $(GEN_KINDS) \
   $(DIR)/kessler.F90 \
   $(DIR)/kessler_update.F90 \
   $(DIR)/driver_kessler_old.F90
 
-CCPP_OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(CCPP_SRCS:.F90=.o)))
-OLD_OBJS  = $(addprefix $(BUILD_DIR)/,$(notdir $(OLD_SRCS:.F90=.o)))
+# ── Executables ───────────────────────────────────────────────────────────────
+EXE_CCPP = $(BUILD)/kessler_ccpp
+EXE_HAND = $(BUILD)/kessler_hand
+EXE_CXX  = $(BUILD)/kessler_cxx
 
-EXE_CCPP = $(BUILD_DIR)/test_kessler_ccpp
-EXE_OLD  = $(BUILD_DIR)/test_kessler_old
+CCPP_OBJS = $(addprefix $(BUILD)/,$(notdir $(CCPP_SRCS:.F90=.o)))
+HAND_OBJS = $(addprefix $(BUILD)/,$(notdir $(HAND_SRCS:.F90=.o)))
 
-# ── phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all old caps run run_old test clean
+CXX_OBJS = \
+  $(CXX_OBJ)/ccpp_kinds.o \
+  $(CXX_OBJ)/kessler_host_mod.o \
+  $(CXX_OBJ)/kessler.o \
+  $(CXX_OBJ)/kessler_update.o \
+  $(CXX_OBJ)/kessler_suite_cap.o \
+  $(CXX_OBJ)/Kessler_ccpp_cap.o \
+  $(CXX_OBJ)/kessler_host_init_c.o \
+  $(CXX_OBJ)/driver_kessler_cpp.o
 
-all: $(EXE_CCPP)
+# ── Phony targets ─────────────────────────────────────────────────────────────
+.PHONY: all ccpp hand cxx run run-ccpp run-hand run-cxx caps clean
 
-old: $(EXE_OLD)
+all: ccpp hand cxx
 
-run_old: $(EXE_OLD)
-	$(EXE_OLD)
+ccpp: $(EXE_CCPP)
+hand: $(EXE_HAND)
+cxx:  $(EXE_CXX)
 
-run: $(EXE_CCPP)
-	$(EXE_CCPP)
+run-ccpp: $(EXE_CCPP)
+	@echo "=== CCPP Fortran driver ===" && $(EXE_CCPP)
 
-test: $(EXE_CCPP)
-	@echo "Running Kessler CCPP driver..."
-	@$(EXE_CCPP); STATUS=$$?; \
-	  if [ $$STATUS -eq 0 ]; then echo "TEST PASSED"; \
-	  else echo "TEST FAILED (exit $$STATUS)"; exit 1; fi
+run-hand: $(EXE_HAND)
+	@echo "=== Hand-written Fortran driver ===" && $(EXE_HAND)
 
-# ── cap generation ────────────────────────────────────────────────────────────
+run-cxx: $(EXE_CXX)
+	@echo "=== C++ BIND(C) driver ===" && $(EXE_CXX)
+
+run: run-ccpp run-hand run-cxx
+
+# ── Build directories ─────────────────────────────────────────────────────────
+$(BUILD) $(CXX_OBJ):
+	mkdir -p $@
+
+# ── Fortran compilation (shared by ccpp and hand) ─────────────────────────────
+$(BUILD)/%.o: $(DIR)/%.F90 | $(BUILD)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD) -I $(BUILD)
+
+# ── Link: Fortran drivers ─────────────────────────────────────────────────────
+$(EXE_CCPP): $(CCPP_OBJS)
+	$(FC) $(FFLAGS) -o $@ $^
+
+$(EXE_HAND): $(HAND_OBJS)
+	$(FC) $(FFLAGS) -o $@ $^
+
+# ── C++ BIND(C) build ─────────────────────────────────────────────────────────
+# Sources in $(BINDC_SRC)/ are committed; regenerate with ./gen_kessler_bindc.
+
+$(CXX_OBJ)/ccpp_kinds.o: $(BINDC_KINDS) | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ)
+
+$(CXX_OBJ)/kessler_host_mod.o: $(DIR)/kessler_host_mod.F90 \
+    $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+
+$(CXX_OBJ)/kessler.o: $(DIR)/kessler.F90 \
+    $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+
+$(CXX_OBJ)/kessler_update.o: $(DIR)/kessler_update.F90 \
+    $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+
+$(CXX_OBJ)/kessler_suite_cap.o: $(BINDC_SUITE) \
+    $(CXX_OBJ)/kessler.o $(CXX_OBJ)/kessler_update.o | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+
+$(CXX_OBJ)/Kessler_ccpp_cap.o: $(BINDC_CAP) \
+    $(CXX_OBJ)/kessler_suite_cap.o $(CXX_OBJ)/kessler_host_mod.o | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+
+$(CXX_OBJ)/kessler_host_init_c.o: $(DIR)/kessler_host_init_c.F90 \
+    $(CXX_OBJ)/kessler_host_mod.o $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+
+$(CXX_OBJ)/driver_kessler_cpp.o: $(DIR)/driver_kessler_cpp.cpp $(BINDC_HDR)
+	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
+
+$(EXE_CXX): $(CXX_OBJS)
+	$(FC) $(FFLAGS) -o $@ $^ -lstdc++
+
+# ── Cap generation ────────────────────────────────────────────────────────────
 caps: $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
 $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): \
@@ -84,22 +171,7 @@ $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): \
     $(DIR)/kessler_suite.xml
 	./gen_kessler
 
-# ── build directory ───────────────────────────────────────────────────────────
-$(BUILD_DIR):
-	mkdir -p $(BUILD_DIR)
-
-# ── compilation rule ──────────────────────────────────────────────────────────
-$(BUILD_DIR)/%.o: $(DIR)/%.F90 | $(BUILD_DIR)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD_DIR) -I $(BUILD_DIR)
-
-# ── link ──────────────────────────────────────────────────────────────────────
-$(EXE_CCPP): $(CCPP_OBJS)
-	$(FC) $(FFLAGS) -o $@ $^
-
-$(EXE_OLD): $(OLD_OBJS)
-	$(FC) $(FFLAGS) -o $@ $^
-
-# ── clean ─────────────────────────────────────────────────────────────────────
+# ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
-	rm -rf $(BUILD_DIR)
+	rm -rf $(BUILD)
 	rm -f $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)

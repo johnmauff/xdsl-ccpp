@@ -36,11 +36,32 @@
 # .meta/.xml input file and calling cmake --build with --fresh-cmake) is
 # required to pick up changes to the CCPP metadata.
 #
+# Optional: BIND(C) / C++ header generation
+#
+# Pass INTERFACE bindC to emit BIND(C) Fortran subroutines and matching C++
+# headers alongside the standard .F90 files.  HOSTFILES is required.
+# TARGET_VAR will then include both .F90 and .h files; add OUTPUT_ROOT to
+# your target's include directories so the headers can be found:
+#
+#   xdsl_ccpp_generate(
+#       HOST_NAME   "Kessler"
+#       OUTPUT_ROOT "${CMAKE_CURRENT_BINARY_DIR}/caps"
+#       TARGET_VAR  KESSLER_CAPS
+#       INTERFACE   bindC
+#       SUITES      "${CMAKE_CURRENT_SOURCE_DIR}/kessler_suite.xml"
+#       SCHEMEFILES "${CMAKE_CURRENT_SOURCE_DIR}/kessler.meta"
+#       HOSTFILES   "${CMAKE_CURRENT_SOURCE_DIR}/kessler_host.meta"
+#   )
+#
+#   add_library(kessler_caps ${KESSLER_CAPS})
+#   target_include_directories(kessler_caps PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/caps")
+#
 # Optional: datatable-based file discovery
 #
 # If EMIT_DATATABLE is provided, xdsl_ccpp_generate() passes --emit-datatable
 # to ccpp_xdsl.  The datatable.xml records the exact set of .F90 files written,
 # so the CMake module reads it for precise file discovery (no glob needed).
+# Note: .h files are always discovered via glob regardless of EMIT_DATATABLE.
 #
 # Usage with datatable:
 #
@@ -55,7 +76,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 function(xdsl_ccpp_generate)
-    set(_oneValueArgs  HOST_NAME OUTPUT_ROOT TARGET_VAR EMIT_DATATABLE)
+    set(_oneValueArgs  HOST_NAME OUTPUT_ROOT TARGET_VAR EMIT_DATATABLE INTERFACE)
     set(_multiValueArgs SUITES SCHEMEFILES HOSTFILES)
     cmake_parse_arguments(XDSL "" "${_oneValueArgs}" "${_multiValueArgs}" ${ARGN})
 
@@ -65,6 +86,17 @@ function(xdsl_ccpp_generate)
             message(FATAL_ERROR "xdsl_ccpp_generate: ${_req} is required")
         endif()
     endforeach()
+
+    if(DEFINED XDSL_INTERFACE AND NOT XDSL_INTERFACE STREQUAL "bindC")
+        message(FATAL_ERROR
+            "xdsl_ccpp_generate: unsupported INTERFACE '${XDSL_INTERFACE}'. "
+            "Currently only 'bindC' is supported.")
+    endif()
+
+    if(XDSL_INTERFACE STREQUAL "bindC" AND NOT XDSL_HOSTFILES)
+        message(FATAL_ERROR
+            "xdsl_ccpp_generate: INTERFACE bindC requires HOSTFILES to be set.")
+    endif()
 
     # ── locate ccpp_xdsl entry point ──────────────────────────────────────────
     find_program(XDSL_CCPP_EXECUTABLE ccpp_xdsl
@@ -98,6 +130,10 @@ function(xdsl_ccpp_generate)
 
     if(XDSL_EMIT_DATATABLE)
         list(APPEND _cmd --emit-datatable "${XDSL_EMIT_DATATABLE}")
+    endif()
+
+    if(XDSL_INTERFACE STREQUAL "bindC")
+        list(APPEND _cmd --bind-c)
     endif()
 
     # ── run at configure time ─────────────────────────────────────────────────
@@ -150,6 +186,22 @@ print(';'.join(n.get('path','') for n in t.findall('.//ccpp_files/file')))"
         message(WARNING
             "xdsl_ccpp_generate: no .F90 files found in ${XDSL_OUTPUT_ROOT} "
             "after running ccpp_xdsl — check the inputs.")
+    endif()
+
+    # ── collect C++ headers when INTERFACE bindC is set ───────────────────────
+    if(XDSL_INTERFACE STREQUAL "bindC")
+        file(GLOB _headers "${XDSL_OUTPUT_ROOT}/*.h")
+        if(NOT _headers)
+            message(WARNING
+                "xdsl_ccpp_generate: INTERFACE bindC was set but no .h files "
+                "were found in ${XDSL_OUTPUT_ROOT} — check that --bind-c "
+                "generated output correctly.")
+        endif()
+        list(APPEND _caps ${_headers})
+        message(STATUS
+            "xdsl_ccpp_generate: INTERFACE bindC — "
+            "add '${XDSL_OUTPUT_ROOT}' to your target's include directories "
+            "so the generated headers can be found.")
     endif()
 
     set(${XDSL_TARGET_VAR} "${_caps}" PARENT_SCOPE)

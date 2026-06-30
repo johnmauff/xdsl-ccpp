@@ -924,7 +924,7 @@ generator to know anything about Kokkos internals.
 | 2 | `array_layout` metadata in host `.meta` files | ✅ Done |
 | 3 | BIND(C) cap generation (`generate-ccpp-cap{bind_c=true}`) | ✅ Done |
 | 4 | C++ header printer (`-t cpp_header`) | ✅ Done |
-| 5 | CMake `INTERFACE bindC` option | Not started |
+| 5 | CMake `INTERFACE bindC` option | ✅ Done |
 | 6 | Kessler C++ driver example | Not started |
 | 7 | Testing | Not started |
 
@@ -959,6 +959,25 @@ Usage via the manual pipeline:
 Usage via the driver (generates both automatically):
 ```bash
 ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o output/
+```
+
+Phase 5 adds `INTERFACE bindC` to `xdsl_ccpp_generate()` in `cmake/xdsl_ccpp.cmake`.
+When set, the function passes `--bind-c` to `ccpp_xdsl` and appends the generated
+`.h` files to `TARGET_VAR` alongside the `.F90` files:
+
+```cmake
+xdsl_ccpp_generate(
+    HOST_NAME   "Kessler"
+    OUTPUT_ROOT "${CMAKE_CURRENT_BINARY_DIR}/caps"
+    TARGET_VAR  KESSLER_CAPS
+    INTERFACE   bindC
+    SUITES      "${CMAKE_CURRENT_SOURCE_DIR}/kessler_suite.xml"
+    SCHEMEFILES "${CMAKE_CURRENT_SOURCE_DIR}/kessler.meta"
+    HOSTFILES   "${CMAKE_CURRENT_SOURCE_DIR}/kessler_host.meta"
+)
+
+add_library(kessler_caps ${KESSLER_CAPS})
+target_include_directories(kessler_caps PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/caps")
 ```
 
 ### Key Observations
