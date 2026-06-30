@@ -483,7 +483,7 @@ class ftnPrintContext:
             case func.FuncOp(sym_name=name, body=bdy, function_type=ftyp):
                 # Skip external declarations; only print subroutine definitions
                 if not op.is_declaration:
-                    self._print_fn(name, bdy, ftyp)
+                    self._print_fn(name, bdy, ftyp, bind_c="bind_c" in op.attributes)
             case func.CallOp(callee=tgt, arguments=args, res=results):
                 self._print_call(tgt, args, results)
             case CCPPKeywordCallOp():
@@ -790,6 +790,16 @@ class ftnPrintContext:
         if not is_kinds_module:
             self.print("\nuse ccpp_kinds", prefix="  ")
 
+        # When any subroutine uses BIND(C), import iso_c_binding at module scope.
+        if not is_kinds_module:
+            has_bind_c = any(
+                isa(op, func.FuncOp) and not op.is_declaration
+                and "bind_c" in op.attributes
+                for op in body.ops
+            )
+            if has_bind_c:
+                self.print("use iso_c_binding", prefix="  ")
+
         # For the ccpp_kinds module, emit ISO_FORTRAN_ENV renames:
         #   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
         # This imports and re-exports each kind under its CCPP name in one step.
@@ -1067,11 +1077,58 @@ class ftnPrintContext:
 
         self.print("end if")
 
+    def _map_ftn_to_c_type(self, ftn_type: str) -> str:
+        """Map a Fortran type string to its ISO_C_BINDING equivalent."""
+        if ftn_type == "integer":
+            return "integer(c_int)"
+        if ftn_type == "logical":
+            return "logical(c_bool)"
+        if ftn_type.startswith("real(kind=4"):
+            return "real(c_float)"
+        if ftn_type.startswith("real"):
+            # All named real kinds (kind_phys, kind_dyn, kind=8, etc.) → c_double
+            return "real(c_double)"
+        if ftn_type.startswith("type("):
+            return "type(c_ptr)"
+        return ftn_type
+
+    def _bind_c_arg_decl_line(
+        self, arg_type: Attribute, arg_name: str, intent: str, is_opt: bool = False
+    ) -> str:
+        """Return a BIND(C)-compatible Fortran argument declaration line.
+
+        Character types are mapped to ``character(kind=c_char, len=1), dimension(*)``.
+        Integer scalars with ``intent(in)`` use the ``VALUE`` attribute (pass by value).
+        All real kinds default to ``real(c_double)`` (CCPP physics kinds are 64-bit).
+        """
+        opt_clause = ", optional" if is_opt else ""
+        ftn_type = self.mlir_type_to_ftn_type(arg_type)
+        dim_suffix = self._ftn_dim_suffix(arg_type)
+
+        if ftn_type.startswith("character"):
+            # All character arguments → c_char assumed-size array
+            return (
+                f"character(kind=c_char, len=1), intent({intent}){opt_clause}"
+                f" :: {arg_name}(*)"
+            )
+
+        c_type = self._map_ftn_to_c_type(ftn_type)
+
+        if not dim_suffix:
+            # Scalar: intent(in) → VALUE (C passes by value, not pointer)
+            if intent == "in":
+                return f"{c_type}, value, intent(in){opt_clause} :: {arg_name}"
+            return f"{c_type}, intent({intent}){opt_clause} :: {arg_name}"
+
+        # Array: use assumed-size (*) — C side passes a raw pointer
+        return f"{c_type}, intent({intent}){opt_clause} :: {arg_name}(*)"
+
     def _print_fn(
         self,
         fn_name: StringAttr,
         bdy: Region,
         ftyp: FunctionType,
+        bind_c: bool = False,
     ):
         """Print a func.FuncOp definition as a Fortran subroutine.
 
@@ -1154,7 +1211,13 @@ class ftnPrintContext:
                     untracked_call_results.append((res, hint))
 
         args_str = ", ".join(input_names + output_names)
-        start_signature = f"\nsubroutine {fn_name.data}({args_str})"
+        if bind_c:
+            start_signature = (
+                f"\nsubroutine {fn_name.data}({args_str})"
+                f" BIND(C, name='{fn_name.data}')"
+            )
+        else:
+            start_signature = f"\nsubroutine {fn_name.data}({args_str})"
         end_signature = f"end subroutine {fn_name.data}"
 
         with self.descend(start_signature, end_signature) as inner:
@@ -1195,15 +1258,21 @@ class ftnPrintContext:
                     intent = "inout"
                 else:
                     intent = "in"
-                if is_opt:
-                    type_str = type_str + ", optional"
-                inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
+                if bind_c:
+                    inner.print(inner._bind_c_arg_decl_line(arg.type, arg_name, intent, is_opt))
+                else:
+                    if is_opt:
+                        type_str = type_str + ", optional"
+                    inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
 
             # Declare output arguments with intent(out) (always scalars)
             for ret_val, out_name in zip(output_ret_vals, output_names):
                 type_str = inner.mlir_type_to_ftn_type(ret_val.type)
                 dim_suffix = inner._ftn_dim_suffix(ret_val.type)
-                inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
+                if bind_c:
+                    inner.print(inner._bind_c_arg_decl_line(ret_val.type, out_name, "out"))
+                else:
+                    inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
 
             # Declare local variables (non-returned allocas, e.g. computed scalars)
             for alloca_op in local_allocas:

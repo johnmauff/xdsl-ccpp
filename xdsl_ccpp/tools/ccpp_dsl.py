@@ -136,6 +136,13 @@ class ccppMain:
             help="Write per-entry-point HTML variable tables into this directory "
                  "(requires --emit-datatable).",
         )
+        parser.add_argument(
+            "--bind-c",
+            action="store_true",
+            default=False,
+            help="Generate BIND(C) Fortran cap subroutines and matching C++ headers "
+                 "(<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.",
+        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -387,9 +394,15 @@ class ccppMain:
 
     def run_opt(self, tmp_dir, mlir_in):
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
+        bind_c = self.options_db.get("bind_c", False)
         ccpp_cap_pass = "generate-ccpp-cap"
+        cap_opts: list[str] = []
         if self.options_db.get("host_name"):
-            ccpp_cap_pass += f"{{host_name={self.options_db['host_name']}}}"
+            cap_opts.append(f"host_name={self.options_db['host_name']}")
+        if bind_c:
+            cap_opts.append("bind_c=true")
+        if cap_opts:
+            ccpp_cap_pass += "{" + ",".join(cap_opts) + "}"
         directive = self.options_db.get("directive")
         meta_kinds_pass = "generate-meta-kinds"
         kind_maps = self.options_db.get("kind_map") or []
@@ -462,6 +475,64 @@ class ccppMain:
                     f"  -> Written '{out_path}' ({len(body)} bytes)",
                 )
 
+    def generate_cpp_headers(self, tmp_dir: str, mlir_in: str, out_dir: str) -> None:
+        """Run the cpp_header target and write the resulting .h files.
+
+        Runs the same pass pipeline as run_opt but with ``-t cpp_header`` to
+        emit C++ header sections, then splits them into individual .h files in
+        *out_dir* (or stdout when --stdout is set).
+        """
+        hdr_out = os.path.join(tmp_dir, "ccpp.h")
+        bind_c = self.options_db.get("bind_c", False)
+        ccpp_cap_pass = "generate-ccpp-cap"
+        cap_opts: list[str] = []
+        if self.options_db.get("host_name"):
+            cap_opts.append(f"host_name={self.options_db['host_name']}")
+        if bind_c:
+            cap_opts.append("bind_c=true")
+        if cap_opts:
+            ccpp_cap_pass += "{" + ",".join(cap_opts) + "}"
+        directive = self.options_db.get("directive")
+        meta_kinds_pass = "generate-meta-kinds"
+        kind_maps = self.options_db.get("kind_map") or []
+        if kind_maps:
+            k, iso = kind_maps[0].split(":", 1)
+            meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
+        has_host = bool(self.options_db.get("host_files"))
+        passes = ["generate-meta-cap"]
+        if has_host:
+            passes.append("generate-host-match")
+        passes.append(meta_kinds_pass)
+        passes.append("generate-suite-cap")
+        if directive:
+            passes.append(f"generate-gpu-data{{directive={directive}}}")
+        if has_host:
+            passes.append(ccpp_cap_pass)
+            if directive:
+                passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
+        passes += ["generate-kinds", "strip-ccpp"]
+        pipeline = ",".join(passes)
+        cmd = (
+            f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
+            f' -p "{pipeline}"'
+            f' -t cpp_header > "{hdr_out}"'
+        )
+        self.print_verbose_message(
+            "Generating C++ headers",
+            f"Generating C++ headers with command: {cmd}",
+        )
+        os.system(cmd)
+        if not os.path.exists(hdr_out) or os.path.getsize(hdr_out) == 0:
+            self.print_verbose_message(
+                "  -> No BIND(C) functions found; no C++ headers written",
+            )
+            if os.path.exists(hdr_out):
+                os.remove(hdr_out)
+            return
+        self.split_fortran_output(hdr_out, out_dir)
+        if not self.options_db.get("debug"):
+            self.remove_file_if_exists(hdr_out)
+
     def _run_datatable(self, mlir_file: str, caps_dir: str, datatable_path: str) -> None:
         """Generate datatable.xml (and optionally HTML) from *mlir_file*."""
         from xdsl_ccpp.tools.ccpp_datatable import build_datatable, write_datatable, write_html
@@ -512,6 +583,9 @@ class ccppMain:
         self._check_memory_space_mismatch(mlir_file)
         ftn_file = self.run_opt(tmp_dir, mlir_file)
         self.split_fortran_output(ftn_file, out_dir)
+
+        if self.options_db.get("bind_c"):
+            self.generate_cpp_headers(tmp_dir, mlir_file, out_dir)
 
         datatable_path = self.options_db.get("emit_datatable")
         if datatable_path:

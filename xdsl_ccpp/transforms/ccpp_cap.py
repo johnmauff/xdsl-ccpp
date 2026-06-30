@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
-from xdsl.dialects.builtin import DYNAMIC_INDEX, IndexType, IntegerAttr, StringAttr, i8
+from xdsl.dialects.builtin import DYNAMIC_INDEX, IndexType, IntegerAttr, StringAttr, UnitAttr, i8
 from xdsl.ir import Block, Region
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
@@ -156,6 +156,11 @@ class CCPPCAP(ModulePass):
     # generated lifecycle subroutines.  When absent, the prefix is derived
     # automatically from the first suite name (e.g. hello_world_suite → HelloWorld).
     host_name: str = ""
+
+    # When True, generated lifecycle and run subroutines in the ccpp_cap module
+    # use BIND(C, name='...') and ISO_C_BINDING-typed arguments so they can be
+    # called from C++ / Kokkos host models.
+    bind_c: bool = False
 
 
     def _collect_public_suite_functions(self, ops):
@@ -2919,6 +2924,8 @@ class CCPPCAP(ModulePass):
                 all_declarations.extend(decls)
 
             all_definitions.append(cap_fn)
+            if self.bind_c:
+                cap_fn.attributes["bind_c"] = UnitAttr()
 
         # Generate ccpp_physics_suite_list listing ALL suite names.
         inner_char_type = memref.MemRefType(i8, [DYNAMIC_INDEX])

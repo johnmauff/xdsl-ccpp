@@ -76,6 +76,8 @@ Optional:
                         When set, ccpp_suite_state is generated as a per-instance array
                         of length N instead of the default (200). Also settable per-pass
                         via ccpp_opt: -p "generate-suite-cap{num_instances=N}"
+  --bind-c              Generate BIND(C) Fortran cap subroutines and matching C++ headers
+                        (<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.
 ```
 
 ## Examples
@@ -799,7 +801,7 @@ The Fortran printer reconstructs the declaration string from these fields. Other
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 210 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 214 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -920,11 +922,44 @@ generator to know anything about Kokkos internals.
 |-------|-------------|--------|
 | 1 | Structured `ModuleVarOp` type attributes | ✅ Done |
 | 2 | `array_layout` metadata in host `.meta` files | ✅ Done |
-| 3 | BIND(C) cap generation (`--interface bindC`) | Not started |
-| 4 | C++ header printer | Not started |
+| 3 | BIND(C) cap generation (`generate-ccpp-cap{bind_c=true}`) | ✅ Done |
+| 4 | C++ header printer (`-t cpp_header`) | ✅ Done |
 | 5 | CMake `INTERFACE bindC` option | Not started |
 | 6 | Kessler C++ driver example | Not started |
 | 7 | Testing | Not started |
+
+Phase 3 adds a `bind_c` flag to `generate-ccpp-cap`. When set, the lifecycle and run
+subroutines in the ccpp_cap module carry `BIND(C, name='...')` and use ISO_C_BINDING
+argument types (`character(kind=c_char,len=1), dimension(*)` for strings,
+`integer(c_int)` for integers, `real(c_double)` for reals). Intent(in) scalar integers
+use the `VALUE` attribute (C pass-by-value). Utility subroutines
+(`ccpp_physics_suite_list`, `ccpp_physics_suite_part_list`) are not marked BIND(C) since
+they use Fortran allocatable types that are not C-interoperable.
+
+Phase 4 adds a `cpp_header` target to `ccpp_opt` and `--bind-c` flag to `ccpp_xdsl`.
+When enabled, a second optimizer pass emits two C++ header files:
+
+- **`<HostName>_ccpp_cap.h`** — `extern "C"` declarations for each BIND(C) subroutine.
+  Character args become `const char*` (intent in) or `char*`; intent(in) scalar
+  integers and reals use by-value C types (`int`, `double`); output scalars and arrays
+  use pointer types. Multi-dimensional real arrays include a `/* rank-N column-major */`
+  comment reminding the caller that Fortran stores in column-major order.
+- **`ccpp_kinds.h`** — `typedef` aliases (`kind_phys_t`, etc.) matching
+  `ccpp_kinds.F90` so C++ code can use CCPP kind names.
+
+Usage via the manual pipeline:
+```bash
+# Fortran caps (BIND(C) variant)
+... | ccpp_opt -p "...,generate-ccpp-cap{bind_c=true},..." -t ftn
+
+# C++ headers
+... | ccpp_opt -p "...,generate-ccpp-cap{bind_c=true},..." -t cpp_header
+```
+
+Usage via the driver (generates both automatically):
+```bash
+ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o output/
+```
 
 ### Key Observations
 

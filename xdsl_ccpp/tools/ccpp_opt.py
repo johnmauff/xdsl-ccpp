@@ -40,7 +40,13 @@ class CCPPOptMain(xDSLOptMain):
 
             print_to_ftn(prog, output)
 
+        def _output_cpp_header(prog: ModuleOp, output: IO[str]):
+            from xdsl_ccpp.backend.print_cpp_header import print_to_cpp_headers
+
+            print_to_cpp_headers(prog, output)
+
         self.available_targets["ftn"] = _output_ftn
+        self.available_targets["cpp_header"] = _output_cpp_header
 
     def register_all_dialects(self):
         super().register_all_dialects()
