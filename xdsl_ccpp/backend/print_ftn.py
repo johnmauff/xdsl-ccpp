@@ -601,6 +601,7 @@ class ftnPrintContext:
                 copyin_names  = [self._get_variable_name_for(v) for v in op.copyin_arrays]
                 copyout_names = [self._get_variable_name_for(v) for v in op.copyout_arrays]
                 present_names = [self._get_variable_name_for(v) for v in op.present_arrays]
+                self.print("#ifdef USE_GPU", use_prefix=False)
                 if not copy_names and not copyin_names and not copyout_names and not present_names:
                     self.print("!$acc data")
                 else:
@@ -610,8 +611,11 @@ class ftnPrintContext:
                         ("copyout", copyout_names),
                         ("present", present_names),
                     ])
+                self.print("#endif", use_prefix=False)
             case CCPPAccDataEndOp():
+                self.print("#ifdef USE_GPU", use_prefix=False)
                 self.print("!$acc end data")
+                self.print("#endif", use_prefix=False)
             case CCPPModuleVarOp():
                 pass  # declared in _print_module preamble, not here
             case CCPPLazyAllocOp():
@@ -1281,6 +1285,8 @@ class ftnPrintContext:
                 else:
                     if is_opt:
                         type_str = type_str + ", optional"
+                    if dim_suffix and not is_alloc and not ftnPrintContext._is_allocatable_char(arg.type):
+                        type_str = type_str + ", target"
                     inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
 
             # Declare output arguments with intent(out) (always scalars)
@@ -1290,6 +1296,8 @@ class ftnPrintContext:
                 if bind_c:
                     inner.print(inner._bind_c_arg_decl_line(ret_val.type, out_name, "out"))
                 else:
+                    if dim_suffix:
+                        type_str = type_str + ", target"
                     inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
 
             # Declare local variables (non-returned allocas, e.g. computed scalars)

@@ -1,6 +1,5 @@
 program test_kessler_ccpp_driver
 
-  use omp_lib
   use kessler_host_mod
   use Kessler_ccpp_cap, only: &
       Kessler_ccpp_physics_register,        &
@@ -16,7 +15,8 @@ program test_kessler_ccpp_driver
   integer :: errflg
   integer :: col_start, col_end
 
-  real(8) :: t1, t2, etime
+  integer(8) :: t1, t2, rate
+  real(8)    :: etime
 
   !------------------------------------------------------
   ! Initialize all host module data
@@ -53,10 +53,10 @@ program test_kessler_ccpp_driver
   col_start = 1
   col_end   = ncol
 
-  t1 = omp_get_wtime()
+  call system_clock(t1, rate)
   call Kessler_ccpp_physics_run('kessler_suite', 'physics', col_start, col_end, errmsg, errflg)
-  t2 = omp_get_wtime()
-  etime = t2 - t1
+  call system_clock(t2)
+  etime = real(t2 - t1, 8) / real(rate, 8)
 
   if (errflg /= 0) then
     print *, 'Run error: ', trim(errmsg)

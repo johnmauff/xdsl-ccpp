@@ -1,6 +1,5 @@
 program test_kessler_driver
 
-  use omp_lib
   use iso_c_binding
   use kessler
   use kessler_update
@@ -33,7 +32,8 @@ program test_kessler_driver
   integer, allocatable :: seed_values(:)
   integer :: seed_size
 
-  real(8) :: t1, t2, etime
+  integer(8) :: t1, t2, rate
+  real(8)    :: etime
 
   logical :: use_host
   integer :: dev
@@ -207,43 +207,39 @@ program test_kessler_driver
 
   version = 2
 
-  t1 = omp_get_wtime()
+  !------------------------------
+  ! kessler_update_timestep_init  (before timer — matches CCPP timestep_initial)
+  !------------------------------
+#ifdef USE_GPU
+  !$omp target update to(temp(1:ncol,1:nz))
+#endif
+
+  call kessler_update_timestep_init(ncol, nz, temp, temp_prev, ttend_t, errmsg, errflg)
+
+#ifdef USE_GPU
+  !$omp target update from(temp_prev(1:ncol,1:nz),ttend_t(1:ncol,1:nz))
+#endif
+
+  call system_clock(t1, rate)
   !------------------------------------------------------
-  ! Run microphysics
+  ! Run microphysics + update  (matches CCPP physics run scope)
   !------------------------------------------------------
-  if(version .eq. 1) then 
+  if(version .eq. 1) then
      call kessler_runv1(ncol, nz, dt, lyr_surf, lyr_toa, &
                           cpair, rair, rho, z, pk, &
                           theta, qv, qc, qr, &
                           precl, relhum, scheme_name, errmsg, errflg)
-  elseif (version .eq. 2) then 
+  elseif (version .eq. 2) then
      call kessler_runv2(ncol, nz, dt, lyr_surf, lyr_toa, &
                           cpair, rair, rho, z, pk, &
                           theta, qv, qc, qr, &
                           precl, relhum, scheme_name, errmsg, errflg)
   endif
-  t2 = omp_get_wtime()
- 
-  etime = t2 - t1
 
 #ifdef USE_GPU
   ! Device -> host  memcpy
   !$omp target update from(theta(1:ncol,1:nz),qv(1:ncol,1:nz), &
   !$omp      qc(1:ncol,1:nz),qr(1:ncol,1:nz),precl(1:ncol),relhum(1:ncol,1:nz))
-#endif
-
-  !------------------------------
-  ! kessler_update_timestep_init
-  !------------------------------
-
-#ifdef USE_GPU
-  !$omp target update to(temp(1:ncol,1:nz))
-#endif
-  
-  call kessler_update_timestep_init(ncol, nz, temp, temp_prev, ttend_t, errmsg, errflg)
-
-#ifdef USE_GPU
-  !$omp target update from(temp_prev(1:ncol,1:nz),ttend_t(1:ncol,1:nz))
 #endif
 
   !-------------------
@@ -256,6 +252,9 @@ program test_kessler_driver
 
   call kessler_update_run(nz, ncol, dt, theta, exner, temp_prev, &
              ttend_t, errmsg, errflg)
+
+  call system_clock(t2)
+  etime = real(t2 - t1, 8) / real(rate, 8)
 
 #ifdef USE_GPU
   !$omp target update from(ttend_t(1:ncol,1:nz))

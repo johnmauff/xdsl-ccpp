@@ -30,12 +30,13 @@ ARCH ?= CPU
 
 ifeq ($(ARCH),GPU)
   ifeq ($(FC),nvfortran)
-    FFLAGS = -g -O2 -Mfree -mp=gpu -Minfo=accel -DUSE_GPU
+    FFLAGS = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
   else
-    FFLAGS = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
+    FFLAGS = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
   endif
 else
-  FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -fopenmp -cpp
+  FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
+  # FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -fopenmp -cpp
 endif
 
 CXXFLAGS = -g -Wall -O2
