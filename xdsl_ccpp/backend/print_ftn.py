@@ -60,6 +60,28 @@ from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRef
 _MAX_LINE_LEN = 99
 
 
+def _module_var_fortran_type(op: "CCPPModuleVarOp") -> str:
+    """Reconstruct the Fortran type string from a ModuleVarOp's structured attributes."""
+    base = op.base_type.data
+    kind = op.kind.data if op.kind is not None else None
+    ddt  = op.ddt_name.data if op.ddt_name is not None else None
+    attrs = op.ftn_attrs.data if op.ftn_attrs is not None else None
+
+    if base == "type":
+        ftn = f"type({ddt})"
+    elif kind is not None:
+        if base == "character":
+            ftn = f"character(len={kind})"
+        else:
+            ftn = f"{base}(kind={kind})"
+    else:
+        ftn = base
+
+    if attrs:
+        ftn += f", {attrs}"
+    return ftn
+
+
 @dataclass
 class ftnPrintContext:
     """Stateful context for printing MLIR IR as Fortran source text.
@@ -873,14 +895,15 @@ class ftnPrintContext:
         # rank=0: scalar, rank>0: allocatable array with that many deferred dimensions.
         for op in body.ops:
             if isa(op, CCPPModuleVarOp):
-                rank = op.rank.value.data
-                ftn_type = op.fortran_type.data
+                rank     = op.rank.value.data
+                ftn_type = _module_var_fortran_type(op)
                 var_name = op.var_name.data
+                is_ptr   = op.ftn_attrs is not None and "pointer" in op.ftn_attrs.data
                 if rank == 0:
                     self.print(f"{ftn_type} :: {var_name}", prefix="  ")
                 else:
                     shape = ", ".join([":"] * rank)
-                    if ", pointer" in ftn_type:
+                    if is_ptr:
                         self.print(
                             f"{ftn_type} :: {var_name}({shape}) => null()",
                             prefix="  ",

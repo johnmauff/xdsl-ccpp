@@ -1605,20 +1605,24 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # DDT interstitials are module-scope non-allocatable scalars; require
                 # type(...) syntax in Fortran.
                 allocatable_mod_vars.append(
-                    ModuleVarOp(entry.local_name, f"type({entry.fortran_type})", rank=0)
+                    ModuleVarOp(entry.local_name, "type", ddt_name=entry.fortran_type, rank=0)
                 )
                 interstitial_var_names.add(entry.local_name.lower())
                 continue
             if entry.fortran_type == "real":
                 kind = entry.kind if entry.kind else CCPP_KIND_PHYS
-                ftn_type = f"real(kind={kind})"
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, "real", kind=kind, rank=entry.rank)
+                )
             elif entry.fortran_type == "integer":
-                ftn_type = "integer"
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, "integer", rank=entry.rank)
+                )
             else:
-                ftn_type = entry.fortran_type
-            allocatable_mod_vars.append(
-                ModuleVarOp(entry.local_name, ftn_type, entry.rank)
-            )
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, entry.fortran_type,
+                                kind=entry.kind if entry.kind else None, rank=entry.rank)
+                )
             interstitial_var_names.add(entry.local_name.lower())
         return allocatable_mod_vars, interstitial_var_names
 

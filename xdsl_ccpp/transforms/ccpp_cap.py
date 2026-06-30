@@ -2263,27 +2263,31 @@ class CCPPCAP(ModulePass):
         module_var_ops: list = []
         for n in dynamic_array_names:
             module_var_ops.append(
-                ModuleVarOp(f"lc_{n}", "type(ccpp_constituent_properties_t)", rank=1)
+                ModuleVarOp(f"lc_{n}", "type", ddt_name="ccpp_constituent_properties_t", rank=1)
             )
         module_var_ops.append(
             ModuleVarOp(
                 "lc_all_constituents",
-                "type(ccpp_constituent_properties_t), target",
+                "type",
+                ddt_name="ccpp_constituent_properties_t",
+                ftn_attrs="target",
                 rank=1,
             )
         )
         module_var_ops.append(
-            ModuleVarOp("lc_constituent_array", "real(kind=kind_phys), target", rank=3)
+            ModuleVarOp("lc_constituent_array", "real", kind="kind_phys", ftn_attrs="target", rank=3)
         )
         module_var_ops.append(
-            ModuleVarOp("lc_const_tend", "real(kind=kind_phys), target", rank=3)
+            ModuleVarOp("lc_const_tend", "real", kind="kind_phys", ftn_attrs="target", rank=3)
         )
         module_var_ops.append(
-            ModuleVarOp("lc_const_props", "type(ccpp_constituent_prop_ptr_t), target", rank=1)
+            ModuleVarOp("lc_const_props", "type", ddt_name="ccpp_constituent_prop_ptr_t", ftn_attrs="target", rank=1)
         )
         for lc_name, rank, _alloc_dims, _cst_std in (scratch_vars or []):
-            ftype = "real(kind=kind_phys), pointer" if _cst_std else "real(kind=kind_phys)"
-            module_var_ops.append(ModuleVarOp(lc_name, ftype, rank=rank))
+            module_var_ops.append(
+                ModuleVarOp(lc_name, "real", kind="kind_phys",
+                            ftn_attrs="pointer" if _cst_std else None, rank=rank)
+            )
 
         # ── Helper: dedup fragment ───────────────────────────────────────────
         def _dedup_block(src_sname, src_units, src_assign, indent="    "):

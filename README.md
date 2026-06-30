@@ -742,6 +742,19 @@ Shared utilities used by multiple passes live in `xdsl_ccpp/transforms/util/`:
 
 When writing a new pass that needs the CCPP metadata module, import `find_ccpp_module` from `xdsl_ccpp.transforms.util.ir_utils` rather than re-implementing the search.
 
+### ModuleVarOp type representation
+
+`ModuleVarOp` (in `xdsl_ccpp/dialects/ccpp_utils.py`) represents a module-level variable declaration. Its type is stored as four structured attributes rather than a pre-rendered Fortran string:
+
+| Attribute | Type | Example |
+|-----------|------|---------|
+| `base_type` | required | `"real"`, `"integer"`, `"character"`, `"logical"`, `"type"` |
+| `kind` | optional | `"kind_phys"`, `"kind_dyn"`, `"512"` (char length) |
+| `ddt_name` | optional | `"vmr_type"` (when `base_type == "type"`) |
+| `ftn_attrs` | optional | `"target"`, `"pointer"` |
+
+The Fortran printer reconstructs the declaration string from these fields. Other language backends (e.g. a C++ header printer) can interpret the type without parsing Fortran syntax.
+
 ---
 
 ## CCPP Tool Comparison
@@ -799,7 +812,7 @@ When writing a new pass that needs the CCPP metadata module, import `find_ccpp_m
 | `--directive acc\|omp` CLI option | ❌ | ❌ | ❌ | ✅ |
 | **Architecture** | | | | |
 | MLIR IR (inspectable, composable) | ❌ | ❌ | ❌ | ✅ |
-| Multi-language host model path | ❌ | ❌ | ❌ | ✅ (architecture ready) |
+| Multi-language host model path | ❌ | ❌ | ❌ | In progress (see below) |
 
 ### Capability Notes
 
@@ -892,6 +905,26 @@ files so that host-variable resolution, dimension validation, and unit conversio
 are exercised at real-world scale (~800 variables).  After that, linking the
 generated caps into a running host model (CCPP-SCM or CAM-SIMA) will confirm
 end-to-end correctness.
+
+### Multi-Language Support
+
+The full plan for C++/Kokkos host + Fortran schemes support is in
+[`multilanguage_plan.md`](multilanguage_plan.md). It describes a 7-phase,
+6–9 week effort to enable a C++/Kokkos host model to call Fortran physics
+schemes through a CCPP-generated BIND(C) cap, without requiring the cap
+generator to know anything about Kokkos internals.
+
+**Current status:**
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Structured `ModuleVarOp` type attributes | ✅ Done |
+| 2 | `array_layout` metadata in host `.meta` files | Not started |
+| 3 | BIND(C) cap generation (`--interface bindC`) | Not started |
+| 4 | C++ header printer | Not started |
+| 5 | CMake `INTERFACE bindC` option | Not started |
+| 6 | Kessler C++ driver example | Not started |
+| 7 | Testing | Not started |
 
 ### Key Observations
 

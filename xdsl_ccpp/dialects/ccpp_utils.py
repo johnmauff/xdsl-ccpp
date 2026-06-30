@@ -448,37 +448,71 @@ class ModuleVarOp(IRDLOperation):
     Replaces the former ``AllocatableModVarOp`` (real vars) and
     ``ModuleTypeVarOp`` (DDT vars) with a single consistent representation.
 
+    Type is described by three structured attributes rather than a pre-rendered
+    Fortran string, so that language backends other than Fortran can interpret
+    the type without parsing:
+
+        base_type  — CCPP base type: "real", "integer", "character",
+                     "logical", or "type" (for DDTs)
+        kind       — optional kind name ("kind_phys") or character length ("512")
+        ddt_name   — DDT type name when base_type == "type" (e.g. "vmr_type")
+        ftn_attrs  — optional Fortran attributes appended after the type,
+                     e.g. "target" or "pointer"
+
     Printer emits in the module spec section before CONTAINS:
-        rank=0: ``{fortran_type} :: {var_name}``
-        rank>0: ``{fortran_type}, allocatable :: {var_name}(:, :, ...)``
+        rank=0: ``{type} :: {var_name}``
+        rank>0: ``{type}, allocatable :: {var_name}(:, :, ...)``
+        (pointer rank>0): ``{type}, pointer :: {var_name}(:) => null()``
 
     Examples::
 
-        ModuleVarOp("temp_layer", "real(kind=kind_phys)", rank=2)
+        ModuleVarOp("temp_layer", "real", kind="kind_phys", rank=2)
         → real(kind=kind_phys), allocatable :: temp_layer(:, :)
 
-        ModuleVarOp("vmr_cap_ddt_suite", "type(vmr_type)", rank=0)
+        ModuleVarOp("vmr_cap_ddt_suite", "type", ddt_name="vmr_type")
         → type(vmr_type) :: vmr_cap_ddt_suite
+
+        ModuleVarOp("lc_arr", "real", kind="kind_phys", ftn_attrs="target", rank=3)
+        → real(kind=kind_phys), target, allocatable :: lc_arr(:, :, :)
     """
 
     name = "ccpp_utils.module_var"
-    var_name     = prop_def(StringAttr)
-    fortran_type = prop_def(StringAttr)   # e.g. "real(kind=kind_phys)", "type(vmr_type)"
-    rank         = prop_def(IntegerAttr)  # 0 = scalar, >0 = allocatable array
+    var_name  = prop_def(StringAttr)
+    base_type = prop_def(StringAttr)        # "real"|"integer"|"character"|"logical"|"type"
+    kind      = opt_prop_def(StringAttr)    # kind name or char length; None if not applicable
+    ddt_name  = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
+    ftn_attrs = opt_prop_def(StringAttr)    # Fortran attributes: "target", "pointer", etc.
+    rank      = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
 
-    def __init__(self, var_name: str, fortran_type: str, rank: int = 0):
-        super().__init__(properties={
-            "var_name":     StringAttr(var_name),
-            "fortran_type": StringAttr(fortran_type),
-            "rank":         IntegerAttr.from_int_and_width(rank, 64),
-        })
+    def __init__(
+        self,
+        var_name: str,
+        base_type: str,
+        *,
+        kind: str | None = None,
+        ddt_name: str | None = None,
+        ftn_attrs: str | None = None,
+        rank: int = 0,
+    ):
+        props: dict = {
+            "var_name":  StringAttr(var_name),
+            "base_type": StringAttr(base_type),
+            "rank":      IntegerAttr.from_int_and_width(rank, 64),
+        }
+        if kind is not None:
+            props["kind"] = StringAttr(kind)
+        if ddt_name is not None:
+            props["ddt_name"] = StringAttr(ddt_name)
+        if ftn_attrs is not None:
+            props["ftn_attrs"] = StringAttr(ftn_attrs)
+        super().__init__(properties=props)
 
 
 # Legacy aliases — kept temporarily so external callers see a clear deprecation path.
 # Use ModuleVarOp directly for new code.
 def AllocatableModVarOp(var_name: str, kind_name: str, rank: int) -> "ModuleVarOp":  # type: ignore[misc]
-    """Deprecated: use ModuleVarOp('real(kind={kind_name})', rank=rank) instead."""
-    return ModuleVarOp(var_name, f"real(kind={kind_name})", rank)
+    """Deprecated: use ModuleVarOp(var_name, 'real', kind=kind_name, rank=rank) instead."""
+    return ModuleVarOp(var_name, "real", kind=kind_name, rank=rank)
 
 
 @irdl_op_definition
@@ -744,9 +778,9 @@ class ConstituentApiOp(IRDLOperation):
         })
 
 
-def ModuleTypeVarOp(var_name: str, fortran_type: str) -> "ModuleVarOp":  # type: ignore[misc]
-    """Deprecated: use ModuleVarOp(var_name, fortran_type) instead."""
-    return ModuleVarOp(var_name, fortran_type, rank=0)
+def ModuleTypeVarOp(var_name: str, ddt_type_name: str) -> "ModuleVarOp":  # type: ignore[misc]
+    """Deprecated: use ModuleVarOp(var_name, 'type', ddt_name=ddt_type_name) instead."""
+    return ModuleVarOp(var_name, "type", ddt_name=ddt_type_name)
 
 
 @irdl_op_definition
