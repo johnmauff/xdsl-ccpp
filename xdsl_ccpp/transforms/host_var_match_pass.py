@@ -280,25 +280,19 @@ class HostVariableMatchPass(ModulePass):
 
         return errors, warnings
 
-    def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        ccpp_mod = find_ccpp_module(op.body.block.ops)
-        if ccpp_mod is None:
-            return
+    def _build_model_var_index(self, ccpp_mod):
+        """Walk HOST/MODULE/DDT tables and return (model_var_index, produced_in_init).
 
-        # ── Step 1: build model variable index ────────────────────────────
-        # standard_name → (local_var_name, module_name, memory_space|None,
-        #                   host_arg_op, is_ddt)
-        # host_arg_op is stored so compatibility checking can read its
-        # type/kind/dimensions/intent without a second IR walk.
-        # is_ddt is True when the variable is a member of a DDT type rather
-        # than a flat module variable.  DDT members are indexed here so the
-        # matching step does not raise "no matching host model variable" errors,
-        # but they are flagged so downstream code generation can handle them
-        # differently (DDT member access requires instance%member notation).
+        model_var_index: standard_name → (local_var_name, module_name,
+                         memory_space|None, host_arg_op, is_ddt)
+        produced_in_init: standard_name → (arg_op, scheme_name, entry_point_name)
+            for args produced (intent=out/inout) by any scheme _init/_run entry.
+
+        Side-effect: emits a CcppHandleOp into ccpp_mod when a ccpp_t variable
+        is found in the HOST table.
+        """
         model_var_index: dict = {}
-        # If the host metadata declares a ccpp_t variable, capture it here
-        # so we can emit a CcppHandleOp after the index is fully built.
-        _ccpp_handle: "tuple[str, str] | None" = None  # (var_name, module_name)
+        _ccpp_handle: "tuple[str, str] | None" = None
 
         for table_prop_op in ccpp_mod.body.ops:
             if not isa(table_prop_op, ccpp.TablePropertiesOp):
@@ -320,42 +314,29 @@ class HostVariableMatchPass(ModulePass):
                             if arg_op.memory_space is not None
                             else None
                         )
-                        # Detect the ccpp_t handle variable — capture it for
-                        # CcppHandleOp emission below.  Not added to model_var_index
-                        # since no scheme arg carries standard_name = ccpp_t_instance.
+                        # ccpp_t handle: captured for CcppHandleOp, not indexed.
                         if arg_op.arg_type.data.lower() == CCPP_T_TYPE:
                             _ccpp_handle = (
                                 arg_op.arg_name.data,
                                 table_prop_op.table_name.data,
                             )
                             continue
-                        # Use lowercase key — CCPP standard names are case-insensitive
                         model_var_index[arg_op.standard_name.data.lower()] = (
                             arg_op.arg_name.data,
                             table_prop_op.table_name.data,
                             memory_space,
-                            arg_op,        # host_arg_op for compatibility checking
+                            arg_op,
                             is_ddt,
                         )
 
-        # ── Step 1a: emit CcppHandleOp if a ccpp_t variable was found ─────
         if _ccpp_handle is not None:
             var_name, module_name = _ccpp_handle
             ccpp_mod.body.block.add_op(CcppHandleOp(var_name, module_name))
 
-        # ── Step 1b: build interstitial variable index ────────────────────
-        # Collect standard_names that are produced (intent=out or inout) by
-        # any scheme's _init or _timestep_init entry point.  Variables that
-        # are produced in init and consumed in run, but have no host model
-        # match, are interstitial — they flow between lifecycle phases inside
-        # the suite cap and are managed by the framework, not the host model.
-        #
-        # key:   standard_name (lowercase)
-        # value: (arg_op, scheme_name, entry_point_name)
+        # Variables produced (intent=out/inout) by a scheme's _init or _run
+        # entry point with no host match are interstitial — they flow between
+        # lifecycle phases inside the suite cap.
         produced_in_init: dict = {}
-        # Include _run as a producer suffix: variables produced by one scheme's
-        # _run and consumed by another scheme's _run (with no host match) are
-        # also interstitial — they flow between scheme calls within the suite.
         _INIT_SUFFIXES = ("_init", "_timestep_init", "_register", "_run")
 
         for table_prop_op in ccpp_mod.body.ops:
@@ -382,7 +363,16 @@ class HostVariableMatchPass(ModulePass):
                         sn = arg_op.standard_name.data.lower()
                         produced_in_init[sn] = (arg_op, scheme_nm, ep_name)
 
-        # ── Step 2: match scheme arguments and validate compatibility ──────
+        return model_var_index, produced_in_init
+
+    def _match_and_validate(self, ccpp_mod, model_var_index, produced_in_init):
+        """Annotate scheme args with host matches and collect compatibility errors.
+
+        Walks all SCHEME argument tables, sets model_var_name/model_module_name/
+        model_var_memory_space/model_var_is_ddt on matched args, runs
+        _check_compatibility on each matched pair, and marks unmatched non-optional
+        args as interstitial or raises a ValueError listing all errors.
+        """
         all_errors: list[str] = []
 
         for table_prop_op in ccpp_mod.body.ops:
@@ -400,24 +390,15 @@ class HostVariableMatchPass(ModulePass):
                         continue
                     if arg_op.standard_name is None:
                         continue
-                    # Normalise to lowercase — CCPP standard names are case-insensitive
                     std_name = arg_op.standard_name.data.lower()
                     if std_name in self._CCPP_INTERNAL:
                         continue
-                    # Allocatable variables are dynamically allocated by the
-                    # CCPP framework itself — they are not provided by the host
-                    # model and do not need a host variable match.
+                    # Allocatable, advected, and constituent args are managed by
+                    # the CCPP framework — they never have a direct host var match.
                     if arg_op.allocatable is not None:
                         continue
-                    # Advected variables are constituent mixing ratios transported
-                    # by the dynamical core.  They live inside the host model's
-                    # constituent array and are accessed through the constituent
-                    # framework mechanism, not as directly named host variables.
                     if arg_op.advected is not None:
                         continue
-                    # Constituent variables (tendencies, diagnostics) are managed
-                    # by the CCPP constituent framework, not provided as directly
-                    # named host model variables.
                     if arg_op.constituent is not None:
                         continue
 
@@ -425,7 +406,6 @@ class HostVariableMatchPass(ModulePass):
                         local_name, module_name, model_memory_space, host_arg_op, is_ddt = (
                             model_var_index[std_name]
                         )
-                        # Annotate with match information
                         arg_op.properties["model_var_name"]    = StringAttr(local_name)
                         arg_op.properties["model_module_name"] = StringAttr(module_name)
                         if model_memory_space is not None:
@@ -433,11 +413,8 @@ class HostVariableMatchPass(ModulePass):
                                 model_memory_space
                             )
                         if is_ddt:
-                            # Mark as DDT member so code generation can emit
-                            # instance%member notation rather than a plain USE.
                             arg_op.properties["model_var_is_ddt"] = UnitAttr()
 
-                        # Validate compatibility — collect errors and warnings
                         errors, warnings = self._check_compatibility(
                             arg_op, host_arg_op, scheme_name
                         )
@@ -446,21 +423,13 @@ class HostVariableMatchPass(ModulePass):
                             print(f"Warning: {w}", file=sys.stderr)
 
                     elif arg_op.optional is None and arg_op.default_value is None:
-                        # Check if this is an interstitial variable — one that
-                        # is produced by a scheme's _init entry point and consumed
-                        # by a scheme's _run entry point within the same suite.
-                        # These flow between lifecycle phases inside the suite cap
-                        # and are managed by the framework rather than the host model.
                         if std_name in produced_in_init:
                             producer_arg, producer_scheme, producer_ep = (
                                 produced_in_init[std_name]
                             )
-                            # A DDT member cannot be an interstitial: the DDT
-                            # instance is host-owned, so its member cannot be
-                            # independently managed at suite cap module scope.
-                            # This path should be unreachable because DDT members
-                            # always have model_var_name set (they have a host match)
-                            # and therefore never reach this elif branch.
+                            # DDT members are always host-matched, so reaching
+                            # this branch with model_var_is_ddt set is unreachable
+                            # in practice — guard against it explicitly.
                             if "model_var_is_ddt" in producer_arg.properties:
                                 all_errors.append(
                                     f"  Scheme '{scheme_name}': argument "
@@ -485,3 +454,11 @@ class HostVariableMatchPass(ModulePass):
                 "Host model variable matching/compatibility failed:\n"
                 + "\n".join(all_errors)
             )
+
+    def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
+        ccpp_mod = find_ccpp_module(op.body.block.ops)
+        if ccpp_mod is None:
+            return
+
+        model_var_index, produced_in_init = self._build_model_var_index(ccpp_mod)
+        self._match_and_validate(ccpp_mod, model_var_index, produced_in_init)

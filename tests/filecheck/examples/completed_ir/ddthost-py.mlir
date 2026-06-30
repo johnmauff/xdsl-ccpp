@@ -126,9 +126,9 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ddt_suite_suite_timestep_final() -> (memref<i32>, memref<512xi8>) {
-// CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-LABEL:     func.func public @ddt_suite_suite_timestep_final(%ncols : memref<i32>, %vmr : memref<!ccpp_utils.derived_type<"vmr_type">>) -> (memref<512xi8>, memref<i32>) {
+// CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
@@ -145,11 +145,17 @@
 // CHECK-NEXT:          %9 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %10 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %11 = "llvm.load"(%10) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %12 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
-// CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
-// CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
+// CHECK-NEXT:        %10 = arith.constant 0 : i32
+// CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
+// CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        scf.if %11 {
+// CHECK-NEXT:          func.call @make_ddt_timestep_final(%ncols, %vmr, %errmsg, %errflg) : (memref<i32>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:        }
+// CHECK-NEXT:        %13 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %14 = "llvm.load"(%13) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %15 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
+// CHECK-NEXT:        "llvm.store"(%14, %15) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ddt_suite_suite_data_prep(%cols : memref<i32>, %cole : memref<i32>, %O3__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %HNO3__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %vmr : memref<!ccpp_utils.derived_type<"vmr_type">>, %psurf__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
@@ -287,14 +293,16 @@
 // CHECK-LABEL:     func.func public @Ddt_ccpp_physics_timestep_final(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:        %lc_ncols = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:        %lc_vmr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:        %2 = "ccpp_utils.strcmp"(%1) <{literal = "ddt_suite"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:        scf.if %2 {
-// CHECK-NEXT:          %3, %4 = func.call @ddt_suite_suite_timestep_final() : () -> (memref<i32>, memref<512xi8>)
-// CHECK-NEXT:          "memref.copy"(%3, %errflg) : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:          "memref.copy"(%4, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
+// CHECK-NEXT:          %3, %4 = func.call @ddt_suite_suite_timestep_final(%lc_ncols, %lc_vmr) : (memref<i32>, memref<!ccpp_utils.derived_type<"vmr_type">>) -> (memref<512xi8>, memref<i32>)
+// CHECK-NEXT:          "memref.copy"(%3, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
+// CHECK-NEXT:          "memref.copy"(%4, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %5 = arith.constant 1 : i32
@@ -309,15 +317,15 @@
 // CHECK-NEXT:        %2 = "ccpp_utils.strcmp"(%1) <{literal = "ddt_suite"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:        scf.if %2 {
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
-// CHECK-NEXT:          %4 = "ccpp_utils.strcmp"(%3) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
-// CHECK-NEXT:          scf.if %4 {
-// CHECK-NEXT:            %5 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_cols"}> : () -> memref<i32>
-// CHECK-NEXT:            %6 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_cole"}> : () -> memref<i32>
-// CHECK-NEXT:            %7 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_O3(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %8 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_HNO3(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %9 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_vmr"}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
-// CHECK-NEXT:            %10 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_psurf(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %11, %12, %13 = func.call @ddt_suite_suite_data_prep(%5, %6, %7, %8, %9, %10) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>)
+// CHECK-NEXT:          %4 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_cols"}> : () -> memref<i32>
+// CHECK-NEXT:          %5 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_cole"}> : () -> memref<i32>
+// CHECK-NEXT:          %6 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_O3(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %7 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_HNO3(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %8 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_vmr"}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
+// CHECK-NEXT:          %9 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_psurf(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %10 = "ccpp_utils.strcmp"(%3) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:          scf.if %10 {
+// CHECK-NEXT:            %11, %12, %13 = func.call @ddt_suite_suite_data_prep(%4, %5, %6, %7, %8, %9) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>)
 // CHECK-NEXT:            "memref.copy"(%12, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:            "memref.copy"(%13, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {
@@ -378,7 +386,7 @@
 // CHECK-LABEL:     func.func private @ddt_suite_suite_initialize(memref<i32>, memref<!ccpp_utils.derived_type<"ccpp_info_t">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?xi32>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>, memref<i32>) attributes {module = "ddt_suite_cap"}
 // CHECK-LABEL:     func.func private @ddt_suite_suite_finalize(memref<i32>, memref<?xi32>) -> (memref<512xi8>, memref<i32>) attributes {module = "ddt_suite_cap"}
 // CHECK-LABEL:     func.func private @ddt_suite_suite_timestep_initial() -> (memref<i32>, memref<512xi8>) attributes {module = "ddt_suite_cap"}
-// CHECK-LABEL:     func.func private @ddt_suite_suite_timestep_final() -> (memref<i32>, memref<512xi8>) attributes {module = "ddt_suite_cap"}
+// CHECK-LABEL:     func.func private @ddt_suite_suite_timestep_final(memref<i32>, memref<!ccpp_utils.derived_type<"vmr_type">>) -> (memref<512xi8>, memref<i32>) attributes {module = "ddt_suite_cap"}
 // CHECK-LABEL:     func.func private @ddt_suite_suite_data_prep(memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) attributes {module = "ddt_suite_cap"}
 // CHECK:         }
 // CHECK-LABEL:   builtin.module @ccpp_kinds {

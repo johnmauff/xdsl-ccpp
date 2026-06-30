@@ -12,6 +12,7 @@
 // CHECK-NEXT:    use environ_conditions, only: environ_conditions_run
 // CHECK-NEXT:    use make_ddt, only: make_ddt_init
 // CHECK-NEXT:    use make_ddt, only: make_ddt_run
+// CHECK-NEXT:    use make_ddt, only: make_ddt_timestep_final
 // CHECK-NEXT:    use make_ddt, only: vmr_type
 // CHECK:         implicit none
 // CHECK-NEXT:    private
@@ -101,15 +102,20 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_initial
-// CHECK-LABEL:   subroutine ddt_suite_suite_timestep_final(errflg, errmsg)
-// CHECK:           integer, intent(out) :: errflg
+// CHECK-LABEL:   subroutine ddt_suite_suite_timestep_final(ncols, vmr, errmsg, errflg)
+// CHECK:           integer, intent(in) :: ncols
+// CHECK-NEXT:      type(vmr_type), intent(in) :: vmr
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in ddt_suite_timestep_final"
 // CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call make_ddt_timestep_final(ncols, vmr, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_final
@@ -243,9 +249,11 @@
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK-NEXT:      integer :: lc_ncols
+// CHECK-NEXT:      type(vmr_type) :: lc_vmr
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:        call ddt_suite_suite_timestep_final(errflg, errmsg)
+// CHECK-NEXT:        call ddt_suite_suite_timestep_final(lc_ncols, lc_vmr, errmsg, errflg)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
 // CHECK-NEXT:        errflg = 1

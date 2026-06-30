@@ -7,6 +7,7 @@
 // CHECK-LABEL: // FILE: temp_suite_cap.F90
 // CHECK-LABEL: module temp_suite_cap
 // CHECK:         use ccpp_kinds
+// CHECK-NEXT:    use setup_coeffs, only: setup_coeffs_timestep_init
 // CHECK-NEXT:    use temp_adjust, only: temp_adjust_finalize
 // CHECK-NEXT:    use temp_adjust, only: temp_adjust_init
 // CHECK-NEXT:    use temp_adjust, only: temp_adjust_register
@@ -119,8 +120,9 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine temp_suite_suite_finalize
-// CHECK-LABEL:   subroutine temp_suite_suite_timestep_initial(ncol, temp_inc, temp_level, errmsg, errflg)
-// CHECK:           integer, intent(in) :: ncol
+// CHECK-LABEL:   subroutine temp_suite_suite_timestep_initial(coeffs, ncol, temp_inc, temp_level, errmsg, errflg)
+// CHECK:           real(kind=kind_phys), intent(inout) :: coeffs(:)
+// CHECK-NEXT:      integer, intent(in) :: ncol
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: temp_inc
 // CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: temp_level(:, :)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -131,6 +133,9 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in temp_suite_timestep_initial"
 // CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call setup_coeffs_timestep_init(coeffs, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call temp_set_timestep_initialize(ncol, temp_inc, temp_level, errmsg, errflg)
@@ -226,6 +231,7 @@
 // CHECK-NEXT:    use environ_conditions, only: environ_conditions_run
 // CHECK-NEXT:    use make_ddt, only: make_ddt_init
 // CHECK-NEXT:    use make_ddt, only: make_ddt_run
+// CHECK-NEXT:    use make_ddt, only: make_ddt_timestep_final
 // CHECK-NEXT:    use make_ddt, only: vmr_type
 // CHECK-NEXT:    use test_host_mod, only: ncols
 // CHECK-NEXT:    use test_host_mod, only: num_model_times
@@ -324,15 +330,20 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_initial
-// CHECK-LABEL:   subroutine ddt_suite_suite_timestep_final(errflg, errmsg)
-// CHECK:           integer, intent(out) :: errflg
+// CHECK-LABEL:   subroutine ddt_suite_suite_timestep_final(ncols, vmr, errmsg, errflg)
+// CHECK:           integer, intent(in) :: ncols
+// CHECK-NEXT:      type(vmr_type), intent(in) :: vmr
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in ddt_suite_timestep_final"
 // CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call make_ddt_timestep_final(ncols, vmr, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_final
@@ -381,6 +392,7 @@
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_timestep_final
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_timestep_initial
 // CHECK-NEXT:    use test_host_data, only: physics_state
+// CHECK-NEXT:    use test_host_mod, only: coeffs
 // CHECK-NEXT:    use test_host_mod, only: config_var
 // CHECK-NEXT:    use test_host_mod, only: model_times
 // CHECK-NEXT:    use test_host_mod, only: ncols
@@ -488,7 +500,8 @@
 // CHECK-NEXT:        call ddt_suite_suite_timestep_initial(errflg, errmsg)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
-// CHECK-NEXT:          call temp_suite_suite_timestep_initial(ncols, lc_temp_inc, temp_interfaces, errmsg, errflg)
+// CHECK-NEXT:          call temp_suite_suite_timestep_initial(coeffs, ncols, lc_temp_inc, temp_interfaces,       &
+// CHECK-NEXT:            errmsg, errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
 // CHECK-NEXT:          errflg = 1
@@ -499,9 +512,10 @@
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK-NEXT:      type(vmr_type) :: lc_vmr
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:        call ddt_suite_suite_timestep_final(errflg, errmsg)
+// CHECK-NEXT:        call ddt_suite_suite_timestep_final(ncols, lc_vmr, errmsg, errflg)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
 // CHECK-NEXT:          call temp_suite_suite_timestep_final(errflg, errmsg)

@@ -721,6 +721,27 @@ ruff check xdsl_ccpp/
 ruff format xdsl_ccpp/
 ```
 
+## Code Organization
+
+The transformation pipeline lives entirely under `xdsl_ccpp/transforms/`:
+
+| Module | Pass name | Role |
+|--------|-----------|------|
+| `ccpp_cap.py` | `generate-ccpp-cap` | Emits the host-facing cap (`ccpp_physics_initialize`, `ccpp_physics_run`, etc.) |
+| `suite_cap.py` | `generate-suite-cap` | Emits per-suite subroutines (`*_suite_physics`, lifecycle init/finalize) |
+| `host_var_match_pass.py` | `generate-host-match` | Annotates scheme arg ops with matching host variable names, kinds, and units |
+| `gpu_ccpp_cap_pass.py` | `generate-gpu-ccpp-cap` | Inserts OpenACC/OpenMP data directives at the ccpp_cap level |
+| `gpu_data_pass.py` | `generate-gpu-data` | Inserts OpenACC/OpenMP directives at the suite_cap level for unmatched device variables |
+
+Shared utilities used by multiple passes live in `xdsl_ccpp/transforms/util/`:
+
+| Module | Contents |
+|--------|----------|
+| `ir_utils.py` | `find_ccpp_module(ops)` — locates the named `@ccpp` ModuleOp from an op list |
+| `ccpp_descriptors.py` | `BuildMetaDataDescriptions` — walks CCPP metadata tables into Python descriptor objects |
+
+When writing a new pass that needs the CCPP metadata module, import `find_ccpp_module` from `xdsl_ccpp.transforms.util.ir_utils` rather than re-implementing the search.
+
 ---
 
 ## CCPP Tool Comparison
@@ -765,7 +786,7 @@ ruff format xdsl_ccpp/
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 205 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 210 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
