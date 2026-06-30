@@ -930,57 +930,13 @@ generator to know anything about Kokkos internals.
 | 6 | Kessler C++ driver example | ✅ Done |
 | 7 | Testing | In progress |
 
-Phase 3 adds a `bind_c` flag to `generate-ccpp-cap`. When set, the lifecycle and run
-subroutines in the ccpp_cap module carry `BIND(C, name='...')` and use ISO_C_BINDING
-argument types (`character(kind=c_char,len=1), dimension(*)` for strings,
-`integer(c_int)` for integers, `real(c_double)` for reals). Intent(in) scalar integers
-use the `VALUE` attribute (C pass-by-value). Utility subroutines
-(`ccpp_physics_suite_list`, `ccpp_physics_suite_part_list`) are not marked BIND(C) since
-they use Fortran allocatable types that are not C-interoperable.
+Pass `--bind-c` to `ccpp_xdsl` to generate BIND(C) Fortran caps and matching C++ headers alongside the standard Fortran output:
 
-Phase 4 adds a `cpp_header` target to `ccpp_opt` and `--bind-c` flag to `ccpp_xdsl`.
-When enabled, a second optimizer pass emits two C++ header files:
-
-- **`<HostName>_ccpp_cap.h`** — `extern "C"` declarations for each BIND(C) subroutine.
-  Character args become `const char*` (intent in) or `char*`; intent(in) scalar
-  integers and reals use by-value C types (`int`, `double`); output scalars and arrays
-  use pointer types. Multi-dimensional real arrays include a `/* rank-N column-major */`
-  comment reminding the caller that Fortran stores in column-major order.
-- **`ccpp_kinds.h`** — `typedef` aliases (`kind_phys_t`, etc.) matching
-  `ccpp_kinds.F90` so C++ code can use CCPP kind names.
-
-Usage via the manual pipeline:
-```bash
-# Fortran caps (BIND(C) variant)
-... | ccpp_opt -p "...,generate-ccpp-cap{bind_c=true},..." -t ftn
-
-# C++ headers
-... | ccpp_opt -p "...,generate-ccpp-cap{bind_c=true},..." -t cpp_header
-```
-
-Usage via the driver (generates both automatically):
 ```bash
 ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o output/
 ```
 
-Phase 5 adds `INTERFACE bindC` to `xdsl_ccpp_generate()` in `cmake/xdsl_ccpp.cmake`.
-When set, the function passes `--bind-c` to `ccpp_xdsl` and appends the generated
-`.h` files to `TARGET_VAR` alongside the `.F90` files:
-
-```cmake
-xdsl_ccpp_generate(
-    HOST_NAME   "Kessler"
-    OUTPUT_ROOT "${CMAKE_CURRENT_BINARY_DIR}/caps"
-    TARGET_VAR  KESSLER_CAPS
-    INTERFACE   bindC
-    SUITES      "${CMAKE_CURRENT_SOURCE_DIR}/kessler_suite.xml"
-    SCHEMEFILES "${CMAKE_CURRENT_SOURCE_DIR}/kessler.meta"
-    HOSTFILES   "${CMAKE_CURRENT_SOURCE_DIR}/kessler_host.meta"
-)
-
-add_library(kessler_caps ${KESSLER_CAPS})
-target_include_directories(kessler_caps PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/caps")
-```
+This writes the standard `.F90` cap files plus `<HostName>_ccpp_cap.h` (extern "C" declarations) and `ccpp_kinds.h` (typedef aliases for CCPP kind names). See [`multilanguage_plan.md`](multilanguage_plan.md) for the full design and type-mapping details.
 
 ### Key Observations
 
