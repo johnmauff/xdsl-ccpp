@@ -8,6 +8,9 @@
 // CHECK-SAME: attributes {module = "tiny_fortran_scheme"}
 // CHECK-NOT:  language
 
-// C++ scheme: both module and language attributes present.
+// C++ scheme: module, language, arg_names, and arg_intents all stamped.
 // CHECK:      func.func private @tiny_cxx_scheme_run
-// CHECK-SAME: attributes {module = "tiny_cxx_scheme", language = "c++"}
+// CHECK-SAME: module = "tiny_cxx_scheme"
+// CHECK-SAME: language = "c++"
+// CHECK-SAME: arg_names = ["ncol", "temp", "errmsg", "errflg"]
+// CHECK-SAME: arg_intents = ["in", "inout", "out", "out"]

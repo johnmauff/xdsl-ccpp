@@ -1551,6 +1551,18 @@ class GenerateSuiteSubroutine(RewritePattern):
                 meta = self.meta_data.get(module_name)
                 if meta is not None and meta.hasAttr("language"):
                     cloned.attributes["language"] = StringAttr(meta.getAttr("language"))
+                    # Stamp arg names and intents so the printer can emit a
+                    # BIND(C) interface block without re-reading the meta files.
+                    arg_table = meta.arg_tables.get(fd.sym_name.data)
+                    if arg_table is not None:
+                        args = list(arg_table.getFunctionArguments())
+                        cloned.attributes["arg_names"] = ArrayAttr(
+                            [StringAttr(a.name) for a in args]
+                        )
+                        cloned.attributes["arg_intents"] = ArrayAttr(
+                            [StringAttr(a.getAttr("intent") if a.hasAttr("intent") else "in")
+                             for a in args]
+                        )
             fn_sigs.append(cloned)
         return fn_sigs
 

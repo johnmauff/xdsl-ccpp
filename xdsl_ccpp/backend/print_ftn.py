@@ -7,6 +7,7 @@ from typing import IO, cast
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
+    ArrayAttr,
     DenseIntOrFPElementsAttr,
     Float32Type,
     Float64Type,
@@ -794,14 +795,20 @@ class ftnPrintContext:
         if not is_kinds_module:
             self.print("\nuse ccpp_kinds", prefix="  ")
 
-        # When any subroutine uses BIND(C), import iso_c_binding at module scope.
+        # When any subroutine uses BIND(C), or any C++ scheme is called,
+        # import iso_c_binding at module scope.
         if not is_kinds_module:
             has_bind_c = any(
                 isa(op, func.FuncOp) and not op.is_declaration
                 and "bind_c" in op.attributes
                 for op in body.ops
             )
-            if has_bind_c:
+            has_cxx_schemes = any(
+                isa(op, func.FuncOp) and op.is_declaration
+                and "language" in op.attributes
+                for op in body.ops
+            )
+            if has_bind_c or has_cxx_schemes:
                 self.print("use iso_c_binding", prefix="  ")
 
         # For the ccpp_kinds module, emit ISO_FORTRAN_ENV renames:
@@ -823,6 +830,8 @@ class ftnPrintContext:
         use_map: dict[str, list[str]] = {}
         for op in body.ops:
             if isa(op, func.FuncOp) and op.is_declaration and "module" in op.attributes:
+                if "language" in op.attributes:
+                    continue  # C++ scheme — emitted as BIND(C) interface block, not use
                 mod = op.attributes["module"].data
                 use_map.setdefault(mod, []).append(op.sym_name.data)
             elif isa(op, llvm.GlobalOp) and "module" in op.attributes:
@@ -860,6 +869,13 @@ class ftnPrintContext:
         for mod, procs in sorted(use_map.items()):
             for proc in sorted(procs):
                 self.print(f"use {mod}, only: {proc}", prefix="  ")
+
+        # Emit BIND(C) interface blocks for C++ scheme entry points.
+        cxx_fns = [op for op in body.ops
+                   if isa(op, func.FuncOp) and op.is_declaration
+                   and "language" in op.attributes]
+        if cxx_fns:
+            self._print_cxx_interface_blocks(cxx_fns)
 
         self.print("\nimplicit none", prefix="  ")
         self.print("private", prefix="  ")
@@ -1126,6 +1142,45 @@ class ftnPrintContext:
 
         # Array: use assumed-size (*) — C side passes a raw pointer
         return f"{c_type}, intent({intent}){opt_clause} :: {arg_name}(*)"
+
+    def _print_cxx_interface_blocks(self, cxx_fns: list) -> None:
+        """Emit Fortran BIND(C) interface blocks for C++ scheme entry points.
+
+        Each external func.FuncOp with a ``language`` attribute gets one
+        ``interface`` / ``end interface`` block.  Argument names and intents
+        are read from the ``arg_names`` and ``arg_intents`` ArrayAttr stamps
+        placed by ``_build_fn_signatures`` in the suite cap pass; if absent
+        (e.g. the entry point had no arg table) positional fallback names are
+        used.
+        """
+        self.print("")
+        self.print("interface", prefix="  ")
+        for fn_op in cxx_fns:
+            fn_name = fn_op.sym_name.data
+            arg_types = list(fn_op.function_type.inputs)
+
+            names_attr = fn_op.attributes.get("arg_names")
+            arg_names = (
+                [a.data for a in names_attr.data]
+                if names_attr is not None
+                else [f"arg_{i}" for i in range(len(arg_types))]
+            )
+            intents_attr = fn_op.attributes.get("arg_intents")
+            arg_intents = (
+                [a.data for a in intents_attr.data]
+                if intents_attr is not None
+                else ["inout"] * len(arg_types)
+            )
+
+            arg_list = ", ".join(arg_names)
+            self.print(f"  subroutine {fn_name}({arg_list}) &", prefix="  ")
+            self.print(f"      BIND(C, name='{fn_name}')", prefix="  ")
+            self.print("    use iso_c_binding", prefix="    ")
+            for arg_name, arg_type, intent in zip(arg_names, arg_types, arg_intents):
+                decl = self._bind_c_arg_decl_line(arg_type, arg_name, intent)
+                self.print(decl, prefix="    ")
+            self.print(f"  end subroutine {fn_name}", prefix="  ")
+        self.print("end interface", prefix="  ")
 
     def _print_fn(
         self,
