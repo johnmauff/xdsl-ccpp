@@ -15,6 +15,13 @@ details see [`DEVELOPERS.md`](DEVELOPERS.md).
 
 ## Installation
 
+### Clone the repository
+
+```bash
+git clone https://github.com/johnmauff/xdsl-ccpp.git
+cd xdsl-ccpp
+```
+
 ### Laptop
 
 ```bash
@@ -38,7 +45,7 @@ pip install -e ".[validate]"
 
 ### Derecho (NCAR)
 
-Load the Python module and create a conda environment:
+Load the conda module and create an environment:
 
 ```bash
 module load conda
@@ -47,11 +54,10 @@ conda activate xdsl-ccpp
 pip install -e ".[dev]"
 ```
 
-For Fortran source cross-validation with Flang, load the LLVM module before
-installing:
+For Fortran source cross-validation, install the validate extra (uses fparser2,
+which is pure Python — no compiler required):
 
 ```bash
-module load llvm
 pip install -e ".[validate]"
 ```
 
@@ -447,24 +453,27 @@ ccpp_datatable options:
 
 xdsl-ccpp supports two multi-language directions:
 
-**C++/Kokkos host → Fortran schemes:** Pass `--bind-c` to generate a BIND(C) Fortran
-cap plus a matching C++ header (`<HostName>_ccpp_cap.h` and `ccpp_kinds.h`).
-The C++ host calls the Fortran physics through standard `extern "C"` function
-pointers; no Kokkos-specific knowledge is needed in the cap generator.
+xdsl-ccpp includes experimental support for two multi-language directions. This
+work is still in development — see [`multilanguage_plan.md`](multilanguage_plan.md)
+for full design, current status, and remaining work.
+
+**C++/Kokkos host → Fortran schemes (prototype):** Pass `--bind-c` to generate a
+BIND(C) Fortran cap plus a matching C++ header (`<HostName>_ccpp_cap.h` and
+`ccpp_kinds.h`). The cap generation and C++ header output are implemented; the
+Kessler example includes a working C++ BIND(C) driver that produces bit-for-bit
+identical results to the Fortran drivers. Row-major array layout RESHAPE is
+implemented. A compiled numerical parity test (CTest/Makefile) has not yet been
+written.
 
 ```bash
 ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o output/
 ```
 
-**Fortran host → C++ schemes:** When a scheme's `.meta` table carries
+**Fortran host → C++ schemes (prototype):** When a scheme's `.meta` table carries
 `language = c++`, the generated suite cap emits a `BIND(C)` interface block instead
 of a `use <module>` statement, allowing a C++ scheme to be called directly from
-Fortran.
-
-Full design, type-mapping tables, array-layout (row_major RESHAPE), and phase
-status are in [`multilanguage_plan.md`](multilanguage_plan.md). The Kessler example
-(`examples/kessler/`) includes a working C++ BIND(C) driver (`kessler_cxx`) that
-produces bit-for-bit identical results to the Fortran drivers.
+Fortran. The cap generator emits correct interface blocks; a compiled end-to-end
+test with an actual C++ scheme implementation has not yet been written.
 
 ---
 
@@ -553,13 +562,6 @@ CPU execution verified. GPU execution not yet tested.
 ‡ The C++ BIND(C) driver (`kessler_cxx`) calls the CCPP-generated BIND(C) Fortran
 cap from C++. All three drivers (CCPP Fortran cap, hand-written Fortran, C++ BIND(C))
 produce identical numerical output.
-
-### Linting
-
-```bash
-ruff check xdsl_ccpp/
-ruff format xdsl_ccpp/
-```
 
 ---
 

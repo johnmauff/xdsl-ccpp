@@ -29,6 +29,9 @@ ccpp_track_variables = "xdsl_ccpp.tools.ccpp_track_variables:main"
 ccpp_datatable = "xdsl_ccpp.tools.ccpp_datatable:main"
 ccpp_generate_meta = "xdsl_ccpp.tools.ccpp_generate_meta:main"
 
+[tool.setuptools.packages.find]
+include = ["xdsl_ccpp*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

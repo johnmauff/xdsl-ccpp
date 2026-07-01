@@ -135,3 +135,12 @@ printer can interpret the type without parsing Fortran syntax.
 2. Define a class inheriting from `ModulePass` (see existing passes for the pattern).
 3. Register the pass in `xdsl_ccpp/tools/ccpp_opt.py`.
 4. Add FileCheck tests under `tests/filecheck/examples/` covering the new pass.
+
+---
+
+## Linting
+
+```bash
+ruff check xdsl_ccpp/
+ruff format xdsl_ccpp/
+```
