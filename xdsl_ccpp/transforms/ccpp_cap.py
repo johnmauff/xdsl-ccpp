@@ -14,6 +14,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ConstituentApiOp,
     HostVarRefOp,
     ModuleVarOp,
+    RowMajorConvertOp,
+    RowMajorWriteBackOp,
     SetStringOp,
     StrCmpOp,
     SuiteVariablesOp,
@@ -628,6 +630,34 @@ class CCPPCAP(ModulePass):
                             fn_arg.hasAttr("model_var_is_ddt"),
                         )
 
+            # Build bare_name → (dim_std_names, intent) for rank≥2 row_major args.
+            # These will be transposed via RowMajorConvertOp in the dispatch chain.
+            local_to_array_layout: dict = {}
+            for scheme_name in scheme_names:
+                table_name = scheme_name + "_run"
+                if scheme_name not in meta_data:
+                    continue
+                if table_name not in meta_data[scheme_name].arg_tables:
+                    continue
+                for fn_arg in (
+                    meta_data[scheme_name]
+                    .getArgTable(table_name)
+                    .getFunctionArguments()
+                ):
+                    bare_name = _bare(fn_arg.name)
+                    if (
+                        bare_name not in local_to_array_layout
+                        and fn_arg.hasAttr("model_var_array_layout")
+                        and fn_arg.getAttr("model_var_array_layout") == "row_major"
+                        and fn_arg.hasAttr("dim_names")
+                        and fn_arg.hasAttr("dimensions")
+                        and fn_arg.getAttr("dimensions") >= 2
+                    ):
+                        local_to_array_layout[bare_name] = (
+                            fn_arg.getAttr("dim_names"),
+                            fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in",
+                        )
+
             # Classify each callee input arg using match pass results as primary source.
             physics_arg_sources = []
             for arg_name in callee_input_names:
@@ -743,6 +773,7 @@ class CCPPCAP(ModulePass):
                     "non_host_args": non_host_args,
                     "std_name_of": std_name_of,
                     "scheme_names": scheme_names,
+                    "local_to_array_layout": local_to_array_layout,
                 }
             )
 
@@ -1068,6 +1099,7 @@ class CCPPCAP(ModulePass):
                 physics_arg_sources = info["physics_arg_sources"]
                 std_name_of = info["std_name_of"]
                 scheme_names = info["scheme_names"]
+                local_to_array_layout = info.get("local_to_array_layout", {})
 
                 # ── Build standard_name → dim_names for cap_var sources ──────
                 cap_var_std_to_dims: dict = {}
@@ -1148,6 +1180,10 @@ class CCPPCAP(ModulePass):
                 for i, (arg_name, arg_type) in enumerate(
                     zip(callee_input_names, callee_input_types)
                 ):
+                    # Row-major rank≥2 arrays are handled by RowMajorConvertOp below;
+                    # skip ArraySectionOp for them so we don't double-slice.
+                    if _bare(arg_name) in local_to_array_layout:
+                        continue
                     src = physics_arg_sources[i]
                     if src[0] == "host":
                         _, host_var_name, host_module_name = src
@@ -1280,6 +1316,62 @@ class CCPPCAP(ModulePass):
                 array_section_ops = (
                     array_section_pre_ops + array_section_extra_ops + array_section_main_ops
                 )
+
+                # ── RowMajorConvertOps (rank≥2 row_major host arrays) ─────────
+                # Transpose row-major host arrays to column-major temps before
+                # passing them to the suite.  ArraySectionOps are skipped for
+                # these args (see check above) so host_var_ref_results[arg_name]
+                # still holds the raw HostVarRefOp result at this point.
+                row_major_convert_ops: list = []
+                row_major_write_back_pairs: list = []  # (conv_op, host_ref_result)
+
+                for i, (arg_name, arg_type) in enumerate(
+                    zip(callee_input_names, callee_input_types)
+                ):
+                    src = physics_arg_sources[i]
+                    if src[0] != "host":
+                        continue
+                    bare = _bare(arg_name)
+                    if bare not in local_to_array_layout:
+                        continue
+
+                    dim_std_names, intent = local_to_array_layout[bare]
+                    dim_exprs: list = []
+                    valid = True
+                    for dim_sn in dim_std_names:
+                        sn_lower = dim_sn.lower()
+                        if sn_lower == CCPP_LOOP_EXTENT_STD_NAME:
+                            # horizontal loop extent: express as col_end - col_start + 1
+                            col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                            col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                            if (col_begin_key and col_end_key
+                                    and col_begin_key in block_arg_map
+                                    and col_end_key in block_arg_map):
+                                dim_exprs.append(f"{col_end_key} - {col_begin_key} + 1")
+                            else:
+                                valid = False
+                                break
+                        else:
+                            canonical = non_host_std_to_canonical.get(sn_lower)
+                            if canonical:
+                                dim_exprs.append(canonical)
+                            elif sn_lower in host_var_map:
+                                # Dimension is a host module variable; use its name directly
+                                dim_exprs.append(host_var_map[sn_lower][0])
+                            else:
+                                valid = False
+                                break
+                    if not valid:
+                        continue
+
+                    host_ref_result = host_var_ref_results[arg_name]
+                    conv_op = RowMajorConvertOp(host_ref_result, dim_exprs, arg_type)
+                    conv_op.res.name_hint = f"{bare}_col"
+                    row_major_convert_ops.append(conv_op)
+                    host_var_ref_results[arg_name] = conv_op.res
+
+                    if intent in ("inout", "out"):
+                        row_major_write_back_pairs.append((conv_op, host_ref_result, dim_exprs))
 
                 # ── Build call args in callee order ───────────────────────────
                 call_args = []
@@ -1417,7 +1509,19 @@ class CCPPCAP(ModulePass):
                                         copy_ops.append(memref.CopyOp(result, cap_ref.res))
                                         break
 
-                inner_if_true = cap_var_inout_refs + [call_op] + copy_ops
+                # Build write-back ops for row-major arrays (inout/out only).
+                row_major_write_back_ops: list = []
+                for conv_op, host_ref_result, dim_exprs in row_major_write_back_pairs:
+                    wb_op = RowMajorWriteBackOp(conv_op.res, host_ref_result, dim_exprs)
+                    row_major_write_back_ops.append(wb_op)
+
+                inner_if_true = (
+                    cap_var_inout_refs
+                    + row_major_convert_ops
+                    + [call_op]
+                    + copy_ops
+                    + row_major_write_back_ops
+                )
 
                 inner_if = scf.IfOp(
                     suite_part_eq.res,

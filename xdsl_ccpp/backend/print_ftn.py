@@ -32,6 +32,8 @@ from xdsl_ccpp.dialects.ccpp_utils import KindDefOp as CCPPKindDefOp
 from xdsl_ccpp.dialects.ccpp_utils import KindWriteBackOp as CCPPKindWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
+from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
@@ -760,6 +762,26 @@ class ftnPrintContext:
                 self.print(f"{dest_name} = {conv_name} {to_expr}")
                 if self._ftn_dim_suffix(op.conv_result.type):
                     self.print(f"deallocate({conv_name})")
+            case CCPPRowMajorConvertOp():
+                # Forward transpose: row-major host → column-major local temp.
+                src_name    = self._get_variable_name_for(op.source)
+                result_name = self._get_variable_name_for(op.res)
+                rank = len(op.dim_exprs.data)
+                dims = [e.data for e in op.dim_exprs.data]
+                dims_str  = ", ".join(dims)
+                order_str = ", ".join(str(rank - i) for i in range(rank))
+                self.print(f"allocate({result_name}({dims_str}))")
+                self.print(f"{result_name} = reshape({src_name}, [{dims_str}], order=[{order_str}])")
+            case CCPPRowMajorWriteBackOp():
+                # Reverse transpose: column-major local temp → row-major host.
+                local_name = self._get_variable_name_for(op.local_val)
+                dest_name  = self._get_variable_name_for(op.host_var)
+                rank = len(op.dim_exprs.data)
+                dims = [e.data for e in op.dim_exprs.data]
+                rev_dims_str = ", ".join(reversed(dims))
+                order_str    = ", ".join(str(rank - i) for i in range(rank))
+                self.print(f"{dest_name} = reshape({local_name}, [{rev_dims_str}], order=[{order_str}])")
+                self.print(f"deallocate({local_name})")
     # ISO_FORTRAN_ENV named constants recognised as kind values
     _ISO_FORTRAN_ENV_KINDS: frozenset[str] = frozenset(
         {
@@ -1373,7 +1395,7 @@ class ftnPrintContext:
                 else:
                     inner.print(f"{type_str} :: {var_name}")
 
-            # Declare kind-cast and unit-convert temporaries
+            # Declare kind-cast and unit-convert temporaries (top-level ops in suite caps)
             for op in bdy.block.ops:
                 if isa(op, CCPPKindCastOp):
                     var_name = (
@@ -1394,6 +1416,22 @@ class ftnPrintContext:
                         op.res.name_hint
                         if op.res.name_hint is not None
                         else f"unit_conv_{id(op)}"
+                    )
+                    inner.variables[op.res] = var_name
+                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                    if dim_suffix:
+                        inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+                    else:
+                        inner.print(f"{type_str} :: {var_name}")
+
+            # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
+            for op in bdy.block.walk():
+                if isa(op, CCPPRowMajorConvertOp):
+                    var_name = (
+                        op.res.name_hint
+                        if op.res.name_hint is not None
+                        else f"row_major_col_{id(op)}"
                     )
                     inner.variables[op.res] = var_name
                     type_str = inner.mlir_type_to_ftn_type(op.res.type)

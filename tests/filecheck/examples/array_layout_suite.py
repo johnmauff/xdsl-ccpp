@@ -12,9 +12,15 @@ class tiny_scheme:
     run = [
         Arg("ncol",   standard_name="horizontal_loop_extent",
             type="integer", units="count",     intent="in"),
+        Arg("nz",     standard_name="vertical_layer_dimension",
+            type="integer", units="count",     intent="in"),
         Arg("temp",   standard_name="air_temperature",
             type="real",    kind="kind_phys",  units="K",
             dimensions=("horizontal_loop_extent",), intent="inout"),
+        Arg("theta",  standard_name="air_potential_temperature",
+            type="real",    kind="kind_phys",  units="K",
+            dimensions=("horizontal_loop_extent", "vertical_layer_dimension"),
+            intent="inout"),
         Arg("errmsg", standard_name="ccpp_error_message",
             type="character", kind="len=512",  units="none", intent="out"),
         Arg("errflg", standard_name="ccpp_error_code",
@@ -34,13 +40,33 @@ host = TableDescriptor(
     {"tiny_host_mod": [
         Arg("ncols",       standard_name="horizontal_dimension",
             type="integer", units="count", intent="in"),
+        Arg("nz_total",    standard_name="vertical_layer_dimension",
+            type="integer", units="count", intent="in"),
         Arg("temperature", standard_name="air_temperature",
             type="real", kind="kind_phys", units="K",
             dimensions=("horizontal_dimension",), intent="inout"),
+        Arg("theta",       standard_name="air_potential_temperature",
+            type="real", kind="kind_phys", units="K",
+            dimensions=("horizontal_dimension", "vertical_layer_dimension"),
+            intent="inout"),
     ]},
     array_layout="row_major",
 )
 
 
+# HOST-type table providing col_start/col_end with standard names so the
+# host cap knows their standard names and can use them in RESHAPE dim_exprs.
+host_sub = TableDescriptor(
+    "tiny_host_sub",
+    "host",
+    {"tiny_host_sub": [
+        Arg("col_start", standard_name="horizontal_loop_begin",
+            type="integer", units="count", intent="in"),
+        Arg("col_end",   standard_name="horizontal_loop_end",
+            type="integer", units="count", intent="in"),
+    ]},
+)
+
+
 if __name__ == "__main__":
-    emit_ir(tiny_suite, additional=[host])
+    emit_ir(tiny_suite, additional=[host, host_sub])

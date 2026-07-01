@@ -952,6 +952,78 @@ class KindWriteBackOp(IRDLOperation):
         )
 
 
+@irdl_op_definition
+class RowMajorConvertOp(IRDLOperation):
+    """Transpose a row-major host array to column-major order for Fortran scheme consumption.
+
+    Emits::
+
+        allocate(result(dim0, dim1, ...))
+        result = reshape(source, [dim0, dim1, ...], order=[rank, ..., 1])
+
+    ``dim_exprs`` holds the target (column-major) dimension sizes as Fortran
+    expressions matching the scheme's dimension order.  Use
+    ``RowMajorWriteBackOp`` to transpose back after the scheme call for
+    ``intent(inout)`` / ``intent(out)`` arguments.
+    """
+
+    name = "ccpp_utils.row_major_convert"
+
+    source    = operand_def()
+    dim_exprs = prop_def(ArrayAttr)   # Fortran expressions, e.g. ["ncol", "nz"]
+
+    res = result_def()
+
+    def __init__(
+        self,
+        source: "SSAValue | IRDLOperation",
+        dim_exprs: "list[str] | ArrayAttr",
+        result_type,
+    ):
+        if isinstance(dim_exprs, list):
+            dim_exprs = ArrayAttr([StringAttr(e) for e in dim_exprs])
+        super().__init__(
+            operands=[source],
+            properties={"dim_exprs": dim_exprs},
+            result_types=[result_type],
+        )
+
+
+@irdl_op_definition
+class RowMajorWriteBackOp(IRDLOperation):
+    """Write a column-major local array back to the row-major host variable.
+
+    Emits::
+
+        host_var = reshape(local_val, [dim_{rank-1}, ..., dim0], order=[rank, ..., 1])
+        deallocate(local_val)
+
+    ``dim_exprs`` must match the ``dim_exprs`` from the corresponding
+    ``RowMajorConvertOp`` (column-major dimension order).  The write-back
+    reverses the dimension list and applies the same ORDER so the result
+    matches the host's row-major layout.
+    """
+
+    name = "ccpp_utils.row_major_write_back"
+
+    local_val = operand_def()
+    host_var  = operand_def()
+    dim_exprs = prop_def(ArrayAttr)   # same order as RowMajorConvertOp (column-major)
+
+    def __init__(
+        self,
+        local_val: "SSAValue | IRDLOperation",
+        host_var:  "SSAValue | IRDLOperation",
+        dim_exprs: "list[str] | ArrayAttr",
+    ):
+        if isinstance(dim_exprs, list):
+            dim_exprs = ArrayAttr([StringAttr(e) for e in dim_exprs])
+        super().__init__(
+            operands=[local_val, host_var],
+            properties={"dim_exprs": dim_exprs},
+        )
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -986,6 +1058,8 @@ CCPPUtils = Dialect(
         KindWriteBackOp,
         UnitConvertOp,
         UnitWriteBackOp,
+        RowMajorConvertOp,
+        RowMajorWriteBackOp,
     ],
     [RealKindType, DerivedType],
 )

@@ -801,7 +801,7 @@ The Fortran printer reconstructs the declaration string from these fields. Other
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 214 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 220 pytest + 3 Makefiles |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
@@ -928,7 +928,7 @@ generator to know anything about Kokkos internals.
 | 4 | C++ header printer (`-t cpp_header`) | ✅ Done |
 | 5 | CMake `INTERFACE bindC` option | ✅ Done |
 | 6 | Kessler C++ driver example | ✅ Done |
-| 7 | Testing | In progress |
+| 7 | Testing | Partial — see below |
 
 Pass `--bind-c` to `ccpp_xdsl` to generate BIND(C) Fortran caps and matching C++ headers alongside the standard Fortran output:
 
@@ -937,6 +937,41 @@ ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o output/
 ```
 
 This writes the standard `.F90` cap files plus `<HostName>_ccpp_cap.h` (extern "C" declarations) and `ccpp_kinds.h` (typedef aliases for CCPP kind names). See [`multilanguage_plan.md`](multilanguage_plan.md) for the full design and type-mapping details.
+
+**Phase 7 testing status:**
+
+| Test | Status |
+|------|--------|
+| BIND(C) Fortran output FileCheck (`kessler-bindC.mlir`) | ✅ Done |
+| C++ header output FileCheck (`kessler-cpp-header.mlir`) | ✅ Done |
+| `array_layout` round-trip through IR FileCheck | ✅ Done |
+| RESHAPE generation for `row_major` host | ✅ Done |
+| Numerical parity (Makefile / CTest) | ❌ Not started |
+
+**Fortran host → C++ scheme implementations (new direction):**
+
+The cap generator also supports the inverse direction: a standard Fortran host calling C++ scheme implementations. When a scheme's `.meta` table carries `language = c++`, the generated suite cap emits a `BIND(C)` interface block instead of a `use <module>` statement, enabling the C++ scheme to be called directly from Fortran:
+
+```fortran
+module tiny_suite_cap
+  use ccpp_kinds
+  use iso_c_binding
+  use tiny_fortran_scheme, only: tiny_fortran_scheme_run
+
+  interface
+    subroutine tiny_cxx_scheme_run(ncol, temp, errmsg, errflg) &
+        BIND(C, name='tiny_cxx_scheme_run')
+      use iso_c_binding
+      integer(c_int), value, intent(in) :: ncol
+      real(c_double), intent(inout)     :: temp(*)
+      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+      integer(c_int), intent(out)       :: errflg
+    end subroutine tiny_cxx_scheme_run
+  end interface
+  ...
+```
+
+The metadata parsing, IR propagation, and interface block generation are implemented and covered by FileCheck tests. A compiled end-to-end test with an actual C++ scheme implementation has not yet been written.
 
 ### Key Observations
 

@@ -359,6 +359,10 @@ class BuildMetaDataDescriptions(Visitor):
         if "model_var_is_ddt" in arg_op.properties:
             arg.setAttr("model_var_is_ddt", True)
 
+        # 'model_var_array_layout' is "row_major" when matched host table declares array_layout = row_major
+        if "model_var_array_layout" in arg_op.properties:
+            arg.setAttr("model_var_array_layout", arg_op.properties["model_var_array_layout"].data)
+
         # 'is_interstitial' marks variables that flow between lifecycle phases
         if "is_interstitial" in arg_op.properties:
             arg.setAttr("is_interstitial", True)

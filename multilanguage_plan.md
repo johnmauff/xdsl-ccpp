@@ -20,6 +20,13 @@ generated Fortran BIND(C) cap performs a RESHAPE using standard Fortran
 intrinsics before passing arrays to schemes. The cap generator never imports
 Kokkos-specific knowledge.
 
+> **GPU limitation.** The Fortran RESHAPE intrinsic operates on host-resident
+> (CPU) memory. For GPU-resident arrays, the C++ host should provide data in
+> column-major order (e.g. `Kokkos::View<double**, Kokkos::LayoutLeft>`) to
+> avoid the RESHAPE entirely — this is the approach used in the Kessler C++
+> driver example. If a `row_major` host passes GPU-resident data, the host is
+> responsible for performing a device-side transpose before calling the cap.
+
 **GPU data movement.** Out of scope for this plan. If the host uses
 GPU-resident Kokkos views, the host is responsible for ensuring data is on the
 CPU before calling the BIND(C) interface, or for using the existing
@@ -251,13 +258,13 @@ that the BIND(C) interface and any RESHAPE logic produce identical results.
 
 ## Phase 7 — Testing (1 week)
 
-| Test | Type | Location |
-|------|------|----------|
-| BIND(C) Fortran output | FileCheck | `tests/filecheck/examples/end_to_end/kessler-bindC.mlir` |
-| C++ header output | FileCheck | `tests/filecheck/examples/end_to_end/kessler-cpp-header.mlir` |
-| Numerical parity | Makefile / CTest | `examples/kessler/` |
-| `array_layout` round-trip through IR | FileCheck | `tests/filecheck/examples/frontend/` |
-| RESHAPE generation for row_major | FileCheck | new test with synthetic row_major host meta |
+| Test | Type | Location | Status |
+|------|------|----------|--------|
+| BIND(C) Fortran output | FileCheck | `tests/filecheck/examples/end_to_end/kessler-bindC.mlir` | ✅ Done |
+| C++ header output | FileCheck | `tests/filecheck/examples/end_to_end/kessler-cpp-header.mlir` | ✅ Done |
+| `array_layout` round-trip through IR | FileCheck | `tests/filecheck/examples/frontend/array-layout-py.mlir`, `tests/filecheck/examples/completed_ir/array-layout-py.mlir` | ✅ Done |
+| RESHAPE generation for row_major | FileCheck | `tests/filecheck/examples/end_to_end/array-layout-reshape.mlir` | ✅ Done |
+| Numerical parity | Makefile / CTest | `examples/kessler/` | ❌ Not started |
 
 ---
 
@@ -276,6 +283,71 @@ that the BIND(C) interface and any RESHAPE logic produce identical results.
 
 ---
 
+## Fortran Host → C++ Scheme Implementations
+
+This direction is orthogonal to the phases above (which cover C++ host → Fortran schemes). It allows a standard Fortran host model to call C++ scheme implementations through a CCPP-generated suite cap.
+
+**Status: cap generator implemented; no compiled end-to-end test yet.**
+
+### Metadata
+
+A scheme's `.meta` table-properties block carries an optional `language` key:
+
+```ini
+[ccpp-table-properties]
+  name = my_cxx_scheme
+  type = scheme
+  language = c++
+```
+
+Valid values: `fortran` (default, attribute omitted from IR) and `c++`.
+
+### IR propagation
+
+The `language = "c++"` attribute flows through the pipeline:
+
+1. **Frontend** (`ccpp_xml.py`, `py_api.py`) — emits `{language = "c++"}` on the scheme `TablePropertiesOp`; Fortran schemes carry no attribute.
+2. **`generate-suite-cap`** (`suite_cap.py`) — stamps `language`, `arg_names`, and `arg_intents` onto the external `func.FuncOp` declaration for the C++ entry point.
+3. **Fortran printer** (`print_ftn.py`) — C++ FuncOps are excluded from `use <module>` statements; instead, a `BIND(C)` interface block is emitted.
+
+### Generated suite cap output
+
+```fortran
+module tiny_suite_cap
+  use ccpp_kinds
+  use iso_c_binding
+  use tiny_fortran_scheme, only: tiny_fortran_scheme_run   ! Fortran scheme: normal USE
+
+  interface                                                 ! C++ scheme: interface block
+    subroutine tiny_cxx_scheme_run(ncol, temp, errmsg, errflg) &
+        BIND(C, name='tiny_cxx_scheme_run')
+      use iso_c_binding
+      integer(c_int), value, intent(in)      :: ncol
+      real(c_double), intent(inout)          :: temp(*)
+      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+      integer(c_int), intent(out)            :: errflg
+    end subroutine tiny_cxx_scheme_run
+  end interface
+  ...
+  call tiny_fortran_scheme_run(ncol, temp, errmsg, errflg)
+  call tiny_cxx_scheme_run(ncol, temp, errmsg, errflg)     ! called like any Fortran sub
+```
+
+### FileCheck tests
+
+| Test | What it verifies |
+|------|-----------------|
+| `tests/filecheck/examples/frontend/language-py.mlir` | `language = "c++"` on `TablePropertiesOp` in raw IR |
+| `tests/filecheck/examples/completed_ir/language-py.mlir` | `module`, `language`, `arg_names`, `arg_intents` on `func.FuncOp` after `generate-suite-cap` |
+| `tests/filecheck/examples/end_to_end/language-cxx-interface-py.mlir` | Full Fortran output: `use iso_c_binding`, no `use tiny_cxx_scheme`, correct `BIND(C)` interface block, calls to both schemes |
+
+### What remains
+
+- A C++ scheme implementation with `extern "C"` entry points to compile and link against.
+- A compiled end-to-end test (Makefile or CTest) verifying ABI correctness and numerical results.
+
+---
+
 ## What This Plan Deliberately Excludes
 
 - **Kokkos-specific code in the cap generator** — the cap is pure Fortran +
@@ -286,5 +358,8 @@ that the BIND(C) interface and any RESHAPE logic produce identical results.
   features compose without coupling.
 - **C++ host with C++ Kokkos schemes** — a separate effort; requires a full
   C++ cap printer and is not addressed here.
+- **Fortran host with C++ schemes (compiled test)** — the cap generator now
+  emits correct `BIND(C)` interface blocks (see section above), but a compiled
+  end-to-end test with an actual C++ scheme implementation has not been written.
 - **`active` guard expression translation** — active conditions are evaluated
   inside the Fortran cap and stay Fortran for this use case.
