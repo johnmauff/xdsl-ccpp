@@ -45,25 +45,25 @@ pip install -e ".[validate]"
 
 ### Derecho (NCAR)
 
-The system Python is read-only. Install into your user space with `--user`:
+Derecho runs inside a system-managed virtual environment. Create your own conda
+environment to get a writable Python installation:
 
 ```bash
-pip install --user -e ".[dev]"
+module load conda
+conda create -n xdsl-ccpp python=3.11
+conda activate xdsl-ccpp
+pip install -e ".[dev]"
+pip install -e ".[validate]"
 ```
 
-This places packages in `~/.local/lib/python3.11/site-packages/` and puts the
-`ccpp_xdsl` command in `~/.local/bin/`. Make sure `~/.local/bin` is on your
-`PATH`:
+Run `conda activate xdsl-ccpp` at the start of each session, or add it to your
+`~/.bashrc`.
+
+For Fortran source cross-validation (uses fparser2, pure Python — no compiler
+required):
 
 ```bash
-export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc to make permanent
-```
-
-For Fortran source cross-validation, install the validate extra (uses fparser2,
-which is pure Python — no compiler required):
-
-```bash
-pip install --user -e ".[validate]"
+pip install -e ".[validate]"
 ```
 
 ---
