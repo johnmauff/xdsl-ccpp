@@ -29,7 +29,7 @@ pip install .
 ```
 
 This installs the `ccpp_xdsl` command-line driver and the `xdsl_ccpp` Python
-package. Requires Python 3.12+ and installs xDSL 0.56.1 as a dependency.
+package. Requires Python 3.11+ and installs xDSL 0.56.1 as a dependency.
 
 For development (linting, testing):
 
@@ -45,20 +45,25 @@ pip install -e ".[validate]"
 
 ### Derecho (NCAR)
 
-Load the conda module and create an environment:
+The system Python is read-only. Install into your user space with `--user`:
 
 ```bash
-module load conda
-conda create -n xdsl-ccpp python=3.12
-conda activate xdsl-ccpp
-pip install -e ".[dev]"
+pip install --user -e ".[dev]"
+```
+
+This places packages in `~/.local/lib/python3.11/site-packages/` and puts the
+`ccpp_xdsl` command in `~/.local/bin/`. Make sure `~/.local/bin` is on your
+`PATH`:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc to make permanent
 ```
 
 For Fortran source cross-validation, install the validate extra (uses fparser2,
 which is pure Python — no compiler required):
 
 ```bash
-pip install -e ".[validate]"
+pip install --user -e ".[validate]"
 ```
 
 ---
