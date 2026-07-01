@@ -1548,6 +1548,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             module_name = sub_to_module.get(fd.sym_name.data)
             if module_name:
                 cloned.attributes["module"] = StringAttr(module_name)
+                meta = self.meta_data.get(module_name)
+                if meta is not None and meta.hasAttr("language"):
+                    cloned.attributes["language"] = StringAttr(meta.getAttr("language"))
             fn_sigs.append(cloned)
         return fn_sigs
 

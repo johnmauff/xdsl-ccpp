@@ -97,8 +97,10 @@ class CCPPTableProperties(CCPPItem):
     from argument-table name → `CCPPArgumentTable` for every entry point that
     belongs to this table (e.g. ``_run``, ``_init``, ``_finalize``).
 
-    Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``relative_path``.
+    Allowed attribute keys: ``name``, ``type``, ``dependencies``,
+    ``relative_path``, ``language``.
     The ``type`` value is automatically coerced to a `CCPPType` enum member.
+    ``language`` is ``"fortran"`` (default, omitted) or ``"c++"``.
     """
 
     def __init__(self, arg_tables=None):
@@ -113,7 +115,7 @@ class CCPPTableProperties(CCPPItem):
         # Coerce raw string 'type' values into the CCPPType enum
         if key == "type" and isinstance(value, str):
             value = CCPPType(value)
-        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path"])
+        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path", "language"])
 
     def setArgTable(self, k, v):
         """Register an argument table under the given key."""
@@ -278,6 +280,9 @@ class BuildMetaDataDescriptions(Visitor):
         ccpp_prop = CCPPTableProperties(arg_tables)
         ccpp_prop.setAttr("name", properties_op.table_name.data)
         ccpp_prop.setAttr("type", properties_op.table_type.data)
+        lang_attr = properties_op.attributes.get("language")
+        if lang_attr is not None:
+            ccpp_prop.setAttr("language", lang_attr.data)
         self.meta_data[ccpp_prop.getAttr("name")] = ccpp_prop
 
     def traverse_argument_table_op(self, arg_table_op: ccpp.ArgumentTableOp):

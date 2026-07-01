@@ -185,10 +185,13 @@ class Arg:
 class SchemeDescriptor:
     """Descriptor produced by :func:`ccpp_scheme`."""
 
-    def __init__(self, name: str, entry_points: dict[str, list[Arg]]):
+    def __init__(self, name: str, entry_points: dict[str, list[Arg]],
+                 *, language: "str | None" = None):
         self.name = name
         # Maps entry-point attribute name (e.g. "run") → list of Arg objects.
         self.entry_points = entry_points
+        # Implementation language: None / "fortran" (default) or "c++".
+        self.language = language
 
 
 class TableDescriptor:
@@ -641,7 +644,12 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> "SchemeDesc
         if ep in _ENTRY_POINTS:
             entry_points[ep] = [_ccpp_arg_to_arg(a) for a in table.getFunctionArguments()]
 
-    return SchemeDescriptor(scheme_name, entry_points)
+    language = (
+        meta.table_properties.getAttr("language")
+        if meta.table_properties.hasAttr("language")
+        else None
+    )
+    return SchemeDescriptor(scheme_name, entry_points, language=language)
 
 
 def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
@@ -743,18 +751,25 @@ def _table_properties_op(
     type_str: str,
     arg_tables: "dict[str, list[Arg]]",
     array_layout: "str | None" = None,
+    language: "str | None" = None,
 ) -> TablePropertiesOp:
     table_ops = []
     for entry_name, args in arg_tables.items():
         arg_ops = [_arg_op(a) for a in args]
         table_ops.append(ArgumentTableOp(entry_name, type_str, arg_ops))
-    attrs = {"array_layout": StringAttr(array_layout)} if array_layout is not None else None
+    attrs: "dict | None" = None
+    if array_layout is not None or (language is not None and language != "fortran"):
+        attrs = {}
+        if array_layout is not None:
+            attrs["array_layout"] = StringAttr(array_layout)
+        if language is not None and language != "fortran":
+            attrs["language"] = StringAttr(language)
     return TablePropertiesOp(table_name, type_str, table_ops, attributes=attrs)
 
 
 def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
     entry_tables = {f"{sd.name}_{ep}": args for ep, args in sd.entry_points.items()}
-    return _table_properties_op(sd.name, "scheme", entry_tables)
+    return _table_properties_op(sd.name, "scheme", entry_tables, language=sd.language)
 
 
 def _group_item_to_op(

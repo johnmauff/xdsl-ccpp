@@ -104,6 +104,7 @@ class CCPPTableProperties(CCPPItem):
         super().__init__()
 
     _VALID_ARRAY_LAYOUTS = ("column_major", "row_major")
+    _VALID_LANGUAGES = ("fortran", "c++")
 
     def setAttr(self, key, value):
         # Coerce raw string 'type' values into the CCPPType enum
@@ -113,7 +114,12 @@ class CCPPTableProperties(CCPPItem):
             raise ValueError(
                 f"array_layout must be one of {self._VALID_ARRAY_LAYOUTS}, got '{value}'"
             )
-        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path", "array_layout"])
+        if key == "language" and value not in self._VALID_LANGUAGES:
+            raise ValueError(
+                f"language must be one of {self._VALID_LANGUAGES}, got '{value}'"
+            )
+        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path",
+                                     "array_layout", "language"])
 
 
 class CCPPArgumentTable(CCPPItem):
@@ -513,6 +519,10 @@ class ccppXML:
         attrs = {"source_module": StringAttr(source_module)} if source_module else {}
         if meta.table_properties.hasAttr("array_layout"):
             attrs["array_layout"] = StringAttr(meta.table_properties.getAttr("array_layout"))
+        if meta.table_properties.hasAttr("language"):
+            lang = meta.table_properties.getAttr("language")
+            if lang != "fortran":
+                attrs["language"] = StringAttr(lang)
         return TablePropertiesOp(
             meta.table_properties.getAttr("name"),
             str(meta.table_properties.getAttr("type")),
