@@ -38,12 +38,14 @@ ifeq ($(FC),nvfortran)
   FC_CPU   = -g -O2 -Mfree -Mpreprocess
   FC_GPU   = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
   CXX_BASE = -g -O2
+  MOD_OUT  = -module
 else ifeq ($(FC),ifx)
   CXX     ?= icpx
   FMA      = -fp-model=precise
   FC_CPU   = -g -O2 -fpp
   FC_GPU   = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
   CXX_BASE = -g -O2
+  MOD_OUT  = -module
 else
   # GNU (gfortran / g++)
   CXX     ?= g++
@@ -51,6 +53,7 @@ else
   FC_CPU   = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
   FC_GPU   = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
   CXX_BASE = -g -Wall -O2
+  MOD_OUT  = -J
 endif
 
 ifeq ($(ARCH),GPU)
@@ -151,7 +154,7 @@ $(BUILD) $(CXX_OBJ):
 
 # ── Fortran compilation (shared by ccpp and hand) ─────────────────────────────
 $(BUILD)/%.o: $(DIR)/%.F90 | $(BUILD)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD) -I $(BUILD)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD) -I $(BUILD)
 
 # ── Link: Fortran drivers ─────────────────────────────────────────────────────
 $(EXE_CCPP): $(CCPP_OBJS)
@@ -164,31 +167,31 @@ $(EXE_HAND): $(HAND_OBJS)
 # Sources in $(BINDC_SRC)/ are committed; regenerate with ./gen_kessler_bindc.
 
 $(CXX_OBJ)/ccpp_kinds.o: $(BINDC_KINDS) | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ)
 
 $(CXX_OBJ)/kessler_host_mod.o: $(DIR)/kessler_host_mod.F90 \
     $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
 $(CXX_OBJ)/kessler.o: $(DIR)/kessler.F90 \
     $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
 $(CXX_OBJ)/kessler_update.o: $(DIR)/kessler_update.F90 \
     $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
 $(CXX_OBJ)/kessler_suite_cap.o: $(BINDC_SUITE) \
     $(CXX_OBJ)/kessler.o $(CXX_OBJ)/kessler_update.o | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
 $(CXX_OBJ)/Kessler_ccpp_cap.o: $(BINDC_CAP) \
     $(CXX_OBJ)/kessler_suite_cap.o $(CXX_OBJ)/kessler_host_mod.o | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
 $(CXX_OBJ)/kessler_host_init_c.o: $(DIR)/kessler_host_init_c.F90 \
     $(CXX_OBJ)/kessler_host_mod.o $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(CXX_OBJ) -I $(CXX_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
 $(CXX_OBJ)/driver_kessler_cpp.o: $(DIR)/driver_kessler_cpp.cpp $(BINDC_HDR)
 	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
