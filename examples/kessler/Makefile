@@ -12,6 +12,9 @@
 #   make run-hand  — build and run the hand-written driver
 #   make run-cxx   — build and run the C++ driver
 #
+# Numerical parity:
+#   make check     — run all three drivers and verify bit-for-bit identical output
+#
 # GPU (OpenMP target offload):
 #   make ARCH=GPU [FC=nvfortran]
 #
@@ -93,7 +96,7 @@ CXX_OBJS = \
   $(CXX_OBJ)/driver_kessler_cpp.o
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all ccpp hand cxx run run-ccpp run-hand run-cxx caps clean
+.PHONY: all ccpp hand cxx run run-ccpp run-hand run-cxx check caps clean
 
 all: ccpp hand cxx
 
@@ -111,6 +114,19 @@ run-cxx: $(EXE_CXX)
 	@echo "=== C++ BIND(C) driver ===" && $(EXE_CXX)
 
 run: run-ccpp run-hand run-cxx
+
+check: ccpp hand cxx
+	@echo "=== Numerical parity check ==="
+	@$(EXE_CCPP) | grep -v "Elapsed" > $(BUILD)/out_ccpp.txt
+	@$(EXE_HAND) | grep -v "Elapsed" > $(BUILD)/out_hand.txt
+	@$(EXE_CXX)  | grep -v "Elapsed" > $(BUILD)/out_cxx.txt
+	@diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt \
+	    && echo "PASS: ccpp == hand (bit-for-bit)" \
+	    || { echo "FAIL: ccpp != hand"; diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt; exit 1; }
+	@diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt \
+	    && echo "PASS: ccpp == cxx  (bit-for-bit)" \
+	    || { echo "FAIL: ccpp != cxx";  diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt; exit 1; }
+	@echo "=== All three drivers produce identical numerical output. ==="
 
 # ── Build directories ─────────────────────────────────────────────────────────
 $(BUILD) $(CXX_OBJ):
