@@ -39,6 +39,7 @@ ifeq ($(FC),nvfortran)
   FC_GPU   = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
   CXX_BASE = -g -O2
   MOD_OUT  = -module
+  NOMAIN   = -Mnomain
 else ifeq ($(FC),ifx)
   CXX     ?= icpx
   FMA      = -fp-model=precise
@@ -46,6 +47,7 @@ else ifeq ($(FC),ifx)
   FC_GPU   = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
   CXX_BASE = -g -O2
   MOD_OUT  = -module
+  NOMAIN   = -nofor-main
 else
   # GNU (gfortran / g++)
   CXX     ?= g++
@@ -54,6 +56,7 @@ else
   FC_GPU   = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
   CXX_BASE = -g -Wall -O2
   MOD_OUT  = -J
+  NOMAIN   =
 endif
 
 ifeq ($(ARCH),GPU)
@@ -197,7 +200,7 @@ $(CXX_OBJ)/driver_kessler_cpp.o: $(DIR)/driver_kessler_cpp.cpp $(BINDC_HDR)
 	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
 
 $(EXE_CXX): $(CXX_OBJS)
-	$(FC) $(FFLAGS) -o $@ $^ -lstdc++
+	$(FC) $(FFLAGS) $(NOMAIN) -o $@ $^ -lstdc++
 
 # ── Cap generation ────────────────────────────────────────────────────────────
 caps: $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
