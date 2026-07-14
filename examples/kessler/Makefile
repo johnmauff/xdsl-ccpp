@@ -21,6 +21,7 @@
 # Code generation (laptop, requires xdsl-ccpp):
 #   ./gen_kessler        — regenerate standard Fortran caps into examples/kessler/
 #   ./gen_kessler_bindc  — regenerate BIND(C) caps + C++ header into examples/kessler/bindc/
+#   ./gen_kessler_chost  — regenerate chost BIND(C) caps + headers into examples/kessler/bindc/
 #
 # Utility:
 #   make caps      — regenerate standard Fortran caps only
@@ -125,7 +126,8 @@ CXX_OBJS = \
   $(CXX_OBJ)/kessler_host_init_c.o \
   $(CXX_OBJ)/driver_kessler_cpp.o
 
-CHOST_HDR = $(DIR)/Kessler_ccpp_chost_cap.h
+CHOST_F90 = $(BINDC_SRC)/Kessler_ccpp_chost_cap.F90
+CHOST_HDR = $(BINDC_SRC)/Kessler_ccpp_chost_cap.h
 
 CXX_HOST_OBJS = \
   $(CXX_HOST_OBJ)/ccpp_kinds.o \
@@ -138,7 +140,7 @@ CXX_HOST_OBJS = \
   $(CXX_HOST_OBJ)/driver_kessler_cxx_host.o
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all ccpp hand cxx cxx_host run run-ccpp run-hand run-cxx run-cxx-host check caps clean
+.PHONY: all ccpp hand cxx cxx_host run run-ccpp run-hand run-cxx run-cxx-host check caps gen-chost clean
 
 all: ccpp hand cxx cxx_host
 
@@ -256,12 +258,12 @@ $(CXX_HOST_OBJ)/kessler_suite_cap.o: $(BINDC_SUITE) \
     $(CXX_HOST_OBJ)/kessler.o $(CXX_HOST_OBJ)/kessler_update.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o: $(DIR)/Kessler_ccpp_chost_cap.F90 \
+$(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o: $(CHOST_F90) \
     $(CXX_HOST_OBJ)/kessler_suite_cap.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
 $(CXX_HOST_OBJ)/driver_kessler_cxx_host.o: $(DIR)/driver_kessler_cxx_host.cpp $(CHOST_HDR)
-	$(CXX) $(CXXFLAGS) -I$(DIR) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
 
 $(EXE_CXX_HOST): $(CXX_HOST_OBJS)
 	$(FC) $(FFLAGS) $(NOMAIN) -o $@ $^ -lstdc++
@@ -274,6 +276,14 @@ $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): \
     $(DIR)/kessler_host_mod.meta $(DIR)/kessler_host_sub.meta \
     $(DIR)/kessler_suite.xml
 	./gen_kessler
+
+gen-chost: $(CHOST_F90) $(CHOST_HDR)
+
+$(CHOST_F90) $(CHOST_HDR): \
+    $(DIR)/kessler.meta $(DIR)/kessler_update.meta \
+    $(DIR)/kessler_host_mod.meta $(DIR)/kessler_host_sub.meta \
+    $(DIR)/kessler_suite.xml
+	./gen_kessler_chost
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:

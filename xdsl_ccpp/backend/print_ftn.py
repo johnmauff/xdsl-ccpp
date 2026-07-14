@@ -57,6 +57,7 @@ from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp        as CCPPPromotio
 from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp         as CCPPSubcycleLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp      as CCPPConstituentApiOp
+from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp            as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
 
 
@@ -665,6 +666,12 @@ class ftnPrintContext:
                     self.print(line)
             case CCPPConstituentApiOp():
                 for line in op.body.data.splitlines():
+                    self.print(line)
+            case CCPPCHostCapOp():
+                # Complete standalone Fortran module — emit ftn_text verbatim.
+                # Normally emitted via print_to_ftn at the top level, but handled
+                # here too in case the op appears inside a module body.
+                for line in op.ftn_text.data.splitlines():
                     self.print(line)
             case CCPPRankReducingSliceOp():
                 # Register the Fortran array-section expression for the result.
@@ -1659,10 +1666,17 @@ def print_to_ftn(
     ctx = Ctx(output)
     ctx.register_binops()
     divider = False
-    # Print each cap module as a separate Fortran file section
-    for module in get_modules_in_module_op(prog):
-        if divider:
-            ctx.print("// -----")
-        divider = True
-        ctx.print("// FILE: " + module.sym_name.data + ".F90")
-        ctx.print_op(module)
+    for op in prog.body.ops:
+        if isinstance(op, builtin.ModuleOp):
+            if divider:
+                ctx.print("// -----")
+            divider = True
+            ctx.print("// FILE: " + op.sym_name.data + ".F90")
+            ctx.print_op(op)
+        elif isinstance(op, CCPPCHostCapOp):
+            if divider:
+                ctx.print("// -----")
+            divider = True
+            ctx.print("// FILE: " + op.mod_name.data + ".F90")
+            for line in op.ftn_text.data.splitlines():
+                ctx.print(line)

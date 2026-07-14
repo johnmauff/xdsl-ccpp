@@ -14,6 +14,7 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.utils.hints import isa
 
+from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import KindDefOp
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 
@@ -227,42 +228,52 @@ def _emit_kinds_header(kinds_module: ModuleOp, output: IO[str]) -> None:
 def print_to_cpp_headers(prog: ModuleOp, output: IO[str]) -> None:
     """Emit C++ header sections for all BIND(C) cap modules in *prog*.
 
-    Emits two ``// FILE:``-delimited sections:
+    Emits up to three ``// FILE:``-delimited sections:
 
     - ``<HostName>_ccpp_cap.h`` — ``extern "C"`` declarations for each BIND(C)
       subroutine, using ISO-C-compatible types.
     - ``ccpp_kinds.h`` — ``typedef`` aliases for every CCPP kind name.
+    - ``<mod_name>.h`` — verbatim ``cpp_text`` from each ``CHostCapOp`` (one
+      section per op, emitted after the standard cap/kinds headers).
 
     Sections are separated by ``// -----`` so ``split_fortran_output`` in the
     driver can write them as individual files alongside the ``.F90`` outputs.
 
-    Nothing is written when no BIND(C) functions are found.
+    Nothing is written when no BIND(C) functions and no CHostCapOps are found.
     """
     cap_module = None
     kinds_module = None
+    chost_ops: list[CHostCapOp] = []
     for sub in prog.body.ops:
-        if not isinstance(sub, builtin.ModuleOp):
-            continue
-        name = sub.sym_name.data if sub.sym_name else ""
-        if name.endswith("_ccpp_cap"):
-            cap_module = sub
-        elif name == "ccpp_kinds":
-            kinds_module = sub
+        if isinstance(sub, builtin.ModuleOp):
+            name = sub.sym_name.data if sub.sym_name else ""
+            if name.endswith("_ccpp_cap"):
+                cap_module = sub
+            elif name == "ccpp_kinds":
+                kinds_module = sub
+        elif isinstance(sub, CHostCapOp):
+            chost_ops.append(sub)
 
-    if cap_module is None:
-        return
+    wrote = False
 
-    bind_c_present = any(
-        isa(op, func.FuncOp) and not op.is_declaration and "bind_c" in op.attributes
-        for op in cap_module.body.ops
-    )
-    if not bind_c_present:
-        return
+    if cap_module is not None:
+        bind_c_present = any(
+            isa(op, func.FuncOp) and not op.is_declaration and "bind_c" in op.attributes
+            for op in cap_module.body.ops
+        )
+        if bind_c_present:
+            output.write(f"// FILE: {cap_module.sym_name.data}.h\n")
+            _emit_cap_header(cap_module, output)
+            wrote = True
 
-    output.write(f"// FILE: {cap_module.sym_name.data}.h\n")
-    _emit_cap_header(cap_module, output)
-
-    if kinds_module is not None:
+    if kinds_module is not None and wrote:
         output.write("// -----\n")
         output.write("// FILE: ccpp_kinds.h\n")
         _emit_kinds_header(kinds_module, output)
+
+    for op in chost_ops:
+        if wrote:
+            output.write("// -----\n")
+        output.write(f"// FILE: {op.mod_name.data}.h\n")
+        output.write(op.cpp_text.data)
+        wrote = True

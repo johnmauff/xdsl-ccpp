@@ -2,7 +2,16 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
-from xdsl.dialects.builtin import DYNAMIC_INDEX, IndexType, IntegerAttr, StringAttr, UnitAttr, i8
+from xdsl.dialects.builtin import (
+    DYNAMIC_INDEX,
+    IndexType,
+    IntegerAttr,
+    IntegerType,
+    MemRefType,
+    StringAttr,
+    UnitAttr,
+    i8,
+)
 from xdsl.ir import Block, Region
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
@@ -11,6 +20,7 @@ from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     CapVarRefOp,
+    CHostCapOp,
     ConstituentApiOp,
     HostVarRefOp,
     ModuleVarOp,
@@ -62,6 +72,200 @@ def _bare(name: str) -> str:
     if name.endswith("__in"):
         return name[:-4]
     return name
+
+
+def _emit_subr_header(append_fn, cfn: str, vnames: list, max_col: int = 92) -> None:
+    """Emit a subroutine header line with bind(C), using continuation if needed."""
+    prefix = f"  subroutine {cfn}("
+    bind_line = f"      bind(C, name='{cfn}')"
+    single = prefix + ", ".join(vnames) + ") &"
+    if len(single) <= max_col:
+        append_fn(single)
+    else:
+        append_fn(prefix + " &")
+        indent = "      "
+        cur = indent
+        for i, nm in enumerate(vnames):
+            sep = ", " if i < len(vnames) - 1 else ""
+            if len(cur) + len(nm) + len(sep) + 4 > max_col:
+                append_fn(cur + " &")
+                cur = indent + nm + sep
+            else:
+                cur += nm + sep
+        append_fn(cur + ") &")
+    append_fn(bind_line)
+
+
+def _emit_call(append_fn, fn_name: str, call_exprs: list, max_col: int = 80) -> None:
+    """Emit 'call fn(args)' with Fortran continuation lines when needed."""
+    prefix = f"    call {fn_name}("
+    single = prefix + ", ".join(call_exprs) + ")"
+    if len(single) <= max_col:
+        append_fn(single)
+        return
+    append_fn(prefix + " &")
+    indent = "        "
+    cur = indent
+    for i, expr in enumerate(call_exprs):
+        sep = ", " if i < len(call_exprs) - 1 else ""
+        if len(cur) + len(expr) + len(sep) + 4 > max_col:
+            append_fn(cur + " &")
+            cur = indent + expr + sep
+        else:
+            cur += expr + sep
+    append_fn(cur + ")")
+
+
+def _chost_build_maps(meta_data):
+    """Build std→host and local→std name maps from metadata for chost arg classification."""
+    std_to_host: dict = {}
+    for props in meta_data.values():
+        if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
+            continue
+        for atbl in props.arg_tables.values():
+            for var in atbl.getFunctionArguments():
+                if var.hasAttr("standard_name"):
+                    sn = var.getAttr("standard_name").lower()
+                    if sn not in std_to_host:
+                        std_to_host[sn] = var.name
+
+    local_to_std: dict = {}
+    for props in meta_data.values():
+        for atbl in props.arg_tables.values():
+            for var in atbl.getFunctionArguments():
+                if var.hasAttr("standard_name") and var.name not in local_to_std:
+                    local_to_std[var.name] = var.getAttr("standard_name").lower()
+
+    ncol_var = (std_to_host.get("horizontal_dimension")
+                or std_to_host.get("horizontal_loop_extent") or "ncol")
+    nz_var = std_to_host.get("vertical_layer_dimension", "nz")
+    return std_to_host, local_to_std, ncol_var, nz_var
+
+
+def _chost_arg_info(hint, mtype, local_to_std, std_to_host):
+    """Return an arg descriptor dict for a single suite cap input argument."""
+    bare = _bare(hint) if hint else ""
+    std  = local_to_std.get(bare, "")
+    host = std_to_host.get(std, bare)
+
+    is_col_start = (std == CCPP_LOOP_BEGIN_STD_NAME)
+    is_col_end   = (std == CCPP_LOOP_END_STD_NAME)
+    is_ncol      = std in {"horizontal_dimension", "horizontal_loop_extent"}
+    is_nz        = std in {"vertical_layer_dimension"}
+    is_errmsg    = (std == "ccpp_error_message")
+    is_errflg    = (std == "ccpp_error_code")
+    is_sname     = (std == "scheme_name" or bare == "scheme_name")
+    is_in_only   = (hint is not None and hint.endswith("__in"))
+
+    rank = 0
+    is_char = is_int = is_real = False
+    if isinstance(mtype, MemRefType):
+        elem = mtype.element_type
+        if isinstance(elem, IntegerType) and elem.width.data == 8:
+            is_char = True
+            rank = -1
+        elif isinstance(elem, IntegerType):
+            is_int = True
+        else:
+            is_real = True
+            rank = sum(1 for d in mtype.shape if d.data == DYNAMIC_INDEX)
+
+    if is_col_start or is_col_end:
+        intent = None
+    elif is_errmsg or is_sname or is_errflg:
+        intent = "out"
+    elif is_ncol or is_nz or is_int or (is_real and rank == 0):
+        intent = "in"
+    elif is_in_only:
+        intent = "in"
+    else:
+        intent = "inout"
+
+    return dict(
+        hint=hint, bare=bare, host=host, std=std,
+        is_col_start=is_col_start, is_col_end=is_col_end,
+        is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
+        is_errflg=is_errflg, is_sname=is_sname,
+        is_char=is_char, is_int=is_int, is_real=is_real,
+        rank=rank, intent=intent,
+    )
+
+
+def _chost_canonical_order(visible):
+    """ncol first, nz second, then other args, then errmsg, then errflg."""
+    ncols   = [a for a in visible if a["is_ncol"]]
+    nzs     = [a for a in visible if a["is_nz"]]
+    errmsgs = [a for a in visible if a["is_errmsg"]]
+    errflgs = [a for a in visible if a["is_errflg"]]
+    others  = [a for a in visible
+               if not a["is_ncol"] and not a["is_nz"]
+               and not a["is_errmsg"] and not a["is_errflg"]]
+    return ncols + nzs + others + errmsgs + errflgs
+
+
+def _chost_out_infos(pfn_out_types, std_to_host):
+    """Build arg descriptors for suite cap output return values (errmsg, errflg, scheme_name)."""
+    out_infos = []
+    for otype in pfn_out_types:
+        if not isinstance(otype, MemRefType):
+            continue
+        elem = otype.element_type
+        if isinstance(elem, IntegerType) and elem.width.data == 8:
+            static_dims = [d.data for d in otype.shape if d.data != DYNAMIC_INDEX]
+            char_len = static_dims[0] if static_dims else CCPP_ERRMSG_LEN
+            if char_len == CCPP_ERRMSG_LEN:
+                host = std_to_host.get("ccpp_error_message", "errmsg")
+                out_infos.append(dict(
+                    hint="errmsg", bare="errmsg", host=host,
+                    std="ccpp_error_message",
+                    is_col_start=False, is_col_end=False,
+                    is_ncol=False, is_nz=False,
+                    is_errmsg=True, is_errflg=False, is_sname=False,
+                    is_char=True, is_int=False, is_real=False,
+                    rank=-1, intent="out",
+                ))
+            else:
+                host = std_to_host.get("scheme_name", "scheme_name")
+                out_infos.append(dict(
+                    hint="scheme_name", bare="scheme_name", host=host,
+                    std="scheme_name",
+                    is_col_start=False, is_col_end=False,
+                    is_ncol=False, is_nz=False,
+                    is_errmsg=False, is_errflg=False, is_sname=True,
+                    is_char=True, is_int=False, is_real=False,
+                    rank=-1, intent="out",
+                ))
+        elif isinstance(elem, IntegerType):
+            host = std_to_host.get("ccpp_error_code", "errflg")
+            out_infos.append(dict(
+                hint="errflg", bare="errflg", host=host,
+                std="ccpp_error_code",
+                is_col_start=False, is_col_end=False,
+                is_ncol=False, is_nz=False,
+                is_errmsg=False, is_errflg=True, is_sname=False,
+                is_char=False, is_int=True, is_real=False,
+                rank=0, intent="out",
+            ))
+    return out_infos
+
+
+def _chost_cpp_type(ai: dict) -> str:
+    """Map a chost arg descriptor to its C++ type string."""
+    if ai["is_ncol"] or ai["is_nz"]:
+        return "int"
+    if ai["is_int"] and not ai["is_errflg"]:
+        return "int"
+    if ai["is_real"] and ai["rank"] == 0:
+        return "double"
+    if ai["is_real"] and ai["intent"] == "in":
+        return "const double*"
+    if ai["is_real"]:
+        return "double*"
+    if ai["is_sname"] or ai["is_errmsg"]:
+        return "char*"
+    if ai["is_errflg"]:
+        return "int*"
+    return "void*"
 
 
 def _resolve_ddt_access_path(
@@ -163,6 +367,11 @@ class CCPPCAP(ModulePass):
     # use BIND(C, name='...') and ISO_C_BINDING-typed arguments so they can be
     # called from C++ / Kokkos host models.
     bind_c: bool = False
+
+    # When True, also generate a CHostCapOp containing a BIND(C) Fortran module
+    # and matching C++ header that accept physics arrays as explicit pointer
+    # arguments rather than reading them from a Fortran host module.
+    explicit_args: bool = False
 
 
     def _collect_public_suite_functions(self, ops):
@@ -2710,6 +2919,475 @@ class CCPPCAP(ModulePass):
 
         return module_var_ops, api_op, global_stubs
 
+    def _generate_chost_cap_module(
+        self, suite_descriptions, meta_data, cap_mod, ccpp_mod, public_fns=None
+    ):
+        """Build a CHostCapOp carrying the BIND(C) chost Fortran module and C++ header.
+
+        The chost cap accepts all physics arrays as explicit pointer arguments so
+        that a C++ host model can own the data and call Fortran physics without a
+        Fortran host module.  The generated module delegates internally to the
+        regular suite cap subroutines.
+
+        Called only when explicit_args=True.
+        """
+        # Derive the CamelCase prefix from the regular cap module name.
+        # e.g. "Kessler_ccpp_cap" → "Kessler"
+        cap_mod_name = cap_mod.sym_name.data
+        assert cap_mod_name.endswith("_ccpp_cap"), (
+            f"Expected cap module name to end with '_ccpp_cap', got '{cap_mod_name}'"
+        )
+        camel_name = cap_mod_name[: -len("_ccpp_cap")]
+        mod_name = camel_name + "_ccpp_chost_cap"
+
+        # Collect BIND(C) function definitions from the cap module (ordered).
+        bind_c_fns = [
+            op for op in cap_mod.body.ops
+            if isa(op, func.FuncOp)
+            and not op.is_declaration
+            and "bind_c" in op.attributes
+        ]
+
+        # The suite cap module name is the first suite key + "_cap".
+        # e.g. "kessler_suite" → "kessler_suite_cap"
+        suite_names = list(suite_descriptions.keys())
+        suite_cap_mod_name = suite_names[0] + "_cap" if suite_names else ""
+
+        ftn_text = self._build_chost_ftn_text(
+            camel_name, mod_name, suite_cap_mod_name, bind_c_fns, meta_data, ccpp_mod,
+            public_fns or {}, suite_descriptions,
+        )
+        cpp_text = self._build_chost_cpp_text(
+            camel_name, mod_name, bind_c_fns,
+            meta_data, public_fns or {}, suite_descriptions,
+        )
+
+        return CHostCapOp(ftn_text, cpp_text, mod_name)
+
+    def _build_chost_ftn_text(
+        self, camel_name, mod_name, suite_cap_mod_name, bind_c_fns, meta_data, ccpp_mod,
+        public_fns, suite_descriptions,
+    ):
+        """Generate the complete Fortran BIND(C) chost cap module text."""
+        # ── Metadata maps ──────────────────────────────────────────────────────
+        # std_to_host: standard_name → host-local variable name (MODULE + HOST tables)
+        std_to_host: dict = {}
+        for props in meta_data.values():
+            if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
+                continue
+            for atbl in props.arg_tables.values():
+                for var in atbl.getFunctionArguments():
+                    if var.hasAttr("standard_name"):
+                        sn = var.getAttr("standard_name").lower()
+                        if sn not in std_to_host:
+                            std_to_host[sn] = var.name
+
+        # local_to_std: any local name (all table types) → standard_name
+        # Covers SCHEME args like lv_in, col_start (from HOST), etc.
+        local_to_std: dict = {}
+        for props in meta_data.values():
+            for atbl in props.arg_tables.values():
+                for var in atbl.getFunctionArguments():
+                    if var.hasAttr("standard_name") and var.name not in local_to_std:
+                        local_to_std[var.name] = var.getAttr("standard_name").lower()
+
+        ncol_var = (std_to_host.get("horizontal_dimension")
+                    or std_to_host.get("horizontal_loop_extent") or "ncol")
+        nz_var = std_to_host.get("vertical_layer_dimension", "nz")
+
+        suite_name = next(iter(suite_descriptions), "")
+
+        # ── Lifecycle suffix lookup ─────────────────────────────────────────────
+        _LIFECYCLE = {
+            "_ccpp_physics_register":         "register",
+            "_ccpp_physics_initialize":       "initialize",
+            "_ccpp_physics_finalize":         "finalize",
+            "_ccpp_physics_timestep_initial": "timestep_initial",
+            "_ccpp_physics_timestep_final":   "timestep_final",
+            "_ccpp_physics_run":              "run",
+        }
+
+        def lc_of(fn_name):
+            for suffix, lc in _LIFECYCLE.items():
+                if fn_name.endswith(suffix):
+                    return lc
+            return None
+
+        def chost_fn_name(fn_name):
+            return fn_name.replace("_ccpp_physics_", "_chost_physics_")
+
+        def suite_fns_for(lc):
+            if lc == "run":
+                return [
+                    f"{suite_name}_suite_{grp.attributes['name']}"
+                    for grp in suite_descriptions.get(suite_name, [])
+                ]
+            return [f"{suite_name}_suite_{lc}"]
+
+        # ── Build per-arg descriptor ────────────────────────────────────────────
+        def arg_info(hint, mtype):
+            bare = _bare(hint) if hint else ""
+            std  = local_to_std.get(bare, "")
+            host = std_to_host.get(std, bare)
+
+            is_col_start = (std == CCPP_LOOP_BEGIN_STD_NAME)
+            is_col_end   = (std == CCPP_LOOP_END_STD_NAME)
+            is_ncol      = std in {"horizontal_dimension", "horizontal_loop_extent"}
+            is_nz        = std in {"vertical_layer_dimension"}
+            is_errmsg    = (std == "ccpp_error_message")
+            is_errflg    = (std == "ccpp_error_code")
+            is_sname     = (std == "scheme_name" or bare == "scheme_name")
+            is_in_only   = (hint is not None and hint.endswith("__in"))
+
+            rank = 0
+            is_char = is_int = is_real = False
+            if isinstance(mtype, MemRefType):
+                elem = mtype.element_type
+                if isinstance(elem, IntegerType) and elem.width.data == 8:
+                    is_char = True
+                    rank = -1
+                elif isinstance(elem, IntegerType):
+                    is_int = True
+                else:
+                    is_real = True
+                    rank = sum(1 for d in mtype.shape if d.data == DYNAMIC_INDEX)
+
+            if is_col_start or is_col_end:
+                intent = None
+            elif is_errmsg or is_sname or is_errflg:
+                intent = "out"
+            elif is_ncol or is_nz or is_int or (is_real and rank == 0):
+                intent = "in"
+            elif is_in_only:
+                intent = "in"
+            else:
+                intent = "inout"
+
+            return dict(
+                hint=hint, bare=bare, host=host, std=std,
+                is_col_start=is_col_start, is_col_end=is_col_end,
+                is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
+                is_errflg=is_errflg, is_sname=is_sname,
+                is_char=is_char, is_int=is_int, is_real=is_real,
+                rank=rank, intent=intent,
+            )
+
+        def canonical_order(visible):
+            """ncol first, then nz, then other args, then errmsg, then errflg."""
+            ncols   = [a for a in visible if a["is_ncol"]]
+            nzs     = [a for a in visible if a["is_nz"]]
+            errmsgs = [a for a in visible if a["is_errmsg"]]
+            errflgs = [a for a in visible if a["is_errflg"]]
+            others  = [a for a in visible
+                       if not a["is_ncol"] and not a["is_nz"]
+                       and not a["is_errmsg"] and not a["is_errflg"]]
+            return ncols + nzs + others + errmsgs + errflgs
+
+        def ftn_decl(ai):
+            host = ai["host"]
+            if ai["is_ncol"] or ai["is_nz"] or (ai["is_int"] and not ai["is_errflg"]):
+                return f"    integer(c_int), value, intent(in) :: {host}"
+            if ai["is_real"] and ai["rank"] == 0:
+                return f"    real(c_double), value, intent(in) :: {host}"
+            if ai["is_real"] and ai["rank"] == 2:
+                return (f"    real(c_double), target,"
+                        f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var})")
+            if ai["is_real"] and ai["rank"] == 1:
+                return (f"    real(c_double), target,"
+                        f" intent({ai['intent']}) :: {host}({ncol_var})")
+            if ai["is_sname"]:
+                return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
+            if ai["is_errmsg"]:
+                return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
+            if ai["is_errflg"]:
+                return f"    integer(c_int),               intent(out) :: {host}"
+            return f"    ! unclassified arg: {host}"
+
+        # ── Collect suite cap functions referenced ──────────────────────────────
+        used_suite_fns: list = []
+        for fn_op in bind_c_fns:
+            lc = lc_of(fn_op.sym_name.data)
+            if lc:
+                for sfn in suite_fns_for(lc):
+                    if sfn not in used_suite_fns and sfn in public_fns:
+                        used_suite_fns.append(sfn)
+
+        # ── Module header ───────────────────────────────────────────────────────
+        L: list = []
+        A = L.append
+
+        A(f"module {mod_name}")
+        A("")
+        A("  use ccpp_kinds, only: kind_phys")
+        A("  use iso_c_binding")
+        for sfn in used_suite_fns:
+            A(f"  use {suite_cap_mod_name}, only: {sfn}")
+        A("")
+        A("  implicit none")
+        A("  private")
+        A("")
+        for fn_op in bind_c_fns:
+            A(f"  public :: {chost_fn_name(fn_op.sym_name.data)}")
+        A("")
+        A("contains")
+
+        # ── Subroutines ─────────────────────────────────────────────────────────
+        for fn_op in bind_c_fns:
+            fn_name = fn_op.sym_name.data
+            cfn     = chost_fn_name(fn_name)
+            lc      = lc_of(fn_name)
+            if lc is None:
+                continue
+
+            sfns = suite_fns_for(lc)
+            suite_fn = next((s for s in sfns if s in public_fns), None)
+            if suite_fn is None:
+                continue
+
+            _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
+
+            # Descriptors for suite cap INPUT block args
+            infos = [arg_info(h, t) for h, t in zip(pfn_hints, pfn_types)]
+
+            # Descriptors for suite cap OUTPUT return values (errmsg, errflg, scheme_name).
+            # These become Fortran intent(out) parameters and must appear in both the
+            # chost signature and the suite cap call (after the input args).
+            out_infos: list = []
+            for otype in pfn_out_types:
+                if not isinstance(otype, MemRefType):
+                    continue
+                elem = otype.element_type
+                if isinstance(elem, IntegerType) and elem.width.data == 8:
+                    # Character output — distinguish errmsg (len=512) from scheme_name
+                    static_dims = [d.data for d in otype.shape if d.data != DYNAMIC_INDEX]
+                    char_len = static_dims[0] if static_dims else CCPP_ERRMSG_LEN
+                    if char_len == CCPP_ERRMSG_LEN:
+                        host = std_to_host.get("ccpp_error_message", "errmsg")
+                        out_infos.append(dict(
+                            hint="errmsg", bare="errmsg", host=host,
+                            std="ccpp_error_message",
+                            is_col_start=False, is_col_end=False,
+                            is_ncol=False, is_nz=False,
+                            is_errmsg=True, is_errflg=False, is_sname=False,
+                            is_char=True, is_int=False, is_real=False,
+                            rank=-1, intent="out",
+                        ))
+                    else:
+                        host = std_to_host.get("scheme_name", "scheme_name")
+                        out_infos.append(dict(
+                            hint="scheme_name", bare="scheme_name", host=host,
+                            std="scheme_name",
+                            is_col_start=False, is_col_end=False,
+                            is_ncol=False, is_nz=False,
+                            is_errmsg=False, is_errflg=False, is_sname=True,
+                            is_char=True, is_int=False, is_real=False,
+                            rank=-1, intent="out",
+                        ))
+                elif isinstance(elem, IntegerType):
+                    host = std_to_host.get("ccpp_error_code", "errflg")
+                    out_infos.append(dict(
+                        hint="errflg", bare="errflg", host=host,
+                        std="ccpp_error_code",
+                        is_col_start=False, is_col_end=False,
+                        is_ncol=False, is_nz=False,
+                        is_errmsg=False, is_errflg=True, is_sname=False,
+                        is_char=False, is_int=True, is_real=False,
+                        rank=0, intent="out",
+                    ))
+
+            # Visible chost args: input args (minus col_start/col_end) + outputs
+            visible = [ai for ai in infos
+                       if not ai["is_col_start"] and not ai["is_col_end"]]
+            visible = visible + out_infos
+
+            # When col_end is present but ncol is not, inject ncol as first arg
+            has_col_end    = any(ai["is_col_end"] for ai in infos)
+            ncol_in_visible = any(ai["is_ncol"] for ai in visible)
+            if has_col_end and not ncol_in_visible:
+                visible = [dict(
+                    hint=ncol_var, bare=ncol_var, host=ncol_var,
+                    std="horizontal_dimension",
+                    is_col_start=False, is_col_end=False,
+                    is_ncol=True, is_nz=False, is_errmsg=False,
+                    is_errflg=False, is_sname=False,
+                    is_char=False, is_int=True, is_real=False,
+                    rank=0, intent="in",
+                )] + visible
+
+            # Apply canonical (ncol-first, errmsg-before-errflg) ordering
+            visible = canonical_order(visible)
+
+            has_errmsg = any(ai["is_errmsg"] for ai in visible)
+            has_sname  = any(ai["is_sname"]  for ai in visible)
+
+            # ── Subroutine signature ──────────────────────────────────────────
+            A("")
+            _emit_subr_header(A, cfn, [ai["host"] for ai in visible])
+
+            # ── Declarations ─────────────────────────────────────────────────
+            for ai in visible:
+                A(ftn_decl(ai))
+            if has_errmsg or has_sname:
+                A("    integer :: i")
+            if has_sname:
+                sn = next(ai["host"] for ai in visible if ai["is_sname"])
+                A(f"    character(len=64)  :: {sn}_f")
+            if has_errmsg:
+                em = next(ai["host"] for ai in visible if ai["is_errmsg"])
+                A(f"    character(len=512) :: {em}_f")
+
+            # ── Body initialization ───────────────────────────────────────────
+            A("")
+            if has_errmsg:
+                A(f"    {em}_f = ' '")
+            if has_sname:
+                A(f"    {sn}_f = ' '")
+            if any(ai["is_errflg"] for ai in visible):
+                ef = next(ai["host"] for ai in visible if ai["is_errflg"])
+                A(f"    {ef} = 0")
+
+            # ── Suite cap calls ───────────────────────────────────────────────
+            for sfn_i in sfns:
+                if sfn_i not in public_fns:
+                    continue
+                # Input args (suite cap input order, col_start/col_end as literals)
+                call_exprs = []
+                for ai in infos:
+                    if ai["is_col_start"]:
+                        call_exprs.append("1")
+                    elif ai["is_col_end"]:
+                        call_exprs.append(ncol_var)
+                    elif ai["is_real"] and ai["rank"] == 0:
+                        call_exprs.append(f"real({ai['host']}, kind_phys)")
+                    else:
+                        call_exprs.append(ai["host"])
+                # Output args (suite cap output order: errmsg_f / scheme_name_f / errflg)
+                for oai in out_infos:
+                    if oai["is_errmsg"] or oai["is_sname"]:
+                        call_exprs.append(f"{oai['host']}_f")
+                    else:
+                        call_exprs.append(oai["host"])
+                _emit_call(A, sfn_i, call_exprs)
+
+            # ── F→C string copy loops ─────────────────────────────────────────
+            if has_sname:
+                A(f"    do i = 1, len_trim({sn}_f)")
+                A(f"      {sn}(i) = {sn}_f(i:i)")
+                A(f"    end do")
+                A(f"    {sn}(len_trim({sn}_f)+1) = c_null_char")
+            if has_errmsg:
+                A(f"    do i = 1, len_trim({em}_f)")
+                A(f"      {em}(i) = {em}_f(i:i)")
+                A(f"    end do")
+                A(f"    {em}(len_trim({em}_f)+1) = c_null_char")
+
+            A(f"  end subroutine {cfn}")
+
+        A("")
+        A(f"end module {mod_name}")
+
+        return "\n".join(L) + "\n"
+
+    def _build_chost_cpp_text(
+        self, camel_name, mod_name, bind_c_fns,
+        meta_data, public_fns, suite_descriptions,
+    ):
+        """Generate the complete C++ header text for the chost cap."""
+        std_to_host, local_to_std, ncol_var, _nz_var = _chost_build_maps(meta_data)
+
+        suite_name = next(iter(suite_descriptions), "")
+
+        _LIFECYCLE = {
+            "_ccpp_physics_register":         "register",
+            "_ccpp_physics_initialize":       "initialize",
+            "_ccpp_physics_finalize":         "finalize",
+            "_ccpp_physics_timestep_initial": "timestep_initial",
+            "_ccpp_physics_timestep_final":   "timestep_final",
+            "_ccpp_physics_run":              "run",
+        }
+
+        def lc_of(fn_name):
+            for suffix, lc in _LIFECYCLE.items():
+                if fn_name.endswith(suffix):
+                    return lc
+            return None
+
+        def chost_fn_name(fn_name):
+            return fn_name.replace("_ccpp_physics_", "_chost_physics_")
+
+        def suite_fns_for(lc):
+            if lc == "run":
+                return [
+                    f"{suite_name}_suite_{grp.attributes['name']}"
+                    for grp in suite_descriptions.get(suite_name, [])
+                ]
+            return [f"{suite_name}_suite_{lc}"]
+
+        L: list = []
+        A = L.append
+        A("// Generated by xdsl-ccpp."
+          " Array arguments are column-major (Fortran order).")
+        A("// Pass Kokkos::View with LayoutLeft, or transpose before calling.")
+        A("#pragma once")
+        A("#ifdef __cplusplus")
+        A('extern "C" {')
+        A("#endif")
+        A("")
+
+        for fn_op in bind_c_fns:
+            fn_name = fn_op.sym_name.data
+            cfn = chost_fn_name(fn_name)
+            lc  = lc_of(fn_name)
+            if lc is None:
+                continue
+
+            sfns = suite_fns_for(lc)
+            suite_fn = next((s for s in sfns if s in public_fns), None)
+            if suite_fn is None:
+                continue
+
+            _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
+
+            infos = [_chost_arg_info(h, t, local_to_std, std_to_host)
+                     for h, t in zip(pfn_hints, pfn_types)]
+            out_infos = _chost_out_infos(pfn_out_types, std_to_host)
+
+            visible = [ai for ai in infos
+                       if not ai["is_col_start"] and not ai["is_col_end"]]
+            visible = visible + out_infos
+
+            has_col_end     = any(ai["is_col_end"]  for ai in infos)
+            ncol_in_visible = any(ai["is_ncol"] for ai in visible)
+            if has_col_end and not ncol_in_visible:
+                visible = [dict(
+                    hint=ncol_var, bare=ncol_var, host=ncol_var,
+                    std="horizontal_dimension",
+                    is_col_start=False, is_col_end=False,
+                    is_ncol=True, is_nz=False, is_errmsg=False,
+                    is_errflg=False, is_sname=False,
+                    is_char=False, is_int=True, is_real=False,
+                    rank=0, intent="in",
+                )] + visible
+
+            visible = _chost_canonical_order(visible)
+            params = [(ai["host"], _chost_cpp_type(ai)) for ai in visible]
+
+            if not params:
+                A(f"void {cfn}(void);")
+            else:
+                A(f"void {cfn}(")
+                for i, (name, cpp_t) in enumerate(params):
+                    comma = "," if i < len(params) - 1 else " "
+                    A(f"    {cpp_t:<16} {name}{comma}")
+                A(");")
+            A("")
+
+        A("#ifdef __cplusplus")
+        A("}")
+        A("#endif")
+
+        return "\n".join(L) + "\n"
+
     def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns,
                                    ddt_source_module=None, protected_std_names=None,
                                    host_std_names=None, ccpp_mod=None):
@@ -3226,3 +3904,10 @@ class CCPPCAP(ModulePass):
             ccpp_mod=ccpp_mod,
         )
         op.body.block.add_op(cap_mod)
+
+        if self.explicit_args:
+            chost_op = self._generate_chost_cap_module(
+                suite_descriptions, meta_data_descriptions, cap_mod, ccpp_mod,
+                public_fns=public_fns,
+            )
+            op.body.block.add_op(chost_op)

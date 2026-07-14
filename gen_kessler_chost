@@ -1,0 +1,34 @@
+#!/bin/bash
+# Generate the explicit-argument BIND(C) chost cap for the Kessler example.
+# Run this on any machine that has xdsl-ccpp installed; commit the resulting
+# files so the container build can compile them without needing ccpp_xdsl.
+#
+# Output: examples/kessler/bindc/
+#   ccpp_kinds.F90               — kind definitions
+#   kessler_suite_cap.F90        — suite cap (BIND(C))
+#   Kessler_ccpp_cap.F90         — BIND(C) physics cap
+#   Kessler_ccpp_cap.h           — C++ extern "C" declarations
+#   ccpp_kinds.h                 — C++ typedef aliases for kind constants
+#   Kessler_ccpp_chost_cap.F90   — explicit-arg chost Fortran module
+#   Kessler_ccpp_chost_cap.h     — C++ extern "C" declarations for chost cap
+#
+# Usage (from repo root):
+#   ./gen_kessler_chost
+
+set -euo pipefail
+
+SUITESF='examples/kessler/kessler_suite.xml'
+SCHEMEF='examples/kessler/kessler.meta,examples/kessler/kessler_update.meta'
+HOSTF='examples/kessler/kessler_host_mod.meta,examples/kessler/kessler_host_sub.meta'
+OUTDIR='examples/kessler/bindc'
+
+mkdir -p "$OUTDIR"
+
+ccpp_xdsl \
+    --suites       "$SUITESF" \
+    --scheme-files "$SCHEMEF" \
+    --host-files   "$HOSTF"   \
+    --explicit-args            \
+    -o             "$OUTDIR"
+
+echo "Chost caps written to $OUTDIR"
