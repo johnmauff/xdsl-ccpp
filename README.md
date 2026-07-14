@@ -7,9 +7,7 @@ framework. It reads CCPP suite XML and scheme metadata files and generates Fortr
 cap subroutines, with optional GPU data-movement directives and C++/BIND(C)
 interoperability support.
 
-For multi-language (C++/Kokkos host) details see
-[`multilanguage_plan.md`](multilanguage_plan.md). For internal pipeline and pass
-details see [`DEVELOPERS.md`](DEVELOPERS.md).
+For internal pipeline and pass details see [`DEVELOPERS.md`](DEVELOPERS.md).
 
 ---
 
@@ -128,6 +126,11 @@ Optional:
   --bind-c              Generate BIND(C) Fortran cap subroutines and matching C++
                         headers (<HostName>_ccpp_cap.h and ccpp_kinds.h).
                         Requires --host-files.
+  --explicit-args       Generate an explicit-argument chost BIND(C) cap
+                        (<HostName>_ccpp_chost_cap.F90 and
+                        <HostName>_ccpp_chost_cap.h) for C++ host models that
+                        own all physics arrays directly, with no Fortran host
+                        module required. Implies --bind-c.
 ```
 
 ---
@@ -456,29 +459,97 @@ ccpp_datatable options:
 
 ### Multi-Language Support
 
-xdsl-ccpp supports two multi-language directions:
+xdsl-ccpp provides two modes for C++ host models calling Fortran physics schemes,
+plus a path for Fortran hosts calling C++ schemes.
 
-xdsl-ccpp includes experimental support for two multi-language directions. This
-work is still in development — see [`multilanguage_plan.md`](multilanguage_plan.md)
-for full design, current status, and remaining work.
+#### `--bind-c` — C++ host with Fortran host module
 
-**C++/Kokkos host → Fortran schemes (prototype):** Pass `--bind-c` to generate a
-BIND(C) Fortran cap plus a matching C++ header (`<HostName>_ccpp_cap.h` and
-`ccpp_kinds.h`). The cap generation and C++ header output are implemented; the
-Kessler example includes a working C++ BIND(C) driver that produces bit-for-bit
-identical results to the Fortran drivers. Row-major array layout RESHAPE is
-implemented. A compiled numerical parity test (CTest/Makefile) has not yet been
-written.
+Pass `--bind-c` to generate a BIND(C) Fortran physics cap plus a C++ header.
+The Fortran host module still owns the physics arrays; the C++ caller drives the
+CCPP lifecycle through generated `extern "C"` functions.
 
 ```bash
-ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o output/
+ccpp_xdsl --suites ... --scheme-files ... --host-files ... --bind-c -o bindc/
 ```
 
-**Fortran host → C++ schemes (prototype):** When a scheme's `.meta` table carries
-`language = c++`, the generated suite cap emits a `BIND(C)` interface block instead
-of a `use <module>` statement, allowing a C++ scheme to be called directly from
-Fortran. The cap generator emits correct interface blocks; a compiled end-to-end
-test with an actual C++ scheme implementation has not yet been written.
+Generated files:
+
+| File | Description |
+|------|-------------|
+| `ccpp_kinds.F90` | Kind parameter definitions |
+| `<suite>_cap.F90` | Suite cap (same as standard Fortran build) |
+| `<HostName>_ccpp_cap.F90` | BIND(C) physics cap |
+| `<HostName>_ccpp_cap.h` | C++ `extern "C"` lifecycle declarations |
+| `ccpp_kinds.h` | C++ `typedef` aliases for `kind_phys`, `kind_dyn`, etc. |
+
+The C++ lifecycle functions follow the naming convention
+`<HostName>_ccpp_physics_run`, `_ccpp_physics_initialize`, etc.:
+
+```cpp
+#include "Kessler_ccpp_cap.h"
+Kessler_ccpp_physics_initialize(...);
+Kessler_ccpp_physics_run(...);
+```
+
+The kessler example includes a working C++ BIND(C) driver (`driver_kessler_cpp.cpp`)
+that builds with `make cxx` and produces bit-for-bit identical results to the Fortran
+drivers (`make check`).
+
+#### `--explicit-args` — C++ host model (no Fortran host module)
+
+Pass `--explicit-args` (implies `--bind-c`) to generate a *chost* ("C++ host") cap:
+a thin BIND(C) Fortran wrapper that takes all physics arrays as explicit C-compatible
+arguments. No Fortran host module is required. This is the mode for C++ host models
+(e.g. Kokkos-based) that own all physics data directly in C++.
+
+```bash
+ccpp_xdsl --suites ... --scheme-files ... --host-files ... --explicit-args -o bindc/
+```
+
+Additional generated files:
+
+| File | Description |
+|------|-------------|
+| `<HostName>_ccpp_chost_cap.F90` | Chost BIND(C) Fortran wrapper module |
+| `<HostName>_ccpp_chost_cap.h` | C++ `extern "C"` declarations with C-compatible types |
+
+Key differences from the plain BIND(C) cap:
+
+- `col_start`/`col_end` loop bounds are removed; `ncol` (total column count) is passed directly
+- Scalar reals and integers are passed by value; 2D arrays carry explicit `(ncol, nz)` dimensions
+- C++ type mapping: `int` for integer scalars, `double` for real scalars, `const double*` for `intent(in)` arrays, `double*` for `intent(inout/out)` arrays, `char*` for character outputs, `int*` for error flag
+- Lifecycle functions are renamed `<HostName>_chost_physics_run`, `_chost_physics_initialize`, etc.
+
+```cpp
+#include "Kessler_ccpp_chost_cap.h"
+Kessler_chost_physics_initialize(lv, pref, rhoqr, gravit, errmsg, &errflg);
+Kessler_chost_physics_run(ncol, nz, dt, lyr_surf, lyr_toa,
+                           cpair, exner, theta, ..., scheme_name, errmsg, &errflg);
+```
+
+The kessler example includes a working C++ host driver (`driver_kessler_cxx_host.cpp`)
+that builds with `make cxx_host` and is verified bit-for-bit against all three Fortran
+drivers by `make check`.
+
+#### Array layout
+
+All array arguments in both modes are **column-major (Fortran order)**: the column
+index varies fastest in memory. A C++ host must allocate and pass arrays accordingly:
+
+```cpp
+// ncol × nz array in Fortran column-major layout
+std::vector<double> theta(ncol * nz);    // access: theta[col + ncol * lev]
+
+// Kokkos equivalent (LayoutLeft = column-major):
+Kokkos::View<double**, Kokkos::LayoutLeft> theta("theta", ncol, nz);
+```
+
+#### Fortran host → C++ schemes
+
+When a scheme's `.meta` table carries `language = c++`, the generated suite cap
+emits a `BIND(C)` interface block instead of a `use <module>` statement, allowing
+a C++ scheme to be called directly from a Fortran host. The cap generator emits
+correct interface blocks; a compiled end-to-end example has not yet been written.
 
 ---
 
@@ -490,7 +561,7 @@ test with an actual C++ scheme implementation has not yet been written.
 | `capgen/` | Two suites (`temp_suite`, `ddt_suite`) with DDT host variables, optional arguments, and CMake build integration |
 | `ddthost/` | DDT host variables and optional entry points; Python-defined host interface |
 | `advection/` | Columnar-chunked physics with constituent registration; column-sliced arrays |
-| `kessler/` | Kessler warm-rain microphysics; OpenACC GPU directives; three drivers: CCPP Fortran cap, hand-written Fortran, and C++ BIND(C) |
+| `kessler/` | Kessler warm-rain microphysics; OpenACC GPU directives; four drivers: CCPP Fortran cap, hand-written Fortran, C++ BIND(C) (`--bind-c`), and C++ host model (`--explicit-args`) |
 | `atmospheric_physics/` | Python suite definitions for 9 suites from [ESCOMP/atmospheric_physics](https://github.com/ESCOMP/atmospheric_physics) (CAM-SIMA's scheme library) |
 
 Each example can be driven via the XML frontend, the Python API, or both.
@@ -558,15 +629,16 @@ files. This validates the pipeline at real-world scale: 146 `.meta` files,
 | `capgen` | 2 | 6 | ~30 | ✅ passes |
 | `ddthost` | 2 | 6 | ~30 | ✅ passes |
 | `advection` | 1 | 4 | ~25 | ✅ passes |
-| `kessler` | 1 | 2 | ~15 | ✅ bit-for-bit vs hand-written cap†‡ |
+| `kessler` | 1 | 2 | ~15 | ✅ bit-for-bit across all four drivers†‡ |
 | CCPP-SCM (GFS) | varies | ~60 | ~800+ | ❌ not yet integrated |
 
-† Bit-for-bit agreement with the hand-written Kessler cap compiled with gfortran;
-CPU execution verified. GPU execution not yet tested.
+† Bit-for-bit agreement verified on CPU; GPU execution not yet tested.
 
-‡ The C++ BIND(C) driver (`kessler_cxx`) calls the CCPP-generated BIND(C) Fortran
-cap from C++. All three drivers (CCPP Fortran cap, hand-written Fortran, C++ BIND(C))
-produce identical numerical output.
+‡ All four drivers produce identical numerical output: the CCPP Fortran cap
+(`kessler_ccpp`), hand-written Fortran cap (`kessler_hand`), C++ BIND(C) driver
+(`kessler_cxx`, built with `--bind-c`), and C++ host model driver
+(`kessler_cxx_host`, built with `--explicit-args`). Verified by `make check` in
+`examples/kessler/`.
 
 ---
 

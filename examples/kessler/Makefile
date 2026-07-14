@@ -18,11 +18,10 @@
 # GPU (OpenMP target offload):
 #   make ARCH=GPU [FC=nvfortran]
 #
-# Code generation (laptop, requires xdsl-ccpp):
+# Code generation (requires xdsl-ccpp):
 #   make caps      — regenerate standard Fortran caps into examples/kessler/
-#   make gen-chost — regenerate chost BIND(C) caps + headers into examples/kessler/bindc/
-#   ./gen_kessler_bindc  — regenerate BIND(C) caps + C++ header into examples/kessler/bindc/
-#   ./gen_kessler_chost  — regenerate chost BIND(C) caps + headers into examples/kessler/bindc/
+#   make gen-bindc — regenerate plain BIND(C) caps + C++ header into examples/kessler/bindc/
+#   make gen-chost — regenerate chost BIND(C) caps + C++ header into examples/kessler/bindc/
 #
 # Utility:
 #   make clean     — remove build artefacts and generated caps
@@ -95,7 +94,7 @@ CAPS_PREREQS = \
     $(DIR)/kessler_host_mod.meta \
     $(DIR)/kessler_host_sub.meta
 
-# ── Generated caps — BIND(C) (./gen_kessler_bindc, committed) ────────────────
+# ── Generated caps — BIND(C) (make gen-bindc) ────────────────────────────────
 BINDC_SRC   = $(DIR)/bindc
 BINDC_KINDS = $(BINDC_SRC)/ccpp_kinds.F90
 BINDC_SUITE = $(BINDC_SRC)/kessler_suite_cap.F90
@@ -154,7 +153,7 @@ CXX_HOST_OBJS = \
   $(CXX_HOST_OBJ)/driver_kessler_cxx_host.o
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all ccpp hand cxx cxx_host run run-ccpp run-hand run-cxx run-cxx-host check caps gen-chost clean
+.PHONY: all ccpp hand cxx cxx_host run run-ccpp run-hand run-cxx run-cxx-host check caps gen-bindc gen-chost clean
 
 all: ccpp hand cxx cxx_host
 
@@ -218,7 +217,7 @@ $(EXE_HAND): $(HAND_OBJS)
 	$(FC) $(FFLAGS) -o $@ $^
 
 # ── C++ BIND(C) build ─────────────────────────────────────────────────────────
-# Sources in $(BINDC_SRC)/ are committed; regenerate with ./gen_kessler_bindc.
+# Sources in $(BINDC_SRC)/ are auto-generated; regenerate with make gen-bindc.
 
 $(CXX_OBJ)/ccpp_kinds.o: $(BINDC_KINDS) | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ)
@@ -297,6 +296,17 @@ $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): $(CAPS_PREREQS)
 	    --host-files   $(CAPS_HOSTS) \
 	    -o             $(DIR)
 
+gen-bindc: $(BINDC_CAP) $(BINDC_HDR)
+
+$(BINDC_KINDS) $(BINDC_SUITE) $(BINDC_CAP) $(BINDC_HDR): $(CAPS_PREREQS)
+	mkdir -p $(BINDC_SRC)
+	$(CCPP_XDSL) \
+	    --suites       $(CAPS_SUITE) \
+	    --scheme-files $(CAPS_SCHEMES) \
+	    --host-files   $(CAPS_HOSTS) \
+	    --bind-c \
+	    -o             $(BINDC_SRC)
+
 gen-chost: $(CHOST_F90) $(CHOST_HDR)
 
 $(CHOST_F90) $(CHOST_HDR): \
@@ -315,3 +325,4 @@ $(CHOST_F90) $(CHOST_HDR): \
 clean:
 	rm -rf $(BUILD)
 	rm -f $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
+	rm -rf $(BINDC_SRC)
