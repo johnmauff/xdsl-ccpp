@@ -95,6 +95,7 @@ CCPP_SRCS = \
 
 HAND_SRCS = \
   $(GEN_KINDS) \
+  $(DIR)/kessler_host_mod.F90 \
   $(DIR)/kessler.F90 \
   $(DIR)/kessler_update.F90 \
   $(DIR)/driver_kessler_old.F90
