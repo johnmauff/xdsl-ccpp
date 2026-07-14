@@ -54,7 +54,7 @@ void init_data_c(
             cpair[idx] = 1004.0;
             rair[idx]  = 287.0;
             z[idx]     = zval;
-            rho[idx]   = a * 1.2 * exp(-zval / 8000.0);
+            rho[idx]   = a * (1.2 * exp(-zval / 8000.0));
             exner[idx] = a;
             theta[idx] = a * (300.0 - 0.006 * zval);
             qv[idx]    = a * 0.010;
