@@ -125,7 +125,7 @@ CXX_OBJS = \
   $(CXX_OBJ)/kessler_host_init_c.o \
   $(CXX_OBJ)/driver_kessler_cpp.o
 
-CHOST_HDR = $(BINDC_SRC)/Kessler_ccpp_chost_cap.h
+CHOST_HDR = $(DIR)/Kessler_ccpp_chost_cap.h
 
 CXX_HOST_OBJS = \
   $(CXX_HOST_OBJ)/ccpp_kinds.o \
@@ -256,12 +256,12 @@ $(CXX_HOST_OBJ)/kessler_suite_cap.o: $(BINDC_SUITE) \
     $(CXX_HOST_OBJ)/kessler.o $(CXX_HOST_OBJ)/kessler_update.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o: $(BINDC_SRC)/Kessler_ccpp_chost_cap.F90 \
+$(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o: $(DIR)/Kessler_ccpp_chost_cap.F90 \
     $(CXX_HOST_OBJ)/kessler_suite_cap.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
 $(CXX_HOST_OBJ)/driver_kessler_cxx_host.o: $(DIR)/driver_kessler_cxx_host.cpp $(CHOST_HDR)
-	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -I$(DIR) -c $< -o $@
 
 $(EXE_CXX_HOST): $(CXX_HOST_OBJS)
 	$(FC) $(FFLAGS) $(NOMAIN) -o $@ $^ -lstdc++
