@@ -34,6 +34,7 @@ ARCH ?= CPU
 # FMA is defined once here and appended to both FFLAGS and CXXFLAGS.
 ifeq ($(FC),nvfortran)
   CXX     ?= nvc++
+  CC       = nvc
   FMA      = -Mnofma
   FC_CPU   = -g -O2 -Mfree -Mpreprocess
   FC_GPU   = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
@@ -42,6 +43,7 @@ ifeq ($(FC),nvfortran)
   NOMAIN   = -Mnomain
 else ifeq ($(FC),ifx)
   CXX     ?= icpx
+  CC       = icx
   FMA      = -fp-model=precise
   FC_CPU   = -g -O2 -fpp
   FC_GPU   = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
@@ -51,6 +53,7 @@ else ifeq ($(FC),ifx)
 else
   # GNU (gfortran / g++)
   CXX     ?= g++
+  CC       = gcc
   FMA      = -ffp-contract=off
   FC_CPU   = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
   FC_GPU   = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
@@ -65,6 +68,7 @@ else
   FFLAGS = $(FC_CPU) $(FMA)
 endif
 CXXFLAGS = $(CXX_BASE) $(FMA)
+CFLAGS   = -g -O2 $(FMA)
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DIR     = examples/kessler
@@ -105,12 +109,13 @@ EXE_CCPP = $(BUILD)/kessler_ccpp
 EXE_HAND = $(BUILD)/kessler_hand
 EXE_CXX  = $(BUILD)/kessler_cxx
 
-CCPP_OBJS = $(addprefix $(BUILD)/,$(notdir $(CCPP_SRCS:.F90=.o)))
-HAND_OBJS = $(addprefix $(BUILD)/,$(notdir $(HAND_SRCS:.F90=.o)))
+CCPP_OBJS = $(addprefix $(BUILD)/,$(notdir $(CCPP_SRCS:.F90=.o))) $(BUILD)/kessler_rng.o
+HAND_OBJS = $(addprefix $(BUILD)/,$(notdir $(HAND_SRCS:.F90=.o))) $(BUILD)/kessler_rng.o
 
 CXX_OBJS = \
   $(CXX_OBJ)/ccpp_kinds.o \
   $(CXX_OBJ)/kessler_host_mod.o \
+  $(CXX_OBJ)/kessler_rng.o \
   $(CXX_OBJ)/kessler.o \
   $(CXX_OBJ)/kessler_update.o \
   $(CXX_OBJ)/kessler_suite_cap.o \
@@ -138,10 +143,6 @@ run-cxx: $(EXE_CXX)
 
 run: run-ccpp run-hand run-cxx
 
-# NOTE: gfortran produces a 1-ULP difference between kessler_ccpp and kessler_hand
-# even with -ffp-contract=off. This is a gfortran code-generation quirk (not a logic
-# error) — nvfortran and ifx both pass bit-for-bit. The FAIL on that comparison is
-# expected and harmless when using FC=gfortran.
 check: ccpp hand cxx
 	@echo "=== Numerical parity check ==="
 	@$(EXE_CCPP) | grep -v "Elapsed" > $(BUILD)/out_ccpp.txt
@@ -163,6 +164,13 @@ $(BUILD) $(CXX_OBJ):
 # ── Fortran compilation (shared by ccpp and hand) ─────────────────────────────
 $(BUILD)/%.o: $(DIR)/%.F90 | $(BUILD)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD) -I $(BUILD)
+
+# ── C compilation ─────────────────────────────────────────────────────────────
+$(BUILD)/%.o: $(DIR)/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(CXX_OBJ)/%.o: $(DIR)/%.c | $(CXX_OBJ)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # ── Link: Fortran drivers ─────────────────────────────────────────────────────
 $(EXE_CCPP): $(CCPP_OBJS)

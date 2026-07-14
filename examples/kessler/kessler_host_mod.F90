@@ -44,11 +44,18 @@ module kessler_host_mod
 contains
 
   subroutine init_data()
+    use iso_c_binding, only: c_double, c_int
+
+    interface
+      subroutine kessler_rng_fill(arr, ncol) bind(C, name='kessler_rng_fill')
+        use iso_c_binding, only: c_double, c_int
+        real(c_double),   intent(out) :: arr(*)
+        integer(c_int),   intent(in), value :: ncol
+      end subroutine
+    end interface
 
     real(kind_phys), allocatable :: arr(:)
-    real(kind_phys) :: u1, u2, ztmp
-    integer, allocatable :: seed_values(:)
-    integer :: seed_size, i, k
+    integer :: i, k
 
     !------------------------------------------------------------------
     ! Grid size and time step
@@ -80,19 +87,9 @@ contains
     allocate(arr(ncol))
 
     !------------------------------------------------------------------
-    ! Deterministic random perturbation (Box-Muller)
+    ! Deterministic random perturbation via portable C RNG (xorshift64 + Box-Muller)
     !------------------------------------------------------------------
-    call random_seed(size=seed_size)
-    allocate(seed_values(seed_size))
-    seed_values = [(i, i=1, seed_size)]
-    call random_seed(put=seed_values)
-
-    do i = 1, ncol
-      call random_number(u1)
-      call random_number(u2)
-      ztmp   = sqrt(-2.0_kind_phys * log(u1)) * cos(2.0_kind_phys * 3.14159265_kind_phys * u2)
-      arr(i) = 1.0_kind_phys + 0.1_kind_phys * ztmp
-    end do
+    call kessler_rng_fill(arr, int(ncol, c_int))
 
     !------------------------------------------------------------------
     ! Initialize physics arrays
