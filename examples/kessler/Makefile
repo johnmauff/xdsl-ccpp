@@ -19,12 +19,12 @@
 #   make ARCH=GPU [FC=nvfortran]
 #
 # Code generation (laptop, requires xdsl-ccpp):
-#   ./gen_kessler        — regenerate standard Fortran caps into examples/kessler/
+#   make caps      — regenerate standard Fortran caps into examples/kessler/
+#   make gen-chost — regenerate chost BIND(C) caps + headers into examples/kessler/bindc/
 #   ./gen_kessler_bindc  — regenerate BIND(C) caps + C++ header into examples/kessler/bindc/
 #   ./gen_kessler_chost  — regenerate chost BIND(C) caps + headers into examples/kessler/bindc/
 #
 # Utility:
-#   make caps      — regenerate standard Fortran caps only
 #   make clean     — remove build artefacts and generated caps
 
 # ── Compilers & flags ─────────────────────────────────────────────────────────
@@ -71,16 +71,29 @@ endif
 CXXFLAGS = $(CXX_BASE) $(FMA)
 CFLAGS   = -g -O2 $(FMA)
 
+# ── Tools ─────────────────────────────────────────────────────────────────────
+CCPP_XDSL ?= ccpp_xdsl
+
 # ── Directories ───────────────────────────────────────────────────────────────
 DIR          = examples/kessler
 BUILD        = $(DIR)/build
 CXX_OBJ      = $(BUILD)/cxx
 CXX_HOST_OBJ = $(BUILD)/cxx_host
 
-# ── Generated caps — standard Fortran (./gen_kessler) ────────────────────────
+# ── Generated caps — standard Fortran (make caps) ────────────────────────────
 GEN_KINDS     = $(DIR)/ccpp_kinds.F90
 GEN_SUITE_CAP = $(DIR)/kessler_suite_cap.F90
 GEN_CCPP_CAP  = $(DIR)/Kessler_ccpp_cap.F90
+
+CAPS_SUITE   = $(DIR)/kessler_suite.xml
+CAPS_SCHEMES = $(DIR)/kessler.meta,$(DIR)/kessler_update.meta
+CAPS_HOSTS   = $(DIR)/kessler_host_mod.meta,$(DIR)/kessler_host_sub.meta
+CAPS_PREREQS = \
+    $(DIR)/kessler_suite.xml \
+    $(DIR)/kessler.meta \
+    $(DIR)/kessler_update.meta \
+    $(DIR)/kessler_host_mod.meta \
+    $(DIR)/kessler_host_sub.meta
 
 # ── Generated caps — BIND(C) (./gen_kessler_bindc, committed) ────────────────
 BINDC_SRC   = $(DIR)/bindc
@@ -276,11 +289,13 @@ $(EXE_CXX_HOST): $(CXX_HOST_OBJS)
 # ── Cap generation ────────────────────────────────────────────────────────────
 caps: $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
-$(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): \
-    $(DIR)/kessler.meta $(DIR)/kessler_update.meta \
-    $(DIR)/kessler_host_mod.meta $(DIR)/kessler_host_sub.meta \
-    $(DIR)/kessler_suite.xml
-	./gen_kessler
+$(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): $(CAPS_PREREQS)
+	$(CCPP_XDSL) \
+	    --directive    acc \
+	    --suites       $(CAPS_SUITE) \
+	    --scheme-files $(CAPS_SCHEMES) \
+	    --host-files   $(CAPS_HOSTS) \
+	    -o             $(DIR)
 
 gen-chost: $(CHOST_F90) $(CHOST_HDR)
 
@@ -288,7 +303,13 @@ $(CHOST_F90) $(CHOST_HDR): \
     $(DIR)/kessler.meta $(DIR)/kessler_update.meta \
     $(DIR)/kessler_host_mod.meta $(DIR)/kessler_host_sub.meta \
     $(DIR)/kessler_suite.xml
-	./gen_kessler_chost
+	mkdir -p $(BINDC_SRC)
+	$(CCPP_XDSL) \
+	    --suites       $(CAPS_SUITE) \
+	    --scheme-files $(CAPS_SCHEMES) \
+	    --host-files   $(CAPS_HOSTS) \
+	    --explicit-args \
+	    -o             $(BINDC_SRC)
 
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
