@@ -27,22 +27,38 @@
 #   make clean     — remove build artefacts and generated caps
 
 # ── Compilers & flags ─────────────────────────────────────────────────────────
-FC   = gfortran
-CXX  = g++
+FC   ?= gfortran
 ARCH ?= CPU
 
-ifeq ($(ARCH),GPU)
-  ifeq ($(FC),nvfortran)
-    FFLAGS = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
-  else
-    FFLAGS = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
-  endif
+# Derive the C++ compiler and per-family flags from FC.
+# FMA is defined once here and appended to both FFLAGS and CXXFLAGS.
+ifeq ($(FC),nvfortran)
+  CXX     ?= nvc++
+  FMA      = -Mnofma
+  FC_CPU   = -g -O2 -Mfree -Mpreprocess
+  FC_GPU   = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
+  CXX_BASE = -g -O2
+else ifeq ($(FC),ifx)
+  CXX     ?= icpx
+  FMA      = -fp-model=precise
+  FC_CPU   = -g -O2 -fpp
+  FC_GPU   = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
+  CXX_BASE = -g -O2
 else
-  FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
-  # FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -fopenmp -cpp
+  # GNU (gfortran / g++)
+  CXX     ?= g++
+  FMA      = -ffp-contract=off
+  FC_CPU   = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
+  FC_GPU   = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
+  CXX_BASE = -g -Wall -O2
 endif
 
-CXXFLAGS = -g -Wall -O2
+ifeq ($(ARCH),GPU)
+  FFLAGS = $(FC_GPU) $(FMA)
+else
+  FFLAGS = $(FC_CPU) $(FMA)
+endif
+CXXFLAGS = $(CXX_BASE) $(FMA)
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DIR     = examples/kessler
@@ -120,13 +136,14 @@ check: ccpp hand cxx
 	@$(EXE_CCPP) | grep -v "Elapsed" > $(BUILD)/out_ccpp.txt
 	@$(EXE_HAND) | grep -v "Elapsed" > $(BUILD)/out_hand.txt
 	@$(EXE_CXX)  | grep -v "Elapsed" > $(BUILD)/out_cxx.txt
-	@diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt \
-	    && echo "PASS: ccpp == hand (bit-for-bit)" \
-	    || { echo "FAIL: ccpp != hand"; diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt; exit 1; }
-	@diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt \
-	    && echo "PASS: ccpp == cxx  (bit-for-bit)" \
-	    || { echo "FAIL: ccpp != cxx";  diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt; exit 1; }
-	@echo "=== All three drivers produce identical numerical output. ==="
+	@result=0; \
+	 diff -q $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt > /dev/null \
+	     && echo "PASS: ccpp == hand (bit-for-bit)" \
+	     || { echo "FAIL: ccpp != hand"; diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt; result=1; }; \
+	 diff -q $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt > /dev/null \
+	     && echo "PASS: ccpp == cxx  (bit-for-bit)" \
+	     || { echo "FAIL: ccpp != cxx";  diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt; result=1; }; \
+	 [ $$result -eq 0 ] && echo "=== All three drivers produce identical numerical output. ===" || exit 1
 
 # ── Build directories ─────────────────────────────────────────────────────────
 $(BUILD) $(CXX_OBJ):
