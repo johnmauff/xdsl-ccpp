@@ -71,9 +71,10 @@ CXXFLAGS = $(CXX_BASE) $(FMA)
 CFLAGS   = -g -O2 $(FMA)
 
 # ── Directories ───────────────────────────────────────────────────────────────
-DIR     = examples/kessler
-BUILD   = $(DIR)/build
-CXX_OBJ = $(BUILD)/cxx
+DIR          = examples/kessler
+BUILD        = $(DIR)/build
+CXX_OBJ      = $(BUILD)/cxx
+CXX_HOST_OBJ = $(BUILD)/cxx_host
 
 # ── Generated caps — standard Fortran (./gen_kessler) ────────────────────────
 GEN_KINDS     = $(DIR)/ccpp_kinds.F90
@@ -105,9 +106,10 @@ HAND_SRCS = \
   $(DIR)/driver_kessler_old.F90
 
 # ── Executables ───────────────────────────────────────────────────────────────
-EXE_CCPP = $(BUILD)/kessler_ccpp
-EXE_HAND = $(BUILD)/kessler_hand
-EXE_CXX  = $(BUILD)/kessler_cxx
+EXE_CCPP     = $(BUILD)/kessler_ccpp
+EXE_HAND     = $(BUILD)/kessler_hand
+EXE_CXX      = $(BUILD)/kessler_cxx
+EXE_CXX_HOST = $(BUILD)/kessler_cxx_host
 
 CCPP_OBJS = $(addprefix $(BUILD)/,$(notdir $(CCPP_SRCS:.F90=.o))) $(BUILD)/kessler_rng.o
 HAND_OBJS = $(addprefix $(BUILD)/,$(notdir $(HAND_SRCS:.F90=.o))) $(BUILD)/kessler_rng.o
@@ -123,14 +125,27 @@ CXX_OBJS = \
   $(CXX_OBJ)/kessler_host_init_c.o \
   $(CXX_OBJ)/driver_kessler_cpp.o
 
+CHOST_HDR = $(BINDC_SRC)/Kessler_ccpp_chost_cap.h
+
+CXX_HOST_OBJS = \
+  $(CXX_HOST_OBJ)/ccpp_kinds.o \
+  $(CXX_HOST_OBJ)/kessler.o \
+  $(CXX_HOST_OBJ)/kessler_update.o \
+  $(CXX_HOST_OBJ)/kessler_suite_cap.o \
+  $(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o \
+  $(BUILD)/kessler_rng.o \
+  $(BUILD)/init_data_c.o \
+  $(CXX_HOST_OBJ)/driver_kessler_cxx_host.o
+
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all ccpp hand cxx run run-ccpp run-hand run-cxx check caps clean
+.PHONY: all ccpp hand cxx cxx_host run run-ccpp run-hand run-cxx run-cxx-host check caps clean
 
-all: ccpp hand cxx
+all: ccpp hand cxx cxx_host
 
-ccpp: $(EXE_CCPP)
-hand: $(EXE_HAND)
-cxx:  $(EXE_CXX)
+ccpp:     $(EXE_CCPP)
+hand:     $(EXE_HAND)
+cxx:      $(EXE_CXX)
+cxx_host: $(EXE_CXX_HOST)
 
 run-ccpp: $(EXE_CCPP)
 	@echo "=== CCPP Fortran driver ===" && $(EXE_CCPP)
@@ -141,24 +156,31 @@ run-hand: $(EXE_HAND)
 run-cxx: $(EXE_CXX)
 	@echo "=== C++ BIND(C) driver ===" && $(EXE_CXX)
 
-run: run-ccpp run-hand run-cxx
+run-cxx-host: $(EXE_CXX_HOST)
+	@echo "=== C++ host-model driver ===" && $(EXE_CXX_HOST)
 
-check: ccpp hand cxx
+run: run-ccpp run-hand run-cxx run-cxx-host
+
+check: ccpp hand cxx cxx_host
 	@echo "=== Numerical parity check ==="
-	@$(EXE_CCPP) | grep -v "Elapsed" > $(BUILD)/out_ccpp.txt
-	@$(EXE_HAND) | grep -v "Elapsed" > $(BUILD)/out_hand.txt
-	@$(EXE_CXX)  | grep -v "Elapsed" > $(BUILD)/out_cxx.txt
+	@$(EXE_CCPP)     | grep -v "Elapsed" > $(BUILD)/out_ccpp.txt
+	@$(EXE_HAND)     | grep -v "Elapsed" > $(BUILD)/out_hand.txt
+	@$(EXE_CXX)      | grep -v "Elapsed" > $(BUILD)/out_cxx.txt
+	@$(EXE_CXX_HOST) | grep -v "Elapsed" > $(BUILD)/out_cxx_host.txt
 	@result=0; \
 	 diff -q $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt > /dev/null \
-	     && echo "PASS: ccpp == hand (bit-for-bit)" \
-	     || { echo "FAIL: ccpp != hand"; diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt; result=1; }; \
+	     && echo "PASS: ccpp == hand     (bit-for-bit)" \
+	     || { echo "FAIL: ccpp != hand";     diff $(BUILD)/out_ccpp.txt $(BUILD)/out_hand.txt;     result=1; }; \
 	 diff -q $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt > /dev/null \
-	     && echo "PASS: ccpp == cxx  (bit-for-bit)" \
-	     || { echo "FAIL: ccpp != cxx";  diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt; result=1; }; \
-	 [ $$result -eq 0 ] && echo "=== All three drivers produce identical numerical output. ===" || exit 1
+	     && echo "PASS: ccpp == cxx      (bit-for-bit)" \
+	     || { echo "FAIL: ccpp != cxx";      diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx.txt;      result=1; }; \
+	 diff -q $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx_host.txt > /dev/null \
+	     && echo "PASS: ccpp == cxx_host (bit-for-bit)" \
+	     || { echo "FAIL: ccpp != cxx_host"; diff $(BUILD)/out_ccpp.txt $(BUILD)/out_cxx_host.txt; result=1; }; \
+	 [ $$result -eq 0 ] && echo "=== All four drivers produce identical numerical output. ===" || exit 1
 
 # ── Build directories ─────────────────────────────────────────────────────────
-$(BUILD) $(CXX_OBJ):
+$(BUILD) $(CXX_OBJ) $(CXX_HOST_OBJ):
 	mkdir -p $@
 
 # ── Fortran compilation (shared by ccpp and hand) ─────────────────────────────
@@ -213,6 +235,35 @@ $(CXX_OBJ)/driver_kessler_cpp.o: $(DIR)/driver_kessler_cpp.cpp $(BINDC_HDR)
 	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
 
 $(EXE_CXX): $(CXX_OBJS)
+	$(FC) $(FFLAGS) $(NOMAIN) -o $@ $^ -lstdc++
+
+# ── C++ host-model build ──────────────────────────────────────────────────────
+# kessler_host_mod is NOT used here — the C++ host owns all arrays.
+# kessler_rng.o and init_data_c.o are shared C objects from $(BUILD)/.
+
+$(CXX_HOST_OBJ)/ccpp_kinds.o: $(BINDC_KINDS) | $(CXX_HOST_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ)
+
+$(CXX_HOST_OBJ)/kessler.o: $(DIR)/kessler.F90 \
+    $(CXX_HOST_OBJ)/ccpp_kinds.o | $(CXX_HOST_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
+
+$(CXX_HOST_OBJ)/kessler_update.o: $(DIR)/kessler_update.F90 \
+    $(CXX_HOST_OBJ)/ccpp_kinds.o | $(CXX_HOST_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
+
+$(CXX_HOST_OBJ)/kessler_suite_cap.o: $(BINDC_SUITE) \
+    $(CXX_HOST_OBJ)/kessler.o $(CXX_HOST_OBJ)/kessler_update.o | $(CXX_HOST_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
+
+$(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o: $(BINDC_SRC)/Kessler_ccpp_chost_cap.F90 \
+    $(CXX_HOST_OBJ)/kessler_suite_cap.o | $(CXX_HOST_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
+
+$(CXX_HOST_OBJ)/driver_kessler_cxx_host.o: $(DIR)/driver_kessler_cxx_host.cpp $(CHOST_HDR)
+	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
+
+$(EXE_CXX_HOST): $(CXX_HOST_OBJS)
 	$(FC) $(FFLAGS) $(NOMAIN) -o $@ $^ -lstdc++
 
 # ── Cap generation ────────────────────────────────────────────────────────────
