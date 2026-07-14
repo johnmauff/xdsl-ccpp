@@ -18,7 +18,7 @@ program test_kessler_driver
 
   ! Arrays
   real(kind_phys), allocatable :: cpair(:,:), rair(:,:), rho(:,:)
-  real(kind_phys), allocatable :: z(:,:), pk(:,:)
+  real(kind_phys), allocatable :: z(:,:)
   real(kind_phys), allocatable :: theta(:,:), qv(:,:), qc(:,:), qr(:,:)
   real(kind_phys), dimension(:,:), allocatable :: temp, exner, zm, temp_prev, st_energy, ttend_t
   real(kind_phys), allocatable :: precl(:), phis(:)
@@ -38,7 +38,7 @@ program test_kessler_driver
   logical :: use_host
   integer :: dev
   integer(c_size_t) :: bytes1D, bytes2D
-  type(c_ptr) :: cpair_raw, rair_raw, rho_raw, z_raw, pk_raw, theta_raw, &
+  type(c_ptr) :: cpair_raw, rair_raw, rho_raw, z_raw, theta_raw, &
                  qv_raw, qc_raw, qr_raw, precl_raw, relhum_raw
 
   type(c_ptr) :: temp_raw, exner_raw, zm_raw, phis_raw, temp_prev_raw, &
@@ -86,7 +86,7 @@ program test_kessler_driver
   ! Allocate arrays
   !------------------------------------------------------
   allocate(cpair(ncol,nz), rair(ncol,nz), rho(ncol,nz))
-  allocate(z(ncol,nz), pk(ncol,nz))
+  allocate(z(ncol,nz))
   allocate(theta(ncol,nz), qv(ncol,nz), qc(ncol,nz), qr(ncol,nz))
   allocate(relhum(ncol,nz))
   allocate(temp(ncol,nz))
@@ -131,7 +131,6 @@ program test_kessler_driver
         z(i,k)   = arr(i) * (100.0_kind_phys * real(k-1, kind_phys))
         rho(i,k) = arr(i) * (1.2_kind_phys * exp(-z(i,k)/8000.0_kind_phys))
 
-        pk(i,k)    = arr(i) * (1.0_kind_phys)
         theta(i,k) = arr(i) * (300.0_kind_phys - 0.006_kind_phys*z(i,k))
 
         qv(i,k) = arr(i) * (0.010_kind_phys)
@@ -157,7 +156,6 @@ program test_kessler_driver
   rair_raw   = omp_target_alloc(bytes2D, dev)
   rho_raw    = omp_target_alloc(bytes2D, dev)
   z_raw      = omp_target_alloc(bytes2D, dev)
-  pk_raw     = omp_target_alloc(bytes2D, dev)
   theta_raw  = omp_target_alloc(bytes2D, dev)
   qv_raw     = omp_target_alloc(bytes2D, dev)
   qc_raw     = omp_target_alloc(bytes2D, dev)
@@ -176,7 +174,6 @@ program test_kessler_driver
   ierr = omp_target_associate_ptr(c_loc(rair(1,1)), rair_raw, bytes2D, 0_c_size_t, dev)
   ierr = omp_target_associate_ptr(c_loc(rho(1,1)), rho_raw, bytes2D, 0_c_size_t, dev)
   ierr = omp_target_associate_ptr(c_loc(z(1,1)), z_raw, bytes2D, 0_c_size_t, dev)
-  ierr = omp_target_associate_ptr(c_loc(pk(1,1)), pk_raw, bytes2D, 0_c_size_t, dev)
   ierr = omp_target_associate_ptr(c_loc(theta(1,1)), theta_raw, bytes2D, 0_c_size_t, dev)
   ierr = omp_target_associate_ptr(c_loc(qv(1,1)), qv_raw, bytes2D, 0_c_size_t, dev)
   ierr = omp_target_associate_ptr(c_loc(qc(1,1)), qc_raw, bytes2D, 0_c_size_t, dev)
@@ -200,7 +197,7 @@ program test_kessler_driver
 
   ! Host -> device memcpy
   !$omp target update to(cpair(1:ncol,1:nz), rair(1:ncol,1:nz), rho(1:ncol,1:nz), &
-  !$omp      z(1:ncol,1:nz), pk(1:ncol,1:nz), theta(1:ncol,1:nz), qv(1:ncol,1:nz), &
+  !$omp      z(1:ncol,1:nz), exner(1:ncol,1:nz), theta(1:ncol,1:nz), qv(1:ncol,1:nz), &
   !$omp      qc(1:ncol,1:nz), qr(1:ncol,1:nz), precl(1:ncol),relhum(1:ncol,1:nz))
 
 #endif
@@ -226,12 +223,12 @@ program test_kessler_driver
   !------------------------------------------------------
   if(version .eq. 1) then
      call kessler_runv1(ncol, nz, dt, lyr_surf, lyr_toa, &
-                          cpair, rair, rho, z, pk, &
+                          cpair, rair, rho, z, exner, &
                           theta, qv, qc, qr, &
                           precl, relhum, scheme_name, errmsg, errflg)
   elseif (version .eq. 2) then
      call kessler_runv2(ncol, nz, dt, lyr_surf, lyr_toa, &
-                          cpair, rair, rho, z, pk, &
+                          cpair, rair, rho, z, exner, &
                           theta, qv, qc, qr, &
                           precl, relhum, scheme_name, errmsg, errflg)
   endif
