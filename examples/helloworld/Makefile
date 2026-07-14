@@ -1,11 +1,19 @@
-# Makefile for the HelloWorld CCPP test using xdsl-ccpp generated caps.
+# HelloWorld CCPP example Makefile
 #
-# From the repo root:
-#   make -f examples/helloworld/Makefile        # build (auto-generates caps)
-#   make -f examples/helloworld/Makefile run
-#   make -f examples/helloworld/Makefile test
-#   make -f examples/helloworld/Makefile caps   # regenerate caps only
-#   make -f examples/helloworld/Makefile clean
+# Build targets:
+#   make [all]  — build the test executable (auto-generates caps if needed)
+#
+# Run targets:
+#   make run    — build and run
+#
+# Verification:
+#   make check  — build, run, and verify pass/fail
+#
+# Code generation (requires xdsl-ccpp):
+#   make caps   — regenerate CCPP caps into examples/helloworld/
+#
+# Utility:
+#   make clean  — remove build artefacts and generated caps
 
 FC     = gfortran
 FFLAGS = -g -Wall
@@ -44,14 +52,14 @@ OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(SRCS:.F90=.o)))
 
 EXE = $(BUILD_DIR)/hello_world
 
-.PHONY: all run test clean caps
+.PHONY: all run check clean caps
 
 all: $(EXE)
 
 run: $(EXE)
 	$(EXE)
 
-test: $(EXE)
+check: $(EXE)
 	@echo "Running HelloWorld CCPP test..."
 	@$(EXE) | tee /tmp/hello_world_output.txt
 	@grep -q "Answers are correct" /tmp/hello_world_output.txt \
@@ -60,6 +68,7 @@ test: $(EXE)
 
 clean:
 	rm -rf $(BUILD_DIR)
+	rm -f $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
 caps: $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 

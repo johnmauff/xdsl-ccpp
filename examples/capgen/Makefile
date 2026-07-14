@@ -1,3 +1,20 @@
+# Capgen CCPP example Makefile
+#
+# Build targets:
+#   make [all]  — build the test executable (auto-generates caps if needed)
+#
+# Run targets:
+#   make run    — build and run
+#
+# Verification:
+#   make check  — build, run, and verify pass/fail
+#
+# Code generation (requires xdsl-ccpp):
+#   make caps   — regenerate CCPP caps into examples/capgen/
+#
+# Utility:
+#   make clean  — remove build artefacts and generated caps
+
 FC     = gfortran
 FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none
 DIR    = examples/capgen
@@ -48,14 +65,14 @@ OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(SRCS:.F90=.o)))
 
 EXE = $(BUILD_DIR)/test_capgen
 
-.PHONY: all run test clean caps
+.PHONY: all run check clean caps
 
 all: $(EXE)
 
 run: $(EXE)
 	$(EXE)
 
-test: $(EXE)
+check: $(EXE)
 	@echo "Running capgen CCPP test..."
 	@$(EXE); STATUS=$$?; \
 	  if [ $$STATUS -eq 0 ]; then echo "TEST PASSED"; \
@@ -63,6 +80,7 @@ test: $(EXE)
 
 clean:
 	rm -rf $(BUILD_DIR)
+	rm -f $(GEN_SUITE_CAPS) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
 caps: $(GEN_SUITE_CAPS) $(GEN_CCPP_CAP) $(GEN_KINDS)
 

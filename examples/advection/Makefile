@@ -1,3 +1,20 @@
+# Advection CCPP example Makefile
+#
+# Build targets:
+#   make [all]  — build the test executable (auto-generates caps if needed)
+#
+# Run targets:
+#   make run    — build and run
+#
+# Verification:
+#   make check  — build, run, and verify pass/fail
+#
+# Code generation (requires xdsl-ccpp):
+#   make caps   — regenerate CCPP caps into examples/advection/
+#
+# Utility:
+#   make clean  — remove build artefacts and generated caps
+
 FC     = gfortran
 FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none
 DIR    = examples/advection
@@ -54,13 +71,20 @@ TEST_EXTRA_SRCS = \
 TEST_EXTRA_OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(TEST_EXTRA_SRCS:.F90=.o)))
 TEST_EXE = $(BUILD_DIR)/test_advection
 
-.PHONY: all clean caps test
+.PHONY: all run check clean caps
 
-all: $(OBJS)
-	@echo "Advection caps compiled successfully."
+all: $(TEST_EXE)
+
+run: $(TEST_EXE)
+	$(TEST_EXE)
+
+check: $(TEST_EXE)
+	@echo "Running advection integration test..."
+	@$(TEST_EXE) && echo "TEST PASSED" || (echo "TEST FAILED"; exit 1)
 
 clean:
 	rm -rf $(BUILD_DIR)
+	rm -f $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
 caps: $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
@@ -83,7 +107,3 @@ $(BUILD_DIR)/test_utils.o: examples/capgen/test_utils.F90 | $(BUILD_DIR)
 
 $(TEST_EXE): $(OBJS) $(TEST_EXTRA_OBJS) $(BUILD_DIR)/test_advection_host_integration.o
 	$(FC) $(FFLAGS) -o $@ $^
-
-test: $(TEST_EXE)
-	@echo "Running advection integration test..."
-	@$(TEST_EXE) && echo "Test PASSED" || (echo "Test FAILED"; exit 1)
