@@ -3,7 +3,7 @@
 // assumed-size declaration — real(c_double), target, intent(inout) :: flux(ncol, nz, *)
 // — and that the third-dimension integer (nbands) is passed by value as c_int.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/examples/chost_r3/tiny_r3_suite.xml --scheme-files tests/filecheck/examples/chost_r3/tiny_r3_scheme.meta --host-files tests/filecheck/examples/chost_r3/tiny_r3_host_mod.meta,tests/filecheck/examples/chost_r3/tiny_r3_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap{bind_c=true explicit_args=true},generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/examples/chost_r3/tiny_r3_suite.xml --scheme-files tests/filecheck/examples/chost_r3/tiny_r3_scheme.meta --host-files tests/filecheck/examples/chost_r3/tiny_r3_host_mod.meta,tests/filecheck/examples/chost_r3/tiny_r3_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: module TinyR3_ccpp_chost_cap
 

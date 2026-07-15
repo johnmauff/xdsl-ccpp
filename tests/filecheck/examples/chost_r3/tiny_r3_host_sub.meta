@@ -1,6 +1,7 @@
 [ccpp-table-properties]
   name = tiny_r3_host_sub
   type = host
+  language = c++
 [ccpp-arg-table]
   name = tiny_r3_host_sub
   type = host

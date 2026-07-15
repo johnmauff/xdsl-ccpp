@@ -1,7 +1,8 @@
 # C++ Host → Fortran Scheme: Known Limitations
 
-This document records known limitations of the `--explicit-args` chost cap
-generation mode as of the current implementation.  See
+This document records known limitations of the chost cap generation mode
+(activated via `language = c++` in host `.meta` files) as of the current
+implementation.  See
 [`multilanguage_plan.md`](multilanguage_plan.md) for design background and
 [`README.md`](README.md) for usage instructions.
 

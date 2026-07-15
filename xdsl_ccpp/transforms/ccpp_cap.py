@@ -495,12 +495,6 @@ class CCPPCAP(ModulePass):
     # called from C++ / Kokkos host models.
     bind_c: bool = False
 
-    # When True, also generate a CHostCapOp containing a BIND(C) Fortran module
-    # and matching C++ header that accept physics arrays as explicit pointer
-    # arguments rather than reading them from a Fortran host module.
-    explicit_args: bool = False
-
-
     def _collect_public_suite_functions(self, ops):
         """Scan all named ModuleOps in ops and return a map of public function info.
 
@@ -3049,7 +3043,7 @@ class CCPPCAP(ModulePass):
         Fortran host module.  The generated module delegates internally to the
         regular suite cap subroutines.
 
-        Called only when explicit_args=True.
+        Called when the host declares ``language = "c++``.
         """
         # Derive the CamelCase prefix from the regular cap module name.
         # e.g. "Kessler_ccpp_cap" → "Kessler"
@@ -4025,8 +4019,8 @@ class CCPPCAP(ModulePass):
         )
         op.body.block.add_op(cap_mod)
 
-        # Auto-detect C++ host: any host/module TablePropertiesOp carrying
-        # language = "c++" triggers the chost cap without needing explicit_args=true.
+        # Generate chost cap when any host/module TablePropertiesOp carries
+        # language = "c++".
         host_lang_cpp = any(
             isa(tbl_op, ccpp.TablePropertiesOp)
             and tbl_op.table_type.data in ("host", "module")
@@ -4035,7 +4029,7 @@ class CCPPCAP(ModulePass):
             for tbl_op in ccpp_mod.body.ops
         )
 
-        if self.explicit_args or host_lang_cpp:
+        if host_lang_cpp:
             chost_op = self._generate_chost_cap_module(
                 suite_descriptions, meta_data_descriptions, cap_mod, ccpp_mod,
                 public_fns=public_fns,

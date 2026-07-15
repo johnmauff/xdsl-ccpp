@@ -126,11 +126,6 @@ Optional:
   --bind-c              Generate BIND(C) Fortran cap subroutines and matching C++
                         headers (<HostName>_ccpp_cap.h and ccpp_kinds.h).
                         Requires --host-files.
-  --explicit-args       Generate an explicit-argument chost BIND(C) cap
-                        (<HostName>_ccpp_chost_cap.F90 and
-                        <HostName>_ccpp_chost_cap.h) for C++ host models that
-                        own all physics arrays directly, with no Fortran host
-                        module required. Implies --bind-c.
 ```
 
 ---
@@ -495,16 +490,27 @@ The kessler example includes a working C++ BIND(C) driver (`driver_kessler_cpp.c
 that builds with `make cxx` and produces bit-for-bit identical results to the Fortran
 drivers (`make check`).
 
-#### `--explicit-args` — C++ host model (no Fortran host module)
+#### C++ host model (no Fortran host module)
 
-Pass `--explicit-args` (implies `--bind-c`) to generate a *chost* ("C++ host") cap:
-a thin BIND(C) Fortran wrapper that takes all physics arrays as explicit C-compatible
-arguments. No Fortran host module is required. This is the mode for C++ host models
-(e.g. Kokkos-based) that own all physics data directly in C++.
+To generate a *chost* ("C++ host") cap — a thin BIND(C) Fortran wrapper that takes
+all physics arrays as explicit C-compatible arguments — add `language = c++` to the
+host `.meta` `[ccpp-table-properties]` block:
+
+```ini
+[ccpp-table-properties]
+  name = kessler_host_sub
+  type = host
+  language = c++
+```
+
+`ccpp_xdsl` then auto-detects the C++ host and no extra flags are needed:
 
 ```bash
-ccpp_xdsl --suites ... --scheme-files ... --host-files ... --explicit-args -o bindc/
+ccpp_xdsl --suites ... --scheme-files ... --host-files host_cpp/... -o bindc/
 ```
+
+No Fortran host module is required. This is the mode for C++ host models
+(e.g. Kokkos-based) that own all physics data directly in C++.
 
 Additional generated files:
 
@@ -569,7 +575,7 @@ correct interface blocks; a compiled end-to-end example has not yet been written
 | `capgen/` | Two suites (`temp_suite`, `ddt_suite`) with DDT host variables, optional arguments, and CMake build integration |
 | `ddthost/` | DDT host variables and optional entry points; Python-defined host interface |
 | `advection/` | Columnar-chunked physics with constituent registration; column-sliced arrays |
-| `kessler/` | Kessler warm-rain microphysics; OpenACC GPU directives; four drivers: CCPP Fortran cap, hand-written Fortran, C++ BIND(C) (`--bind-c`), and C++ host model (`--explicit-args`) |
+| `kessler/` | Kessler warm-rain microphysics; OpenACC GPU directives; four drivers: CCPP Fortran cap, hand-written Fortran, C++ BIND(C) (`--bind-c`), and C++ host model (`language = c++` in `host_cpp/*.meta`) |
 | `atmospheric_physics/` | Python suite definitions for 9 suites from [ESCOMP/atmospheric_physics](https://github.com/ESCOMP/atmospheric_physics) (CAM-SIMA's scheme library) |
 
 Each example can be driven via the XML frontend, the Python API, or both.
@@ -645,7 +651,7 @@ files. This validates the pipeline at real-world scale: 146 `.meta` files,
 ‡ All four drivers produce identical numerical output: the CCPP Fortran cap
 (`kessler_ccpp`), hand-written Fortran cap (`kessler_hand`), C++ BIND(C) driver
 (`kessler_cxx`, built with `--bind-c`), and C++ host model driver
-(`kessler_cxx_host`, built with `--explicit-args`). Verified by `make check` in
+(`kessler_cxx_host`, built with `language = c++` in `host_cpp/*.meta`). Verified by `make check` in
 `examples/kessler/`.
 
 ---

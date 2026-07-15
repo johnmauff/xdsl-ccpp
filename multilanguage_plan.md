@@ -368,20 +368,11 @@ module tiny_suite_cap
 
 ## Open Design Questions / Future Improvements
 
-### `language = c++` for C++ host models
+### `language = c++` for C++ host models ✅ Implemented
 
-Currently, the C++ host cap is activated entirely by pass flags:
-
-```
-generate-ccpp-cap{bind_c=true explicit_args=true}
-```
-
-There is no corresponding attribute in the host `.meta` files.  This is
-asymmetric with C++ *schemes*, which carry `language = c++` on their
-`[ccpp-table-properties]` block so the metadata is self-describing.
-
-**Proposed improvement:** allow host sub `.meta` files to declare the host
-language:
+Host `.meta` files can now declare `language = c++` in their
+`[ccpp-table-properties]` block, making the metadata self-describing and
+eliminating the need for any extra CLI flags:
 
 ```ini
 [ccpp-table-properties]
@@ -390,11 +381,15 @@ language:
   language = c++
 ```
 
-The `generate-ccpp-cap` pass would read this attribute and automatically
-activate `bind_c=true explicit_args=true` without requiring the caller to
-pass those flags explicitly.  This makes the `.meta` file the single source of
-truth for the host language, consistent with how scheme language is already
-handled.
+Detection happens at two layers:
 
-**Note:** Until this is implemented, `language = c++` in host `.meta` files
-has no effect — the chost path is controlled solely by the pass pipeline flags.
+- **`ccpp_cap.py`** — the `generate-ccpp-cap` pass scans the IR for any
+  `TablePropertiesOp` with `table_type` in `{"host", "module"}` and
+  `language = "c++"`.  When found, it automatically activates the chost cap
+  path without the caller needing to set any extra flags.
+- **`ccpp_dsl.py`** — the `ccpp_xdsl` CLI tool reads the host `.meta` files
+  directly via `_host_lang_cpp()` before invoking the optimizer.  When
+  `language = c++` is detected, `bind_c` is enabled automatically and
+  `generate_cpp_headers` is called, so no `--bind-c` flag is needed.
+
+The `host_cpp/` meta files in the kessler example use this mechanism.

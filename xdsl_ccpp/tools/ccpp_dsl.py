@@ -143,15 +143,6 @@ class ccppMain:
             help="Generate BIND(C) Fortran cap subroutines and matching C++ headers "
                  "(<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.",
         )
-        parser.add_argument(
-            "--explicit-args",
-            action="store_true",
-            default=False,
-            help="Generate an explicit-argument BIND(C) chost cap "
-                 "(<HostName>_ccpp_chost_cap.F90 and <HostName>_ccpp_chost_cap.h) "
-                 "so that a C++ host model can own physics arrays and call Fortran "
-                 "physics without a Fortran host module. Implies --bind-c.",
-        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -428,16 +419,13 @@ class ccppMain:
 
     def _build_pipeline(self) -> str:
         """Build and return the comma-joined pass pipeline string."""
-        explicit_args = self.options_db.get("explicit_args", False)
-        bind_c = self.options_db.get("bind_c", False) or explicit_args or self._host_lang_cpp()
+        bind_c = self.options_db.get("bind_c", False) or self._host_lang_cpp()
         ccpp_cap_pass = "generate-ccpp-cap"
         cap_opts: list[str] = []
         if self.options_db.get("host_name"):
             cap_opts.append(f"host_name={self.options_db['host_name']}")
         if bind_c:
             cap_opts.append("bind_c=true")
-        if explicit_args:
-            cap_opts.append("explicit_args=true")
         if cap_opts:
             ccpp_cap_pass += "{" + " ".join(cap_opts) + "}"
         directive = self.options_db.get("directive")
@@ -596,7 +584,7 @@ class ccppMain:
         ftn_file = self.run_opt(tmp_dir, mlir_file)
         self.split_fortran_output(ftn_file, out_dir)
 
-        if self.options_db.get("bind_c") or self.options_db.get("explicit_args") or self._host_lang_cpp():
+        if self.options_db.get("bind_c") or self._host_lang_cpp():
             self.generate_cpp_headers(tmp_dir, mlir_file, out_dir)
 
         datatable_path = self.options_db.get("emit_datatable")
