@@ -1,0 +1,32 @@
+[ccpp-table-properties]
+  name = tiny_fortran_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = tiny_fortran_scheme_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  type = integer
+  units = count
+  dimensions = ()
+  intent = in
+[ temp ]
+  standard_name = air_temperature
+  type = real
+  kind = kind_phys
+  units = K
+  dimensions = (horizontal_loop_extent)
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  type = character
+  kind = len=512
+  units = none
+  dimensions = ()
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  type = integer
+  units = 1
+  dimensions = ()
+  intent = out

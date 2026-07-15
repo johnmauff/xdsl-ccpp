@@ -544,6 +544,14 @@ std::vector<double> theta(ncol * nz);    // access: theta[col + ncol * lev]
 Kokkos::View<double**, Kokkos::LayoutLeft> theta("theta", ncol, nz);
 ```
 
+#### Known limitations
+
+The current chost implementation has several known constraints — fixed `double`
+precision (no REAL32), no DDT argument support, rank > 2 arrays, GPU memory
+management, and others. See
+[`multilanguage_limitations.md`](multilanguage_limitations.md) for the full list
+with priority ordering and resolution notes.
+
 #### Fortran host → C++ schemes
 
 When a scheme's `.meta` table carries `language = c++`, the generated suite cap

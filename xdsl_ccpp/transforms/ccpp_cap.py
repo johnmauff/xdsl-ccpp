@@ -4,6 +4,7 @@ from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
+    Float32Type,
     IndexType,
     IntegerAttr,
     IntegerType,
@@ -24,6 +25,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ConstituentApiOp,
     HostVarRefOp,
     ModuleVarOp,
+    RealKindType,
     RowMajorConvertOp,
     RowMajorWriteBackOp,
     SetStringOp,
@@ -116,6 +118,23 @@ def _emit_call(append_fn, fn_name: str, call_exprs: list, max_col: int = 80) -> 
     append_fn(cur + ")")
 
 
+def _chost_kind_iso_map(ccpp_mod) -> dict:
+    """Extract kind-name → ISO-constant mapping from ccpp.kinds ops in the ccpp module."""
+    kind_iso: dict = {}
+    for inner in ccpp_mod.body.ops:
+        if not isa(inner, ccpp.KindsOp):
+            continue
+        for kind_op in inner.body.ops:
+            if isa(kind_op, ccpp.KindOp):
+                kind_iso[kind_op.kind_name.data] = kind_op.kind_value.data
+    return kind_iso
+
+
+def _real_width_from_iso(iso_constant: str) -> int:
+    """Return 32 or 64 given an ISO_FORTRAN_ENV constant like 'REAL32'/'REAL64'."""
+    return 32 if iso_constant == "REAL32" else 64
+
+
 def _chost_build_maps(meta_data):
     """Build std→host and local→std name maps from metadata for chost arg classification."""
     std_to_host: dict = {}
@@ -142,7 +161,7 @@ def _chost_build_maps(meta_data):
     return std_to_host, local_to_std, ncol_var, nz_var
 
 
-def _chost_arg_info(hint, mtype, local_to_std, std_to_host):
+def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
     """Return an arg descriptor dict for a single suite cap input argument."""
     bare = _bare(hint) if hint else ""
     std  = local_to_std.get(bare, "")
@@ -158,6 +177,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host):
     is_in_only   = (hint is not None and hint.endswith("__in"))
 
     rank = 0
+    real_width = 64
     is_char = is_int = is_real = False
     if isinstance(mtype, MemRefType):
         elem = mtype.element_type
@@ -168,6 +188,11 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host):
             is_int = True
         else:
             is_real = True
+            if isinstance(elem, Float32Type):
+                real_width = 32
+            elif isinstance(elem, RealKindType) and kind_iso_map:
+                iso = kind_iso_map.get(elem.kind_name.data, "REAL64")
+                real_width = _real_width_from_iso(iso)
             rank = sum(1 for d in mtype.shape if d.data == DYNAMIC_INDEX)
 
     if is_col_start or is_col_end:
@@ -187,7 +212,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host):
         is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
         is_errflg=is_errflg, is_sname=is_sname,
         is_char=is_char, is_int=is_int, is_real=is_real,
-        rank=rank, intent=intent,
+        real_width=real_width, rank=rank, intent=intent,
     )
 
 
@@ -255,12 +280,13 @@ def _chost_cpp_type(ai: dict) -> str:
         return "int"
     if ai["is_int"] and not ai["is_errflg"]:
         return "int"
-    if ai["is_real"] and ai["rank"] == 0:
-        return "double"
-    if ai["is_real"] and ai["intent"] == "in":
-        return "const double*"
     if ai["is_real"]:
-        return "double*"
+        cpp_real = "float" if ai.get("real_width", 64) == 32 else "double"
+        if ai["rank"] == 0:
+            return cpp_real
+        if ai["intent"] == "in":
+            return f"const {cpp_real}*"
+        return f"{cpp_real}*"
     if ai["is_sname"] or ai["is_errmsg"]:
         return "char*"
     if ai["is_errflg"]:
@@ -2959,7 +2985,7 @@ class CCPPCAP(ModulePass):
         )
         cpp_text = self._build_chost_cpp_text(
             camel_name, mod_name, bind_c_fns,
-            meta_data, public_fns or {}, suite_descriptions,
+            meta_data, public_fns or {}, suite_descriptions, ccpp_mod,
         )
 
         return CHostCapOp(ftn_text, cpp_text, mod_name)
@@ -2994,6 +3020,8 @@ class CCPPCAP(ModulePass):
         ncol_var = (std_to_host.get("horizontal_dimension")
                     or std_to_host.get("horizontal_loop_extent") or "ncol")
         nz_var = std_to_host.get("vertical_layer_dimension", "nz")
+
+        kind_iso_map = _chost_kind_iso_map(ccpp_mod)
 
         suite_name = next(iter(suite_descriptions), "")
 
@@ -3040,6 +3068,7 @@ class CCPPCAP(ModulePass):
             is_in_only   = (hint is not None and hint.endswith("__in"))
 
             rank = 0
+            real_width = 64
             is_char = is_int = is_real = False
             if isinstance(mtype, MemRefType):
                 elem = mtype.element_type
@@ -3050,6 +3079,11 @@ class CCPPCAP(ModulePass):
                     is_int = True
                 else:
                     is_real = True
+                    if isinstance(elem, Float32Type):
+                        real_width = 32
+                    elif isinstance(elem, RealKindType) and kind_iso_map:
+                        iso = kind_iso_map.get(elem.kind_name.data, "REAL64")
+                        real_width = _real_width_from_iso(iso)
                     rank = sum(1 for d in mtype.shape if d.data == DYNAMIC_INDEX)
 
             if is_col_start or is_col_end:
@@ -3069,7 +3103,7 @@ class CCPPCAP(ModulePass):
                 is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
                 is_errflg=is_errflg, is_sname=is_sname,
                 is_char=is_char, is_int=is_int, is_real=is_real,
-                rank=rank, intent=intent,
+                real_width=real_width, rank=rank, intent=intent,
             )
 
         def canonical_order(visible):
@@ -3087,14 +3121,16 @@ class CCPPCAP(ModulePass):
             host = ai["host"]
             if ai["is_ncol"] or ai["is_nz"] or (ai["is_int"] and not ai["is_errflg"]):
                 return f"    integer(c_int), value, intent(in) :: {host}"
-            if ai["is_real"] and ai["rank"] == 0:
-                return f"    real(c_double), value, intent(in) :: {host}"
-            if ai["is_real"] and ai["rank"] == 2:
-                return (f"    real(c_double), target,"
-                        f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var})")
-            if ai["is_real"] and ai["rank"] == 1:
-                return (f"    real(c_double), target,"
-                        f" intent({ai['intent']}) :: {host}({ncol_var})")
+            if ai["is_real"]:
+                c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
+                if ai["rank"] == 0:
+                    return f"    real({c_real}), value, intent(in) :: {host}"
+                if ai["rank"] == 2:
+                    return (f"    real({c_real}), target,"
+                            f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var})")
+                if ai["rank"] == 1:
+                    return (f"    real({c_real}), target,"
+                            f" intent({ai['intent']}) :: {host}({ncol_var})")
             if ai["is_sname"]:
                 return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
             if ai["is_errmsg"]:
@@ -3290,10 +3326,12 @@ class CCPPCAP(ModulePass):
 
     def _build_chost_cpp_text(
         self, camel_name, mod_name, bind_c_fns,
-        meta_data, public_fns, suite_descriptions,
+        meta_data, public_fns, suite_descriptions, ccpp_mod=None,
     ):
         """Generate the complete C++ header text for the chost cap."""
         std_to_host, local_to_std, ncol_var, _nz_var = _chost_build_maps(meta_data)
+
+        kind_iso_map = _chost_kind_iso_map(ccpp_mod) if ccpp_mod is not None else {}
 
         suite_name = next(iter(suite_descriptions), "")
 
@@ -3348,7 +3386,7 @@ class CCPPCAP(ModulePass):
 
             _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
 
-            infos = [_chost_arg_info(h, t, local_to_std, std_to_host)
+            infos = [_chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
                      for h, t in zip(pfn_hints, pfn_types)]
             out_infos = _chost_out_infos(pfn_out_types, std_to_host)
 
