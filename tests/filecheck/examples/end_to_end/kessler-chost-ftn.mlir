@@ -1,9 +1,9 @@
 // Test explicit_args mode of generate-ccpp-cap for the kessler example.
 // Verifies that the generated chost cap module:
 //   - uses iso_c_binding and delegates to the suite cap
-//   - strips col_start/col_end and injects ncol for the run subroutine
+//   - injects ncol and passes col_start/col_end through for the run subroutine
 //   - emits bind(C) subroutines with correct Fortran types for every lifecycle
-//   - substitutes literal 1 for col_start and ncol for col_end in suite cap calls
+//   - passes col_start and col_end directly in suite cap calls
 //   - converts Fortran character buffers to C strings via copy loops
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/kessler_suite.xml --scheme-files examples/kessler/kessler.meta,examples/kessler/kessler_update.meta --host-files examples/kessler/kessler_host_mod.meta,examples/kessler/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap{bind_c=true explicit_args=true},generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
@@ -41,11 +41,13 @@
 // CHECK:           character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK:           integer(c_int),               intent(out) :: errflg
 
-// Run: col_start/col_end stripped; ncol injected; intent(in) arrays use target intent(in).
+// Run: ncol injected; col_start and col_end passed through as value ints.
 // CHECK-LABEL:   subroutine Kessler_chost_physics_run(
 // CHECK:             bind(C, name='Kessler_chost_physics_run')
 // CHECK:           integer(c_int), value, intent(in) :: ncol
 // CHECK:           integer(c_int), value, intent(in) :: nz
+// CHECK:           integer(c_int), value, intent(in) :: col_start
+// CHECK:           integer(c_int), value, intent(in) :: col_end
 // CHECK:           real(c_double), value, intent(in) :: dt
 // CHECK:           integer(c_int), value, intent(in) :: lyr_surf
 // CHECK:           integer(c_int), value, intent(in) :: lyr_toa
@@ -59,9 +61,9 @@
 // CHECK:           character(len=64)  :: scheme_name_f
 // CHECK:           character(len=512) :: errmsg_f
 
-// Run call: col_start replaced by 1, col_end replaced by ncol; dt cast with real().
+// Run call: col_start and col_end passed through; dt cast with real().
 // CHECK:           call kessler_suite_suite_physics(
-// CHECK:               1, ncol, nz, real(dt, kind_phys), lyr_surf, lyr_toa,
+// CHECK:               col_start, col_end, nz, real(dt, kind_phys), lyr_surf, lyr_toa,
 // CHECK:               scheme_name_f, errmsg_f, errflg)
 
 // C-string copy loop for scheme_name appears before errmsg copy.

@@ -149,18 +149,22 @@ ergonomics.  The wrapper would be pure C++ with no additional Fortran code.
 
 ---
 
-## 8. Column Chunking
+## 8. ~~Column Chunking~~ *(Resolved)*
 
-The chost cap passes all `ncol` columns in a single call.  A C++ host that
-wants to process columns in sub-chunks (e.g. GPU thread blocks, cache tiles) can
-pass a smaller `ncol` and a base pointer into a larger allocation — but only if
-the underlying buffer is contiguous for that slice.  There is no stride argument,
-and non-contiguous sub-views are not supported.
+The chost `run` subroutine now accepts `col_start` and `col_end` as explicit
+`integer(c_int), value, intent(in)` parameters (mirroring the Fortran driver
+interface).  The arrays remain dimensioned by `ncol` (the full column extent of
+the allocation), and the Fortran wrapper passes `col_start` and `col_end`
+directly to the suite cap so the scheme sees only the active column range.
 
-**Potential resolution:** Accept an optional leading-dimension argument
-(`ldim`) to allow strided column slices.  This would require changes to both the
-Fortran wrapper (use explicit leading dimension in array declarations) and the
-C++ header.
+```fortran
+! C++ caller controls the active chunk:
+call Kessler_chost_physics_run(ncol_full, col_start, col_end, nz, dt, ..., theta, ...)
+```
+
+Because array columns are non-contiguous in column-major memory, the C++ caller
+must NOT pre-extract a chunk by pointer arithmetic; passing `col_start`/`col_end`
+is the correct approach.
 
 ---
 
@@ -175,4 +179,4 @@ C++ header.
 | ~~5~~ | ~~Rank > 2 arrays~~ | *(Resolved)* | *(Done)* |
 | 6 | Thread safety | Only for concurrent callers | Low–Medium |
 | 7 | No C++ ergonomics | Usability only | Medium |
-| 8 | Column chunking | Usability / performance | Medium |
+| ~~8~~ | ~~Column chunking~~ | *(Resolved)* | *(Done)* |

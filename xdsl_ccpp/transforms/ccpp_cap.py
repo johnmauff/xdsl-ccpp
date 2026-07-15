@@ -3235,10 +3235,8 @@ class CCPPCAP(ModulePass):
                         rank=0, intent="out",
                     ))
 
-            # Visible chost args: input args (minus col_start/col_end) + outputs
-            visible = [ai for ai in infos
-                       if not ai["is_col_start"] and not ai["is_col_end"]]
-            visible = visible + out_infos
+            # Visible chost args: all input args (including col_start/col_end) + outputs
+            visible = list(infos) + out_infos
 
             # When col_end is present but ncol is not, inject ncol as first arg
             has_col_end    = any(ai["is_col_end"] for ai in infos)
@@ -3290,13 +3288,11 @@ class CCPPCAP(ModulePass):
             for sfn_i in sfns:
                 if sfn_i not in public_fns:
                     continue
-                # Input args (suite cap input order, col_start/col_end as literals)
+                # Input args (suite cap input order, col_start/col_end passed through)
                 call_exprs = []
                 for ai in infos:
-                    if ai["is_col_start"]:
-                        call_exprs.append("1")
-                    elif ai["is_col_end"]:
-                        call_exprs.append(ncol_var)
+                    if ai["is_col_start"] or ai["is_col_end"]:
+                        call_exprs.append(ai["host"])
                     elif ai["is_real"] and ai["rank"] == 0:
                         call_exprs.append(f"real({ai['host']}, kind_phys)")
                     else:
@@ -3394,9 +3390,7 @@ class CCPPCAP(ModulePass):
                      for h, t in zip(pfn_hints, pfn_types)]
             out_infos = _chost_out_infos(pfn_out_types, std_to_host)
 
-            visible = [ai for ai in infos
-                       if not ai["is_col_start"] and not ai["is_col_end"]]
-            visible = visible + out_infos
+            visible = list(infos) + out_infos
 
             has_col_end     = any(ai["is_col_end"]  for ai in infos)
             ncol_in_visible = any(ai["is_ncol"] for ai in visible)

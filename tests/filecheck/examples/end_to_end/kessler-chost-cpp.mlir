@@ -47,11 +47,13 @@
 // CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg
 
-// Run: ncol and nz first; scalars by value; intent(in) arrays as const double*;
-// inout arrays as double*; scheme_name before errmsg before errflg.
+// Run: ncol and nz first; col_start and col_end passed through; scalars by value;
+// intent(in) arrays as const double*; inout arrays as double*; scheme_name before errmsg before errflg.
 // CHECK-LABEL: void Kessler_chost_physics_run(
 // CHECK:           int              ncol,
 // CHECK-NEXT:      int              nz,
+// CHECK-NEXT:      int              col_start,
+// CHECK-NEXT:      int              col_end,
 // CHECK-NEXT:      double           dt,
 // CHECK-NEXT:      int              lyr_surf,
 // CHECK-NEXT:      int              lyr_toa,
