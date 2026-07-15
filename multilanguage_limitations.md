@@ -95,16 +95,21 @@ layout — both are non-trivial.
 
 ---
 
-## 5. Rank > 2 Arrays
+## 5. ~~Rank > 2 Arrays~~ *(Resolved)*
 
-The dimension annotation logic assumes physics arrays are either 1-D `(ncol)` or
-2-D `(ncol, nz)`.  Arrays of rank 3 or higher (e.g. a spectral coefficient array
-`(ncol, nz, nbands)`) are not explicitly handled and will likely receive
-incorrect dimension declarations or fall through to a `void*` type.
+The chost cap now handles rank 3 and higher arrays.  The Fortran wrapper declares
+them with the first two dimensions named (`ncol`, `nz`) and an assumed-size last
+dimension (`*`), e.g.:
 
-**Potential resolution:** Generalise the dimension-annotation pass to count
-dynamic dimensions from the `MemRefType` shape and emit the appropriate
-multi-dimensional pointer or flat-pointer with a comment.
+```fortran
+real(c_double), target, intent(inout) :: flux(ncol, nz, *)
+```
+
+The C++ header always emits a flat pointer (`double*`) regardless of rank, which
+is correct — C has no multi-dimensional pointer type for BIND(C) calls.  The
+third-dimension size integer (e.g. `nbands`) is automatically included in the
+chost signature as a `integer(c_int), value, intent(in)` argument so the caller
+can communicate the size.
 
 ---
 
@@ -167,7 +172,7 @@ C++ header.
 | 4 | No DDT support | Yes, for DDT-heavy schemes | High |
 | 2 | GPU memory management | Yes, for GPU builds | Medium–High |
 | 1 | Column-major layout | Subtle bugs if overlooked | Medium |
-| 5 | Rank > 2 arrays | Yes, for spectral/band schemes | Medium |
+| ~~5~~ | ~~Rank > 2 arrays~~ | *(Resolved)* | *(Done)* |
 | 6 | Thread safety | Only for concurrent callers | Low–Medium |
 | 7 | No C++ ergonomics | Usability only | Medium |
 | 8 | Column chunking | Usability / performance | Medium |

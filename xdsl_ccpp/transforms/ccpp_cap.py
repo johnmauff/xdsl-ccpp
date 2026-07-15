@@ -3125,12 +3125,16 @@ class CCPPCAP(ModulePass):
                 c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
                 if ai["rank"] == 0:
                     return f"    real({c_real}), value, intent(in) :: {host}"
-                if ai["rank"] == 2:
-                    return (f"    real({c_real}), target,"
-                            f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var})")
                 if ai["rank"] == 1:
                     return (f"    real({c_real}), target,"
                             f" intent({ai['intent']}) :: {host}({ncol_var})")
+                if ai["rank"] == 2:
+                    return (f"    real({c_real}), target,"
+                            f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var})")
+                # rank >= 3: ncol and nz are known; higher dimensions are
+                # assumed-size (*) since we have no variable name for them.
+                return (f"    real({c_real}), target,"
+                        f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var}, *)")
             if ai["is_sname"]:
                 return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
             if ai["is_errmsg"]:

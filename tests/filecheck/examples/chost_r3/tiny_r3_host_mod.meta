@@ -1,0 +1,26 @@
+[ccpp-table-properties]
+  name = tiny_r3_host_mod
+  type = module
+[ccpp-arg-table]
+  name = tiny_r3_host_mod
+  type = module
+[ ncol ]
+  standard_name = horizontal_dimension
+  units = count
+  type = integer
+  dimensions = ()
+[ nz ]
+  standard_name = vertical_layer_dimension
+  units = count
+  type = integer
+  dimensions = ()
+[ nbands ]
+  standard_name = number_of_spectral_bands
+  units = count
+  type = integer
+  dimensions = ()
+[ flux ]
+  standard_name = spectral_flux
+  units = W m-2
+  type = real | kind = kind_phys
+  dimensions = (horizontal_dimension, vertical_layer_dimension, number_of_spectral_bands)

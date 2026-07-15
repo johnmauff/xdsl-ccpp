@@ -1,0 +1,44 @@
+[ccpp-table-properties]
+  name = tiny_r3_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = tiny_r3_scheme_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  type = integer
+  units = count
+  dimensions = ()
+  intent = in
+[ nz ]
+  standard_name = vertical_layer_dimension
+  type = integer
+  units = count
+  dimensions = ()
+  intent = in
+[ nbands ]
+  standard_name = number_of_spectral_bands
+  type = integer
+  units = count
+  dimensions = ()
+  intent = in
+[ flux ]
+  standard_name = spectral_flux
+  type = real
+  kind = kind_phys
+  units = W m-2
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension, number_of_spectral_bands)
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  type = character
+  kind = len=512
+  units = none
+  dimensions = ()
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  type = integer
+  units = 1
+  dimensions = ()
+  intent = out

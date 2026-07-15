@@ -1,0 +1,26 @@
+[ccpp-table-properties]
+  name = tiny_r3_host_sub
+  type = host
+[ccpp-arg-table]
+  name = tiny_r3_host_sub
+  type = host
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  type = integer
+  units = count
+  dimensions = ()
+[ col_end ]
+  standard_name = horizontal_loop_end
+  type = integer
+  units = count
+  dimensions = ()
+[ errmsg ]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character | kind = len=512
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
