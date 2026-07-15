@@ -108,8 +108,8 @@
 // CHECK-NEXT:      integer, intent(in) :: lev
 // CHECK-NEXT:      integer, intent(in) :: ilev
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: timestep
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: temp_level(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: temp_layer(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: temp_level(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: temp_layer(:, :)
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg

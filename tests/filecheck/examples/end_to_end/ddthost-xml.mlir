@@ -42,8 +42,8 @@
 // CHECK:           errflg, ntimes)
 // CHECK-NEXT:      integer, intent(in) :: nbox
 // CHECK-NEXT:      type(ccpp_info_t), intent(in) :: ccpp_info
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: o3(:)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: hno3(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: o3(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: hno3(:)
 // CHECK-NEXT:      integer, allocatable, intent(inout) :: model_times(:)
 // CHECK-NEXT:      type(vmr_type), intent(out) :: vmr
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -75,7 +75,7 @@
 // CHECK-NEXT:    end subroutine ddt_suite_suite_initialize
 // CHECK-LABEL:   subroutine ddt_suite_suite_finalize(ntimes, model_times, errmsg, errflg)
 // CHECK:           integer, intent(in) :: ntimes
-// CHECK-NEXT:      integer, intent(in) :: model_times(:)
+// CHECK-NEXT:      integer, target, intent(in) :: model_times(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
@@ -122,10 +122,10 @@
 // CHECK-LABEL:   subroutine ddt_suite_suite_data_prep(cols, cole, O3, HNO3, vmr, psurf, errmsg, errflg)
 // CHECK:           integer, intent(in) :: cols
 // CHECK-NEXT:      integer, intent(in) :: cole
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: O3(:)
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: HNO3(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(in) :: O3(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(in) :: HNO3(:)
 // CHECK-NEXT:      type(vmr_type), intent(inout) :: vmr
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: psurf(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(in) :: psurf(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0

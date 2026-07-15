@@ -70,8 +70,8 @@
 // CHECK:           const_inds, tfreeze, const_index, errmsg, errflg, tcld)
 // CHECK-NEXT:      character(len=512), intent(in) :: const_std_name
 // CHECK-NEXT:      integer, intent(in) :: num_consts
-// CHECK-NEXT:      character(len=512), intent(in) :: test_stdname_array(:)
-// CHECK-NEXT:      integer, intent(inout) :: const_inds(:)
+// CHECK-NEXT:      character(len=512), target, intent(in) :: test_stdname_array(:)
+// CHECK-NEXT:      integer, target, intent(inout) :: const_inds(:)
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tfreeze
 // CHECK-NEXT:      integer, intent(out) :: const_index
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -147,18 +147,18 @@
 // CHECK-NEXT:      const_index, errmsg, errflg)
 // CHECK-NEXT:      character(len=512), intent(in) :: const_std_name
 // CHECK-NEXT:      integer, intent(in) :: num_consts
-// CHECK-NEXT:      character(len=512), intent(in) :: test_stdname_array(:)
-// CHECK-NEXT:      integer, intent(inout) :: const_inds(:)
+// CHECK-NEXT:      character(len=512), target, intent(in) :: test_stdname_array(:)
+// CHECK-NEXT:      integer, target, intent(inout) :: const_inds(:)
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: timestep
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tcld
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: temp(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: qv(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: ps(:)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: cld_liq_tend(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: const_tend(:, :, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: const(:, :, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: temp(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: qv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(in) :: ps(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: cld_liq_tend(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: const_tend(:, :, :)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: const(:, :, :)
 // CHECK-NEXT:      integer, intent(out) :: const_index
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -310,8 +310,8 @@
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      character(len=512), intent(in) :: const_std_name
 // CHECK-NEXT:      integer, intent(in) :: num_consts
-// CHECK-NEXT:      character(len=512), intent(in) :: test_stdname_array(:)
-// CHECK-NEXT:      integer, intent(inout) :: const_inds(:)
+// CHECK-NEXT:      character(len=512), target, intent(in) :: test_stdname_array(:)
+// CHECK-NEXT:      integer, target, intent(inout) :: const_inds(:)
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: timestep

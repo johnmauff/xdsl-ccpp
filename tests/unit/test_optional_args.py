@@ -111,11 +111,11 @@ class TestSuiteCapDeclaration:
 
     def test_optional_keyword_on_qv_declaration(self, capgen_fortran):
         """qv is declared with the OPTIONAL attribute in the suite cap."""
-        assert "optional, intent(inout) :: qv" in capgen_fortran
+        assert "optional, target, intent(inout) :: qv" in capgen_fortran
 
     def test_qv_is_array(self, capgen_fortran):
         """qv is declared as an assumed-shape array (1D slice of the column)."""
-        assert "optional, intent(inout) :: qv(:)" in capgen_fortran
+        assert "optional, target, intent(inout) :: qv(:)" in capgen_fortran
 
     def test_non_optional_args_have_no_optional(self, capgen_fortran):
         """ps (a non-optional arg) does not get the optional keyword."""
@@ -363,7 +363,7 @@ class TestPromotedOptionalArgs:
 
     def test_suite_cap_declares_qv_optional_2d(self, promoted_opt_fortran):
         """The suite cap declares qv as 2D (host rank) with optional attribute."""
-        assert "optional, intent(inout) :: qv(:, :)" in promoted_opt_fortran
+        assert "optional, target, intent(inout) :: qv(:, :)" in promoted_opt_fortran
 
     def test_promotion_loop_present(self, promoted_opt_fortran):
         """A do-loop over the vertical dimension is emitted."""

@@ -63,12 +63,12 @@
 // Fields appear in order of first use across lifecycles (initialize → run).
 // All pointer fields are non-const (host owns and initialises the memory).
 // CHECK-LABEL: struct State {
-// CHECK:     double           lv;
-// CHECK:     int              ncol;
-// CHECK:     double           dt;
-// CHECK:     double*          cpair;
-// CHECK:     double*          theta;
-// CHECK:     double*          precl;
+// CHECK:     double           lv = 0;
+// CHECK:     int              ncol = 0;
+// CHECK:     double*          cpair = nullptr;
+// CHECK:     double           dt = 0;
+// CHECK:     double*          theta = nullptr;
+// CHECK:     double*          precl = nullptr;
 // Constructor initialises dimension scalars; remaining fields default to 0/nullptr.
 // CHECK:     State(int ncol = 0, int nz = 0)
 // CHECK:         : ncol(ncol), nz(nz) {}
