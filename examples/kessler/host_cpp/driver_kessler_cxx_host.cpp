@@ -67,7 +67,7 @@ int main() {
 
     double elapsed_s = std::chrono::duration<double>(t_end - t_start).count();
 
-    Kessler_chost_print_results(NCOL, NZ, "kessler", elapsed_s,
+    Kessler_chost_print_results(NCOL, NZ, "KESSLER", elapsed_s,
         state.theta, state.qv, state.qc, state.qr,
         state.precl, state.relhum,
         state.temp_prev, state.ttend_t, state.st_energy);
