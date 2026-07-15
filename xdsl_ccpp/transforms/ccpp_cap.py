@@ -59,6 +59,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_SCHEME_NAME_LEN,
+    CCPP_VERT_DIM_STD_NAME,
 )
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
@@ -165,7 +166,7 @@ def _chost_build_maps(meta_data):
 
     ncol_var = (std_to_host.get(CCPP_HORIZ_DIM_STD_NAME)
                 or std_to_host.get(CCPP_LOOP_EXTENT_STD_NAME) or "ncol")
-    nz_var = std_to_host.get("vertical_layer_dimension", "nz")
+    nz_var = std_to_host.get(CCPP_VERT_DIM_STD_NAME, "nz")
     return std_to_host, local_to_std, ncol_var, nz_var
 
 
@@ -178,7 +179,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
     is_col_start = (std == CCPP_LOOP_BEGIN_STD_NAME)
     is_col_end   = (std == CCPP_LOOP_END_STD_NAME)
     is_ncol      = std in {CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME}
-    is_nz        = std in {"vertical_layer_dimension"}
+    is_nz        = std in {CCPP_VERT_DIM_STD_NAME}
     is_errmsg    = (std == "ccpp_error_message")
     is_errflg    = (std == "ccpp_error_code")
     is_sname     = (std == "scheme_name" or bare == "scheme_name")
@@ -187,6 +188,13 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
     rank = 0
     real_width = 64
     is_char = is_int = is_real = False
+    if isinstance(mtype, DerivedType):
+        raise ValueError(
+            f"chost cap: argument '{bare}' (standard_name='{std}') has derived "
+            f"type '{mtype.type_name.data}' — DDT arguments are not supported in "
+            f"the C-interoperable chost interface. Flatten the DDT into individual "
+            f"scalar/array members, or see multilanguage_limitations.md for options."
+        )
     if isinstance(mtype, MemRefType):
         elem = mtype.element_type
         if isinstance(elem, IntegerType) and elem.width.data == 8:
@@ -3111,7 +3119,7 @@ class CCPPCAP(ModulePass):
 
         ncol_var = (std_to_host.get(CCPP_HORIZ_DIM_STD_NAME)
                     or std_to_host.get(CCPP_LOOP_EXTENT_STD_NAME) or "ncol")
-        nz_var = std_to_host.get("vertical_layer_dimension", "nz")
+        nz_var = std_to_host.get(CCPP_VERT_DIM_STD_NAME, "nz")
 
         kind_iso_map = _chost_kind_iso_map(ccpp_mod)
 
@@ -3587,7 +3595,7 @@ class CCPPCAP(ModulePass):
         _DIM_TO_ALLOC = {
             CCPP_LOOP_EXTENT_STD_NAME: "ncols",
             CCPP_HORIZ_DIM_STD_NAME: "ncols",
-            "vertical_layer_dimension": "pver",
+            CCPP_VERT_DIM_STD_NAME: "pver",
             "number_of_ccpp_constituents": "lc_num",
         }
         scratch_var_list: list = []

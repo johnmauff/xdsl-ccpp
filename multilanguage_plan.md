@@ -264,7 +264,7 @@ that the BIND(C) interface and any RESHAPE logic produce identical results.
 | C++ header output | FileCheck | `tests/filecheck/examples/end_to_end/kessler-cpp-header.mlir` | ✅ Done |
 | `array_layout` round-trip through IR | FileCheck | `tests/filecheck/examples/frontend/array-layout-py.mlir`, `tests/filecheck/examples/completed_ir/array-layout-py.mlir` | ✅ Done |
 | RESHAPE generation for row_major | FileCheck | `tests/filecheck/examples/end_to_end/array-layout-reshape.mlir` | ✅ Done |
-| Numerical parity | Makefile / CTest | `examples/kessler/` | ❌ Not started |
+| Numerical parity | Makefile / CTest | `examples/kessler/` (`make check`) | ✅ Done |
 
 ---
 

@@ -124,6 +124,7 @@ CCPP_LOOP_EXTENT_STD_NAME = "horizontal_loop_extent"   # column count
 CCPP_LOOP_BEGIN_STD_NAME  = "horizontal_loop_begin"    # first column index
 CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
+CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
 
 # ── Unit conversion table ────────────────────────────────────────────────────
 # Maps (scheme_units, host_units) → (to_scheme_expr, to_host_expr).
