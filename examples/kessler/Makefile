@@ -1,30 +1,36 @@
 # Kessler microphysics example Makefile
 #
+# Directory layout:
+#   scheme/    — Fortran scheme source and metadata
+#   host_ftn/  — Fortran host model, standard CCPP driver, and C++ BIND(C) driver
+#   host_cpp/  — C++ host model driver (chost cap; C++ owns all arrays)
+#   shared/    — Utilities shared across drivers (RNG, init data, print)
+#   bindc/     — Generated BIND(C) caps and C++ headers (regenerate with make gen-*)
+#
 # Build targets:
-#   make [all]     — build all three drivers
+#   make [all]     — build all four drivers
 #   make ccpp      — CCPP-generated Fortran driver
 #   make hand      — hand-written Fortran driver
-#   make cxx       — plain C++ driver (BIND(C) caps)
+#   make cxx       — plain C++ driver (BIND(C) caps, data in Fortran host_mod)
+#   make cxx_host  — C++ host-model driver (chost cap, C++ owns all arrays)
 #
 # Run targets:
-#   make run       — build and run all three (for easy comparison)
-#   make run-ccpp  — build and run the CCPP Fortran driver
-#   make run-hand  — build and run the hand-written driver
-#   make run-cxx   — build and run the C++ driver
+#   make run          — build and run all four (for easy comparison)
+#   make run-ccpp     — build and run the CCPP Fortran driver
+#   make run-hand     — build and run the hand-written Fortran driver
+#   make run-cxx      — build and run the C++ BIND(C) driver
+#   make run-cxx-host — build and run the C++ host-model driver
 #
 # Numerical parity:
-#   make check     — run all three drivers and verify bit-for-bit identical output
+#   make check     — run all four drivers and verify bit-for-bit identical output
 #
 # GPU (OpenMP target offload):
 #   make ARCH=GPU [FC=nvfortran]
 #
 # Code generation (requires xdsl-ccpp):
 #   make caps      — regenerate standard Fortran caps into examples/kessler/
-#   make gen-bindc — regenerate plain BIND(C) caps + C++ header into examples/kessler/bindc/
-#   make gen-chost — regenerate chost BIND(C) caps + C++ header into examples/kessler/bindc/
-#
-# Utility:
-#   make clean     — remove build artefacts and generated caps
+#   make gen-bindc — regenerate plain BIND(C) caps + C++ header into bindc/
+#   make gen-chost — regenerate chost BIND(C) caps + C++ headers into bindc/
 
 # ── Compilers & flags ─────────────────────────────────────────────────────────
 FC   ?= gfortran
@@ -75,6 +81,10 @@ CCPP_XDSL ?= ccpp_xdsl
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DIR          = examples/kessler
+SCHEME       = $(DIR)/scheme
+HOST_FTN     = $(DIR)/host_ftn
+HOST_CPP     = $(DIR)/host_cpp
+SHARED       = $(DIR)/shared
 BUILD        = $(DIR)/build
 CXX_OBJ      = $(BUILD)/cxx
 CXX_HOST_OBJ = $(BUILD)/cxx_host
@@ -84,15 +94,29 @@ GEN_KINDS     = $(DIR)/ccpp_kinds.F90
 GEN_SUITE_CAP = $(DIR)/kessler_suite_cap.F90
 GEN_CCPP_CAP  = $(DIR)/Kessler_ccpp_cap.F90
 
-CAPS_SUITE   = $(DIR)/kessler_suite.xml
-CAPS_SCHEMES = $(DIR)/kessler.meta,$(DIR)/kessler_update.meta
-CAPS_HOSTS   = $(DIR)/kessler_host_mod.meta,$(DIR)/kessler_host_sub.meta
+CAPS_SUITE   = $(SCHEME)/kessler_suite.xml
+CAPS_SCHEMES = $(SCHEME)/kessler.meta,$(SCHEME)/kessler_update.meta
+
+# Fortran host meta files — used by caps and gen-bindc targets
+CAPS_HOSTS     = $(HOST_FTN)/kessler_host_mod.meta,$(HOST_FTN)/kessler_host_sub.meta
+# C++ host meta files (carry language = c++) — used by gen-chost target
+CAPS_HOSTS_CPP = $(HOST_CPP)/kessler_host_mod.meta,$(HOST_CPP)/kessler_host_sub.meta
+
+# Scheme prerequisites shared by all cap generation targets
+CAPS_SCHEME_PREREQS = \
+    $(SCHEME)/kessler_suite.xml \
+    $(SCHEME)/kessler.meta \
+    $(SCHEME)/kessler_update.meta
+
 CAPS_PREREQS = \
-    $(DIR)/kessler_suite.xml \
-    $(DIR)/kessler.meta \
-    $(DIR)/kessler_update.meta \
-    $(DIR)/kessler_host_mod.meta \
-    $(DIR)/kessler_host_sub.meta
+    $(CAPS_SCHEME_PREREQS) \
+    $(HOST_FTN)/kessler_host_mod.meta \
+    $(HOST_FTN)/kessler_host_sub.meta
+
+CAPS_PREREQS_CPP = \
+    $(CAPS_SCHEME_PREREQS) \
+    $(HOST_CPP)/kessler_host_mod.meta \
+    $(HOST_CPP)/kessler_host_sub.meta
 
 # ── Generated caps — BIND(C) (make gen-bindc) ────────────────────────────────
 BINDC_SRC   = $(DIR)/bindc
@@ -104,19 +128,19 @@ BINDC_HDR   = $(BINDC_SRC)/Kessler_ccpp_cap.h
 # ── Source lists (modules before their users) ─────────────────────────────────
 CCPP_SRCS = \
   $(GEN_KINDS) \
-  $(DIR)/kessler_host_mod.F90 \
-  $(DIR)/kessler.F90 \
-  $(DIR)/kessler_update.F90 \
+  $(HOST_FTN)/kessler_host_mod.F90 \
+  $(SCHEME)/kessler.F90 \
+  $(SCHEME)/kessler_update.F90 \
   $(GEN_SUITE_CAP) \
   $(GEN_CCPP_CAP) \
-  $(DIR)/driver_kessler_ccpp.F90
+  $(HOST_FTN)/driver_kessler_ccpp.F90
 
 HAND_SRCS = \
   $(GEN_KINDS) \
-  $(DIR)/kessler_host_mod.F90 \
-  $(DIR)/kessler.F90 \
-  $(DIR)/kessler_update.F90 \
-  $(DIR)/driver_kessler_old.F90
+  $(HOST_FTN)/kessler_host_mod.F90 \
+  $(SCHEME)/kessler.F90 \
+  $(SCHEME)/kessler_update.F90 \
+  $(HOST_FTN)/driver_kessler_old.F90
 
 # ── Executables ───────────────────────────────────────────────────────────────
 EXE_CCPP     = $(BUILD)/kessler_ccpp
@@ -139,7 +163,8 @@ CXX_OBJS = \
   $(CXX_OBJ)/driver_kessler_cpp.o
 
 CHOST_F90 = $(BINDC_SRC)/Kessler_ccpp_chost_cap.F90
-CHOST_HDR = $(DIR)/Kessler_ccpp_chost_cap.h
+CHOST_HDR = $(BINDC_SRC)/Kessler_ccpp_chost_cap.h
+CHOST_HPP = $(BINDC_SRC)/Kessler_chost.hpp
 
 CXX_HOST_OBJS = \
   $(CXX_HOST_OBJ)/ccpp_kinds.o \
@@ -198,15 +223,23 @@ check: ccpp hand cxx cxx_host
 $(BUILD) $(CXX_OBJ) $(CXX_HOST_OBJ):
 	mkdir -p $@
 
-# ── Fortran compilation (shared by ccpp and hand) ─────────────────────────────
+# ── Fortran compilation — standard build (ccpp and hand) ─────────────────────
+# Generated caps land in $(DIR)/; scheme sources in $(SCHEME)/;
+# host Fortran sources in $(HOST_FTN)/.
 $(BUILD)/%.o: $(DIR)/%.F90 | $(BUILD)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD) -I $(BUILD)
 
+$(BUILD)/%.o: $(SCHEME)/%.F90 | $(BUILD)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD) -I $(BUILD)
+
+$(BUILD)/%.o: $(HOST_FTN)/%.F90 | $(BUILD)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD) -I $(BUILD)
+
 # ── C compilation ─────────────────────────────────────────────────────────────
-$(BUILD)/%.o: $(DIR)/%.c | $(BUILD)
+$(BUILD)/%.o: $(SHARED)/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(CXX_OBJ)/%.o: $(DIR)/%.c | $(CXX_OBJ)
+$(CXX_OBJ)/%.o: $(SHARED)/%.c | $(CXX_OBJ)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # ── Link: Fortran drivers ─────────────────────────────────────────────────────
@@ -222,15 +255,15 @@ $(EXE_HAND): $(HAND_OBJS)
 $(CXX_OBJ)/ccpp_kinds.o: $(BINDC_KINDS) | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ)
 
-$(CXX_OBJ)/kessler_host_mod.o: $(DIR)/kessler_host_mod.F90 \
+$(CXX_OBJ)/kessler_host_mod.o: $(HOST_FTN)/kessler_host_mod.F90 \
     $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
-$(CXX_OBJ)/kessler.o: $(DIR)/kessler.F90 \
+$(CXX_OBJ)/kessler.o: $(SCHEME)/kessler.F90 \
     $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
-$(CXX_OBJ)/kessler_update.o: $(DIR)/kessler_update.F90 \
+$(CXX_OBJ)/kessler_update.o: $(SCHEME)/kessler_update.F90 \
     $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
@@ -242,11 +275,11 @@ $(CXX_OBJ)/Kessler_ccpp_cap.o: $(BINDC_CAP) \
     $(CXX_OBJ)/kessler_suite_cap.o $(CXX_OBJ)/kessler_host_mod.o | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
-$(CXX_OBJ)/kessler_host_init_c.o: $(DIR)/kessler_host_init_c.F90 \
+$(CXX_OBJ)/kessler_host_init_c.o: $(HOST_FTN)/kessler_host_init_c.F90 \
     $(CXX_OBJ)/kessler_host_mod.o $(CXX_OBJ)/ccpp_kinds.o | $(CXX_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_OBJ) -I $(CXX_OBJ)
 
-$(CXX_OBJ)/driver_kessler_cpp.o: $(DIR)/driver_kessler_cpp.cpp $(BINDC_HDR)
+$(CXX_OBJ)/driver_kessler_cpp.o: $(HOST_FTN)/driver_kessler_cpp.cpp $(BINDC_HDR)
 	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
 
 $(EXE_CXX): $(CXX_OBJS)
@@ -259,11 +292,11 @@ $(EXE_CXX): $(CXX_OBJS)
 $(CXX_HOST_OBJ)/ccpp_kinds.o: $(BINDC_KINDS) | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/kessler.o: $(DIR)/kessler.F90 \
+$(CXX_HOST_OBJ)/kessler.o: $(SCHEME)/kessler.F90 \
     $(CXX_HOST_OBJ)/ccpp_kinds.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/kessler_update.o: $(DIR)/kessler_update.F90 \
+$(CXX_HOST_OBJ)/kessler_update.o: $(SCHEME)/kessler_update.F90 \
     $(CXX_HOST_OBJ)/ccpp_kinds.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
@@ -275,12 +308,13 @@ $(CXX_HOST_OBJ)/Kessler_ccpp_chost_cap.o: $(CHOST_F90) \
     $(CXX_HOST_OBJ)/kessler_suite_cap.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/kessler_chost_print.o: $(DIR)/kessler_chost_print.F90 \
+$(CXX_HOST_OBJ)/kessler_chost_print.o: $(HOST_CPP)/kessler_chost_print.F90 \
     $(CXX_HOST_OBJ)/ccpp_kinds.o | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/driver_kessler_cxx_host.o: $(DIR)/driver_kessler_cxx_host.cpp $(CHOST_HDR)
-	$(CXX) $(CXXFLAGS) -I$(DIR) -c $< -o $@
+$(CXX_HOST_OBJ)/driver_kessler_cxx_host.o: $(HOST_CPP)/driver_kessler_cxx_host.cpp \
+    $(CHOST_HDR) $(CHOST_HPP) | $(CXX_HOST_OBJ)
+	$(CXX) $(CXXFLAGS) -I$(BINDC_SRC) -c $< -o $@
 
 $(EXE_CXX_HOST): $(CXX_HOST_OBJS)
 	$(FC) $(FFLAGS) $(NOMAIN) -o $@ $^ -lstdc++
@@ -307,17 +341,14 @@ $(BINDC_KINDS) $(BINDC_SUITE) $(BINDC_CAP) $(BINDC_HDR): $(CAPS_PREREQS)
 	    --bind-c \
 	    -o             $(BINDC_SRC)
 
-gen-chost: $(CHOST_F90) $(CHOST_HDR)
+gen-chost: $(CHOST_F90) $(CHOST_HDR) $(CHOST_HPP)
 
-$(CHOST_F90) $(CHOST_HDR): \
-    $(DIR)/kessler.meta $(DIR)/kessler_update.meta \
-    $(DIR)/kessler_host_mod.meta $(DIR)/kessler_host_sub.meta \
-    $(DIR)/kessler_suite.xml
+$(CHOST_F90) $(CHOST_HDR) $(CHOST_HPP): $(CAPS_PREREQS_CPP)
 	mkdir -p $(BINDC_SRC)
 	$(CCPP_XDSL) \
 	    --suites       $(CAPS_SUITE) \
 	    --scheme-files $(CAPS_SCHEMES) \
-	    --host-files   $(CAPS_HOSTS) \
+	    --host-files   $(CAPS_HOSTS_CPP) \
 	    --explicit-args \
 	    -o             $(BINDC_SRC)
 

@@ -169,8 +169,8 @@ exist, as it keeps them as the single source of truth:
 ```python
 from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, emit_ir
 
-kessler        = ccpp_scheme_from_meta("examples/kessler/kessler.meta")
-kessler_update = ccpp_scheme_from_meta("examples/kessler/kessler_update.meta")
+kessler        = ccpp_scheme_from_meta("examples/kessler/scheme/kessler.meta")
+kessler_update = ccpp_scheme_from_meta("examples/kessler/scheme/kessler_update.meta")
 
 @ccpp_suite("kessler_suite", version="1.0")
 class kessler_suite:

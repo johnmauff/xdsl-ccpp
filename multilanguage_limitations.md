@@ -130,22 +130,31 @@ state slot.
 
 ---
 
-## 7. No C++ Ergonomics Layer
+## 7. ~~No C++ Ergonomics Layer~~ *(Resolved)*
 
-The generated interface is raw `extern "C"` with Fortran-style error reporting:
-`char* errmsg` (null-terminated string buffer) and `int* errflg` (non-zero on
-error).  C++ callers must manually check `errflg` after every lifecycle call.
+A `<HostName>_chost.hpp` header is now generated alongside
+`<HostName>_ccpp_chost_cap.h`.  It provides:
 
-There is no generated C++ wrapper class providing:
-- RAII lifecycle management (constructor calls initialize; destructor calls
-  finalize)
-- Exception-on-error translation (`errflg != 0` → `std::runtime_error`)
-- `std::string` errmsg extraction
-- Named parameter / builder pattern for the many-argument `run` call
+- A `Status` struct with `int code`, `std::string message`, and `bool ok()`.
+- Per-lifecycle named arg structs (e.g. `RunArgs`) using C++20 designated
+  initializers for readable call sites.  `errmsg`, `errflg`, and `scheme_name`
+  are excluded — allocated internally and never exposed.
+- `inline` free functions inside `namespace <HostName>_chost`.
 
-**Potential resolution:** Generate an optional `<HostName>_chost.hpp` thin C++
-wrapper header that wraps the `extern "C"` calls in a class with the above
-ergonomics.  The wrapper would be pure C++ with no additional Fortran code.
+```cpp
+#include "Kessler_chost.hpp"
+
+auto s = Kessler_chost::run({
+    .ncol=100, .col_start=1, .col_end=50, .nz=64,
+    .dt=0.1, .lyr_surf=1, .lyr_toa=64,
+    .cpair=cpair_ptr, .exner=exner_ptr,
+    .theta=theta_ptr, .precl=precl_ptr
+});
+if (!s.ok()) { /* s.message */ }
+```
+
+The wrapper is pure C++ with no additional Fortran code and is emitted as
+part of the `cpp_header` target output.
 
 ---
 
@@ -178,5 +187,5 @@ is the correct approach.
 | 1 | Column-major layout | Subtle bugs if overlooked | Medium |
 | ~~5~~ | ~~Rank > 2 arrays~~ | *(Resolved)* | *(Done)* |
 | 6 | Thread safety | Only for concurrent callers | Low–Medium |
-| 7 | No C++ ergonomics | Usability only | Medium |
+| ~~7~~ | ~~No C++ ergonomics~~ | *(Resolved)* | *(Done)* |
 | ~~8~~ | ~~Column chunking~~ | *(Resolved)* | *(Done)* |

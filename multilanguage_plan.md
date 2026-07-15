@@ -363,3 +363,38 @@ module tiny_suite_cap
   end-to-end test with an actual C++ scheme implementation has not been written.
 - **`active` guard expression translation** — active conditions are evaluated
   inside the Fortran cap and stay Fortran for this use case.
+
+---
+
+## Open Design Questions / Future Improvements
+
+### `language = c++` for C++ host models
+
+Currently, the C++ host cap is activated entirely by pass flags:
+
+```
+generate-ccpp-cap{bind_c=true explicit_args=true}
+```
+
+There is no corresponding attribute in the host `.meta` files.  This is
+asymmetric with C++ *schemes*, which carry `language = c++` on their
+`[ccpp-table-properties]` block so the metadata is self-describing.
+
+**Proposed improvement:** allow host sub `.meta` files to declare the host
+language:
+
+```ini
+[ccpp-table-properties]
+  name = kessler_host_sub
+  type = host
+  language = c++
+```
+
+The `generate-ccpp-cap` pass would read this attribute and automatically
+activate `bind_c=true explicit_args=true` without requiring the caller to
+pass those flags explicitly.  This makes the `.meta` file the single source of
+truth for the host language, consistent with how scheme language is already
+handled.
+
+**Note:** Until this is implemented, `language = c++` in host `.meta` files
+has no effect — the chost path is controlled solely by the pass pipeline flags.

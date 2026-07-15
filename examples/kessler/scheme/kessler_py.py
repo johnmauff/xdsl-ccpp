@@ -6,31 +6,31 @@ in Python.  OpenACC GPU data directives are generated automatically from the
 memory_space = device attributes in kessler.meta and kessler_update.meta.
 
 Run to emit MLIR IR:
-    python3 examples/kessler/kessler_py.py
+    python3 examples/kessler/scheme/kessler_py.py
 
 Full pipeline — CPU Fortran only:
-    python3 examples/kessler/kessler_py.py | \\
+    python3 examples/kessler/scheme/kessler_py.py | \\
         python3 -m xdsl_ccpp.tools.ccpp_opt \\
         -p generate-meta-cap,generate-host-match,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp \\
         -t ftn
 
 Full pipeline — with OpenACC GPU directives (default):
-    python3 examples/kessler/kessler_py.py | \\
+    python3 examples/kessler/scheme/kessler_py.py | \\
         python3 -m xdsl_ccpp.tools.ccpp_opt \\
         -p generate-meta-cap,generate-host-match,generate-meta-kinds,generate-suite-cap,generate-gpu-data,generate-ccpp-cap,generate-gpu-ccpp-cap,generate-kinds,strip-ccpp \\
         -t ftn
 
 Full pipeline — with OpenMP target offload directives:
-    python3 examples/kessler/kessler_py.py | \\
+    python3 examples/kessler/scheme/kessler_py.py | \\
         python3 -m xdsl_ccpp.tools.ccpp_opt \\
         -p "generate-meta-cap,generate-host-match,generate-meta-kinds,generate-suite-cap,generate-gpu-data,generate-ccpp-cap,generate-gpu-ccpp-cap{directive=omp},generate-kinds,strip-ccpp" \\
         -t ftn
 
 Equivalent driver invocation (OpenACC):
     ccpp_xdsl \\
-        --suites   examples/kessler/kessler_suite.xml \\
-        --scheme-files examples/kessler/kessler.meta,examples/kessler/kessler_update.meta \\
-        --host-files   examples/kessler/kessler_host_mod.meta,examples/kessler/kessler_host_sub.meta \\
+        --suites   examples/kessler/scheme/kessler_suite.xml \\
+        --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta \\
+        --host-files   examples/kessler/host_ftn/kessler_host_mod.meta,examples/kessler/host_ftn/kessler_host_sub.meta \\
         --directive acc \\
         -o output/
 """
@@ -47,16 +47,16 @@ from xdsl_ccpp.frontend.py_api import (
 # preserved and drive OpenACC/OpenMP directive generation downstream)
 # ---------------------------------------------------------------------------
 
-kessler        = ccpp_scheme_from_meta("examples/kessler/kessler.meta")
-kessler_update = ccpp_scheme_from_meta("examples/kessler/kessler_update.meta")
+kessler        = ccpp_scheme_from_meta("examples/kessler/scheme/kessler.meta")
+kessler_update = ccpp_scheme_from_meta("examples/kessler/scheme/kessler_update.meta")
 
 # ---------------------------------------------------------------------------
 # Host metadata
 # ---------------------------------------------------------------------------
 
 host = (
-    ccpp_host_from_meta("examples/kessler/kessler_host_mod.meta")
-    + ccpp_host_from_meta("examples/kessler/kessler_host_sub.meta")
+    ccpp_host_from_meta("examples/kessler/host_ftn/kessler_host_mod.meta")
+    + ccpp_host_from_meta("examples/kessler/host_ftn/kessler_host_sub.meta")
 )
 
 # ---------------------------------------------------------------------------

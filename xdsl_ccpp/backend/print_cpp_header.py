@@ -277,3 +277,10 @@ def print_to_cpp_headers(prog: ModuleOp, output: IO[str]) -> None:
         output.write(f"// FILE: {op.mod_name.data}.h\n")
         output.write(op.cpp_text.data)
         wrote = True
+        if op.wrapper_text.data:
+            wrapper_file = (
+                op.mod_name.data.replace("_ccpp_chost_cap", "_chost") + ".hpp"
+            )
+            output.write("// -----\n")
+            output.write(f"// FILE: {wrapper_file}\n")
+            output.write(op.wrapper_text.data)
