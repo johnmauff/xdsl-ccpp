@@ -349,7 +349,6 @@ $(CHOST_F90) $(CHOST_HDR) $(CHOST_HPP): $(CAPS_PREREQS_CPP)
 	    --suites       $(CAPS_SUITE) \
 	    --scheme-files $(CAPS_SCHEMES) \
 	    --host-files   $(CAPS_HOSTS_CPP) \
-	    --explicit-args \
 	    -o             $(BINDC_SRC)
 
 # ── Clean ─────────────────────────────────────────────────────────────────────

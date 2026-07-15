@@ -401,10 +401,30 @@ class ccppMain:
                 file=sys.stderr,
             )
 
+    def _host_lang_cpp(self) -> bool:
+        """Return True if any host meta file declares ``language = c++``."""
+        for path in self.options_db.get("host_files") or []:
+            try:
+                with open(path) as f:
+                    in_table_props = False
+                    for line in f:
+                        stripped = line.strip()
+                        if stripped == "[ccpp-table-properties]":
+                            in_table_props = True
+                        elif stripped.startswith("["):
+                            in_table_props = False
+                        elif in_table_props:
+                            key, _, val = stripped.partition("=")
+                            if key.strip() == "language" and val.strip() == "c++":
+                                return True
+            except OSError:
+                pass
+        return False
+
     def run_opt(self, tmp_dir, mlir_in):
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         explicit_args = self.options_db.get("explicit_args", False)
-        bind_c = self.options_db.get("bind_c", False) or explicit_args
+        bind_c = self.options_db.get("bind_c", False) or explicit_args or self._host_lang_cpp()
         ccpp_cap_pass = "generate-ccpp-cap"
         cap_opts: list[str] = []
         if self.options_db.get("host_name"):
@@ -496,7 +516,7 @@ class ccppMain:
         """
         hdr_out = os.path.join(tmp_dir, "ccpp.h")
         explicit_args = self.options_db.get("explicit_args", False)
-        bind_c = self.options_db.get("bind_c", False) or explicit_args
+        bind_c = self.options_db.get("bind_c", False) or explicit_args or self._host_lang_cpp()
         ccpp_cap_pass = "generate-ccpp-cap"
         cap_opts: list[str] = []
         if self.options_db.get("host_name"):
@@ -599,7 +619,7 @@ class ccppMain:
         ftn_file = self.run_opt(tmp_dir, mlir_file)
         self.split_fortran_output(ftn_file, out_dir)
 
-        if self.options_db.get("bind_c") or self.options_db.get("explicit_args"):
+        if self.options_db.get("bind_c") or self.options_db.get("explicit_args") or self._host_lang_cpp():
             self.generate_cpp_headers(tmp_dir, mlir_file, out_dir)
 
         datatable_path = self.options_db.get("emit_datatable")

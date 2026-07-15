@@ -4207,7 +4207,17 @@ class CCPPCAP(ModulePass):
         )
         op.body.block.add_op(cap_mod)
 
-        if self.explicit_args:
+        # Auto-detect C++ host: any host/module TablePropertiesOp carrying
+        # language = "c++" triggers the chost cap without needing explicit_args=true.
+        host_lang_cpp = any(
+            isa(tbl_op, ccpp.TablePropertiesOp)
+            and tbl_op.table_type.data in ("host", "module")
+            and "language" in tbl_op.attributes
+            and tbl_op.attributes["language"].data == "c++"
+            for tbl_op in ccpp_mod.body.ops
+        )
+
+        if self.explicit_args or host_lang_cpp:
             chost_op = self._generate_chost_cap_module(
                 suite_descriptions, meta_data_descriptions, cap_mod, ccpp_mod,
                 public_fns=public_fns,
