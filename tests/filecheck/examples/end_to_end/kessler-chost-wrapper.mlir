@@ -61,13 +61,17 @@
 
 // State struct aggregates all lifecycle fields; col_start/col_end excluded.
 // Fields appear in order of first use across lifecycles (initialize → run).
+// All pointer fields are non-const (host owns and initialises the memory).
 // CHECK-LABEL: struct State {
 // CHECK:     double           lv;
 // CHECK:     int              ncol;
 // CHECK:     double           dt;
-// CHECK:     const double*    cpair;
+// CHECK:     double*          cpair;
 // CHECK:     double*          theta;
 // CHECK:     double*          precl;
+// Constructor initialises dimension scalars; remaining fields default to 0/nullptr.
+// CHECK:     State(int ncol = 0, int nz = 0)
+// CHECK:         : ncol(ncol), nz(nz) {}
 
 // State overload for initialize — no loop bounds.
 // CHECK-LABEL: inline Status initialize(const State& s) {

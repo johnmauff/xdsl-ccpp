@@ -3622,6 +3622,19 @@ class CCPPCAP(ModulePass):
                 default = " = nullptr" if cpp_t.endswith("*") else " = 0"
                 A(f"    {cpp_t:<16} {ai['host']}{default};")
 
+            # Constructor: initialise dimension scalars; all other fields default
+            # via their in-class initialisers above.  Prevents aggregate-init
+            # errors when State has a private: section from allocate().
+            has_ncol = any(ai["host"] == ncol_var for ai in state_fields)
+            has_nz   = any(ai["host"] == nz_var   for ai in state_fields)
+            if has_ncol and has_nz:
+                A("")
+                A(f"    State(int {ncol_var} = 0, int {nz_var} = 0)")
+                A(f"        : {ncol_var}({ncol_var}), {nz_var}({nz_var}) {{}}")
+            elif has_ncol:
+                A("")
+                A(f"    State(int {ncol_var} = 0) : {ncol_var}({ncol_var}) {{}}")
+
             # Array fields whose size we can express from ncol_var / nz_var
             alloc_fields = [
                 ai for ai in state_fields

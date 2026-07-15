@@ -51,7 +51,7 @@ static void check(const char* label, const Kessler_chost::Status& s) {
 }
 
 int main() {
-    Kessler_chost::State state{.ncol=NCOL, .nz=NZ};
+    Kessler_chost::State state(NCOL, NZ);
     state.allocate();   // allocates and wires all array pointers
     init_data(state);   // fills scalars and array data
 
