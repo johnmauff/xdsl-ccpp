@@ -1,9 +1,12 @@
+import sys
 from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
+    ArrayAttr,
+    DictionaryAttr,
     Float32Type,
     IndexType,
     IntegerAttr,
@@ -23,7 +26,9 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CapVarRefOp,
     CHostCapOp,
     ConstituentApiOp,
+    DerivedType,
     HostVarRefOp,
+    KeywordCallOp,
     ModuleVarOp,
     RealKindType,
     RowMajorConvertOp,
@@ -53,7 +58,10 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_SCHEME_NAME_LEN,
 )
+
+_CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
 
 def _iter_schemes(group):
@@ -155,8 +163,8 @@ def _chost_build_maps(meta_data):
                 if var.hasAttr("standard_name") and var.name not in local_to_std:
                     local_to_std[var.name] = var.getAttr("standard_name").lower()
 
-    ncol_var = (std_to_host.get("horizontal_dimension")
-                or std_to_host.get("horizontal_loop_extent") or "ncol")
+    ncol_var = (std_to_host.get(CCPP_HORIZ_DIM_STD_NAME)
+                or std_to_host.get(CCPP_LOOP_EXTENT_STD_NAME) or "ncol")
     nz_var = std_to_host.get("vertical_layer_dimension", "nz")
     return std_to_host, local_to_std, ncol_var, nz_var
 
@@ -169,7 +177,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
 
     is_col_start = (std == CCPP_LOOP_BEGIN_STD_NAME)
     is_col_end   = (std == CCPP_LOOP_END_STD_NAME)
-    is_ncol      = std in {"horizontal_dimension", "horizontal_loop_extent"}
+    is_ncol      = std in {CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME}
     is_nz        = std in {"vertical_layer_dimension"}
     is_errmsg    = (std == "ccpp_error_message")
     is_errflg    = (std == "ccpp_error_code")
@@ -274,6 +282,59 @@ def _chost_out_infos(pfn_out_types, std_to_host):
     return out_infos
 
 
+def _chost_maybe_inject_ncol(visible: list, infos: list, ncol_var: str) -> list:
+    """Prepend a synthetic ncol arg-descriptor when col_end is present but ncol is not.
+
+    Returns the (possibly prepended) visible list.
+    """
+    has_col_end     = any(ai["is_col_end"] for ai in infos)
+    ncol_in_visible = any(ai["is_ncol"]    for ai in visible)
+    if has_col_end and not ncol_in_visible:
+        visible = [dict(
+            hint=ncol_var, bare=ncol_var, host=ncol_var,
+            std=CCPP_HORIZ_DIM_STD_NAME,
+            is_col_start=False, is_col_end=False,
+            is_ncol=True, is_nz=False, is_errmsg=False,
+            is_errflg=False, is_sname=False,
+            is_char=False, is_int=True, is_real=False,
+            rank=0, intent="in",
+        )] + visible
+    return visible
+
+
+_LIFECYCLE = {
+    "_ccpp_physics_register":         "register",
+    "_ccpp_physics_initialize":       "initialize",
+    "_ccpp_physics_finalize":         "finalize",
+    "_ccpp_physics_timestep_initial": "timestep_initial",
+    "_ccpp_physics_timestep_final":   "timestep_final",
+    "_ccpp_physics_run":              "run",
+}
+
+
+def _lc_of(fn_name: str):
+    """Return the lifecycle name for a bind-C function name, or None if not recognised."""
+    for suffix, lc in _LIFECYCLE.items():
+        if fn_name.endswith(suffix):
+            return lc
+    return None
+
+
+def _chost_fn_name(fn_name: str) -> str:
+    """Map a suite-cap bind-C function name to its chost counterpart."""
+    return fn_name.replace("_ccpp_physics_", "_chost_physics_")
+
+
+def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
+    """Return the list of suite cap function names for a given lifecycle."""
+    if lc == "run":
+        return [
+            f"{suite_name}_suite_{grp.attributes['name']}"
+            for grp in suite_descriptions.get(suite_name, [])
+        ]
+    return [f"{suite_name}_suite_{lc}"]
+
+
 def _chost_cpp_type(ai: dict) -> str:
     """Map a chost arg descriptor to its C++ type string."""
     if ai["is_ncol"] or ai["is_nz"]:
@@ -292,6 +353,46 @@ def _chost_cpp_type(ai: dict) -> str:
     if ai["is_errflg"]:
         return "int*"
     return "void*"
+
+
+def _chost_fn_contexts(
+    bind_c_fns, suite_name, suite_descriptions, public_fns,
+    ncol_var, local_to_std, std_to_host, kind_iso_map,
+):
+    """Yield per-function context dicts for chost cap generation.
+
+    Each dict contains the computed preamble values for one bind-C function:
+    fn, cfn, lc, sfns, suite_fn, infos, out_infos, visible.
+    Functions with no recognised lifecycle or no matching suite cap are skipped.
+    """
+    contexts = []
+    for fn in bind_c_fns:
+        fn_name = fn.sym_name.data
+        lc = _lc_of(fn_name)
+        if lc is None:
+            continue
+        sfns = _suite_fns_for(lc, suite_name, suite_descriptions)
+        suite_fn = next((s for s in sfns if s in public_fns), None)
+        if suite_fn is None:
+            continue
+        _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
+        infos = [_chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
+                 for h, t in zip(pfn_hints, pfn_types)]
+        out_infos = _chost_out_infos(pfn_out_types, std_to_host)
+        visible = list(infos) + out_infos
+        visible = _chost_maybe_inject_ncol(visible, infos, ncol_var)
+        visible = _chost_canonical_order(visible)
+        contexts.append({
+            "fn": fn,
+            "cfn": _chost_fn_name(fn_name),
+            "lc": lc,
+            "sfns": sfns,
+            "suite_fn": suite_fn,
+            "infos": infos,
+            "out_infos": out_infos,
+            "visible": visible,
+        })
+    return contexts
 
 
 def _resolve_ddt_access_path(
@@ -460,7 +561,7 @@ class CCPPCAP(ModulePass):
         _CCPP_ERR = CCPP_ERROR_STD_NAMES
         # Only the loop-extent scalar is truly framework-internal and excluded.
         # The constituent-array names are real physics arrays and must appear.
-        _INTERNAL = frozenset({"horizontal_loop_extent"})
+        _INTERNAL = frozenset({CCPP_LOOP_EXTENT_STD_NAME})
         CM = 36  # character length matching cm=36 in test driver
 
         suite_vars: dict = {}
@@ -931,7 +1032,6 @@ class CCPPCAP(ModulePass):
                                     ("ddt_member", instance_var, instance_module, full_member)
                                 )
                         else:
-                            import sys
                             print(
                                 f"Warning: '{suite_callee}' arg '{arg_name}' "
                                 f"(standard_name='{std_name}') matched DDT type "
@@ -950,7 +1050,6 @@ class CCPPCAP(ModulePass):
                             and std_name not in CCPP_FRAMEWORK_STD_NAMES \
                             and std_name not in constituent_std_names \
                             and not arg_name.endswith("__opt"):
-                        import sys
                         print(
                             f"Warning: '{suite_callee}' arg '{arg_name}' "
                             f"(standard_name='{std_name}') has no host variable "
@@ -1627,7 +1726,6 @@ class CCPPCAP(ModulePass):
 
                 # ── Verify argument count matches callee signature ─────────────
                 if len(call_args) != len(callee_input_types):
-                    import sys
                     raise ValueError(
                         f"Signature mismatch for '{suite_callee}': "
                         f"generated {len(call_args)} input arg(s) but callee expects "
@@ -1643,8 +1741,6 @@ class CCPPCAP(ModulePass):
                 # so that Fortran correctly forwards the OPTIONAL absence status.
                 suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
                 if suite_has_optional:
-                    from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as _KWCallOp
-                    from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr
                     # Derive result keyword names from output types
                     _result_names = [
                         "errmsg" if rt == errmsg_type
@@ -1652,7 +1748,7 @@ class CCPPCAP(ModulePass):
                         else f"_out_{_i}"
                         for _i, rt in enumerate(callee_output_types)
                     ]
-                    call_op = _KWCallOp(
+                    call_op = KeywordCallOp(
                         suite_callee,
                         ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
                         ArrayAttr([StringAttr(n) for n in _result_names]),
@@ -2165,9 +2261,8 @@ class CCPPCAP(ModulePass):
                     elem_type = arg_type.element_type
                     shape = list(arg_type.shape.data)
                     n_dyn = sum(1 for d in shape if d.data == DYNAMIC_INDEX)
-                    from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DT
                     if (
-                        isinstance(elem_type, _DT)
+                        isinstance(elem_type, DerivedType)
                         and elem_type.type_name.data == "ccpp_constituent_properties_t"
                         and n_dyn > 0
                     ):
@@ -2177,7 +2272,7 @@ class CCPPCAP(ModulePass):
                         cap_ref = CapVarRefOp(f"lc_{bare}", arg_type)
                         hoisted_alloc_ops.append(cap_ref)
                         call_inputs.append(cap_ref.res)
-                        _ddt_mod = "ccpp_constituent_prop_mod"
+                        _ddt_mod = _CCPP_CONSTITUENT_MOD
                         _key = (elem_type.type_name.data, _ddt_mod)
                         if _key not in seen_host_globals:
                             seen_host_globals.add(_key)
@@ -2203,9 +2298,9 @@ class CCPPCAP(ModulePass):
                         hoisted_alloc_ops.append(zero_idx)
                         # Ensure the DDT type's module appears in the USE list.
                         _CCPP_DDT_MODS = {
-                            "ccpp_constituent_properties_t": "ccpp_constituent_prop_mod",
+                            "ccpp_constituent_properties_t": _CCPP_CONSTITUENT_MOD,
                         }
-                        if isinstance(elem_type, _DT):
+                        if isinstance(elem_type, DerivedType):
                             _ddt_mod = _CCPP_DDT_MODS.get(elem_type.type_name.data)
                             if _ddt_mod:
                                 _key = (elem_type.type_name.data, _ddt_mod)
@@ -2228,7 +2323,6 @@ class CCPPCAP(ModulePass):
 
             # ── Verify argument count matches callee signature ─────────────────
             if len(call_inputs) != len(callee_input_types):
-                import sys
                 raise ValueError(
                     f"Signature mismatch for '{suite_callee}': "
                     f"generated {len(call_inputs)} input arg(s) but callee expects "
@@ -2940,7 +3034,7 @@ class CCPPCAP(ModulePass):
                 type_name,
                 "external",
             )
-            _g.attributes["module"] = StringAttr("ccpp_constituent_prop_mod")
+            _g.attributes["module"] = StringAttr(_CCPP_CONSTITUENT_MOD)
             global_stubs.append(_g)
 
         return module_var_ops, api_op, global_stubs
@@ -3021,105 +3115,13 @@ class CCPPCAP(ModulePass):
                     if var.hasAttr("standard_name") and var.name not in local_to_std:
                         local_to_std[var.name] = var.getAttr("standard_name").lower()
 
-        ncol_var = (std_to_host.get("horizontal_dimension")
-                    or std_to_host.get("horizontal_loop_extent") or "ncol")
+        ncol_var = (std_to_host.get(CCPP_HORIZ_DIM_STD_NAME)
+                    or std_to_host.get(CCPP_LOOP_EXTENT_STD_NAME) or "ncol")
         nz_var = std_to_host.get("vertical_layer_dimension", "nz")
 
         kind_iso_map = _chost_kind_iso_map(ccpp_mod)
 
         suite_name = next(iter(suite_descriptions), "")
-
-        # ── Lifecycle suffix lookup ─────────────────────────────────────────────
-        _LIFECYCLE = {
-            "_ccpp_physics_register":         "register",
-            "_ccpp_physics_initialize":       "initialize",
-            "_ccpp_physics_finalize":         "finalize",
-            "_ccpp_physics_timestep_initial": "timestep_initial",
-            "_ccpp_physics_timestep_final":   "timestep_final",
-            "_ccpp_physics_run":              "run",
-        }
-
-        def lc_of(fn_name):
-            for suffix, lc in _LIFECYCLE.items():
-                if fn_name.endswith(suffix):
-                    return lc
-            return None
-
-        def chost_fn_name(fn_name):
-            return fn_name.replace("_ccpp_physics_", "_chost_physics_")
-
-        def suite_fns_for(lc):
-            if lc == "run":
-                return [
-                    f"{suite_name}_suite_{grp.attributes['name']}"
-                    for grp in suite_descriptions.get(suite_name, [])
-                ]
-            return [f"{suite_name}_suite_{lc}"]
-
-        # ── Build per-arg descriptor ────────────────────────────────────────────
-        def arg_info(hint, mtype):
-            bare = _bare(hint) if hint else ""
-            std  = local_to_std.get(bare, "")
-            host = std_to_host.get(std, bare)
-
-            is_col_start = (std == CCPP_LOOP_BEGIN_STD_NAME)
-            is_col_end   = (std == CCPP_LOOP_END_STD_NAME)
-            is_ncol      = std in {"horizontal_dimension", "horizontal_loop_extent"}
-            is_nz        = std in {"vertical_layer_dimension"}
-            is_errmsg    = (std == "ccpp_error_message")
-            is_errflg    = (std == "ccpp_error_code")
-            is_sname     = (std == "scheme_name" or bare == "scheme_name")
-            is_in_only   = (hint is not None and hint.endswith("__in"))
-
-            rank = 0
-            real_width = 64
-            is_char = is_int = is_real = False
-            if isinstance(mtype, MemRefType):
-                elem = mtype.element_type
-                if isinstance(elem, IntegerType) and elem.width.data == 8:
-                    is_char = True
-                    rank = -1
-                elif isinstance(elem, IntegerType):
-                    is_int = True
-                else:
-                    is_real = True
-                    if isinstance(elem, Float32Type):
-                        real_width = 32
-                    elif isinstance(elem, RealKindType) and kind_iso_map:
-                        iso = kind_iso_map.get(elem.kind_name.data, "REAL64")
-                        real_width = _real_width_from_iso(iso)
-                    rank = sum(1 for d in mtype.shape if d.data == DYNAMIC_INDEX)
-
-            if is_col_start or is_col_end:
-                intent = None
-            elif is_errmsg or is_sname or is_errflg:
-                intent = "out"
-            elif is_ncol or is_nz or is_int or (is_real and rank == 0):
-                intent = "in"
-            elif is_in_only:
-                intent = "in"
-            else:
-                intent = "inout"
-
-            return dict(
-                hint=hint, bare=bare, host=host, std=std,
-                is_col_start=is_col_start, is_col_end=is_col_end,
-                is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
-                is_errflg=is_errflg, is_sname=is_sname,
-                is_char=is_char, is_int=is_int, is_real=is_real,
-                real_width=real_width, rank=rank, intent=intent,
-            )
-
-        def canonical_order(visible):
-            """ncol first, then nz, then other args, then errmsg, then errflg."""
-            ncols   = [a for a in visible if a["is_ncol"]]
-            nzs     = [a for a in visible if a["is_nz"]]
-            errmsgs = [a for a in visible if a["is_errmsg"]]
-            errflgs = [a for a in visible if a["is_errflg"]]
-            others  = [a for a in visible
-                       if not a["is_ncol"] and not a["is_nz"]
-                       and not a["is_errmsg"] and not a["is_errflg"]]
-            return ncols + nzs + others + errmsgs + errflgs
 
         def ftn_decl(ai):
             host = ai["host"]
@@ -3147,14 +3149,17 @@ class CCPPCAP(ModulePass):
                 return f"    integer(c_int),               intent(out) :: {host}"
             return f"    ! unclassified arg: {host}"
 
+        fn_ctxs = _chost_fn_contexts(
+            bind_c_fns, suite_name, suite_descriptions, public_fns,
+            ncol_var, local_to_std, std_to_host, kind_iso_map,
+        )
+
         # ── Collect suite cap functions referenced ──────────────────────────────
         used_suite_fns: list = []
-        for fn_op in bind_c_fns:
-            lc = lc_of(fn_op.sym_name.data)
-            if lc:
-                for sfn in suite_fns_for(lc):
-                    if sfn not in used_suite_fns and sfn in public_fns:
-                        used_suite_fns.append(sfn)
+        for ctx in fn_ctxs:
+            for sfn in ctx["sfns"]:
+                if sfn not in used_suite_fns and sfn in public_fns:
+                    used_suite_fns.append(sfn)
 
         # ── Module header ───────────────────────────────────────────────────────
         L: list = []
@@ -3171,93 +3176,16 @@ class CCPPCAP(ModulePass):
         A("  private")
         A("")
         for fn_op in bind_c_fns:
-            A(f"  public :: {chost_fn_name(fn_op.sym_name.data)}")
+            A(f"  public :: {_chost_fn_name(fn_op.sym_name.data)}")
         A("")
         A("contains")
 
         # ── Subroutines ─────────────────────────────────────────────────────────
-        for fn_op in bind_c_fns:
-            fn_name = fn_op.sym_name.data
-            cfn     = chost_fn_name(fn_name)
-            lc      = lc_of(fn_name)
-            if lc is None:
-                continue
-
-            sfns = suite_fns_for(lc)
-            suite_fn = next((s for s in sfns if s in public_fns), None)
-            if suite_fn is None:
-                continue
-
-            _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
-
-            # Descriptors for suite cap INPUT block args
-            infos = [arg_info(h, t) for h, t in zip(pfn_hints, pfn_types)]
-
-            # Descriptors for suite cap OUTPUT return values (errmsg, errflg, scheme_name).
-            # These become Fortran intent(out) parameters and must appear in both the
-            # chost signature and the suite cap call (after the input args).
-            out_infos: list = []
-            for otype in pfn_out_types:
-                if not isinstance(otype, MemRefType):
-                    continue
-                elem = otype.element_type
-                if isinstance(elem, IntegerType) and elem.width.data == 8:
-                    # Character output — distinguish errmsg (len=512) from scheme_name
-                    static_dims = [d.data for d in otype.shape if d.data != DYNAMIC_INDEX]
-                    char_len = static_dims[0] if static_dims else CCPP_ERRMSG_LEN
-                    if char_len == CCPP_ERRMSG_LEN:
-                        host = std_to_host.get("ccpp_error_message", "errmsg")
-                        out_infos.append(dict(
-                            hint="errmsg", bare="errmsg", host=host,
-                            std="ccpp_error_message",
-                            is_col_start=False, is_col_end=False,
-                            is_ncol=False, is_nz=False,
-                            is_errmsg=True, is_errflg=False, is_sname=False,
-                            is_char=True, is_int=False, is_real=False,
-                            rank=-1, intent="out",
-                        ))
-                    else:
-                        host = std_to_host.get("scheme_name", "scheme_name")
-                        out_infos.append(dict(
-                            hint="scheme_name", bare="scheme_name", host=host,
-                            std="scheme_name",
-                            is_col_start=False, is_col_end=False,
-                            is_ncol=False, is_nz=False,
-                            is_errmsg=False, is_errflg=False, is_sname=True,
-                            is_char=True, is_int=False, is_real=False,
-                            rank=-1, intent="out",
-                        ))
-                elif isinstance(elem, IntegerType):
-                    host = std_to_host.get("ccpp_error_code", "errflg")
-                    out_infos.append(dict(
-                        hint="errflg", bare="errflg", host=host,
-                        std="ccpp_error_code",
-                        is_col_start=False, is_col_end=False,
-                        is_ncol=False, is_nz=False,
-                        is_errmsg=False, is_errflg=True, is_sname=False,
-                        is_char=False, is_int=True, is_real=False,
-                        rank=0, intent="out",
-                    ))
-
-            # Visible chost args: all input args (including col_start/col_end) + outputs
-            visible = list(infos) + out_infos
-
-            # When col_end is present but ncol is not, inject ncol as first arg
-            has_col_end    = any(ai["is_col_end"] for ai in infos)
-            ncol_in_visible = any(ai["is_ncol"] for ai in visible)
-            if has_col_end and not ncol_in_visible:
-                visible = [dict(
-                    hint=ncol_var, bare=ncol_var, host=ncol_var,
-                    std="horizontal_dimension",
-                    is_col_start=False, is_col_end=False,
-                    is_ncol=True, is_nz=False, is_errmsg=False,
-                    is_errflg=False, is_sname=False,
-                    is_char=False, is_int=True, is_real=False,
-                    rank=0, intent="in",
-                )] + visible
-
-            # Apply canonical (ncol-first, errmsg-before-errflg) ordering
-            visible = canonical_order(visible)
+        for ctx in fn_ctxs:
+            cfn, lc, sfns = ctx["cfn"], ctx["lc"], ctx["sfns"]
+            suite_fn, infos, out_infos, visible = (
+                ctx["suite_fn"], ctx["infos"], ctx["out_infos"], ctx["visible"]
+            )
 
             has_errmsg = any(ai["is_errmsg"] for ai in visible)
             has_sname  = any(ai["is_sname"]  for ai in visible)
@@ -3273,10 +3201,10 @@ class CCPPCAP(ModulePass):
                 A("    integer :: i")
             if has_sname:
                 sn = next(ai["host"] for ai in visible if ai["is_sname"])
-                A(f"    character(len=64)  :: {sn}_f")
+                A(f"    character(len={CCPP_SCHEME_NAME_LEN})  :: {sn}_f")
             if has_errmsg:
                 em = next(ai["host"] for ai in visible if ai["is_errmsg"])
-                A(f"    character(len=512) :: {em}_f")
+                A(f"    character(len={CCPP_ERRMSG_LEN}) :: {em}_f")
 
             # ── Body initialization ───────────────────────────────────────────
             A("")
@@ -3339,32 +3267,6 @@ class CCPPCAP(ModulePass):
 
         suite_name = next(iter(suite_descriptions), "")
 
-        _LIFECYCLE = {
-            "_ccpp_physics_register":         "register",
-            "_ccpp_physics_initialize":       "initialize",
-            "_ccpp_physics_finalize":         "finalize",
-            "_ccpp_physics_timestep_initial": "timestep_initial",
-            "_ccpp_physics_timestep_final":   "timestep_final",
-            "_ccpp_physics_run":              "run",
-        }
-
-        def lc_of(fn_name):
-            for suffix, lc in _LIFECYCLE.items():
-                if fn_name.endswith(suffix):
-                    return lc
-            return None
-
-        def chost_fn_name(fn_name):
-            return fn_name.replace("_ccpp_physics_", "_chost_physics_")
-
-        def suite_fns_for(lc):
-            if lc == "run":
-                return [
-                    f"{suite_name}_suite_{grp.attributes['name']}"
-                    for grp in suite_descriptions.get(suite_name, [])
-                ]
-            return [f"{suite_name}_suite_{lc}"]
-
         L: list = []
         A = L.append
         A("// Generated by xdsl-ccpp."
@@ -3376,40 +3278,11 @@ class CCPPCAP(ModulePass):
         A("#endif")
         A("")
 
-        for fn_op in bind_c_fns:
-            fn_name = fn_op.sym_name.data
-            cfn = chost_fn_name(fn_name)
-            lc  = lc_of(fn_name)
-            if lc is None:
-                continue
-
-            sfns = suite_fns_for(lc)
-            suite_fn = next((s for s in sfns if s in public_fns), None)
-            if suite_fn is None:
-                continue
-
-            _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
-
-            infos = [_chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
-                     for h, t in zip(pfn_hints, pfn_types)]
-            out_infos = _chost_out_infos(pfn_out_types, std_to_host)
-
-            visible = list(infos) + out_infos
-
-            has_col_end     = any(ai["is_col_end"]  for ai in infos)
-            ncol_in_visible = any(ai["is_ncol"] for ai in visible)
-            if has_col_end and not ncol_in_visible:
-                visible = [dict(
-                    hint=ncol_var, bare=ncol_var, host=ncol_var,
-                    std="horizontal_dimension",
-                    is_col_start=False, is_col_end=False,
-                    is_ncol=True, is_nz=False, is_errmsg=False,
-                    is_errflg=False, is_sname=False,
-                    is_char=False, is_int=True, is_real=False,
-                    rank=0, intent="in",
-                )] + visible
-
-            visible = _chost_canonical_order(visible)
+        for ctx in _chost_fn_contexts(
+            bind_c_fns, suite_name, suite_descriptions, public_fns,
+            ncol_var, local_to_std, std_to_host, kind_iso_map,
+        ):
+            cfn, visible = ctx["cfn"], ctx["visible"]
             params = [(ai["host"], _chost_cpp_type(ai)) for ai in visible]
 
             if not params:
@@ -3445,32 +3318,7 @@ class CCPPCAP(ModulePass):
         suite_name = next(iter(suite_descriptions), "")
         ns_name = f"{camel_name}_chost"
 
-        _LIFECYCLE = {
-            "_ccpp_physics_register":         "register",
-            "_ccpp_physics_initialize":       "initialize",
-            "_ccpp_physics_finalize":         "finalize",
-            "_ccpp_physics_timestep_initial": "timestep_initial",
-            "_ccpp_physics_timestep_final":   "timestep_final",
-            "_ccpp_physics_run":              "run",
-        }
         _CPP_FN_NAME = {"register": "do_register"}  # 'register' is a C++ keyword
-
-        def lc_of(fn_name):
-            for suffix, lc in _LIFECYCLE.items():
-                if fn_name.endswith(suffix):
-                    return lc
-            return None
-
-        def chost_fn_name(fn_name):
-            return fn_name.replace("_ccpp_physics_", "_chost_physics_")
-
-        def suite_fns_for(lc):
-            if lc == "run":
-                return [
-                    f"{suite_name}_suite_{grp.attributes['name']}"
-                    for grp in suite_descriptions.get(suite_name, [])
-                ]
-            return [f"{suite_name}_suite_{lc}"]
 
         def struct_name(lc):
             return "".join(w.capitalize() for w in lc.split("_")) + "Args"
@@ -3494,40 +3342,11 @@ class CCPPCAP(ModulePass):
 
         lc_data: list = []   # (cpp_fn, struct_args) per lifecycle, for State generation
 
-        for fn_op in bind_c_fns:
-            fn_name = fn_op.sym_name.data
-            cfn = chost_fn_name(fn_name)
-            lc  = lc_of(fn_name)
-            if lc is None:
-                continue
-
-            sfns = suite_fns_for(lc)
-            suite_fn = next((s for s in sfns if s in public_fns), None)
-            if suite_fn is None:
-                continue
-
-            _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
-
-            infos = [_chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
-                     for h, t in zip(pfn_hints, pfn_types)]
-            out_infos = _chost_out_infos(pfn_out_types, std_to_host)
-
-            visible = list(infos) + out_infos
-
-            has_col_end     = any(ai["is_col_end"] for ai in infos)
-            ncol_in_visible = any(ai["is_ncol"]    for ai in visible)
-            if has_col_end and not ncol_in_visible:
-                visible = [dict(
-                    hint=ncol_var, bare=ncol_var, host=ncol_var,
-                    std="horizontal_dimension",
-                    is_col_start=False, is_col_end=False,
-                    is_ncol=True, is_nz=False, is_errmsg=False,
-                    is_errflg=False, is_sname=False,
-                    is_char=False, is_int=True, is_real=False,
-                    rank=0, intent="in",
-                )] + visible
-
-            visible = _chost_canonical_order(visible)
+        for ctx in _chost_fn_contexts(
+            bind_c_fns, suite_name, suite_descriptions, public_fns,
+            ncol_var, local_to_std, std_to_host, kind_iso_map,
+        ):
+            cfn, lc, visible = ctx["cfn"], ctx["lc"], ctx["visible"]
 
             has_errmsg  = any(ai["is_errmsg"] for ai in visible)
             has_errflg  = any(ai["is_errflg"] for ai in visible)
@@ -3563,9 +3382,9 @@ class CCPPCAP(ModulePass):
 
             # ── Internal buffers ───────────────────────────────────────────────
             if has_sname:
-                A("    char   scheme_name[64]  = {};")
+                A(f"    char   scheme_name[{CCPP_SCHEME_NAME_LEN}]  = {{}};")
             if has_errmsg:
-                A("    char   errmsg[512]      = {};")
+                A(f"    char   errmsg[{CCPP_ERRMSG_LEN}]      = {{}};")
             if has_errflg:
                 A("    int    errflg           = 0;")
 
@@ -3772,8 +3591,8 @@ class CCPPCAP(ModulePass):
                 if _var_cv.hasAttr("standard_name"):
                     _host_block_std.add(_var_cv.getAttr("standard_name").lower())
         _DIM_TO_ALLOC = {
-            "horizontal_loop_extent": "ncols",
-            "horizontal_dimension": "ncols",
+            CCPP_LOOP_EXTENT_STD_NAME: "ncols",
+            CCPP_HORIZ_DIM_STD_NAME: "ncols",
             "vertical_layer_dimension": "pver",
             "number_of_ccpp_constituents": "lc_num",
         }
@@ -3848,7 +3667,6 @@ class CCPPCAP(ModulePass):
         # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
         # lifecycle and run functions accept a single ccpp_info_t inout arg that
         # bundles errmsg/errflg and (for run) col_start/col_end.
-        from xdsl_ccpp.dialects.ccpp_utils import DerivedType as _DerivedType
         ccpp_info_type = None
         ccpp_info_module_name = None
         for _tbl, _props in meta_data.items():
@@ -3866,7 +3684,7 @@ class CCPPCAP(ModulePass):
                     _src = (ddt_source_module or {}).get(_ddt_type_name)
                     if _src:
                         ccpp_info_type = memref.MemRefType(
-                            _DerivedType(_ddt_type_name), []
+                            DerivedType(_ddt_type_name), []
                         )
                         ccpp_info_module_name = _src
                         # The USE stub for ccpp_info_t is emitted by the DDT
@@ -3881,7 +3699,7 @@ class CCPPCAP(ModulePass):
         if ccpp_mod is not None and ccpp_info_type is None:
             for _op in ccpp_mod.body.block.ops:
                 if isa(_op, ccpp.CcppHandleOp):
-                    ccpp_t_type = memref.MemRefType(_DerivedType("ccpp_t"), [])
+                    ccpp_t_type = memref.MemRefType(DerivedType("ccpp_t"), [])
                     ccpp_t_var_name = _op.var_name.data
                     break
 

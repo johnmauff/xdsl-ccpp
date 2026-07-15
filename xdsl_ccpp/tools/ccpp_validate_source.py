@@ -40,7 +40,7 @@ from xdsl.universe import Universe
 
 from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-from xdsl_ccpp.frontend.ccpp_xml import ccppXML
+from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.validate_fir import (
     check_dimension_names,
     collect_standard_names,
@@ -167,7 +167,7 @@ def _parse_meta_file(meta_path: str) -> builtin.ModuleOp | None:
     try:
         frontend = ccppXML()
         props = [frontend.build_meta_ir(m)
-                 for m in frontend.parse_metadata_file(meta_path, True)]
+                 for m in parse_meta_file(meta_path, True)]
         return builtin.ModuleOp(props) if props else None
     except Exception as exc:
         print(f"Error loading '{meta_path}': {exc}", file=sys.stderr)

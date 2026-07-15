@@ -31,7 +31,7 @@ from xdsl.universe import Universe
 
 from xdsl_ccpp.dialects.ccpp import CCPP, TablePropertiesOp
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-from xdsl_ccpp.frontend.ccpp_xml import ccppXML
+from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.validate_fir import compare_modules
 
 
@@ -94,7 +94,7 @@ def _load_meta_file(meta_path: str) -> builtin.ModuleOp | None:
     try:
         frontend = ccppXML()
         props = []
-        for meta in frontend.parse_metadata_file(meta_path, True):
+        for meta in parse_meta_file(meta_path, True):
             props.append(frontend.build_meta_ir(meta))
         if not props:
             print(f"Warning: no tables found in '{meta_path}'", file=sys.stderr)

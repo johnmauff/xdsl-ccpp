@@ -16,7 +16,7 @@ from xdsl_ccpp.dialects.ccpp import (
     TableTypeKind,
 )
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-from xdsl_ccpp.frontend.ccpp_xml import ccppXML
+from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 
 
 def _make_ctx() -> Context:
@@ -269,12 +269,12 @@ class ccppMain:
         frontend = ccppXML()
         count = 0
         for scheme_file in scheme_files:
-            for meta in frontend.parse_metadata_file(scheme_file, True):
+            for meta in parse_meta_file(scheme_file, True):
                 prop = frontend.build_meta_ir(meta)
                 ccpp_module.body.block.add_op(prop)
                 count += 1
         for host_file in host_files:
-            for meta in frontend.parse_metadata_file(host_file, False):
+            for meta in parse_meta_file(host_file, False):
                 prop = frontend.build_meta_ir(meta)
                 ccpp_module.body.block.add_op(prop)
                 count += 1
@@ -403,6 +403,11 @@ class ccppMain:
 
     def _host_lang_cpp(self) -> bool:
         """Return True if any host meta file declares ``language = c++``."""
+        if not hasattr(self, "_host_lang_cpp_cache"):
+            self._host_lang_cpp_cache = self._compute_host_lang_cpp()
+        return self._host_lang_cpp_cache
+
+    def _compute_host_lang_cpp(self) -> bool:
         for path in self.options_db.get("host_files") or []:
             try:
                 with open(path) as f:
@@ -421,8 +426,8 @@ class ccppMain:
                 pass
         return False
 
-    def run_opt(self, tmp_dir, mlir_in):
-        ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
+    def _build_pipeline(self) -> str:
+        """Build and return the comma-joined pass pipeline string."""
         explicit_args = self.options_db.get("explicit_args", False)
         bind_c = self.options_db.get("bind_c", False) or explicit_args or self._host_lang_cpp()
         ccpp_cap_pass = "generate-ccpp-cap"
@@ -440,7 +445,6 @@ class ccppMain:
         kind_maps = self.options_db.get("kind_map") or []
         if kind_maps:
             if len(kind_maps) > 1:
-                import sys
                 print(
                     "Warning: only the first --kind-map entry is used; "
                     "multiple extra kinds are not yet supported.",
@@ -461,7 +465,11 @@ class ccppMain:
             if directive:
                 passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
         passes += ["generate-kinds", "strip-ccpp"]
-        pipeline = ",".join(passes)
+        return ",".join(passes)
+
+    def run_opt(self, tmp_dir, mlir_in):
+        ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
+        pipeline = self._build_pipeline()
         cmd = (
             f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
             f' -p "{pipeline}"'
@@ -515,38 +523,7 @@ class ccppMain:
         *out_dir* (or stdout when --stdout is set).
         """
         hdr_out = os.path.join(tmp_dir, "ccpp.h")
-        explicit_args = self.options_db.get("explicit_args", False)
-        bind_c = self.options_db.get("bind_c", False) or explicit_args or self._host_lang_cpp()
-        ccpp_cap_pass = "generate-ccpp-cap"
-        cap_opts: list[str] = []
-        if self.options_db.get("host_name"):
-            cap_opts.append(f"host_name={self.options_db['host_name']}")
-        if bind_c:
-            cap_opts.append("bind_c=true")
-        if explicit_args:
-            cap_opts.append("explicit_args=true")
-        if cap_opts:
-            ccpp_cap_pass += "{" + " ".join(cap_opts) + "}"
-        directive = self.options_db.get("directive")
-        meta_kinds_pass = "generate-meta-kinds"
-        kind_maps = self.options_db.get("kind_map") or []
-        if kind_maps:
-            k, iso = kind_maps[0].split(":", 1)
-            meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
-        has_host = bool(self.options_db.get("host_files"))
-        passes = ["generate-meta-cap"]
-        if has_host:
-            passes.append("generate-host-match")
-        passes.append(meta_kinds_pass)
-        passes.append("generate-suite-cap")
-        if directive:
-            passes.append(f"generate-gpu-data{{directive={directive}}}")
-        if has_host:
-            passes.append(ccpp_cap_pass)
-            if directive:
-                passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
-        passes += ["generate-kinds", "strip-ccpp"]
-        pipeline = ",".join(passes)
+        pipeline = self._build_pipeline()
         cmd = (
             f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
             f' -p "{pipeline}"'

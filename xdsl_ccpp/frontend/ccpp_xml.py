@@ -47,20 +47,6 @@ class MetaData:
         self.arg_tables = arg_tables
 
 
-class SchemeMetaData(MetaData):
-    """Metadata parsed from a physics-scheme ``.meta`` file."""
-
-    def __init__(self, table_properties, arg_tables):
-        super().__init__(table_properties, arg_tables)
-
-
-class HostMetaData(MetaData):
-    """Metadata parsed from a host-model ``.meta`` file."""
-
-    def __init__(self, table_properties, arg_tables):
-        super().__init__(table_properties, arg_tables)
-
-
 class CCPPItem:
     """Generic key/value attribute container used by the frontend parser.
 
@@ -283,11 +269,11 @@ def parse_meta_file(filename, is_scheme):
 
     Args:
         filename:  Path to the ``.meta`` file.
-        is_scheme: If True, return `SchemeMetaData` instances; otherwise `HostMetaData`.
+        is_scheme: If True, the file contains scheme metadata; otherwise host metadata.
 
     Returns:
-        A list of `SchemeMetaData` or `HostMetaData` objects, one per
-        ``[ccpp-table-properties]`` block found in the file.
+        A list of `MetaData` objects, one per ``[ccpp-table-properties]`` block
+        found in the file.
     """
     completed = []
     current_table_properties = None
@@ -300,8 +286,7 @@ def parse_meta_file(filename, is_scheme):
         nonlocal current_table_properties, table_arg_tables
         if current_table_properties is None:
             return
-        cls = SchemeMetaData if is_scheme else HostMetaData
-        completed.append(cls(current_table_properties, table_arg_tables))
+        completed.append(MetaData(current_table_properties, table_arg_tables))
         current_table_properties = None
         table_arg_tables = []
 
@@ -456,10 +441,6 @@ class ccppXML:
 
         return options_db
 
-    def parse_metadata_file(self, filename, isScheme):
-        """Parse a ``.meta`` file; delegates to the module-level :func:`parse_meta_file`."""
-        return parse_meta_file(filename, isScheme)
-
     def build_suite_ir(self, suite):
         """Convert a parsed `XMLSuite` tree into CCPP dialect IR ops.
 
@@ -551,7 +532,7 @@ class ccppXML:
         schemes = {}
         for scheme_file in self.options_db["scheme_files"]:
             stem = Path(scheme_file).stem
-            for c in self.parse_metadata_file(scheme_file, True):
+            for c in parse_meta_file(scheme_file, True):
                 schemes[c.table_properties.getAttr("name")] = c
                 ir_ops.append(self.build_meta_ir(c, source_module=stem))
 
@@ -559,7 +540,7 @@ class ccppXML:
         hosts = {}
         for host_file in self.options_db["host_files"]:
             stem = Path(host_file).stem
-            for c in self.parse_metadata_file(host_file, False):
+            for c in parse_meta_file(host_file, False):
                 hosts[c.table_properties.getAttr("name")] = c
                 ir_ops.append(self.build_meta_ir(c, source_module=stem))
 

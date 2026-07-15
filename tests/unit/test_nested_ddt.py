@@ -19,7 +19,7 @@ from xdsl.universe import Universe
 
 from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML
+from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
 from xdsl_ccpp.transforms.suite_kinds import MetaKind
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
@@ -61,13 +61,13 @@ def _run_pipeline(
     for i, content in enumerate(scheme_metas):
         path = tmp_path / f"scheme_{i}.meta"
         path.write_text(content)
-        for meta in frontend.parse_metadata_file(str(path), True):
+        for meta in parse_meta_file(str(path), True):
             ir_ops.append(frontend.build_meta_ir(meta))
 
     for i, content in enumerate(host_metas):
         path = tmp_path / f"host_{i}.meta"
         path.write_text(content)
-        for meta in frontend.parse_metadata_file(str(path), False):
+        for meta in parse_meta_file(str(path), False):
             ir_ops.append(frontend.build_meta_ir(meta))
 
     module = ModuleOp(ir_ops)

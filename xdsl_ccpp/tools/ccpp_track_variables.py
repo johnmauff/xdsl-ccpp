@@ -33,7 +33,7 @@ from xdsl_ccpp.dialects.ccpp import (
     TableTypeKind,
 )
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML
+from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
 from xdsl_ccpp.util.ccpp_conventions import CCPP_DIMENSIONLESS_UNITS, normalize_units
 
 
@@ -274,10 +274,10 @@ def _load_module(
     for suite_path in suites:
         ir_ops.append(frontend.build_suite_ir(XMLSuite(suite_path)))
     for path in scheme_files:
-        for meta in frontend.parse_metadata_file(path, True):
+        for meta in parse_meta_file(path, True):
             ir_ops.append(frontend.build_meta_ir(meta))
     for path in host_files:
-        for meta in frontend.parse_metadata_file(path, False):
+        for meta in parse_meta_file(path, False):
             ir_ops.append(frontend.build_meta_ir(meta))
     return builtin.ModuleOp(ir_ops)
 

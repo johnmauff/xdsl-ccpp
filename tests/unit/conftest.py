@@ -21,7 +21,7 @@ from xdsl.universe import Universe
 
 from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML
+from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
 
@@ -61,13 +61,13 @@ def _build_module(
     for i, content in enumerate(scheme_metas):
         meta_file = tmp_path / f"scheme_{i}.meta"
         meta_file.write_text(content)
-        for meta in frontend.parse_metadata_file(str(meta_file), True):
+        for meta in parse_meta_file(str(meta_file), True):
             ir_ops.append(frontend.build_meta_ir(meta))
 
     for i, content in enumerate(host_metas):
         meta_file = tmp_path / f"host_{i}.meta"
         meta_file.write_text(content)
-        for meta in frontend.parse_metadata_file(str(meta_file), False):
+        for meta in parse_meta_file(str(meta_file), False):
             ir_ops.append(frontend.build_meta_ir(meta))
 
     return ModuleOp(ir_ops)

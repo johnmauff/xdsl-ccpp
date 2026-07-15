@@ -21,6 +21,9 @@ CCPP_ERRFLG_LOCAL = "errflg"
 # The CCPP specification mandates 512; schemes declare character(len=512).
 CCPP_ERRMSG_LEN = 512
 
+# Fixed length (in characters) of the scheme_name buffer in all generated caps.
+CCPP_SCHEME_NAME_LEN = 64
+
 # Sentinel used when a subcycle loop count is a CCPP standard name (a runtime
 # variable, not a literal integer). Any value > 1 causes the subcycle loop to
 # be emitted; we assume a named loop count always means "loop more than once."
