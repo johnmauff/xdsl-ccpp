@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<suite name="capgen_chost_suite" version="1.0">
+  <group name="physics">
+    <scheme>make_ddt</scheme>
+    <scheme>setup_coeffs</scheme>
+    <scheme>temp_calc_adjust</scheme>
+  </group>
+</suite>

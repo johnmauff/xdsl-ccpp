@@ -1,7 +1,8 @@
 # Capgen CCPP example Makefile
 #
 # Directory layout:
-#   (flat)     — scheme Fortran source, meta files, suite XMLs, Fortran host
+#   scheme/    — scheme Fortran source, meta files, suite XMLs
+#   host_ftn/  — Fortran host driver (source + meta files)
 #   host_cpp/  — C++ host driver (source + meta files)
 #   bindc/     — generated caps for both drivers (regenerate with make gen-*)
 #
@@ -19,7 +20,7 @@
 #   make check     — build and run both drivers, verify both pass
 #
 # Code generation (requires xdsl-ccpp):
-#   make caps      — regenerate Fortran host caps into examples/capgen/
+#   make caps      — regenerate Fortran host caps into bindc/
 #   make gen-chost — regenerate C++ chost caps + headers into bindc/
 #
 # Utility:
@@ -68,6 +69,8 @@ CCPP_XDSL ?= ccpp_xdsl
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DIR          = examples/capgen
+SCHEME_DIR   = $(DIR)/scheme
+HOST_FTN_DIR = $(DIR)/host_ftn
 HOST_CPP_DIR = $(DIR)/host_cpp
 BINDC_DIR    = $(DIR)/bindc
 BUILD        = $(DIR)/build
@@ -75,37 +78,37 @@ FTN_OBJ      = $(BUILD)/ftn_host
 CXX_HOST_OBJ = $(BUILD)/cxx_host
 
 # ── Generated caps — Fortran host (make caps) ─────────────────────────────────
-GEN_KINDS      = $(DIR)/ccpp_kinds.F90
-GEN_SUITE_CAPS = $(DIR)/ddt_suite_cap.F90 $(DIR)/temp_suite_cap.F90
-GEN_CCPP_CAP   = $(DIR)/test_host_ccpp_cap.F90
+GEN_KINDS      = $(BINDC_DIR)/ccpp_kinds.F90
+GEN_SUITE_CAPS = $(BINDC_DIR)/ddt_suite_cap.F90 $(BINDC_DIR)/temp_suite_cap.F90
+GEN_CCPP_CAP   = $(BINDC_DIR)/test_host_ccpp_cap.F90
 
-CAPS_SUITES  = $(DIR)/ddt_suite.xml,$(DIR)/temp_suite.xml
-CAPS_SCHEMES = $(DIR)/make_ddt.meta,$(DIR)/environ_conditions.meta,$(DIR)/setup_coeffs.meta,$(DIR)/temp_set.meta,$(DIR)/temp_calc_adjust.meta,$(DIR)/temp_adjust.meta
-CAPS_HOSTS   = $(DIR)/test_host_data.meta,$(DIR)/test_host_mod.meta,$(DIR)/test_host.meta
+CAPS_SUITES  = $(SCHEME_DIR)/ddt_suite.xml,$(SCHEME_DIR)/temp_suite.xml
+CAPS_SCHEMES = $(SCHEME_DIR)/make_ddt.meta,$(SCHEME_DIR)/environ_conditions.meta,$(SCHEME_DIR)/setup_coeffs.meta,$(SCHEME_DIR)/temp_set.meta,$(SCHEME_DIR)/temp_calc_adjust.meta,$(SCHEME_DIR)/temp_adjust.meta
+CAPS_HOSTS   = $(HOST_FTN_DIR)/test_host_data.meta,$(HOST_FTN_DIR)/test_host_mod.meta,$(HOST_FTN_DIR)/test_host.meta
 
 CAPS_PREREQS = \
-    $(DIR)/ddt_suite.xml \
-    $(DIR)/temp_suite.xml \
-    $(DIR)/make_ddt.meta \
-    $(DIR)/environ_conditions.meta \
-    $(DIR)/setup_coeffs.meta \
-    $(DIR)/temp_set.meta \
-    $(DIR)/temp_calc_adjust.meta \
-    $(DIR)/temp_adjust.meta \
-    $(DIR)/test_host_data.meta \
-    $(DIR)/test_host_mod.meta \
-    $(DIR)/test_host.meta
+    $(SCHEME_DIR)/ddt_suite.xml \
+    $(SCHEME_DIR)/temp_suite.xml \
+    $(SCHEME_DIR)/make_ddt.meta \
+    $(SCHEME_DIR)/environ_conditions.meta \
+    $(SCHEME_DIR)/setup_coeffs.meta \
+    $(SCHEME_DIR)/temp_set.meta \
+    $(SCHEME_DIR)/temp_calc_adjust.meta \
+    $(SCHEME_DIR)/temp_adjust.meta \
+    $(HOST_FTN_DIR)/test_host_data.meta \
+    $(HOST_FTN_DIR)/test_host_mod.meta \
+    $(HOST_FTN_DIR)/test_host.meta
 
 # ── Generated caps — chost C++ host (make gen-chost) ─────────────────────────
-CAPS_CHOST_SUITES  = $(DIR)/capgen_chost_suite.xml
-CAPS_CHOST_SCHEMES = $(DIR)/make_ddt.meta,$(DIR)/setup_coeffs.meta,$(DIR)/temp_calc_adjust.meta
+CAPS_CHOST_SUITES  = $(SCHEME_DIR)/capgen_chost_suite.xml
+CAPS_CHOST_SCHEMES = $(SCHEME_DIR)/make_ddt.meta,$(SCHEME_DIR)/setup_coeffs.meta,$(SCHEME_DIR)/temp_calc_adjust.meta
 CAPS_CHOST_HOSTS   = $(HOST_CPP_DIR)/capgen_host_mod.meta,$(HOST_CPP_DIR)/capgen_host_sub.meta
 
 CAPS_CHOST_PREREQS = \
-    $(DIR)/capgen_chost_suite.xml \
-    $(DIR)/make_ddt.meta \
-    $(DIR)/setup_coeffs.meta \
-    $(DIR)/temp_calc_adjust.meta \
+    $(SCHEME_DIR)/capgen_chost_suite.xml \
+    $(SCHEME_DIR)/make_ddt.meta \
+    $(SCHEME_DIR)/setup_coeffs.meta \
+    $(SCHEME_DIR)/temp_calc_adjust.meta \
     $(HOST_CPP_DIR)/capgen_host_mod.meta \
     $(HOST_CPP_DIR)/capgen_host_sub.meta
 
@@ -117,19 +120,19 @@ CHOST_HPP       = $(BINDC_DIR)/CapgenChost_chost.hpp
 # ── Source lists — Fortran host ───────────────────────────────────────────────
 FTN_SRCS = \
     $(GEN_KINDS) \
-    $(DIR)/test_utils.F90 \
-    $(DIR)/test_host_data.F90 \
-    $(DIR)/test_host_mod.F90 \
-    $(DIR)/make_ddt.F90 \
-    $(DIR)/environ_conditions.F90 \
-    $(DIR)/setup_coeffs.F90 \
-    $(DIR)/temp_set.F90 \
-    $(DIR)/temp_calc_adjust.F90 \
-    $(DIR)/temp_adjust.F90 \
+    $(HOST_FTN_DIR)/test_utils.F90 \
+    $(SCHEME_DIR)/make_ddt.F90 \
+    $(SCHEME_DIR)/environ_conditions.F90 \
+    $(SCHEME_DIR)/setup_coeffs.F90 \
+    $(SCHEME_DIR)/temp_set.F90 \
+    $(SCHEME_DIR)/temp_calc_adjust.F90 \
+    $(SCHEME_DIR)/temp_adjust.F90 \
+    $(HOST_FTN_DIR)/test_host_data.F90 \
+    $(HOST_FTN_DIR)/test_host_mod.F90 \
     $(GEN_SUITE_CAPS) \
     $(GEN_CCPP_CAP) \
-    $(DIR)/test_host.F90 \
-    $(DIR)/test_capgen_host_integration.F90
+    $(HOST_FTN_DIR)/test_host.F90 \
+    $(HOST_FTN_DIR)/test_capgen_host_integration.F90
 
 FTN_OBJS = $(addprefix $(FTN_OBJ)/,$(notdir $(FTN_SRCS:.F90=.o)))
 
@@ -176,20 +179,49 @@ $(BUILD) $(FTN_OBJ) $(CXX_HOST_OBJ):
 	mkdir -p $@
 
 # ── Fortran compilation — ftn_host ────────────────────────────────────────────
-$(FTN_OBJ)/%.o: $(DIR)/%.F90 | $(FTN_OBJ)
+$(FTN_OBJ)/%.o: $(BINDC_DIR)/%.F90 | $(FTN_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(FTN_OBJ) -I $(FTN_OBJ)
 
-# ── Fortran compilation — cxx_host (compiled with same FC for .mod files) ─────
+$(FTN_OBJ)/%.o: $(SCHEME_DIR)/%.F90 | $(FTN_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(FTN_OBJ) -I $(FTN_OBJ)
+
+$(FTN_OBJ)/%.o: $(HOST_FTN_DIR)/%.F90 | $(FTN_OBJ)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(FTN_OBJ) -I $(FTN_OBJ)
+
+# ── Fortran module ordering — ftn_host (parallel-make safety) ─────────────────
+$(FTN_OBJ)/test_utils.o:         | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/test_host_data.o:     | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/test_host_mod.o:      | $(FTN_OBJ)/ccpp_kinds.o \
+                                    $(FTN_OBJ)/test_host_data.o
+$(FTN_OBJ)/make_ddt.o:           | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/environ_conditions.o: | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/setup_coeffs.o:       | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/temp_set.o:           | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/temp_calc_adjust.o:   | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/temp_adjust.o:        | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/ddt_suite_cap.o:      | $(FTN_OBJ)/make_ddt.o
+$(FTN_OBJ)/temp_suite_cap.o:     | $(FTN_OBJ)/environ_conditions.o \
+                                    $(FTN_OBJ)/setup_coeffs.o \
+                                    $(FTN_OBJ)/temp_set.o \
+                                    $(FTN_OBJ)/temp_calc_adjust.o \
+                                    $(FTN_OBJ)/temp_adjust.o
+$(FTN_OBJ)/test_host_ccpp_cap.o: | $(FTN_OBJ)/ddt_suite_cap.o \
+                                    $(FTN_OBJ)/temp_suite_cap.o \
+                                    $(FTN_OBJ)/test_host_mod.o
+$(FTN_OBJ)/test_host.o:          | $(FTN_OBJ)/test_host_ccpp_cap.o
+$(FTN_OBJ)/test_capgen_host_integration.o: | $(FTN_OBJ)/test_host.o
+
+# ── Fortran compilation — cxx_host ────────────────────────────────────────────
 $(CXX_HOST_OBJ)/%.o: $(BINDC_DIR)/%.F90 | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-$(CXX_HOST_OBJ)/%.o: $(DIR)/%.F90 | $(CXX_HOST_OBJ)
+$(CXX_HOST_OBJ)/%.o: $(SCHEME_DIR)/%.F90 | $(CXX_HOST_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(CXX_HOST_OBJ) -I $(CXX_HOST_OBJ)
 
-# ── Fortran module ordering (parallel-make safety) ────────────────────────────
-$(CXX_HOST_OBJ)/make_ddt.o:              | $(CXX_HOST_OBJ)/ccpp_kinds.o
-$(CXX_HOST_OBJ)/setup_coeffs.o:          | $(CXX_HOST_OBJ)/ccpp_kinds.o
-$(CXX_HOST_OBJ)/temp_calc_adjust.o:      | $(CXX_HOST_OBJ)/ccpp_kinds.o
+# ── Fortran module ordering — cxx_host (parallel-make safety) ─────────────────
+$(CXX_HOST_OBJ)/make_ddt.o:               | $(CXX_HOST_OBJ)/ccpp_kinds.o
+$(CXX_HOST_OBJ)/setup_coeffs.o:           | $(CXX_HOST_OBJ)/ccpp_kinds.o
+$(CXX_HOST_OBJ)/temp_calc_adjust.o:       | $(CXX_HOST_OBJ)/ccpp_kinds.o
 $(CXX_HOST_OBJ)/capgen_chost_suite_cap.o: | \
     $(CXX_HOST_OBJ)/make_ddt.o \
     $(CXX_HOST_OBJ)/setup_coeffs.o \
@@ -214,12 +246,13 @@ $(EXE_CXX): $(CXX_HOST_OBJS) | $(BUILD)
 caps: $(GEN_SUITE_CAPS) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
 $(GEN_SUITE_CAPS) $(GEN_CCPP_CAP) $(GEN_KINDS): $(CAPS_PREREQS)
+	mkdir -p $(BINDC_DIR)
 	$(CCPP_XDSL) \
 	    --suites       $(CAPS_SUITES) \
 	    --scheme-files $(CAPS_SCHEMES) \
 	    --host-files   $(CAPS_HOSTS) \
 	    --host-name    test_host \
-	    -o             $(DIR)
+	    -o             $(BINDC_DIR)
 
 gen-chost: $(CHOST_F90) $(CHOST_HDR) $(CHOST_HPP)
 
@@ -235,4 +268,3 @@ $(CHOST_SUITE_CAP) $(CHOST_F90) $(CHOST_HDR) $(CHOST_HPP): $(CAPS_CHOST_PREREQS)
 clean:
 	rm -rf $(BUILD)
 	rm -rf $(BINDC_DIR)
-	rm -f $(GEN_SUITE_CAPS) $(GEN_CCPP_CAP) $(GEN_KINDS)
