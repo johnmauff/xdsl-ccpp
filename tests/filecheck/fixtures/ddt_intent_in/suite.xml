@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Minimal suite for Gap-2 intent=in DDT testing.
+Uses make_ddt from the ddthost example; the timestep_final entry point has
+vmr (vmr_type) as intent=in.
+-->
+<suite name="ddt_in_suite" version="1.0">
+  <group name="physics">
+    <scheme>make_ddt</scheme>
+  </group>
+</suite>

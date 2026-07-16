@@ -267,8 +267,22 @@ def _chost_expand_ddt_arg(
             f"chost DDT expand: DDT '{ddt_type_name}' has no arg table"
         )
 
+    # ── Pass 1: build lookup of scalar integer members by standard_name ─────────
+    # Enables resolving non-vertical array dimensions such as
+    #   vmr_array(horizontal_dimension, number_of_chemical_species)
+    # by finding the DDT scalar member whose standard_name matches the dimension.
+    scalar_std_to_flat: dict = {}
+    for var in arg_table.getFunctionArguments():
+        _vtype = var.getAttr("type").lower() if var.hasAttr("type") else "real"
+        _ndim  = int(var.getAttr("dimensions")) if var.hasAttr("dimensions") else 0
+        if _vtype == "integer" and _ndim == 0:
+            _std = var.getAttr("standard_name").lower() if var.hasAttr("standard_name") else ""
+            scalar_std_to_flat[_std] = f"{prefix}_{var.name}"
+
+    # ── Pass 2: build member arg-info dicts ───────────────────────────────────
     member_ais = []
     flat_nz_var = None
+    dim_scalars_used: set = set()   # flat names of scalars referenced as dim_nz
 
     for var in arg_table.getFunctionArguments():
         flat_name = f"{prefix}_{var.name}"
@@ -291,7 +305,20 @@ def _chost_expand_ddt_arg(
         has_vert  = any(d.lower() in CCPP_VERTICAL_DIMENSIONS    for d in dim_names)
 
         dim_ncol = ncol_var if has_horiz else None
-        dim_nz   = "__FLAT_NZ__"   if has_vert  else None
+        if has_vert:
+            dim_nz = "__FLAT_NZ__"
+        elif ndim >= 2 and has_horiz:
+            # Non-vertical second dimension: find the DDT scalar that provides it.
+            dim_nz = None
+            for d in dim_names:
+                if d.lower() not in CCPP_HORIZONTAL_DIMENSIONS:
+                    candidate = scalar_std_to_flat.get(d.lower())
+                    if candidate:
+                        dim_nz = candidate
+                        dim_scalars_used.add(candidate)
+                        break
+        else:
+            dim_nz = None
 
         if is_nz or is_ncol or (is_int and ndim == 0):
             intent = "in"
@@ -303,7 +330,7 @@ def _chost_expand_ddt_arg(
         ai = dict(
             hint=None, bare=flat_name, host=flat_name, std=std,
             is_col_start=False, is_col_end=False,
-            is_ncol=is_ncol, is_nz=is_nz,
+            is_ncol=is_ncol, is_nz=is_nz, is_dim_scalar=False,
             is_errmsg=False, is_errflg=False, is_sname=False,
             is_char=False, is_int=is_int, is_real=is_real,
             real_width=real_width, rank=ndim, intent=intent,
@@ -320,14 +347,18 @@ def _chost_expand_ddt_arg(
     for ai in member_ais:
         if ai["dim_nz"] == "__FLAT_NZ__":
             ai["dim_nz"] = flat_nz_var
+        # Non-vertical scalars that dimension an array get is_dim_scalar so they
+        # appear in the canonical nz group and in the State constructor.
+        if ai["host"] in dim_scalars_used:
+            ai["is_dim_scalar"] = True
 
-    inout_array_ais = [ai for ai in member_ais if ai["rank"] > 0]
+    array_ais = [ai for ai in member_ais if ai["rank"] > 0]
     local_info = dict(
         local_name=f"{prefix}_local",
         ddt_type=ddt_type_name,
         prefix=prefix,
         member_ais=member_ais,
-        inout_array_ais=inout_array_ais,
+        array_ais=array_ais,
         flat_nz_var=flat_nz_var,
     )
     return member_ais, local_info
@@ -336,11 +367,11 @@ def _chost_expand_ddt_arg(
 def _chost_canonical_order(visible):
     """ncol first, nz second, then other args, then errmsg, then errflg."""
     ncols   = [a for a in visible if a["is_ncol"]]
-    nzs     = [a for a in visible if a["is_nz"]]
+    nzs     = [a for a in visible if a["is_nz"] or a.get("is_dim_scalar")]
     errmsgs = [a for a in visible if a["is_errmsg"]]
     errflgs = [a for a in visible if a["is_errflg"]]
     others  = [a for a in visible
-               if not a["is_ncol"] and not a["is_nz"]
+               if not a["is_ncol"] and not a["is_nz"] and not a.get("is_dim_scalar")
                and not a["is_errmsg"] and not a["is_errflg"]]
     return ncols + nzs + others + errmsgs + errflgs
 
@@ -464,6 +495,45 @@ def _chost_cpp_type(ai: dict) -> str:
     return "void*"
 
 
+# Map CCPP lifecycle names to scheme entry-point name suffixes.
+_LC_TO_ENTRY_SUFFIX = {
+    "run":              ("_run",),
+    "initialize":       ("_init", "_initialize"),
+    "timestep_initial": ("_timestep_initial",),
+    "timestep_final":   ("_timestep_final",),
+    "finalize":         ("_finalize",),
+    "register":         ("_register",),
+}
+
+
+def _ddt_arg_intent(std_name: str, lc: str, meta_data: dict) -> str:
+    """Return the intent of a DDT arg with the given standard_name for lifecycle lc.
+
+    Scans all SCHEME arg tables whose name ends with the entry-point suffix that
+    corresponds to ``lc`` (e.g. ``lc="timestep_final"`` → suffix ``"_timestep_final"``).
+    If any matching table declares the arg ``intent=inout`` (most permissive), that
+    wins immediately.  Returns ``"inout"`` when not found (safe default).
+    """
+    suffixes = _LC_TO_ENTRY_SUFFIX.get(lc, ())
+    found: str | None = None
+    for props in meta_data.values():
+        if props.getAttr("type") != CCPPType.SCHEME:
+            continue
+        for tbl_name, atbl in props.arg_tables.items():
+            if not any(tbl_name.endswith(s) for s in suffixes):
+                continue
+            for var in atbl.getFunctionArguments():
+                if not (var.hasAttr("standard_name") and var.hasAttr("intent")):
+                    continue
+                if var.getAttr("standard_name").lower() != std_name:
+                    continue
+                intent = var.getAttr("intent")
+                if intent == "inout":
+                    return "inout"
+                found = found or intent
+    return found or "inout"
+
+
 def _chost_fn_contexts(
     bind_c_fns, suite_name, suite_descriptions, public_fns,
     ncol_var, local_to_std, std_to_host, kind_iso_map,
@@ -508,9 +578,12 @@ def _chost_fn_contexts(
                 _ddt_type = t.type_name.data
 
             if _ddt_type is not None and meta_data is not None:
+                std = local_to_std.get(bare, "")
+                original_intent = _ddt_arg_intent(std, lc, meta_data)
                 member_ais, local_info = _chost_expand_ddt_arg(
                     bare, _ddt_type, meta_data,
                     local_to_std, std_to_host, kind_iso_map, ncol_var, nz_var,
+                    original_intent=original_intent,
                 )
                 infos.extend(member_ais)
                 ddt_locals[bare] = local_info
@@ -3429,14 +3502,15 @@ class CCPPCAP(ModulePass):
                         call_exprs.append(oai["host"])
                 _emit_call(A, sfn_i, call_exprs)
 
-            # ── DDT writeback: copy array members back then deallocate ────────
+            # ── DDT cleanup: writeback inout arrays, deallocate all arrays ───────
             for li in ddt_locals.values():
                 lname = li["local_name"]
-                for ai in li["inout_array_ais"]:
+                for ai in li["array_ais"]:
                     mn  = ai["_ddt_member"]
                     fn_ = ai["bare"]
-                    c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
-                    A(f"    {fn_} = real({lname}%{mn}, {c_real})")
+                    if ai["intent"] != "in":
+                        c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
+                        A(f"    {fn_} = real({lname}%{mn}, {c_real})")
                     A(f"    deallocate({lname}%{mn})")
 
             # ── F→C string copy loops ─────────────────────────────────────────
@@ -3651,7 +3725,7 @@ class CCPPCAP(ModulePass):
             # default via their in-class initialisers.  Prevents aggregate-init
             # errors when State has a private: section from allocate().
             ncol_fields = [ai for ai in state_fields if ai["is_ncol"]]
-            nz_fields   = [ai for ai in state_fields if ai["is_nz"]]
+            nz_fields   = [ai for ai in state_fields if ai["is_nz"] or ai.get("is_dim_scalar")]
             dim_scalar_fields = ncol_fields + nz_fields
             if dim_scalar_fields:
                 params_str = ", ".join(
