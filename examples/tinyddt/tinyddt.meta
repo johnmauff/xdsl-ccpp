@@ -19,6 +19,26 @@
   kind = kind_phys
 
 [ccpp-table-properties]
+  name = tiny_tend_t
+  type = ddt
+[ccpp-arg-table]
+  name = tiny_tend_t
+  type = ddt
+[ nz ]
+  standard_name = vertical_layer_dimension
+  long_name = number of vertical layers
+  units = count
+  dimensions = ()
+  type = integer
+[ dtemp ]
+  standard_name = tendency_of_air_temperature
+  long_name = air temperature tendency
+  units = K s-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real
+  kind = kind_phys
+
+[ccpp-table-properties]
   name = tinyddt
   type = scheme
 [ccpp-arg-table]
@@ -43,6 +63,12 @@
   long_name = tiny DDT physics state
   dimensions = ()
   type = tiny_state_t
+  intent = inout
+[ tend ]
+  standard_name = tiny_physics_tendency
+  long_name = tiny DDT physics tendency
+  dimensions = ()
+  type = tiny_tend_t
   intent = inout
 [ errmsg ]
   standard_name = ccpp_error_message

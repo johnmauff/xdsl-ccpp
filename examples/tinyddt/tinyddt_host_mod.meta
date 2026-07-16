@@ -15,3 +15,8 @@
   long_name = tiny DDT physics state
   type = tiny_state_t
   dimensions = ()
+[ tend ]
+  standard_name = tiny_physics_tendency
+  long_name = tiny DDT physics tendency
+  type = tiny_tend_t
+  dimensions = ()
