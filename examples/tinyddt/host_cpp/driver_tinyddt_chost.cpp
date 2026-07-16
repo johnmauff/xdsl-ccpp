@@ -10,7 +10,6 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <vector>
 
 static constexpr int NCOL     = 4;
 static constexpr int STATE_NZ = 3;
@@ -24,21 +23,25 @@ static void check(const char* label, const Tinyddt_chost::Status& s) {
 
 int main() {
     Tinyddt_chost::State state(NCOL, STATE_NZ);
+    state.allocate();
 
-    // Allocate temperature array in column-major order: (ncol, state_nz).
-    std::vector<double> temp(NCOL * STATE_NZ, 200.0);
-    state.state_temp = temp.data();
+    // Initialise temperatures to 200 K.
+    for (int i = 0; i < NCOL * STATE_NZ; ++i)
+        state.state_temp[i] = 200.0;
 
-    check("register",   Tinyddt_chost::do_register());
-    check("initialize", Tinyddt_chost::initialize());
-    check("run",        Tinyddt_chost::run(state, 1, NCOL));
-    check("finalize",   Tinyddt_chost::finalize());
+    check("register",         Tinyddt_chost::do_register());
+    check("initialize",       Tinyddt_chost::initialize());
+    check("timestep_initial", Tinyddt_chost::timestep_initial());
+    check("run",              Tinyddt_chost::run(state, 1, NCOL));
+    check("timestep_final",   Tinyddt_chost::timestep_final());
+    check("finalize",         Tinyddt_chost::finalize());
 
     // tinyddt_run adds 1.0 K to all temperatures, so each should be 201.0.
     bool passed = true;
     for (int i = 0; i < NCOL * STATE_NZ; ++i) {
-        if (temp[i] != 201.0) {
-            std::fprintf(stderr, "FAIL: temp[%d] = %.1f, expected 201.0\n", i, temp[i]);
+        if (state.state_temp[i] != 201.0) {
+            std::fprintf(stderr, "FAIL: temp[%d] = %.1f, expected 201.0\n",
+                         i, state.state_temp[i]);
             passed = false;
         }
     }
@@ -46,7 +49,7 @@ int main() {
     if (passed) {
         std::printf("PASS: all %d temperatures = %.1f "
                     "(initial 200.0 + 1.0 from tinyddt_run)\n",
-                    NCOL * STATE_NZ, temp[0]);
+                    NCOL * STATE_NZ, state.state_temp[0]);
         return 0;
     }
     return 1;
