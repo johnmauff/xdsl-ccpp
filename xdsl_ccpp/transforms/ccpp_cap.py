@@ -283,6 +283,7 @@ def _chost_expand_ddt_arg(
     member_ais = []
     flat_nz_var = None
     dim_scalars_used: set = set()   # flat names of scalars referenced as dim_nz
+    char_member_blanks: list = []   # character members — not exposed, init to ' '
 
     for var in arg_table.getFunctionArguments():
         flat_name = f"{prefix}_{var.name}"
@@ -295,6 +296,12 @@ def _chost_expand_ddt_arg(
         vtype   = var.getAttr("type").lower() if var.hasAttr("type") else "real"
         is_int  = (vtype == "integer")
         is_real = (vtype == "real")
+
+        if vtype == "character":
+            # Character members (e.g. ccpp_info_t%errmsg) are not exposed in the
+            # C interface; the chost cap initialises them to blank instead.
+            char_member_blanks.append(var.name)
+            continue
 
         real_width = 64
         if is_real and var.hasAttr("kind"):
@@ -360,6 +367,7 @@ def _chost_expand_ddt_arg(
         member_ais=member_ais,
         array_ais=array_ais,
         flat_nz_var=flat_nz_var,
+        char_member_blanks=char_member_blanks,
     )
     return member_ais, local_info
 
@@ -534,6 +542,30 @@ def _ddt_arg_intent(std_name: str, lc: str, meta_data: dict) -> str:
     return found or "inout"
 
 
+def _ddt_out_name(ddt_type_name: str, lc: str, meta_data: dict) -> "str | None":
+    """Return the local variable name of an intent=out arg with the given DDT type.
+
+    Scans scheme arg tables for lifecycle ``lc`` looking for an arg whose ``type``
+    matches ``ddt_type_name`` and whose ``intent`` is ``"out"``.  Returns None when
+    not found (e.g. the DDT appears as intent=inout in the inputs).
+    """
+    suffixes = _LC_TO_ENTRY_SUFFIX.get(lc, ())
+    for props in meta_data.values():
+        if props.getAttr("type") != CCPPType.SCHEME:
+            continue
+        for tbl_name, atbl in props.arg_tables.items():
+            if not any(tbl_name.endswith(s) for s in suffixes):
+                continue
+            for var in atbl.getFunctionArguments():
+                if not var.hasAttr("type") or not var.hasAttr("intent"):
+                    continue
+                if var.getAttr("type").lower() != ddt_type_name.lower():
+                    continue
+                if var.getAttr("intent") == "out":
+                    return var.name
+    return None
+
+
 def _chost_fn_contexts(
     bind_c_fns, suite_name, suite_descriptions, public_fns,
     ncol_var, local_to_std, std_to_host, kind_iso_map,
@@ -594,6 +626,34 @@ def _chost_fn_contexts(
                 suite_call_pieces.append({"kind": "arg", "ai": ai})
 
         out_infos = _chost_out_infos(pfn_out_types, std_to_host)
+
+        # ── intent=out DDT outputs (Gap 3) ────────────────────────────────────
+        # For intent=out DDTs the MLIR encodes them as function *outputs* (not
+        # inputs), so they do not appear in pfn_hints/pfn_types.  Detect them
+        # here and expand into flat args just like intent=inout DDTs from inputs,
+        # but skip the array allocate+fill in the copy-in phase (the scheme does
+        # the allocation internally).
+        ddt_out_locals: list = []
+        if meta_data is not None:
+            for otype in pfn_out_types:
+                if not isinstance(otype, MemRefType):
+                    continue
+                elem = otype.element_type
+                if not isinstance(elem, DerivedType):
+                    continue
+                ddt_type_name = elem.type_name.data
+                prefix = _ddt_out_name(ddt_type_name, lc, meta_data)
+                if prefix is None or prefix in ddt_locals:
+                    continue
+                member_ais, local_info = _chost_expand_ddt_arg(
+                    prefix, ddt_type_name, meta_data,
+                    local_to_std, std_to_host, kind_iso_map, ncol_var, nz_var,
+                    original_intent="out",
+                )
+                infos.extend(member_ais)
+                ddt_locals[prefix] = local_info
+                ddt_out_locals.append(local_info["local_name"])
+
         visible = list(infos) + out_infos
         visible = _chost_maybe_inject_ncol(visible, infos, ncol_var)
         visible = _chost_canonical_order(visible)
@@ -608,6 +668,7 @@ def _chost_fn_contexts(
             "visible": visible,
             "ddt_locals": ddt_locals,
             "suite_call_pieces": suite_call_pieces,
+            "ddt_out_locals": ddt_out_locals,
         })
     return contexts
 
@@ -3452,6 +3513,9 @@ class CCPPCAP(ModulePass):
             # ── DDT copy-in: scalars assigned, arrays allocated and filled ────
             for li in ddt_locals.values():
                 lname = li["local_name"]
+                # Character members are not in the C interface; initialise blank.
+                for mn in li.get("char_member_blanks", []):
+                    A(f"    {lname}%{mn} = ' '")
                 for ai in li["member_ais"]:
                     mn = ai["_ddt_member"]
                     fn_ = ai["bare"]
@@ -3466,8 +3530,10 @@ class CCPPCAP(ModulePass):
                             dims = f"{_dn}, {_dz}"
                         else:
                             dims = f"{_dn}, {_dz}, *"
-                        A(f"    allocate({lname}%{mn}({dims}))")
-                        A(f"    {lname}%{mn} = real({fn_}, kind_phys)")
+                        if ai["intent"] != "out":
+                            # intent=out: scheme allocates internally; skip pre-alloc.
+                            A(f"    allocate({lname}%{mn}({dims}))")
+                            A(f"    {lname}%{mn} = real({fn_}, kind_phys)")
 
             # ── Suite cap calls ───────────────────────────────────────────────
             for sfn_i in sfns:
@@ -3494,6 +3560,9 @@ class CCPPCAP(ModulePass):
                             call_exprs.append(f"real({ai['host']}, kind_phys)")
                         else:
                             call_exprs.append(ai["host"])
+                # intent=out DDT locals come before errmsg/errflg in the call.
+                for ddt_local_name in ctx.get("ddt_out_locals", []):
+                    call_exprs.append(ddt_local_name)
                 # Output args (suite cap output order: errmsg_f / scheme_name_f / errflg)
                 for oai in out_infos:
                     if oai["is_errmsg"] or oai["is_sname"]:
