@@ -55,11 +55,13 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_HORIZONTAL_DIMENSIONS,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_SCHEME_NAME_LEN,
     CCPP_VERT_DIM_STD_NAME,
+    CCPP_VERTICAL_DIMENSIONS,
 )
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
@@ -188,10 +190,13 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
     rank = 0
     real_width = 64
     is_char = is_int = is_real = False
-    if isinstance(mtype, DerivedType):
+    _ddt = (mtype if isinstance(mtype, DerivedType)
+            else mtype.element_type if isinstance(mtype, MemRefType) and isinstance(mtype.element_type, DerivedType)
+            else None)
+    if _ddt is not None:
         raise ValueError(
             f"chost cap: argument '{bare}' (standard_name='{std}') has derived "
-            f"type '{mtype.type_name.data}' — DDT arguments are not supported in "
+            f"type '{_ddt.type_name.data}' — DDT arguments are not supported in "
             f"the C-interoperable chost interface. Flatten the DDT into individual "
             f"scalar/array members, or see multilanguage_limitations.md for options."
         )
@@ -230,6 +235,102 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
         is_char=is_char, is_int=is_int, is_real=is_real,
         real_width=real_width, rank=rank, intent=intent,
     )
+
+
+def _chost_expand_ddt_arg(
+    prefix, ddt_type_name, meta_data,
+    local_to_std, std_to_host, kind_iso_map, ncol_var, nz_var,
+    original_intent="inout",
+):
+    """Expand a DDT scheme argument into flat C-interoperable arg info dicts.
+
+    For a scheme arg ``state`` of type ``tiny_state_t``, produces one arg dict
+    per DDT member (e.g. ``state_nz``, ``state_temp``), plus a ``local_info``
+    dict that drives Fortran reconstruction code.
+
+    Returns (member_ais, local_info).
+    """
+    ddt_props = meta_data.get(ddt_type_name)
+    if ddt_props is None:
+        for _k, _v in meta_data.items():
+            if _k.lower() == ddt_type_name.lower() and _v.getAttr("type") == CCPPType.DDT:
+                ddt_props = _v
+                break
+    if ddt_props is None:
+        raise ValueError(
+            f"chost DDT expand: type '{ddt_type_name}' not found in metadata"
+        )
+    ddt_table_name = ddt_props.getAttr("name")
+    arg_table = ddt_props.arg_tables.get(ddt_table_name)
+    if arg_table is None:
+        raise ValueError(
+            f"chost DDT expand: DDT '{ddt_type_name}' has no arg table"
+        )
+
+    member_ais = []
+    flat_nz_var = None
+
+    for var in arg_table.getFunctionArguments():
+        flat_name = f"{prefix}_{var.name}"
+        std = var.getAttr("standard_name").lower() if var.hasAttr("standard_name") else ""
+        ndim = int(var.getAttr("dimensions")) if var.hasAttr("dimensions") else 0
+        dim_names = var.getAttr("dim_names") if var.hasAttr("dim_names") else []
+
+        is_ncol = std in {CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME}
+        is_nz   = std in CCPP_VERTICAL_DIMENSIONS
+        vtype   = var.getAttr("type").lower() if var.hasAttr("type") else "real"
+        is_int  = (vtype == "integer")
+        is_real = (vtype == "real")
+
+        real_width = 64
+        if is_real and var.hasAttr("kind"):
+            iso = kind_iso_map.get(var.getAttr("kind"), "REAL64")
+            real_width = _real_width_from_iso(iso)
+
+        has_horiz = any(d.lower() in CCPP_HORIZONTAL_DIMENSIONS for d in dim_names)
+        has_vert  = any(d.lower() in CCPP_VERTICAL_DIMENSIONS    for d in dim_names)
+
+        dim_ncol = ncol_var if has_horiz else None
+        dim_nz   = "__FLAT_NZ__"   if has_vert  else None
+
+        if is_nz or is_ncol or (is_int and ndim == 0):
+            intent = "in"
+        elif ndim == 0 and is_real:
+            intent = "in"
+        else:
+            intent = original_intent
+
+        ai = dict(
+            hint=None, bare=flat_name, host=flat_name, std=std,
+            is_col_start=False, is_col_end=False,
+            is_ncol=is_ncol, is_nz=is_nz,
+            is_errmsg=False, is_errflg=False, is_sname=False,
+            is_char=False, is_int=is_int, is_real=is_real,
+            real_width=real_width, rank=ndim, intent=intent,
+            _ddt_member=var.name,
+            _ddt_local=f"{prefix}_local",
+            _ddt_prefix=prefix,
+            dim_ncol=dim_ncol,
+            dim_nz=dim_nz,
+        )
+        if is_nz:
+            flat_nz_var = flat_name
+        member_ais.append(ai)
+
+    for ai in member_ais:
+        if ai["dim_nz"] == "__FLAT_NZ__":
+            ai["dim_nz"] = flat_nz_var
+
+    inout_array_ais = [ai for ai in member_ais if ai["rank"] > 0]
+    local_info = dict(
+        local_name=f"{prefix}_local",
+        ddt_type=ddt_type_name,
+        prefix=prefix,
+        member_ais=member_ais,
+        inout_array_ais=inout_array_ais,
+        flat_nz_var=flat_nz_var,
+    )
+    return member_ais, local_info
 
 
 def _chost_canonical_order(visible):
@@ -366,11 +467,20 @@ def _chost_cpp_type(ai: dict) -> str:
 def _chost_fn_contexts(
     bind_c_fns, suite_name, suite_descriptions, public_fns,
     ncol_var, local_to_std, std_to_host, kind_iso_map,
+    meta_data=None, ddt_source_module=None, nz_var="nz",
 ):
     """Yield per-function context dicts for chost cap generation.
 
     Each dict contains the computed preamble values for one bind-C function:
-    fn, cfn, lc, sfns, suite_fn, infos, out_infos, visible.
+    fn, cfn, lc, sfns, suite_fn, infos, out_infos, visible, ddt_locals,
+    suite_call_pieces.
+
+    When meta_data is provided, DDT-typed arguments are expanded into flat
+    C-compatible args rather than raising an error.  ddt_locals maps each
+    original DDT arg bare name to a local_info dict used to generate Fortran
+    reconstruction code.  suite_call_pieces is a list parallel to the original
+    pfn_hints, recording what to pass in the suite cap call for each arg.
+
     Functions with no recognised lifecycle or no matching suite cap are skipped.
     """
     contexts = []
@@ -384,8 +494,32 @@ def _chost_fn_contexts(
         if suite_fn is None:
             continue
         _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
-        infos = [_chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
-                 for h, t in zip(pfn_hints, pfn_types)]
+
+        infos = []
+        ddt_locals: dict = {}
+        suite_call_pieces: list = []
+
+        for h, t in zip(pfn_hints, pfn_types):
+            bare = _bare(h) if h else ""
+            _ddt_type = None
+            if isinstance(t, MemRefType) and isinstance(t.element_type, DerivedType):
+                _ddt_type = t.element_type.type_name.data
+            elif isinstance(t, DerivedType):
+                _ddt_type = t.type_name.data
+
+            if _ddt_type is not None and meta_data is not None:
+                member_ais, local_info = _chost_expand_ddt_arg(
+                    bare, _ddt_type, meta_data,
+                    local_to_std, std_to_host, kind_iso_map, ncol_var, nz_var,
+                )
+                infos.extend(member_ais)
+                ddt_locals[bare] = local_info
+                suite_call_pieces.append({"kind": "ddt_local", "name": local_info["local_name"]})
+            else:
+                ai = _chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
+                infos.append(ai)
+                suite_call_pieces.append({"kind": "arg", "ai": ai})
+
         out_infos = _chost_out_infos(pfn_out_types, std_to_host)
         visible = list(infos) + out_infos
         visible = _chost_maybe_inject_ncol(visible, infos, ncol_var)
@@ -399,6 +533,8 @@ def _chost_fn_contexts(
             "infos": infos,
             "out_infos": out_infos,
             "visible": visible,
+            "ddt_locals": ddt_locals,
+            "suite_call_pieces": suite_call_pieces,
         })
     return contexts
 
@@ -3042,7 +3178,8 @@ class CCPPCAP(ModulePass):
         return module_var_ops, api_op, global_stubs
 
     def _generate_chost_cap_module(
-        self, suite_descriptions, meta_data, cap_mod, ccpp_mod, public_fns=None
+        self, suite_descriptions, meta_data, cap_mod, ccpp_mod,
+        public_fns=None, ddt_source_module=None,
     ):
         """Build a CHostCapOp carrying the BIND(C) chost Fortran module and C++ header.
 
@@ -3078,21 +3215,24 @@ class CCPPCAP(ModulePass):
         ftn_text = self._build_chost_ftn_text(
             camel_name, mod_name, suite_cap_mod_name, bind_c_fns, meta_data, ccpp_mod,
             public_fns or {}, suite_descriptions,
+            ddt_source_module=ddt_source_module,
         )
         cpp_text = self._build_chost_cpp_text(
             camel_name, mod_name, bind_c_fns,
             meta_data, public_fns or {}, suite_descriptions, ccpp_mod,
+            ddt_source_module=ddt_source_module,
         )
         wrapper_text = self._build_chost_wrapper_text(
             camel_name, mod_name, bind_c_fns,
             meta_data, public_fns or {}, suite_descriptions, ccpp_mod,
+            ddt_source_module=ddt_source_module,
         )
 
         return CHostCapOp(ftn_text, cpp_text, mod_name, wrapper_text)
 
     def _build_chost_ftn_text(
         self, camel_name, mod_name, suite_cap_mod_name, bind_c_fns, meta_data, ccpp_mod,
-        public_fns, suite_descriptions,
+        public_fns, suite_descriptions, ddt_source_module=None,
     ):
         """Generate the complete Fortran BIND(C) chost cap module text."""
         # ── Metadata maps ──────────────────────────────────────────────────────
@@ -3131,18 +3271,19 @@ class CCPPCAP(ModulePass):
                 return f"    integer(c_int), value, intent(in) :: {host}"
             if ai["is_real"]:
                 c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
+                _dn = ai.get("dim_ncol") or ncol_var
+                _dz = ai.get("dim_nz")   or nz_var
                 if ai["rank"] == 0:
                     return f"    real({c_real}), value, intent(in) :: {host}"
                 if ai["rank"] == 1:
                     return (f"    real({c_real}), target,"
-                            f" intent({ai['intent']}) :: {host}({ncol_var})")
+                            f" intent({ai['intent']}) :: {host}({_dn})")
                 if ai["rank"] == 2:
                     return (f"    real({c_real}), target,"
-                            f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var})")
-                # rank >= 3: ncol and nz are known; higher dimensions are
-                # assumed-size (*) since we have no variable name for them.
+                            f" intent({ai['intent']}) :: {host}({_dn}, {_dz})")
+                # rank >= 3: higher dimensions are assumed-size (*).
                 return (f"    real({c_real}), target,"
-                        f" intent({ai['intent']}) :: {host}({ncol_var}, {nz_var}, *)")
+                        f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, *)")
             if ai["is_sname"]:
                 return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
             if ai["is_errmsg"]:
@@ -3154,6 +3295,7 @@ class CCPPCAP(ModulePass):
         fn_ctxs = _chost_fn_contexts(
             bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
+            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         )
 
         # ── Collect suite cap functions referenced ──────────────────────────────
@@ -3163,6 +3305,16 @@ class CCPPCAP(ModulePass):
                 if sfn not in used_suite_fns and sfn in public_fns:
                     used_suite_fns.append(sfn)
 
+        # ── Collect DDT types that need USE statements ──────────────────────────
+        ddt_uses: dict = {}  # type_name → module_name
+        for ctx in fn_ctxs:
+            for li in ctx.get("ddt_locals", {}).values():
+                tn = li["ddt_type"]
+                if tn not in ddt_uses and ddt_source_module:
+                    mod = ddt_source_module.get(tn)
+                    if mod:
+                        ddt_uses[tn] = mod
+
         # ── Module header ───────────────────────────────────────────────────────
         L: list = []
         A = L.append
@@ -3171,6 +3323,8 @@ class CCPPCAP(ModulePass):
         A("")
         A("  use ccpp_kinds, only: kind_phys")
         A("  use iso_c_binding")
+        for tn, mod in sorted(ddt_uses.items()):
+            A(f"  use {mod}, only: {tn}")
         for sfn in used_suite_fns:
             A(f"  use {suite_cap_mod_name}, only: {sfn}")
         A("")
@@ -3188,6 +3342,8 @@ class CCPPCAP(ModulePass):
             suite_fn, infos, out_infos, visible = (
                 ctx["suite_fn"], ctx["infos"], ctx["out_infos"], ctx["visible"]
             )
+            ddt_locals      = ctx.get("ddt_locals", {})
+            suite_call_pcs  = ctx.get("suite_call_pieces", [])
 
             has_errmsg = any(ai["is_errmsg"] for ai in visible)
             has_sname  = any(ai["is_sname"]  for ai in visible)
@@ -3207,6 +3363,8 @@ class CCPPCAP(ModulePass):
             if has_errmsg:
                 em = next(ai["host"] for ai in visible if ai["is_errmsg"])
                 A(f"    character(len={CCPP_ERRMSG_LEN}) :: {em}_f")
+            for li in ddt_locals.values():
+                A(f"    type({li['ddt_type']}) :: {li['local_name']}")
 
             # ── Body initialization ───────────────────────────────────────────
             A("")
@@ -3218,19 +3376,51 @@ class CCPPCAP(ModulePass):
                 ef = next(ai["host"] for ai in visible if ai["is_errflg"])
                 A(f"    {ef} = 0")
 
+            # ── DDT copy-in: scalars assigned, arrays allocated and filled ────
+            for li in ddt_locals.values():
+                lname = li["local_name"]
+                for ai in li["member_ais"]:
+                    mn = ai["_ddt_member"]
+                    fn_ = ai["bare"]
+                    if ai["rank"] == 0:
+                        A(f"    {lname}%{mn} = {fn_}")
+                    else:
+                        _dn = ai.get("dim_ncol") or ncol_var
+                        _dz = ai.get("dim_nz")   or nz_var
+                        if ai["rank"] == 1:
+                            dims = _dn
+                        elif ai["rank"] == 2:
+                            dims = f"{_dn}, {_dz}"
+                        else:
+                            dims = f"{_dn}, {_dz}, *"
+                        A(f"    allocate({lname}%{mn}({dims}))")
+                        A(f"    {lname}%{mn} = real({fn_}, kind_phys)")
+
             # ── Suite cap calls ───────────────────────────────────────────────
             for sfn_i in sfns:
                 if sfn_i not in public_fns:
                     continue
-                # Input args (suite cap input order, col_start/col_end passed through)
                 call_exprs = []
-                for ai in infos:
-                    if ai["is_col_start"] or ai["is_col_end"]:
-                        call_exprs.append(ai["host"])
-                    elif ai["is_real"] and ai["rank"] == 0:
-                        call_exprs.append(f"real({ai['host']}, kind_phys)")
-                    else:
-                        call_exprs.append(ai["host"])
+                if suite_call_pcs:
+                    for piece in suite_call_pcs:
+                        if piece["kind"] == "ddt_local":
+                            call_exprs.append(piece["name"])
+                        else:
+                            ai = piece["ai"]
+                            if ai["is_col_start"] or ai["is_col_end"]:
+                                call_exprs.append(ai["host"])
+                            elif ai["is_real"] and ai["rank"] == 0:
+                                call_exprs.append(f"real({ai['host']}, kind_phys)")
+                            else:
+                                call_exprs.append(ai["host"])
+                else:
+                    for ai in infos:
+                        if ai["is_col_start"] or ai["is_col_end"]:
+                            call_exprs.append(ai["host"])
+                        elif ai["is_real"] and ai["rank"] == 0:
+                            call_exprs.append(f"real({ai['host']}, kind_phys)")
+                        else:
+                            call_exprs.append(ai["host"])
                 # Output args (suite cap output order: errmsg_f / scheme_name_f / errflg)
                 for oai in out_infos:
                     if oai["is_errmsg"] or oai["is_sname"]:
@@ -3238,6 +3428,16 @@ class CCPPCAP(ModulePass):
                     else:
                         call_exprs.append(oai["host"])
                 _emit_call(A, sfn_i, call_exprs)
+
+            # ── DDT writeback: copy array members back then deallocate ────────
+            for li in ddt_locals.values():
+                lname = li["local_name"]
+                for ai in li["inout_array_ais"]:
+                    mn  = ai["_ddt_member"]
+                    fn_ = ai["bare"]
+                    c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
+                    A(f"    {fn_} = real({lname}%{mn}, {c_real})")
+                    A(f"    deallocate({lname}%{mn})")
 
             # ── F→C string copy loops ─────────────────────────────────────────
             if has_sname:
@@ -3261,9 +3461,10 @@ class CCPPCAP(ModulePass):
     def _build_chost_cpp_text(
         self, camel_name, mod_name, bind_c_fns,
         meta_data, public_fns, suite_descriptions, ccpp_mod=None,
+        ddt_source_module=None,
     ):
         """Generate the complete C++ header text for the chost cap."""
-        std_to_host, local_to_std, ncol_var, _nz_var = _chost_build_maps(meta_data)
+        std_to_host, local_to_std, ncol_var, nz_var = _chost_build_maps(meta_data)
 
         kind_iso_map = _chost_kind_iso_map(ccpp_mod) if ccpp_mod is not None else {}
 
@@ -3283,6 +3484,7 @@ class CCPPCAP(ModulePass):
         for ctx in _chost_fn_contexts(
             bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
+            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         ):
             cfn, visible = ctx["cfn"], ctx["visible"]
             params = [(ai["host"], _chost_cpp_type(ai)) for ai in visible]
@@ -3306,6 +3508,7 @@ class CCPPCAP(ModulePass):
     def _build_chost_wrapper_text(
         self, camel_name, mod_name, bind_c_fns,
         meta_data, public_fns, suite_descriptions, ccpp_mod=None,
+        ddt_source_module=None,
     ):
         """Generate the C++ ergonomics wrapper (.hpp) for the chost cap.
 
@@ -3347,6 +3550,7 @@ class CCPPCAP(ModulePass):
         for ctx in _chost_fn_contexts(
             bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
+            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         ):
             cfn, lc, visible = ctx["cfn"], ctx["lc"], ctx["visible"]
 
@@ -3443,20 +3647,24 @@ class CCPPCAP(ModulePass):
                 default = " = nullptr" if cpp_t.endswith("*") else " = 0"
                 A(f"    {cpp_t:<16} {ai['host']}{default};")
 
-            # Constructor: initialise dimension scalars; all other fields default
-            # via their in-class initialisers above.  Prevents aggregate-init
+            # Constructor: initialise ncol and all is_nz scalars; other fields
+            # default via their in-class initialisers.  Prevents aggregate-init
             # errors when State has a private: section from allocate().
-            has_ncol = any(ai["host"] == ncol_var for ai in state_fields)
-            has_nz   = any(ai["host"] == nz_var   for ai in state_fields)
-            if has_ncol and has_nz:
+            ncol_fields = [ai for ai in state_fields if ai["is_ncol"]]
+            nz_fields   = [ai for ai in state_fields if ai["is_nz"]]
+            dim_scalar_fields = ncol_fields + nz_fields
+            if dim_scalar_fields:
+                params_str = ", ".join(
+                    f"int {ai['host']} = 0" for ai in dim_scalar_fields
+                )
+                inits_str = ", ".join(
+                    f"{ai['host']}({ai['host']})" for ai in dim_scalar_fields
+                )
                 A("")
-                A(f"    State(int {ncol_var} = 0, int {nz_var} = 0)")
-                A(f"        : {ncol_var}({ncol_var}), {nz_var}({nz_var}) {{}}")
-            elif has_ncol:
-                A("")
-                A(f"    State(int {ncol_var} = 0) : {ncol_var}({ncol_var}) {{}}")
+                A(f"    State({params_str})")
+                A(f"        : {inits_str} {{}}")
 
-            # Array fields whose size we can express from ncol_var / nz_var
+            # Array fields whose size we can express from their dim_ncol / dim_nz
             alloc_fields = [
                 ai for ai in state_fields
                 if ai["rank"] in (1, 2) and not ai["is_int"]
@@ -3468,10 +3676,12 @@ class CCPPCAP(ModulePass):
                 A("    void allocate() {")
                 for ai in alloc_fields:
                     elem_t = _chost_cpp_type(ai).replace("const ", "").replace("*", "").strip()
+                    _dn = ai.get("dim_ncol") or ncol_var
+                    _dz = ai.get("dim_nz")   or nz_var
                     size_expr = (
-                        f"static_cast<std::size_t>({ncol_var})"
+                        f"static_cast<std::size_t>({_dn})"
                         if ai["rank"] == 1
-                        else f"static_cast<std::size_t>({ncol_var}) * {nz_var}"
+                        else f"static_cast<std::size_t>({_dn}) * {_dz}"
                     )
                     A(f"        _{ai['host']}.assign({size_expr}, 0);")
                     A(f"        {ai['host']} = _{ai['host']}.data();")
@@ -4041,5 +4251,6 @@ class CCPPCAP(ModulePass):
             chost_op = self._generate_chost_cap_module(
                 suite_descriptions, meta_data_descriptions, cap_mod, ccpp_mod,
                 public_fns=public_fns,
+                ddt_source_module=ddt_source_module,
             )
             op.body.block.add_op(chost_op)
