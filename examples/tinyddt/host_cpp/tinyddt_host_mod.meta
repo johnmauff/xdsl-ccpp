@@ -1,0 +1,18 @@
+[ccpp-table-properties]
+  name = tinyddt_host_mod
+  type = module
+  language = c++
+[ccpp-arg-table]
+  name = tinyddt_host_mod
+  type = module
+[ ncol ]
+  standard_name = horizontal_dimension
+  long_name = total number of columns
+  units = count
+  dimensions = ()
+  type = integer
+[ state ]
+  standard_name = tiny_physics_state
+  long_name = tiny DDT physics state
+  type = tiny_state_t
+  dimensions = ()

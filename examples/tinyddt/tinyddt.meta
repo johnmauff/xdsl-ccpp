@@ -1,0 +1,61 @@
+[ccpp-table-properties]
+  name = tiny_state_t
+  type = ddt
+[ccpp-arg-table]
+  name = tiny_state_t
+  type = ddt
+[ nz ]
+  standard_name = vertical_layer_dimension
+  long_name = number of vertical layers
+  units = count
+  dimensions = ()
+  type = integer
+[ temp ]
+  standard_name = air_temperature
+  long_name = air temperature
+  units = K
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real
+  kind = kind_phys
+
+[ccpp-table-properties]
+  name = tinyddt
+  type = scheme
+[ccpp-arg-table]
+  name = tinyddt_run
+  type = scheme
+[ cols ]
+  standard_name = horizontal_loop_begin
+  long_name = start column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ cole ]
+  standard_name = horizontal_loop_end
+  long_name = end column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ state ]
+  standard_name = tiny_physics_state
+  long_name = tiny DDT physics state
+  dimensions = ()
+  type = tiny_state_t
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
