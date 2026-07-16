@@ -172,7 +172,8 @@ def _chost_build_maps(meta_data):
     return std_to_host, local_to_std, ncol_var, nz_var
 
 
-def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
+def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
+                    local_to_dim_names=None):
     """Return an arg descriptor dict for a single suite cap input argument."""
     bare = _bare(hint) if hint else ""
     std  = local_to_std.get(bare, "")
@@ -227,6 +228,20 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
     else:
         intent = "inout"
 
+    # Resolve the correct vertical dimension host variable for rank-2 arrays.
+    # A 2-D real may use vertical_interface_dimension (e.g. pverP) rather than
+    # the default vertical_layer_dimension (pver), so look up the actual
+    # dimension standard name rather than falling back to the global nz_var.
+    dim_nz = None
+    if rank >= 2 and is_real and local_to_dim_names is not None:
+        _dim_names = local_to_dim_names.get(bare, [])
+        _vert = next(
+            (d.lower() for d in _dim_names if d.lower() in CCPP_VERTICAL_DIMENSIONS),
+            None,
+        )
+        if _vert is not None:
+            dim_nz = std_to_host.get(_vert)
+
     return dict(
         hint=hint, bare=bare, host=host, std=std,
         is_col_start=is_col_start, is_col_end=is_col_end,
@@ -234,6 +249,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None):
         is_errflg=is_errflg, is_sname=is_sname,
         is_char=is_char, is_int=is_int, is_real=is_real,
         real_width=real_width, rank=rank, intent=intent,
+        dim_nz=dim_nz,
     )
 
 
@@ -431,13 +447,18 @@ def _chost_out_infos(pfn_out_types, std_to_host):
 
 
 def _chost_maybe_inject_ncol(visible: list, infos: list, ncol_var: str) -> list:
-    """Prepend a synthetic ncol arg-descriptor when col_end is present but ncol is not.
+    """Prepend a synthetic ncol arg-descriptor when ncol is needed but absent.
+
+    Triggers when col_end is present (ncol = col_end - col_start + 1 idiom) OR
+    when any horizontal array is present (its Fortran declaration needs ncol as
+    the explicit dimension size in the BIND(C) interface).
 
     Returns the (possibly prepended) visible list.
     """
-    has_col_end     = any(ai["is_col_end"] for ai in infos)
-    ncol_in_visible = any(ai["is_ncol"]    for ai in visible)
-    if has_col_end and not ncol_in_visible:
+    has_col_end     = any(ai["is_col_end"]                       for ai in infos)
+    has_horiz_array = any(ai["is_real"] and ai["rank"] >= 1      for ai in infos)
+    ncol_in_visible = any(ai["is_ncol"]                          for ai in visible)
+    if (has_col_end or has_horiz_array) and not ncol_in_visible:
         visible = [dict(
             hint=ncol_var, bare=ncol_var, host=ncol_var,
             std=CCPP_HORIZ_DIM_STD_NAME,
@@ -447,6 +468,45 @@ def _chost_maybe_inject_ncol(visible: list, infos: list, ncol_var: str) -> list:
             is_char=False, is_int=True, is_real=False,
             rank=0, intent="in",
         )] + visible
+    return visible
+
+
+def _chost_maybe_inject_nz(visible: list, infos: list, std_to_host: dict) -> list:
+    """Inject vertical dimension scalar args required by rank-2 arrays but not yet visible.
+
+    When a rank-2 real arg has dim_nz pointing to a specific host variable (e.g. pverP
+    for vertical_interface_dimension), that scalar must appear as a BIND(C) parameter.
+    The canonical injection for the default nz_var is handled elsewhere; this function
+    covers non-default vertical dimensions like vertical_interface_dimension.
+
+    Returns the (possibly extended) visible list.
+    """
+    nz_hosts_present = {ai["host"] for ai in visible if ai["is_nz"] or ai.get("is_dim_scalar")}
+    to_inject: dict = {}
+    for ai in infos:
+        if not (ai["is_real"] and ai["rank"] >= 2):
+            continue
+        dz = ai.get("dim_nz")
+        if not dz or dz in nz_hosts_present:
+            continue
+        # Find the standard_name whose std_to_host value is dz.
+        nz_std = next(
+            (std for std, host in std_to_host.items()
+             if host == dz and std in CCPP_VERTICAL_DIMENSIONS),
+            None,
+        )
+        if nz_std and dz not in to_inject:
+            to_inject[dz] = dict(
+                hint=dz, bare=dz, host=dz, std=nz_std,
+                is_col_start=False, is_col_end=False,
+                is_ncol=False, is_nz=True, is_errmsg=False,
+                is_errflg=False, is_sname=False,
+                is_char=False, is_int=True, is_real=False,
+                rank=0, intent="in", dim_nz=None,
+            )
+            nz_hosts_present.add(dz)
+    if to_inject:
+        visible = list(to_inject.values()) + visible
     return visible
 
 
@@ -585,6 +645,15 @@ def _chost_fn_contexts(
 
     Functions with no recognised lifecycle or no matching suite cap are skipped.
     """
+    # Build local_name → [dim_std_name, ...] for correct vertical-dim resolution.
+    local_to_dim_names: dict = {}
+    if meta_data is not None:
+        for props in meta_data.values():
+            for atbl in props.arg_tables.values():
+                for var in atbl.getFunctionArguments():
+                    if var.hasAttr("dim_names") and var.name not in local_to_dim_names:
+                        local_to_dim_names[var.name] = var.getAttr("dim_names")
+
     contexts = []
     for fn in bind_c_fns:
         fn_name = fn.sym_name.data
@@ -621,7 +690,10 @@ def _chost_fn_contexts(
                 ddt_locals[bare] = local_info
                 suite_call_pieces.append({"kind": "ddt_local", "name": local_info["local_name"]})
             else:
-                ai = _chost_arg_info(h, t, local_to_std, std_to_host, kind_iso_map)
+                ai = _chost_arg_info(
+                    h, t, local_to_std, std_to_host, kind_iso_map,
+                    local_to_dim_names=local_to_dim_names,
+                )
                 infos.append(ai)
                 suite_call_pieces.append({"kind": "arg", "ai": ai})
 
@@ -655,7 +727,14 @@ def _chost_fn_contexts(
                 ddt_out_locals.append(local_info["local_name"])
 
         visible = list(infos) + out_infos
+        # Deduplicate by host name: two schemes may map different local names
+        # (e.g. cols/col_start) to the same host variable.  Keep first occurrence
+        # so the BIND(C) parameter list has no repeated entries.
+        _seen: set = set()
+        visible = [ai for ai in visible
+                   if not (ai["host"] in _seen or _seen.add(ai["host"]))]
         visible = _chost_maybe_inject_ncol(visible, infos, ncol_var)
+        visible = _chost_maybe_inject_nz(visible, infos, std_to_host)
         visible = _chost_canonical_order(visible)
         contexts.append({
             "fn": fn,
