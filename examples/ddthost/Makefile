@@ -169,10 +169,10 @@ run: run-ftn run-cxx-host
 
 check: ftn_host cxx_host
 	@echo "=== ddthost CCPP check ==="
-	@$(EXE_FTN); STATUS=$$?; \
+	@$(EXE_FTN) > /dev/null; STATUS=$$?; \
 	  if [ $$STATUS -eq 0 ]; then echo "PASS: ftn_host"; \
 	  else echo "FAIL: ftn_host (exit $$STATUS)"; exit 1; fi
-	@$(EXE_CXX); STATUS=$$?; \
+	@$(EXE_CXX) > /dev/null; STATUS=$$?; \
 	  if [ $$STATUS -eq 0 ]; then echo "PASS: cxx_host"; \
 	  else echo "FAIL: cxx_host (exit $$STATUS)"; exit 1; fi
 
@@ -189,6 +189,35 @@ $(FTN_OBJ)/%.o: $(SCHEME_DIR)/%.F90 | $(FTN_OBJ)
 
 $(FTN_OBJ)/%.o: $(HOST_FTN_DIR)/%.F90 | $(FTN_OBJ)
 	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(FTN_OBJ) -I $(FTN_OBJ)
+
+# ── Fortran module ordering (parallel-make safety) ────────────────────────────
+# Order-only prerequisites ensure .mod files are fully written before any
+# dependent source reads them (prevents "Unexpected EOF" with make -j).
+$(FTN_OBJ)/test_utils.o:         | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/host_ccpp_ddt.o:      | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/test_host_data.o:     | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/test_host_mod.o:      | $(FTN_OBJ)/ccpp_kinds.o \
+                                    $(FTN_OBJ)/host_ccpp_ddt.o \
+                                    $(FTN_OBJ)/test_host_data.o
+$(FTN_OBJ)/make_ddt.o:           | $(FTN_OBJ)/ccpp_kinds.o \
+                                    $(FTN_OBJ)/host_ccpp_ddt.o
+$(FTN_OBJ)/environ_conditions.o: | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/setup_coeffs.o:       | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/temp_set.o:           | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/temp_calc_adjust.o:   | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/temp_adjust.o:        | $(FTN_OBJ)/ccpp_kinds.o
+$(FTN_OBJ)/ddt_suite_cap.o:      | $(FTN_OBJ)/make_ddt.o \
+                                    $(FTN_OBJ)/host_ccpp_ddt.o
+$(FTN_OBJ)/temp_suite_cap.o:     | $(FTN_OBJ)/environ_conditions.o \
+                                    $(FTN_OBJ)/setup_coeffs.o \
+                                    $(FTN_OBJ)/temp_set.o \
+                                    $(FTN_OBJ)/temp_calc_adjust.o \
+                                    $(FTN_OBJ)/temp_adjust.o
+$(FTN_OBJ)/test_host_ccpp_cap.o: | $(FTN_OBJ)/ddt_suite_cap.o \
+                                    $(FTN_OBJ)/temp_suite_cap.o \
+                                    $(FTN_OBJ)/test_host_mod.o
+$(FTN_OBJ)/test_host.o:          | $(FTN_OBJ)/test_host_ccpp_cap.o
+$(FTN_OBJ)/test_ddt_host_integration.o: | $(FTN_OBJ)/test_host.o
 
 $(EXE_FTN): $(FTN_OBJS) | $(BUILD)
 	$(FC) $(FFLAGS) -o $@ $^
