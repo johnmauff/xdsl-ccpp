@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Suite for the ddthost C++ host example.
+Uses only make_ddt (not environ_conditions) to exercise DDT flattening:
+  - initialize: vmr (vmr_type, intent=out), ccpp_info (ccpp_info_t, intent=in)
+  - run:        vmr (vmr_type, intent=inout), O3 and HNO3 (real arrays)
+  - timestep_final: vmr (vmr_type, intent=in) — verifies O3/HNO3 values
+-->
+<suite name="ddthost_suite" version="1.0">
+  <group name="physics">
+    <scheme>make_ddt</scheme>
+  </group>
+</suite>

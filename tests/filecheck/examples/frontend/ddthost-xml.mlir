@@ -2,7 +2,7 @@
 // Exercises: DDT table type, host/module table types, and optional entry
 // points (make_ddt_timestep_final but no make_ddt_finalize).
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/ddthost/ddt_suite.xml --scheme-files examples/ddthost/make_ddt.meta,examples/ddthost/environ_conditions.meta --host-files examples/ddthost/test_host_data.meta,examples/ddthost/test_host_mod.meta,examples/ddthost/host_ccpp_ddt.meta,examples/ddthost/test_host.meta | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/ddthost/scheme/ddt_suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta,examples/ddthost/scheme/environ_conditions.meta --host-files examples/ddthost/host_ftn/test_host_data.meta,examples/ddthost/host_ftn/test_host_mod.meta,examples/ddthost/scheme/host_ccpp_ddt.meta,examples/ddthost/host_ftn/test_host.meta | python3 -m filecheck %s
 
 // Suite and group structure.
 

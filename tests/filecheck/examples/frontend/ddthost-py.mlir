@@ -2,7 +2,7 @@
 // The Python API defines schemes and the vmr_type DDT via @ccpp_ddt +
 // additional=[vmr_type].  Unlike the XML frontend there are no host tables.
 //
-// RUN: python3 examples/ddthost/ddthost_py.py | python3 -m filecheck %s
+// RUN: python3 examples/ddthost/scheme/ddthost_py.py | python3 -m filecheck %s
 
 // Suite and group structure.
 

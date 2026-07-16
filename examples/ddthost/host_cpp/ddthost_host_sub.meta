@@ -1,0 +1,48 @@
+[ccpp-table-properties]
+  name = ddthost_host_sub
+  type = host
+  language = c++
+[ccpp-arg-table]
+  name = ddthost_host_sub
+  type = host
+[ ccpp_info ]
+  standard_name = host_standard_ccpp_type
+  long_name = CCPP info DDT (col_start, col_end, errmsg, errflg)
+  type = ccpp_info_t
+  dimensions = ()
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  long_name = start column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+[ col_end ]
+  standard_name = horizontal_loop_end
+  long_name = end column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+[ O3 ]
+  standard_name = ozone
+  long_name = ozone volume mixing ratio
+  units = ppmv
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
+[ HNO3 ]
+  standard_name = nitric_acid
+  long_name = nitric acid volume mixing ratio
+  units = ppmv
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character | kind = len=512
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer

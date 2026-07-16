@@ -5,10 +5,10 @@ ccpp_ddt_from_meta, keeping the .meta files as the single source of truth.
 For the inline Python equivalent of ddt_suite only, see ddthost_py.py.
 
 Run to emit MLIR IR:
-    python3 examples/ddthost/ddthost_meta_py.py
+    python3 examples/ddthost/scheme/ddthost_meta_py.py
 
 Full pipeline (MLIR → Fortran):
-    python3 examples/ddthost/ddthost_meta_py.py | \\
+    python3 examples/ddthost/scheme/ddthost_meta_py.py | \\
         python3 -m xdsl_ccpp.tools.ccpp_opt \\
         -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp \\
         -t ftn
@@ -32,26 +32,26 @@ from xdsl_ccpp.frontend.py_api import (
 # ---------------------------------------------------------------------------
 
 # make_ddt.meta has two blocks: vmr_type (DDT) then make_ddt (scheme)
-vmr_type           = ccpp_ddt_from_meta("examples/ddthost/make_ddt.meta")
-make_ddt           = ccpp_scheme_from_meta("examples/ddthost/make_ddt.meta")
+vmr_type           = ccpp_ddt_from_meta("examples/ddthost/scheme/make_ddt.meta")
+make_ddt           = ccpp_scheme_from_meta("examples/ddthost/scheme/make_ddt.meta")
 
-environ_conditions = ccpp_scheme_from_meta("examples/ddthost/environ_conditions.meta")
-setup_coeffs       = ccpp_scheme_from_meta("examples/ddthost/setup_coeffs.meta")
-temp_set           = ccpp_scheme_from_meta("examples/ddthost/temp_set.meta")
-temp_calc_adjust   = ccpp_scheme_from_meta("examples/ddthost/temp_calc_adjust.meta")
-temp_adjust        = ccpp_scheme_from_meta("examples/ddthost/temp_adjust.meta")
+environ_conditions = ccpp_scheme_from_meta("examples/ddthost/scheme/environ_conditions.meta")
+setup_coeffs       = ccpp_scheme_from_meta("examples/ddthost/scheme/setup_coeffs.meta")
+temp_set           = ccpp_scheme_from_meta("examples/ddthost/scheme/temp_set.meta")
+temp_calc_adjust   = ccpp_scheme_from_meta("examples/ddthost/scheme/temp_calc_adjust.meta")
+temp_adjust        = ccpp_scheme_from_meta("examples/ddthost/scheme/temp_adjust.meta")
 
 # ---------------------------------------------------------------------------
 # Host metadata (includes ccpp_info_t DDT used by make_ddt_init)
 # ---------------------------------------------------------------------------
 
 # host_ccpp_ddt.meta defines the ccpp_info_t DDT referenced by make_ddt_init
-ccpp_info_t = ccpp_ddt_from_meta("examples/ddthost/host_ccpp_ddt.meta")
+ccpp_info_t = ccpp_ddt_from_meta("examples/ddthost/scheme/host_ccpp_ddt.meta")
 
 host = (
-    ccpp_host_from_meta("examples/ddthost/test_host_data.meta")
-    + ccpp_host_from_meta("examples/ddthost/test_host_mod.meta")
-    + ccpp_host_from_meta("examples/ddthost/test_host.meta")
+    ccpp_host_from_meta("examples/ddthost/host_ftn/test_host_data.meta")
+    + ccpp_host_from_meta("examples/ddthost/host_ftn/test_host_mod.meta")
+    + ccpp_host_from_meta("examples/ddthost/host_ftn/test_host.meta")
 )
 
 # ---------------------------------------------------------------------------
