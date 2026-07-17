@@ -1419,10 +1419,13 @@ class CPPInteropCap(ModulePass):
                 A(f"inline Status {cpp_fn}() {{")
 
             # ── Internal buffers ───────────────────────────────────────────────
+            # +1 on each: the Fortran side writes a null terminator at
+            # len_trim(...)+1, which is one past the end of a buffer sized
+            # exactly CCPP_*_LEN when the string fully fills it.
             if has_sname:
-                A(f"    char   scheme_name[{CCPP_SCHEME_NAME_LEN}]  = {{}};")
+                A(f"    char   scheme_name[{CCPP_SCHEME_NAME_LEN + 1}]  = {{}};")
             if has_errmsg:
-                A(f"    char   errmsg[{CCPP_ERRMSG_LEN}]      = {{}};")
+                A(f"    char   errmsg[{CCPP_ERRMSG_LEN + 1}]      = {{}};")
             if has_errflg:
                 A("    int    errflg           = 0;")
 

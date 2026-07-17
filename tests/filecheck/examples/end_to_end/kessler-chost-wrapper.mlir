@@ -28,7 +28,7 @@
 
 // Initialize inline function: errmsg/errflg allocated internally.
 // CHECK-LABEL: inline Status initialize(const InitializeArgs& a) {
-// CHECK:     char   errmsg[512]      = {};
+// CHECK:     char   errmsg[513]      = {};
 // CHECK:     int    errflg           = 0;
 // CHECK:     Kessler_chost_physics_initialize(
 // CHECK:     return {errflg, errflg ? errmsg : ""};
@@ -52,8 +52,8 @@
 
 // Run inline function: scheme_name allocated internally, errmsg/errflg too.
 // CHECK-LABEL: inline Status run(const RunArgs& a) {
-// CHECK:     char   scheme_name[64]  = {};
-// CHECK:     char   errmsg[512]      = {};
+// CHECK:     char   scheme_name[65]  = {};
+// CHECK:     char   errmsg[513]      = {};
 // CHECK:     int    errflg           = 0;
 // CHECK:     Kessler_chost_physics_run(
 // CHECK:         a.ncol, a.nz, a.col_start, a.col_end,
