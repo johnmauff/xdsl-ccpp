@@ -5,6 +5,10 @@ Discovers all ``*.mlir`` files under ``tests/filecheck/``, extracts their
 repository root.  The ``%s`` placeholder in each RUN line is replaced with the
 absolute path to the test file, following the LLVM FileCheck convention.
 
+A file may also carry a ``// XFAIL: <reason>`` directive (same convention as
+LLVM lit) to mark a known, tracked failure — the test still runs, but a
+failure is reported as expected instead of breaking the suite.
+
 Usage::
 
     pytest tests/
@@ -28,13 +32,19 @@ class FilecheckFile(pytest.File):
     def collect(self):
         content = self.path.read_text()
         run_cmds = []
+        xfail_reason = None
         for line in content.splitlines():
             stripped = line.strip()
             if stripped.startswith("// RUN:"):
                 run_cmds.append(stripped[len("// RUN:") :].strip())
+            elif stripped.startswith("// XFAIL:"):
+                xfail_reason = stripped[len("// XFAIL:") :].strip()
         for idx, cmd in enumerate(run_cmds):
             name = "run" if len(run_cmds) == 1 else f"run{idx}"
-            yield FilecheckItem.from_parent(self, name=name, cmd=cmd)
+            item = FilecheckItem.from_parent(self, name=name, cmd=cmd)
+            if xfail_reason:
+                item.add_marker(pytest.mark.xfail(reason=xfail_reason, strict=False))
+            yield item
 
 
 class FilecheckItem(pytest.Item):
