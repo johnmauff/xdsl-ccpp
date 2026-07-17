@@ -3597,7 +3597,12 @@ class CCPPCAP(ModulePass):
                 if ai["rank"] == 2:
                     return (f"    real({c_real}), target,"
                             f" intent({ai['intent']}) :: {host}({_dn}, {_dz})")
-                # rank >= 3: higher dimensions are assumed-size (*).
+                # rank >= 3: use explicit shape for the 3rd dim when known so the
+                # array can be passed to assumed-shape (:,:,:) suite cap dummies.
+                _n3 = ai.get("dim_n3")
+                if _n3:
+                    return (f"    real({c_real}), target,"
+                            f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, {_n3})")
                 return (f"    real({c_real}), target,"
                         f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, *)")
             if ai.get("is_logical"):
