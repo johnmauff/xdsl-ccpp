@@ -1,0 +1,26 @@
+[ccpp-table-properties]
+  name = constprop_host_mod
+  type = module
+  language = c++
+[ccpp-arg-table]
+  name = constprop_host_mod
+  type = module
+[ ncol ]
+  standard_name = horizontal_dimension
+  long_name = total number of columns
+  units = count
+  dimensions = ()
+  type = integer
+[ nz ]
+  standard_name = vertical_layer_dimension
+  long_name = number of vertical layers
+  units = count
+  dimensions = ()
+  type = integer
+[ temp ]
+  standard_name = air_temperature
+  long_name = air temperature
+  units = K
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = inout

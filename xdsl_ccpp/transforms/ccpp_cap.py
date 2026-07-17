@@ -66,6 +66,27 @@ from xdsl_ccpp.util.ccpp_conventions import (
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
+_CONSTITUENT_DDT_NAME = "ccpp_constituent_properties_t"
+
+# Field descriptors for ccpp_constituent_properties_t.
+# Each entry: (fortran_field_name, kind, char_len_or_None)
+#   kind: "char" | "real" | "logical"
+#   char_len: declared len= value (excluding the +1 null terminator)
+_CONSTITUENT_STRUCT_FIELDS = [
+    ("std_name",         "char",    128),
+    ("long_name",        "char",    128),
+    ("units",            "char",    32),
+    ("default_val",      "real",    None),
+    ("min_val",          "real",    None),
+    ("is_advected_flag", "logical", None),
+    ("is_water",         "logical", None),
+    ("mix_ratio_type",   "char",    32),
+    ("vert_dim",         "char",    64),
+    ("default_val_set",  "logical", None),
+    ("molar_mass_val",   "real",    None),
+    ("thermo_active",    "logical", None),
+]
+
 
 def _iter_schemes(group):
     """Yield all XMLScheme leaves from a group, descending into XMLSubcycle nodes."""
@@ -691,6 +712,7 @@ def _chost_fn_contexts(
         infos = []
         ddt_locals: dict = {}
         suite_call_pieces: list = []
+        constituent_vars: list = []
 
         for h, t in zip(pfn_hints, pfn_types):
             bare = _bare(h) if h else ""
@@ -699,6 +721,17 @@ def _chost_fn_contexts(
                 _ddt_type = t.element_type.type_name.data
             elif isinstance(t, DerivedType):
                 _ddt_type = t.type_name.data
+
+            if _ddt_type == _CONSTITUENT_DDT_NAME and isinstance(t, MemRefType):
+                # Constituent DDT array — excluded from C++ function signature.
+                # The chost cap owns a module-level allocatable for each one and
+                # passes it directly to the suite cap register function.
+                constituent_vars.append(bare)
+                suite_call_pieces.append({
+                    "kind": "constituent_mod_var",
+                    "name": f"_chost_{bare}",
+                })
+                continue
 
             if _ddt_type is not None and meta_data is not None:
                 std = local_to_std.get(bare, "")
@@ -770,6 +803,7 @@ def _chost_fn_contexts(
             "ddt_locals": ddt_locals,
             "suite_call_pieces": suite_call_pieces,
             "ddt_out_locals": ddt_out_locals,
+            "constituent_vars": constituent_vars,
         })
     return contexts
 
@@ -3552,6 +3586,15 @@ class CCPPCAP(ModulePass):
                     if mod:
                         ddt_uses[tn] = mod
 
+        # ── Collect constituent DDT array variables across all lifecycles ───────
+        all_constituent_vars: list = []
+        _seen_cv: set = set()
+        for ctx in fn_ctxs:
+            for cv in ctx.get("constituent_vars", []):
+                if cv not in _seen_cv:
+                    _seen_cv.add(cv)
+                    all_constituent_vars.append(cv)
+
         # ── Module header ───────────────────────────────────────────────────────
         L: list = []
         A = L.append
@@ -3562,6 +3605,8 @@ class CCPPCAP(ModulePass):
         A("  use iso_c_binding")
         for tn, mod in sorted(ddt_uses.items()):
             A(f"  use {mod}, only: {tn}")
+        if all_constituent_vars:
+            A(f"  use {_CCPP_CONSTITUENT_MOD}, only: {_CONSTITUENT_DDT_NAME}")
         for sfn in used_suite_fns:
             A(f"  use {suite_cap_mod_name}, only: {sfn}")
         A("")
@@ -3570,6 +3615,23 @@ class CCPPCAP(ModulePass):
         A("")
         for fn_op in bind_c_fns:
             A(f"  public :: {_chost_fn_name(fn_op.sym_name.data)}")
+        if all_constituent_vars:
+            A(f"  public :: {mod_name}_nconstituents")
+            A(f"  public :: {mod_name}_get_constituent_info")
+            A("")
+            A("  ! BIND(C) struct mirroring CcppConstituentInfo on the C++ side")
+            A("  type, public, bind(c) :: chost_constituent_info_t")
+            for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
+                if fkind == "char":
+                    A(f"    character(kind=c_char) :: {fname}({flen + 1})")
+                elif fkind == "real":
+                    A(f"    real(c_double)         :: {fname}")
+                else:  # logical
+                    A(f"    logical(c_bool)        :: {fname}")
+            A("  end type chost_constituent_info_t")
+            A("")
+            for cv in all_constituent_vars:
+                A(f"  type({_CONSTITUENT_DDT_NAME}), allocatable, save :: _chost_{cv}(:)")
         A("")
         A("contains")
 
@@ -3647,6 +3709,8 @@ class CCPPCAP(ModulePass):
                     for piece in suite_call_pcs:
                         if piece["kind"] == "ddt_local":
                             call_exprs.append(piece["name"])
+                        elif piece["kind"] == "constituent_mod_var":
+                            call_exprs.append(piece["name"])
                         else:
                             ai = piece["ai"]
                             if ai["is_col_start"] or ai["is_col_end"]:
@@ -3699,6 +3763,46 @@ class CCPPCAP(ModulePass):
 
             A(f"  end subroutine {cfn}")
 
+        # ── Constituent query functions ──────────────────────────────────────────
+        if all_constituent_vars:
+            A("")
+            A(f"  function {mod_name}_nconstituents() result(n) &")
+            A(f"      bind(c, name=\"{mod_name}_nconstituents\")")
+            A("    integer(c_int) :: n")
+            A("    n = 0_c_int")
+            for cv in all_constituent_vars:
+                A(f"    if (allocated(_chost_{cv})) &")
+                A(f"        n = n + int(size(_chost_{cv}), c_int)")
+            A(f"  end function {mod_name}_nconstituents")
+            A("")
+            A(f"  subroutine {mod_name}_get_constituent_info(buf, n) &")
+            A(f"      bind(c, name=\"{mod_name}_get_constituent_info\")")
+            A("    type(chost_constituent_info_t), intent(out) :: buf(n)")
+            A("    integer(c_int), value, intent(in) :: n")
+            A("    integer :: _chost_idx, _chost_j, _chost_slen, _chost_i")
+            A("    _chost_idx = 0")
+            for cv in all_constituent_vars:
+                A(f"    if (allocated(_chost_{cv})) then")
+                A(f"      do _chost_i = 1, size(_chost_{cv})")
+                A("        _chost_idx = _chost_idx + 1")
+                A("        if (_chost_idx > n) return")
+                for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
+                    src = f"_chost_{cv}(_chost_i)%{fname}"
+                    dst = f"buf(_chost_idx)%{fname}"
+                    if fkind == "char":
+                        A(f"        _chost_slen = min(len_trim({src}), {flen})")
+                        A(f"        do _chost_j = 1, _chost_slen")
+                        A(f"          {dst}(_chost_j) = {src}(_chost_j:_chost_j)")
+                        A(f"        end do")
+                        A(f"        {dst}(min(_chost_slen+1,{flen+1})) = c_null_char")
+                    elif fkind == "real":
+                        A(f"        {dst} = real({src}, c_double)")
+                    else:  # logical
+                        A(f"        {dst} = logical({src}, c_bool)")
+                A(f"      end do")
+                A(f"    end if")
+            A(f"  end subroutine {mod_name}_get_constituent_info")
+
         A("")
         A(f"end module {mod_name}")
 
@@ -3727,11 +3831,20 @@ class CCPPCAP(ModulePass):
         A("#endif")
         A("")
 
-        for ctx in _chost_fn_contexts(
+        all_constituent_vars_cpp: list = []
+        _seen_cv_cpp: set = set()
+        fn_ctxs_cpp = list(_chost_fn_contexts(
             bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
             meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
-        ):
+        ))
+        for ctx in fn_ctxs_cpp:
+            for cv in ctx.get("constituent_vars", []):
+                if cv not in _seen_cv_cpp:
+                    _seen_cv_cpp.add(cv)
+                    all_constituent_vars_cpp.append(cv)
+
+        for ctx in fn_ctxs_cpp:
             cfn, visible = ctx["cfn"], ctx["visible"]
             params = [(ai["host"], _chost_cpp_type(ai)) for ai in visible]
 
@@ -3748,6 +3861,28 @@ class CCPPCAP(ModulePass):
         A("#ifdef __cplusplus")
         A("}")
         A("#endif")
+
+        if all_constituent_vars_cpp:
+            A("")
+            A("#include <stdbool.h>")
+            A("struct CcppConstituentInfo {")
+            for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
+                if fkind == "char":
+                    A(f"    char     {fname}[{flen + 1}];")
+                elif fkind == "real":
+                    A(f"    double   {fname};")
+                else:  # logical
+                    A(f"    bool     {fname};")
+            A("};")
+            A("")
+            A("#ifdef __cplusplus")
+            A('extern "C" {')
+            A("#endif")
+            A(f"int  {mod_name}_nconstituents(void);")
+            A(f"void {mod_name}_get_constituent_info(struct CcppConstituentInfo* buf, int n);")
+            A("#ifdef __cplusplus")
+            A("}")
+            A("#endif")
 
         return "\n".join(L) + "\n"
 
@@ -3791,13 +3926,40 @@ class CCPPCAP(ModulePass):
         A("    bool ok() const { return code == 0; }")
         A("};")
 
-        lc_data: list = []   # (cpp_fn, struct_args) per lifecycle, for State generation
-
-        for ctx in _chost_fn_contexts(
+        # Collect constituent vars across all lifecycles for this wrapper
+        all_constituent_vars_hpp: list = []
+        _seen_cv_hpp: set = set()
+        fn_ctxs_hpp = list(_chost_fn_contexts(
             bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
             meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
-        ):
+        ))
+        for ctx in fn_ctxs_hpp:
+            for cv in ctx.get("constituent_vars", []):
+                if cv not in _seen_cv_hpp:
+                    _seen_cv_hpp.add(cv)
+                    all_constituent_vars_hpp.append(cv)
+
+        if all_constituent_vars_hpp:
+            A("")
+            A("// ── constituent query ─────────────────────────────────────────────────────")
+            A("// CcppConstituentInfo is declared in the included .h file.")
+            A("// Use nconstituents() + get_constituents() after do_register().")
+            A("")
+            A("inline int nconstituents() {")
+            A(f"    return {mod_name}_nconstituents();")
+            A("}")
+            A("")
+            A("inline std::vector<CcppConstituentInfo> get_constituents() {")
+            A("    int n = nconstituents();")
+            A("    std::vector<CcppConstituentInfo> v(static_cast<std::size_t>(n));")
+            A(f"    if (n > 0) {mod_name}_get_constituent_info(v.data(), n);")
+            A("    return v;")
+            A("}")
+
+        lc_data: list = []   # (cpp_fn, struct_args) per lifecycle, for State generation
+
+        for ctx in fn_ctxs_hpp:
             cfn, lc, visible = ctx["cfn"], ctx["lc"], ctx["visible"]
 
             has_errmsg  = any(ai["is_errmsg"] for ai in visible)

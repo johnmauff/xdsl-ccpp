@@ -1,0 +1,69 @@
+[ccpp-table-properties]
+  name = constprop
+  type = scheme
+
+[ccpp-arg-table]
+  name = constprop_register
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_constprop
+  long_name = constituent properties for constprop
+  dimensions = (:)
+  type = ccpp_constituent_properties_t
+  intent = out
+  allocatable = true
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+
+[ccpp-arg-table]
+  name = constprop_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  long_name = number of columns in this chunk
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ nz ]
+  standard_name = vertical_layer_dimension
+  long_name = number of vertical layers
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ temp ]
+  standard_name = air_temperature
+  long_name = air temperature
+  units = K
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
