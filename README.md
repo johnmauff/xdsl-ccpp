@@ -434,9 +434,9 @@ Integrated use (recommended):
 
 ```bash
 ccpp_xdsl \
-  --suites examples/capgen/ddt_suite.xml,examples/capgen/temp_suite.xml \
-  --scheme-files examples/capgen/make_ddt.meta,examples/capgen/temp_set.meta \
-  --host-files   examples/capgen/test_host.meta \
+  --suites examples/capgen/scheme/ddt_suite.xml,examples/capgen/scheme/temp_suite.xml \
+  --scheme-files examples/capgen/scheme/make_ddt.meta,examples/capgen/scheme/temp_set.meta \
+  --host-files   examples/capgen/host_ftn/test_host.meta \
   --host-name    test_host \
   -o             caps/ \
   --emit-datatable caps/datatable.xml \

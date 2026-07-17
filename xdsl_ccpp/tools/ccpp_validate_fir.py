@@ -10,7 +10,7 @@ For each ``.F90`` file the tool:
 
 Usage example::
 
-    python3 -m xdsl_ccpp.tools.ccpp_validate_fir examples/capgen/temp_adjust.F90
+    python3 -m xdsl_ccpp.tools.ccpp_validate_fir examples/capgen/scheme/temp_adjust.F90
 
 Exit code is 0 if all validated files match, 1 if any mismatches are found
 or any step fails.

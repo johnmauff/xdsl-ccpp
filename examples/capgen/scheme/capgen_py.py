@@ -6,26 +6,26 @@ in Python.  Both suites (ddt_suite and temp_suite) are defined and emitted
 together, matching the two-suite XML invocation.
 
 Run to emit MLIR IR:
-    python3 examples/capgen/capgen_py.py
+    python3 examples/capgen/scheme/capgen_py.py
 
 Full pipeline (MLIR → Fortran):
-    python3 examples/capgen/capgen_py.py | \\
+    python3 examples/capgen/scheme/capgen_py.py | \\
         python3 -m xdsl_ccpp.tools.ccpp_opt \\
         -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp \\
         -t ftn
 
 Equivalent XML invocation:
     python3 -m xdsl_ccpp.frontend.ccpp_xml \\
-        --suites examples/capgen/ddt_suite.xml,examples/capgen/temp_suite.xml \\
-        --scheme-files examples/capgen/make_ddt.meta,\\
-examples/capgen/environ_conditions.meta,\\
-examples/capgen/setup_coeffs.meta,\\
-examples/capgen/temp_set.meta,\\
-examples/capgen/temp_calc_adjust.meta,\\
-examples/capgen/temp_adjust.meta \\
-        --host-files examples/capgen/test_host_data.meta,\\
-examples/capgen/test_host_mod.meta,\\
-examples/capgen/test_host.meta \\
+        --suites examples/capgen/scheme/ddt_suite.xml,examples/capgen/scheme/temp_suite.xml \\
+        --scheme-files examples/capgen/scheme/make_ddt.meta,\\
+examples/capgen/scheme/environ_conditions.meta,\\
+examples/capgen/scheme/setup_coeffs.meta,\\
+examples/capgen/scheme/temp_set.meta,\\
+examples/capgen/scheme/temp_calc_adjust.meta,\\
+examples/capgen/scheme/temp_adjust.meta \\
+        --host-files examples/capgen/host_ftn/test_host_data.meta,\\
+examples/capgen/host_ftn/test_host_mod.meta,\\
+examples/capgen/host_ftn/test_host.meta \\
         | python3 -m xdsl_ccpp.tools.ccpp_opt \\
         -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp \\
         -t ftn
@@ -48,23 +48,23 @@ from xdsl_ccpp.frontend.py_api import (
 # ---------------------------------------------------------------------------
 
 # make_ddt.meta has two blocks: vmr_type (DDT) then make_ddt (scheme)
-vmr_type        = ccpp_ddt_from_meta("examples/capgen/make_ddt.meta")
-make_ddt        = ccpp_scheme_from_meta("examples/capgen/make_ddt.meta")
+vmr_type        = ccpp_ddt_from_meta("examples/capgen/scheme/make_ddt.meta")
+make_ddt        = ccpp_scheme_from_meta("examples/capgen/scheme/make_ddt.meta")
 
-environ_conditions = ccpp_scheme_from_meta("examples/capgen/environ_conditions.meta")
-setup_coeffs       = ccpp_scheme_from_meta("examples/capgen/setup_coeffs.meta")
-temp_set           = ccpp_scheme_from_meta("examples/capgen/temp_set.meta")
-temp_calc_adjust   = ccpp_scheme_from_meta("examples/capgen/temp_calc_adjust.meta")
-temp_adjust        = ccpp_scheme_from_meta("examples/capgen/temp_adjust.meta")
+environ_conditions = ccpp_scheme_from_meta("examples/capgen/scheme/environ_conditions.meta")
+setup_coeffs       = ccpp_scheme_from_meta("examples/capgen/scheme/setup_coeffs.meta")
+temp_set           = ccpp_scheme_from_meta("examples/capgen/scheme/temp_set.meta")
+temp_calc_adjust   = ccpp_scheme_from_meta("examples/capgen/scheme/temp_calc_adjust.meta")
+temp_adjust        = ccpp_scheme_from_meta("examples/capgen/scheme/temp_adjust.meta")
 
 # ---------------------------------------------------------------------------
 # Host metadata
 # ---------------------------------------------------------------------------
 
 host = (
-    ccpp_host_from_meta("examples/capgen/test_host_data.meta")
-    + ccpp_host_from_meta("examples/capgen/test_host_mod.meta")
-    + ccpp_host_from_meta("examples/capgen/test_host.meta")
+    ccpp_host_from_meta("examples/capgen/host_ftn/test_host_data.meta")
+    + ccpp_host_from_meta("examples/capgen/host_ftn/test_host_mod.meta")
+    + ccpp_host_from_meta("examples/capgen/host_ftn/test_host.meta")
 )
 
 # ---------------------------------------------------------------------------

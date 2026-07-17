@@ -705,8 +705,8 @@ def ccpp_ddt_from_meta(filename: str) -> "TableDescriptor":
     when a ``.meta`` file contains both a DDT definition and a scheme
     definition (e.g. ``make_ddt.meta``)::
 
-        vmr_type = ccpp_ddt_from_meta("examples/capgen/make_ddt.meta")
-        make_ddt = ccpp_scheme_from_meta("examples/capgen/make_ddt.meta")
+        vmr_type = ccpp_ddt_from_meta("examples/capgen/scheme/make_ddt.meta")
+        make_ddt = ccpp_scheme_from_meta("examples/capgen/scheme/make_ddt.meta")
 
         @ccpp_suite("ddt_suite", version="1.0")
         class ddt_suite:

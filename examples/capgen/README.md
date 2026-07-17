@@ -24,25 +24,25 @@ A two-suite example combining DDT-based schemes with temperature physics schemes
 
 | File | Description |
 |------|-------------|
-| `ddt_suite.xml` | Suite definition for `ddt_suite` |
-| `temp_suite.xml` | Suite definition for `temp_suite` |
-| `make_ddt.meta` | Metadata for `make_ddt` + `vmr_type` DDT definition |
-| `environ_conditions.meta` | Metadata for `environ_conditions` |
-| `setup_coeffs.meta` | Metadata for `setup_coeffs` |
-| `temp_set.meta` | Metadata for `temp_set` |
-| `temp_calc_adjust.meta` | Metadata for `temp_calc_adjust` |
-| `temp_adjust.meta` | Metadata for `temp_adjust` |
-| `test_host_data.meta` | Host DDT metadata (`physics_state`) |
-| `test_host.meta` | Host DDT/host metadata |
-| `test_host_mod.meta` | Host module metadata |
+| `scheme/ddt_suite.xml` | Suite definition for `ddt_suite` |
+| `scheme/temp_suite.xml` | Suite definition for `temp_suite` |
+| `scheme/make_ddt.meta` | Metadata for `make_ddt` + `vmr_type` DDT definition |
+| `scheme/environ_conditions.meta` | Metadata for `environ_conditions` |
+| `scheme/setup_coeffs.meta` | Metadata for `setup_coeffs` |
+| `scheme/temp_set.meta` | Metadata for `temp_set` |
+| `scheme/temp_calc_adjust.meta` | Metadata for `temp_calc_adjust` |
+| `scheme/temp_adjust.meta` | Metadata for `temp_adjust` |
+| `host_ftn/test_host_data.meta` | Host DDT metadata (`physics_state`) |
+| `host_ftn/test_host.meta` | Host DDT/host metadata |
+| `host_ftn/test_host_mod.meta` | Host module metadata |
 
 ## Running with ccpp_xdsl
 
 ```bash
 ccpp_xdsl \
-  --suites examples/capgen/ddt_suite.xml,examples/capgen/temp_suite.xml \
-  --scheme-files examples/capgen/make_ddt.meta,examples/capgen/environ_conditions.meta,examples/capgen/setup_coeffs.meta,examples/capgen/temp_set.meta,examples/capgen/temp_calc_adjust.meta,examples/capgen/temp_adjust.meta \
-  --host-files examples/capgen/test_host_data.meta,examples/capgen/test_host_mod.meta,examples/capgen/test_host.meta \
+  --suites examples/capgen/scheme/ddt_suite.xml,examples/capgen/scheme/temp_suite.xml \
+  --scheme-files examples/capgen/scheme/make_ddt.meta,examples/capgen/scheme/environ_conditions.meta,examples/capgen/scheme/setup_coeffs.meta,examples/capgen/scheme/temp_set.meta,examples/capgen/scheme/temp_calc_adjust.meta,examples/capgen/scheme/temp_adjust.meta \
+  --host-files examples/capgen/host_ftn/test_host_data.meta,examples/capgen/host_ftn/test_host_mod.meta,examples/capgen/host_ftn/test_host.meta \
   -o output/
 ```
 
