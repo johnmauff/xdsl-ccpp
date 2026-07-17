@@ -33,7 +33,9 @@
 #   make gen-chost — regenerate chost BIND(C) caps + C++ headers into bindc/
 
 # ── Compilers & flags ─────────────────────────────────────────────────────────
-FC   ?= gfortran
+ifeq ($(origin FC),default)
+FC   := gfortran
+endif
 ARCH ?= CPU
 
 # Derive the C++ compiler and per-family flags from FC.
