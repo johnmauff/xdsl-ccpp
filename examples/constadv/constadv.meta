@@ -1,0 +1,76 @@
+#####################################################################
+[ccpp-table-properties]
+  name = constadv
+  type = scheme
+[ccpp-arg-table]
+  name = constadv_register
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_constadv
+  units = none
+  dimensions = (:)
+  allocatable = True
+  type = ccpp_constituent_properties_t
+  intent = out
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = Error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = Error flag for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+[ccpp-arg-table]
+  name = constadv_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  long_name = number of active columns
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ nz ]
+  standard_name = vertical_layer_dimension
+  long_name = number of vertical layers
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ ncnst ]
+  standard_name = number_of_ccpp_constituents
+  long_name = number of CCPP constituents
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ q ]
+  standard_name = ccpp_constituents
+  long_name = CCPP constituent array
+  units = none
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension, number_of_ccpp_constituents)
+  type = real
+  kind = kind_phys
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = Error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = Error flag for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out

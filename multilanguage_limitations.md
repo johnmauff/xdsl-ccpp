@@ -246,23 +246,49 @@ intent(in)` label arg; the C++ driver passes a non-empty label and verifies the
 
 ---
 
-## 10. Runtime-Determined Dimensions
+## ~~10. Runtime-Determined Dimensions~~ *(Resolved)*
 
-Some suites have a dimension (`ncnst`, the constituent count) that is only known
-after the register and initialize lifecycles complete — each scheme registers its
-constituents during `register`, then the framework counts them and allocates
-arrays of that size for `run`.  The C++ host cannot know `ncnst` at compile time
-or even at driver startup; it must query the value after `initialize`.
+Rank-3 array arguments whose third dimension is the constituent count (`ncnst`)
+are now fully supported.  The generator:
 
-The current chost cap model assumes all array dimensions are known before
-`allocate()` is called.  There is no mechanism to communicate
-framework-determined sizes back to the C++ host between lifecycles.
+1. **Extracts `dim_n3`** — for rank-3 real arrays, scans `local_to_dim_names` for
+   a dimension that is neither horizontal nor vertical and looks up the
+   corresponding host variable.  For `q(horizontal_loop_extent,
+   vertical_layer_dimension, number_of_ccpp_constituents)` this resolves to the
+   host variable with standard name `number_of_ccpp_constituents` (e.g. `ncnst`).
 
-**Potential resolution:** Expose a `query_dimensions()` function in the generated
-`.hpp` header (or a post-initialize callback) that returns the runtime-determined
-sizes so the C++ caller can re-allocate or resize before calling `run`.  This
-requires the suite cap to expose those counts via a BIND(C) query function, which
-the generator would need to emit.
+2. **Marks the scalar** — the integer argument that provides `dim_n3` is flagged
+   `is_dim_scalar=True`, which places it in the `State` constructor parameter list
+   alongside `ncol` and `nz`.
+
+3. **Sizes the allocation** — `State::allocate()` assigns
+   `ncol × nz × ncnst` elements for rank-3 arrays (vs. `ncol × nz` for rank-2).
+
+4. **Passes `ncnst` automatically** — the `run(State&, col_start, col_end)`
+   overload extracts `s.ncnst` and forwards it to the BIND(C) call.
+
+The two-phase usage pattern in the C++ driver is:
+
+```cpp
+// Phase 1 — register; ncnst is unknown before this call
+CA::do_register();
+int ncnst = CA::nconstituents();   // query runtime value from gap-4c interface
+
+// Phase 2 — allocate with runtime ncnst, then run
+CA::initialize();
+CA::State st{NCOL, NZ, ncnst};
+st.allocate();                     // sizes _q as NCOL * NZ * ncnst
+// ... fill st.q ...
+CA::timestep_initial();
+CA::run(st, 1, NCOL);              // passes st.ncnst automatically
+CA::timestep_final();
+CA::finalize();
+```
+
+Validated by `examples/constadv/` — a minimal scheme that registers 2 constituents
+in `register` and scales `q(ncol, nz, ncnst)` by 2× in `run`.  The C++ driver
+queries `ncnst=2` after register, constructs `State{NCOL, NZ, 2}`, and verifies
+all 24 elements equal 2.0 after the run.
 
 ---
 
@@ -275,7 +301,7 @@ the generator would need to emit.
 | ~~4b~~ | ~~DDT — nested DDTs~~ | *(Resolved)* | *(Done)* |
 | ~~4c~~ | ~~DDT — array-of-DDTs / allocatable DDT args~~ | *(Resolved)* | *(Done)* |
 | ~~9~~ | ~~`character(len=N)` scalar args~~ | *(Resolved)* | *(Done)* |
-| 10 | Runtime-determined dimensions (`ncnst`) | Constituent-aware suites | High |
+| ~~10~~ | ~~Runtime-determined dimensions (`ncnst`)~~ | *(Resolved)* | *(Done)* |
 | 2 | GPU memory management | Yes, for GPU builds | Medium–High |
 | 1 | Column-major layout | Subtle bugs if overlooked | Medium |
 | ~~5~~ | ~~Rank > 2 arrays~~ | *(Resolved)* | *(Done)* |

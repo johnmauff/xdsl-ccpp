@@ -281,6 +281,17 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
         if _vert is not None:
             dim_nz = std_to_host.get(_vert)
 
+    dim_n3 = None
+    if rank >= 3 and is_real and local_to_dim_names is not None:
+        _dim_names = local_to_dim_names.get(bare, [])
+        for _d in _dim_names:
+            _d_lo = _d.lower()
+            if (_d_lo not in CCPP_HORIZONTAL_DIMENSIONS
+                    and _d_lo not in CCPP_VERTICAL_DIMENSIONS):
+                dim_n3 = std_to_host.get(_d_lo)
+                if dim_n3:
+                    break
+
     return dict(
         hint=hint, bare=bare, host=host, std=std,
         is_col_start=is_col_start, is_col_end=is_col_end,
@@ -288,7 +299,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
         is_errflg=is_errflg, is_sname=is_sname,
         is_char=is_char, is_int=is_int, is_real=is_real, is_logical=False,
         real_width=real_width, rank=rank, intent=intent,
-        dim_nz=dim_nz, char_len=char_len,
+        dim_nz=dim_nz, dim_n3=dim_n3, char_len=char_len,
     )
 
 
@@ -808,6 +819,14 @@ def _chost_fn_contexts(
                 infos.extend(member_ais)
                 ddt_locals[prefix] = local_info
                 ddt_out_locals.append(local_info["local_name"])
+
+        # Mark scalar ints that provide the 3rd dimension of a rank-3 array.
+        # Reuses is_dim_scalar so they land in the State constructor automatically.
+        _n3_hosts = {ai.get("dim_n3") for ai in infos if ai.get("dim_n3")}
+        if _n3_hosts:
+            for _ai in infos:
+                if _ai["host"] in _n3_hosts and _ai["is_int"] and _ai["rank"] == 0:
+                    _ai["is_dim_scalar"] = True
 
         visible = list(infos) + out_infos
         # Deduplicate by host name: two schemes may map different local names
@@ -4127,25 +4146,31 @@ class CCPPCAP(ModulePass):
                 A(f"    State({params_str})")
                 A(f"        : {inits_str} {{}}")
 
-            # Array fields whose size we can express from their dim_ncol / dim_nz
+            # Array fields whose size we can express from their dim_ncol / dim_nz / dim_n3
             alloc_fields = [
                 ai for ai in state_fields
-                if ai["rank"] in (1, 2) and not ai["is_int"]
+                if not ai["is_int"]
+                and (
+                    ai["rank"] in (1, 2)
+                    or (ai["rank"] >= 3 and ai.get("dim_n3"))
+                )
             ]
             if alloc_fields:
                 A("")
                 A("    // Allocate all array fields from internal storage.")
-                A("    // Set ncol (and nz for 2-D arrays) before calling.")
+                A("    // Set ncol (and nz/ncnst for higher-rank arrays) before calling.")
                 A("    void allocate() {")
                 for ai in alloc_fields:
                     elem_t = _chost_cpp_type(ai).replace("const ", "").replace("*", "").strip()
                     _dn = ai.get("dim_ncol") or ncol_var
                     _dz = ai.get("dim_nz")   or nz_var
-                    size_expr = (
-                        f"static_cast<std::size_t>({_dn})"
-                        if ai["rank"] == 1
-                        else f"static_cast<std::size_t>({_dn}) * {_dz}"
-                    )
+                    if ai["rank"] == 1:
+                        size_expr = f"static_cast<std::size_t>({_dn})"
+                    elif ai["rank"] == 2:
+                        size_expr = f"static_cast<std::size_t>({_dn}) * {_dz}"
+                    else:
+                        _n3 = ai.get("dim_n3") or "1"
+                        size_expr = f"static_cast<std::size_t>({_dn}) * {_dz} * {_n3}"
                     A(f"        _{ai['host']}.assign({size_expr}, 0);")
                     A(f"        {ai['host']} = _{ai['host']}.data();")
                 A("    }")
