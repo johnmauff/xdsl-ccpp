@@ -1,0 +1,73 @@
+[ccpp-table-properties]
+  name = inner_phys_t
+  type = ddt
+[ccpp-arg-table]
+  name = inner_phys_t
+  type = ddt
+[ nz ]
+  standard_name = vertical_layer_dimension
+  long_name = number of vertical layers
+  units = count
+  dimensions = ()
+  type = integer
+[ temp ]
+  standard_name = air_temperature
+  long_name = air temperature
+  units = K
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real
+  kind = kind_phys
+
+[ccpp-table-properties]
+  name = outer_phys_t
+  type = ddt
+[ccpp-arg-table]
+  name = outer_phys_t
+  type = ddt
+[ inner ]
+  standard_name = nested_inner_physics_state
+  long_name = nested inner physics state
+  dimensions = ()
+  type = inner_phys_t
+
+[ccpp-table-properties]
+  name = nestedddt
+  type = scheme
+[ccpp-arg-table]
+  name = nestedddt_run
+  type = scheme
+[ cols ]
+  standard_name = horizontal_loop_begin
+  long_name = start column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ cole ]
+  standard_name = horizontal_loop_end
+  long_name = end column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ state ]
+  standard_name = outer_physics_state
+  long_name = outer DDT physics state
+  dimensions = ()
+  type = outer_phys_t
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out

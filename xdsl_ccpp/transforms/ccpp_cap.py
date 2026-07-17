@@ -314,6 +314,25 @@ def _chost_expand_ddt_arg(
         is_real    = (vtype == "real")
         is_logical = (vtype == "logical")
 
+        _PRIMITIVE_TYPES = {"real", "integer", "logical", "character", "complex"}
+        if vtype not in _PRIMITIVE_TYPES:
+            # Nested DDT member: expand recursively, re-root paths under this local.
+            # Option B (direct path): nested members are accessed as
+            # outer_local%member_name%leaf so no separate inner local is declared.
+            nested_ais, nested_li = _chost_expand_ddt_arg(
+                f"{prefix}_{var.name}", vtype, meta_data,
+                local_to_std, std_to_host, kind_iso_map, ncol_var, nz_var,
+                original_intent=original_intent,
+            )
+            for nai in nested_ais:
+                nai["_ddt_member"] = f"{var.name}%{nai['_ddt_member']}"
+                nai["_ddt_local"]  = f"{prefix}_local"
+                nai["_ddt_prefix"] = prefix
+            member_ais.extend(nested_ais)
+            for cmn in nested_li.get("char_member_blanks", []):
+                char_member_blanks.append(f"{var.name}%{cmn}")
+            continue
+
         if vtype == "character":
             # Character members (e.g. ccpp_info_t%errmsg) are not exposed in the
             # C interface; the chost cap initialises them to blank instead.

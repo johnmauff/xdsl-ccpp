@@ -1,0 +1,18 @@
+[ccpp-table-properties]
+  name = nestedddt_host_mod
+  type = module
+  language = c++
+[ccpp-arg-table]
+  name = nestedddt_host_mod
+  type = module
+[ ncol ]
+  standard_name = horizontal_dimension
+  long_name = total number of columns
+  units = count
+  dimensions = ()
+  type = integer
+[ state ]
+  standard_name = outer_physics_state
+  long_name = outer DDT physics state
+  type = outer_phys_t
+  dimensions = ()

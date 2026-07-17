@@ -1,0 +1,32 @@
+[ccpp-table-properties]
+  name = nestedddt_host_sub
+  type = host
+  language = c++
+[ccpp-arg-table]
+  name = nestedddt_host_sub
+  type = host
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  long_name = start column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+[ col_end ]
+  standard_name = horizontal_loop_end
+  long_name = end column index for horizontal loop
+  units = count
+  dimensions = ()
+  type = integer
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
