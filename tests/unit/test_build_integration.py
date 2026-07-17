@@ -17,6 +17,8 @@ import pytest
 
 _EXAMPLES = pathlib.Path(__file__).parent.parent.parent / "examples"
 _CAP = _EXAMPLES / "capgen"
+_SCHEME = _CAP / "scheme"
+_HOST_FTN = _CAP / "host_ftn"
 
 # Files that must be present after a successful capgen run.
 _EXPECTED_CAPS = {
@@ -34,21 +36,21 @@ _EXPECTED_CAPS = {
 def test_ccpp_xdsl_generates_caps(tmp_path):
     """ccpp_xdsl exits 0 and writes expected cap files for the capgen example."""
     suites = [
-        str(_CAP / "ddt_suite.xml"),
-        str(_CAP / "temp_suite.xml"),
+        str(_SCHEME / "ddt_suite.xml"),
+        str(_SCHEME / "temp_suite.xml"),
     ]
     scheme_files = [
-        str(_CAP / "make_ddt.meta"),
-        str(_CAP / "environ_conditions.meta"),
-        str(_CAP / "setup_coeffs.meta"),
-        str(_CAP / "temp_set.meta"),
-        str(_CAP / "temp_calc_adjust.meta"),
-        str(_CAP / "temp_adjust.meta"),
+        str(_SCHEME / "make_ddt.meta"),
+        str(_SCHEME / "environ_conditions.meta"),
+        str(_SCHEME / "setup_coeffs.meta"),
+        str(_SCHEME / "temp_set.meta"),
+        str(_SCHEME / "temp_calc_adjust.meta"),
+        str(_SCHEME / "temp_adjust.meta"),
     ]
     host_files = [
-        str(_CAP / "test_host_data.meta"),
-        str(_CAP / "test_host_mod.meta"),
-        str(_CAP / "test_host.meta"),
+        str(_HOST_FTN / "test_host_data.meta"),
+        str(_HOST_FTN / "test_host_mod.meta"),
+        str(_HOST_FTN / "test_host.meta"),
     ]
     tempdir = tmp_path / "tmp"
     tempdir.mkdir()
