@@ -3,7 +3,7 @@
 // to emit_ir, and verifies that the Python frontend produces the same Fortran
 // as the XML frontend for the same example.
 //
-// RUN: python3 examples/ddthost/scheme/ddthost_py.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 examples/ddthost/scheme/ddthost_py.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: // FILE: ddt_suite_cap.F90
 // CHECK-LABEL: module ddt_suite_cap

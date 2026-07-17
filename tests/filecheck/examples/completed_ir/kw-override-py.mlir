@@ -3,7 +3,7 @@
 // a plain func.call.  ncol is absent from the physics subroutine signature
 // since it is no longer a runtime parameter.
 //
-// RUN: python3 tests/filecheck/examples/end_to_end/kw_override_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
+// RUN: python3 tests/filecheck/examples/end_to_end/kw_override_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
 // --- Suite cap module ---
 

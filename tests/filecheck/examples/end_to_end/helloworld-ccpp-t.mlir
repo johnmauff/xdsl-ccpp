@@ -5,7 +5,7 @@
 //   - State guards and assignments are indexed by ccpp_data%ccpp_instance
 //   - All ccpp cap lifecycle/run subroutines thread ccpp_data through
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/helloworld/hello_world_suite.xml --scheme-files examples/helloworld/hello_scheme.meta,examples/helloworld/temp_adjust.meta --host-files examples/helloworld/hello_world_host_ccpp_t.meta,examples/helloworld/hello_world_mod.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/helloworld/hello_world_suite.xml --scheme-files examples/helloworld/hello_scheme.meta,examples/helloworld/temp_adjust.meta --host-files examples/helloworld/hello_world_host_ccpp_t.meta,examples/helloworld/hello_world_mod.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: // FILE: hello_world_suite_cap.F90
 // CHECK-LABEL: module hello_world_suite_cap

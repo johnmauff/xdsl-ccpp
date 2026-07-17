@@ -11,7 +11,7 @@ the DDT's own scalar members to resolve dim_nz = "vmr_nvmr".
 
 import pytest
 
-from xdsl_ccpp.transforms.ccpp_cap import _chost_expand_ddt_arg
+from xdsl_ccpp.transforms.cpp_interop import _chost_expand_ddt_arg
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPTableProperties,
     CCPPArgumentTable,

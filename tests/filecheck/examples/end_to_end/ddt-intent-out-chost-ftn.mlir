@@ -18,7 +18,7 @@
 // must NOT expose ccpp_info_errmsg in the chost signature and must initialise
 // ccpp_info_local%errmsg to blank internally.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/fixtures/ddt_intent_in/suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta --host-files tests/filecheck/fixtures/ddt_intent_in/host_mod.meta,tests/filecheck/fixtures/ddt_intent_in/host_sub.meta,examples/ddthost/scheme/host_ccpp_ddt.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/fixtures/ddt_intent_in/suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta --host-files tests/filecheck/fixtures/ddt_intent_in/host_mod.meta,tests/filecheck/fixtures/ddt_intent_in/host_sub.meta,examples/ddthost/scheme/host_ccpp_ddt.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
 
 // ── Gap 3 + Gap 4: initialize subroutine ────────────────────────────────────
 

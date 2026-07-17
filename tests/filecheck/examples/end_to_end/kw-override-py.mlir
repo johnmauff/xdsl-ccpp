@@ -8,7 +8,7 @@
 // subroutine signature (it is no longer a runtime parameter) but present
 // as a literal in the scheme call.
 //
-// RUN: python3 tests/filecheck/examples/end_to_end/kw_override_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 tests/filecheck/examples/end_to_end/kw_override_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: // FILE: kw_suite_cap.F90
 // CHECK-LABEL: module kw_suite_cap

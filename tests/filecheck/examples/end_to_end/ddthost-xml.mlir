@@ -2,7 +2,7 @@
 // Exercises Fortran derived data type (DDT) arguments: vmr_type appears as
 // type(vmr_type) in subroutine signatures and scheme calls.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/ddthost/scheme/ddt_suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta,examples/ddthost/scheme/environ_conditions.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/ddthost/scheme/ddt_suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta,examples/ddthost/scheme/environ_conditions.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: // FILE: ddt_suite_cap.F90
 // CHECK-LABEL: module ddt_suite_cap
