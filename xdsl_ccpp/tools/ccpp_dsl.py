@@ -450,6 +450,11 @@ class ccppMain:
             passes.append(f"generate-gpu-data{{directive={directive}}}")
         if has_host:
             passes.append(ccpp_cap_pass)
+            # Must run immediately after generate-ccpp-cap and before
+            # generate-gpu-ccpp-cap, matching the original behavior where
+            # chost generation ran inline at the end of CCPPCAP.apply(),
+            # before any subsequent pass could touch the cap module.
+            passes.append("generate-cpp-cap")
             if directive:
                 passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
         passes += ["generate-kinds", "strip-ccpp"]

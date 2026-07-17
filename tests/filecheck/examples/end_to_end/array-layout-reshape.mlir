@@ -5,7 +5,7 @@
 // them to the suite cap (using Fortran RESHAPE), and write them back after.
 // 1D arrays from the same host (e.g. temperature) are passed through directly.
 //
-// RUN: python3 tests/filecheck/examples/array_layout_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-suite-cap,generate-ccpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 tests/filecheck/examples/array_layout_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // The host cap uses host module variables for theta and temperature.
 // CHECK-LABEL: module Tiny_ccpp_cap

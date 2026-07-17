@@ -15,7 +15,7 @@ import pytest
 from xdsl.dialects.builtin import MemRefType
 
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType
-from xdsl_ccpp.transforms.ccpp_cap import _chost_arg_info
+from xdsl_ccpp.transforms.cpp_interop import _chost_arg_info
 
 
 class TestChostDDTError:

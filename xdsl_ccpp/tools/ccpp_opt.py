@@ -6,6 +6,7 @@ from xdsl.xdsl_opt_main import xDSLOptMain
 from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
+from xdsl_ccpp.transforms.cpp_interop import CPPInteropCap
 from xdsl_ccpp.transforms.fir_to_meta import FIRToMeta
 from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
 from xdsl_ccpp.transforms.lower_ccpp_utils import LowerCCPPUtils
@@ -22,6 +23,7 @@ class CCPPOptMain(xDSLOptMain):
         super().register_all_passes()
         self.register_pass("generate-suite-cap", lambda: SuiteCAP)
         self.register_pass("generate-ccpp-cap", lambda: CCPPCAP)
+        self.register_pass("generate-cpp-cap", lambda: CPPInteropCap)
         self.register_pass("generate-meta-cap", lambda: MetaCAP)
         self.register_pass("generate-meta-kinds", lambda: MetaKind)
         self.register_pass("generate-kinds", lambda: GenerateKinds)

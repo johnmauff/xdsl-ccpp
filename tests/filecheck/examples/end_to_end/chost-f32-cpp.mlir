@@ -2,7 +2,7 @@
 // Verifies the precision fix: the generated header must use float/float*
 // rather than always emitting double/double*.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_cpp/kessler_host_mod.meta,examples/kessler/host_cpp/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds{extra_kind=kind_phys extra_iso=REAL32},generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_cpp/kessler_host_mod.meta,examples/kessler/host_cpp/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds{extra_kind=kind_phys extra_iso=REAL32},generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
 
 // typedef uses float for REAL32 kind.
 // CHECK: typedef float     kind_phys_t;
