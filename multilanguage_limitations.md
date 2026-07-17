@@ -104,13 +104,13 @@ and capgen examples) are automatically expanded into flat C-compatible arguments
 C++ side.  The `c_bool` kind is part of `iso_c_binding`, which is already
 imported by the generated cap.
 
-### 4b. Nested DDTs not supported
+### ~~4b. Nested DDTs not supported~~ *(Resolved)*
 
-If a DDT member is itself of a derived type (e.g. `phys_state%rad` where `rad`
-is `inner_type`), the member's `vtype` doesn't match any known primitive — it
-falls through to `! unclassified arg` silently.
-
-**Fix:** recursive expansion of nested DDTs.
+`_chost_expand_ddt_arg` now detects when a member's `vtype` is not a primitive
+and recursively expands it.  Nested members are accessed via the outer local
+using direct path assignment (`outer_local%inner_member%leaf`) so no additional
+Fortran local variable is needed.  Arbitrary nesting depth is supported.
+Validated by the `examples/nestedddt` example.
 
 ### 4c. Array-of-DDTs raises a generation-time error
 
@@ -261,7 +261,7 @@ the generator would need to emit.
 |---|-----------|-----------------|---------------|
 | ~~3~~ | ~~Fixed `double` precision~~ | *(Resolved)* | *(Done)* |
 | ~~4a~~ | ~~DDT — `logical` members silently dropped~~ | *(Resolved)* | *(Done)* |
-| 4b | DDT — nested DDTs | Schemes with nested types | Medium |
+| ~~4b~~ | ~~DDT — nested DDTs~~ | *(Resolved)* | *(Done)* |
 | 4c | DDT — array-of-DDTs / allocatable DDT args | Register lifecycle (advection) | High |
 | 9 | `character(len=*)` assumed-length args | Schemes with string args | Medium |
 | 10 | Runtime-determined dimensions (`ncnst`) | Constituent-aware suites | High |
