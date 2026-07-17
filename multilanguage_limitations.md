@@ -112,24 +112,28 @@ using direct path assignment (`outer_local%inner_member%leaf`) so no additional
 Fortran local variable is needed.  Arbitrary nesting depth is supported.
 Validated by the `examples/nestedddt` example.
 
-### 4c. Array-of-DDTs raises a generation-time error
+### ~~4c. Array-of-DDTs raises a generation-time error~~ *(Resolved)*
 
-A scheme argument of type `MemRefType(DerivedType, [DYNAMIC])` — i.e. a
-rank-1+ array whose element type is a DDT — hits a `ValueError` at cap
-generation time.  The clearest real-world example is the advection register
-lifecycle:
+Allocatable DDT-array arguments (e.g. `ccpp_constituent_properties_t(:)` from
+a scheme's register lifecycle) are now handled automatically.  The chost cap
+generator detects these by element type name and:
 
-```fortran
-type(ccpp_constituent_properties_t), allocatable, intent(out) :: dyn_const(:)
-```
+1. **Excludes them from the C++ function signature** — the C++ caller never
+   sees them; they are entirely internal to the cap.
+2. **Declares module-level allocatables** (`_chost_dyn_const`, etc.) so the
+   data persists after register returns.
+3. **Generates a BIND(C) query interface:**
+   - `{host}_nconstituents()` returns the total count across all constituent
+     arrays registered by all schemes in the suite.
+   - `{host}_get_constituent_info(buf, n)` copies the full
+     `ccpp_constituent_properties_t` data into a C-compatible
+     `CcppConstituentInfo` struct array (fixed-length char fields with null
+     termination, `double` reals, `bool` logicals).
+4. **Exposes C++ wrappers** in the ergonomics `.hpp`:
+   `nconstituents()` and `get_constituents() → std::vector<CcppConstituentInfo>`.
 
-This is an allocatable array of DDTs used to communicate constituent metadata
-from the scheme to the framework.  It has no natural C equivalent; a faithful
-port would require either an opaque handle, a generated C struct array, or a
-redesign of the register protocol.
-
-**Fix:** either a hard error with a clear diagnostic, or an opaque-handle
-mechanism for the register lifecycle.
+Validated by `examples/constprop/` — a minimal scheme that registers one
+constituent property; the C++ driver queries it back and verifies all 12 fields.
 
 ---
 
@@ -215,23 +219,30 @@ is the correct approach.
 
 ---
 
-## 9. `character(len=*)` Assumed-Length Arguments
+## ~~9. `character(len=N)` Fixed-Length Scalar Arguments~~ *(Resolved)*
 
-Some schemes pass assumed-length character strings (`character(len=*), intent(in)`)
-as arguments — for example, the advection `cld_suite` passes a constituent-name
-string this way.  BIND(C) prohibits `character(len=*)` dummy arguments entirely;
-the Fortran standard requires a fixed length (`character(len=N, kind=c_char)`) for
-any character argument in an interoperable procedure.
+Fixed-length character scalar arguments (`character(len=N)`) are now fully
+supported in the chost cap.  The mapping is:
 
-The chost cap generator does not yet handle character arguments of any kind.
-Encountering one currently produces either a generation-time crash or a silently
-missing argument.
+- **C++ side:** `const char*` (intent=in) or `char*` (intent=out/inout) — a
+  null-terminated C string.
+- **C header:** same pointer types, emitted into the BIND(C) prototype.
+- **Fortran side:** `character(kind=c_char, len=1), intent(...) :: arg(*)` (the
+  required BIND(C) form), plus a local `character(len=N) :: arg_f` buffer.
+- **C→F copy-in** (intent=in/inout): scans the C string up to the first
+  `c_null_char`, filling `arg_f` one character at a time.
+- **F→C copy-out** (intent=out/inout): copies `len_trim(arg_f)` characters back
+  and appends a null terminator.
 
-**Potential resolution:** Map `character(len=N)` to `const char*` (C-side) and
-`character(len=N, kind=c_char)` (Fortran-side) for fixed-length strings.
-Assumed-length strings (`len=*`) would require the caller to pass the string and
-its length separately (a common Fortran C-interop pattern), or the scheme API
-would need to be changed to use a fixed-length or `c_char` string.
+The generator raises a clear `ValueError` for unsupported forms:
+- `character(len=*)` assumed-length scalars — BIND(C) does not permit them;
+  change the scheme to use a fixed `character(len=N)`.
+- Character arrays (e.g. `character(len=N) :: arr(M)`) — not supported in the
+  C-interoperable interface.
+
+Validated by `examples/chararg/` — a minimal scheme with a `character(len=32),
+intent(in)` label arg; the C++ driver passes a non-empty label and verifies the
+3× temperature scaling, then verifies an empty label returns an error.
 
 ---
 
@@ -262,8 +273,8 @@ the generator would need to emit.
 | ~~3~~ | ~~Fixed `double` precision~~ | *(Resolved)* | *(Done)* |
 | ~~4a~~ | ~~DDT — `logical` members silently dropped~~ | *(Resolved)* | *(Done)* |
 | ~~4b~~ | ~~DDT — nested DDTs~~ | *(Resolved)* | *(Done)* |
-| 4c | DDT — array-of-DDTs / allocatable DDT args | Register lifecycle (advection) | High |
-| 9 | `character(len=*)` assumed-length args | Schemes with string args | Medium |
+| ~~4c~~ | ~~DDT — array-of-DDTs / allocatable DDT args~~ | *(Resolved)* | *(Done)* |
+| ~~9~~ | ~~`character(len=N)` scalar args~~ | *(Resolved)* | *(Done)* |
 | 10 | Runtime-determined dimensions (`ncnst`) | Constituent-aware suites | High |
 | 2 | GPU memory management | Yes, for GPU builds | Medium–High |
 | 1 | Column-major layout | Subtle bugs if overlooked | Medium |

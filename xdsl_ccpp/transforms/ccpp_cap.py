@@ -222,11 +222,29 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
             f"the C-interoperable chost interface. Flatten the DDT into individual "
             f"scalar/array members, or see multilanguage_limitations.md for options."
         )
+    char_len = None
     if isinstance(mtype, MemRefType):
         elem = mtype.element_type
         if isinstance(elem, IntegerType) and elem.width.data == 8:
-            is_char = True
-            rank = -1
+            static_dims = [d.data for d in mtype.shape if d.data != DYNAMIC_INDEX]
+            dyn_dims    = [d for d in mtype.shape if d.data == DYNAMIC_INDEX]
+            if dyn_dims:
+                if len(mtype.shape) == 1:
+                    raise ValueError(
+                        f"chost cap: argument '{bare}' (standard_name='{std}') is an "
+                        f"assumed-length character (len=*) — BIND(C) does not permit "
+                        f"assumed-length dummy arguments. Change the scheme to use a "
+                        f"fixed-length character(len=N) argument instead."
+                    )
+                raise ValueError(
+                    f"chost cap: argument '{bare}' (standard_name='{std}') is a "
+                    f"character array — arrays of strings are not supported in the "
+                    f"C-interoperable chost interface. Use a fixed-length scalar "
+                    f"character(len=N) argument instead."
+                )
+            is_char  = True
+            rank     = -1
+            char_len = static_dims[0] if static_dims else CCPP_ERRMSG_LEN
         elif isinstance(elem, IntegerType):
             is_int = True
         else:
@@ -270,7 +288,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
         is_errflg=is_errflg, is_sname=is_sname,
         is_char=is_char, is_int=is_int, is_real=is_real, is_logical=False,
         real_width=real_width, rank=rank, intent=intent,
-        dim_nz=dim_nz,
+        dim_nz=dim_nz, char_len=char_len,
     )
 
 
@@ -599,6 +617,8 @@ def _chost_cpp_type(ai: dict) -> str:
         return f"{cpp_real}*"
     if ai.get("is_logical"):
         return "bool"
+    if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
+        return "const char*" if ai.get("intent") == "in" else "char*"
     if ai["is_sname"] or ai["is_errmsg"]:
         return "char*"
     if ai["is_errflg"]:
@@ -749,6 +769,14 @@ def _chost_fn_contexts(
                     h, t, local_to_std, std_to_host, kind_iso_map,
                     local_to_dim_names=local_to_dim_names,
                 )
+                # Scalar char args don't get the __in hint suffix from suite_cap
+                # (that's only for array args), so their intent defaults to "inout".
+                # Look up the actual intent from scheme metadata to get it right.
+                if (ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]
+                        and ai["intent"] == "inout" and meta_data is not None):
+                    actual = _ddt_arg_intent(ai["std"], lc, meta_data)
+                    if actual == "in":
+                        ai["intent"] = "in"
                 infos.append(ai)
                 suite_call_pieces.append({"kind": "arg", "ai": ai})
 
@@ -3555,6 +3583,8 @@ class CCPPCAP(ModulePass):
                         f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, *)")
             if ai.get("is_logical"):
                 return f"    logical(c_bool), value, intent({ai['intent']}) :: {host}"
+            if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
+                return f"    character(kind=c_char, len=1), intent({ai['intent']}) :: {host}(*)"
             if ai["is_sname"]:
                 return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
             if ai["is_errmsg"]:
@@ -3646,6 +3676,8 @@ class CCPPCAP(ModulePass):
 
             has_errmsg = any(ai["is_errmsg"] for ai in visible)
             has_sname  = any(ai["is_sname"]  for ai in visible)
+            plain_char_args = [ai for ai in visible
+                               if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]]
 
             # ── Subroutine signature ──────────────────────────────────────────
             A("")
@@ -3654,7 +3686,7 @@ class CCPPCAP(ModulePass):
             # ── Declarations ─────────────────────────────────────────────────
             for ai in visible:
                 A(ftn_decl(ai))
-            if has_errmsg or has_sname:
+            if has_errmsg or has_sname or plain_char_args:
                 A("    integer :: i")
             if has_sname:
                 sn = next(ai["host"] for ai in visible if ai["is_sname"])
@@ -3662,6 +3694,9 @@ class CCPPCAP(ModulePass):
             if has_errmsg:
                 em = next(ai["host"] for ai in visible if ai["is_errmsg"])
                 A(f"    character(len={CCPP_ERRMSG_LEN}) :: {em}_f")
+            for ai in plain_char_args:
+                cl = ai.get("char_len") or CCPP_ERRMSG_LEN
+                A(f"    character(len={cl}) :: {ai['host']}_f")
             for li in ddt_locals.values():
                 A(f"    type({li['ddt_type']}) :: {li['local_name']}")
 
@@ -3674,6 +3709,15 @@ class CCPPCAP(ModulePass):
             if any(ai["is_errflg"] for ai in visible):
                 ef = next(ai["host"] for ai in visible if ai["is_errflg"])
                 A(f"    {ef} = 0")
+            # C→F copy-in for plain character(len=N) args (intent=in or intent=inout)
+            for ai in plain_char_args:
+                if ai.get("intent") in ("in", "inout"):
+                    h = ai["host"]
+                    A(f"    {h}_f = ' '")
+                    A(f"    do i = 1, len({h}_f)")
+                    A(f"      if ({h}(i) == c_null_char) exit")
+                    A(f"      {h}_f(i:i) = {h}(i)")
+                    A(f"    end do")
 
             # ── DDT copy-in: scalars assigned, arrays allocated and filled ────
             for li in ddt_locals.values():
@@ -3717,6 +3761,8 @@ class CCPPCAP(ModulePass):
                                 call_exprs.append(ai["host"])
                             elif ai["is_real"] and ai["rank"] == 0:
                                 call_exprs.append(f"real({ai['host']}, kind_phys)")
+                            elif ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
+                                call_exprs.append(f"{ai['host']}_f")
                             else:
                                 call_exprs.append(ai["host"])
                 else:
@@ -3725,6 +3771,8 @@ class CCPPCAP(ModulePass):
                             call_exprs.append(ai["host"])
                         elif ai["is_real"] and ai["rank"] == 0:
                             call_exprs.append(f"real({ai['host']}, kind_phys)")
+                        elif ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
+                            call_exprs.append(f"{ai['host']}_f")
                         else:
                             call_exprs.append(ai["host"])
                 # intent=out DDT locals come before errmsg/errflg in the call.
@@ -3760,6 +3808,13 @@ class CCPPCAP(ModulePass):
                 A(f"      {em}(i) = {em}_f(i:i)")
                 A(f"    end do")
                 A(f"    {em}(len_trim({em}_f)+1) = c_null_char")
+            for ai in plain_char_args:
+                if ai.get("intent") in ("out", "inout"):
+                    h = ai["host"]
+                    A(f"    do i = 1, len_trim({h}_f)")
+                    A(f"      {h}(i) = {h}_f(i:i)")
+                    A(f"    end do")
+                    A(f"    {h}(len_trim({h}_f)+1) = c_null_char")
 
             A(f"  end subroutine {cfn}")
 
