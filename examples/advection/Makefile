@@ -63,9 +63,9 @@ SRCS = \
 
 OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(SRCS:.F90=.o)))
 
-# test_utils lives in examples/capgen (shared across examples)
+# test_utils lives in examples/capgen/host_ftn (shared across examples)
 TEST_EXTRA_SRCS = \
-    examples/capgen/test_utils.F90 \
+    examples/capgen/host_ftn/test_utils.F90 \
     $(DIR)/test_host.F90
 
 TEST_EXTRA_OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(TEST_EXTRA_SRCS:.F90=.o)))
@@ -102,7 +102,7 @@ $(BUILD_DIR):
 $(BUILD_DIR)/%.o: $(DIR)/%.F90 | $(BUILD_DIR)
 	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD_DIR) -I $(BUILD_DIR)
 
-$(BUILD_DIR)/test_utils.o: examples/capgen/test_utils.F90 | $(BUILD_DIR)
+$(BUILD_DIR)/test_utils.o: examples/capgen/host_ftn/test_utils.F90 | $(BUILD_DIR)
 	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD_DIR) -I $(BUILD_DIR)
 
 $(TEST_EXE): $(OBJS) $(TEST_EXTRA_OBJS) $(BUILD_DIR)/test_advection_host_integration.o

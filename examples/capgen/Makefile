@@ -27,7 +27,9 @@
 #   make clean     — remove build artefacts and generated caps
 
 # ── Compilers & flags ─────────────────────────────────────────────────────────
-FC   ?= gfortran
+ifeq ($(origin FC),default)
+FC   := gfortran
+endif
 ARCH ?= CPU
 
 ifeq ($(FC),nvfortran)
