@@ -87,19 +87,19 @@ def _run_capgen_pipeline(suite_xmls: list[str], scheme_metas: list[str],
 def capgen_fortran() -> str:
     """Full Fortran output from the capgen example (temp_suite only)."""
     return _run_capgen_pipeline(
-        suite_xmls=["examples/capgen/temp_suite.xml"],
+        suite_xmls=["examples/capgen/scheme/temp_suite.xml"],
         scheme_metas=[
-            "examples/capgen/make_ddt.meta",
-            "examples/capgen/environ_conditions.meta",
-            "examples/capgen/setup_coeffs.meta",
-            "examples/capgen/temp_set.meta",
-            "examples/capgen/temp_calc_adjust.meta",
-            "examples/capgen/temp_adjust.meta",
+            "examples/capgen/scheme/make_ddt.meta",
+            "examples/capgen/scheme/environ_conditions.meta",
+            "examples/capgen/scheme/setup_coeffs.meta",
+            "examples/capgen/scheme/temp_set.meta",
+            "examples/capgen/scheme/temp_calc_adjust.meta",
+            "examples/capgen/scheme/temp_adjust.meta",
         ],
         host_metas=[
-            "examples/capgen/test_host_data.meta",
-            "examples/capgen/test_host_mod.meta",
-            "examples/capgen/test_host.meta",
+            "examples/capgen/host_ftn/test_host_data.meta",
+            "examples/capgen/host_ftn/test_host_mod.meta",
+            "examples/capgen/host_ftn/test_host.meta",
         ],
     )
 

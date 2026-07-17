@@ -27,6 +27,8 @@ _HERE = pathlib.Path(__file__).parent
 _EXAMPLES = _HERE.parent.parent / "examples"
 _ADV = _EXAMPLES / "advection"
 _CAP = _EXAMPLES / "capgen"
+_CAP_SCHEME = _CAP / "scheme"
+_CAP_HOST_FTN = _CAP / "host_ftn"
 
 
 # ── Inline meta helpers ───────────────────────────────────────────────────────
@@ -340,12 +342,12 @@ class TestCapgenIntegration:
 
     @pytest.fixture(scope="class")
     def cap_module(self):
-        suites = [str(_CAP / "ddt_suite.xml")]
+        suites = [str(_CAP_SCHEME / "ddt_suite.xml")]
         scheme_files = [
-            str(_CAP / "make_ddt.meta"),
-            str(_CAP / "environ_conditions.meta"),
+            str(_CAP_SCHEME / "make_ddt.meta"),
+            str(_CAP_SCHEME / "environ_conditions.meta"),
         ]
-        host_files = [str(_CAP / "test_host_data.meta")]
+        host_files = [str(_CAP_HOST_FTN / "test_host_data.meta")]
         return _load_module(suites, scheme_files, host_files)
 
     def test_found_in_environ_conditions(self, cap_module):
