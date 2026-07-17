@@ -81,18 +81,55 @@ inserted by the `generate-meta-kinds` pass, so any `--kind-map` override (e.g.
 
 ---
 
-## 4. No DDT (Derived Data Type) Support
+## 4. Partial DDT Support — Remaining Gaps
 
-Schemes whose argument lists include a Fortran derived data type (DDT) — such as
-a physics state struct, a tracer container, or `ccpp_t` — cannot be expressed in
-a C-compatible interface.  The chost generator will either skip those arguments
-or produce an incorrect declaration.
+Basic DDT flattening is implemented and tested: scheme arguments whose type is a
+DDT with scalar-integer and real-array members (e.g. `vmr_type` in the ddthost
+and capgen examples) are automatically expanded into flat C-compatible arguments.
+`intent=in`, `intent=inout`, and `intent=out` DDTs are all handled.
 
-**Potential resolution:** Restrict chost use to schemes that have no DDT
-arguments, and emit a clear error at generation time if a DDT is encountered.
-Full DDT support would require either (a) flattening the DDT members into
-individual C arguments, or (b) generating a C `struct` that mirrors the Fortran
-layout — both are non-trivial.
+**What works:**
+- DDT with `integer` scalar members (e.g. `nvmr`)
+- DDT with `real(kind_phys)` 1-D and 2-D array members
+- `intent=out` DDTs where the scheme allocates the array internally (initialize
+  lifecycle)
+- `intent=inout` DDTs where the C++ caller owns the flat buffers (run lifecycle)
+
+**Remaining gaps:**
+
+### ~~4a. `logical` DDT members silently dropped~~ *(Resolved)*
+
+`_chost_expand_ddt_arg` now detects `vtype == "logical"` and emits
+`logical(c_bool), value, intent(...)` on the Fortran side and `bool` on the
+C++ side.  The `c_bool` kind is part of `iso_c_binding`, which is already
+imported by the generated cap.
+
+### 4b. Nested DDTs not supported
+
+If a DDT member is itself of a derived type (e.g. `phys_state%rad` where `rad`
+is `inner_type`), the member's `vtype` doesn't match any known primitive — it
+falls through to `! unclassified arg` silently.
+
+**Fix:** recursive expansion of nested DDTs.
+
+### 4c. Array-of-DDTs raises a generation-time error
+
+A scheme argument of type `MemRefType(DerivedType, [DYNAMIC])` — i.e. a
+rank-1+ array whose element type is a DDT — hits a `ValueError` at cap
+generation time.  The clearest real-world example is the advection register
+lifecycle:
+
+```fortran
+type(ccpp_constituent_properties_t), allocatable, intent(out) :: dyn_const(:)
+```
+
+This is an allocatable array of DDTs used to communicate constituent metadata
+from the scheme to the framework.  It has no natural C equivalent; a faithful
+port would require either an opaque handle, a generated C struct array, or a
+redesign of the register protocol.
+
+**Fix:** either a hard error with a clear diagnostic, or an opaque-handle
+mechanism for the register lifecycle.
 
 ---
 
@@ -178,12 +215,56 @@ is the correct approach.
 
 ---
 
+## 9. `character(len=*)` Assumed-Length Arguments
+
+Some schemes pass assumed-length character strings (`character(len=*), intent(in)`)
+as arguments — for example, the advection `cld_suite` passes a constituent-name
+string this way.  BIND(C) prohibits `character(len=*)` dummy arguments entirely;
+the Fortran standard requires a fixed length (`character(len=N, kind=c_char)`) for
+any character argument in an interoperable procedure.
+
+The chost cap generator does not yet handle character arguments of any kind.
+Encountering one currently produces either a generation-time crash or a silently
+missing argument.
+
+**Potential resolution:** Map `character(len=N)` to `const char*` (C-side) and
+`character(len=N, kind=c_char)` (Fortran-side) for fixed-length strings.
+Assumed-length strings (`len=*`) would require the caller to pass the string and
+its length separately (a common Fortran C-interop pattern), or the scheme API
+would need to be changed to use a fixed-length or `c_char` string.
+
+---
+
+## 10. Runtime-Determined Dimensions
+
+Some suites have a dimension (`ncnst`, the constituent count) that is only known
+after the register and initialize lifecycles complete — each scheme registers its
+constituents during `register`, then the framework counts them and allocates
+arrays of that size for `run`.  The C++ host cannot know `ncnst` at compile time
+or even at driver startup; it must query the value after `initialize`.
+
+The current chost cap model assumes all array dimensions are known before
+`allocate()` is called.  There is no mechanism to communicate
+framework-determined sizes back to the C++ host between lifecycles.
+
+**Potential resolution:** Expose a `query_dimensions()` function in the generated
+`.hpp` header (or a post-initialize callback) that returns the runtime-determined
+sizes so the C++ caller can re-allocate or resize before calling `run`.  This
+requires the suite cap to expose those counts via a BIND(C) query function, which
+the generator would need to emit.
+
+---
+
 ## Priority Summary
 
 | # | Limitation | Blocks real use? | Effort to fix |
 |---|-----------|-----------------|---------------|
 | ~~3~~ | ~~Fixed `double` precision~~ | *(Resolved)* | *(Done)* |
-| 4 | No DDT support | Yes, for DDT-heavy schemes | High |
+| ~~4a~~ | ~~DDT — `logical` members silently dropped~~ | *(Resolved)* | *(Done)* |
+| 4b | DDT — nested DDTs | Schemes with nested types | Medium |
+| 4c | DDT — array-of-DDTs / allocatable DDT args | Register lifecycle (advection) | High |
+| 9 | `character(len=*)` assumed-length args | Schemes with string args | Medium |
+| 10 | Runtime-determined dimensions (`ncnst`) | Constituent-aware suites | High |
 | 2 | GPU memory management | Yes, for GPU builds | Medium–High |
 | 1 | Column-major layout | Subtle bugs if overlooked | Medium |
 | ~~5~~ | ~~Rank > 2 arrays~~ | *(Resolved)* | *(Done)* |

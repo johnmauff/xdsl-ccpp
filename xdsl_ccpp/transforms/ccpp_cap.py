@@ -247,7 +247,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
         is_col_start=is_col_start, is_col_end=is_col_end,
         is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
         is_errflg=is_errflg, is_sname=is_sname,
-        is_char=is_char, is_int=is_int, is_real=is_real,
+        is_char=is_char, is_int=is_int, is_real=is_real, is_logical=False,
         real_width=real_width, rank=rank, intent=intent,
         dim_nz=dim_nz,
     )
@@ -310,8 +310,9 @@ def _chost_expand_ddt_arg(
         is_ncol = std in {CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME}
         is_nz   = std in CCPP_VERTICAL_DIMENSIONS
         vtype   = var.getAttr("type").lower() if var.hasAttr("type") else "real"
-        is_int  = (vtype == "integer")
-        is_real = (vtype == "real")
+        is_int     = (vtype == "integer")
+        is_real    = (vtype == "real")
+        is_logical = (vtype == "logical")
 
         if vtype == "character":
             # Character members (e.g. ccpp_info_t%errmsg) are not exposed in the
@@ -355,7 +356,7 @@ def _chost_expand_ddt_arg(
             is_col_start=False, is_col_end=False,
             is_ncol=is_ncol, is_nz=is_nz, is_dim_scalar=False,
             is_errmsg=False, is_errflg=False, is_sname=False,
-            is_char=False, is_int=is_int, is_real=is_real,
+            is_char=False, is_int=is_int, is_real=is_real, is_logical=is_logical,
             real_width=real_width, rank=ndim, intent=intent,
             _ddt_member=var.name,
             _ddt_local=f"{prefix}_local",
@@ -418,7 +419,7 @@ def _chost_out_infos(pfn_out_types, std_to_host):
                     is_col_start=False, is_col_end=False,
                     is_ncol=False, is_nz=False,
                     is_errmsg=True, is_errflg=False, is_sname=False,
-                    is_char=True, is_int=False, is_real=False,
+                    is_char=True, is_int=False, is_real=False, is_logical=False,
                     rank=-1, intent="out",
                 ))
             else:
@@ -429,7 +430,7 @@ def _chost_out_infos(pfn_out_types, std_to_host):
                     is_col_start=False, is_col_end=False,
                     is_ncol=False, is_nz=False,
                     is_errmsg=False, is_errflg=False, is_sname=True,
-                    is_char=True, is_int=False, is_real=False,
+                    is_char=True, is_int=False, is_real=False, is_logical=False,
                     rank=-1, intent="out",
                 ))
         elif isinstance(elem, IntegerType):
@@ -440,7 +441,7 @@ def _chost_out_infos(pfn_out_types, std_to_host):
                 is_col_start=False, is_col_end=False,
                 is_ncol=False, is_nz=False,
                 is_errmsg=False, is_errflg=True, is_sname=False,
-                is_char=False, is_int=True, is_real=False,
+                is_char=False, is_int=True, is_real=False, is_logical=False,
                 rank=0, intent="out",
             ))
     return out_infos
@@ -465,7 +466,7 @@ def _chost_maybe_inject_ncol(visible: list, infos: list, ncol_var: str) -> list:
             is_col_start=False, is_col_end=False,
             is_ncol=True, is_nz=False, is_errmsg=False,
             is_errflg=False, is_sname=False,
-            is_char=False, is_int=True, is_real=False,
+            is_char=False, is_int=True, is_real=False, is_logical=False,
             rank=0, intent="in",
         )] + visible
     return visible
@@ -501,7 +502,7 @@ def _chost_maybe_inject_nz(visible: list, infos: list, std_to_host: dict) -> lis
                 is_col_start=False, is_col_end=False,
                 is_ncol=False, is_nz=True, is_errmsg=False,
                 is_errflg=False, is_sname=False,
-                is_char=False, is_int=True, is_real=False,
+                is_char=False, is_int=True, is_real=False, is_logical=False,
                 rank=0, intent="in", dim_nz=None,
             )
             nz_hosts_present.add(dz)
@@ -556,6 +557,8 @@ def _chost_cpp_type(ai: dict) -> str:
         if ai["intent"] == "in":
             return f"const {cpp_real}*"
         return f"{cpp_real}*"
+    if ai.get("is_logical"):
+        return "bool"
     if ai["is_sname"] or ai["is_errmsg"]:
         return "char*"
     if ai["is_errflg"]:
@@ -3497,6 +3500,8 @@ class CCPPCAP(ModulePass):
                 # rank >= 3: higher dimensions are assumed-size (*).
                 return (f"    real({c_real}), target,"
                         f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, *)")
+            if ai.get("is_logical"):
+                return f"    logical(c_bool), value, intent({ai['intent']}) :: {host}"
             if ai["is_sname"]:
                 return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
             if ai["is_errmsg"]:
