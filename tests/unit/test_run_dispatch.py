@@ -20,13 +20,17 @@ end-to-end example suites for coverage -- constructing valid Block/FuncOp
 fixtures by hand for those is a separate, larger effort.
 """
 
+import pytest
+
 from xdsl_ccpp.dialects.ccpp import ArgSourceKind
 from xdsl_ccpp.transforms.run_dispatch import (
     _RunMetadataMaps,
     _build_per_suite_run_info,
+    _build_resolved_arg_ops,
     _build_run_metadata_maps,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
+    _resolved_arg_op_from_source,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
@@ -327,6 +331,39 @@ def _assert_resolved_matches_source(arg_name, op, src):
         assert op.module_name is None
         assert op.member_path is None
         assert op.std_name is None
+
+
+class TestResolvedArgOpFromSourceRejectsUnknownKind:
+    """An unrecognized physics_arg_sources kind must raise, not silently
+    become a Block op -- that would break the "pure mirror" guarantee and
+    could mask a real classification bug."""
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError, match="Unrecognized physics_arg_sources kind"):
+            _resolved_arg_op_from_source("x", ("bogus_kind",))
+
+    def test_block_kind_still_produces_block_op(self):
+        """The one-tuple "block" tag itself is still handled explicitly."""
+        op = _resolved_arg_op_from_source("x", ("block",))
+        assert op.source_kind.data == ArgSourceKind.Block
+
+
+class TestBuildResolvedArgOpsRejectsLengthMismatch:
+    """callee_input_names and physics_arg_sources must be the same length --
+    a silent zip()-style truncation/misalignment would break the "mirror"
+    guarantee if the two ever diverged (e.g. a future refactor)."""
+
+    def test_matching_lengths_succeed(self):
+        ops = _build_resolved_arg_ops(["a", "b"], [("block",), ("block",)])
+        assert [op.arg_name.data for op in ops] == ["a", "b"]
+
+    def test_more_names_than_sources_raises(self):
+        with pytest.raises(ValueError, match="diverged in length"):
+            _build_resolved_arg_ops(["a", "b"], [("block",)])
+
+    def test_more_sources_than_names_raises(self):
+        with pytest.raises(ValueError, match="diverged in length"):
+            _build_resolved_arg_ops(["a"], [("block",), ("block",)])
 
 
 class TestBuildPerSuiteRunInfoResolvedArgOps:

@@ -227,8 +227,28 @@ def _resolved_arg_op_from_source(arg_name: str, src: tuple) -> ResolvedArgOp:
     elif kind == "cap_var":
         _, std_name = src
         return ResolvedArgOp(arg_name, ArgSourceKind.CapVar, std_name=std_name)
-    else:
+    elif kind == "block":
         return ResolvedArgOp(arg_name, ArgSourceKind.Block)
+    else:
+        raise ValueError(f"Unrecognized physics_arg_sources kind: {kind!r}")
+
+def _build_resolved_arg_ops(callee_input_names: list, physics_arg_sources: list) -> list:
+    """Build the resolved_arg_ops mirror of physics_arg_sources, index-aligned
+    with callee_input_names.
+
+    Raises if the two lists have diverged in length -- silently zipping them
+    would misalign or truncate instead of failing fast.
+    """
+    if len(physics_arg_sources) != len(callee_input_names):
+        raise ValueError(
+            f"physics_arg_sources ({len(physics_arg_sources)} entries) and "
+            f"callee_input_names ({len(callee_input_names)} entries) diverged "
+            f"in length -- resolved_arg_ops would silently misalign"
+        )
+    return [
+        _resolved_arg_op_from_source(callee_input_names[i], physics_arg_sources[i])
+        for i in range(len(physics_arg_sources))
+    ]
 
 def _build_per_suite_run_info(
     suite_run_entries,
@@ -421,10 +441,7 @@ def _build_per_suite_run_info(
 
         # Stage 2 dual-build: mirror physics_arg_sources into ResolvedArgOp,
         # alongside the tuple form. Not read by anything downstream yet.
-        resolved_arg_ops = [
-            _resolved_arg_op_from_source(arg_name, src)
-            for arg_name, src in zip(callee_input_names, physics_arg_sources)
-        ]
+        resolved_arg_ops = _build_resolved_arg_ops(callee_input_names, physics_arg_sources)
 
         non_host_args = [
             (callee_input_names[i], callee_input_types[i],
