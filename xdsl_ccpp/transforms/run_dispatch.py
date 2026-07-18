@@ -667,7 +667,7 @@ def _build_run_chain_preamble(
     trim_suite_name = TrimOp(suite_name_arg)
 
     write_suite_name_err = WriteErrMsgOp(
-        errmsg_arg, trim_suite_name.res, "No suite named ", "found"
+        errmsg_arg, trim_suite_name.res, "No suite named ", " found"
     )
     one_outer_err = arith.ConstantOp.from_int_and_width(1, 32)
     store_outer_err = memref.StoreOp.get(one_outer_err, errflg_arg, [])
