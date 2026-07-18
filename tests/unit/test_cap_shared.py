@@ -10,6 +10,11 @@ _build_no_suite_matched_false_ops was added later, consolidating three
 independent copies of the same "no suite matched" error sequence
 (run_dispatch.py x2, lifecycle_cap.py x1) into one shared function.
 
+_iter_schemes was added later still, consolidating ccpp_cap.py's and
+suite_cap.py's independent copies of the same subcycle-flattening logic
+(suite_variable_model.py has a third, deliberately separate copy -- see its
+own comment for why it isn't unified here).
+
 _collect_ddt_use_stubs and _rank_of were added later still, consolidating
 ccpp_cap.py/suite_cap.py's identical DDT-USE-stub logic and
 ccpp_cap.py/run_dispatch.py's identical type-rank expression respectively.
@@ -28,9 +33,16 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_no_suite_matched_false_ops,
     _collect_ddt_use_stubs,
     _is_framework_managed,
+    _iter_schemes,
     _rank_of,
 )
-from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPArgument, CCPPArgumentTable
+from xdsl_ccpp.transforms.util.ccpp_descriptors import (
+    CCPPArgument,
+    CCPPArgumentTable,
+    XMLGroup,
+    XMLScheme,
+    XMLSubcycle,
+)
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 
 
@@ -140,6 +152,42 @@ class TestBuildNoSuiteMatchedFalseOps:
         )
         assert one_err.value.value.data == 1
         assert store_errflg_err.memref == errflg_dest
+
+
+class TestIterSchemes:
+    """_iter_schemes: yield a group's XMLScheme leaves, flattening one level
+    of XMLSubcycle nesting."""
+
+    def test_plain_schemes_yielded_directly(self):
+        group = XMLGroup("physics")
+        group.addChild(XMLScheme("scheme_a"))
+        group.addChild(XMLScheme("scheme_b"))
+        names = [s.attributes["name"] for s in _iter_schemes(group)]
+        assert names == ["scheme_a", "scheme_b"]
+
+    def test_subcycle_schemes_flattened(self):
+        group = XMLGroup("physics")
+        subcycle = XMLSubcycle(loop_count=2)
+        subcycle.addChild(XMLScheme("scheme_a"))
+        subcycle.addChild(XMLScheme("scheme_b"))
+        group.addChild(subcycle)
+        names = [s.attributes["name"] for s in _iter_schemes(group)]
+        assert names == ["scheme_a", "scheme_b"]
+
+    def test_mixed_plain_and_subcycle_schemes_preserve_order(self):
+        group = XMLGroup("physics")
+        subcycle = XMLSubcycle(loop_count=3)
+        subcycle.addChild(XMLScheme("scheme_b"))
+        subcycle.addChild(XMLScheme("scheme_c"))
+        group.addChild(XMLScheme("scheme_a"))
+        group.addChild(subcycle)
+        group.addChild(XMLScheme("scheme_d"))
+        names = [s.attributes["name"] for s in _iter_schemes(group)]
+        assert names == ["scheme_a", "scheme_b", "scheme_c", "scheme_d"]
+
+    def test_empty_group_yields_nothing(self):
+        group = XMLGroup("physics")
+        assert list(_iter_schemes(group)) == []
 
 
 class TestCollectDdtUseStubs:

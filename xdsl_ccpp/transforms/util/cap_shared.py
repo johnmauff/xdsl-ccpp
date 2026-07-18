@@ -12,7 +12,7 @@ from xdsl.dialects import arith, llvm, memref, scf
 from xdsl.dialects.builtin import StringAttr, i8
 
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
-from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
@@ -96,6 +96,27 @@ def _assert_call_arg_count_matches_signature(
             f"  Callee inputs:   {callee_input_names}\n"
             f"  Generated args:  {[str(a) for a in call_args]}"
         )
+
+
+def _iter_schemes(group):
+    """Yield all XMLScheme leaves from a group, descending into XMLSubcycle nodes.
+
+    Shared by ccpp_cap.py and suite_cap.py's getSchemeNames -- previously two
+    independent copies of the same flattening logic, each only exercising the
+    one-level-deep subcycle case (nested subcycles are untested repo-wide --
+    see the refactor plan's backlog).
+
+    suite_variable_model.py has a third, deliberately separate copy (duck-typed
+    via "loop_count" in child.attributes rather than this isinstance check) --
+    not unified here because that module's own docstring commits to zero
+    xDSL/MLIR imports, and importing this function would pull in this module's
+    xDSL-dependent imports transitively. See the comment at its call site.
+    """
+    for child in group:
+        if isinstance(child, XMLSubcycle):
+            yield from child
+        else:
+            yield child
 
 
 def _build_no_suite_matched_false_ops(errmsg_dest, trim_suite_name_res, errflg_dest) -> list:

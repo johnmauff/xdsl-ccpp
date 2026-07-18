@@ -37,6 +37,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     _collect_ddt_use_stubs,
     _is_framework_managed,
+    _iter_schemes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -147,25 +148,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         ``overrides`` is a plain ``{arg_name: literal_str}`` dict, empty when
         the scheme was not called with keyword argument overrides.
         """
-        result = []
-        for group in suite_description:
-            for child in group:
-                if isinstance(child, XMLSubcycle):
-                    for scheme in child:
-                        result.append(
-                            (
-                                scheme.attributes["name"],
-                                scheme.attributes.get("arg_overrides", {}),
-                            )
-                        )
-                else:
-                    result.append(
-                        (
-                            child.attributes["name"],
-                            child.attributes.get("arg_overrides", {}),
-                        )
-                    )
-        return result
+        return [
+            (scheme.attributes["name"], scheme.attributes.get("arg_overrides", {}))
+            for group in suite_description
+            for scheme in _iter_schemes(group)
+        ]
 
     def getCallSequence(self, suite_description):
         """Return the ordered call sequence, preserving subcycle boundaries.
