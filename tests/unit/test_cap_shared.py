@@ -5,10 +5,21 @@ so it can be shared with _get_suite_lifecycle_ret_info, which was previously
 hand-rolling a partial mirror of the same logic (is_interstitial only, missing
 the advected/allocatable-real-array branch). This is its first direct unit
 test -- previously only exercised indirectly via end-to-end examples.
+
+_build_no_suite_matched_false_ops was added later, consolidating three
+independent copies of the same "no suite matched" error sequence
+(run_dispatch.py x2, lifecycle_cap.py x1) into one shared function.
 """
 
-from xdsl_ccpp.transforms.util.cap_shared import _is_framework_managed
+from xdsl.dialects import memref, scf
+
+from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
+from xdsl_ccpp.transforms.util.cap_shared import (
+    _build_no_suite_matched_false_ops,
+    _is_framework_managed,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPArgument
+from xdsl_ccpp.transforms.util.typing import TypeConversions
 
 
 def _make_arg(name, **attrs):
@@ -51,3 +62,60 @@ class TestIsFrameworkManaged:
     def test_plain_scalar_arg_is_not(self):
         arg = _make_arg("x", type="integer", dimensions=0)
         assert _is_framework_managed(arg) is False
+
+
+class TestBuildNoSuiteMatchedFalseOps:
+    """_build_no_suite_matched_false_ops: the shared "no suite matched"
+    fallback error sequence -- previously duplicated three ways
+    (run_dispatch.py x2, lifecycle_cap.py x1), which is exactly the failure
+    shape that let a Phase 3a review fix land on two copies and miss the
+    third. Now a single implementation, directly testable."""
+
+    def _fixture_operands(self):
+        errmsg_dest = memref.AllocaOp.get(
+            TypeConversions.getBaseType("character"), shape=[512]
+        ).memref
+        trim_suite_name_res = memref.AllocaOp.get(
+            TypeConversions.getBaseType("character"), shape=[64]
+        ).memref
+        errflg_dest = memref.AllocaOp.get(
+            TypeConversions.getBaseType("integer"), shape=[]
+        ).memref
+        return errmsg_dest, trim_suite_name_res, errflg_dest
+
+    def test_returns_four_ops_in_order(self):
+        errmsg_dest, trim_suite_name_res, errflg_dest = self._fixture_operands()
+        ops = _build_no_suite_matched_false_ops(
+            errmsg_dest, trim_suite_name_res, errflg_dest
+        )
+        assert len(ops) == 4
+        write_err, one_err, store_errflg_err, yield_op = ops
+        assert isinstance(write_err, WriteErrMsgOp)
+        assert isinstance(store_errflg_err, memref.StoreOp)
+        assert isinstance(yield_op, scf.YieldOp)
+
+    def test_error_message_text_has_leading_and_trailing_space(self):
+        """Prefix ends and suffix starts with a space so the trimmed suite
+        name reads correctly on both sides: "No suite named <name> found"."""
+        errmsg_dest, trim_suite_name_res, errflg_dest = self._fixture_operands()
+        write_err, _one_err, _store, _yield = _build_no_suite_matched_false_ops(
+            errmsg_dest, trim_suite_name_res, errflg_dest
+        )
+        assert write_err.prefix.data == "No suite named "
+        assert write_err.suffix.data == " found"
+
+    def test_writes_to_the_given_errmsg_and_var_operands(self):
+        errmsg_dest, trim_suite_name_res, errflg_dest = self._fixture_operands()
+        write_err, _one_err, _store, _yield = _build_no_suite_matched_false_ops(
+            errmsg_dest, trim_suite_name_res, errflg_dest
+        )
+        assert write_err.dest == errmsg_dest
+        assert write_err.var == trim_suite_name_res
+
+    def test_sets_errflg_to_one_on_the_given_dest(self):
+        errmsg_dest, trim_suite_name_res, errflg_dest = self._fixture_operands()
+        _write, one_err, store_errflg_err, _yield = _build_no_suite_matched_false_ops(
+            errmsg_dest, trim_suite_name_res, errflg_dest
+        )
+        assert one_err.value.value.data == 1
+        assert store_errflg_err.memref == errflg_dest

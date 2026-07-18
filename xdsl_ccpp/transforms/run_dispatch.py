@@ -44,6 +44,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     _bare,
     _build_host_var_map,
+    _build_no_suite_matched_false_ops,
     _get_suite_lifecycle_ret_info,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -682,18 +683,9 @@ def _build_run_chain_preamble(
     store_errflg = memref.StoreOp.get(err_const, errflg_arg, [])
     trim_suite_name = TrimOp(suite_name_arg)
 
-    write_suite_name_err = WriteErrMsgOp(
-        errmsg_arg, trim_suite_name.res, "No suite named ", " found"
+    current_false_ops = _build_no_suite_matched_false_ops(
+        errmsg_arg, trim_suite_name.res, errflg_arg
     )
-    one_outer_err = arith.ConstantOp.from_int_and_width(1, 32)
-    store_outer_err = memref.StoreOp.get(one_outer_err, errflg_arg, [])
-
-    current_false_ops = [
-        write_suite_name_err,
-        one_outer_err,
-        store_outer_err,
-        scf.YieldOp(),
-    ]
 
     per_suite_grouped: dict = {}
     for _info in per_suite:
@@ -1487,14 +1479,10 @@ def _generate_suite_part_list_fn(
     trim_suite_name = TrimOp(new_block.args[0])
 
     # Innermost else: no suite matched
-    write_err = WriteErrMsgOp(
-        errmsg_alloc, trim_suite_name.res, "No suite named ", " found"
-    )
-    one_err = arith.ConstantOp.from_int_and_width(1, 32)
-    store_errflg_err = memref.StoreOp.get(one_err, errflg_alloc, [])
-
     # Build chain from inside out
-    current_false_ops = [write_err, one_err, store_errflg_err, scf.YieldOp()]
+    current_false_ops = _build_no_suite_matched_false_ops(
+        errmsg_alloc, trim_suite_name.res, errflg_alloc
+    )
 
     for suite_name, part_names in reversed(suite_part_entries):
         strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite_name)

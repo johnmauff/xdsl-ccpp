@@ -118,8 +118,10 @@ contributing functions into the *same* ModuleOp `ccpp_cap.py` is still
 assembling, using shared Python state (`host_var_map`, `cap_var_map`, the
 `ccpp_t` handle) that isn't durable IR. Promoting any of them would mean
 re-deriving that state from the IR the way `cpp_interop.py` does — which
-isn't possible until that state actually becomes durable IR (see the "full
-IR unification" write-up under Phase 4 of the refactor plan).
+isn't possible until that state actually becomes durable IR. That's tracked
+as its own deferred sub-plan, Phase 7 ("full IR unification"), in the
+refactor plan — not scheduled, but with a concrete 4-stage execution plan
+recorded there if it's ever picked up.
 
 Shared utilities live in `xdsl_ccpp/transforms/util/`:
 

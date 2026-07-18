@@ -1,18 +1,41 @@
-"""Shared helpers used across ccpp_cap.py, cpp_interop.py, lifecycle_cap.py, and
-constituent_cap.py.
+"""Shared helpers used across ccpp_cap.py, cpp_interop.py, lifecycle_cap.py,
+constituent_cap.py, and run_dispatch.py.
 
 A neutral leaf module with no dependency on any of the cap-generation files,
 so those files can freely import from here without creating an import cycle
-(ccpp_cap.py calls into lifecycle_cap.py/constituent_cap.py directly, and all
-three need these same helpers, which previously lived in ccpp_cap.py itself).
+(ccpp_cap.py calls into lifecycle_cap.py/constituent_cap.py/run_dispatch.py
+directly, and all of them need these same helpers, which previously lived in
+ccpp_cap.py itself).
 """
 
+from xdsl.dialects import arith, memref, scf
+
+from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
 _CONSTITUENT_DDT_NAME = "ccpp_constituent_properties_t"
+
+
+def _build_no_suite_matched_false_ops(errmsg_dest, trim_suite_name_res, errflg_dest) -> list:
+    """Build the innermost false-branch ops for the "no suite matched" fallback.
+
+    Sets errmsg to "No suite named <name> found" and errflg to 1. Shared by
+    run_dispatch.py (two call sites: _build_run_chain_preamble and
+    _generate_suite_part_list_fn) and lifecycle_cap.py (one call site) --
+    previously three independent copies of the same error sequence, which is
+    exactly the failure shape that let a Phase 3a review fix land on two
+    copies and miss the third (a one-word text fix applied to run_dispatch.py's
+    two copies, initially missing lifecycle_cap.py's).
+    """
+    write_err = WriteErrMsgOp(
+        errmsg_dest, trim_suite_name_res, "No suite named ", " found"
+    )
+    one_err = arith.ConstantOp.from_int_and_width(1, 32)
+    store_errflg_err = memref.StoreOp.get(one_err, errflg_dest, [])
+    return [write_err, one_err, store_errflg_err, scf.YieldOp()]
 
 
 def _bare(name: str) -> str:

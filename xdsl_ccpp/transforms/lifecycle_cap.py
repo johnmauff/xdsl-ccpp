@@ -22,12 +22,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     HostVarRefOp,
     StrCmpOp,
     TrimOp,
-    WriteErrMsgOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _bare,
     _build_host_var_map,
+    _build_no_suite_matched_false_ops,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_CODE,
@@ -120,12 +120,9 @@ def _generate_lifecycle_fn(
     trim_suite_name = TrimOp(new_block.args[0])
 
     # Innermost else: no suite matched
-    write_err = WriteErrMsgOp(
-        errmsg_alloc, trim_suite_name.res, "No suite named ", " found"
+    current_false_ops = _build_no_suite_matched_false_ops(
+        errmsg_alloc, trim_suite_name.res, errflg_alloc
     )
-    one_err = arith.ConstantOp.from_int_and_width(1, 32)
-    store_errflg_err = memref.StoreOp.get(one_err, errflg_alloc, [])
-    current_false_ops = [write_err, one_err, store_errflg_err, scf.YieldOp()]
 
     all_host_global_ops: list = []
     # Use the shared set if provided to avoid duplicate GlobalOps across calls
