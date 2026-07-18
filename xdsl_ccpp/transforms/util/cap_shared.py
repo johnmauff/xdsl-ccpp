@@ -55,6 +55,18 @@ def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     return result
 
 
+def _is_framework_managed(a) -> bool:
+    """True for suite-cap-owned variables: interstitials of any type,
+    and advected/allocatable real arrays."""
+    if a.hasAttr("is_interstitial"):
+        return True
+    if a.getAttr("type") != "real":
+        return False
+    if not (a.hasAttr("dimensions") and a.getAttr("dimensions") > 0):
+        return False
+    return a.hasAttr("advected") or a.hasAttr("allocatable")
+
+
 def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
     """Return [(mlir_type, arg_name, standard_name)] for intent=out scalar args.
 
@@ -76,10 +88,11 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
         arg_table = meta_data[scheme_name].getArgTable(table_name)
         for fn_arg in arg_table.getFunctionArguments():
             has_dims = fn_arg.hasAttr("dimensions") and fn_arg.getAttr("dimensions") > 0
-            # Mirror suite_cap.py's _is_framework_managed logic:
-            # interstitials of any type (real, integer, DDT) are excluded —
-            # they are stored at suite cap module scope, not returned to caller.
-            is_framework_managed = fn_arg.hasAttr("is_interstitial")
+            # _is_framework_managed's array-shaped branch requires dims > 0,
+            # which the `not has_dims` filter below already excludes here — so
+            # for every arg that can reach that filter, this call reduces to
+            # exactly the is_interstitial check it used to hand-roll.
+            is_framework_managed = _is_framework_managed(fn_arg)
             # Deduplicate by standard_name so different local names for the
             # same logical arg (e.g. errflg vs errcode for ccpp_error_code)
             # don't produce duplicate return types.

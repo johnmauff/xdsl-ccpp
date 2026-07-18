@@ -34,6 +34,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     UnitConvertOp,
     UnitWriteBackOp,
 )
+from xdsl_ccpp.transforms.util.cap_shared import _is_framework_managed
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
@@ -664,18 +665,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
 
     @staticmethod
-    def _is_framework_managed(a) -> bool:
-        """True for suite-cap-owned variables: interstitials of any type,
-        and advected/allocatable real arrays."""
-        if a.hasAttr("is_interstitial"):
-            return True
-        if a.getAttr("type") != "real":
-            return False
-        if not (a.hasAttr("dimensions") and a.getAttr("dimensions") > 0):
-            return False
-        return a.hasAttr("advected") or a.hasAttr("allocatable")
-
-    @staticmethod
     def _arg_dims(a) -> int:
         """Return the dimension count to use for the block arg type.
 
@@ -829,7 +818,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         framework_vars = {
             a.name: a
             for a in all_args.values()
-            if self._is_framework_managed(a)
+            if _is_framework_managed(a)
         }
         input_arg_list = [
             a

@@ -96,6 +96,124 @@ def _collect_public_suite_functions(ops):
 
 
 
+def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict, dict, list]":
+    """Build cap_var_map: interstitial DDT values returned from lifecycle.
+
+    These need module-level storage in the cap so they persist between calls.
+    Pre-populates cap_var_map for framework-managed arrays (ccpp_constituents,
+    ccpp_constituent_tendencies) and scheme-scratch arrays with no host
+    metadata match (e.g. tendency_of_cloud_liquid_dry_mixing_ratio) -- both
+    are allocated at cap module scope so they never appear as physics_run
+    block arguments.
+
+    This is a separate, later-stage heuristic from suite_cap.py's
+    _is_framework_managed: that one decides the suite's own subroutine
+    signature (by is_interstitial/advected/allocatable attributes) *before*
+    the signature exists; this one re-scans the suite's already-built public
+    signature (public_fns) and catches whatever's left unresolved once
+    host-var matching has also run. The two are not meant to compute the
+    same thing -- see the Phase 4 plan notes for why they aren't merged.
+
+    Returns:
+        (cap_var_map, host_var_map_lc, scratch_var_list):
+          - cap_var_map: standard_name -> (var_name, mlir_type, fortran_type_str)
+          - host_var_map_lc: standard_name -> (var_name, table_name), MODULE tables only
+          - scratch_var_list: [(var_name, rank, alloc_dims_str, const_std_name_or_None)]
+    """
+    cap_var_map: dict = {}
+    # MODULE only: write-back targets (like num_model_times) live in MODULE
+    # tables.  HOST-type tables are caller-provided interfaces, not modules.
+    host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
+
+    _FRAMEWORK_TO_CAP_VAR = {
+        "ccpp_constituents": "lc_constituent_array",
+        "ccpp_constituent_tendencies": "lc_const_tend",
+    }
+    _host_block_std: set = set()
+    for _tbl_cv, _props_cv in meta_data.items():
+        if _props_cv.getAttr("type") != CCPPType.HOST:
+            continue
+        if _tbl_cv not in _props_cv.arg_tables:
+            continue
+        for _var_cv in _props_cv.getArgTable(_tbl_cv).getFunctionArguments():
+            if _var_cv.hasAttr("standard_name"):
+                _host_block_std.add(_var_cv.getAttr("standard_name").lower())
+    _DIM_TO_ALLOC = {
+        CCPP_LOOP_EXTENT_STD_NAME: "ncols",
+        CCPP_HORIZ_DIM_STD_NAME: "ncols",
+        CCPP_VERT_DIM_STD_NAME: "pver",
+        "number_of_ccpp_constituents": "lc_num",
+    }
+    scratch_var_list: list = []
+    scratch_var_seen: set = set()
+    for _sn_cv, _sd_cv in suite_descriptions.items():
+        for _grp_cv in _sd_cv:
+            _grp_name_cv = _grp_cv.attributes["name"]
+            _callee_cv = _sn_cv + "_suite_" + _grp_name_cv
+            if _callee_cv not in public_fns:
+                continue
+            _, _, _ci_types, _ci_names = public_fns[_callee_cv]
+            _grp_schemes = [_s.attributes["name"] for _s in _grp_cv]
+            _sno_cv: dict = {}
+            _dno_cv: dict = {}
+            _cno_cv: dict = {}  # bare_name → True when constituent=True
+            _matched_cv: set = set()
+            for _scheme_cv in _grp_schemes:
+                _run_tbl_cv = _scheme_cv + "_run"
+                if _scheme_cv not in meta_data:
+                    continue
+                if _run_tbl_cv not in meta_data[_scheme_cv].arg_tables:
+                    continue
+                for _fa_cv in (
+                    meta_data[_scheme_cv].getArgTable(_run_tbl_cv).getFunctionArguments()
+                ):
+                    _bn_cv = _bare(_fa_cv.name)
+                    if _bn_cv not in _sno_cv and _fa_cv.hasAttr("standard_name"):
+                        _sno_cv[_bn_cv] = _fa_cv.getAttr("standard_name").lower()
+                    if _bn_cv not in _dno_cv and _fa_cv.hasAttr("dim_names"):
+                        _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
+                    if _fa_cv.hasAttr("constituent"):
+                        _cno_cv[_bn_cv] = True
+                    if _fa_cv.hasAttr("model_var_name"):
+                        _matched_cv.add(_bn_cv)
+            for _an_cv, _at_cv in zip(_ci_names, _ci_types):
+                _bn_cv = _bare(_an_cv)
+                if _bn_cv in _matched_cv:
+                    continue  # host-matched (including DDT members)
+                _std_cv = _sno_cv.get(_bn_cv)
+                if not _std_cv:
+                    continue
+                if _std_cv in _FRAMEWORK_TO_CAP_VAR:
+                    if _std_cv not in cap_var_map:
+                        cap_var_map[_std_cv] = (_FRAMEWORK_TO_CAP_VAR[_std_cv], None, None)
+                    continue
+                if (_std_cv in CCPP_FRAMEWORK_STD_NAMES
+                        or _std_cv in CCPP_ERROR_STD_NAMES
+                        or _std_cv in _host_block_std
+                        or _std_cv in host_var_map_lc):
+                    continue
+                if _std_cv not in scratch_var_seen:
+                    scratch_var_seen.add(_std_cv)
+                    _lc_cv = f"lc_{_bn_cv}"
+                    _rank_cv = (
+                        len(list(_at_cv.shape.data))
+                        if hasattr(_at_cv, "shape") else 0
+                    )
+                    _dims_cv = _dno_cv.get(_bn_cv, [])
+                    _alloc_cv = ", ".join(
+                        _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
+                    ) if _dims_cv else "ncols, pver"
+                    # Constituent-tendency scratch vars (constituent=True in meta)
+                    # are pointer slices into lc_const_tend, not separate allocatables.
+                    _const_std_name = None
+                    if _cno_cv.get(_bn_cv) and _std_cv.startswith("tendency_of_"):
+                        _const_std_name = _std_cv[len("tendency_of_"):]
+                    cap_var_map[_std_cv] = (_lc_cv, None, None)
+                    scratch_var_list.append((_lc_cv, _rank_cv, _alloc_cv, _const_std_name))
+
+    return cap_var_map, host_var_map_lc, scratch_var_list
+
+
 @dataclass(frozen=True)
 class CCPPCAP(ModulePass):
     """MLIR pass that generates a single combined CCPP physics cap dispatcher module.
@@ -425,105 +543,9 @@ class CCPPCAP(ModulePass):
         # a DDT instance used in the run function may also appear in lifecycle functions).
         shared_seen_host_globals: set = set()
 
-        # ── Build cap_var_map: interstitial DDT values returned from lifecycle ──
-        # These need module-level storage in the cap so they persist between calls.
-        # Format: standard_name → (var_name, mlir_type, fortran_type_str)
-        # Also build host_var_map_lc for identifying host-var returns (write-back).
-        cap_var_map: dict = {}
-        # MODULE only: write-back targets (like num_model_times) live in MODULE
-        # tables.  HOST-type tables are caller-provided interfaces, not modules.
-        host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
-
-        # ── Pre-populate cap_var_map for framework-managed and scheme-scratch arrays ──
-        # Framework arrays (ccpp_constituents, ccpp_constituent_tendencies) are owned by
-        # the cap module.  Scheme-specific scratch arrays with no host metadata match
-        # (e.g. tendency_of_cloud_liquid_dry_mixing_ratio) are also allocated at cap
-        # module scope so they never appear as physics_run block arguments.
-        _FRAMEWORK_TO_CAP_VAR = {
-            "ccpp_constituents": "lc_constituent_array",
-            "ccpp_constituent_tendencies": "lc_const_tend",
-        }
-        _host_block_std: set = set()
-        for _tbl_cv, _props_cv in meta_data.items():
-            if _props_cv.getAttr("type") != CCPPType.HOST:
-                continue
-            if _tbl_cv not in _props_cv.arg_tables:
-                continue
-            for _var_cv in _props_cv.getArgTable(_tbl_cv).getFunctionArguments():
-                if _var_cv.hasAttr("standard_name"):
-                    _host_block_std.add(_var_cv.getAttr("standard_name").lower())
-        _DIM_TO_ALLOC = {
-            CCPP_LOOP_EXTENT_STD_NAME: "ncols",
-            CCPP_HORIZ_DIM_STD_NAME: "ncols",
-            CCPP_VERT_DIM_STD_NAME: "pver",
-            "number_of_ccpp_constituents": "lc_num",
-        }
-        scratch_var_list: list = []
-        scratch_var_seen: set = set()
-        for _sn_cv, _sd_cv in suite_descriptions.items():
-            for _grp_cv in _sd_cv:
-                _grp_name_cv = _grp_cv.attributes["name"]
-                _callee_cv = _sn_cv + "_suite_" + _grp_name_cv
-                if _callee_cv not in public_fns:
-                    continue
-                _, _, _ci_types, _ci_names = public_fns[_callee_cv]
-                _grp_schemes = [_s.attributes["name"] for _s in _grp_cv]
-                _sno_cv: dict = {}
-                _dno_cv: dict = {}
-                _cno_cv: dict = {}  # bare_name → True when constituent=True
-                _matched_cv: set = set()
-                for _scheme_cv in _grp_schemes:
-                    _run_tbl_cv = _scheme_cv + "_run"
-                    if _scheme_cv not in meta_data:
-                        continue
-                    if _run_tbl_cv not in meta_data[_scheme_cv].arg_tables:
-                        continue
-                    for _fa_cv in (
-                        meta_data[_scheme_cv].getArgTable(_run_tbl_cv).getFunctionArguments()
-                    ):
-                        _bn_cv = _bare(_fa_cv.name)
-                        if _bn_cv not in _sno_cv and _fa_cv.hasAttr("standard_name"):
-                            _sno_cv[_bn_cv] = _fa_cv.getAttr("standard_name").lower()
-                        if _bn_cv not in _dno_cv and _fa_cv.hasAttr("dim_names"):
-                            _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
-                        if _fa_cv.hasAttr("constituent"):
-                            _cno_cv[_bn_cv] = True
-                        if _fa_cv.hasAttr("model_var_name"):
-                            _matched_cv.add(_bn_cv)
-                for _an_cv, _at_cv in zip(_ci_names, _ci_types):
-                    _bn_cv = _bare(_an_cv)
-                    if _bn_cv in _matched_cv:
-                        continue  # host-matched (including DDT members)
-                    _std_cv = _sno_cv.get(_bn_cv)
-                    if not _std_cv:
-                        continue
-                    if _std_cv in _FRAMEWORK_TO_CAP_VAR:
-                        if _std_cv not in cap_var_map:
-                            cap_var_map[_std_cv] = (_FRAMEWORK_TO_CAP_VAR[_std_cv], None, None)
-                        continue
-                    if (_std_cv in CCPP_FRAMEWORK_STD_NAMES
-                            or _std_cv in CCPP_ERROR_STD_NAMES
-                            or _std_cv in _host_block_std
-                            or _std_cv in host_var_map_lc):
-                        continue
-                    if _std_cv not in scratch_var_seen:
-                        scratch_var_seen.add(_std_cv)
-                        _lc_cv = f"lc_{_bn_cv}"
-                        _rank_cv = (
-                            len(list(_at_cv.shape.data))
-                            if hasattr(_at_cv, "shape") else 0
-                        )
-                        _dims_cv = _dno_cv.get(_bn_cv, [])
-                        _alloc_cv = ", ".join(
-                            _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
-                        ) if _dims_cv else "ncols, pver"
-                        # Constituent-tendency scratch vars (constituent=True in meta)
-                        # are pointer slices into lc_const_tend, not separate allocatables.
-                        _const_std_name = None
-                        if _cno_cv.get(_bn_cv) and _std_cv.startswith("tendency_of_"):
-                            _const_std_name = _std_cv[len("tendency_of_"):]
-                        cap_var_map[_std_cv] = (_lc_cv, None, None)
-                        scratch_var_list.append((_lc_cv, _rank_cv, _alloc_cv, _const_std_name))
+        cap_var_map, host_var_map_lc, scratch_var_list = _build_cap_var_map(
+            meta_data, suite_descriptions, public_fns
+        )
 
         # Detect the ccpp_info_t pattern: HOST table contains a variable with
         # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
