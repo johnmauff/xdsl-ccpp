@@ -25,11 +25,13 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     RealKindType,
 )
 from xdsl_ccpp.transforms.ccpp_cap import (
+    _collect_public_suite_functions,
+    _resolve_ddt_access_path,
+)
+from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _CONSTITUENT_DDT_NAME,
     _bare,
-    _collect_public_suite_functions,
-    _resolve_ddt_access_path,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
