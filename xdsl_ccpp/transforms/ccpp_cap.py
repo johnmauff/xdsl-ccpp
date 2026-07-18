@@ -153,7 +153,7 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
             if _callee_cv not in public_fns:
                 continue
             _, _, _ci_types, _ci_names = public_fns[_callee_cv]
-            _grp_schemes = [_s.attributes["name"] for _s in _grp_cv]
+            _grp_schemes = [_s.attributes["name"] for _s in _iter_schemes(_grp_cv)]
             _sno_cv: dict = {}
             _dno_cv: dict = {}
             _cno_cv: dict = {}  # bare_name → True when constituent=True
@@ -586,35 +586,6 @@ class CCPPCAP(ModulePass):
                     ccpp_t_type = memref.MemRefType(DerivedType("ccpp_t"), [])
                     ccpp_t_var_name = _op.var_name.data
                     break
-
-        errmsg_type_tmp = memref.MemRefType(
-            TypeConversions.getBaseType("character"), [CCPP_ERRMSG_LEN]
-        )
-        errflg_type_tmp = memref.MemRefType(
-            TypeConversions.getBaseType("integer"), []
-        )
-        for _, table_postfix, callee_suffix, suite_part in lifecycle_specs:
-            if suite_part is not None or table_postfix is None:
-                continue  # only init/finalize produce cap-owned returns
-            for suite_name, suite_desc in suite_descriptions.items():
-                suite_callee = suite_name + callee_suffix
-                if suite_callee not in public_fns:
-                    continue
-                scheme_names_lc = [
-                    s.attributes["name"]
-                    for g in suite_desc for s in g
-                ]
-                ret_info = _get_suite_lifecycle_ret_info(
-                    scheme_names_lc, meta_data, table_postfix
-                )
-                for ret_type, arg_name, std_name in ret_info:
-                    if ret_type in (errmsg_type_tmp, errflg_type_tmp):
-                        continue
-                    if std_name in host_var_map_lc:
-                        continue  # host var — will be written back, not cap-owned
-                    # DDT interstitials (e.g. vmr_type) are now declared at suite
-                    # cap module scope by generateSuiteModuleOp.  The top-level cap
-                    # no longer needs to track or pass them via cap_var_map.
 
         for fn_suffix, table_postfix, callee_suffix, suite_part in lifecycle_specs:
             if suite_part is not None:

@@ -13,6 +13,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPTableProperties,
     XMLGroup,
     XMLScheme,
+    XMLSubcycle,
     XMLSuite,
 )
 
@@ -114,3 +115,54 @@ class TestBuildCapVarMap:
     def test_host_var_map_lc_empty_when_no_module_tables(self):
         _cap_var_map, host_var_map_lc, _scratch = self._build()
         assert host_var_map_lc == {}
+
+
+class TestBuildCapVarMapFlattensSubcycles:
+    """A scheme nested inside <subcycle> must still be found.
+
+    Regression test for a Copilot-flagged bug: iterating a group's direct
+    children hit XMLSubcycle.attributes (which has no "name" key, only
+    loop_count/is_literal) and raised KeyError, silently making every scheme
+    nested in a subcycle invisible to cap_var_map classification. Fixed by
+    flattening through _iter_schemes, matching every other call site in this
+    module (e.g. the suite_run_entries construction a few hundred lines down).
+    """
+
+    def _meta_data(self):
+        scheme_props = _make_table_props(
+            "phys_scheme", "scheme",
+            _make_arg_table("phys_scheme_run", [
+                _make_arg("scratch1", standard_name="some_scratch_quantity"),
+            ], "scheme"),
+        )
+        scheme_props.arg_tables["phys_scheme_run"] = scheme_props.arg_tables.pop(
+            "phys_scheme"
+        )
+        return {"phys_scheme": scheme_props}
+
+    def _suite_descriptions(self):
+        suite = XMLSuite("testsuite", "1")
+        group = XMLGroup("run")
+        subcycle = XMLSubcycle(loop_count=2)
+        subcycle.addChild(XMLScheme("phys_scheme"))
+        group.addChild(subcycle)
+        suite.addChild(group)
+        return {"testsuite": suite}
+
+    def _public_fns(self):
+        callee_input_names = ["scratch1"]
+        return {
+            "testsuite_suite_run": (
+                "testsuite_cap_mod",
+                [],
+                [None] * len(callee_input_names),
+                callee_input_names,
+            ),
+        }
+
+    def test_scheme_nested_in_subcycle_is_found(self):
+        cap_var_map, _host_var_map_lc, scratch_var_list = _build_cap_var_map(
+            self._meta_data(), self._suite_descriptions(), self._public_fns()
+        )
+        assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
+        assert ("lc_scratch1", 0, "ncols, pver", None) in scratch_var_list
