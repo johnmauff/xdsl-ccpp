@@ -928,6 +928,7 @@ def _build_run_dispatch_chain(
 
                 valid = True
                 for dim_std_name in dim_names_list[1:]:
+                    dim_std_name = dim_std_name.lower()
                     if dim_std_name not in host_var_map:
                         valid = False
                         break
