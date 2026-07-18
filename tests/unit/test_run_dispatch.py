@@ -20,17 +20,13 @@ end-to-end example suites for coverage -- constructing valid Block/FuncOp
 fixtures by hand for those is a separate, larger effort.
 """
 
-import pytest
-
 from xdsl_ccpp.dialects.ccpp import ArgSourceKind
 from xdsl_ccpp.transforms.run_dispatch import (
     _RunMetadataMaps,
     _build_per_suite_run_info,
-    _build_resolved_arg_ops,
     _build_run_metadata_maps,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
-    _resolved_arg_op_from_source,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
@@ -293,94 +289,30 @@ class TestBuildRunMetadataMaps:
 
 
 # ---------------------------------------------------------------------------
-# _build_per_suite_run_info -- physics_arg_sources / resolved_arg_ops parity
+# _build_per_suite_run_info -- resolved_arg_ops classification
 #
-# Phase 3b Stage 2: resolved_arg_ops is a dual-build mirror of
-# physics_arg_sources, one ResolvedArgOp per tuple. This exercises one arg of
-# each of the four source kinds and asserts the op's fields match the tuple's
-# payload exactly, field for field.
+# Phase 3b Stage 4: the classification loop builds ResolvedArgOp directly
+# (the tuple form and its tuple->op conversion helpers are gone). This
+# exercises one arg of each of the four source kinds and asserts each op's
+# fields directly.
 # ---------------------------------------------------------------------------
 
-def _assert_resolved_matches_source(arg_name, op, src):
-    """Assert a ResolvedArgOp is the exact mirror of its physics_arg_sources tuple."""
+def _assert_resolved_arg_op(
+    op, arg_name, kind, *, var_name=None, module_name=None, member_path=None, std_name=None
+):
+    """Assert a ResolvedArgOp has exactly the expected kind and fields."""
     op.verify()
     assert op.arg_name.data == arg_name
-    kind = src[0]
-    if kind == "host":
-        assert op.source_kind.data == ArgSourceKind.Host
-        assert op.var_name.data == src[1]
-        assert op.module_name.data == src[2]
-        assert op.member_path is None
-        assert op.std_name is None
-    elif kind == "ddt_member":
-        assert op.source_kind.data == ArgSourceKind.DdtMember
-        assert op.var_name.data == src[1]
-        assert op.module_name.data == src[2]
-        assert op.member_path.data == src[3]
-        assert op.std_name is None
-    elif kind == "cap_var":
-        assert op.source_kind.data == ArgSourceKind.CapVar
-        assert op.std_name.data == src[1]
-        assert op.var_name is None
-        assert op.module_name is None
-        assert op.member_path is None
-    else:
-        assert kind == "block"
-        assert op.source_kind.data == ArgSourceKind.Block
-        assert op.var_name is None
-        assert op.module_name is None
-        assert op.member_path is None
-        assert op.std_name is None
-
-
-class TestResolvedArgOpFromSourceRejectsUnknownKind:
-    """An unrecognized physics_arg_sources kind must raise, not silently
-    become a Block op -- that would break the "pure mirror" guarantee and
-    could mask a real classification bug."""
-
-    def test_unknown_kind_raises(self):
-        with pytest.raises(ValueError, match="Unrecognized physics_arg_sources kind"):
-            _resolved_arg_op_from_source("x", ("bogus_kind",))
-
-    def test_empty_tuple_raises_value_error_not_index_error(self):
-        """An empty tuple must fail the same clear way as any other
-        unrecognized kind, not with an uninformative IndexError."""
-        with pytest.raises(ValueError, match="Unrecognized physics_arg_sources kind"):
-            _resolved_arg_op_from_source("x", ())
-
-    def test_block_kind_still_produces_block_op(self):
-        """The one-tuple "block" tag itself is still handled explicitly."""
-        op = _resolved_arg_op_from_source("x", ("block",))
-        assert op.source_kind.data == ArgSourceKind.Block
-
-    def test_block_kind_with_extra_payload_raises(self):
-        """A malformed ("block", ...) tuple with extra fields must raise, not
-        silently drop the extra payload -- host/ddt_member/cap_var all fail on
-        unpack for the same kind of malformed tuple, so block should too."""
-        with pytest.raises(ValueError):
-            _resolved_arg_op_from_source("x", ("block", "unexpected_extra_field"))
-
-
-class TestBuildResolvedArgOpsRejectsLengthMismatch:
-    """callee_input_names and physics_arg_sources must be the same length --
-    a silent zip()-style truncation/misalignment would break the "mirror"
-    guarantee if the two ever diverged (e.g. a future refactor)."""
-
-    def test_matching_lengths_succeed(self):
-        ops = _build_resolved_arg_ops(["a", "b"], [("block",), ("block",)])
-        assert [op.arg_name.data for op in ops] == ["a", "b"]
-
-    def test_more_names_than_sources_raises(self):
-        with pytest.raises(ValueError, match="diverged in length"):
-            _build_resolved_arg_ops(["a", "b"], [("block",)])
-
-    def test_more_sources_than_names_raises(self):
-        with pytest.raises(ValueError, match="diverged in length"):
-            _build_resolved_arg_ops(["a"], [("block",), ("block",)])
+    assert op.source_kind.data == kind
+    assert (op.var_name.data if op.var_name is not None else None) == var_name
+    assert (op.module_name.data if op.module_name is not None else None) == module_name
+    assert (op.member_path.data if op.member_path is not None else None) == member_path
+    assert (op.std_name.data if op.std_name is not None else None) == std_name
 
 
 class TestBuildPerSuiteRunInfoResolvedArgOps:
-    """resolved_arg_ops mirrors physics_arg_sources, one arg of each kind."""
+    """_build_per_suite_run_info classifies each callee arg into a
+    ResolvedArgOp, one arg of each source kind."""
 
     def _meta_data(self):
         # phys_scheme's _run table declares all four callee args directly, so
@@ -434,7 +366,7 @@ class TestBuildPerSuiteRunInfoResolvedArgOps:
             ddt_parent_map={"rad_t": [("rad", "phys_state_t")]},
         )
 
-    def test_resolved_arg_ops_mirror_physics_arg_sources(self):
+    def test_resolved_arg_ops_classify_each_source_kind(self):
         callee_input_names = ["temp", "rad_temp", "vmr", "unmatched_arg"]
         public_fns = {
             "test_suite_callee": (
@@ -460,14 +392,19 @@ class TestBuildPerSuiteRunInfoResolvedArgOps:
 
         assert len(per_suite) == 1
         info = per_suite[0]
-        assert info["physics_arg_sources"] == [
-            ("host", "t_host", "test_host_mod"),
-            ("ddt_member", "phys_state", "test_host_mod", "rad%temp"),
-            ("cap_var", "array_of_volume_mixing_ratios"),
-            ("block",),
-        ]
-        assert len(info["resolved_arg_ops"]) == len(info["physics_arg_sources"])
-        for arg_name, op, src in zip(
-            callee_input_names, info["resolved_arg_ops"], info["physics_arg_sources"]
-        ):
-            _assert_resolved_matches_source(arg_name, op, src)
+        ops = info["resolved_arg_ops"]
+        assert len(ops) == len(callee_input_names)
+
+        _assert_resolved_arg_op(
+            ops[0], "temp", ArgSourceKind.Host,
+            var_name="t_host", module_name="test_host_mod",
+        )
+        _assert_resolved_arg_op(
+            ops[1], "rad_temp", ArgSourceKind.DdtMember,
+            var_name="phys_state", module_name="test_host_mod", member_path="rad%temp",
+        )
+        _assert_resolved_arg_op(
+            ops[2], "vmr", ArgSourceKind.CapVar,
+            std_name="array_of_volume_mixing_ratios",
+        )
+        _assert_resolved_arg_op(ops[3], "unmatched_arg", ArgSourceKind.Block)

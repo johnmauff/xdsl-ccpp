@@ -1,11 +1,10 @@
-"""Unit tests for ResolvedArgOp / ArgSourceKind (Phase 3b, Stage 1).
+"""Unit tests for ResolvedArgOp / ArgSourceKind.
 
-Stage 1 of the run-dispatch IR-promotion plan: this op is defined and tested
-standalone here, but is not yet wired into run_dispatch.py -- nothing in the
-generator constructs or consumes it. It exists to make the per-argument
-resolution decision (currently ad hoc Python tuples in
-_build_per_suite_run_info's physics_arg_sources list) durable and inspectable
-on its own. Wiring it in as an actual replacement for those tuples is Stage 2+.
+These test the op/attribute definitions directly, independent of the
+classification logic that constructs them. run_dispatch.py's
+_build_per_suite_run_info (see test_run_dispatch.py) is what actually builds
+these ops for each callee argument; this file covers verify()'s
+required/forbidden-field rules per source_kind in isolation.
 """
 
 import pytest
