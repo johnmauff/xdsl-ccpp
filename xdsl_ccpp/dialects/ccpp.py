@@ -18,6 +18,7 @@ from xdsl.ir import (
     Operation,
     Region,
     SpacedOpaqueSyntaxAttribute,
+    VerifyException,
 )
 from xdsl.irdl import (
     IRDLOperation,
@@ -385,6 +386,130 @@ class ArgumentOp(IRDLOperation):
         super().__init__(properties=properties)
 
 
+class ArgSourceKind(StrEnum):
+    """Where a resolved scheme-call argument's data comes from.
+
+    Host:      a host module variable, accessed via a Fortran USE statement.
+    DdtMember: a member of a module-level DDT instance (accessed as
+               ``instance%path%member``).
+    CapVar:    a cap-owned module variable (e.g. a constituent interstitial).
+    Block:     unresolved -- the argument becomes a caller-supplied block
+               argument instead.
+    """
+
+    Host = "host"
+    DdtMember = "ddt_member"
+    CapVar = "cap_var"
+    Block = "block"
+
+
+@irdl_attr_definition
+class ArgSourceKindAttr(EnumAttribute[ArgSourceKind], SpacedOpaqueSyntaxAttribute):
+    name = "ccpp.arg_source_kind"
+
+
+@irdl_op_definition
+class ResolvedArgOp(IRDLOperation):
+    """Durable record of where one scheme-call argument's data comes from.
+
+    Phase 3b Stage 1 of the restructuring plan: standalone definition only,
+    not yet wired into the generator. Mirrors the four-way tag currently
+    produced as ad hoc Python tuples in run_dispatch.py's
+    _build_per_suite_run_info (the ``physics_arg_sources`` list:
+    ``("host", var, module)`` / ``("ddt_member", var, module, path)`` /
+    ``("cap_var", std_name)`` / ``("block",)``) -- this op exists to make
+    that resolution decision durable and inspectable on its own, independent
+    of whatever later constructs the actual SSA reference (e.g.
+    ``HostVarRefOp``, which already accepts a ``member_name`` for the
+    DdtMember case).
+
+    Required properties by ``source_kind``:
+      - Host:      ``var_name``, ``module_name``
+      - DdtMember: ``var_name``, ``module_name``, ``member_path``
+      - CapVar:    ``std_name``
+      - Block:     none of the above
+    """
+
+    name = "ccpp.resolved_arg"
+
+    arg_name = prop_def(StringAttr)
+    source_kind = prop_def(ArgSourceKindAttr)
+    var_name = opt_prop_def(StringAttr)
+    module_name = opt_prop_def(StringAttr)
+    member_path = opt_prop_def(StringAttr)
+    std_name = opt_prop_def(StringAttr)
+
+    def __init__(
+        self,
+        arg_name: str | StringAttr,
+        source_kind: "str | ArgSourceKind | ArgSourceKindAttr",
+        var_name: str | StringAttr | None = None,
+        module_name: str | StringAttr | None = None,
+        member_path: str | StringAttr | None = None,
+        std_name: str | StringAttr | None = None,
+    ):
+        if isa(arg_name, str):
+            arg_name = StringAttr(arg_name)
+        if isinstance(source_kind, str):
+            source_kind = ArgSourceKindAttr(ArgSourceKind(source_kind))
+        elif isinstance(source_kind, ArgSourceKind):
+            source_kind = ArgSourceKindAttr(source_kind)
+
+        properties: dict = {"arg_name": arg_name, "source_kind": source_kind}
+        if var_name is not None:
+            properties["var_name"] = StringAttr(var_name) if isa(var_name, str) else var_name
+        if module_name is not None:
+            properties["module_name"] = StringAttr(module_name) if isa(module_name, str) else module_name
+        if member_path is not None:
+            properties["member_path"] = StringAttr(member_path) if isa(member_path, str) else member_path
+        if std_name is not None:
+            properties["std_name"] = StringAttr(std_name) if isa(std_name, str) else std_name
+
+        super().__init__(properties=properties)
+
+    def verify_(self) -> None:
+        kind = self.source_kind.data
+        has_var = self.var_name is not None
+        has_mod = self.module_name is not None
+        has_member = self.member_path is not None
+        has_std = self.std_name is not None
+
+        if kind == ArgSourceKind.Host:
+            if not (has_var and has_mod):
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=Host requires var_name and module_name"
+                )
+            if has_member or has_std:
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=Host must not set member_path or std_name"
+                )
+        elif kind == ArgSourceKind.DdtMember:
+            if not (has_var and has_mod and has_member):
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=DdtMember requires var_name, "
+                    "module_name, and member_path"
+                )
+            if has_std:
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=DdtMember must not set std_name"
+                )
+        elif kind == ArgSourceKind.CapVar:
+            if not has_std:
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=CapVar requires std_name"
+                )
+            if has_var or has_mod or has_member:
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=CapVar must not set var_name, "
+                    "module_name, or member_path"
+                )
+        elif kind == ArgSourceKind.Block:
+            if has_var or has_mod or has_member or has_std:
+                raise VerifyException(
+                    "ResolvedArgOp: source_kind=Block must not set any source payload"
+                )
+
+
 CCPP = Dialect(
     "ccpp",
     [
@@ -398,8 +523,10 @@ CCPP = Dialect(
         TablePropertiesOp,
         ArgumentTableOp,
         ArgumentOp,
+        ResolvedArgOp,
     ],
     [
         TableTypeKindAttr,
+        ArgSourceKindAttr,
     ],
 )
