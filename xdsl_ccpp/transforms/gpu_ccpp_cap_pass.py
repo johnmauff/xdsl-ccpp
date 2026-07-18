@@ -29,8 +29,7 @@ from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 class GPUCcppCapPass(ModulePass):
     """Insert OpenACC data directives at the ccpp_cap level.
 
-    Runs after generate-ccpp-cap, generate-cpp-cap, and generate-host-match
-    (see ccpp_dsl.py's _build_pipeline for the exact ordering).  For each
+    Runs after generate-ccpp-cap and generate-host-match.  For each
     *_ccpp_physics_run subroutine, wraps the suite-part dispatch (inner
     scf.IfOp) with an !$acc data region using host model variable names.
 

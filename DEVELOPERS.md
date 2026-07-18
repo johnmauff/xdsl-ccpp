@@ -63,24 +63,12 @@ python3 examples/helloworld/helloworld_py.py \
 | `generate-host-match` | Annotate scheme args with matching host variable names, kinds, and units |
 | `generate-suite-cap` | Emit per-suite subroutines (`*_suite_physics`, lifecycle init/finalize) |
 | `generate-ccpp-cap` | Emit the host-facing cap (`ccpp_physics_initialize`, `ccpp_physics_run`, etc.) |
-| `generate-cpp-cap` | Emit a BIND(C) chost Fortran cap + C++ header/wrapper, for C++ host models. No-ops unless a host/module table declares `language = "c++"` |
 | `generate-kinds` | Emit `ccpp_kinds.F90` |
 | `generate-gpu-ccpp-cap` | Insert OpenACC/OpenMP data directives at the ccpp_cap level |
 | `generate-gpu-data` | Insert OpenACC/OpenMP directives at the suite_cap level for unmatched device variables |
 | `strip-ccpp` | Remove CCPP dialect ops, leaving standard MLIR |
 
 Pass options are set with `{key=value}` syntax, e.g. `generate-ccpp-cap{bind_c=true}`.
-
-The `ccpp_xdsl` driver builds its own pass list automatically (see
-`_build_pipeline` in `xdsl_ccpp/tools/ccpp_dsl.py`) rather than using a fixed
-string: `generate-host-match` is only inserted when `--host-files` is given,
-and `generate-ccpp-cap`/`generate-cpp-cap` only run — always as a pair, right
-after `generate-suite-cap` (and `generate-gpu-data`, if `--directive` was
-given) — also gated on `--host-files` being present. The example pass lists
-below are for manually composing `ccpp_opt` directly and don't reproduce that
-conditional logic — they're a fixed, minimal pipeline without host-matching
-or the C++ backend, not a stand-in for what the driver would build for the
-same flags.
 
 ---
 
@@ -93,27 +81,10 @@ The transformation pipeline lives under `xdsl_ccpp/transforms/`:
 | Module | Pass name | Role |
 |--------|-----------|------|
 | `ccpp_cap.py` | `generate-ccpp-cap` | Host-facing cap (`ccpp_physics_initialize`, `ccpp_physics_run`, etc.) |
-| `cpp_interop.py` | `generate-cpp-cap` | C++/BIND(C) host-interop cap ("chost") — runs immediately after `generate-ccpp-cap`, no-ops without a `language = "c++"` host/module table |
 | `suite_cap.py` | `generate-suite-cap` | Per-suite subroutines (`*_suite_physics`, lifecycle init/finalize) |
 | `host_var_match_pass.py` | `generate-host-match` | Annotates scheme arg ops with matching host variable names, kinds, and units |
 | `gpu_ccpp_cap_pass.py` | `generate-gpu-ccpp-cap` | Inserts OpenACC/OpenMP data directives at the ccpp_cap level |
 | `gpu_data_pass.py` | `generate-gpu-data` | Inserts OpenACC/OpenMP directives at the suite_cap level for unmatched device variables |
-
-`ccpp_cap.py`'s `generate-ccpp-cap` pass isn't monolithic — it calls directly
-into three plain (not separately pass-registered) modules to generate parts
-of the combined cap module:
-
-| Module | Called for |
-|--------|------------|
-| `run_dispatch.py` | The run-dispatch cluster: per-suite argument resolution (host var / DDT member / cap var / block arg) and the nested if/else dispatch chain for `ccpp_physics_run` |
-| `lifecycle_cap.py` | The `_ccpp_physics_initialize`/`_finalize`/`_timestep_initial`/`_timestep_final` lifecycle dispatcher subroutines |
-| `constituent_cap.py` | The constituent API (`ccpp_physics_get_constituent_...`) and its supporting metadata collection |
-
-All three were extracted from `ccpp_cap.py` itself (originally one ~4,700-line
-file) and still depend on it for a handful of shared helpers — see
-`cap_shared.py` below. Whether to promote `run_dispatch.py` to a full
-registered pass (in the spirit of `cpp_interop.py`/`gpu_ccpp_cap_pass.py`) is
-an open decision, not yet made.
 
 Shared utilities live in `xdsl_ccpp/transforms/util/`:
 
@@ -121,7 +92,6 @@ Shared utilities live in `xdsl_ccpp/transforms/util/`:
 |--------|----------|
 | `ir_utils.py` | `find_ccpp_module(ops)` — locates the named `@ccpp` ModuleOp from an op list |
 | `ccpp_descriptors.py` | `BuildMetaDataDescriptions` — walks CCPP metadata tables into Python descriptor objects |
-| `cap_shared.py` | Helpers shared by `ccpp_cap.py`, `cpp_interop.py`, `lifecycle_cap.py`, and `constituent_cap.py` — `_bare`, `_build_host_var_map`, `_get_suite_lifecycle_ret_info`, `_is_framework_managed`. A neutral leaf module (no dependency on any of those four), so they can all import from it without an import cycle |
 
 When writing a new pass that needs the CCPP metadata module, import
 `find_ccpp_module` from `xdsl_ccpp.transforms.util.ir_utils`.
@@ -133,7 +103,7 @@ Custom MLIR dialects are defined under `xdsl_ccpp/dialects/`:
 | Module | Contents |
 |--------|----------|
 | `ccpp_utils.py` | Core CCPP ops: `ModuleVarOp`, `HostVarRefOp`, `UnitConvertOp`, `RowMajorConvertOp`, and related ops |
-| `ccpp.py` | Suite-structure ops (`SuiteOp`, `GroupOp`, `SchemeOp`, `SubcycleOp`), metadata table ops (`TablePropertiesOp`, `ArgumentTableOp`, `ArgumentOp`), kind ops (`KindOp`, `KindsOp`), `CcppHandleOp` (the host's `ccpp_t` variable, for multi-instance support), and `ResolvedArgOp`/`ArgSourceKind` (durable per-argument source resolution, built by `run_dispatch.py`) |
+| `ccpp_cap_dialect.py` | Cap-level ops used by `generate-ccpp-cap` |
 
 ### ModuleVarOp type representation
 
