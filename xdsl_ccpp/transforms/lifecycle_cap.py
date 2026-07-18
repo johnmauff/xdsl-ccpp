@@ -20,7 +20,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CapVarRefOp,
     DerivedType,
     HostVarRefOp,
-    ModuleVarOp,
     StrCmpOp,
     TrimOp,
     WriteErrMsgOp,
