@@ -111,9 +111,15 @@ of the combined cap module:
 
 All three were extracted from `ccpp_cap.py` itself (originally one ~4,700-line
 file) and still depend on it for a handful of shared helpers — see
-`cap_shared.py` below. Whether to promote `run_dispatch.py` to a full
-registered pass (in the spirit of `cpp_interop.py`/`gpu_ccpp_cap_pass.py`) is
-an open decision, not yet made.
+`cap_shared.py` below. All three stay plain modules rather than becoming
+registered passes: unlike `cpp_interop.py`, which scans an already-complete
+ccpp module built by a prior pass, these three are called *mid-construction*,
+contributing functions into the *same* ModuleOp `ccpp_cap.py` is still
+assembling, using shared Python state (`host_var_map`, `cap_var_map`, the
+`ccpp_t` handle) that isn't durable IR. Promoting any of them would mean
+re-deriving that state from the IR the way `cpp_interop.py` does — which
+isn't possible until that state actually becomes durable IR (see the "full
+IR unification" write-up under Phase 4 of the refactor plan).
 
 Shared utilities live in `xdsl_ccpp/transforms/util/`:
 
