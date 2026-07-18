@@ -815,7 +815,7 @@ def _build_run_dispatch_chain(
             callee_output_types = info["callee_output_types"]
             callee_input_types = info["callee_input_types"]
             callee_input_names = info["callee_input_names"]
-            physics_arg_sources = info["physics_arg_sources"]
+            resolved_arg_ops = info["resolved_arg_ops"]
             std_name_of = info["std_name_of"]
             scheme_names = info["scheme_names"]
             local_to_array_layout = info.get("local_to_array_layout", {})
@@ -844,15 +844,17 @@ def _build_run_dispatch_chain(
             for i, (arg_name, arg_type) in enumerate(
                 zip(callee_input_names, callee_input_types)
             ):
-                src = physics_arg_sources[i]
-                if src[0] == "host":
-                    _, host_var_name, host_module_name = src
+                op = resolved_arg_ops[i]
+                if op.source_kind.data == ArgSourceKind.Host:
+                    host_var_name, host_module_name = op.var_name.data, op.module_name.data
                     ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
                     host_var_ref_ops.append(ref_op)
                     host_var_ref_results[arg_name] = ref_op.res
                     host_name_to_ref_result[host_var_name] = ref_op.res
-                elif src[0] == "ddt_member":
-                    _, instance_var, instance_module, member_name = src
+                elif op.source_kind.data == ArgSourceKind.DdtMember:
+                    instance_var, instance_module, member_name = (
+                        op.var_name.data, op.module_name.data, op.member_path.data
+                    )
                     # Resolve std_name tokens in subscript to local variable names
                     resolved_member, sub_vars = _resolve_member_subscripts(
                         member_name, host_var_map
@@ -875,8 +877,8 @@ def _build_run_dispatch_chain(
                             )
                             sv_glob.attributes["module"] = StringAttr(module_name)
                             chain_global_ops.append(sv_glob)
-                elif src[0] == "cap_var":
-                    _, std_name_cv = src
+                elif op.source_kind.data == ArgSourceKind.CapVar:
+                    std_name_cv = op.std_name.data
                     cv_name, cv_type, _ftn = cap_var_map[std_name_cv]
                     _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
                     if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
@@ -903,19 +905,21 @@ def _build_run_dispatch_chain(
                 # skip ArraySectionOp for them so we don't double-slice.
                 if _bare(arg_name) in local_to_array_layout:
                     continue
-                src = physics_arg_sources[i]
-                if src[0] == "host":
-                    _, host_var_name, host_module_name = src
+                op = resolved_arg_ops[i]
+                if op.source_kind.data == ArgSourceKind.Host:
+                    host_var_name, host_module_name = op.var_name.data, op.module_name.data
                     lookup_var, lookup_mod = host_var_name, host_module_name
-                elif src[0] == "ddt_member":
-                    _, instance_var, instance_module, member_name = src
+                elif op.source_kind.data == ArgSourceKind.DdtMember:
+                    instance_var, instance_module, member_name = (
+                        op.var_name.data, op.module_name.data, op.member_path.data
+                    )
                     # For nested paths like "b%x" or "b%x(ncol)", strip the
                     # chain prefix and any array subscripts to get the leaf
                     # member name for the var descriptor lookup.
                     leaf = member_name.rsplit("%", 1)[-1].split("(")[0]
                     lookup_var, lookup_mod = leaf, instance_module
-                elif src[0] == "cap_var":
-                    _, std_name_cv = src
+                elif op.source_kind.data == ArgSourceKind.CapVar:
+                    std_name_cv = op.std_name.data
                     _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
                     if not _cv_dims or _cv_dims[0].lower() != CCPP_LOOP_EXTENT_STD_NAME:
                         continue
@@ -1048,8 +1052,8 @@ def _build_run_dispatch_chain(
             for i, (arg_name, arg_type) in enumerate(
                 zip(callee_input_names, callee_input_types)
             ):
-                src = physics_arg_sources[i]
-                if src[0] != "host":
+                op = resolved_arg_ops[i]
+                if op.source_kind.data != ArgSourceKind.Host:
                     continue
                 bare = _bare(arg_name)
                 if bare not in local_to_array_layout:
@@ -1097,8 +1101,10 @@ def _build_run_dispatch_chain(
             call_args = []
             call_arg_bare_names = []
             for i, arg_name in enumerate(callee_input_names):
-                src = physics_arg_sources[i]
-                if src[0] in ("host", "ddt_member", "cap_var"):
+                op = resolved_arg_ops[i]
+                if op.source_kind.data in (
+                    ArgSourceKind.Host, ArgSourceKind.DdtMember, ArgSourceKind.CapVar
+                ):
                     call_args.append(host_var_ref_results[arg_name])
                 else:
                     # Block arg: use canonical name if this arg was deduplicated
@@ -1218,8 +1224,9 @@ def _build_run_dispatch_chain(
                                 zip(callee_input_names, callee_input_types)
                             ):
                                 if (a_type == ret_type
-                                        and physics_arg_sources[i][0] == "cap_var"):
-                                    _, std_name_cv = physics_arg_sources[i]
+                                        and resolved_arg_ops[i].source_kind.data
+                                        == ArgSourceKind.CapVar):
+                                    std_name_cv = resolved_arg_ops[i].std_name.data
                                     cv_name, cv_type, _ = cap_var_map[std_name_cv]
                                     cap_ref = CapVarRefOp(cv_name, a_type)
                                     cap_var_inout_refs.append(cap_ref)
