@@ -3,21 +3,27 @@
 Phase 3a (the mechanical move of the run-dispatch cluster out of ccpp_cap.py)
 made it possible, for the first time, to unit-test this logic in isolation
 instead of only exercising it indirectly through full end-to-end pipeline
-runs. These tests cover the three functions that operate on plain data
-(dicts, descriptor objects, strings) rather than live xDSL IR/Block objects:
+runs. These tests cover the functions that operate on plain data (dicts,
+descriptor objects, strings) rather than live xDSL IR/Block objects:
 
   - _resolve_ddt_access_path   -- recursive DDT type -> Fortran accessor path
   - _resolve_member_subscripts -- standard_name token rewriting in subscripts
   - _build_run_metadata_maps   -- host/DDT/constituent lookup maps from meta_data
+  - _build_per_suite_run_info  -- per-arg host/DDT/cap-var/block classification
+                                   (needs a few llvm.GlobalOps but no Block/FuncOp
+                                   fixture, so it's unit-testable too)
 
-The remaining, IR-heavy functions in this module (_build_per_suite_run_info,
-_build_run_block_signature, _build_run_chain_preamble, _build_run_dispatch_chain,
-_assemble_run_fn, _generate_run_fn, _generate_suite_part_list_fn) still rely on
-the existing end-to-end example suites for coverage -- constructing valid
-Block/FuncOp fixtures by hand for those is a separate, larger effort.
+The remaining, IR-heavy functions in this module (_build_run_block_signature,
+_build_run_chain_preamble, _build_run_dispatch_chain, _assemble_run_fn,
+_generate_run_fn, _generate_suite_part_list_fn) still rely on the existing
+end-to-end example suites for coverage -- constructing valid Block/FuncOp
+fixtures by hand for those is a separate, larger effort.
 """
 
+from xdsl_ccpp.dialects.ccpp import ArgSourceKind
 from xdsl_ccpp.transforms.run_dispatch import (
+    _RunMetadataMaps,
+    _build_per_suite_run_info,
     _build_run_metadata_maps,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
@@ -280,3 +286,138 @@ class TestBuildRunMetadataMaps:
 
         maps = _build_run_metadata_maps(meta_data)
         assert maps.ddt_parent_map == {"rad_t": [("rad", "phys_state_t")]}
+
+
+# ---------------------------------------------------------------------------
+# _build_per_suite_run_info -- physics_arg_sources / resolved_arg_ops parity
+#
+# Phase 3b Stage 2: resolved_arg_ops is a dual-build mirror of
+# physics_arg_sources, one ResolvedArgOp per tuple. This exercises one arg of
+# each of the four source kinds and asserts the op's fields match the tuple's
+# payload exactly, field for field.
+# ---------------------------------------------------------------------------
+
+def _assert_resolved_matches_source(arg_name, op, src):
+    """Assert a ResolvedArgOp is the exact mirror of its physics_arg_sources tuple."""
+    op.verify()
+    assert op.arg_name.data == arg_name
+    kind = src[0]
+    if kind == "host":
+        assert op.source_kind.data == ArgSourceKind.Host
+        assert op.var_name.data == src[1]
+        assert op.module_name.data == src[2]
+        assert op.member_path is None
+        assert op.std_name is None
+    elif kind == "ddt_member":
+        assert op.source_kind.data == ArgSourceKind.DdtMember
+        assert op.var_name.data == src[1]
+        assert op.module_name.data == src[2]
+        assert op.member_path.data == src[3]
+        assert op.std_name is None
+    elif kind == "cap_var":
+        assert op.source_kind.data == ArgSourceKind.CapVar
+        assert op.std_name.data == src[1]
+        assert op.var_name is None
+        assert op.module_name is None
+        assert op.member_path is None
+    else:
+        assert kind == "block"
+        assert op.source_kind.data == ArgSourceKind.Block
+        assert op.var_name is None
+        assert op.module_name is None
+        assert op.member_path is None
+        assert op.std_name is None
+
+
+class TestBuildPerSuiteRunInfoResolvedArgOps:
+    """resolved_arg_ops mirrors physics_arg_sources, one arg of each kind."""
+
+    def _meta_data(self):
+        # phys_scheme's _run table declares all four callee args directly, so
+        # std_name_of picks them all up from the scheme table itself.
+        scheme_props = _make_table_props(
+            "phys_scheme", "scheme",
+            _make_arg_table("phys_scheme_run", [
+                # Host var: matched via model_var_name/model_module_name,
+                # model_var_is_ddt unset -> plain host variable.
+                _make_arg(
+                    "temp", standard_name="air_temperature",
+                    model_var_name="t_host", model_module_name="test_host_mod",
+                ),
+                # DDT member: model_module_name holds the DDT *type* name
+                # (rad_t), resolved one level deep via ddt_parent_map below.
+                _make_arg(
+                    "rad_temp", standard_name="shortwave_heating_rate",
+                    model_var_name="temp", model_module_name="rad_t",
+                    model_var_is_ddt=True,
+                ),
+                # Cap var: no model_var_name match, but its standard_name is
+                # in cap_var_map.
+                _make_arg("vmr", standard_name="array_of_volume_mixing_ratios"),
+                # Block: no model_var_name match, no standard_name at all, so
+                # falls all the way through to the caller-block-arg default.
+                _make_arg("unmatched_arg"),
+            ], "scheme"),
+        )
+        scheme_props.arg_tables["phys_scheme_run"] = scheme_props.arg_tables.pop(
+            "phys_scheme"
+        )
+
+        # test_host_mod must be a real MODULE-type entry so the DDT-member
+        # branch's "is the instance a HOST-type table" check finds MODULE,
+        # not HOST, and takes the ddt_member path instead of falling back
+        # to block.
+        mod_props = _make_table_props(
+            "test_host_mod", "module",
+            _make_arg_table("test_host_mod", [], "module"),
+        )
+
+        return {"phys_scheme": scheme_props, "test_host_mod": mod_props}
+
+    def _maps(self):
+        return _RunMetadataMaps(
+            host_var_map={},
+            host_block_std_names=set(),
+            constituent_std_names=set(),
+            ddt_type_names=set(),
+            ddt_instance_map={"phys_state_t": ("phys_state", "test_host_mod")},
+            ddt_parent_map={"rad_t": [("rad", "phys_state_t")]},
+        )
+
+    def test_resolved_arg_ops_mirror_physics_arg_sources(self):
+        callee_input_names = ["temp", "rad_temp", "vmr", "unmatched_arg"]
+        public_fns = {
+            "test_suite_callee": (
+                "test_suite_cap_mod",
+                [],
+                [None] * len(callee_input_names),
+                callee_input_names,
+            ),
+        }
+        suite_run_entries = [
+            ("test_suite", "run", "test_suite_callee", ["phys_scheme"]),
+        ]
+        cap_var_map = {"array_of_volume_mixing_ratios": "vmr_ddt"}
+
+        per_suite, _host_global_ops = _build_per_suite_run_info(
+            suite_run_entries,
+            public_fns,
+            self._meta_data(),
+            self._maps(),
+            cap_var_map,
+            seen_host_globals=set(),
+        )
+
+        assert len(per_suite) == 1
+        info = per_suite[0]
+        assert info["physics_arg_sources"] == [
+            ("host", "t_host", "test_host_mod"),
+            ("ddt_member", "phys_state", "test_host_mod", "rad%temp"),
+            ("cap_var", "array_of_volume_mixing_ratios"),
+            ("block",),
+        ]
+        assert len(info["resolved_arg_ops"]) == len(info["physics_arg_sources"])
+        for arg_name, op, src in zip(
+            callee_input_names, info["resolved_arg_ops"], info["physics_arg_sources"]
+        ):
+            _assert_resolved_matches_source(arg_name, op, src)
