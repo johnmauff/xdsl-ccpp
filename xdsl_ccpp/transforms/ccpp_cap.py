@@ -33,6 +33,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _bare,
     _build_host_var_map,
     _get_suite_lifecycle_ret_info,
+    _iter_schemes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -42,7 +43,6 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 )
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.transforms.util.typing import TypeConversions
-from xdsl_ccpp.transforms.util.ccpp_descriptors import XMLSubcycle as _XMLSubcycle
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_STD_NAMES,
     CCPP_ERRMSG_LEN,
@@ -51,18 +51,6 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
 )
-
-
-def _iter_schemes(group):
-    """Yield all XMLScheme leaves from a group, descending into XMLSubcycle nodes."""
-    for child in group:
-        if isinstance(child, _XMLSubcycle):
-            yield from child
-        else:
-            yield child
-
-
-
 
 def _collect_public_suite_functions(ops):
     """Scan all named ModuleOps in ops and return a map of public function info.
