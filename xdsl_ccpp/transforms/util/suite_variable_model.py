@@ -109,6 +109,14 @@ class SuiteVariableModel:
         self._errors: list[str] = []
 
         # Ordered list of (scheme_name, group_name) pairs across the suite.
+        #
+        # This duck-types the subcycle check ("loop_count" in child.attributes)
+        # instead of `isinstance(child, XMLSubcycle)`, deliberately -- unlike
+        # ccpp_cap.py/suite_cap.py's shared cap_shared._iter_schemes, which uses
+        # isinstance and is not imported here, since this module's own contract
+        # (see the module docstring) is zero xDSL/MLIR imports, and cap_shared
+        # transitively imports xdsl.dialects. Not unified with _iter_schemes for
+        # that reason; keep both in sync if the subcycle model ever changes.
         scheme_groups: list[tuple[str, str]] = []
         for group in suite_description:
             gname = group.attributes["name"]
