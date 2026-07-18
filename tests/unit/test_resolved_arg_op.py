@@ -72,6 +72,21 @@ class TestDdtMemberConstruction:
         assert op.member_path.data == "rad%temp"
         assert op.std_name is None
 
+    def test_construct_from_string_kind(self):
+        """source_kind accepts the exact tag run_dispatch.py's ad hoc tuples
+        use today ("ddt_member", not the auto()-squashed "ddtmember") --
+        this is what lets Stage 2 convert those tuples without translation.
+        """
+        op = ResolvedArgOp(
+            "rad_temp",
+            "ddt_member",
+            var_name="phys_state",
+            module_name="test_host_mod",
+            member_path="rad%temp",
+        )
+        op.verify()
+        assert op.source_kind.data == ArgSourceKind.DdtMember
+
 
 class TestCapVarConstruction:
     """source_kind=CapVar: a cap-owned module variable (e.g. a constituent)."""
@@ -86,6 +101,16 @@ class TestCapVarConstruction:
         assert op.var_name is None
         assert op.module_name is None
         assert op.member_path is None
+
+    def test_construct_from_string_kind(self):
+        """source_kind accepts the exact tag run_dispatch.py's ad hoc tuples
+        use today ("cap_var", not the auto()-squashed "capvar").
+        """
+        op = ResolvedArgOp(
+            "vmr", "cap_var", std_name="array_of_volume_mixing_ratios"
+        )
+        op.verify()
+        assert op.source_kind.data == ArgSourceKind.CapVar
 
 
 class TestBlockConstruction:

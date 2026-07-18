@@ -397,10 +397,10 @@ class ArgSourceKind(StrEnum):
                argument instead.
     """
 
-    Host = auto()
-    DdtMember = auto()
-    CapVar = auto()
-    Block = auto()
+    Host = "host"
+    DdtMember = "ddt_member"
+    CapVar = "cap_var"
+    Block = "block"
 
 
 @irdl_attr_definition
