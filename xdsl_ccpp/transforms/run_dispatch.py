@@ -203,56 +203,6 @@ def _build_run_metadata_maps(meta_data) -> "_RunMetadataMaps":
         ddt_parent_map=ddt_parent_map,
     )
 
-def _resolved_arg_op_from_source(arg_name: str, src: tuple) -> ResolvedArgOp:
-    """Build the ``ResolvedArgOp`` equivalent of one ``physics_arg_sources`` tuple.
-
-    Phase 3b Stage 2 (dual-build): a pure mirror of the tuple already appended
-    to ``physics_arg_sources`` -- nothing downstream reads this yet.
-    """
-    if not src:
-        raise ValueError("Unrecognized physics_arg_sources kind: empty tuple")
-    kind = src[0]
-    if kind == "host":
-        _, host_var, host_mod = src
-        return ResolvedArgOp(
-            arg_name, ArgSourceKind.Host, var_name=host_var, module_name=host_mod
-        )
-    elif kind == "ddt_member":
-        _, instance_var, instance_module, full_member = src
-        return ResolvedArgOp(
-            arg_name,
-            ArgSourceKind.DdtMember,
-            var_name=instance_var,
-            module_name=instance_module,
-            member_path=full_member,
-        )
-    elif kind == "cap_var":
-        _, std_name = src
-        return ResolvedArgOp(arg_name, ArgSourceKind.CapVar, std_name=std_name)
-    elif kind == "block":
-        (_,) = src
-        return ResolvedArgOp(arg_name, ArgSourceKind.Block)
-    else:
-        raise ValueError(f"Unrecognized physics_arg_sources kind: {kind!r}")
-
-def _build_resolved_arg_ops(callee_input_names: list, physics_arg_sources: list) -> list:
-    """Build the resolved_arg_ops mirror of physics_arg_sources, index-aligned
-    with callee_input_names.
-
-    Raises if the two lists have diverged in length -- silently zipping them
-    would misalign or truncate instead of failing fast.
-    """
-    if len(physics_arg_sources) != len(callee_input_names):
-        raise ValueError(
-            f"physics_arg_sources ({len(physics_arg_sources)} entries) and "
-            f"callee_input_names ({len(callee_input_names)} entries) diverged "
-            f"in length -- resolved_arg_ops would silently misalign"
-        )
-    return [
-        _resolved_arg_op_from_source(callee_input_names[i], physics_arg_sources[i])
-        for i in range(len(physics_arg_sources))
-    ]
-
 def _build_per_suite_run_info(
     suite_run_entries,
     public_fns: dict,
@@ -378,7 +328,7 @@ def _build_per_suite_run_info(
                     )
 
         # Classify each callee input arg using match pass results as primary source.
-        physics_arg_sources = []
+        resolved_arg_ops = []
         for arg_name in callee_input_names:
             bare = _bare(arg_name)
             std_name = std_name_of.get(bare) or std_name_of.get(arg_name)
@@ -409,10 +359,18 @@ def _build_per_suite_run_info(
                             instance_module in meta_data
                             and meta_data[instance_module].getAttr("type") == CCPPType.HOST
                         ):
-                            physics_arg_sources.append(("block",))
+                            resolved_arg_ops.append(
+                                ResolvedArgOp(arg_name, ArgSourceKind.Block)
+                            )
                         else:
-                            physics_arg_sources.append(
-                                ("ddt_member", instance_var, instance_module, full_member)
+                            resolved_arg_ops.append(
+                                ResolvedArgOp(
+                                    arg_name,
+                                    ArgSourceKind.DdtMember,
+                                    var_name=instance_var,
+                                    module_name=instance_module,
+                                    member_path=full_member,
+                                )
                             )
                     else:
                         print(
@@ -422,12 +380,21 @@ def _build_per_suite_run_info(
                             f"found — treating as a host-caller block argument.",
                             file=sys.stderr,
                         )
-                        physics_arg_sources.append(("block",))
+                        resolved_arg_ops.append(
+                            ResolvedArgOp(arg_name, ArgSourceKind.Block)
+                        )
                 else:
-                    physics_arg_sources.append(("host", host_var, host_mod))
+                    resolved_arg_ops.append(
+                        ResolvedArgOp(
+                            arg_name, ArgSourceKind.Host,
+                            var_name=host_var, module_name=host_mod,
+                        )
+                    )
             elif std_name and cap_var_map and std_name in cap_var_map:
                 # Cap-owned module variable (e.g. vmr interstitial DDT)
-                physics_arg_sources.append(("cap_var", std_name))
+                resolved_arg_ops.append(
+                    ResolvedArgOp(arg_name, ArgSourceKind.CapVar, std_name=std_name)
+                )
             else:
                 if std_name and std_name not in host_block_std_names \
                         and std_name not in CCPP_FRAMEWORK_STD_NAMES \
@@ -440,18 +407,14 @@ def _build_per_suite_run_info(
                         f"Check that the host metadata provides this variable.",
                         file=sys.stderr,
                     )
-                physics_arg_sources.append(("block",))
-
-        # Stage 2 dual-build: mirror physics_arg_sources into ResolvedArgOp,
-        # alongside the tuple form. Not read by anything downstream yet.
-        resolved_arg_ops = _build_resolved_arg_ops(callee_input_names, physics_arg_sources)
+                resolved_arg_ops.append(ResolvedArgOp(arg_name, ArgSourceKind.Block))
 
         non_host_args = [
             (callee_input_names[i], callee_input_types[i],
              std_name_of.get(_bare(callee_input_names[i]),
                              callee_input_names[i]))
-            for i, src in enumerate(physics_arg_sources)
-            if src[0] == "block"
+            for i, op in enumerate(resolved_arg_ops)
+            if op.source_kind.data == ArgSourceKind.Block
             # cap_var sources are cap-internal; don't expose as block args
         ]
 
@@ -459,14 +422,12 @@ def _build_per_suite_run_info(
         for i, (_arg_name, _arg_type) in enumerate(
             zip(callee_input_names, callee_input_types)
         ):
-            src = physics_arg_sources[i]
-            if src[0] == "host":
-                _, host_var_name, host_module_name = src
-                stub_name, stub_module = host_var_name, host_module_name
-            elif src[0] == "ddt_member":
-                _, instance_var, instance_module, _member = src
-                stub_name, stub_module = instance_var, instance_module
-            elif src[0] == "cap_var":
+            op = resolved_arg_ops[i]
+            if op.source_kind.data == ArgSourceKind.Host:
+                stub_name, stub_module = op.var_name.data, op.module_name.data
+            elif op.source_kind.data == ArgSourceKind.DdtMember:
+                stub_name, stub_module = op.var_name.data, op.module_name.data
+            elif op.source_kind.data == ArgSourceKind.CapVar:
                 continue  # cap vars live in the same module, no USE needed
             else:
                 continue
@@ -490,7 +451,6 @@ def _build_per_suite_run_info(
                 "callee_output_types": callee_output_types,
                 "callee_input_types": callee_input_types,
                 "callee_input_names": callee_input_names,
-                "physics_arg_sources": physics_arg_sources,
                 "resolved_arg_ops": resolved_arg_ops,
                 "non_host_args": non_host_args,
                 "std_name_of": std_name_of,

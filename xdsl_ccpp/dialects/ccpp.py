@@ -412,16 +412,13 @@ class ArgSourceKindAttr(EnumAttribute[ArgSourceKind], SpacedOpaqueSyntaxAttribut
 class ResolvedArgOp(IRDLOperation):
     """Durable record of where one scheme-call argument's data comes from.
 
-    Phase 3b Stage 1 of the restructuring plan: standalone definition only,
-    not yet wired into the generator. Mirrors the four-way tag currently
-    produced as ad hoc Python tuples in run_dispatch.py's
-    _build_per_suite_run_info (the ``physics_arg_sources`` list:
-    ``("host", var, module)`` / ``("ddt_member", var, module, path)`` /
-    ``("cap_var", std_name)`` / ``("block",)``) -- this op exists to make
-    that resolution decision durable and inspectable on its own, independent
-    of whatever later constructs the actual SSA reference (e.g.
-    ``HostVarRefOp``, which already accepts a ``member_name`` for the
-    DdtMember case).
+    Built directly by run_dispatch.py's _build_per_suite_run_info (one op per
+    callee input arg, classifying it as a host module variable, a DDT member,
+    a cap-owned variable, or a caller-supplied block argument) and read by
+    _build_run_dispatch_chain when constructing the actual SSA reference
+    (e.g. ``HostVarRefOp``, which accepts a ``member_name`` for the
+    DdtMember case) -- this op makes that resolution decision durable and
+    inspectable on its own, independent of that later construction step.
 
     Required properties by ``source_kind``:
       - Host:      ``var_name``, ``module_name``
