@@ -175,7 +175,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
 // CHECK-NEXT:        call hello_world_suite_suite_register(errflg, errmsg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_register
@@ -187,7 +187,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
 // CHECK-NEXT:        call hello_world_suite_suite_initialize(errmsg, errflg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_initialize
@@ -199,7 +199,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
 // CHECK-NEXT:        call hello_world_suite_suite_finalize(errmsg, errflg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_finalize
@@ -211,7 +211,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
 // CHECK-NEXT:        call hello_world_suite_suite_timestep_initial(errflg, errmsg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_timestep_initial
@@ -223,7 +223,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
 // CHECK-NEXT:        call hello_world_suite_suite_timestep_final(errflg, errmsg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_timestep_final
@@ -246,7 +246,7 @@
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_run

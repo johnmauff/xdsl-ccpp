@@ -448,7 +448,7 @@
 // CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
 // CHECK-NEXT:          call temp_suite_suite_register(config_var, errmsg, errflg)
 // CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
@@ -469,7 +469,7 @@
 // CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
 // CHECK-NEXT:          call temp_suite_suite_initialize(temp_inc, lc_fudge, ccpp_tmp_0, errmsg, errflg)
 // CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
@@ -485,7 +485,7 @@
 // CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
 // CHECK-NEXT:          call temp_suite_suite_finalize(errmsg, errflg)
 // CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
@@ -503,7 +503,7 @@
 // CHECK-NEXT:          call temp_suite_suite_timestep_initial(coeffs, ncols, lc_temp_inc, temp_interfaces,       &
 // CHECK-NEXT:            errmsg, errflg)
 // CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
@@ -520,7 +520,7 @@
 // CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
 // CHECK-NEXT:          call temp_suite_suite_timestep_final(errflg, errmsg)
 // CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
@@ -569,7 +569,7 @@
 // CHECK-NEXT:            end if
 // CHECK-NEXT:          end if
 // CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if

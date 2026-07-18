@@ -245,7 +245,7 @@
 // CHECK-NEXT:          "memref.copy"(%5, %1) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          "memref.copy"(%6, %0) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %7 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %7, %1[] : memref<i32>
 // CHECK-NEXT:        }
@@ -273,7 +273,7 @@
 // CHECK-NEXT:          "memref.copy"(%13, %1) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          "memref.copy"(%14, %10) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %5) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %5) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %15 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %15, %1[] : memref<i32>
 // CHECK-NEXT:        }
@@ -293,7 +293,7 @@
 // CHECK-NEXT:          "memref.copy"(%7, %0) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:          "memref.copy"(%8, %1) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %9 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %9, %1[] : memref<i32>
 // CHECK-NEXT:        }
@@ -311,7 +311,7 @@
 // CHECK-NEXT:          "memref.copy"(%5, %1) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          "memref.copy"(%6, %0) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %7 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %7, %1[] : memref<i32>
 // CHECK-NEXT:        }
@@ -331,7 +331,7 @@
 // CHECK-NEXT:          "memref.copy"(%6, %0) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:          "memref.copy"(%7, %1) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%0, %3) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %8 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %8, %1[] : memref<i32>
 // CHECK-NEXT:        }
@@ -365,7 +365,7 @@
 // CHECK-NEXT:            memref.store %18, %3[] : memref<i32>
 // CHECK-NEXT:          }
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%2, %5) <{prefix = "No suite named ", suffix = "found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%2, %5) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
 // CHECK-NEXT:          %19 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %19, %3[] : memref<i32>
 // CHECK-NEXT:        }

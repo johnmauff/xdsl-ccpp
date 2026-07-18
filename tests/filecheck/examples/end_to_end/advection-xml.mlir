@@ -251,7 +251,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        call cld_suite_suite_register(lc_dyn_const, lc_dyn_const_ice, errmsg, errflg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_register
@@ -264,7 +264,7 @@
 // CHECK-NEXT:        call cld_suite_suite_initialize(const_std_name, num_consts, std_name_array, const_inds,     &
 // CHECK-NEXT:          tfreeze, const_index, errmsg, errflg, lc_tcld)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_initialize
@@ -276,7 +276,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        call cld_suite_suite_finalize(errflg, errmsg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_finalize
@@ -288,7 +288,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        call cld_suite_suite_timestep_initial(errflg, errmsg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_timestep_initial
@@ -300,7 +300,7 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
 // CHECK-NEXT:        call cld_suite_suite_timestep_final(errflg, errmsg)
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_timestep_final
@@ -330,7 +330,7 @@
 // CHECK-NEXT:          errflg = 1
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), "found"
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_run

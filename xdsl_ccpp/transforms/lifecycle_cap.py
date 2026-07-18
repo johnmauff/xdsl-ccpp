@@ -121,7 +121,7 @@ def _generate_lifecycle_fn(
 
     # Innermost else: no suite matched
     write_err = WriteErrMsgOp(
-        errmsg_alloc, trim_suite_name.res, "No suite named ", "found"
+        errmsg_alloc, trim_suite_name.res, "No suite named ", " found"
     )
     one_err = arith.ConstantOp.from_int_and_width(1, 32)
     store_errflg_err = memref.StoreOp.get(one_err, errflg_alloc, [])
