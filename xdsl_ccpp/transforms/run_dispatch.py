@@ -42,10 +42,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     WriteErrMsgOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
+    _assert_call_arg_count_matches_signature,
     _bare,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
     _get_suite_lifecycle_ret_info,
+    _rank_of,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
@@ -834,10 +836,7 @@ def _build_run_dispatch_chain(
                     cv_name, cv_type, _ftn = cap_var_map[std_name_cv]
                     _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
                     if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
-                        _cv_rank = (
-                            len(list(arg_type.shape.data))
-                            if hasattr(arg_type, "shape") else 0
-                        )
+                        _cv_rank = _rank_of(arg_type)
                         if _cv_rank > 0:
                             cv_name = f"{cv_name}({', '.join([':'] * _cv_rank)})"
                     cap_ref = CapVarRefOp(cv_name, arg_type)
@@ -1069,14 +1068,9 @@ def _build_run_dispatch_chain(
                 call_arg_bare_names.append(_bare(arg_name))
 
             # ── Verify argument count matches callee signature ─────────────
-            if len(call_args) != len(callee_input_types):
-                raise ValueError(
-                    f"Signature mismatch for '{suite_callee}': "
-                    f"generated {len(call_args)} input arg(s) but callee expects "
-                    f"{len(callee_input_types)}.\n"
-                    f"  Callee inputs:   {callee_input_names}\n"
-                    f"  Generated args:  {[str(a) for a in call_args]}"
-                )
+            _assert_call_arg_count_matches_signature(
+                suite_callee, call_args, callee_input_names, callee_input_types
+            )
 
             # ── Inner if for suite_part ───────────────────────────────────
             suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)

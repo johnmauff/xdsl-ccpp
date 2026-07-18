@@ -25,6 +25,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
+    _assert_call_arg_count_matches_signature,
     _bare,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
@@ -276,13 +277,9 @@ def _generate_lifecycle_fn(
                     call_inputs.append(alloc_op.memref)
 
         # ── Verify argument count matches callee signature ─────────────────
-        if len(call_inputs) != len(callee_input_types):
-            raise ValueError(
-                f"Signature mismatch for '{suite_callee}': "
-                f"generated {len(call_inputs)} input arg(s) but callee expects "
-                f"{len(callee_input_types)}.\n"
-                f"  Callee inputs: {callee_input_names}"
-            )
+        _assert_call_arg_count_matches_signature(
+            suite_callee, call_inputs, callee_input_names, callee_input_types
+        )
 
         # Build the call, then handle each return value:
         #   errmsg/errflg  → copy to the function's errmsg/errflg allocas

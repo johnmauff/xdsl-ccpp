@@ -34,7 +34,10 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     UnitConvertOp,
     UnitWriteBackOp,
 )
-from xdsl_ccpp.transforms.util.cap_shared import _is_framework_managed
+from xdsl_ccpp.transforms.util.cap_shared import (
+    _collect_ddt_use_stubs,
+    _is_framework_managed,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
@@ -1557,31 +1560,13 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def _build_ddt_use_stubs(self, scheme_entries: list) -> list:
         """Return llvm.GlobalOp USE-stubs for each DDT type referenced by scheme args."""
-        primitive_types = {"real", "integer", "character", "logical", "complex"}
-        seen: set[str] = set()
-        stubs = []
-        for scheme_name, _ in scheme_entries:
-            if scheme_name not in self.meta_data:
-                continue
-            for arg_table in self.meta_data[scheme_name].arg_tables.values():
-                for arg in arg_table.getFunctionArguments():
-                    if not arg.hasAttr("type"):
-                        continue
-                    arg_type = arg.getAttr("type")
-                    if arg_type in primitive_types or arg_type in seen:
-                        continue
-                    mod = self.ddt_source_module.get(arg_type)
-                    if mod is None:
-                        continue
-                    seen.add(arg_type)
-                    stub = llvm.GlobalOp(
-                        llvm.LLVMArrayType.from_size_and_type(0, i8),
-                        arg_type,
-                        "internal",
-                    )
-                    stub.attributes["module"] = StringAttr(mod)
-                    stubs.append(stub)
-        return stubs
+        arg_tables_iterable = (
+            arg_table
+            for scheme_name, _ in scheme_entries
+            if scheme_name in self.meta_data
+            for arg_table in self.meta_data[scheme_name].arg_tables.values()
+        )
+        return _collect_ddt_use_stubs(arg_tables_iterable, self.ddt_source_module)
 
     def _build_state_globals(self, all_strings_used: set):
         """Return the mutable ccpp_suite_state global and one read-only global per state string."""

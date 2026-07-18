@@ -32,7 +32,9 @@ from xdsl_ccpp.transforms.run_dispatch import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     _bare,
     _build_host_var_map,
+    _collect_ddt_use_stubs,
     _get_suite_lifecycle_ret_info,
+    _rank_of,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -195,10 +197,7 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                 if _std_cv not in scratch_var_seen:
                     scratch_var_seen.add(_std_cv)
                     _lc_cv = f"lc_{_bn_cv}"
-                    _rank_cv = (
-                        len(list(_at_cv.shape.data))
-                        if hasattr(_at_cv, "shape") else 0
-                    )
+                    _rank_cv = _rank_of(_at_cv)
                     _dims_cv = _dno_cv.get(_bn_cv, [])
                     _alloc_cv = ", ".join(
                         _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
@@ -778,27 +777,12 @@ class CCPPCAP(ModulePass):
 
         # Emit USE-association stubs for DDT types used in any scheme across all suites.
         if ddt_source_module:
-            primitive_types = {"real", "integer", "character", "logical", "complex"}
-            seen_type_imports: set[str] = set()
-            for props in meta_data.values():
-                for arg_table in props.arg_tables.values():
-                    for arg in arg_table.getFunctionArguments():
-                        if not arg.hasAttr("type"):
-                            continue
-                        arg_type = arg.getAttr("type")
-                        if arg_type in primitive_types or arg_type in seen_type_imports:
-                            continue
-                        mod = ddt_source_module.get(arg_type)
-                        if mod is None:
-                            continue
-                        seen_type_imports.add(arg_type)
-                        stub = llvm.GlobalOp(
-                            llvm.LLVMArrayType.from_size_and_type(0, i8),
-                            arg_type,
-                            "internal",
-                        )
-                        stub.attributes["module"] = StringAttr(mod)
-                        all_globals.append(stub)
+            arg_tables_iterable = (
+                arg_table
+                for props in meta_data.values()
+                for arg_table in props.arg_tables.values()
+            )
+            all_globals.extend(_collect_ddt_use_stubs(arg_tables_iterable, ddt_source_module))
 
         module_ops = all_globals + all_definitions + all_declarations
 

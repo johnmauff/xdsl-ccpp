@@ -9,16 +9,28 @@ test -- previously only exercised indirectly via end-to-end examples.
 _build_no_suite_matched_false_ops was added later, consolidating three
 independent copies of the same "no suite matched" error sequence
 (run_dispatch.py x2, lifecycle_cap.py x1) into one shared function.
+
+_collect_ddt_use_stubs and _rank_of were added later still, consolidating
+ccpp_cap.py/suite_cap.py's identical DDT-USE-stub logic and
+ccpp_cap.py/run_dispatch.py's identical type-rank expression respectively.
+
+_assert_call_arg_count_matches_signature consolidates lifecycle_cap.py's and
+run_dispatch.py's identical "Signature mismatch" check-and-raise, whose
+wording had already started to diverge between the two copies.
 """
 
+import pytest
 from xdsl.dialects import memref, scf
 
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
 from xdsl_ccpp.transforms.util.cap_shared import (
+    _assert_call_arg_count_matches_signature,
     _build_no_suite_matched_false_ops,
+    _collect_ddt_use_stubs,
     _is_framework_managed,
+    _rank_of,
 )
-from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPArgument
+from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPArgument, CCPPArgumentTable
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 
 
@@ -27,6 +39,15 @@ def _make_arg(name, **attrs):
     for k, v in attrs.items():
         arg.setAttr(k, v)
     return arg
+
+
+def _make_arg_table(args, name="tbl", table_type="scheme"):
+    tbl = CCPPArgumentTable()
+    tbl.setAttr("name", name)
+    tbl.setAttr("type", table_type)
+    for arg in args:
+        tbl.setFunctionArgument(arg)
+    return tbl
 
 
 class TestIsFrameworkManaged:
@@ -119,3 +140,108 @@ class TestBuildNoSuiteMatchedFalseOps:
         )
         assert one_err.value.value.data == 1
         assert store_errflg_err.memref == errflg_dest
+
+
+class TestCollectDdtUseStubs:
+    """_collect_ddt_use_stubs: llvm.GlobalOp USE-association stubs for DDT
+    types referenced by scheme args -- previously duplicated identically in
+    ccpp_cap.py (_generate_ccpp_cap_module) and suite_cap.py
+    (_build_ddt_use_stubs)."""
+
+    def test_ddt_typed_arg_gets_a_stub(self):
+        tbl = _make_arg_table([_make_arg("x", type="vmr_type")])
+        stubs = _collect_ddt_use_stubs([tbl], {"vmr_type": "vmr_mod"})
+        assert len(stubs) == 1
+        assert stubs[0].sym_name.data == "vmr_type"
+        assert stubs[0].attributes["module"].data == "vmr_mod"
+
+    def test_primitive_typed_arg_gets_no_stub(self):
+        tbl = _make_arg_table([_make_arg("x", type="real")])
+        stubs = _collect_ddt_use_stubs([tbl], {"real": "should_never_be_used"})
+        assert stubs == []
+
+    def test_ddt_type_with_no_source_module_gets_no_stub(self):
+        tbl = _make_arg_table([_make_arg("x", type="unregistered_type")])
+        stubs = _collect_ddt_use_stubs([tbl], {})
+        assert stubs == []
+
+    def test_arg_without_type_attr_is_skipped(self):
+        tbl = _make_arg_table([_make_arg("x")])
+        stubs = _collect_ddt_use_stubs([tbl], {"vmr_type": "vmr_mod"})
+        assert stubs == []
+
+    def test_same_ddt_type_deduped_within_one_arg_table(self):
+        tbl = _make_arg_table([
+            _make_arg("x", type="vmr_type"),
+            _make_arg("y", type="vmr_type"),
+        ])
+        stubs = _collect_ddt_use_stubs([tbl], {"vmr_type": "vmr_mod"})
+        assert len(stubs) == 1
+
+    def test_same_ddt_type_deduped_across_multiple_arg_tables(self):
+        tbl1 = _make_arg_table([_make_arg("x", type="vmr_type")], name="tbl1")
+        tbl2 = _make_arg_table([_make_arg("y", type="vmr_type")], name="tbl2")
+        stubs = _collect_ddt_use_stubs([tbl1, tbl2], {"vmr_type": "vmr_mod"})
+        assert len(stubs) == 1
+
+    def test_external_seen_set_is_respected(self):
+        """A caller-provided seen set lets stubs already emitted elsewhere be
+        skipped here too."""
+        seen = {"vmr_type"}
+        tbl = _make_arg_table([_make_arg("x", type="vmr_type")])
+        stubs = _collect_ddt_use_stubs([tbl], {"vmr_type": "vmr_mod"}, seen=seen)
+        assert stubs == []
+
+
+class TestRankOf:
+    """_rank_of: dimension count of an xDSL type, 0 for anything without a
+    shape -- previously duplicated identically in ccpp_cap.py
+    (_build_cap_var_map) and run_dispatch.py (_build_run_dispatch_chain)."""
+
+    def test_memref_type_returns_rank(self):
+        t = memref.MemRefType(TypeConversions.getBaseType("real"), [10, 20])
+        assert _rank_of(t) == 2
+
+    def test_rank_one_memref_type(self):
+        t = memref.MemRefType(TypeConversions.getBaseType("real"), [10])
+        assert _rank_of(t) == 1
+
+    def test_scalar_type_without_shape_returns_zero(self):
+        t = TypeConversions.getBaseType("real")
+        assert _rank_of(t) == 0
+
+    def test_none_returns_zero(self):
+        assert _rank_of(None) == 0
+
+
+class TestAssertCallArgCountMatchesSignature:
+    """_assert_call_arg_count_matches_signature: the shared "Signature
+    mismatch" check-and-raise -- previously duplicated in lifecycle_cap.py
+    and run_dispatch.py, with wording that had already started to diverge."""
+
+    def test_matching_counts_does_not_raise(self):
+        _assert_call_arg_count_matches_signature(
+            "test_suite_run", ["a", "b"], ["arg1", "arg2"], ["type1", "type2"]
+        )
+
+    def test_fewer_args_than_expected_raises(self):
+        with pytest.raises(ValueError, match="Signature mismatch for 'test_suite_run'"):
+            _assert_call_arg_count_matches_signature(
+                "test_suite_run", ["a"], ["arg1", "arg2"], ["type1", "type2"]
+            )
+
+    def test_more_args_than_expected_raises(self):
+        with pytest.raises(ValueError, match="Signature mismatch for 'test_suite_run'"):
+            _assert_call_arg_count_matches_signature(
+                "test_suite_run", ["a", "b", "c"], ["arg1", "arg2"], ["type1", "type2"]
+            )
+
+    def test_error_message_includes_counts_and_names(self):
+        with pytest.raises(ValueError) as excinfo:
+            _assert_call_arg_count_matches_signature(
+                "test_suite_run", ["a"], ["arg1", "arg2"], ["type1", "type2"]
+            )
+        msg = str(excinfo.value)
+        assert "generated 1 input arg(s) but callee expects 2" in msg
+        assert "Callee inputs:" in msg
+        assert "Generated args:" in msg

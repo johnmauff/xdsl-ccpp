@@ -1,5 +1,5 @@
 """Shared helpers used across ccpp_cap.py, cpp_interop.py, lifecycle_cap.py,
-constituent_cap.py, and run_dispatch.py.
+constituent_cap.py, run_dispatch.py, and suite_cap.py.
 
 A neutral leaf module with no dependency on any of the cap-generation files,
 so those files can freely import from here without creating an import cycle
@@ -8,7 +8,8 @@ directly, and all of them need these same helpers, which previously lived in
 ccpp_cap.py itself).
 """
 
-from xdsl.dialects import arith, memref, scf
+from xdsl.dialects import arith, llvm, memref, scf
+from xdsl.dialects.builtin import StringAttr, i8
 
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
@@ -17,6 +18,84 @@ from xdsl_ccpp.transforms.util.typing import TypeConversions
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
 _CONSTITUENT_DDT_NAME = "ccpp_constituent_properties_t"
+
+_DDT_PRIMITIVE_TYPES = frozenset({"real", "integer", "character", "logical", "complex"})
+
+
+def _collect_ddt_use_stubs(arg_tables_iterable, ddt_source_module: dict, seen: "set | None" = None) -> list:
+    """Return llvm.GlobalOp USE-association stubs for each DDT type referenced
+    by args in the given arg tables.
+
+    arg_tables_iterable yields CCPPArgumentTable objects already flattened to
+    whatever scope the caller needs (every scheme across every suite, or just
+    one suite's schemes). seen, if given, is mutated in place so a caller can
+    dedupe across multiple calls; a fresh set is used per call otherwise,
+    matching both existing call sites' behavior.
+
+    Shared by ccpp_cap.py (`_generate_ccpp_cap_module`, scans all of
+    `meta_data`) and suite_cap.py (`GenerateSuiteSubroutine._build_ddt_use_stubs`,
+    scans one suite's `scheme_entries`) -- previously two independent, byte-
+    identical implementations of this logic.
+    """
+    if seen is None:
+        seen = set()
+    stubs = []
+    for arg_table in arg_tables_iterable:
+        for arg in arg_table.getFunctionArguments():
+            if not arg.hasAttr("type"):
+                continue
+            arg_type = arg.getAttr("type")
+            if arg_type in _DDT_PRIMITIVE_TYPES or arg_type in seen:
+                continue
+            mod = ddt_source_module.get(arg_type)
+            if mod is None:
+                continue
+            seen.add(arg_type)
+            stub = llvm.GlobalOp(
+                llvm.LLVMArrayType.from_size_and_type(0, i8),
+                arg_type,
+                "internal",
+            )
+            stub.attributes["module"] = StringAttr(mod)
+            stubs.append(stub)
+    return stubs
+
+
+def _rank_of(mlir_type) -> int:
+    """Return the rank (number of dimensions) of an xDSL type, 0 if it has no shape.
+
+    Shared by ccpp_cap.py (`_build_cap_var_map`, computing a scratch var's
+    allocation rank) and run_dispatch.py (`_build_run_dispatch_chain`,
+    computing a cap-var array-section's colon count) -- previously two
+    independent copies of the same `len(list(t.shape.data)) if hasattr(t,
+    "shape") else 0` expression, used at two adjacent stages of the same
+    cap-var pipeline (allocating the scratch var vs. referencing it at a
+    call site).
+    """
+    return len(list(mlir_type.shape.data)) if hasattr(mlir_type, "shape") else 0
+
+
+def _assert_call_arg_count_matches_signature(
+    suite_callee: str, call_args: list, callee_input_names: list, callee_input_types: list
+) -> None:
+    """Raise ValueError if the generated call-arg count doesn't match the
+    callee's declared input signature.
+
+    Shared by lifecycle_cap.py and run_dispatch.py -- previously two
+    independent copies of the same check-and-raise, with wording that had
+    already started to diverge (run_dispatch.py's copy included a
+    "Generated args:" debug line lifecycle_cap.py's didn't -- both now get
+    it, since it's strictly more useful for debugging a mismatch and no test
+    checks this exact string).
+    """
+    if len(call_args) != len(callee_input_types):
+        raise ValueError(
+            f"Signature mismatch for '{suite_callee}': "
+            f"generated {len(call_args)} input arg(s) but callee expects "
+            f"{len(callee_input_types)}.\n"
+            f"  Callee inputs:   {callee_input_names}\n"
+            f"  Generated args:  {[str(a) for a in call_args]}"
+        )
 
 
 def _build_no_suite_matched_false_ops(errmsg_dest, trim_suite_name_res, errflg_dest) -> list:
