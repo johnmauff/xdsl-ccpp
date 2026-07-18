@@ -209,6 +209,8 @@ def _resolved_arg_op_from_source(arg_name: str, src: tuple) -> ResolvedArgOp:
     Phase 3b Stage 2 (dual-build): a pure mirror of the tuple already appended
     to ``physics_arg_sources`` -- nothing downstream reads this yet.
     """
+    if not src:
+        raise ValueError("Unrecognized physics_arg_sources kind: empty tuple")
     kind = src[0]
     if kind == "host":
         _, host_var, host_mod = src
@@ -228,6 +230,7 @@ def _resolved_arg_op_from_source(arg_name: str, src: tuple) -> ResolvedArgOp:
         _, std_name = src
         return ResolvedArgOp(arg_name, ArgSourceKind.CapVar, std_name=std_name)
     elif kind == "block":
+        (_,) = src
         return ResolvedArgOp(arg_name, ArgSourceKind.Block)
     else:
         raise ValueError(f"Unrecognized physics_arg_sources kind: {kind!r}")

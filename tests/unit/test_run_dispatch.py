@@ -342,10 +342,23 @@ class TestResolvedArgOpFromSourceRejectsUnknownKind:
         with pytest.raises(ValueError, match="Unrecognized physics_arg_sources kind"):
             _resolved_arg_op_from_source("x", ("bogus_kind",))
 
+    def test_empty_tuple_raises_value_error_not_index_error(self):
+        """An empty tuple must fail the same clear way as any other
+        unrecognized kind, not with an uninformative IndexError."""
+        with pytest.raises(ValueError, match="Unrecognized physics_arg_sources kind"):
+            _resolved_arg_op_from_source("x", ())
+
     def test_block_kind_still_produces_block_op(self):
         """The one-tuple "block" tag itself is still handled explicitly."""
         op = _resolved_arg_op_from_source("x", ("block",))
         assert op.source_kind.data == ArgSourceKind.Block
+
+    def test_block_kind_with_extra_payload_raises(self):
+        """A malformed ("block", ...) tuple with extra fields must raise, not
+        silently drop the extra payload -- host/ddt_member/cap_var all fail on
+        unpack for the same kind of malformed tuple, so block should too."""
+        with pytest.raises(ValueError):
+            _resolved_arg_op_from_source("x", ("block", "unexpected_extra_field"))
 
 
 class TestBuildResolvedArgOpsRejectsLengthMismatch:
