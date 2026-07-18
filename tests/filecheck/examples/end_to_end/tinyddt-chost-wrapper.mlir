@@ -34,7 +34,7 @@
 
 // Run inline function: errmsg/errflg allocated internally; all flattened args forwarded.
 // CHECK-LABEL: inline Status run(const RunArgs& a) {
-// CHECK:     char   errmsg[512]      = {};
+// CHECK:     char   errmsg[513]      = {};
 // CHECK:     int    errflg           = 0;
 // CHECK:     Tinyddt_chost_physics_run(
 // CHECK:         a.ncol, a.state_nz, a.tend_nz, a.col_start,

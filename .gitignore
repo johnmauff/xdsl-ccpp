@@ -205,3 +205,7 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Generated example output (each examples/*/Makefile regenerates these into
+# bindc/ via `make caps` / `make gen-chost`; not meant to be committed)
+bindc/
