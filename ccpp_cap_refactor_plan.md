@@ -1,23 +1,58 @@
 # Refactor Plan: Decomposing `ccpp_cap.py` in xdsl-ccpp
 
-**Target:** `xdsl_ccpp/transforms/ccpp_cap.py` (4,749 lines), the `CCPPCAP` pass (`generate-ccpp-cap`)
-in [johnmauff/xdsl-ccpp](https://github.com/johnmauff/xdsl-ccpp).
+**Target (as of the plan's start, 2026-07-17):** `xdsl_ccpp/transforms/ccpp_cap.py`
+(4,749 lines), the `CCPPCAP` pass (`generate-ccpp-cap`) in
+[johnmauff/xdsl-ccpp](https://github.com/johnmauff/xdsl-ccpp). **Current size (2026-07-19,
+after Phases 1-5): 853 lines** — an 82% reduction, all of it moved into
+`cpp_interop.py`/`lifecycle_cap.py`/`constituent_cap.py`/`run_dispatch.py`/`suite_cap.py`/
+`cap_shared.py` rather than deleted; see "Current state" below for where it all landed.
 
-**Context:** `CCPPCAP` bundles at least five distinct concerns into one `ModulePass`:
-a C++/BIND(C) backend, run-dispatch argument resolution, lifecycle-function generation,
-constituent-API generation, and suite-variable/final-module assembly. The project's own
-sibling passes — `generate_kinds.py` (66 lines) and `gpu_ccpp_cap_pass.py` (339 lines),
-both registered to run immediately after `generate-ccpp-cap` — show that small, focused
-passes are the established pattern here; `CCPPCAP` just never got split the same way.
+**Context (as of the plan's start):** `CCPPCAP` bundled at least five distinct concerns into
+one `ModulePass`: a C++/BIND(C) backend, run-dispatch argument resolution, lifecycle-function
+generation, constituent-API generation, and suite-variable/final-module assembly. The
+project's own sibling passes at the time — `generate_kinds.py` (66 lines, unchanged since) and
+`gpu_ccpp_cap_pass.py` (339 lines at the time; now 405 after this session's lifecycle-coverage
+work) — showed that small, focused passes were the established pattern here; `CCPPCAP` just
+hadn't been split the same way yet.
 
-The repo currently has a single contributor and a thin test net (0.25:1 test:core ratio),
-with some existing tests already broken. That shapes the plan below: order phases by risk
+The repo had a single contributor and a thin test net (0.25:1 test:core ratio at the time),
+with some existing tests already broken. That shaped the plan below: order phases by risk
 (lowest first), keep every phase behavior-preserving until the last one, and lean on the
-existing golden-file (FileCheck) tests as the de facto reviewer at each step.
+existing golden-file (FileCheck) tests as the de facto reviewer at each step. **None of that
+motivating state is current anymore** — see "Current state" immediately below for where things
+actually stand; the paragraph above is kept as-is as the original rationale, not a live
+description.
 
 ---
 
-## 📍 Session status (updated 2026-07-18)
+## Current state (2026-07-19)
+
+Numbers below are freshly measured from the actual repo, not carried forward from any earlier
+entry in this log:
+
+- **`ccpp_cap.py`: 853 lines** (was 4,749 at the plan's start — Phases 1-5 below account for
+  the reduction).
+- **Full test suite: 305 unit tests passed + 44 FileCheck passed, 1 xfailed** (the one
+  accepted exception is the rank-3 chost/`--bind-c` question — still open, see the entries
+  below on that). Green throughout every phase since Phase 0; **the "some existing tests
+  already broken" state from the plan's start no longer applies and hasn't since Phase 0.**
+- **Test:core ratio: ~5,426 test lines / ~18,566 `xdsl_ccpp/` source lines (~0.29:1)**, up from
+  0.25:1 at the plan's start — 21 files under `tests/unit/`. Treat this as an approximate,
+  not a precisely reproduced recomputation of whatever methodology produced the original 0.25:1
+  figure.
+- **`gpu_ccpp_cap_pass.py`: 405 lines** (339 before this session's lifecycle-phase-coverage
+  extension) and **`gpu_data_pass.py`: 276 lines** — both outside the original 6-phase plan's
+  scope (that plan targeted `ccpp_cap.py` specifically) but touched heavily in this same
+  session; see the GPU/OpenACC entries further down.
+- Everything above reflects this session's cumulative work, not just today: the 6-phase
+  `ccpp_cap.py` decomposition, Phase 7's design work, the subcycle/duplication-sweep fixes, the
+  GPU lifecycle-coverage extension and its Copilot-review fixes, the documentation-limitations
+  audit and cleanup, and the `duplication_analysis_summary.md` backlog addition are all already
+  reflected in these totals.
+
+---
+
+## 📍 Session status (updated 2026-07-19)
 
 **Done and merged to upstream `main`:** Phases 0, 1, 2, 3a, all of Phase 3b (Stages 1-4, PRs
 #9-#12), and Phase 4 (PR #13, including a post-merge Copilot review fix — a second occurrence
@@ -751,7 +786,7 @@ structure, not internal analysis caches). The more valuable IR-ification target 
 (host var / DDT member / cap-owned var / block arg, plus any needed transform) — the actual
 `ResolvedArg`-equivalent for this project. Narrow or re-scope 3b accordingly before Stage 1.
 
-### Phase 3b: staged breakdown (agreed 2026-07-17, not started)
+### Phase 3b: staged breakdown ✅ done (agreed 2026-07-17, all 4 stages completed 2026-07-18)
 
 Same incremental discipline as every phase so far — introduce the new representation
 alongside the old, verify equivalence, migrate one consumer at a time, remove the old path
