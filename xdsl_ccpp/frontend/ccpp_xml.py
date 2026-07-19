@@ -191,6 +191,14 @@ class XMLSubcycle(XMLSuiteBase):
     """Intermediate node representing a ``<subcycle loop="N">`` within a group.
 
     Parses all ``<scheme>`` children and stores them as `XMLScheme` nodes.
+
+    Nested ``<subcycle>`` elements are not supported -- rejected explicitly
+    rather than silently dropped. Real CCPP suites (e.g. CAM4's diagnostic
+    radiation subcycles, examples/atmospheric_physics/suite_cam4_py.py) use
+    multiple *sibling* subcycles, never one nested inside another, and the
+    Python suite-authoring API (`forLoop`) is itself typed to only accept a
+    list of schemes, not another subcycle. If a real need for nesting turns
+    up later, this is the place to lift the restriction.
     """
 
     def __init__(self, xml_node):
@@ -206,6 +214,13 @@ class XMLSubcycle(XMLSuiteBase):
         for child in xml_node:
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))
+            elif child.tag == "subcycle":
+                raise ValueError(
+                    "Nested <subcycle> elements are not supported "
+                    f"(found a <subcycle loop=\"{child.attrib.get('loop', '1')}\"> "
+                    f"inside <subcycle loop=\"{raw}\">). "
+                    "Use multiple sibling <subcycle> blocks instead."
+                )
 
 
 class XMLGroup(XMLSuiteBase):

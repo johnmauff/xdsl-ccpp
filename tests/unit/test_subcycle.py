@@ -5,6 +5,16 @@ Verifies that <subcycle loop="N"> in a suite XML is:
   - reconstructed into XMLSubcycle by BuildSchemeDescription (transforms)
   - flattened correctly by getSchemeNames / getCallSequence (suite_cap)
   - included in track() results (ccpp_track_variables)
+
+Nested subcycles (a <subcycle> inside another <subcycle>, or a forLoop()
+inside another forLoop()) are explicitly rejected, not supported: real CCPP
+suites use multiple sibling subcycles (see
+examples/atmospheric_physics/suite_cam4_py.py), never nesting, and the
+Python suite-authoring API's own type contract doesn't allow it either.
+Rejected at three entry points -- the XML frontend parser, the Python DSL
+frontend's IR-emission, and (defense in depth) IR-to-descriptor
+reconstruction, shared by both frontends -- so a nested subcycle fails
+loudly instead of silently dropping every scheme inside it.
 """
 
 import pytest
@@ -12,6 +22,11 @@ import pytest
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp import GroupOp, SchemeOp, SubcycleOp, SuiteOp
+from xdsl_ccpp.frontend.py_api import (
+    SchemeDescriptor,
+    SubcycleDescriptor,
+    _group_item_to_op,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildSchemeDescription,
     XMLSubcycle,
@@ -103,6 +118,60 @@ class TestFrontendParsing:
         assert isa(children[1], SubcycleOp) and children[1].loop_count.data == "3"
         assert isa(children[2], SchemeOp) and children[2].scheme_name.data == "post_scheme"
 
+    def test_nested_subcycle_is_rejected(self, build_module):
+        """A <subcycle> nested inside another <subcycle> must raise a clear
+        error at parse time, not silently drop the nested schemes.
+
+        Real CCPP suites (CAM4's diagnostic radiation subcycles) use multiple
+        sibling subcycles, never nesting -- confirmed via
+        examples/atmospheric_physics/suite_cam4_py.py and the Python
+        suite-authoring API's own type contract (forLoop only accepts a list
+        of schemes, not another subcycle).
+        """
+        suite_xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_suite" version="1.0">
+  <group name="physics">
+    <subcycle loop="2">
+      <scheme>outer_scheme</scheme>
+      <subcycle loop="3">
+        <scheme>inner_scheme</scheme>
+      </subcycle>
+    </subcycle>
+  </group>
+</suite>
+"""
+        metas = [_scheme_meta(n) for n in ("outer_scheme", "inner_scheme")]
+        with pytest.raises(ValueError, match="Nested <subcycle> elements are not supported"):
+            build_module(metas, [], suite_xml)
+
+
+# ── Python DSL frontend ────────────────────────────────────────────────────────
+
+class TestPythonDSLFrontendRejectsNesting:
+    """forLoop() bypasses the XML parser entirely (py_api.py builds SubcycleOp
+    directly), so it needs its own guard against nesting."""
+
+    def test_nested_forloop_is_rejected(self):
+        inner_scheme = SchemeDescriptor("inner_scheme", {})
+        inner = SubcycleDescriptor(2, [inner_scheme])
+        outer_scheme = SchemeDescriptor("outer_scheme", {})
+        outer = SubcycleDescriptor(3, [outer_scheme, inner])
+
+        with pytest.raises(ValueError, match="Nested forLoop\\(\\) blocks are not supported"):
+            _group_item_to_op(outer, {})
+
+    def test_non_nested_forloop_still_works(self):
+        """Sanity check: a plain (non-nested) forLoop still converts fine."""
+        scheme_a = SchemeDescriptor("scheme_a", {})
+        scheme_b = SchemeDescriptor("scheme_b", {})
+        subcycle = SubcycleDescriptor(2, [scheme_a, scheme_b])
+
+        op = _group_item_to_op(subcycle, {})
+
+        assert isa(op, SubcycleOp)
+        assert op.loop_count.data == "2"
+
 
 # ── Descriptor reconstruction ─────────────────────────────────────────────────
 
@@ -169,6 +238,18 @@ class TestBuildSchemeDescription:
         assert isinstance(children[1], XMLSubcycle)
         assert isinstance(children[2], XMLScheme)
         assert children[2].attributes["name"] == "post_scheme"
+
+    def test_nested_subcycle_op_is_rejected(self):
+        """Defense in depth: even if a nested SubcycleOp reached the IR by
+        some route other than the (now-blocking) XML parser, reconstruction
+        must raise rather than silently drop the nested schemes."""
+        inner = SubcycleOp(loop_count=2, body=[SchemeOp("inner_scheme")])
+        outer = SubcycleOp(loop_count=3, body=[inner])
+        group_op = GroupOp("physics", body=[outer])
+
+        bsd = BuildSchemeDescription()
+        with pytest.raises(ValueError, match="Nested ccpp.subcycle ops are not supported"):
+            bsd.traverse(group_op)
 
 
 # ── getSchemeNames / getCallSequence ─────────────────────────────────────────
