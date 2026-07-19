@@ -6,6 +6,10 @@ suite cap and ccpp cap subroutines include ``ccpp_data`` (or whatever the
 local variable name is) as an ``intent(inout)`` argument, and that the
 ccpp_suite_state guard is emitted as a per-instance array indexed by
 ``ccpp_data%ccpp_instance``.
+
+TestCcppTWithConstituents additionally covers ccpp_t combined with
+constituents in the same scheme -- previously untested together (each
+feature's own test fixtures never declared the other).
 """
 
 from io import StringIO
@@ -50,6 +54,26 @@ _SCHEME_REAL_VAR = """\
   type = real
   kind = kind_phys
   intent = in
+"""
+
+# Framework-owned constituent arrays (matches examples/advection's
+# apply_constituent_tendencies.meta) -- resolved via cap_var_map to
+# module-level lc_constituent_array/lc_const_tend, never host-matched.
+_SCHEME_CONSTITUENT_VARS = """\
+[ const ]
+  standard_name = ccpp_constituents
+  long_name = ccpp constituents
+  units = none
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension, number_of_ccpp_constituents)
+  intent = inout
+[ const_tend ]
+  standard_name = ccpp_constituent_tendencies
+  long_name = ccpp constituent tendencies
+  units = none
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension, number_of_ccpp_constituents)
+  intent = inout
 """
 
 _HOST_REAL_VAR = """\
@@ -274,3 +298,77 @@ class TestCcppTFortranOutput:
         )
         assert f"dimension({CCPP_NUM_INSTANCES})" not in fortran
         assert "ccpp_suite_state" in fortran
+
+
+class TestCcppTWithConstituents:
+    """ccpp_t (multi-instance) threading combined with constituents in the
+    same scheme -- previously zero test coverage combined the two (each was
+    only ever tested separately: test_ccpp_t_threading.py's own fixtures
+    never declare a constituent-typed arg, and examples/advection's
+    constituent-bearing schemes/hosts never declare a ccpp_t variable)."""
+
+    def _module_with_constituents(self, run_host_match, ccpp_context):
+        return _run_full_pipeline(
+            run_host_match, ccpp_context,
+            scheme_metas=[
+                _scheme_meta(
+                    "test_scheme", _SCHEME_REAL_VAR + _SCHEME_CONSTITUENT_VARS
+                )
+            ],
+            host_metas=[_host_meta("test_mod", _HOST_REAL_VAR + _HOST_CCPP_T_VAR)],
+            suite_xml=minimal_suite_xml("test_scheme"),
+        )
+
+    def test_ccpp_t_still_threaded_with_constituents_present(
+        self, run_host_match, ccpp_context
+    ):
+        """A scheme that also has constituent args still gets ccpp_t as an
+        intent(inout) block arg on the suite cap run function."""
+        module = self._module_with_constituents(run_host_match, ccpp_context)
+        fns = _find_public_fns(module)
+        run_fn = fns.get("test_suite_suite_physics")
+        assert run_fn is not None, f"Expected test_suite_suite_physics; found: {list(fns)}"
+        assert _has_ccpp_t_arg(run_fn), "ccpp_t block arg should survive constituents being present"
+        assert _ccpp_t_is_inout(run_fn), "ccpp_t should still be intent(inout)"
+
+    def test_constituent_args_resolved_to_cap_owned_vars_not_block_args(
+        self, run_host_match, ccpp_context
+    ):
+        """At the top-level dispatcher (where cap_var_map is actually
+        consumed), the constituent args must not leak through as extra
+        caller-supplied block arguments -- they're cap-owned module vars.
+
+        (The suite cap's own _suite_physics signature legitimately still
+        has them as dummy args -- cap_var_map resolution happens one layer
+        up, at the ccpp_physics_run dispatcher built by ccpp_cap.py/
+        run_dispatch.py, same as in any constituent-only example.)
+        """
+        module = self._module_with_constituents(run_host_match, ccpp_context)
+        fns = _find_public_fns(module)
+        run_fn = next(
+            (fn for name, fn in fns.items() if name.endswith("_ccpp_physics_run")),
+            None,
+        )
+        assert run_fn is not None, f"No _ccpp_physics_run fn found; fns: {list(fns)}"
+        arg_names = {arg.name_hint for arg in run_fn.body.block.args}
+        assert "const" not in arg_names
+        assert "const_tend" not in arg_names
+
+    def test_fortran_output_has_both_ccpp_t_and_constituent_arrays(
+        self, run_host_match, ccpp_context
+    ):
+        """Generated Fortran shows per-instance ccpp_suite_state (ccpp_t) and
+        the module-level constituent scratch arrays (lc_constituent_array /
+        lc_const_tend), confirming both features generated correctly
+        together, not just that neither one crashed."""
+        module = self._module_with_constituents(run_host_match, ccpp_context)
+        for pass_cls in [MetaKind, GenerateKinds, StripCCPP]:
+            pass_cls().apply(ccpp_context, module)
+        out = StringIO()
+        print_to_ftn(module, out)
+        fortran = out.getvalue()
+
+        assert f"dimension({CCPP_NUM_INSTANCES})" in fortran
+        assert "ccpp_suite_state(ccpp_data%ccpp_instance)" in fortran
+        assert "lc_constituent_array" in fortran
+        assert "lc_const_tend" in fortran
