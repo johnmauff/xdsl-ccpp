@@ -40,43 +40,62 @@ ARCH ?= CPU
 
 # Derive the C++ compiler and per-family flags from FC.
 # FMA is defined once here and appended to both FFLAGS and CXXFLAGS.
+#
+# ACC_OFF_C: nvfortran/nvc/nvc++ compile *every* translation unit with an
+# accelerator-runtime registration hook (an .init_array entry referencing
+# __acc_compiled), regardless of whether that file uses OpenACC directives
+# or -acc was passed. On a CPU-only (ARCH=CPU) build we pass -noacc so the
+# ACC directive parser treats !$acc lines as plain comments; ACC_OFF_C
+# carries the equivalent flag to the C/C++ compiles (kessler_rng.c, the
+# BIND(C) drivers) so *every* object in the link is built the same way —
+# otherwise objects compiled without -noacc still reference
+# __acc_compiled while the CPU-build link (which also uses -noacc, via
+# FC_CPU) no longer links the runtime library that defines it, producing
+# an undefined-reference error. gfortran/ifx don't have this quirk, so
+# ACC_OFF_C is empty for those families.
 ifeq ($(FC),nvfortran)
-  CXX     ?= nvc++
-  CC       = nvc
-  FMA      = -Mnofma
-  FC_CPU   = -g -O2 -Mfree -Mpreprocess
-  FC_GPU   = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
-  CXX_BASE = -g -O2
-  MOD_OUT  = -module
-  NOMAIN   = -Mnomain
+  CXX      ?= nvc++
+  CC        = nvc
+  FMA       = -Mnofma
+  FC_CPU    = -g -O2 -Mfree -Mpreprocess -noacc
+  FC_GPU    = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
+  ACC_OFF_C = -noacc
+  CXX_BASE  = -g -O2
+  MOD_OUT   = -module
+  NOMAIN    = -Mnomain
 else ifeq ($(FC),ifx)
-  CXX     ?= icpx
-  CC       = icx
-  FMA      = -fp-model=precise
-  FC_CPU   = -g -O2 -fpp
-  FC_GPU   = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
-  CXX_BASE = -g -O2
-  MOD_OUT  = -module
-  NOMAIN   = -nofor-main
+  CXX      ?= icpx
+  CC        = icx
+  FMA       = -fp-model=precise
+  FC_CPU    = -g -O2 -fpp
+  FC_GPU    = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
+  ACC_OFF_C =
+  CXX_BASE  = -g -O2
+  MOD_OUT   = -module
+  NOMAIN    = -nofor-main
 else
   # GNU (gfortran / g++)
-  CXX     ?= g++
-  CC       = gcc
-  FMA      = -ffp-contract=off
-  FC_CPU   = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
-  FC_GPU   = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
-  CXX_BASE = -g -Wall -O2
-  MOD_OUT  = -J
-  NOMAIN   =
+  CXX      ?= g++
+  CC        = gcc
+  FMA       = -ffp-contract=off
+  FC_CPU    = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
+  FC_GPU    = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
+  ACC_OFF_C =
+  CXX_BASE  = -g -Wall -O2
+  MOD_OUT   = -J
+  NOMAIN    =
 endif
 
 ifeq ($(ARCH),GPU)
   FFLAGS = $(FC_GPU) $(FMA)
 else
   FFLAGS = $(FC_CPU) $(FMA)
+  # Only a CPU build needs the C/C++ objects to also drop their ACC hook —
+  # a GPU build's link keeps the runtime library linked either way.
+  ACC_OFF = $(ACC_OFF_C)
 endif
-CXXFLAGS = $(CXX_BASE) $(FMA)
-CFLAGS   = -g -O2 $(FMA)
+CXXFLAGS = $(CXX_BASE) $(FMA) $(ACC_OFF)
+CFLAGS   = -g -O2 $(FMA) $(ACC_OFF)
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
 CCPP_XDSL ?= ccpp_xdsl

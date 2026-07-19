@@ -1,7 +1,3 @@
-!#define DEVICEPTR(...) deviceptr(__VA_ARGS__)
-#ifdef _OPENACC
-#define DEVICEPTR(...) deviceptr(__VA_ARGS__)
-#endif
 module kessler
 
    use ccpp_kinds, only:  kind_phys
@@ -182,7 +178,7 @@ CONTAINS
       !------------------------------------------------
       !   Begin calculation
       !------------------------------------------------
-      !$acc parallel loop collapse(2) gang vector DEVICEPTR(cpair,rair,pk,rho,qr) &
+      !$acc parallel loop collapse(2) gang vector present(cpair,rair,pk,rho,qr) &
       !$acc present(f5,r,rhalf,pc,velqr) default(present)
       do col =1,ncol
          do klev=lyr_surf, lyr_toa, lyr_step
@@ -208,7 +204,7 @@ CONTAINS
       enddo
 
       ! Compute maximum time step size in accordance with CFL condition
-      !$acc parallel loop gang DEVICEPTR(z,precl) &
+      !$acc parallel loop gang present(z,precl) &
       !$acc present(velqr,dt0,mask,time_counter,precl_acc) private(dtmin) default(present)
       do col=1,ncol
          dt0(col)  = dt
@@ -254,7 +250,7 @@ CONTAINS
       ! do while ( abs(dt - time_counter(col)) > 1.0E-5_kind_phys)
       do while ( .not. all_converged)
 
-         !$acc parallel loop gang vector DEVICEPTR(rho,qr,precl) &
+         !$acc parallel loop gang vector present(rho,qr,precl) &
          !$acc present(velqr,precl_acc,dt0,mask) default(present)
          do col = 1, ncol
             ! Precipitation rate (m_water/s) over the subcycled time step
@@ -266,7 +262,7 @@ CONTAINS
          enddo
 
          ! Mass-weighted sedimentation term using upstream differencing
-         !$acc parallel loop collapse(2) gang vector DEVICEPTR(qr,z) &
+         !$acc parallel loop collapse(2) gang vector present(qr,z) &
          !$acc present(sed,r,velqr,dt0) default(present)
          do col = 1, ncol
             do klev = lyr_surf, lyr_toa - lyr_step, lyr_step
@@ -277,14 +273,14 @@ CONTAINS
             end do
          enddo
 
-         !$acc parallel loop gang vector DEVICEPTR(qr,z) &
+         !$acc parallel loop gang vector present(qr,z) &
          !$acc present(sed,velqr,dt0) default(present)
          do col = 1, ncol
             sed(col,lyr_toa) = -dt0(col) * qr(col, lyr_toa) * velqr(col,lyr_toa) /    &
                  (0.5_kind_phys * (z(col, lyr_toa)-z(col, lyr_toa-lyr_step)))
          enddo
 
-         !$acc parallel loop collapse(2) gang vector DEVICEPTR(qc,qr,qv,pk,theta,cpair) &
+         !$acc parallel loop collapse(2) gang vector present(qc,qr,qv,pk,theta,cpair) &
          !$acc present(sed,r,pc,f5,dt0,mask) default(present)
          do col = 1, ncol
             ! Adjustment terms
@@ -339,7 +335,7 @@ CONTAINS
           end do ! column loop
 
           ! Recalculate liquid water terminal velocity (m/s)
-          !$acc parallel loop collapse(2) gang vector DEVICEPTR(qr) &
+          !$acc parallel loop collapse(2) gang vector present(qr) &
           !$acc present(velqr,rhalf,r) default(present)
           do col = 1, ncol
              do klev = lyr_surf, lyr_toa, lyr_step
@@ -348,7 +344,7 @@ CONTAINS
           end do ! column loop
 
           ! recompute the time step
-          !$acc parallel loop gang DEVICEPTR(z) &
+          !$acc parallel loop gang present(z) &
           !$acc present(velqr,dt0) private(dtmin) default(present)
           do col = 1, ncol
              dtmin = dt0(col)
@@ -367,14 +363,14 @@ CONTAINS
 
       end do  ! do while loop
 
-      !$acc parallel loop gang vector DEVICEPTR(precl) present(precl_acc) default(present)
+      !$acc parallel loop gang vector present(precl) present(precl_acc) default(present)
       do col=1,ncol
          ! compute the average preciptation rate over the physics time step period
          precl(col) = precl_acc(col) / dt
       end do ! column loop
 
       ! Diagnostic: relative humidity (relhum)
-      !$acc parallel loop collapse(2) gang vector DEVICEPTR(pk,theta,relhum,qv) &
+      !$acc parallel loop collapse(2) gang vector present(pk,theta,relhum,qv) &
       !$acc present(pc) default(present)
       do col = 1,ncol
          do klev = lyr_surf,lyr_toa,lyr_step
@@ -473,7 +469,7 @@ CONTAINS
       !------------------------------------------------
       !   Begin calculation
       !------------------------------------------------
-      !$acc parallel loop gang vector DEVICEPTR(cpair,rair,pk,rho,qc,qr,qv,theta,z,precl) &
+      !$acc parallel loop gang vector present(cpair,rair,pk,rho,qc,qr,qv,theta,z,precl) &
       !$acc private(r,rhalf,pc,sed,velqr) default(present) reduction(min:dt0)
       do col =1,ncol
         do klev=lyr_surf, lyr_toa, lyr_step

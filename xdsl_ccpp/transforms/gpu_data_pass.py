@@ -9,9 +9,11 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccDataBeginOp,
     AccDataEndOp,
+    KeywordCallOp,
     OmpTargetDataBeginOp,
     OmpTargetDataEndOp,
 )
+from xdsl_ccpp.transforms.util.cap_shared import _bare
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
@@ -22,7 +24,9 @@ class GPUDataPass(ModulePass):
 
     Reads memory_space and model_var_name annotations from CCPP metadata
     (populated by generate-host-match) and wraps consecutive GPU-capable
-    scheme calls in !$acc data regions inside _physics subroutines.
+    scheme calls in !$acc data regions inside the suite-level _physics,
+    _register, _initialize, _finalize, _timestep_initial, and
+    _timestep_final subroutines.
 
     Directives are inserted at the suite_cap level using scheme-local variable
     names, which are the variables in scope at that level.  The model_var_name
@@ -43,16 +47,27 @@ class GPUDataPass(ModulePass):
 
         e.g. 'hello_scheme_run' → 'hello_scheme'
         Returns None if the name doesn't match a known suffix.
+
+        Longer/more-specific suffixes ('_timestep_init', '_timestep_final')
+        must be checked before their shorter substrings ('_init',
+        '_finalize') — 'foo_timestep_init' ends with both '_timestep_init'
+        and '_init', and checking '_init' first would strip the wrong
+        length, leaving 'foo_timestep' instead of 'foo'.
         """
-        for suffix in ("_run", "_init", "_finalize",
-                       "_timestep_init", "_timestep_final"):
+        for suffix in ("_timestep_init", "_timestep_final", "_run",
+                       "_init", "_finalize", "_register"):
             if callee_name.endswith(suffix):
                 return callee_name[: -len(suffix)]
         return None
 
-    def _get_device_args(self, scheme_name, meta_data):
+    def _get_device_args(self, scheme_name, table_name, meta_data):
         """Return a dict mapping scheme-local name → host variable name for
-        all device-resident arguments in the scheme's _run argument table.
+        all device-resident arguments in the scheme's <table_name> argument
+        table -- the specific lifecycle entry point actually being called
+        (e.g. '<scheme>_timestep_final'), NOT always '<scheme>_run'.  A
+        scheme's device-arg set can differ per entry point, so reusing the
+        _run table for every call would silently use the wrong argument
+        list (or miss the call entirely when the scheme has no _run entry).
 
         The host variable name comes from the model_var_name annotation set by
         generate-host-match.  It is None when no host match was found (e.g.
@@ -60,7 +75,6 @@ class GPUDataPass(ModulePass):
         """
         if scheme_name not in meta_data:
             return {}
-        table_name = scheme_name + "_run"
         if table_name not in meta_data[scheme_name].arg_tables:
             return {}
         device_args = {}
@@ -80,17 +94,29 @@ class GPUDataPass(ModulePass):
         return device_args
 
     def _find_call_in_if(self, if_op):
-        """Return the func.CallOp inside an error-guarded scf.IfOp, or None.
+        """Return the scheme call inside an error-guarded scf.IfOp, or None.
 
         suite_cap.py wraps each scheme call in an scf.IfOp that checks errflg.
-        This method looks inside the true region of that guard to find the call.
+        This method looks inside the true region of that guard to find the
+        call -- either a plain func.CallOp, or a KeywordCallOp (emitted
+        instead whenever the scheme call has any keyword/literal-override
+        arguments, e.g. an optional arg -- see suite_cap.py's
+        generateSchemeSubroutineCallOps). Missing the KeywordCallOp case
+        would silently skip every scheme call involving an optional or
+        overridden argument.
         """
         if not if_op.true_region.blocks:
             return None
         for op in if_op.true_region.blocks[0].ops:
-            if isa(op, func.CallOp):
+            if isa(op, func.CallOp) or isa(op, KeywordCallOp):
                 return op
         return None
+
+    def _callee_name(self, call_op):
+        """Return the called subroutine name for either call op variety."""
+        if isa(call_op, KeywordCallOp):
+            return call_op.callee.data
+        return call_op.callee.root_reference.data
 
     def _process_physics_fn(self, fn_op, meta_data):
         """Insert acc.data markers around GPU scheme calls in one subroutine.
@@ -116,12 +142,11 @@ class GPUDataPass(ModulePass):
             call_op = self._find_call_in_if(op)
             if call_op is None:
                 continue
-            scheme_name = self._get_scheme_name(
-                call_op.callee.root_reference.data
-            )
+            callee_name = self._callee_name(call_op)
+            scheme_name = self._get_scheme_name(callee_name)
             if scheme_name is None:
                 continue
-            device_vars = self._get_device_args(scheme_name, meta_data)
+            device_vars = self._get_device_args(scheme_name, callee_name, meta_data)
             if device_vars:
                 gpu_calls.append((op, device_vars))
 
@@ -148,8 +173,12 @@ class GPUDataPass(ModulePass):
         # At the suite_cap level the variables are function block arguments —
         # assumed-shape arrays that already represent the active column slice.
         # No further subsectioning is needed; just pass the block arg SSA values.
+        # Optional/allocatable args carry a __opt/__alloc suffix on their
+        # block-arg name_hint (see suite_cap.py) that metadata names (and
+        # therefore all_local_vars) never have -- bare both sides so a
+        # hostless optional/allocatable device var isn't silently dropped.
         arg_by_name = {
-            arg.name_hint: arg
+            _bare(arg.name_hint): arg
             for arg in block.args
             if arg.name_hint is not None
         }
@@ -184,6 +213,20 @@ class GPUDataPass(ModulePass):
                 InsertPoint.after(last_if),
             )
 
+    # Suffixes of the suite-level lifecycle subroutines built by
+    # suite_cap.py (suite_name + "_suite" + generated_subroutine_posfix; see
+    # ccpp_cap.py's lifecycle_specs for the matching callee_suffix values).
+    # "_suite_physics" is handled separately below via substring match,
+    # since per-group run callees are suffixed with the group name (e.g.
+    # "_suite_physics1"), not an exact "_suite_physics" ending.
+    _LIFECYCLE_SUITE_FN_SUFFIXES = (
+        "_suite_register",
+        "_suite_initialize",
+        "_suite_finalize",
+        "_suite_timestep_initial",
+        "_suite_timestep_final",
+    )
+
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         if ccpp_mod is None:
@@ -194,7 +237,11 @@ class GPUDataPass(ModulePass):
         bmdd.traverse(ccpp_mod)
         meta_data = bmdd.meta_data
 
-        # Find all suite cap modules and process their _physics subroutines
+        # Find all suite cap modules and process their _physics subroutines,
+        # plus the register/initialize/finalize/timestep_initial/
+        # timestep_final lifecycle subroutines built alongside them —
+        # schemes with memory_space=device args on those entry points need
+        # the same data-region treatment _suite_physics already gets.
         for module_op in op.body.block.ops:
             if not (
                 isa(module_op, builtin.ModuleOp)
@@ -203,9 +250,10 @@ class GPUDataPass(ModulePass):
             ):
                 continue
             for child in module_op.body.block.ops:
-                if (
-                    isa(child, func.FuncOp)
-                    and not child.is_declaration
-                    and "_suite_physics" in child.sym_name.data
+                if not (isa(child, func.FuncOp) and not child.is_declaration):
+                    continue
+                fn_name = child.sym_name.data
+                if "_suite_physics" in fn_name or fn_name.endswith(
+                    self._LIFECYCLE_SUITE_FN_SUFFIXES
                 ):
                     self._process_physics_fn(child, meta_data)
