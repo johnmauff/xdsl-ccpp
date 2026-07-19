@@ -17,6 +17,8 @@ _run-entry argument list if one happened to exist).
 
 from io import StringIO
 
+import pytest
+
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
 from xdsl_ccpp.backend.print_ftn import print_to_ftn
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
@@ -246,3 +248,35 @@ class TestGPUDataSuiteCapLifecycleCoverage:
             body = fortran.split(f"subroutine {fn_name}")[1]
             body = body.split(f"end subroutine {fn_name}")[0]
             assert "!$acc" not in body, f"unexpected acc directive in {fn_name}"
+
+
+class TestGetSchemeName:
+    """GPUDataPass._get_scheme_name must recognize both spellings of the
+    per-timestep entry-point suffix. ccpp_cap.py's lifecycle_specs uses
+    '_timestep_initialize'/'_timestep_finalize' as the canonical scheme-level
+    postfix (e.g. examples/capgen/scheme/temp_set.meta's
+    temp_set_timestep_initialize) with '_timestep_init'/'_timestep_final'
+    accepted as an alias (lifecycle_cap.py's _lc_postfix_aliases, matching
+    examples/kessler's kessler_update_timestep_init/_final). Missing either
+    spelling here means calls using it are silently skipped -- no data
+    region inserted, no error raised. Also covers the ordering hazard: a
+    shorter suffix ('_init'/'_finalize'/'_timestep_init'/'_timestep_final')
+    that happens to be a trailing substring of a longer one must not be
+    checked first, or it strips the wrong length."""
+
+    @pytest.mark.parametrize(
+        "callee_name,expected",
+        [
+            ("temp_set_timestep_initialize", "temp_set"),
+            ("temp_set_timestep_finalize", "temp_set"),
+            ("kessler_update_timestep_init", "kessler_update"),
+            ("kessler_update_timestep_final", "kessler_update"),
+            ("hello_scheme_run", "hello_scheme"),
+            ("hello_scheme_init", "hello_scheme"),
+            ("hello_scheme_finalize", "hello_scheme"),
+            ("hello_scheme_register", "hello_scheme"),
+            ("unrelated_name", None),
+        ],
+    )
+    def test_recognizes_both_timestep_spellings(self, callee_name, expected):
+        assert GPUDataPass()._get_scheme_name(callee_name) == expected

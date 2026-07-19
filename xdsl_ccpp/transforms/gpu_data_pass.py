@@ -48,13 +48,30 @@ class GPUDataPass(ModulePass):
         e.g. 'hello_scheme_run' → 'hello_scheme'
         Returns None if the name doesn't match a known suffix.
 
-        Longer/more-specific suffixes ('_timestep_init', '_timestep_final')
-        must be checked before their shorter substrings ('_init',
-        '_finalize') — 'foo_timestep_init' ends with both '_timestep_init'
-        and '_init', and checking '_init' first would strip the wrong
-        length, leaving 'foo_timestep' instead of 'foo'.
+        Two spellings are in use for the per-timestep entry points:
+        '_timestep_initialize'/'_timestep_finalize' is what ccpp_cap.py's
+        lifecycle_specs actually uses as the canonical scheme-level postfix
+        (see e.g. examples/capgen/scheme/temp_set.meta's
+        temp_set_timestep_initialize); '_timestep_init'/'_timestep_final' is
+        an accepted alias (lifecycle_cap.py's _lc_postfix_aliases) for
+        schemes following the atmospheric_physics/kessler_update convention.
+        Both must be recognized here or calls using whichever spelling isn't
+        listed are silently skipped -- no data region, no error.
+
+        Longer/more-specific suffixes must be checked before shorter ones
+        they contain as a trailing substring, or the shorter one matches
+        first and strips the wrong length:
+        - '_timestep_finalize' before '_finalize' ('foo_timestep_finalize'
+          ends with both).
+        - '_timestep_init'/'_timestep_final' before '_init'/'_finalize'
+          ('foo_timestep_init' ends with both '_timestep_init' and '_init').
+        '_timestep_initialize' doesn't collide with anything shorter in this
+        list (it ends in '...ialize', not '...init'), so its relative
+        position doesn't matter, but it's kept alongside its sibling suffixes
+        for readability.
         """
-        for suffix in ("_timestep_init", "_timestep_final", "_run",
+        for suffix in ("_timestep_initialize", "_timestep_finalize",
+                       "_timestep_init", "_timestep_final", "_run",
                        "_init", "_finalize", "_register"):
             if callee_name.endswith(suffix):
                 return callee_name[: -len(suffix)]
