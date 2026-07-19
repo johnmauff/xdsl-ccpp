@@ -307,9 +307,10 @@ class TestCcppTWithConstituents:
     never declare a constituent-typed arg, and examples/advection's
     constituent-bearing schemes/hosts never declare a ccpp_t variable)."""
 
-    def _module_with_constituents(self, run_host_match, ccpp_context):
-        return _run_full_pipeline(
-            run_host_match, ccpp_context,
+    def _constituent_fixture_kwargs(self):
+        """Shared scheme/host/suite fixture args, so both the raw-IR tests
+        and the printed-Fortran test build the exact same module."""
+        return dict(
             scheme_metas=[
                 _scheme_meta(
                     "test_scheme", _SCHEME_REAL_VAR + _SCHEME_CONSTITUENT_VARS
@@ -317,6 +318,12 @@ class TestCcppTWithConstituents:
             ],
             host_metas=[_host_meta("test_mod", _HOST_REAL_VAR + _HOST_CCPP_T_VAR)],
             suite_xml=minimal_suite_xml("test_scheme"),
+        )
+
+    def _module_with_constituents(self, run_host_match, ccpp_context):
+        return _run_full_pipeline(
+            run_host_match, ccpp_context,
+            **self._constituent_fixture_kwargs(),
         )
 
     def test_ccpp_t_still_threaded_with_constituents_present(
@@ -361,12 +368,9 @@ class TestCcppTWithConstituents:
         the module-level constituent scratch arrays (lc_constituent_array /
         lc_const_tend), confirming both features generated correctly
         together, not just that neither one crashed."""
-        module = self._module_with_constituents(run_host_match, ccpp_context)
-        for pass_cls in [MetaKind, GenerateKinds, StripCCPP]:
-            pass_cls().apply(ccpp_context, module)
-        out = StringIO()
-        print_to_ftn(module, out)
-        fortran = out.getvalue()
+        fortran = _fortran_output(
+            run_host_match, ccpp_context, **self._constituent_fixture_kwargs()
+        )
 
         assert f"dimension({CCPP_NUM_INSTANCES})" in fortran
         assert "ccpp_suite_state(ccpp_data%ccpp_instance)" in fortran
