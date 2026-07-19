@@ -1,7 +1,3 @@
-!#define DEVICEPTR(...) deviceptr(__VA_ARGS__)
-#ifdef _OPENACC
-#define DEVICEPTR(...) deviceptr(__VA_ARGS__)
-#endif
 module kessler_update
 
    use ccpp_kinds, only: kind_phys
@@ -50,7 +46,7 @@ CONTAINS
       errflg = 0
 
       !   Initialize the previous temperature and its tendency to zero
-      !!$acc parallel loop collapse(2) DEVICEPTR(temp, temp_prev, ttend_t)
+      !!$acc parallel loop collapse(2) present(temp, temp_prev, ttend_t)
       !$acc parallel loop collapse(2)
       do k=1,nz
         do i=1,ncol
@@ -88,7 +84,7 @@ CONTAINS
       errflg = 0
 
       ! Back out tendencies from updated fields
-      !$acc parallel loop collapse(2) DEVICEPTR(theta, exner, temp_prev, ttend_t)
+      !$acc parallel loop collapse(2) present(theta, exner, temp_prev, ttend_t)
       do klev = 1, nz
          do i=1,ncol
            ttend_t(i,klev) = ttend_t(i,klev) &
@@ -121,7 +117,7 @@ CONTAINS
       errmsg = ''
       errflg = 0
 
-      !$acc parallel loop collapse(2) DEVICEPTR(cpair, temp, zm, phis, st_energy)
+      !$acc parallel loop collapse(2) present(cpair, temp, zm, phis, st_energy)
       do klev = 1, nz
          do i=1,ncol
             st_energy(i,klev) = (temp(i,klev) * cpair(i,klev)) + (gravit * zm(i,klev)) + &

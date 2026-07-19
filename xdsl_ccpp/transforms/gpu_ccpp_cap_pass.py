@@ -30,9 +30,15 @@ class GPUCcppCapPass(ModulePass):
     """Insert OpenACC data directives at the ccpp_cap level.
 
     Runs after generate-ccpp-cap, generate-cpp-cap, and generate-host-match
-    (see ccpp_dsl.py's _build_pipeline for the exact ordering).  For each
-    *_ccpp_physics_run subroutine, wraps the suite-part dispatch (inner
-    scf.IfOp) with an !$acc data region using host model variable names.
+    (see ccpp_dsl.py's _build_pipeline for the exact ordering).  For
+    *_ccpp_physics_run, wraps the suite-part dispatch (inner scf.IfOp) with
+    an !$acc data region using host model variable names.  For each of the
+    lifecycle dispatchers (*_ccpp_physics_register/_initialize/_finalize/
+    _timestep_initial/_timestep_final), wraps the suite callee call inside
+    each suite-name scf.IfOp the same way -- schemes that declare
+    memory_space=device args on their register/init/finalize/timestep_*
+    entry points need the same data-region treatment as their _run entry
+    point, and previously only _run got it.
 
     The OpenACC clause is chosen by comparing the scheme's declared memory
     space against the host model variable's declared memory space
@@ -223,97 +229,155 @@ class GPUCcppCapPass(ModulePass):
             if inner_if is None:
                 continue
 
-            # Classify HostVarRefOps in this block by OpenACC clause type
-            present_vars  = []
-            copyin_vars   = []
-            copy_vars     = []
-            copyout_vars  = []
-            update_vars   = []
+            self._wrap_scheme_call(true_block, suite_call, clause_map)
 
-            for ref_op in true_block.ops:
-                if not isa(ref_op, HostVarRefOp):
-                    continue
-                var_name = ref_op.var_name.data
-                if var_name not in clause_map:
-                    continue
-                clause = clause_map[var_name]
-                if clause == "present":
-                    present_vars.append(var_name)
-                elif clause == "copyin":
-                    copyin_vars.append(var_name)
-                elif clause == "copy":
-                    copy_vars.append(var_name)
-                elif clause == "copyout":
-                    copyout_vars.append(var_name)
-                elif clause == "update":
-                    update_vars.append(var_name)
+    def _process_lifecycle_fn(self, fn_op, clause_map):
+        """Insert acc directives around the suite callee call in a lifecycle
+        dispatcher (initialize/finalize/timestep_initial/timestep_final/
+        register), built by lifecycle_cap.py's _generate_lifecycle_fn.
 
-            # Data region directives go inside the inner scf.IfOp's true
-            # region, immediately around the suite physics call.  This way the
-            # acc/omp data region only opens once the suite-part comparison is
-            # already known to be true — no wasted data movement on the wrong
-            # suite part.
-            # copy/copyin/copyout/tofrom: use array sections for efficiency.
-            # present / alloc: use base variable names — the host put the
-            #   whole array on device, not just the active columns.
-            if present_vars or copyin_vars or copy_vars or copyout_vars:
-                copy_refs    = self._resolve_array_refs(true_block, set(copy_vars),    use_sections=True)
-                copyin_refs  = self._resolve_array_refs(true_block, set(copyin_vars),  use_sections=True)
-                copyout_refs = self._resolve_array_refs(true_block, set(copyout_vars), use_sections=True)
-                base_refs    = self._resolve_array_refs(true_block, set(present_vars), use_sections=False)
-                if self.directive == "omp":
-                    # OMP uses map(tofrom:) for copy and map(to:) for copyin,
-                    # map(from:) for copyout; map(alloc:) for present.
-                    Rewriter.insert_op(
-                        OmpTargetDataBeginOp(
-                            tofrom=copy_refs + copyin_refs + copyout_refs,
-                            alloc=base_refs,
-                        ),
-                        InsertPoint.before(suite_call),
-                    )
-                    Rewriter.insert_op(
-                        OmpTargetDataEndOp(),
-                        InsertPoint.after(suite_call),
-                    )
-                else:  # acc (default)
-                    Rewriter.insert_op(
-                        AccDataBeginOp(
-                            copy=copy_refs,
-                            copyin=copyin_refs,
-                            copyout=copyout_refs,
-                            present=base_refs,
-                        ),
-                        InsertPoint.before(suite_call),
-                    )
-                    Rewriter.insert_op(
-                        AccDataEndOp(),
-                        InsertPoint.after(suite_call),
-                    )
+        Unlike *_ccpp_physics_run (one scf.IfOp per suite name, wrapping a
+        second, nested scf.IfOp per suite part with the suite_physics call
+        inside), a lifecycle dispatcher has just one level of scf.IfOp per
+        suite name, with the suite lifecycle callee (e.g.
+        kessler_suite_timestep_final) called directly in its true region.
+        Once (true_block, suite_call) are found, the clause classification
+        and directive insertion are identical to the run-dispatch case, so
+        both funnel into _wrap_scheme_call.
+        """
+        if not fn_op.body.blocks:
+            return
 
-            # Update directives go inside the inner scf.IfOp's true region,
-            # bracketing the actual suite physics call.
-            if update_vars and suite_call is not None:
-                update_refs = self._resolve_array_refs(
-                    true_block, update_vars
+        for op in fn_op.body.blocks[0].ops:
+            if not isa(op, scf.IfOp):
+                continue
+            if not op.true_region.blocks:
+                continue
+
+            true_block = op.true_region.blocks[0]
+
+            suite_call = None
+            for inner_op in true_block.ops:
+                if isa(inner_op, func.CallOp):
+                    suite_call = inner_op
+                    break
+            if suite_call is None:
+                continue
+
+            self._wrap_scheme_call(true_block, suite_call, clause_map)
+
+    def _wrap_scheme_call(self, true_block, suite_call, clause_map):
+        """Classify HostVarRefOps in true_block by OpenACC clause type and
+        wrap suite_call with the resulting data/update directives.
+
+        Shared by _process_run_fn and _process_lifecycle_fn: once each has
+        located (true_block, suite_call) for its own dispatch shape, the
+        classification and directive insertion logic is identical.
+        """
+        # Classify HostVarRefOps in this block by OpenACC clause type
+        present_vars  = []
+        copyin_vars   = []
+        copy_vars     = []
+        copyout_vars  = []
+        update_vars   = []
+
+        for ref_op in true_block.ops:
+            if not isa(ref_op, HostVarRefOp):
+                continue
+            var_name = ref_op.var_name.data
+            if var_name not in clause_map:
+                continue
+            clause = clause_map[var_name]
+            if clause == "present":
+                present_vars.append(var_name)
+            elif clause == "copyin":
+                copyin_vars.append(var_name)
+            elif clause == "copy":
+                copy_vars.append(var_name)
+            elif clause == "copyout":
+                copyout_vars.append(var_name)
+            elif clause == "update":
+                update_vars.append(var_name)
+
+        # Data region directives go inside the inner scf.IfOp's true
+        # region, immediately around the suite physics call.  This way the
+        # acc/omp data region only opens once the suite-part comparison is
+        # already known to be true — no wasted data movement on the wrong
+        # suite part.
+        # copy/copyin/copyout/tofrom: use array sections for efficiency.
+        # present / alloc: use base variable names — the host put the
+        #   whole array on device, not just the active columns.
+        if present_vars or copyin_vars or copy_vars or copyout_vars:
+            copy_refs    = self._resolve_array_refs(true_block, set(copy_vars),    use_sections=True)
+            copyin_refs  = self._resolve_array_refs(true_block, set(copyin_vars),  use_sections=True)
+            copyout_refs = self._resolve_array_refs(true_block, set(copyout_vars), use_sections=True)
+            base_refs    = self._resolve_array_refs(true_block, set(present_vars), use_sections=False)
+            if self.directive == "omp":
+                # OMP uses map(tofrom:) for copy and map(to:) for copyin,
+                # map(from:) for copyout; map(alloc:) for present.
+                Rewriter.insert_op(
+                    OmpTargetDataBeginOp(
+                        tofrom=copy_refs + copyin_refs + copyout_refs,
+                        alloc=base_refs,
+                    ),
+                    InsertPoint.before(suite_call),
                 )
-                if self.directive == "omp":
-                    Rewriter.insert_op(
-                        OmpTargetUpdateFromOp(array_refs=update_refs),
-                        InsertPoint.before(suite_call),
-                    )
-                    Rewriter.insert_op(
-                        OmpTargetUpdateToOp(array_refs=update_refs),
-                        InsertPoint.after(suite_call),
-                    )
-                else:  # acc (default)
-                    Rewriter.insert_op(
-                        AccUpdateSelfOp(array_refs=update_refs),
-                        InsertPoint.before(suite_call),
-                    )
-                    Rewriter.insert_op(
-                        AccUpdateDeviceOp(array_refs=update_refs),
-                        InsertPoint.after(suite_call),
-                    )
+                Rewriter.insert_op(
+                    OmpTargetDataEndOp(),
+                    InsertPoint.after(suite_call),
+                )
+            else:  # acc (default)
+                Rewriter.insert_op(
+                    AccDataBeginOp(
+                        copy=copy_refs,
+                        copyin=copyin_refs,
+                        copyout=copyout_refs,
+                        present=base_refs,
+                    ),
+                    InsertPoint.before(suite_call),
+                )
+                Rewriter.insert_op(
+                    AccDataEndOp(),
+                    InsertPoint.after(suite_call),
+                )
+
+        # Update directives go inside the inner scf.IfOp's true region,
+        # bracketing the actual suite physics call.
+        if update_vars and suite_call is not None:
+            update_refs = self._resolve_array_refs(
+                true_block, update_vars
+            )
+            if self.directive == "omp":
+                Rewriter.insert_op(
+                    OmpTargetUpdateFromOp(array_refs=update_refs),
+                    InsertPoint.before(suite_call),
+                )
+                Rewriter.insert_op(
+                    OmpTargetUpdateToOp(array_refs=update_refs),
+                    InsertPoint.after(suite_call),
+                )
+            else:  # acc (default)
+                Rewriter.insert_op(
+                    AccUpdateSelfOp(array_refs=update_refs),
+                    InsertPoint.before(suite_call),
+                )
+                Rewriter.insert_op(
+                    AccUpdateDeviceOp(array_refs=update_refs),
+                    InsertPoint.after(suite_call),
+                )
+
+    # Suffixes of the lifecycle dispatcher functions built by
+    # lifecycle_cap.py's _generate_lifecycle_fn (see ccpp_cap.py's
+    # lifecycle_specs). *_ccpp_physics_run is handled separately by
+    # _process_run_fn, since its dispatch shape (nested suite-part IfOp)
+    # differs from these single-level-IfOp dispatchers.
+    _LIFECYCLE_FN_SUFFIXES = (
+        "_ccpp_physics_register",
+        "_ccpp_physics_initialize",
+        "_ccpp_physics_finalize",
+        "_ccpp_physics_timestep_initial",
+        "_ccpp_physics_timestep_final",
+    )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
@@ -332,9 +396,10 @@ class GPUCcppCapPass(ModulePass):
             ):
                 continue
             for child in module_op.body.block.ops:
-                if (
-                    isa(child, func.FuncOp)
-                    and not child.is_declaration
-                    and "_ccpp_physics_run" in child.sym_name.data
-                ):
+                if not (isa(child, func.FuncOp) and not child.is_declaration):
+                    continue
+                fn_name = child.sym_name.data
+                if "_ccpp_physics_run" in fn_name:
                     self._process_run_fn(child, clause_map)
+                elif fn_name.endswith(self._LIFECYCLE_FN_SUFFIXES):
+                    self._process_lifecycle_fn(child, clause_map)
