@@ -81,7 +81,7 @@ inserted by the `generate-meta-kinds` pass, so any `--kind-map` override (e.g.
 
 ---
 
-## 4. Partial DDT Support — Remaining Gaps
+## 4. ~~Partial DDT Support~~ *(Resolved)*
 
 Basic DDT flattening is implemented and tested: scheme arguments whose type is a
 DDT with scalar-integer and real-array members (e.g. `vmr_type` in the ddthost
@@ -95,7 +95,9 @@ and capgen examples) are automatically expanded into flat C-compatible arguments
   lifecycle)
 - `intent=inout` DDTs where the C++ caller owns the flat buffers (run lifecycle)
 
-**Remaining gaps:**
+**All three gaps originally tracked here are now resolved** (the heading above
+used to read "Remaining Gaps" — stale, since every sub-item below was already
+marked Resolved):
 
 ### ~~4a. `logical` DDT members silently dropped~~ *(Resolved)*
 
@@ -137,21 +139,64 @@ constituent property; the C++ driver queries it back and verifies all 12 fields.
 
 ---
 
-## 5. ~~Rank > 2 Arrays~~ *(Resolved)*
+## 5. Rank > 2 Arrays — Partially Resolved
 
-The chost cap now handles rank 3 and higher arrays.  The Fortran wrapper declares
-them with the first two dimensions named (`ncol`, `nz`) and an assumed-size last
-dimension (`*`), e.g.:
+**chost path (`language = c++` host, no Fortran host module): Resolved,
+but the declaration style below was stale — corrected 2026-07-19.**
+The chost cap handles rank 3 and higher arrays with an **explicit-shape**
+Fortran wrapper declaration (all dimensions named), not the assumed-size form
+this section used to describe:
 
 ```fortran
-real(c_double), target, intent(inout) :: flux(ncol, nz, *)
+real(c_double), target, intent(inout) :: flux(ncol, nz, nbands)
 ```
 
-The C++ header always emits a flat pointer (`double*`) regardless of rank, which
-is correct — C has no multi-dimensional pointer type for BIND(C) calls.  The
-third-dimension size integer (e.g. `nbands`) is automatically included in the
-chost signature as a `integer(c_int), value, intent(in)` argument so the caller
-can communicate the size.
+(Regenerated the `tiny_r3` fixture under `tests/filecheck/examples/chost_r3/`
+directly to confirm — this is the actual current output, not the old
+`flux(ncol, nz, *)` form.) The
+explicit-shape style was introduced in commit `2fe5473` specifically so the
+wrapper's actual argument matches the rank/shape the suite cap's own
+assumed-shape `(:,:,:)` dummy expects. The C++ header still emits a flat
+pointer (`double*`) regardless of rank, which is correct — C has no
+multi-dimensional pointer type for BIND(C) calls — with each higher
+dimension's size (e.g. `nbands`) passed by value as
+`integer(c_int), value, intent(in)`.
+
+**Plain `--bind-c` path (no `language = c++`, i.e. `generate-ccpp-cap{bind_c=true}`
+without the chost layer on top): likely still broken — do not mark Resolved.**
+`TinyR3_ccpp_cap.F90`'s `TinyR3_ccpp_physics_run` declares `flux` as flat
+assumed-size —
+
+```fortran
+real(c_double), intent(inout) :: flux(*)
+```
+
+— and forwards it directly as the actual argument to
+`tiny_r3_suite_suite_physics`'s dummy, which is assumed-shape rank 3:
+
+```fortran
+real(kind=kind_phys), target, intent(inout) :: flux(:, :, :)
+```
+
+Under standard Fortran rules, an assumed-shape dummy requires the actual
+argument to genuinely be an array of matching rank carrying a descriptor —
+an assumed-size actual only participates in sequence association when the
+callee's own dummy is itself explicit-shape or assumed-size, never
+assumed-shape. Passing a rank-1 assumed-size actual to a rank-3 assumed-shape
+dummy, under the explicit interface this generator always produces (via
+`use <module>, only: <name>`), should be a compile-time rank-mismatch error in
+any standards-conforming compiler. **Not verified against an actual compiler**
+(none available in the environment this was investigated in, 2026-07-19) —
+this is a probable bug based on the language rules, not a confirmed one; flag
+for someone with a Fortran compiler to check before either fixing or
+re-closing this.
+
+The golden FileCheck test for this case
+(`tests/filecheck/examples/end_to_end/chost-r3-ftn.mlir`) is currently
+`XFAIL`ed for exactly this reason — see that file's own header comment for the
+fuller history (the assumed-size→explicit-shape change in `2fe5473` landed
+without updating either this test or this doc section, which is what left
+both of the above out of sync until now).
 
 ---
 
@@ -304,7 +349,7 @@ all 24 elements equal 2.0 after the run.
 | ~~10~~ | ~~Runtime-determined dimensions (`ncnst`)~~ | *(Resolved)* | *(Done)* |
 | 2 | GPU memory management | Yes, for GPU builds | Medium–High |
 | 1 | Column-major layout | Subtle bugs if overlooked | Medium |
-| ~~5~~ | ~~Rank > 2 arrays~~ | *(Resolved)* | *(Done)* |
+| 5 | Rank > 2 arrays — plain `--bind-c` path only (chost path *is* resolved) | Likely, if the rank mismatch is real — unverified, no compiler available | Low (probably a declaration-style fix, once confirmed) |
 | 6 | Thread safety | Only for concurrent callers | Low–Medium |
 | ~~7~~ | ~~No C++ ergonomics~~ | *(Resolved)* | *(Done)* |
 | ~~8~~ | ~~Column chunking~~ | *(Resolved)* | *(Done)* |

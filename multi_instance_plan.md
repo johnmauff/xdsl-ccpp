@@ -24,10 +24,19 @@ source, instance cap) are otherwise not written down anywhere else.
   array indexed by `ccpp_data%ccpp_instance`, tracking a state string
   (`'uninitialized'` / `'initialized'` / `'in_time_step'`) rather than a
   plain boolean.
-- **Instance cap**: configurable via `--num-instances` on `ccpp_xdsl`
-  (`xdsl_ccpp/frontend/ccpp_xml.py`), embedded as the `ccpp.num_instances`
-  IR attribute; defaults to `CCPP_NUM_INSTANCES = 200`
-  (`xdsl_ccpp/util/ccpp_conventions.py`) when not passed.
+- **Instance cap**: configurable via `--num-instances`, but only on the
+  low-level `xdsl_ccpp.frontend.ccpp_xml` frontend module (see
+  DEVELOPERS.md's "Running the Pipeline Manually" for how to compose it with
+  `ccpp_opt` by hand) — **not** on the main `ccpp_xdsl` driver
+  (`xdsl_ccpp/tools/ccpp_dsl.py`), which doesn't expose this flag at all
+  (confirmed 2026-07-19: `ccpp_xdsl --help` has no `--num-instances`/instance
+  option, and passing it to `ccpp_xdsl` fails with "unrecognized arguments").
+  The value is embedded as the `ccpp.num_instances` IR attribute either way;
+  defaults to `CCPP_NUM_INSTANCES = 200` (`xdsl_ccpp/util/ccpp_conventions.py`)
+  when not passed. That file's own `# TODO: expose via --num-instances CLI
+  argument` comment (directly above the constant) is accurate, not stale —
+  it's specifically about wiring this into the `ccpp_xdsl` driver, which
+  hasn't happened yet.
 
 ## Where to look
 

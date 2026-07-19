@@ -206,13 +206,24 @@ starting 3b):
   pass-status decision for `run_dispatch.py`/`lifecycle_cap.py`/`constituent_cap.py`. Motivating
   investigation is under Phase 4; the actual 4-stage execution plan is under Phase 7 — earlier
   assumed not decomposable into Phase-3b-style stages, revised on reconsideration.
-- **Still-open correctness question, unrelated to this refactor's own scope (Phase 0, not
-  re-investigated since):** the rank-3 array chost declaration mismatch between the chost
-  layer (explicit-shape, per commit `2fe5473`) and `TinyR3_ccpp_cap.F90` (still assumed-size) —
-  flagged in Phase 0 as a possible Fortran interop bug, deliberately left alone per project
-  owner decision at the time ("ongoing work... don't guess-fix a Fortran interop correctness
-  question," no Fortran compiler available in this environment to verify either way). See
-  Phase 0 above for full detail.
+- **Still-open correctness question, unrelated to this refactor's own scope (Phase 0,
+  re-investigated 2026-07-19 during a documentation-limitations sweep — more precisely
+  characterized, still unresolved).** The original framing here was imprecise: regenerating
+  the `tiny_r3` fixture confirmed the **chost** layer is actually fine — it emits
+  explicit-shape `flux(ncol, nz, nbands)` (per commit `2fe5473`), correctly matching the
+  suite cap's assumed-shape `(:, :, :)` dummy. The real open question is the **plain
+  `--bind-c` path** (no `language = c++`): `TinyR3_ccpp_cap.F90` declares `flux` as flat
+  assumed-size (`real(c_double), intent(inout) :: flux(*)`) and forwards it directly as the
+  actual argument into the suite cap's assumed-shape `flux(:, :, :)` dummy — a rank mismatch
+  (1 vs 3) that should be a compile-time error under standard Fortran rules for assumed-shape
+  dummies (they require a genuine matching-rank array with a descriptor; assumed-size actuals
+  only participate in sequence association when the callee's own dummy is itself explicit-shape
+  or assumed-size, never assumed-shape). **Still not verified against an actual compiler** —
+  none available in this environment either time this has been investigated. Documented
+  precisely in `multilanguage_limitations.md` §5 (split into "chost path: resolved" / "plain
+  `--bind-c` path: likely broken, unverified") and flagged in `README.md`'s `--bind-c` section
+  — see those two for the exact declarations and full writeup. See Phase 0 above for the
+  original flag.
 - **Full duplication sweep, 2026-07-19 (after the subcycle-flattening fix above):** asked
   directly whether more of this failure shape exists in the cap-generation cluster. Found and
   ranked three candidates, plus several investigated-and-ruled-out false positives (worth
@@ -332,10 +343,131 @@ starting 3b):
     explicit `-gpu=ccXY` target since no device is present to auto-detect) — would have caught the
     `-noacc`/`ACC_OFF_C` Makefile regression above, but can't execute the binary or verify
     bit-for-bit correctness.
-  - **`kessler-gpu-acc-fixes` branch: not fully closed out yet (flagged 2026-07-19).** Copilot's
-    automated PR review found issues after the branch was pushed; not yet triaged in this log —
-    revisit once the specific findings are available (this sandbox has no `gh` CLI access to pull
-    them directly).
+  - **`kessler-gpu-acc-fixes` branch: closed out (2026-07-19).** Copilot's automated PR review
+    found 2 issues, both real, both fixed same day: (1) `GPUDataPass._get_scheme_name` didn't
+    recognize the `_timestep_initialize`/`_timestep_finalize` naming convention (the canonical
+    scheme-level postfix per `ccpp_cap.py`'s `lifecycle_specs` — see e.g.
+    `examples/capgen/scheme/temp_set.meta`'s `temp_set_timestep_initialize`); only the
+    `_timestep_init`/`_timestep_final` alias (kessler_update's convention) was recognized, so
+    calls using the canonical spelling were silently skipped — no data region, no error. Fixed by
+    adding both suffixes with correct precedence ordering (`_timestep_finalize` must be checked
+    before `_finalize`, same shadowing hazard as the earlier `_timestep_init`/`_init` fix).
+    (2) The blanket `DEVICEPTR→present` sed replacement in `kessler.F90` had left **9** directives
+    (not just the 1 Copilot flagged) with two separate `present(...)` clauses on the same
+    directive — invalid per OpenACC, since the original code paired `DEVICEPTR(...)` for caller
+    args with an already-separate `present(...)` for locally `enter data`-managed scratch arrays;
+    replacing the macro made both clauses the same type. Found the rest with a script that
+    reassembles logical (continuation-joined) `!$acc` directives and checks for more than one
+    `present(` per directive; merged each pair into one combined clause. Added a 9-case
+    parametrized regression test for (1) and a programmatic duplicate-clause check for (2). Full
+    suite green throughout (305 unit + 44 FileCheck, 1 xfailed unchanged), `ruff check` clean,
+    regenerated kessler end-to-end to confirm.
+- **Documentation-limitations audit and cleanup, 2026-07-19 (unrelated to this refactor's own
+  scope, but logged here since it's the same running session).** Project owner asked for a
+  full sweep of every doc (`README.md`, `DEVELOPERS.md`, `multilanguage_limitations.md`,
+  `multilanguage_plan.md`, `multi_instance_plan.md`, this file, every `examples/*/README.md`)
+  plus code docstrings/comments across `xdsl_ccpp/` for documented limitations, to sort real
+  from stale together. Full findings list delivered directly to the project owner (not
+  duplicated here); items acted on so far:
+  - **`README.md`:** the "Known limitations" chost summary (fixed double precision/no DDT
+    support/rank > 2 arrays) was stale — all three are marked Resolved in
+    `multilanguage_limitations.md` itself; replaced with the three items that doc's own
+    priority table still lists live (column-major layout, chost GPU memory management, thread
+    safety). The "GPU execution not yet tested" footnote was stale given the GPU milestone
+    above; updated to record the confirmed CPU/GPU bit-for-bit match. Added a callout in the
+    plain `--bind-c` section flagging the rank ≥ 3 array issue below. Removed `--num-instances
+    N` from the `ccpp_xdsl` options table — confirmed via `ccpp_xdsl --help` and reading
+    `ccpp_dsl.py`'s own arg parser that this flag does not exist on that driver at all; added a
+    short note pointing to `multi_instance_plan.md` instead.
+  - **`multilanguage_limitations.md`:** §4's heading still said "Remaining Gaps" though all
+    three sub-items were already marked Resolved — fixed. §5 ("Rank > 2 Arrays — Resolved") was
+    the substantial fix — see the rank-3 entry above for the full technical detail; changed to
+    "Partially Resolved" (chost path confirmed fine with a corrected code example; plain
+    `--bind-c` path flagged as likely broken, unverified) and the Priority Summary table's row 5
+    updated to match.
+  - **`multi_instance_plan.md`:** the original audit pass flagged a "contradiction" between this
+    doc (claims `--num-instances` works "on `ccpp_xdsl`") and a `# TODO: expose via
+    --num-instances CLI argument` comment in `ccpp_conventions.py`, guessing the TODO was stale.
+    Verifying directly showed the opposite: `--num-instances` is real, but only on the
+    low-level `xdsl_ccpp.frontend.ccpp_xml` frontend module (confirmed via `ccpp_xdsl --help`
+    and `ccpp_dsl.py`'s arg parser having no such flag) — the plan doc's wording was the
+    inaccurate one, and the TODO comment is correct as written. Rewrote the doc's "Instance cap"
+    bullet to state precisely which tool the flag lives on. **Worth remembering: don't trust an
+    audit's first-pass guess about which of two contradicting docs is stale without checking the
+    actual code directly** — the fork that did the original sweep guessed correctly about the
+    existence of a contradiction but reasoned backwards about which side of it was true.
+  - Not yet revisited: `multilanguage_plan.md`, `DEVELOPERS.md`, the example READMEs (audit found
+    nothing stale in the latter two), and two of the three smaller code-level TODOs the audit
+    surfaced (`suite_cap.py:381`'s single-optional-arg-name-per-group limitation,
+    `ccpp_dsl.py`'s `--kind-map` first-entry-only limitation — both confirmed genuinely live, not
+    stale, so no action needed there).
+  - **Correction on the third: the `cpp_interop.py` DDT `ValueError` was not actually dead code.**
+    The original audit guessed it was stale leftover from before DDT flattening shipped;
+    investigating directly (before touching it) found a dedicated test file
+    (`tests/unit/test_chost_ddt_error.py`, 8 tests) that exercises it in isolation, and
+    `_chost_arg_info` is deliberately `meta_data`-agnostic by design — it's a low-level guard
+    against a DDT ever reaching it directly, not the flattening path itself (that's one layer up,
+    in `_chost_fn_contexts`, gated on whether `meta_data` was provided). What was actually stale
+    was narrower: the error message's closing pointer to `multilanguage_limitations.md` "for
+    options," which no longer matches that doc's §4 (now fully Resolved). Fixed just that
+    sentence; left the raise, its "not supported" framing, and the test file untouched. **Second
+    reminder in the same session not to trust an audit's dead-code/staleness guess without
+    verifying against the actual call graph and test suite first** — see the `multi_instance_plan.md`
+    reminder above for the first.
+- **Ideas from `duplication_analysis_summary.md` added to the backlog (2026-07-19).** Project
+  owner ran a code-duplication analysis of the companion `NCAR/atmospheric_physics` repo (Fortran
+  source, `.meta`, and suite-XML layers) and asked for a link from existing docs — done (a
+  pointer from `README.md`'s "Metadata Skeleton Generation" section, see that file). Logging the
+  substance here too, since two of the three proposed interventions are `xdsl_ccpp` tooling work,
+  not `atmospheric_physics`-side changes, and belong in this project's own backlog:
+  - **By far the largest finding, not yet started:** eliminate `.meta` as a hand-maintained shadow
+    file. ~45% of every `.meta` block (type/intent/argument name) is mechanically derivable from
+    the Fortran signature already; `standard_name`/`units` (~30%) is the only genuinely
+    irreducible content. Proposed fix: tag `standard_name`/`units` directly in Fortran via a
+    name-keyed comment block (`!ccpp [qv] standard_name=... units=...`, immune to declaration
+    reordering unlike a trailing-per-line comment), and extend `fparser2_to_meta.py` /
+    `ccpp_generate_meta.py` to consume it — generating `.meta` mechanically instead of leaving
+    `standard_name`/`units` as hand-filled stubs. Confirmed practical against this repo
+    specifically, not just in the abstract: `ArgumentOp` (`xdsl_ccpp/dialects/ccpp.py`) already
+    carries `standard_name`/`units`/`long_name`/`dim_names` as optional properties with a working
+    generic `.meta` writer (`meta_from_module`), so this only needs a third way to populate
+    already-existing IR fields — no dialect or writer change. Two open risks the analysis
+    resolved with working code rather than leaving as open questions: (1) `fparser2` strips
+    comments from the parse tree, but `Type_Declaration_Stmt.item.span` gives the exact source
+    line range, letting the raw comment be recovered by cross-referencing back into the original
+    source text — demonstrated end-to-end on a real 149-character standard name; (2) checked the
+    real `standard_name` length distribution across `atmospheric_physics`'s 3,596 variable
+    blocks — under 1% would push a line past the traditional 132-column Fortran limit, and the
+    current `.meta` already has an unwrapped ~186-character line for that same worst case, so
+    this isn't a new problem, just a relocated one. **Only ever extends `fparser2_to_meta.py`,
+    never `fir_to_meta.py`** — once Flang compiles to FIR/HLFIR the comments are already gone, so
+    the compiler-validated route stays `.meta`-consuming, not `.meta`-producing, for this purpose.
+    Staged effort plan (design → extend `fparser2_to_meta.py` → migrate `atmospheric_physics` →
+    CI wiring) already sketched in the source document, sized as "a couple of focused weeks," not
+    a major rearchitecture.
+  - **Bonus finding, smaller and independent of the above:** `ArgumentOp.memory_space` (the
+    property `generate-gpu-ccpp-cap`/`generate-gpu-data` read to decide `present`/`copyin`/etc.)
+    may also be derivable — not from a new annotation, but from **existing, currently-disabled**
+    OpenACC `deviceptr(...)` clauses already sitting in `kessler_update.F90` behind
+    `#define DEVICEPTR(...)` (empty). Demonstrated recovering the exact device-resident variable
+    set from `kessler_update_run`'s existing directives with the same span-based technique used
+    for the `standard_name`/`units` proposal. Would be a separate, fourth extraction pass (parallel
+    to the type/intent extractor and the new `!ccpp`-tag extractor), feeding the same existing
+    `memory_space` property — same target, different source, no IR change. Caveated: only gives a
+    signal for variables a scheme's directives *already* name explicitly; says nothing about
+    `model_var_memory_space` (the host-side declaration), which is a separate concern.
+  - **Not part of this project's backlog** (logged in the source document, not here, since they're
+    `atmospheric_physics`-side or purely `atmospheric_physics`-authoring-layer changes with no
+    `xdsl_ccpp` tooling implication): the `scheme_family` symbolic-tracing code generator for
+    Fortran-layer formula duplication (~320-360 lines), and the Python suite-composition DSL
+    (`theta_basis`/`dry_basis` combinators) for SDF XML duplication (~280 lines) — though the
+    latter echoes `xdsl_ccpp.frontend.py_api`'s existing `@ccpp_suite`/`forLoop` design
+    independently, which is worth knowing about if that DSL is ever extended with
+    auto-bracketing combinators.
+  - **Not scheduled, not started** — logged per this doc's usual practice for considered-but-not-
+    committed-to future work (same treatment as Phase 7 and the GPU data-movement follow-up
+    above). See `duplication_analysis_summary.md` for the full analysis, worked examples, and
+    effort staging table; not duplicated here.
 
 **Housekeeping — done, same day:** local `main` was briefly stale (showed only through Phase 2
 (#7) — no fetch credentials in this sandbox, not a real gap upstream) but the project owner
