@@ -780,6 +780,12 @@ def _group_item_to_op(
     if isinstance(item, SubcycleDescriptor):
         inner_ops = []
         for sd in item.schemes:
+            if isinstance(sd, SubcycleDescriptor):
+                raise ValueError(
+                    "Nested forLoop() blocks are not supported -- forLoop's "
+                    "schemes list must contain only schemes, not another "
+                    "forLoop(). Use multiple sibling forLoop() blocks instead."
+                )
             inner_ops.append(SchemeOp(sd.name, None))
             seen_schemes.setdefault(sd.name, sd)
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))

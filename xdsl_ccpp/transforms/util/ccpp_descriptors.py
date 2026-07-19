@@ -436,6 +436,18 @@ class BuildSchemeDescription(Visitor):
                                 for k, v in child_op.arg_overrides.data.items()
                             }
                         subcycle.addChild(XMLScheme(child_op.scheme_name.data, overrides))
+                    elif isa(child_op, ccpp.SubcycleOp):
+                        # Defense in depth: the frontend XML parser already
+                        # rejects nested <subcycle> elements, so this should
+                        # be unreachable via the normal XML path. Guards
+                        # against a nested SubcycleOp reaching the IR by any
+                        # other route (e.g. the Python suite-authoring API)
+                        # silently losing every scheme inside it.
+                        raise ValueError(
+                            "Nested ccpp.subcycle ops are not supported "
+                            f"(found one inside subcycle loop_count="
+                            f"{op.loop_count.data!r})."
+                        )
                 self.current_group.addChild(subcycle)
             elif isa(op, ccpp.SchemeOp):
                 overrides = {}
