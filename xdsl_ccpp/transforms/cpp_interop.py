@@ -180,8 +180,12 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
         raise ValueError(
             f"chost cap: argument '{bare}' (standard_name='{std}') has derived "
             f"type '{_ddt.type_name.data}' — DDT arguments are not supported in "
-            f"the C-interoperable chost interface. Flatten the DDT into individual "
-            f"scalar/array members, or see multilanguage_limitations.md for options."
+            f"the C-interoperable chost interface by this helper directly. DDT "
+            f"flattening is handled one layer up, by _chost_fn_contexts routing "
+            f"through _chost_expand_ddt_arg (requires scheme metadata to be "
+            f"available — see multilanguage_limitations.md §4, which is fully "
+            f"resolved via that path). Reaching this error means a DDT arg "
+            f"reached _chost_arg_info directly without going through that routing."
         )
     char_len = None
     if isinstance(mtype, MemRefType):

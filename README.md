@@ -120,13 +120,17 @@ Optional:
   --emit-datatable      Write datatable.xml to this path after generating caps
   --emit-html           Write per-entry-point HTML variable tables to this directory
                         (requires --emit-datatable)
-  --num-instances N     Maximum number of simultaneous CCPP instances (ensemble
-                        members). When set, ccpp_suite_state is a per-instance array
-                        of length N instead of the default (200).
   --bind-c              Generate BIND(C) Fortran cap subroutines and matching C++
                         headers (<HostName>_ccpp_cap.h and ccpp_kinds.h).
                         Requires --host-files.
 ```
+
+Multi-instance `ccpp_t` support (per-instance `ccpp_suite_state`, default cap of
+200 simultaneous instances) is implemented, but `--num-instances` is currently
+only exposed on the lower-level `xdsl_ccpp.frontend.ccpp_xml` frontend module,
+not on this `ccpp_xdsl` driver — see
+[`multi_instance_plan.md`](multi_instance_plan.md) for how to set it via manual
+pipeline composition.
 
 ---
 
@@ -314,6 +318,12 @@ Options:
   -v, --verbose      Print the output path for each generated file
 ```
 
+> **Future direction:** [`duplication_analysis_summary.md`](duplication_analysis_summary.md)
+> analyzes how much of a real host model's `.meta` (NCAR/atmospheric_physics) is a
+> hand-maintained mirror of its own Fortran source, and sketches a design for closing the
+> "fills in stubs" gap above entirely — tagging `standard_name`/`units` directly in Fortran
+> comments and generating `.meta` mechanically from them, extending this same tool.
+
 Requires fparser: `pip install fparser` (or `pip install -e ".[validate]"`).
 
 ### Fortran Source Cross-Validation
@@ -490,6 +500,16 @@ The kessler example includes a working C++ BIND(C) driver (`driver_kessler_cpp.c
 that builds with `make cxx` and produces bit-for-bit identical results to the Fortran
 drivers (`make check`).
 
+> **Known issue, rank ≥ 3 arrays:** for this plain `--bind-c` path (no
+> `language = c++`), the generated `<HostName>_ccpp_cap.F90` currently declares
+> higher-rank array arguments as flat assumed-size (`flux(*)`) and forwards them
+> directly into the suite cap's assumed-shape `(:, :, :)` dummy — a rank
+> mismatch that should be a compile-time error under standard Fortran rules.
+> Not yet verified against an actual compiler. The *chost* mode below doesn't
+> have this problem (it uses an explicit-shape declaration instead). See
+> [`multilanguage_limitations.md`](multilanguage_limitations.md) §5 for the
+> full detail.
+
 #### C++ host model (no Fortran host module)
 
 To generate a *chost* ("C++ host") cap — a thin BIND(C) Fortran wrapper that takes
@@ -552,11 +572,13 @@ Kokkos::View<double**, Kokkos::LayoutLeft> theta("theta", ncol, nz);
 
 #### Known limitations
 
-The current chost implementation has several known constraints — fixed `double`
-precision (no REAL32), no DDT argument support, rank > 2 arrays, GPU memory
-management, and others. See
-[`multilanguage_limitations.md`](multilanguage_limitations.md) for the full list
-with priority ordering and resolution notes.
+The current chost implementation has several known constraints — array arguments
+must be column-major (row-major C++ silently produces wrong physics), GPU memory
+placement for chost arrays is entirely the C++ host's responsibility (the OpenACC
+runtime can't see e.g. Kokkos `CudaSpace` allocations), and `ccpp_suite_state` is a
+module-level Fortran variable, so concurrent calls from multiple C++ threads are not
+thread-safe. See [`multilanguage_limitations.md`](multilanguage_limitations.md) for
+the full list with priority ordering and resolution notes.
 
 #### Fortran host → C++ schemes
 
@@ -646,7 +668,10 @@ files. This validates the pipeline at real-world scale: 146 `.meta` files,
 | `kessler` | 1 | 2 | ~15 | ✅ bit-for-bit across all four drivers†‡ |
 | CCPP-SCM (GFS) | varies | ~60 | ~800+ | ❌ not yet integrated |
 
-† Bit-for-bit agreement verified on CPU; GPU execution not yet tested.
+† Bit-for-bit agreement across all four drivers verified on CPU. The CCPP Fortran
+driver (`kessler_ccpp`) has additionally been verified bit-for-bit between a CPU
+build and a GPU build (`ARCH=GPU`, OpenACC, nvhpc/nvfortran) — see
+`examples/kessler/Makefile`.
 
 ‡ All four drivers produce identical numerical output: the CCPP Fortran cap
 (`kessler_ccpp`), hand-written Fortran cap (`kessler_hand`), C++ BIND(C) driver
