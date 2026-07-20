@@ -61,14 +61,24 @@ class VarLifetime:
         instead of globally across every suite in the module.
     phases_used: every lifecycle phase this variable is referenced in by any
         scheme belonging to this suite.
-    entry_phase / exit_phase: where to insert AccEnterDataOp / AccExitDataOp.
-        Both None when hoisted is False.
-    hoisted: True iff this variable should get enter/exit-data treatment.
-        False for "present"/"update" variables (excluded from hoisting
-        entirely -- see _resolve_lifetime) and for variables used in only
-        one phase (hoisting them would gain nothing and only adds unstructured
-        pairing-correctness risk) -- both stay on the legacy per-call
-        AccDataBeginOp/AccDataEndOp path, unchanged from before this feature.
+    entry_phase / exit_phase: where to insert the hoisted directive pair --
+        AccEnterDataOp/AccExitDataOp for copyin/copy/copyout, or
+        AccUpdateSelfOp/AccUpdateDeviceOp (fired once instead of per-call)
+        for "update". Both None when hoisted is False.
+    hoisted: True iff this variable should get the hoisted, once-per-suite
+        treatment instead of the legacy per-call one. False for "present"
+        variables (present() is a pure runtime assertion with no data
+        movement to eliminate, and CCPP doesn't own a present-clause
+        variable's residency -- the host model does -- so this is a
+        permanent exclusion, not a phase-count one) and for variables used
+        in only one phase (hoisting them would gain nothing and only adds
+        unstructured pairing-correctness risk) -- both stay on the legacy
+        per-call path, unchanged from before this feature. "update"
+        variables are no longer permanently excluded (see _resolve_lifetime
+        and _wrap_scheme_call) -- hoisting them assumes nothing outside this
+        suite's own dispatch (e.g. the host model's own GPU-resident driver
+        code) touches the variable's device copy between this suite's
+        calls; see this pass's class docstring for that assumption.
     """
 
     kind: str
@@ -106,20 +116,22 @@ class GPUCcppCapPass(ModulePass):
 
         scheme=host   + model=device  -> !$acc update self(var) before call,
                                          !$acc update device(var) after call
-            Scheme is CPU-only but model keeps data on GPU -- never hoisted
-            (a separate, still-open backlog item; see
-            ccpp_cap_refactor_plan.md).
+            Scheme is CPU-only but model keeps data on GPU. Hoisted the same
+            way as copyin/copy/copyout (see below) -- fired once at the
+            variable's computed entry/exit phase instead of on every call.
 
         scheme=host   + model=host    -> no directive (CPU path, default)
 
     Cross-function data hoisting (ACC backend only -- see directive below):
-    for copyin/copy/copyout variables, instead of independently transferring
-    the variable on every dispatcher call that touches it, this pass computes
-    the actual earliest and latest lifecycle phase (of the six above) the
-    variable is used in, within THIS suite specifically (not globally across
-    every suite dispatched from the same module -- see
-    _analyze_suite_var_lifetimes), and emits a single unstructured
-    `!$acc enter data`/`exit data` pair spanning that range instead:
+    for copyin/copy/copyout and update variables, instead of independently
+    transferring/syncing the variable on every dispatcher call that touches
+    it, this pass computes the actual earliest and latest lifecycle phase
+    (of the six above) the variable is used in, within THIS suite
+    specifically (not globally across every suite dispatched from the same
+    module -- see _analyze_suite_var_lifetimes), and emits a single pair of
+    directives spanning that range instead: unstructured `!$acc enter
+    data`/`exit data` for copyin/copy/copyout, or a single `!$acc update
+    self`/`update device` pair for update:
 
       - If any of {register, initialize, finalize} reference the variable,
         it gets whole-simulation scope: entry at the earliest of
@@ -129,7 +141,9 @@ class GPUCcppCapPass(ModulePass):
         the once-per-timestep group -- register/initialize/finalize and
         timestep_initial/run/timestep_final are never mixed as an
         entry/exit pair, since enter_data/exit_data reference-counting
-        requires both ends to run the same number of times).
+        requires both ends to run the same number of times; the same
+        constraint is applied to the update self/device pair for
+        consistency, even though it isn't itself reference-counted).
       - Otherwise (only used among timestep_initial/run/timestep_final), it
         gets per-timestep scope: entry/exit are the actual earliest/latest
         of those three phases the variable is used in. If entry == exit
@@ -137,8 +151,25 @@ class GPUCcppCapPass(ModulePass):
         variable stays on the legacy path (VarLifetime.hoisted = False).
 
     Any phase strictly between entry and exit gets a plain present() clause
-    (pure runtime assertion, no data movement, safe to repeat) instead of
-    re-transferring.
+    for copyin/copy/copyout variables (pure runtime assertion, no data
+    movement, safe to repeat) instead of re-transferring; update variables
+    get nothing at all at those phases (no assertion applies -- the
+    variable's host-side copy is simply assumed current between the entry
+    and exit sync points; see the "update" hoisting assumption below).
+
+    Hoisting an "update" variable assumes nothing outside this suite's own
+    dispatch touches the variable's device copy between its entry and exit
+    phase -- in particular, that no GPU-resident code the host model runs
+    independently of CCPP (e.g. its own dynamics core) reads or writes that
+    variable's device copy in between. This assumption is required because,
+    unlike copyin/copy/copyout variables (pure CCPP-owned scratch device
+    memory, invisible to anything outside this framework), the device
+    allocation for an update variable is owned by the host model, not by
+    CCPP -- so CCPP cannot itself verify the assumption holds. It is
+    currently untested in practice: no example in this repo declares a host
+    variable memory_space=device, so this path has zero real exercise today
+    beyond its unit tests. Flagged as a real, accepted risk rather than
+    deferred -- see ccpp_cap_refactor_plan.md's GPU/OpenACC backlog entry.
 
     Naming note: 'model_var_name' refers to the host MODEL variable name,
     not a CPU-memory variable. 'host'/'device' in memory_space follow
@@ -236,13 +267,14 @@ class GPUCcppCapPass(ModulePass):
                         phases_used.setdefault(host_var, set()).add(phase)
                     elif scheme_space == "host" and model_space == "device":
                         update_vars.add(host_var)
+                        phases_used.setdefault(host_var, set()).add(phase)
                     # else: both host -- no directive needed
 
         lifetimes = {}
         for host_var in present_vars:
             lifetimes[host_var] = VarLifetime("present", frozenset(), None, None, False)
         for host_var in update_vars:
-            lifetimes[host_var] = VarLifetime("update", frozenset(), None, None, False)
+            lifetimes[host_var] = self._resolve_lifetime("update", phases_used.get(host_var, set()))
         for host_var, r in needs_in.items():
             w = needs_out.get(host_var, False)
             if r and w:
@@ -286,11 +318,13 @@ class GPUCcppCapPass(ModulePass):
     def _role_at(self, lifetime: VarLifetime, phase: str) -> str:
         """Classify one host var's role at one call site's phase.
 
-        Returns "legacy" (present/update/degenerate -- unchanged per-call
+        Returns "legacy" (present variables, always; degenerate/single-phase
+        copyin/copy/copyout/update variables -- unchanged per-call
         AccDataBeginOp/AccDataEndOp or AccUpdateSelfOp/AccUpdateDeviceOp
-        path), "enter", "exit", or "passthrough" (present-only, no data
-        movement, safe to repeat every phase strictly between entry and
-        exit).
+        path), "enter", "exit", or "passthrough" (copyin/copy/copyout only --
+        present-only, no data movement, safe to repeat every phase strictly
+        between entry and exit; hoisted "update" variables get nothing at
+        the equivalent phases -- see _wrap_scheme_call).
         """
         if not lifetime.hoisted or self.directive != "acc":
             return "legacy"
@@ -393,12 +427,13 @@ class GPUCcppCapPass(ModulePass):
             !$acc update self(temp_midpoints)
 
         For scalar variables with no ArraySectionOp, %ref is used directly.
-        Hoisted enter/exit/passthrough references always use use_sections=False
-        (called that way by _wrap_scheme_call) -- ArraySectionOp operands
-        (e.g. col_start/col_end) are themselves function-scoped and can't be
-        reused for a synthesized reference cloned into a different function's
-        block, so hoisted transfers move the whole declared array rather than
-        a per-call column subrange.
+        Hoisted enter/exit/passthrough references -- including hoisted
+        "update" variables' single update self/device pair -- always use
+        use_sections=False (called that way by _wrap_scheme_call).
+        ArraySectionOp operands (e.g. col_start/col_end) are themselves
+        function-scoped and can't be reused for a synthesized reference
+        cloned into a different function's block, so hoisted transfers move
+        the whole declared array rather than a per-call column subrange.
         """
         # Build map: HostVarRefOp.res → ArraySectionOp.res (if one exists)
         section_for_ref = {}
@@ -469,14 +504,22 @@ class GPUCcppCapPass(ModulePass):
         Insertion order when multiple roles co-occur at one call site:
         AccEnterDataOp (before) -> AccDataBeginOp (before, present/legacy
         vars) -> suite_call -> AccDataEndOp (after) -> AccExitDataOp (after).
-        All four are legal to sequence this way since enter/exit-data are
-        unstructured (no scoping requirement relative to the structured
-        data region).
+        Hoisted "update" variables (kind == "update", hoisted == True) fire
+        a single AccUpdateSelfOp/AccUpdateDeviceOp pair anchored the same way
+        as AccEnterDataOp/AccExitDataOp (outside the structured data region,
+        falling back to suite_call when no structured region exists at this
+        call site) instead of the legacy per-call pair, which stays anchored
+        directly to suite_call (innermost, unaffected). All of the above are
+        legal to sequence this way since enter/exit-data and update self/
+        device are unstructured (no scoping requirement relative to the
+        structured data region or to each other -- they touch disjoint
+        variables, since a variable's kind is mutually exclusive).
         """
         legacy_present, legacy_copyin, legacy_copy, legacy_copyout = [], [], [], []
         update_vars = []
         enter_copyin, enter_create = [], []
         exit_copyout, exit_delete = [], []
+        update_enter_vars, update_exit_vars = [], []
         passthrough_present = []
 
         seen_here = set()
@@ -501,11 +544,23 @@ class GPUCcppCapPass(ModulePass):
                 elif lt.kind == "copyout":
                     legacy_copyout.append(var_name)
             elif role == "enter":
-                (enter_copyin if lt.kind in ("copyin", "copy") else enter_create).append(var_name)
+                if lt.kind == "update":
+                    update_enter_vars.append(var_name)
+                else:
+                    (enter_copyin if lt.kind in ("copyin", "copy") else enter_create).append(var_name)
             elif role == "exit":
-                (exit_copyout if lt.kind in ("copyout", "copy") else exit_delete).append(var_name)
+                if lt.kind == "update":
+                    update_exit_vars.append(var_name)
+                else:
+                    (exit_copyout if lt.kind in ("copyout", "copy") else exit_delete).append(var_name)
             elif role == "passthrough":
-                passthrough_present.append(var_name)
+                # Hoisted "update" variables get nothing at passthrough
+                # phases -- no data movement or assertion applies (unlike
+                # present(), there's no runtime check for "this host-side
+                # copy is still current"), so this phase's call just uses
+                # whatever the entry-phase update self left in host memory.
+                if lt.kind != "update":
+                    passthrough_present.append(var_name)
             # "unused" isn't reachable here: a var only appears in true_block
             # if this call's own scheme references it, and entry/exit are
             # chosen as the min/max of phases_used, so every naturally
@@ -517,10 +572,16 @@ class GPUCcppCapPass(ModulePass):
                 continue
             if phase == lt.entry_phase:
                 if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
-                    (enter_copyin if lt.kind in ("copyin", "copy") else enter_create).append(var_name)
+                    if lt.kind == "update":
+                        update_enter_vars.append(var_name)
+                    else:
+                        (enter_copyin if lt.kind in ("copyin", "copy") else enter_create).append(var_name)
             elif phase == lt.exit_phase:
                 if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
-                    (exit_copyout if lt.kind in ("copyout", "copy") else exit_delete).append(var_name)
+                    if lt.kind == "update":
+                        update_exit_vars.append(var_name)
+                    else:
+                        (exit_copyout if lt.kind in ("copyout", "copy") else exit_delete).append(var_name)
 
         # Data region directives go inside the inner scf.IfOp's true
         # region, immediately around the suite physics call.  This way the
@@ -566,14 +627,25 @@ class GPUCcppCapPass(ModulePass):
             Rewriter.insert_op(data_begin_op, InsertPoint.before(suite_call))
             Rewriter.insert_op(data_end_op, InsertPoint.after(suite_call))
 
+        # Shared by AccEnterDataOp/AccExitDataOp and the hoisted update
+        # self/device pair below -- both tiers sit outside the structured
+        # data region (or directly at suite_call when no structured region
+        # was emitted at this call site), for the same anchoring reason as
+        # data_begin_op/data_end_op above.
+        enter_anchor = (
+            InsertPoint.before(data_begin_op)
+            if data_begin_op is not None
+            else InsertPoint.before(suite_call)
+        )
+        exit_anchor = (
+            InsertPoint.after(data_end_op)
+            if data_end_op is not None
+            else InsertPoint.after(suite_call)
+        )
+
         if enter_copyin or enter_create:
             enter_copyin_refs = self._resolve_array_refs(true_block, set(enter_copyin), use_sections=False)
             enter_create_refs = self._resolve_array_refs(true_block, set(enter_create), use_sections=False)
-            enter_anchor = (
-                InsertPoint.before(data_begin_op)
-                if data_begin_op is not None
-                else InsertPoint.before(suite_call)
-            )
             Rewriter.insert_op(
                 AccEnterDataOp(copyin=enter_copyin_refs, create=enter_create_refs),
                 enter_anchor,
@@ -582,20 +654,28 @@ class GPUCcppCapPass(ModulePass):
         if exit_copyout or exit_delete:
             exit_copyout_refs = self._resolve_array_refs(true_block, set(exit_copyout), use_sections=False)
             exit_delete_refs  = self._resolve_array_refs(true_block, set(exit_delete),  use_sections=False)
-            exit_anchor = (
-                InsertPoint.after(data_end_op)
-                if data_end_op is not None
-                else InsertPoint.after(suite_call)
-            )
             Rewriter.insert_op(
                 AccExitDataOp(copyout=exit_copyout_refs, delete=exit_delete_refs),
                 exit_anchor,
             )
 
+        # Hoisted "update" variables: a single sync pair per suite instead
+        # of one per touching call site. ACC-only, same as AccEnterDataOp/
+        # AccExitDataOp above -- _role_at never returns "enter"/"exit" for
+        # directive == "omp", so these two lists are always empty there.
+        if update_enter_vars:
+            update_enter_refs = self._resolve_array_refs(true_block, update_enter_vars, use_sections=False)
+            Rewriter.insert_op(AccUpdateSelfOp(array_refs=update_enter_refs), enter_anchor)
+
+        if update_exit_vars:
+            update_exit_refs = self._resolve_array_refs(true_block, update_exit_vars, use_sections=False)
+            Rewriter.insert_op(AccUpdateDeviceOp(array_refs=update_exit_refs), exit_anchor)
+
         # Update directives go inside the inner scf.IfOp's true region,
-        # bracketing the actual suite physics call. Unaffected by hoisting --
-        # this is the separate scheme=host+model=device path, still driven
-        # purely off lt.kind == "update", same as before this feature existed.
+        # bracketing the actual suite physics call. This is the legacy
+        # per-call path for degenerate/single-phase "update" variables --
+        # still driven purely off lt.kind == "update", same as before this
+        # feature existed.
         if update_vars and suite_call is not None:
             update_refs = self._resolve_array_refs(
                 true_block, update_vars

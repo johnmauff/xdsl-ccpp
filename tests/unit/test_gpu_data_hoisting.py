@@ -87,6 +87,19 @@ def _no_data_directive_line_mentions(body: str, var_name: str) -> bool:
     return True
 
 
+def _no_acc_directive_line_mentions(body: str, var_name: str) -> bool:
+    """True if no `!$acc ...` line in body references var_name at all --
+    unlike a whole-body substring check, this doesn't false-positive on the
+    variable's legitimate appearance as a plain call argument (e.g. a
+    hoisted "update" variable's passthrough phase, where it's still passed
+    to the scheme call but gets no directive of any kind)."""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if "!$acc" in stripped and var_name in stripped:
+            return False
+    return True
+
+
 def _device_arg(std_name: str, intent: str = "in") -> str:
     return f"""\
   standard_name = {std_name}
@@ -487,11 +500,13 @@ class TestMultiSuiteScoping:
         assert _no_data_directive_line_mentions(run_fn, "shared_var")
 
 
-# ── Group D: update-clause regression guard ───────────────────────────────────
+# ── Group D: update-clause regression guard (single-phase, degenerate) ───────
 #
-# scheme=host + model=device (CPU-only scheme, host keeps data on GPU) is
-# untouched by this feature -- still driven by AccUpdateSelfOp/
-# AccUpdateDeviceOp, unaffected by the per-suite rescoping.
+# scheme=host + model=device (CPU-only scheme, host keeps data on GPU), used
+# in only one phase -- degenerate, so it must stay on the legacy per-call
+# AccUpdateSelfOp/AccUpdateDeviceOp path exactly as before hoisting was
+# extended to cover "update" variables too (see Group E for the multi-phase
+# hoisted case).
 
 _GROUP_D_SCHEME = f"""\
 [ccpp-table-properties]
@@ -531,3 +546,161 @@ class TestUpdateClauseRegression:
         assert "update device(cpu_var" in run_fn
         assert "enter data" not in run_fn
         assert "exit data" not in run_fn
+
+
+# ── Group E: hoisted update-clause vars (item 1(a)) ───────────────────────────
+#
+# scheme=host + model=device variables now get the same earliest/latest-phase
+# hoisting as copyin/copy/copyout, just with a single AccUpdateSelfOp/
+# AccUpdateDeviceOp pair instead of AccEnterDataOp/AccExitDataOp -- CCPP
+# doesn't own this variable's device allocation (the host model does), it's
+# only synchronizing a transient host-side copy. Hoisting this assumes
+# nothing outside this suite's own dispatch touches the variable's device
+# copy in between (see GPUCcppCapPass's class docstring).
+#
+#   three_phase_upd -- CPU-only schemes at _timestep_initial + _run +
+#                      _timestep_final. entry=timestep_initial,
+#                      exit=timestep_final, and _run (strictly between) must
+#                      get NOTHING at all -- no update self/device, no
+#                      present() (unlike copyin/copy/copyout's passthrough).
+#   wholesim_upd    -- CPU-only schemes at _initialize + _run only (no
+#                      _finalize reference). Exercises the synthesized-ref
+#                      path (same mechanism Group B validated for
+#                      copyin/copy/copyout) combined with the "update" kind
+#                      dispatch -- exit forced to finalize via a cloned
+#                      HostVarRefOp, emitting AccUpdateDeviceOp there.
+
+_GROUP_E_SCHEME = f"""\
+[ccpp-table-properties]
+  name = hoist_scheme_upd
+  type = scheme
+[ccpp-arg-table]
+  name = hoist_scheme_upd_timestep_init
+  type = scheme
+[ three_phase_upd ]
+  standard_name = test_three_phase_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_upd_run
+  type = scheme
+[ three_phase_upd ]
+  standard_name = test_three_phase_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_upd_timestep_final
+  type = scheme
+[ three_phase_upd ]
+  standard_name = test_three_phase_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_GROUP_E_HOST = _host_module_meta(
+    "hoist_host_upd",
+    _host_var_block("three_phase_upd", "test_three_phase_upd_var", device=True),
+)
+
+_GROUP_E_SUITE_XML = minimal_suite_xml("hoist_scheme_upd", suite_name="hoist_suite_upd")
+
+
+def _group_e_fortran(run_host_match, ccpp_context) -> str:
+    return _fortran_output(
+        run_host_match, ccpp_context,
+        scheme_metas=[_GROUP_E_SCHEME],
+        host_metas=[_GROUP_E_HOST],
+        suite_xml=_GROUP_E_SUITE_XML,
+    )
+
+
+_GROUP_E_WHOLESIM_SCHEME = f"""\
+[ccpp-table-properties]
+  name = hoist_scheme_upd_wholesim
+  type = scheme
+[ccpp-arg-table]
+  name = hoist_scheme_upd_wholesim_init
+  type = scheme
+[ wholesim_upd ]
+  standard_name = test_wholesim_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_upd_wholesim_run
+  type = scheme
+[ wholesim_upd ]
+  standard_name = test_wholesim_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_GROUP_E_WHOLESIM_HOST = _host_module_meta(
+    "hoist_host_upd_wholesim",
+    _host_var_block("wholesim_upd", "test_wholesim_upd_var", device=True),
+)
+
+_GROUP_E_WHOLESIM_SUITE_XML = minimal_suite_xml(
+    "hoist_scheme_upd_wholesim", suite_name="hoist_suite_upd_wholesim"
+)
+
+
+class TestUpdateClauseHoisting:
+    """Group E: item 1(a) -- hoisting extended to scheme=host+model=device."""
+
+    def test_three_phase_update_var_syncs_once_each_way_nothing_at_passthrough(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _group_e_fortran(run_host_match, ccpp_context)
+        initial_fn = _fn_body(fortran, "HoistSuiteUpd_ccpp_physics_timestep_initial")
+        run_fn = _fn_body(fortran, "HoistSuiteUpd_ccpp_physics_run")
+        final_fn = _fn_body(fortran, "HoistSuiteUpd_ccpp_physics_timestep_final")
+
+        assert "update self(three_phase_upd" in initial_fn
+        assert "update device(three_phase_upd" not in initial_fn
+        assert "update device(three_phase_upd" in final_fn
+        assert "update self(three_phase_upd" not in final_fn
+        # No re-sync, no present(), nothing at all at the passthrough phase
+        # -- the variable is still a plain call argument there (the CPU-only
+        # scheme genuinely needs it), just with no ACC directive.
+        assert _no_acc_directive_line_mentions(run_fn, "three_phase_upd")
+        assert "enter data" not in initial_fn
+        assert "exit data" not in final_fn
+
+    def test_init_run_only_update_var_syncs_device_at_finalize_via_synthesized_ref(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            scheme_metas=[_GROUP_E_WHOLESIM_SCHEME],
+            host_metas=[_GROUP_E_WHOLESIM_HOST],
+            suite_xml=_GROUP_E_WHOLESIM_SUITE_XML,
+        )
+        init_fn = _fn_body(fortran, "HoistSuiteUpdWholesim_ccpp_physics_initialize")
+        run_fn = _fn_body(fortran, "HoistSuiteUpdWholesim_ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "HoistSuiteUpdWholesim_ccpp_physics_finalize")
+
+        assert "update self(wholesim_upd" in init_fn
+        assert "update device(wholesim_upd" not in init_fn
+        assert _no_acc_directive_line_mentions(run_fn, "wholesim_upd")
+        assert "update device(wholesim_upd" in finalize_fn
+        assert "update self(wholesim_upd" not in finalize_fn

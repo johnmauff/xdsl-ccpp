@@ -32,23 +32,32 @@ entry in this log:
 
 - **`ccpp_cap.py`: 853 lines** (was 4,749 at the plan's start — Phases 1-5 below account for
   the reduction).
-- **Full test suite: 305 unit tests passed + 44 FileCheck passed, 1 xfailed** (the one
-  accepted exception is the rank-3 chost/`--bind-c` question — still open, see the entries
-  below on that). Green throughout every phase since Phase 0; **the "some existing tests
-  already broken" state from the plan's start no longer applies and hasn't since Phase 0.**
-- **Test:core ratio: ~5,426 test lines / ~18,566 `xdsl_ccpp/` source lines (~0.29:1)**, up from
-  0.25:1 at the plan's start — 21 files under `tests/unit/`. Treat this as an approximate,
-  not a precisely reproduced recomputation of whatever methodology produced the original 0.25:1
-  figure.
-- **`gpu_ccpp_cap_pass.py`: 405 lines** (339 before this session's lifecycle-phase-coverage
-  extension) and **`gpu_data_pass.py`: 276 lines** — both outside the original 6-phase plan's
-  scope (that plan targeted `ccpp_cap.py` specifically) but touched heavily in this same
-  session; see the GPU/OpenACC entries further down.
+- **Full test suite: 359 unit tests passed + 44 FileCheck passed, 1 xfailed** (305 unit tests
+  before this session's `test_gpu_data_hoisting.py` addition, 357 after Option 2, 359 after
+  item 1(a)'s update-clause hoisting extension; the one accepted xfail exception is the rank-3
+  chost/`--bind-c` question — still open, see the entries below on that). Green throughout every
+  phase since Phase 0; **the "some existing tests already broken" state from the plan's start no
+  longer applies and hasn't since Phase 0.**
+- **Test:core ratio: ~5,426 test lines / ~18,566 `xdsl_ccpp/` source lines (~0.29:1) before this
+  session's GPU data-hoisting tests**, up from 0.25:1 at the plan's start — 21 files under
+  `tests/unit/` (22 after this session, with `test_gpu_data_hoisting.py` added). Treat this as an
+  approximate, not a precisely reproduced recomputation of whatever methodology produced the
+  original 0.25:1 figure.
+- **`gpu_ccpp_cap_pass.py`: 740 lines** (660 after Option 2's cross-function OpenACC
+  data-hoisting rewrite below, before item 1(a)'s update-clause hoisting extension; 405 before
+  Option 2; 339 before the lifecycle-phase-coverage extension that preceded it) and
+  **`gpu_data_pass.py`: 257 lines** (untouched by item 1(a) — see "Current state" above on why
+  the two passes' host-less-scratch-array and host-matched-variable paths never overlap) — both
+  outside the original 6-phase plan's scope (that plan targeted `ccpp_cap.py` specifically) but
+  touched heavily in this same session; see the GPU/OpenACC entries further down. New
+  `tests/unit/test_gpu_data_hoisting.py`: 706 lines, 10 tests (8 after Option 2, +2 for item
+  1(a)'s `TestUpdateClauseHoisting`).
 - Everything above reflects this session's cumulative work, not just today: the 6-phase
   `ccpp_cap.py` decomposition, Phase 7's design work, the subcycle/duplication-sweep fixes, the
-  GPU lifecycle-coverage extension and its Copilot-review fixes, the documentation-limitations
-  audit and cleanup, and the `duplication_analysis_summary.md` backlog addition are all already
-  reflected in these totals.
+  GPU lifecycle-coverage extension and its Copilot-review fixes, the cross-function OpenACC
+  data-hoisting feature ("Option 2") and its own Copilot-review fixes, extending that hoisting to
+  the update-clause path (item 1(a)), the documentation-limitations audit and cleanup, and the
+  `duplication_analysis_summary.md` backlog addition are all already reflected in these totals.
 
 ---
 
@@ -329,29 +338,88 @@ starting 3b):
   `!$acc data copyin/copy/copyout ... end data` region, because `kessler_host_mod.meta` never
   declares `memory_space = device` (so every var lands on the `scheme=device + model=host` clause
   path, never `present`). Not a bug — a real transition-period concern for a host model that will
-  have a long-lived mix of GPU-resident and not-yet-ported schemes. Two follow-on pieces
-  identified, **not implemented, not scheduled**:
-  - **"Option 2" — hoist the data region across `timestep_initial` → `run` → `timestep_final`**
-    so a variable transfers once per timestep instead of once per phase call. Needs unstructured
-    `!$acc enter data`/`exit data` ops added to the `ccpp_utils` dialect (only the structured
-    `AccDataBeginOp`/`AccDataEndOp` pair exists today) plus printer support — both small,
-    mechanical, same pattern as the existing acc-directive printing. The real cost is rewriting
-    `GPUCcppCapPass._process_run_fn`'s per-function insertion model into a whole-module analysis
-    (which lifecycle phases use which host vars, anchor `enter data`/`exit data` accordingly).
-    Doesn't depend on Phase 7 below — operates at today's already-durable per-function
-    granularity.
-  - **Making the `scheme=host + model=device` (update self/update device) clause path robust** —
-    needs (a) the same new enter/exit-data ops, anchored at `_ccpp_physics_initialize`/`_finalize`
-    for whole-simulation persistence (simpler anchoring than Option 2 — no per-variable
-    phase-range analysis needed, likely *smaller* in isolation); (b) moving clause insertion from
-    bracketing the *entire* suite-group dispatch call (today's granularity in
-    `GPUCcppCapPass._wrap_scheme_call`) down to *individual* scheme calls within a group —
-    `GPUDataPass._find_call_in_if` already finds calls at that granularity for host-less scratch
-    vars, so this is an ownership/architecture question (does per-scheme-call clause routing move
-    into `GPUDataPass`, which today only handles the host-less case, or does `GPUCcppCapPass`
-    reach down into suite-level function bodies itself) rather than a small patch; (c) handling a
-    group where two schemes touching the same host var need conflicting clauses — not separable
-    work, falls out naturally once (b) is done.
+  have a long-lived mix of GPU-resident and not-yet-ported schemes. Two follow-on pieces were
+  identified; **"Option 2" is now done, the update-clause item is not implemented, not
+  scheduled**:
+  - **"Option 2" — cross-function OpenACC data hoisting: done (2026-07-19).** Generalized beyond
+    the original fixed-anchor sketch above per the project owner's request: rather than
+    hardcoding `timestep_initial`/`timestep_final` as the entry/exit points, `GPUCcppCapPass` now
+    computes the actual earliest/latest lifecycle phase each host variable is used in, per suite,
+    and hoists `copyin`/`copy`/`copyout` variables to a single unstructured `!$acc enter
+    data`/`exit data` pair spanning that real range (with `present()` at any phase strictly in
+    between), instead of re-transferring on every call. `present`-clause and `update`-clause
+    variables are deliberately excluded — see the follow-on item just below for the latter.
+    Covers whole-simulation scope (`register`/`initialize`/`finalize`, entry anchor genuinely
+    computed rather than assumed to be `initialize`; exit always forced to `finalize` via a
+    synthesized `HostVarRefOp` when the variable has no natural reference there) and per-suite
+    scoping (a variable's classification in one suite is unaffected by an unrelated suite's usage
+    of a same-named host variable in a multi-suite module, confirmed real via
+    `examples/capgen`'s two-suite `CAPS_SUITES` pattern). v1 scope: OpenACC only — the
+    `directive="omp"` backend keeps its pre-existing per-call `OmpTargetDataBeginOp`/
+    `OmpTargetDataEndOp` path unchanged (known gap, not silently mishandled; see the OMP item
+    below).
+    - New `AccEnterDataOp`/`AccExitDataOp` ops in the `ccpp_utils` dialect plus printer support
+      (`print_ftn.py`), a shared `cap_shared.split_scheme_table_name` helper (scheme arg-table
+      name → phase, replacing `gpu_data_pass.py`'s narrower `_get_scheme_name`), and a full
+      rewrite of `GPUCcppCapPass` around a `VarLifetime` per-suite/per-host-variable record and a
+      two-pass discovery-then-insertion `apply()`. New `tests/unit/test_gpu_data_hoisting.py` (8
+      tests: per-timestep hoisting across two schemes, whole-simulation scope including the
+      register-only entry-anchor edge case, multi-suite scoping, the present-clause exclusion,
+      and an update-clause regression guard). Full suite green throughout (357 unit + 44
+      FileCheck, 1 xfailed unchanged), `ruff check` clean.
+    - **Copilot review fixes (2026-07-19):** the initial insertion logic anchored every tier
+      (`AccEnterDataOp`/`AccExitDataOp`, the structured `AccDataBeginOp`/`AccDataEndOp` region,
+      and the update-clause ops) directly at `InsertPoint.before/after(suite_call)`. Since a later
+      insertion at that same point always lands closer to `suite_call` than an earlier one,
+      whichever tier's code ran last ended up interleaved *inside* the structured region instead
+      of outside it — confirmed concretely in regenerated `examples/kessler` output (`!$acc enter
+      data copyin(cpair, z)` was landing *after* `!$acc data copy(...)` instead of before it, and
+      `exit data` before `end data` instead of after). Fixed by capturing the inserted
+      `AccDataBeginOp`/`AccDataEndOp` in local `data_begin_op`/`data_end_op` variables and
+      anchoring the enter/exit-data insertions to those ops directly (falling back to
+      `suite_call` when no structured region was emitted for that call site), making the nesting
+      deterministic regardless of insertion order. Re-verified against `examples/kessler`: correct
+      nesting confirmed, full suite still green.
+    - **Milestone (2026-07-19): confirmed on the project owner's HPC system (nvhpc/nvfortran)**,
+      both before and after the Copilot-review ordering fix — passed CI and manual HPC
+      verification.
+  - **Making the `scheme=host + model=device` (update self/update device) clause path robust —
+    (a) done (2026-07-19), (b)/(c) still not implemented, not scheduled.**
+    - **(a): hoisting extended to "update" variables — done.** Turned out different from the
+      original sketch above (which guessed unconditional whole-simulation anchoring using the
+      new enter/exit-data ops): after discussing the design trade-offs with the project owner,
+      built as a direct extension of Option 2's existing machinery instead. `_analyze_one_suite`
+      now tracks `phases_used` for update-clause variables exactly like copyin/copy/copyout and
+      resolves them through the same `_resolve_lifetime` (whole-sim vs per-timestep, genuine
+      earliest/latest phase, not a hardcoded anchor); `_role_at`/`_wrap_scheme_call` fire a single
+      `AccUpdateSelfOp` at the computed entry phase and a single `AccUpdateDeviceOp` at the exit
+      phase instead of a pair at every touching call site, with nothing at all (no directive, no
+      assertion) at any phase strictly in between. Deliberately reuses the existing
+      `AccUpdateSelfOp`/`AccUpdateDeviceOp` ops, not the new `AccEnterDataOp`/`AccExitDataOp` —
+      CCPP doesn't own an update-clause variable's device allocation (the host model does), so it
+      should only ever synchronize it, never allocate/deallocate it. **Explicit, accepted risk,
+      not silently assumed:** unlike copyin/copy/copyout (pure CCPP-owned scratch device memory,
+      invisible to anything outside this framework), hoisting an update variable assumes nothing
+      outside this suite's own dispatch — in particular, no GPU-resident code the host model runs
+      independently of CCPP (e.g. its own dynamics core) — touches that variable's device copy
+      between the suite's calls. CCPP has no way to verify this itself; documented prominently in
+      `GPUCcppCapPass`'s class docstring rather than deferred. Currently untested in practice: no
+      example in this repo declares a host variable `memory_space = device`, so this path (like
+      the update-clause path generally) has zero real exercise beyond its own unit tests —
+      `tests/unit/test_gpu_data_hoisting.py`'s new `TestUpdateClauseHoisting` (2 tests: a
+      three-phase span confirming sync-once-each-way with nothing at the passthrough phase, and
+      an initialize+run-only span confirming the synthesized-reference path forces the device
+      sync to `finalize`). Full suite green (359 unit + 44 FileCheck, 1 xfailed unchanged),
+      `ruff check` clean.
+    - **(b)/(c): still not implemented, not scheduled.** (b) moving clause insertion from
+      bracketing the *entire* suite-group dispatch call (today's granularity in
+      `GPUCcppCapPass._wrap_scheme_call`) down to *individual* scheme calls within a group —
+      `GPUDataPass._find_call_in_if` already finds calls at that granularity for host-less scratch
+      vars, so this is an ownership/architecture question (does per-scheme-call clause routing move
+      into `GPUDataPass`, which today only handles the host-less case, or does `GPUCcppCapPass`
+      reach down into suite-level function bodies itself) rather than a small patch; (c) handling a
+      group where two schemes touching the same host var need conflicting clauses — not separable
+      work, falls out naturally once (b) is done.
   - **Sequencing finding: (b)/(c) should wait for Phase 7 (full IR unification, below), not be
     attempted before it.** Phase 7's whole point is making "which bucket does this scheme arg
     fall into" a single durable-IR decision instead of the three independently-computed
@@ -361,6 +429,13 @@ starting 3b):
     fourth ad hoc heuristic Phase 7 would then have to reconcile or replace. Option 2 and the
     enter/exit-data lifecycle piece of (a) don't have this dependency and can proceed
     independently, whenever picked up.
+  - **OMP backend equivalent: not implemented, not scheduled.** `directive="omp"` never gets
+    hoisting from Option 2's work — it keeps the original per-call `OmpTargetDataBeginOp`/
+    `OmpTargetDataEndOp` structured-region path unconditionally. Mirroring the ACC hoisting logic
+    for OMP `target data`/`target enter data`/`target exit data` would need the OMP-equivalent
+    unstructured ops (none exist yet) plus routing `GPUCcppCapPass`'s existing per-suite
+    `VarLifetime` analysis (already directive-agnostic) through an OMP-specific emission path
+    alongside the current ACC-only one in `_wrap_scheme_call`.
   - **Milestone (2026-07-19): confirmed on the project owner's HPC system (nvhpc/nvfortran).**
     `examples/kessler` now builds *and executes* under `ARCH=GPU`, producing bit-for-bit
     identical output to the CPU build. First real GPU pass/fail confirmation for this codebase.
