@@ -704,3 +704,142 @@ class TestUpdateClauseHoisting:
         assert _no_acc_directive_line_mentions(run_fn, "wholesim_upd")
         assert "update device(wholesim_upd" in finalize_fn
         assert "update self(wholesim_upd" not in finalize_fn
+
+
+# ── Group F: per-timestep hoisting alongside an independent finalize touch ───
+#
+# A variable referenced across a genuine per-timestep span (timestep_initial
+# + run) *and* independently at finalize -- finalize can't anchor
+# whole-simulation scope on its own (see _resolve_lifetime: only
+# register/initialize can), so this variable is per-timestep hoisted (entry
+# at timestep_initial, exit at run) while its finalize touch falls outside
+# that range and stays on the legacy per-call path independently (_role_at's
+# "unused" role). Exercises both the copyin/copy/copyout path and the
+# update path through the same "unused" fallback.
+
+_GROUP_F_SCHEME = f"""\
+[ccpp-table-properties]
+  name = hoist_scheme_fz
+  type = scheme
+[ccpp-arg-table]
+  name = hoist_scheme_fz_timestep_init
+  type = scheme
+[ fz_var ]
+{_device_arg("test_fz_var", intent="inout")}
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_fz_run
+  type = scheme
+[ fz_var ]
+{_device_arg("test_fz_var", intent="inout")}
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_fz_finalize
+  type = scheme
+[ fz_var ]
+{_device_arg("test_fz_var", intent="inout")}
+{CCPP_MANDATORY_ARGS}
+"""
+
+_GROUP_F_HOST = _host_module_meta(
+    "hoist_host_fz",
+    _host_var_block("fz_var", "test_fz_var"),
+)
+
+_GROUP_F_SUITE_XML = minimal_suite_xml("hoist_scheme_fz", suite_name="hoist_suite_fz")
+
+_GROUP_F_UPD_SCHEME = f"""\
+[ccpp-table-properties]
+  name = hoist_scheme_fz_upd
+  type = scheme
+[ccpp-arg-table]
+  name = hoist_scheme_fz_upd_timestep_init
+  type = scheme
+[ fz_upd_var ]
+  standard_name = test_fz_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_fz_upd_run
+  type = scheme
+[ fz_upd_var ]
+  standard_name = test_fz_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = hoist_scheme_fz_upd_finalize
+  type = scheme
+[ fz_upd_var ]
+  standard_name = test_fz_upd_var
+  long_name = CPU-only scheme, host keeps this on GPU
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_GROUP_F_UPD_HOST = _host_module_meta(
+    "hoist_host_fz_upd",
+    _host_var_block("fz_upd_var", "test_fz_upd_var", device=True),
+)
+
+_GROUP_F_UPD_SUITE_XML = minimal_suite_xml("hoist_scheme_fz_upd", suite_name="hoist_suite_fz_upd")
+
+
+class TestFinalizeAlongsidePerTimestepHoisting:
+    """Group F: finalize can't anchor whole-sim scope alone, so a variable
+    with a real per-timestep span plus an independent finalize touch still
+    hoists the per-timestep span, leaving finalize on the legacy path."""
+
+    def test_copy_var_hoists_per_timestep_finalize_touch_stays_legacy(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            scheme_metas=[_GROUP_F_SCHEME],
+            host_metas=[_GROUP_F_HOST],
+            suite_xml=_GROUP_F_SUITE_XML,
+        )
+        initial_fn = _fn_body(fortran, "HoistSuiteFz_ccpp_physics_timestep_initial")
+        run_fn = _fn_body(fortran, "HoistSuiteFz_ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "HoistSuiteFz_ccpp_physics_finalize")
+
+        assert "enter data" in initial_fn
+        assert "fz_var" in initial_fn
+        assert "exit data" in run_fn
+        assert "fz_var" in run_fn
+        # finalize's own touch is independent of the hoisted span: full
+        # legacy structured transfer, no enter/exit-data.
+        assert "copy(fz_var" in finalize_fn or "copyin(fz_var" in finalize_fn or "copyout(fz_var" in finalize_fn
+        assert _no_data_directive_line_mentions(finalize_fn, "fz_var")
+
+    def test_update_var_hoists_per_timestep_finalize_touch_stays_legacy(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            scheme_metas=[_GROUP_F_UPD_SCHEME],
+            host_metas=[_GROUP_F_UPD_HOST],
+            suite_xml=_GROUP_F_UPD_SUITE_XML,
+        )
+        initial_fn = _fn_body(fortran, "HoistSuiteFzUpd_ccpp_physics_timestep_initial")
+        run_fn = _fn_body(fortran, "HoistSuiteFzUpd_ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "HoistSuiteFzUpd_ccpp_physics_finalize")
+
+        assert "update self(fz_upd_var" in initial_fn
+        assert "update device(fz_upd_var" not in initial_fn
+        assert "update device(fz_upd_var" in run_fn
+        assert "update self(fz_upd_var" not in run_fn
+        # finalize's own touch is independent of the hoisted span: full
+        # legacy per-call self+device pair, right at its own call site.
+        assert "update self(fz_upd_var" in finalize_fn
+        assert "update device(fz_upd_var" in finalize_fn

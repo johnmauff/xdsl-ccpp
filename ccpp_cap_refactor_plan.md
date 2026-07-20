@@ -32,9 +32,10 @@ entry in this log:
 
 - **`ccpp_cap.py`: 853 lines** (was 4,749 at the plan's start — Phases 1-5 below account for
   the reduction).
-- **Full test suite: 359 unit tests passed + 44 FileCheck passed, 1 xfailed** (305 unit tests
+- **Full test suite: 361 unit tests passed + 44 FileCheck passed, 1 xfailed** (305 unit tests
   before this session's `test_gpu_data_hoisting.py` addition, 357 after Option 2, 359 after
-  item 1(a)'s update-clause hoisting extension; the one accepted xfail exception is the rank-3
+  item 1(a)'s update-clause hoisting extension, 361 after the second Copilot-review fix to
+  `_resolve_lifetime`'s whole-sim rule; the one accepted xfail exception is the rank-3
   chost/`--bind-c` question — still open, see the entries below on that). Green throughout every
   phase since Phase 0; **the "some existing tests already broken" state from the plan's start no
   longer applies and hasn't since Phase 0.**
@@ -43,15 +44,15 @@ entry in this log:
   `tests/unit/` (22 after this session, with `test_gpu_data_hoisting.py` added). Treat this as an
   approximate, not a precisely reproduced recomputation of whatever methodology produced the
   original 0.25:1 figure.
-- **`gpu_ccpp_cap_pass.py`: 740 lines** (660 after Option 2's cross-function OpenACC
-  data-hoisting rewrite below, before item 1(a)'s update-clause hoisting extension; 405 before
-  Option 2; 339 before the lifecycle-phase-coverage extension that preceded it) and
-  **`gpu_data_pass.py`: 257 lines** (untouched by item 1(a) — see "Current state" above on why
-  the two passes' host-less-scratch-array and host-matched-variable paths never overlap) — both
-  outside the original 6-phase plan's scope (that plan targeted `ccpp_cap.py` specifically) but
-  touched heavily in this same session; see the GPU/OpenACC entries further down. New
-  `tests/unit/test_gpu_data_hoisting.py`: 706 lines, 10 tests (8 after Option 2, +2 for item
-  1(a)'s `TestUpdateClauseHoisting`).
+- **`gpu_ccpp_cap_pass.py`: 775 lines** (740 after item 1(a)'s update-clause hoisting extension;
+  660 after Option 2's cross-function OpenACC data-hoisting rewrite below; 405 before Option 2;
+  339 before the lifecycle-phase-coverage extension that preceded it) and **`gpu_data_pass.py`:
+  257 lines** (untouched by item 1(a) — see "Current state" above on why the two passes'
+  host-less-scratch-array and host-matched-variable paths never overlap) — both outside the
+  original 6-phase plan's scope (that plan targeted `ccpp_cap.py` specifically) but touched
+  heavily in this same session; see the GPU/OpenACC entries further down. New
+  `tests/unit/test_gpu_data_hoisting.py`: 845 lines, 12 tests (8 after Option 2, +2 for item
+  1(a)'s `TestUpdateClauseHoisting`, +2 for `TestFinalizeAlongsidePerTimestepHoisting`).
 - Everything above reflects this session's cumulative work, not just today: the 6-phase
   `ccpp_cap.py` decomposition, Phase 7's design work, the subcycle/duplication-sweep fixes, the
   GPU lifecycle-coverage extension and its Copilot-review fixes, the cross-function OpenACC
@@ -383,6 +384,29 @@ starting 3b):
     - **Milestone (2026-07-19): confirmed on the project owner's HPC system (nvhpc/nvfortran)**,
       both before and after the Copilot-review ordering fix — passed CI and manual HPC
       verification.
+    - **Second Copilot review finding (2026-07-19), on item 1(a)'s PR: docstring/implementation
+      mismatch in `_resolve_lifetime`'s whole-sim rule.** The class docstring said "if any of
+      {register, initialize, finalize} reference the variable, it gets whole-simulation scope,"
+      but `_resolve_lifetime` only ever accepted `register`/`initialize` as an entry anchor —
+      finalize-only one-time-phase usage returned `hoisted=False` unconditionally. The narrow
+      case (a variable used *only* at `finalize`, nowhere else at all) is correctly non-hoistable
+      (entry would equal exit — nothing to span, same reasoning as the already-documented
+      per-timestep degenerate case) and just needed the docstring corrected. But digging further
+      surfaced a real, broader gap the narrow framing didn't capture: `_resolve_lifetime` returned
+      `hoisted=False` for *any* variable touching `finalize` at all, even one with a genuine
+      per-timestep span alongside it (e.g. used at `timestep_initial` + `run` + `finalize`) —
+      losing all hoisting benefit for the per-timestep portion too, not just failing to hoist the
+      lone `finalize` touch. Decided with the project owner to fix the implementation, not just
+      the docstring: `_resolve_lifetime` now falls through to per-timestep hoisting when
+      `finalize` is the *only* one-time-phase usage, leaving `finalize` as an independent touch
+      outside the hoisted range. This makes `_role_at`'s `"unused"` role reachable for the first
+      time (previously commented "not reachable in practice," accurately, before this fix) —
+      `_wrap_scheme_call` now folds `"unused"` into the same handling as `"legacy"`, so that
+      independent `finalize` touch still gets a correct full per-call transfer, just outside the
+      hoisted span. Verified for both the copyin/copy/copyout path and the update path (which
+      shares the same `_resolve_lifetime`/`_role_at` machinery) via two new tests in
+      `TestFinalizeAlongsidePerTimestepHoisting`. Full suite green (361 unit + 44 FileCheck, 1
+      xfailed unchanged), `ruff check` clean.
   - **Making the `scheme=host + model=device` (update self/update device) clause path robust —
     (a) done (2026-07-19), (b)/(c) still not implemented, not scheduled.**
     - **(a): hoisting extended to "update" variables — done.** Turned out different from the

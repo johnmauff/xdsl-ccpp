@@ -133,22 +133,34 @@ class GPUCcppCapPass(ModulePass):
     data`/`exit data` for copyin/copy/copyout, or a single `!$acc update
     self`/`update device` pair for update:
 
-      - If any of {register, initialize, finalize} reference the variable,
-        it gets whole-simulation scope: entry at the earliest of
-        {register, initialize} actually used, exit always at `finalize`
-        (the only phase guaranteed to run exactly once after every
-        timestep, so the only safe exit anchor once entry is forced out of
-        the once-per-timestep group -- register/initialize/finalize and
+      - If `register` or `initialize` reference the variable, it gets
+        whole-simulation scope: entry at the earliest of {register,
+        initialize} actually used, exit always at `finalize` (the only
+        phase guaranteed to run exactly once after every timestep, so the
+        only safe exit anchor once entry is forced out of the
+        once-per-timestep group -- register/initialize/finalize and
         timestep_initial/run/timestep_final are never mixed as an
         entry/exit pair, since enter_data/exit_data reference-counting
         requires both ends to run the same number of times; the same
         constraint is applied to the update self/device pair for
-        consistency, even though it isn't itself reference-counted).
-      - Otherwise (only used among timestep_initial/run/timestep_final), it
-        gets per-timestep scope: entry/exit are the actual earliest/latest
-        of those three phases the variable is used in. If entry == exit
-        (used in only one of the three), hoisting gains nothing, and the
-        variable stays on the legacy path (VarLifetime.hoisted = False).
+        consistency, even though it isn't itself reference-counted). This
+        covers every phase the variable could be used in, `finalize`
+        included, since `finalize` is always the exit.
+      - Otherwise, entry/exit are the actual earliest/latest of
+        {timestep_initial, run, timestep_final} the variable is used in
+        (`finalize`-only usage, with no register/initialize usage either,
+        can't anchor entry on its own -- see _resolve_lifetime -- so it
+        falls to this per-timestep rule too). If entry == exit (used in at
+        most one of the three), hoisting gains nothing, and the variable
+        stays on the legacy path (VarLifetime.hoisted = False) for every
+        phase it's used in. If the variable is *also* referenced at
+        `finalize` on top of a genuine per-timestep span, that finalize
+        touch falls outside the hoisted range (finalize can't be reached by
+        stretching a per-timestep exit to cover it -- see the
+        reference-counting note above) and stays on the legacy per-call
+        path independently, while the per-timestep span is still hoisted
+        (_role_at's "unused" role, folded into "legacy" by
+        _wrap_scheme_call).
 
     Any phase strictly between entry and exit gets a plain present() clause
     for copyin/copy/copyout variables (pure runtime assertion, no data
@@ -298,18 +310,25 @@ class GPUCcppCapPass(ModulePass):
             # wrong to enter at initialize (register runs first). Exit is
             # always finalize (see class docstring for why).
             candidates = one_time - {"finalize"}
-            if not candidates:
-                # Only finalize itself references this var directly, with no
-                # earlier one-time-phase or per-timestep usage -- nothing to
-                # span (entry would equal exit); leave on the legacy path.
-                return VarLifetime(kind, used, None, None, False)
-            entry = min(candidates, key=_PHASE_RANK.__getitem__)
-            return VarLifetime(kind, used, entry, "finalize", True)
+            if candidates:
+                entry = min(candidates, key=_PHASE_RANK.__getitem__)
+                return VarLifetime(kind, used, entry, "finalize", True)
+            # Only finalize itself is used among the one-time phases (no
+            # register/initialize usage) -- finalize can't anchor entry on
+            # its own (that would make entry == exit, spanning nothing), so
+            # whole-sim scope doesn't apply here. Fall through to check
+            # whether the per-timestep phases alone still justify hoisting;
+            # if they do, finalize remains a separate touch outside the
+            # hoisted range, always on the legacy per-call path (_role_at
+            # returns "unused" for it, which _wrap_scheme_call treats the
+            # same as "legacy" -- see its classification loop).
 
         per_ts = used & _PER_TIMESTEP_PHASES
         if len(per_ts) <= 1:
             # Degenerate: used in at most one of timestep_initial/run/
-            # timestep_final. No hoisting benefit -- stay on the legacy path.
+            # timestep_final, and (if reached via the finalize-only
+            # fallthrough above) nowhere else either -- no hoisting benefit,
+            # stay on the legacy path for every phase used.
             return VarLifetime(kind, used, None, None, False)
         entry = min(per_ts, key=_PHASE_RANK.__getitem__)
         exit_ = max(per_ts, key=_PHASE_RANK.__getitem__)
@@ -321,10 +340,23 @@ class GPUCcppCapPass(ModulePass):
         Returns "legacy" (present variables, always; degenerate/single-phase
         copyin/copy/copyout/update variables -- unchanged per-call
         AccDataBeginOp/AccDataEndOp or AccUpdateSelfOp/AccUpdateDeviceOp
-        path), "enter", "exit", or "passthrough" (copyin/copy/copyout only --
+        path), "enter", "exit", "passthrough" (copyin/copy/copyout only --
         present-only, no data movement, safe to repeat every phase strictly
         between entry and exit; hoisted "update" variables get nothing at
-        the equivalent phases -- see _wrap_scheme_call).
+        the equivalent phases -- see _wrap_scheme_call), or "unused".
+
+        "unused" arises specifically for a variable hoisted per-timestep
+        (entry/exit within timestep_initial/run/timestep_final) that is
+        *also* referenced at `finalize` -- finalize can't anchor whole-sim
+        scope on its own (see _resolve_lifetime), so it's left outside the
+        hoisted range entirely. _wrap_scheme_call treats "unused" exactly
+        like "legacy": a full per-call transfer at that one phase,
+        independent of the hoisted span elsewhere. This can only ever be
+        `finalize` falling after a per-timestep exit, never a phase falling
+        before an entry -- finalize is always last in canonical phase
+        order, and whole-sim-scoped lifetimes (entry in
+        {register, initialize}) already cover every phase up to their
+        `finalize` exit via "enter"/"passthrough"/"exit", leaving no gap.
         """
         if not lifetime.hoisted or self.directive != "acc":
             return "legacy"
@@ -334,7 +366,7 @@ class GPUCcppCapPass(ModulePass):
             return "exit"
         if _PHASE_RANK[lifetime.entry_phase] < _PHASE_RANK[phase] < _PHASE_RANK[lifetime.exit_phase]:
             return "passthrough"
-        return "unused"  # not reachable in practice -- see _wrap_scheme_call
+        return "unused"
 
     # ---- Discovery: find every per-suite dispatch call site -----------------
 
@@ -532,7 +564,11 @@ class GPUCcppCapPass(ModulePass):
                 continue
             seen_here.add(var_name)
             role = self._role_at(lt, phase)
-            if role == "legacy":
+            if role in ("legacy", "unused"):
+                # "unused" is a hoisted variable's independent finalize
+                # touch falling outside its per-timestep entry/exit range
+                # (see _role_at) -- treated identically to "legacy": a full
+                # per-call transfer at this one phase only.
                 if lt.kind == "present":
                     legacy_present.append(var_name)
                 elif lt.kind == "update":
@@ -561,10 +597,9 @@ class GPUCcppCapPass(ModulePass):
                 # whatever the entry-phase update self left in host memory.
                 if lt.kind != "update":
                     passthrough_present.append(var_name)
-            # "unused" isn't reachable here: a var only appears in true_block
-            # if this call's own scheme references it, and entry/exit are
-            # chosen as the min/max of phases_used, so every naturally
-            # referenced phase falls within [entry, exit].
+            # "unused" is folded into the "legacy" branch above -- see
+            # _role_at's docstring for when it arises (a per-timestep-hoisted
+            # variable's independent finalize touch).
 
         # Forced anchors with no natural HostVarRefOp at this phase.
         for var_name, lt in lifetimes.items():
