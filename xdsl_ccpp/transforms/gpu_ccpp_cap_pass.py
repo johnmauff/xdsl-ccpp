@@ -17,6 +17,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     HostVarRefOp,
     OmpTargetDataBeginOp,
     OmpTargetDataEndOp,
+    OmpTargetEnterDataOp,
+    OmpTargetExitDataOp,
     OmpTargetUpdateFromOp,
     OmpTargetUpdateToOp,
     StrCmpOp,
@@ -122,8 +124,8 @@ class GPUCcppCapPass(ModulePass):
 
         scheme=host   + model=host    -> no directive (CPU path, default)
 
-    Cross-function data hoisting (ACC backend only -- see directive below):
-    for copyin/copy/copyout and update variables, instead of independently
+    Cross-function data hoisting (both ACC and OMP backends -- see directive
+    below): for copyin/copy/copyout and update variables, instead of independently
     transferring/syncing the variable on every dispatcher call that touches
     it, this pass computes the actual earliest and latest lifecycle phase
     (of the six above) the variable is used in, within THIS suite
@@ -196,10 +198,11 @@ class GPUCcppCapPass(ModulePass):
     # Usage: generate-gpu-ccpp-cap            (default: OpenACC)
     #        generate-gpu-ccpp-cap{directive=omp}  (OpenMP target)
     #
-    # Cross-function hoisting is ACC-only for now -- the OMP backend keeps
-    # its pre-existing per-call OmpTargetDataBeginOp/OmpTargetDataEndOp
-    # behavior unchanged (still benefiting from the per-suite scoping fix
-    # below, just not the enter/exit-data skip). See _role_at.
+    # Cross-function hoisting applies to both backends -- OMP uses
+    # OmpTargetEnterDataOp/OmpTargetExitDataOp (map(to:)/map(alloc:) and
+    # map(from:)/map(release:)) and OmpTargetUpdateFromOp/OmpTargetUpdateToOp
+    # where ACC uses AccEnterDataOp/AccExitDataOp and
+    # AccUpdateSelfOp/AccUpdateDeviceOp. See _role_at/_wrap_scheme_call.
     directive: str = "acc"
 
     # ---- Analysis: per-suite variable lifetimes -----------------------------
@@ -358,7 +361,7 @@ class GPUCcppCapPass(ModulePass):
         {register, initialize}) already cover every phase up to their
         `finalize` exit via "enter"/"passthrough"/"exit", leaving no gap.
         """
-        if not lifetime.hoisted or self.directive != "acc":
+        if not lifetime.hoisted:
             return "legacy"
         if phase == lifetime.entry_phase:
             return "enter"
@@ -603,7 +606,7 @@ class GPUCcppCapPass(ModulePass):
 
         # Forced anchors with no natural HostVarRefOp at this phase.
         for var_name, lt in lifetimes.items():
-            if not lt.hoisted or self.directive != "acc" or var_name in seen_here:
+            if not lt.hoisted or var_name in seen_here:
                 continue
             if phase == lt.entry_phase:
                 if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
@@ -681,30 +684,40 @@ class GPUCcppCapPass(ModulePass):
         if enter_copyin or enter_create:
             enter_copyin_refs = self._resolve_array_refs(true_block, set(enter_copyin), use_sections=False)
             enter_create_refs = self._resolve_array_refs(true_block, set(enter_create), use_sections=False)
-            Rewriter.insert_op(
-                AccEnterDataOp(copyin=enter_copyin_refs, create=enter_create_refs),
-                enter_anchor,
-            )
+            if self.directive == "omp":
+                # OMP's map(to:...) is the enter-data equivalent of ACC's
+                # copyin(...); map(alloc:...) of create(...).
+                enter_op = OmpTargetEnterDataOp(to=enter_copyin_refs, alloc=enter_create_refs)
+            else:  # acc (default)
+                enter_op = AccEnterDataOp(copyin=enter_copyin_refs, create=enter_create_refs)
+            Rewriter.insert_op(enter_op, enter_anchor)
 
         if exit_copyout or exit_delete:
             exit_copyout_refs = self._resolve_array_refs(true_block, set(exit_copyout), use_sections=False)
             exit_delete_refs  = self._resolve_array_refs(true_block, set(exit_delete),  use_sections=False)
-            Rewriter.insert_op(
-                AccExitDataOp(copyout=exit_copyout_refs, delete=exit_delete_refs),
-                exit_anchor,
-            )
+            if self.directive == "omp":
+                # OMP's map(from:...) is the exit-data equivalent of ACC's
+                # copyout(...); map(release:...) of delete(...).
+                exit_op = OmpTargetExitDataOp(from_=exit_copyout_refs, release=exit_delete_refs)
+            else:  # acc (default)
+                exit_op = AccExitDataOp(copyout=exit_copyout_refs, delete=exit_delete_refs)
+            Rewriter.insert_op(exit_op, exit_anchor)
 
         # Hoisted "update" variables: a single sync pair per suite instead
-        # of one per touching call site. ACC-only, same as AccEnterDataOp/
-        # AccExitDataOp above -- _role_at never returns "enter"/"exit" for
-        # directive == "omp", so these two lists are always empty there.
+        # of one per touching call site.
         if update_enter_vars:
             update_enter_refs = self._resolve_array_refs(true_block, update_enter_vars, use_sections=False)
-            Rewriter.insert_op(AccUpdateSelfOp(array_refs=update_enter_refs), enter_anchor)
+            if self.directive == "omp":
+                Rewriter.insert_op(OmpTargetUpdateFromOp(array_refs=update_enter_refs), enter_anchor)
+            else:  # acc (default)
+                Rewriter.insert_op(AccUpdateSelfOp(array_refs=update_enter_refs), enter_anchor)
 
         if update_exit_vars:
             update_exit_refs = self._resolve_array_refs(true_block, update_exit_vars, use_sections=False)
-            Rewriter.insert_op(AccUpdateDeviceOp(array_refs=update_exit_refs), exit_anchor)
+            if self.directive == "omp":
+                Rewriter.insert_op(OmpTargetUpdateToOp(array_refs=update_exit_refs), exit_anchor)
+            else:  # acc (default)
+                Rewriter.insert_op(AccUpdateDeviceOp(array_refs=update_exit_refs), exit_anchor)
 
         # Update directives go inside the inner scf.IfOp's true region,
         # bracketing the actual suite physics call. This is the legacy

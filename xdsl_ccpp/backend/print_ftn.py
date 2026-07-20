@@ -50,6 +50,8 @@ from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataBeginOp as CCPPOmpTargetD
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp    as CCPPOmpTargetDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp   as CCPPOmpTargetUpdateToOp
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetEnterDataOp  as CCPPOmpTargetEnterDataOp
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetExitDataOp   as CCPPOmpTargetExitDataOp
 from xdsl_ccpp.dialects.ccpp_utils import ModuleVarOp           as CCPPModuleVarOp
 from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
@@ -735,8 +737,8 @@ class ftnPrintContext:
                     self.print("!$omp target data")
                 else:
                     self._emit_omp_directive("target data", [
-                        ("map(tofrom:", tofrom_names),
-                        ("map(alloc:",  alloc_names),
+                        ("map(tofrom:", tofrom_names, ""),
+                        ("map(alloc:",  alloc_names,  ""),
                     ])
             case CCPPOmpTargetDataEndOp():
                 self.print("!$omp end target data")
@@ -746,6 +748,20 @@ class ftnPrintContext:
             case CCPPOmpTargetUpdateToOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_omp_directive("target update", [("to", var_names)])
+            case CCPPOmpTargetEnterDataOp():
+                to_names    = [self._get_variable_name_for(v) for v in op.to_arrays]
+                alloc_names = [self._get_variable_name_for(v) for v in op.alloc_arrays]
+                self._emit_omp_directive("target enter data", [
+                    ("map(to:",    to_names,    ""),
+                    ("map(alloc:", alloc_names, ""),
+                ])
+            case CCPPOmpTargetExitDataOp():
+                from_names    = [self._get_variable_name_for(v) for v in op.from_arrays]
+                release_names = [self._get_variable_name_for(v) for v in op.release_arrays]
+                self._emit_omp_directive("target exit data", [
+                    ("map(from:",    from_names,    ""),
+                    ("map(release:", release_names, ""),
+                ])
             case CCPPKindCastOp():
                 src_name    = self._get_variable_name_for(op.source)
                 result_name = self._get_variable_name_for(op.res)
@@ -1512,7 +1528,7 @@ class ftnPrintContext:
                     inner.print(f"{c_name}(len_trim({ftn_local})+1) = c_null_char")
 
     def _emit_acc_directive(
-        self, keyword: str, clauses: list[tuple[str, list[str]]], *, sentinel: str = "!$acc"
+        self, keyword: str, clauses: list, *, sentinel: str = "!$acc"
     ) -> None:
         """Emit an OpenACC directive with proper continuation at variable boundaries.
 
@@ -1527,8 +1543,18 @@ class ftnPrintContext:
 
         Args:
             keyword:  The OpenACC directive keyword, e.g. 'data' or 'update'.
-            clauses:  List of (clause_name, [var_name_strings]) pairs.
-                      Pairs with empty variable lists are skipped.
+            clauses:  List of (clause_name, [var_name_strings]) pairs, or
+                      (clause_name, [var_name_strings], opener) triples.
+                      Pairs with empty variable lists are skipped. `opener`
+                      defaults to "(" -- the ACC/OMP-update convention, where
+                      clause_name is a bare keyword and exactly one paren is
+                      added (e.g. "copyin" -> "copyin(var)"). OMP's map-based
+                      clauses have a two-level shape instead -- "map(" then a
+                      map-type modifier then ":" then the list, e.g.
+                      "map(tofrom: var)" -- which doesn't fit a single
+                      auto-added "(": pass clause_name as the complete literal
+                      prefix (e.g. "map(tofrom:") with opener="" so nothing
+                      extra is inserted.
 
         Example output for a long copyin list::
 
@@ -1541,14 +1567,16 @@ class ftnPrintContext:
         current = acc_start
         output_lines: list[str] = []
 
-        for clause_name, var_names in clauses:
+        for clause in clauses:
+            clause_name, var_names = clause[0], clause[1]
+            opener = clause[2] if len(clause) > 2 else "("
             if not var_names:
                 continue
             # Build tokens: first includes the clause opener, last closes the paren.
             # e.g. ["copyin(var1,", "var2,", "var3)"]
             tokens = []
             for i, var in enumerate(var_names):
-                prefix = f"{clause_name}(" if i == 0 else ""
+                prefix = f"{clause_name}{opener}" if i == 0 else ""
                 suffix = ")" if i == len(var_names) - 1 else ","
                 tokens.append(prefix + var + suffix)
 
@@ -1563,9 +1591,7 @@ class ftnPrintContext:
         output_lines.append(current)
         for line in output_lines:
             print(line, file=self.output)
-    def _emit_omp_directive(
-        self, keyword: str, clauses: list[tuple[str, list[str]]]
-    ) -> None:
+    def _emit_omp_directive(self, keyword: str, clauses: list) -> None:
         self._emit_acc_directive(keyword, clauses, sentinel="!$omp")
 
     @contextmanager
