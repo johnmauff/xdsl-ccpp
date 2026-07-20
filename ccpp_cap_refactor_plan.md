@@ -1489,9 +1489,9 @@ scheduled, and not a prerequisite for anything above.
 ## Phase 7 — Full IR unification (deferred sub-plan — not part of the original 6-phase scope)
 
 Added 2026-07-19, after the Phase 4 investigation (see above) showed this is genuinely
-stageable rather than the monolithic rewrite first assumed. **Not scheduled** — no obligation to
-pick this up soon; tracked here with an actionable staged plan so whoever does isn't starting
-from a paragraph of rationale alone.
+stageable rather than the monolithic rewrite first assumed. **Stage 1 done (2026-07-20); Stages
+2-4 not scheduled** — no obligation to pick those up soon; tracked here with an actionable
+staged plan so whoever does isn't starting from a paragraph of rationale alone.
 
 **Goal:** a single "does the cap own this variable, or does it come from outside" decision,
 computed once and durable in IR, consumed by `suite_cap.py`, `ccpp_cap.py`'s cap_var_map logic,
@@ -1499,13 +1499,41 @@ and `run_dispatch.py` — replacing today's three sequential, independently-comp
 Full motivating rationale (why the current split exists, the long-term advantage) is under
 Phase 4 above; this section is the execution plan.
 
-- **Stage 1 — Define, don't wire.** An IR op (candidate name: `ccpp.arg_ownership`, or an
-  extension of the existing `ArgSourceKind`/`ResolvedArgOp` machinery if the categories overlap
-  enough — worth deciding during design rather than assuming a parallel enum) recording, per
-  scheme arg, which bucket it falls into (suite-owned/interstitial, host-matched, cap-scratch,
-  unresolved-block) plus whatever payload each bucket needs. Standalone, following the same
-  required/forbidden-field-per-kind + custom `verify_()` pattern `ResolvedArgOp` already
-  established. Not called by any pass yet.
+- **Stage 1 — Define, don't wire. ✅ done (2026-07-20).** The open design question (candidate
+  name `ccpp.arg_ownership`, or extend `ArgSourceKind`/`ResolvedArgOp`) resolved by comparing
+  both bucket-sets against the actual code before writing anything: they're related but not the
+  same classification. `_is_framework_managed`'s docstring is explicit that it decides
+  suite-ownership *before* the suite's subroutine signature exists — interstitial/advected/
+  allocatable args never become dummy args at all, so they never reach `ResolvedArgOp`'s world
+  (there's deliberately no `SuiteOwned` case in `ArgSourceKind`, since the question never comes
+  up there). Conversely `ArgSourceKind` splits host-matched into `Host`/`DdtMember` — a finer,
+  later-stage distinction (does the SSA reference need a `member_path`) the ownership question
+  doesn't care about. Checked `suite_cap.py:280`/`:697`'s direct `is_interstitial`/`allocatable`
+  checks too, to confirm the new op doesn't need to carry *why* an arg is `SuiteOwned` — those
+  are separate downstream concerns (rank-reducing slice construction, scratch-var allocation
+  shape) that stay independent metadata queries. **Decision: a new, separate op**, not an
+  extension — forcing a `SuiteOwned` case into `ArgSourceKind` would add a kind that never needs
+  the SSA-construction payload the enum exists for.
+  - Added to `ccpp.py`, mirroring `ResolvedArgOp`'s exact established pattern: `ArgOwnershipKind`
+    (`StrEnum`: SuiteOwned/HostMatched/CapScratch/Block — explicit string values, not `auto()`,
+    same reason `ArgSourceKind` uses them: `auto()` squashes `HostMatched`/`CapScratch` to
+    `"hostmatched"`/`"capscratch"`, no underscore) + `ArgOwnershipKindAttr` (`EnumAttribute`
+    wrapper) + `ArgOwnershipOp` (`ccpp.arg_ownership`): `arg_name` + `ownership_kind` (both
+    required) + `std_name` (required only for HostMatched/CapScratch — the key into the
+    existing `host_var_map_lc`/`cap_var_map` dicts; forbidden for SuiteOwned/Block). Custom
+    `verify_()` enforces this, following `ResolvedArgOp`'s required/forbidden-per-kind
+    precedent exactly. Both registered on the `CCPP` dialect.
+  - 14 new unit tests in `tests/unit/test_arg_ownership_op.py` (dialect registration, one
+    positive construct+verify case per kind — including the string-tag construction form — plus
+    4 negative verify cases, one per required/forbidden-field violation). All passed on first
+    write.
+  - **Not called by any pass** — zero changes to `suite_cap.py`, `ccpp_cap.py`, or
+    `run_dispatch.py`. Verified zero-impact by construction: full suite 392 passed (378 + 14
+    new) unit, FileCheck unchanged at 44 passed + 1 xfailed (identical to the pre-Stage-1
+    baseline). `ruff check` clean on the new test file; the one new finding in `ccpp.py` itself
+    (a quoted type annotation in `ArgOwnershipOp.__init__`) intentionally left matching
+    `ResolvedArgOp`'s own constructor's identical pre-existing style at the same file, rather
+    than fixing only the new instance and introducing inconsistency.
 - **Stage 2 — Dual-build, don't switch consumers.** Compute the classification early — right
   after `HostVariableMatchPass` has annotated `model_var_name`/`is_interstitial`, before
   `generate-suite-cap` runs — and emit it as durable IR, *alongside* the existing mechanisms
