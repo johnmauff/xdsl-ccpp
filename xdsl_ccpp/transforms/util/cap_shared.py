@@ -11,9 +11,24 @@ ccpp_cap.py itself).
 from xdsl.dialects import arith, llvm, memref, scf
 from xdsl.dialects.builtin import StringAttr, i8
 
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, ArgOwnershipOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERROR_STD_NAMES,
+    CCPP_FRAMEWORK_STD_NAMES,
+)
+
+# Known framework arrays promoted to a fixed cap-owned module variable name,
+# rather than a freshly-allocated scratch var. Used directly by both
+# ccpp_cap.py's _build_cap_var_map and classify_arg_ownership below -- a
+# single definition, not two independently-maintained copies, so the two
+# heuristics can't silently diverge on this list.
+FRAMEWORK_STD_NAME_TO_CAP_VAR: dict = {
+    "ccpp_constituents": "lc_constituent_array",
+    "ccpp_constituent_tendencies": "lc_const_tend",
+}
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
@@ -283,3 +298,94 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
         std_name = raw.lower() if raw else None
         result.append((mlir_type, arg.name, std_name))
     return result
+
+
+def _collect_host_block_std_names(meta_data) -> set:
+    """Standard names declared in HOST-type (not MODULE-type) metadata tables --
+    caller-provided-each-call values with no persisted host module storage, so
+    they stay a genuine passthrough block argument rather than being promoted
+    to a cap-owned module variable.
+
+    Shared by ccpp_cap.py's _build_cap_var_map and classify_arg_ownership
+    below -- previously computed inline only inside _build_cap_var_map; Stage 2
+    of Phase 7 (full IR unification, see ccpp_cap_refactor_plan.md) needs the
+    identical set independently, at the same early point _is_framework_managed
+    already runs, before any suite's subroutine signature exists.
+    """
+    host_block_std: set = set()
+    for tbl_name, props in meta_data.items():
+        if props.getAttr("type") != CCPPType.HOST:
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if var.hasAttr("standard_name"):
+                host_block_std.add(var.getAttr("standard_name").lower())
+    return host_block_std
+
+
+def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> ArgOwnershipOp:
+    """Classify one ccpp.ArgumentOp into its ownership bucket (see
+    ArgOwnershipKind in ccpp.py) -- does the cap own this arg, or does its
+    data come from outside?
+
+    Mirrors suite_cap.py's _is_framework_managed (the SuiteOwned gate) and
+    ccpp_cap.py's _build_cap_var_map (the HostMatched/CapScratch/Block split),
+    but computed purely from this arg's own properties plus module-wide,
+    meta_data-only lookups (host_var_map_lc, host_block_std_names,
+    FRAMEWORK_STD_NAME_TO_CAP_VAR, and the static CCPP_FRAMEWORK_STD_NAMES/
+    CCPP_ERROR_STD_NAMES sets) -- no dependency on any suite's already-built
+    subroutine signature, unlike _build_cap_var_map's current implementation
+    (see the Phase 7 Stage 2 plan for why that dependency is an
+    implementation artifact, not a real ordering requirement).
+
+    Operates on the real ccpp.ArgumentOp (typed property access: is_interstitial,
+    arg_type, dimensions, advected, allocatable, model_var_name, standard_name),
+    not the CCPPArgument descriptor _is_framework_managed uses (hasAttr/getAttr) --
+    the two representations expose the same underlying data differently.
+
+    Returns a constructed, verified (verify() is called before returning)
+    ArgOwnershipOp -- not inserted into the module. Callers
+    (generate-arg-ownership) copy .ownership_kind onto the real
+    ArgumentOp's own `ownership_kind` property, reusing the arg's existing
+    `standard_name` rather than storing std_name a second time.
+    """
+    arg_name = arg_op.arg_name.data
+
+    def _make(kind, std_name=None):
+        ownership = ArgOwnershipOp(arg_name, kind, std_name=std_name)
+        ownership.verify()
+        return ownership
+
+    is_suite_owned = arg_op.is_interstitial is not None or (
+        arg_op.arg_type.data == "real"
+        and arg_op.dimensions is not None
+        and arg_op.dimensions.data > 0
+        and (arg_op.advected is not None or arg_op.allocatable is not None)
+    )
+    if is_suite_owned:
+        return _make(ArgOwnershipKind.SuiteOwned)
+
+    std_name = arg_op.standard_name.data.lower() if arg_op.standard_name is not None else None
+
+    if arg_op.model_var_name is not None:
+        # HostVariableMatchPass only ever sets model_var_name when
+        # standard_name is present (host_var_match_pass.py's match loop skips
+        # any arg with no standard_name before it ever sets model_var_name),
+        # so std_name is expected non-None here. Passed through as-is rather
+        # than substituted -- if that invariant is ever broken elsewhere,
+        # verify() should raise, not be silently masked by a wrong fallback.
+        return _make(ArgOwnershipKind.HostMatched, std_name=std_name)
+
+    if std_name is not None and std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR:
+        return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
+
+    if std_name is None or (
+        std_name in CCPP_FRAMEWORK_STD_NAMES
+        or std_name in CCPP_ERROR_STD_NAMES
+        or std_name in host_block_std_names
+        or std_name in host_var_map_lc
+    ):
+        return _make(ArgOwnershipKind.Block)
+
+    return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
