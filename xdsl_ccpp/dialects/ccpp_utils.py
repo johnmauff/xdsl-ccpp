@@ -494,6 +494,64 @@ class OmpTargetUpdateToOp(IRDLOperation):
         super().__init__(operands=[list(array_refs)])
 
 @irdl_op_definition
+class OmpTargetEnterDataOp(IRDLOperation):
+    """Emit !$omp target enter data map(to:...) map(alloc:...) -- unstructured,
+    the OMP equivalent of AccEnterDataOp (see there for the general
+    unstructured-pairing caveat: must be balanced by hand with exactly one
+    later OmpTargetExitDataOp on the same variables, or the device reference
+    count never reaches zero).
+
+    to_arrays: host->device transfer, establishing residency for variables
+        some caller reads before writing (needs_in) -- OMP's map(to:...)
+        is the direct equivalent of ACC's copyin(...).
+    alloc_arrays: device allocation only, no initial transfer -- variables
+        that are always written before being read (needs_in is False) --
+        equivalent to ACC's create(...).
+    """
+    name = "ccpp_utils.omp_target_enter_data"
+    to_arrays    = var_operand_def()
+    alloc_arrays = var_operand_def()
+
+    irdl_options = [AttrSizedOperandSegments()]
+
+    def __init__(self, to=None, alloc=None):
+        super().__init__(operands=[
+            list(to    or []),
+            list(alloc or []),
+        ])
+
+@irdl_op_definition
+class OmpTargetExitDataOp(IRDLOperation):
+    """Emit !$omp target exit data map(from:...) map(release:...) --
+    unstructured, the exit half of an OmpTargetEnterDataOp/OmpTargetExitDataOp
+    pair (see OmpTargetEnterDataOp).
+
+    from_arrays: device->host transfer, then release residency -- variables
+        some caller reads back after the hoisted region closes (needs_out) --
+        equivalent to ACC's copyout(...).
+    release_arrays: release residency only, no transfer back -- variables
+        nothing reads back on the host side (needs_out is False). Still
+        required to balance the matching OmpTargetEnterDataOp's reference
+        count even though no data moves. "release" (decrements the
+        reference count, freeing only once it reaches zero) is the direct
+        equivalent of ACC's delete(...) -- deliberately not OMP 5.0's
+        stronger map(delete:...), which forces removal regardless of
+        reference count and could tear down a mapping something else still
+        expects to be live.
+    """
+    name = "ccpp_utils.omp_target_exit_data"
+    from_arrays    = var_operand_def()
+    release_arrays = var_operand_def()
+
+    irdl_options = [AttrSizedOperandSegments()]
+
+    def __init__(self, from_=None, release=None):
+        super().__init__(operands=[
+            list(from_   or []),
+            list(release or []),
+        ])
+
+@irdl_op_definition
 class ModuleVarOp(IRDLOperation):
     """Unified module-level variable declaration.
 
@@ -1130,6 +1188,8 @@ CCPPUtils = Dialect(
         OmpTargetDataEndOp,
         OmpTargetUpdateFromOp,
         OmpTargetUpdateToOp,
+        OmpTargetEnterDataOp,
+        OmpTargetExitDataOp,
         ModuleVarOp,
         LazyAllocOp,
         SafeDeallocOp,

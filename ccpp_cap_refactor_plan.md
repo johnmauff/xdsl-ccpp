@@ -32,25 +32,29 @@ entry in this log:
 
 - **`ccpp_cap.py`: 853 lines** (was 4,749 at the plan's start — Phases 1-5 below account for
   the reduction).
-- **Full test suite: 361 unit tests passed + 44 FileCheck passed, 1 xfailed** (305 unit tests
+- **Full test suite: 378 unit tests passed + 44 FileCheck passed, 1 xfailed** (305 unit tests
   before this session's `test_gpu_data_hoisting.py` addition, 357 after Option 2, 359 after
   item 1(a)'s update-clause hoisting extension, 361 after the second Copilot-review fix to
-  `_resolve_lifetime`'s whole-sim rule; the one accepted xfail exception is the rank-3
-  chost/`--bind-c` question — still open, see the entries below on that). Green throughout every
-  phase since Phase 0; **the "some existing tests already broken" state from the plan's start no
-  longer applies and hasn't since Phase 0.**
+  `_resolve_lifetime`'s whole-sim rule, 366 after the OMP `map(...)` paren-bug fix
+  (`test_omp_directives.py`), 368 after the OMP hoisting IR ops' op-level printer tests, 374
+  after wiring OMP hoisting itself into `GPUCcppCapPass` (`test_omp_hoisting.py`'s initial
+  Group A/B/E), 378 after extending `test_omp_hoisting.py` with Group C/D/F; the one accepted
+  xfail exception is the rank-3 chost/`--bind-c` question — still open, see the entries below on
+  that). Green throughout every phase since Phase 0; **the "some existing tests already broken"
+  state from the plan's start no longer applies and hasn't since Phase 0.**
 - **Test:core ratio: ~5,426 test lines / ~18,566 `xdsl_ccpp/` source lines (~0.29:1) before this
   session's GPU data-hoisting tests**, up from 0.25:1 at the plan's start — 21 files under
-  `tests/unit/` (22 after this session, with `test_gpu_data_hoisting.py` added). Treat this as an
-  approximate, not a precisely reproduced recomputation of whatever methodology produced the
-  original 0.25:1 figure.
-- **`gpu_ccpp_cap_pass.py`: 775 lines** (740 after item 1(a)'s update-clause hoisting extension;
-  660 after Option 2's cross-function OpenACC data-hoisting rewrite below; 405 before Option 2;
-  339 before the lifecycle-phase-coverage extension that preceded it) and **`gpu_data_pass.py`:
-  257 lines** (untouched by item 1(a) — see "Current state" above on why the two passes'
-  host-less-scratch-array and host-matched-variable paths never overlap) — both outside the
-  original 6-phase plan's scope (that plan targeted `ccpp_cap.py` specifically) but touched
-  heavily in this same session; see the GPU/OpenACC entries further down. New
+  `tests/unit/` (25 after this session: `test_gpu_data_hoisting.py`, `test_omp_directives.py`,
+  `test_omp_hoisting.py` added). Treat this as an approximate, not a precisely reproduced
+  recomputation of whatever methodology produced the original 0.25:1 figure.
+- **`gpu_ccpp_cap_pass.py`: 788 lines** (775 before OMP hoisting was wired in; 740 after item
+  1(a)'s update-clause hoisting extension; 660 after Option 2's cross-function OpenACC
+  data-hoisting rewrite below; 405 before Option 2; 339 before the lifecycle-phase-coverage
+  extension that preceded it) and **`gpu_data_pass.py`: 257 lines** (untouched by item 1(a) or
+  the OMP hoisting wiring — see "Current state" above on why the two passes' host-less-
+  scratch-array and host-matched-variable paths never overlap) — both outside the original
+  6-phase plan's scope (that plan targeted `ccpp_cap.py` specifically) but touched heavily in
+  this same session; see the GPU/OpenACC entries further down. New
   `tests/unit/test_gpu_data_hoisting.py`: 845 lines, 12 tests (8 after Option 2, +2 for item
   1(a)'s `TestUpdateClauseHoisting`, +2 for `TestFinalizeAlongsidePerTimestepHoisting`).
 - Everything above reflects this session's cumulative work, not just today: the 6-phase
@@ -463,13 +467,150 @@ starting 3b):
     fourth ad hoc heuristic Phase 7 would then have to reconcile or replace. Option 2 and the
     enter/exit-data lifecycle piece of (a) don't have this dependency and can proceed
     independently, whenever picked up.
-  - **OMP backend equivalent: not implemented, not scheduled.** `directive="omp"` never gets
-    hoisting from Option 2's work — it keeps the original per-call `OmpTargetDataBeginOp`/
-    `OmpTargetDataEndOp` structured-region path unconditionally. Mirroring the ACC hoisting logic
-    for OMP `target data`/`target enter data`/`target exit data` would need the OMP-equivalent
-    unstructured ops (none exist yet) plus routing `GPUCcppCapPass`'s existing per-suite
-    `VarLifetime` analysis (already directive-agnostic) through an OMP-specific emission path
-    alongside the current ACC-only one in `_wrap_scheme_call`.
+  - **OMP backend equivalent ("item #2"): done (2026-07-20).** `directive="omp"` now gets the
+    same cross-function hoisting Option 2 built for ACC — `OmpTargetEnterDataOp`/
+    `OmpTargetExitDataOp` and `OmpTargetUpdateFromOp`/`OmpTargetUpdateToOp` fire once at the
+    computed entry/exit phase instead of the old per-call `OmpTargetDataBeginOp`/
+    `OmpTargetDataEndOp` structured-region path on every touching call (which remains, unchanged,
+    for degenerate/single-phase variables — same as ACC's legacy path).
+    - **Prerequisite bug, found while scoping (2026-07-19), fixed (2026-07-20): existing OMP
+      `map(...)` clauses rendered malformed.** `print_ftn.py`'s `CCPPOmpTargetDataBeginOp` case
+      arm called `_emit_omp_directive`/`_emit_acc_directive` with clause names like
+      `"map(tofrom:"` and `"map(alloc:"`, but that shared helper *also* appended its own `"("`
+      before the first variable (the mechanism that makes ACC's bare clause names like
+      `"copyin"` turn into `copyin(var)`). Combining the two produced a doubled, unbalanced
+      paren — confirmed by actually generating OMP output through the pipeline before the fix:
+      `!$omp target data map(alloc:(always_present)` and `!$omp target data
+      map(tofrom:(three_phase)`, both missing a closing paren, invalid Fortran. Affected both
+      `map(tofrom:...)` and `map(alloc:...)` uniformly, on both `GPUDataPass._process_physics_fn`'s
+      and `GPUCcppCapPass._wrap_scheme_call`'s existing structured-region emission. `target
+      update from(...)`/`to(...)` (the update-clause path) was unaffected — those clause names
+      don't have their own `map(...)` wrapper, so they fit the old single-paren assumption
+      correctly.
+      - **Fix:** `_emit_acc_directive`'s clause tuples now optionally accept a third element,
+        `opener` (default `"("`, preserving every existing 2-tuple call site unchanged). Passing
+        `opener=""` lets a clause_name be the complete literal prefix (e.g. `"map(tofrom:"`)
+        with nothing extra appended — used by the `target data` case arm's two clauses. No
+        change needed to `GPUDataPass`/`GPUCcppCapPass` themselves; this was purely a printer-level
+        fix, both existing call sites (`GPUDataPass`'s suite_cap-level region and
+        `GPUCcppCapPass`'s ccpp_cap-level region) render correctly through the one shared helper.
+      - **New test coverage, the first real OMP directive-output tests in the repo:**
+        `tests/unit/test_omp_directives.py` (5 tests) — reuses `test_gpu_directives.py`'s existing
+        present/copyin/host-less-scratch fixtures with `directive="omp"` instead of `"acc"`
+        (confirms the fix across `map(alloc:...)`, `map(tofrom:...)`, and the suite_cap-level
+        host-less path), plus a small dedicated fixture confirming `target update
+        from(...)`/`to(...)` still renders correctly (regression guard on the tuple-unpacking
+        change, though that path was never actually broken). Verified the new tests actually
+        catch the regression: reverted the fix locally and confirmed the 3 map-clause tests fail
+        without it, then restored the fix. Full suite green (366 unit + 44 FileCheck, 1 xfailed
+        unchanged), `ruff check` clean (same 3 pre-existing baseline issues in `print_ftn.py`,
+        unchanged from before this fix).
+    - **New IR ops: done (2026-07-20).** `OmpTargetEnterDataOp` (`map(to:...)`/`map(alloc:...)`,
+      mirroring `AccEnterDataOp`'s copyin/create split) and `OmpTargetExitDataOp`
+      (`map(from:...)`/`map(release:...)` — OMP's `release` is the ref-counted-decrement analog
+      of ACC's `delete`, not OMP 5.0's stronger `delete` mapping-type, which forces removal
+      regardless of reference count) added to `ccpp_utils.py` and registered in the `CCPPUtils`
+      dialect. The update-clause hoist path needs **no new ops** — `OmpTargetUpdateFromOp`/
+      `OmpTargetUpdateToOp` already exist and are the direct equivalents of
+      `AccUpdateSelfOp`/`AccUpdateDeviceOp` used for that path. Printer support added too (case
+      arms in `print_ftn.py`, using the `opener=""` mechanism from the paren-bug fix above — both
+      new directives render with balanced parens by construction, not by luck). At this point in
+      the work these ops weren't wired into any pass yet — `GPUCcppCapPass`/`GPUDataPass` didn't
+      construct them, verified only via direct construction (`OmpTargetEnterDataOp(to=[],
+      alloc=[])` etc.) and two op-level printer tests in `TestOmpTargetEnterExitDataPrinter`
+      (`test_omp_directives.py`) confirming correct, balanced output through the actual `case`
+      dispatch. **That gap is closed by the very next sub-bullet below** (the `_role_at` gate
+      removal + `_wrap_scheme_call` branches) — both ops are now constructed by
+      `GPUCcppCapPass`'s hoisting for `directive="omp"` and exercised end-to-end in
+      `test_omp_hoisting.py`; nothing here is still pending. Full suite green at this snapshot
+      (368 unit + 44 FileCheck, 1 xfailed unchanged), `ruff check` clean.
+    - **The actual unlock was a single removed gate, not new analysis, confirmed correct.**
+      `_role_at` (and a second copy of the same gate in `_wrap_scheme_call`'s forced-anchor loop)
+      hard-coded `self.directive != "acc"` → always `"legacy"`. Both removed — the underlying
+      `VarLifetime`/per-suite analysis was already fully directive-agnostic, so no new analysis
+      was needed, only the gate itself.
+    - **Passthrough needed no new code, confirmed.** ACC's passthrough already worked by feeding
+      the variable into the *existing* structured-region block in `_wrap_scheme_call` (the one
+      that builds `AccDataBeginOp`'s `present=` bucket), which already branched on
+      `self.directive` and already used `OmpTargetDataBeginOp(alloc=...)` for the OMP case.
+      Removing the `_role_at` gate was sufficient — no changes needed to that block at all.
+    - **`_wrap_scheme_call` insertion blocks: `self.directive` branches added** for the two new
+      enter/exit-data blocks and the two update-hoist blocks, mirroring the branch the structured-
+      region block already had. OMP's `map(to:...)`/`map(alloc:...)` map onto ACC's
+      `copyin`/`create`; `map(from:...)`/`map(release:...)` onto `copyout`/`delete`;
+      `OmpTargetUpdateFromOp`/`OmpTargetUpdateToOp` onto `AccUpdateSelfOp`/`AccUpdateDeviceOp`
+      (same "before call = self/from, after call = device/to" mapping the pre-existing legacy
+      per-call update path already used). Class docstring and `directive` field comment updated
+      to drop the now-inaccurate "ACC backend only"/"ACC-only for now" wording.
+    - **Verified end-to-end against `test_gpu_data_hoisting.py`'s Group A fixture** (manual dump)
+      before writing tests: `three_phase` correctly enters at `timestep_initial`
+      (`map(to:three_phase)`), folds into the passthrough `map(alloc:...)` bucket at `run`, exits
+      at `timestep_final` (`map(from:three_phase)`); `cross_var` enters at `run`
+      (`map(to:cross_var)`) and exits via `map(release:cross_var)` at `timestep_final` (`copyin`
+      kind → release, no data movement back needed) — same shapes as the ACC behavior, just with
+      OMP ops/clause text.
+    - **New test coverage, now all six groups: `tests/unit/test_omp_hoisting.py` (10 tests).**
+      Initially added Group A (per-timestep hoisting across two schemes, three-phase passthrough,
+      degenerate single-phase stays legacy), Group B (whole-sim scope via synthesized ref,
+      register-only entry anchor), and Group E (update-clause hoisting with nothing at the
+      passthrough phase) — 6 tests, judged sufficient at the time since the underlying lifetime
+      analysis is directive-agnostic. Extended (2026-07-20) with the remaining three: **Group C**
+      (multi-suite scoping — suite A's run-only usage stays degenerate despite suite B's
+      unrelated `_init`-phase usage of the same variable name, asserted via
+      `map(tofrom:shared_var...)` and no target enter/exit data), **Group D** (a single-phase,
+      degenerate update-clause variable stays on the legacy per-call `target update
+      from(...)`/`to(...)` path, no target enter/exit data), and **Group F** (finalize
+      independent of a per-timestep-hoisted span — both the copyin/copy/copyout and update-clause
+      sub-cases). All ten reuse `test_gpu_data_hoisting.py`'s exact fixtures (including its
+      `_make_context`/`_build_multi_suite_module` helpers for Group C's two-suite module) with
+      `directive="omp"` — genuinely new coverage for the OMP backend, not a copy-paste of
+      already-tested ACC behavior. Full suite green (378 unit + 44 FileCheck, 1 xfailed
+      unchanged), `ruff check` clean. **The OMP hoisting test matrix is now symmetric with ACC's
+      — every one of `test_gpu_data_hoisting.py`'s six groups has an OMP counterpart.**
+  - **Use `examples/advection` to exercise subtler OpenACC cases against a real example, not just
+    synthetic fixtures: scoped (2026-07-19), not implemented, not scheduled — pick up another
+    day.** Prompted by the project owner asking whether `advection` (the constituent/DDT example
+    — `const_indices`, `cld_liq`, `cld_ice`, `apply_constituent_tendencies`, `physics_state` DDT)
+    could stress-test hoisting beyond what `examples/kessler` already covers. Investigated
+    directly rather than guessing:
+    - **Real gaps `kessler` genuinely can't cover, confirmed by grepping both examples' `.meta`
+      files:** (1) `kessler.meta`/`kessler_update.meta` have no `_register` table at all (only
+      `_init`/`_timestep_init`/`_run`/`_timestep_final`) — meaning the whole-simulation-scope
+      hoisting path (register/initialize entry, forced exit at finalize) has **never been
+      validated against a real example**, only synthetic fixtures in
+      `test_gpu_data_hoisting.py`. `cld_ice.meta`/`cld_liq.meta` do have real `_register` tables.
+      (2) No example anywhere in this repo exercises a DDT member's device residency — whether
+      `HostVariableMatchPass` even resolves `model_var_name`/`model_var_memory_space` correctly
+      for a DDT member (`advection` has one: `physics_state`) is currently an open question.
+    - **`apply_constituent_tendencies` appearing twice in one group turned out NOT to stress
+      `GPUCcppCapPass`'s hoisting at all**, contrary to the initial guess that repeated scheme
+      calls would be an interesting case for it. Traced through `_wrap_scheme_call`'s discovery:
+      it only ever sees one call site per lifecycle phase (the suite's combined `_suite_physics`
+      call) — the repeated scheme call happens one level deeper, inside `suite_cap.py`'s own
+      generated function body, which only `GPUDataPass` instruments (and already unions device
+      vars across both occurrences into one combined region, correctly). Good for stress-testing
+      `GPUDataPass`'s host-less-scratch dedup path specifically, not Option 2/1(a)'s hoisting.
+    - **Not usable as-is.** Confirmed via `grep -rn memory_space examples/advection/` — zero
+      hits, on both scheme and host side, and the Makefile has no ACC/GPU target at all. Using it
+      for this purpose means deliberately adding `memory_space = device` to a couple of
+      variables: one in `cld_ice_register`/`cld_liq_register` plus a matching host declaration
+      (for the whole-sim-scope case), and one on a DDT member (for the DDT-residency case) — not
+      just running the existing example through the pipeline.
+    - **Separate, unrelated bug found while checking this: `cld_ice.meta`'s finalize table is
+      named `cld_ice_final`, not `cld_ice_finalize`.** `lifecycle_cap.py`'s `_lc_postfix_aliases`
+      only maps `_timestep_initialize`/`_timestep_finalize` to their `_timestep_init`/
+      `_timestep_final` aliases — there's no equivalent bare `_finalize`/`_final` alias pair, so
+      `cld_ice_final` is never picked up by the core lifecycle dispatch at all today. Currently
+      silent/inert rather than actively broken (the table's only content is boilerplate
+      `errmsg`/`errflg`, no real args), but a real gap worth fixing regardless — and specifically
+      blocks using `cld_ice` for the whole-sim-scope test above until fixed (or that test uses
+      `cld_liq` / a properly-named new finalize table instead).
+    - **Recommended next steps, in order:** (1) fix the `_final`/`_finalize` alias gap in
+      `lifecycle_cap.py` (small, independent, unblocks using `cld_ice` for anything finalize-
+      related); (2) add a real whole-sim-scope hoisting example (register/initialize → finalize)
+      using `cld_ice`/`cld_liq`, the first real (non-synthetic) validation of that path; (3) add a
+      DDT-member device-residency case and confirm `HostVariableMatchPass` handles it correctly
+      before assuming `GPUCcppCapPass`'s hoisting does too.
   - **Milestone (2026-07-19): confirmed on the project owner's HPC system (nvhpc/nvfortran).**
     `examples/kessler` now builds *and executes* under `ARCH=GPU`, producing bit-for-bit
     identical output to the CPU build. First real GPU pass/fail confirmation for this codebase.
