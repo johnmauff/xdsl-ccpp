@@ -1489,8 +1489,8 @@ scheduled, and not a prerequisite for anything above.
 ## Phase 7 — Full IR unification (deferred sub-plan — not part of the original 6-phase scope)
 
 Added 2026-07-19, after the Phase 4 investigation (see above) showed this is genuinely
-stageable rather than the monolithic rewrite first assumed. **Stage 1 done (2026-07-20); Stages
-2-4 not scheduled** — no obligation to pick those up soon; tracked here with an actionable
+stageable rather than the monolithic rewrite first assumed. **Stages 1-2 done (2026-07-20);
+Stages 3-4 not scheduled** — no obligation to pick those up soon; tracked here with an actionable
 staged plan so whoever does isn't starting from a paragraph of rationale alone.
 
 **Goal:** a single "does the cap own this variable, or does it come from outside" decision,
@@ -1534,12 +1534,87 @@ Phase 4 above; this section is the execution plan.
     (a quoted type annotation in `ArgOwnershipOp.__init__`) intentionally left matching
     `ResolvedArgOp`'s own constructor's identical pre-existing style at the same file, rather
     than fixing only the new instance and introducing inconsistency.
-- **Stage 2 — Dual-build, don't switch consumers.** Compute the classification early — right
-  after `HostVariableMatchPass` has annotated `model_var_name`/`is_interstitial`, before
-  `generate-suite-cap` runs — and emit it as durable IR, *alongside* the existing mechanisms
-  (`suite_cap.py`'s `_is_framework_managed`, `ccpp_cap.py`'s `_build_cap_var_map`) without
-  switching any consumer yet. Add a test asserting the new IR's contents match what the old
-  mechanisms decide, for every existing example.
+- **Stage 2 — Dual-build, don't switch consumers. ✅ done (2026-07-20).**
+  - **Placement decision, resolved before writing code:** `ArgOwnershipOp` (Stage 1) is never
+    inserted into the module as real IR. Checked whether anything assumes an `ArgumentTableOp`'s
+    block contains only `ArgumentOp`s — it does: `BuildMetaDataDescriptions`'s visitor asserts
+    `self.arg_token is not None` right after dispatching each child, with no handler for any
+    other op type, so inserting `ArgOwnershipOp` as a sibling would crash that visitor (used by
+    nearly every classification consumer) the next time it ran. Also checked whether the
+    classification is suite/group-scoped (which would rule out attaching it to the
+    scheme-level `ArgumentOp`) — it isn't: every lookup involved (`is_interstitial` presence,
+    `model_var_name` presence, the static frozensets, `host_var_map_lc`) is suite-independent, so
+    the decision for a given arg is the same regardless of which suite/group uses it. **Chosen
+    design (hybrid):** added `ownership_kind` as a new `opt_prop_def(ArgOwnershipKindAttr)`
+    field directly on `ccpp.ArgumentOp` (moved `ArgOwnershipKind`/`ArgOwnershipKindAttr` earlier
+    in `ccpp.py`, before `ArgumentOp`, so the field type is defined in time) — matching
+    `HostVariableMatchPass`'s own exact precedent for `model_var_name`/`is_interstitial`, the
+    one proven cross-pass-durability pattern in this codebase. `ArgOwnershipOp` itself is kept
+    exactly as Stage 1 built it and still gets used, just not by insertion: the new
+    classification function constructs and verifies one per arg (getting `verify_()`'s
+    impossible-to-construct-inconsistent-state guarantee, and reusing Stage 1's tested type
+    rather than idling it), then the pass copies only `.ownership_kind` onto the real
+    `ArgumentOp` — reusing the arg's own existing `standard_name` property rather than storing
+    `std_name` a second time. Exactly how `ResolvedArgOp` is already used today (constructed,
+    verified, consumed — never inserted into a block).
+  - **Early-computability, checked per bucket rather than assumed:** the 2026-07-19 revision's
+    optimism ("`_is_framework_managed` is a pure function of arg attributes already present in
+    `meta_data`") only actually covers the `SuiteOwned` bucket. Checked whether the same holds
+    for `_build_cap_var_map`'s `HostMatched`/`CapScratch`/`Block` split — it does, but not for
+    free: that function iterates `public_fns[_callee_cv]`'s *already-built* dummy-arg list, but
+    every actual classification check inside the loop (`FRAMEWORK_STD_NAME_TO_CAP_VAR`,
+    `CCPP_FRAMEWORK_STD_NAMES`, `CCPP_ERROR_STD_NAMES`, a HOST-type-table scan, `host_var_map_lc`)
+    is itself meta_data-only, no signature dependency. The only reason `public_fns` appeared
+    load-bearing was to know *which args exist as dummy args at all* — which is answered by
+    `model_var_name` presence (HostMatched) or nothing further being needed (the classification
+    doesn't require knowing whether an arg ends up on a signature, just what it *would* resolve
+    to if it did). Confirmed empirically, not just reasoned: `classify_arg_ownership`, built
+    purely per-`ArgumentOp` with zero suite/group iteration, agreed with `_build_cap_var_map`'s
+    real output across every real example tested (see below) — the one true discrepancy found
+    was a *test* scoping bug (below), not a classification bug.
+  - **Implementation:** `cap_shared.py` gained `FRAMEWORK_STD_NAME_TO_CAP_VAR` (moved out of
+    `_build_cap_var_map`'s function body, shared rather than duplicated), `_collect_host_block_std_names`
+    (the HOST-type-table scan, same treatment), and `classify_arg_ownership(arg_op,
+    host_var_map_lc, host_block_std_names) -> ArgOwnershipOp` (the actual classification,
+    operating on the real `ccpp.ArgumentOp`'s typed properties — a different access pattern than
+    `_is_framework_managed`'s `hasAttr`/`getAttr`, which is designed for the separate
+    `CCPPArgument` descriptor form). New pass `ArgOwnershipPass` (`generate-arg-ownership`,
+    `arg_ownership_pass.py`) walks every SCHEME-type `TablePropertiesOp`'s `ArgumentOp`s and
+    copies each classification's `ownership_kind` onto the real op. Registered in `ccpp_opt.py`
+    and inserted unconditionally into `ccpp_dsl.py`'s pipeline, right after the (still
+    conditional) `generate-host-match` and before `generate-meta-kinds`/`generate-suite-cap` —
+    unconditional because the classification is meaningful even without host metadata
+    (`HostMatched` simply never triggers, same as `generate-host-match`'s own annotations in
+    that case). `suite_cap.py`/`ccpp_cap.py`/`run_dispatch.py` are completely untouched — this
+    stage is dual-build only, by construction, not just by discipline.
+  - **Validation, the real point of this stage:** `tests/unit/test_arg_ownership_pass.py`, run
+    against real examples (kessler, advection, helloworld — not synthetic fixtures, deliberately,
+    since the goal is confirming agreement with production heuristics on production metadata:
+    host matches, constituents, DDT plumbing) rather than small hand-built ones. For every real
+    example, runs the *actual* `_is_framework_managed` and `_build_cap_var_map` (calling them for
+    real, not reimplementing them) and compares their decision against
+    `ArgOwnershipPass`'s real output, per scheme arg.
+    - **One real discrepancy found, and it was a test bug, not a pass bug:** `advection`'s
+      `dyn_const_ice`/`dyn_const` (constituent-registration args declared only in each scheme's
+      `_register` table) initially showed mismatches — `_build_cap_var_map` never sees them at
+      all (its loop is scoped to the physics/`_run` group callee specifically), so there was no
+      real "old heuristic" ground truth for the CapScratch-vs-Block split on register/init/
+      finalize-only args in the first place; the test's naive "not in cap_var_map → Block"
+      fallback was simply wrong there. Fixed by restricting the strict CapScratch-vs-Block
+      comparison to args declared in a `_run`-suffixed table (via `split_scheme_table_name`,
+      matching `_build_cap_var_map`'s own scoping) — `SuiteOwned`/`HostMatched` aren't scoping-
+      sensitive and are still checked unconditionally. Confirmed meaningful coverage remains
+      after the fix (not just silencing everything): advection still strictly compares 38/52
+      args across all four buckets, including 3 genuine `CapScratch` cases; kessler 44/52;
+      helloworld 14/22.
+    - 6 new tests (2 per example: full-agreement + no-scheme-arg-left-unclassified), all passing
+      after the scoping fix.
+  - Verified zero-impact by construction: full suite 398 passed (392 + 6 new) unit, FileCheck
+    unchanged at 44 passed + 1 xfailed (identical to the pre-Stage-2 baseline, confirming the
+    new pass — now wired into the *real* `ccpp_dsl.py` pipeline, not just constructed in
+    isolation — produces zero observable difference in any generated Fortran output). `ruff
+    check` clean on every new/touched file; pre-existing baseline findings in `ccpp.py`/
+    `ccpp_dsl.py`/`ccpp_opt.py` confirmed unchanged via `git stash` comparison.
 - **Stage 3 — Migrate one consumer at a time.**
   - `suite_cap.py`'s `_classify_args`: swap the inline `_is_framework_managed` call for reading
     the Stage 2 IR.

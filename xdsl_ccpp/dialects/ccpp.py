@@ -284,6 +284,44 @@ class KindsOp(IRDLOperation):
         super().__init__(regions=[kind_ops])
 
 
+class ArgOwnershipKind(StrEnum):
+    """Does the cap own this scheme arg, or does its data come from outside?
+
+    Decided once, upfront -- before suite_cap.py builds the suite's own
+    subroutine signature -- unlike ArgSourceKind/ResolvedArgOp below, which
+    only classifies args that already survived *not* being SuiteOwned (an
+    interstitial/advected/allocatable-real arg never becomes a dummy arg at
+    all, so it never reaches ResolvedArgOp's world -- there is deliberately
+    no SuiteOwned case there). Phase 7 (see ccpp_cap_refactor_plan.md) is
+    where suite_cap.py's _is_framework_managed and ccpp_cap.py's
+    _build_cap_var_map -- today two independently-computed heuristics for
+    this same ownership question -- both migrate to reading this instead.
+
+    SuiteOwned:   interstitial, or advected/allocatable real array -- suite
+                  cap owns storage; never a dummy arg on the suite's
+                  subroutine signature at all.
+    HostMatched:  resolved against host metadata (module var or DDT member --
+                  ArgSourceKind's Host/DdtMember split is a finer, later-stage
+                  distinction this classification doesn't need).
+    CapScratch:   no host match; promoted to a cap-owned module variable
+                  (framework array like ccpp_constituents, or scheme-local
+                  scratch with no host counterpart). Equivalent to
+                  ArgSourceKind.CapVar.
+    Block:        genuinely unresolved -- becomes a caller-supplied block
+                  argument. Equivalent to ArgSourceKind.Block.
+    """
+
+    SuiteOwned = "suite_owned"
+    HostMatched = "host_matched"
+    CapScratch = "cap_scratch"
+    Block = "block"
+
+
+@irdl_attr_definition
+class ArgOwnershipKindAttr(EnumAttribute[ArgOwnershipKind], SpacedOpaqueSyntaxAttribute):
+    name = "ccpp.arg_ownership_kind"
+
+
 @irdl_op_definition
 class ArgumentOp(IRDLOperation):
     name = "ccpp.arg"
@@ -308,6 +346,10 @@ class ArgumentOp(IRDLOperation):
     model_var_unit_mismatch = opt_prop_def(StringAttr)  # set when scheme/host units differ: "scheme_units:host_units"
     model_var_is_ddt   = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
     is_interstitial    = opt_prop_def(UnitAttr)   # set when var flows between lifecycle phases
+    # Phase 7, Stage 2: durable ownership classification (see ArgOwnershipKind),
+    # set by generate-arg-ownership. Reuses this op's own standard_name for the
+    # HostMatched/CapScratch payload rather than storing it a second time.
+    ownership_kind    = opt_prop_def(ArgOwnershipKindAttr)
     is_promoted        = opt_prop_def(UnitAttr)   # set when scheme rank < host rank (promotion)
     promoted_dim       = opt_prop_def(StringAttr) # standard name of the dimension being promoted over
     allocatable = opt_prop_def(UnitAttr)
@@ -505,44 +547,6 @@ class ResolvedArgOp(IRDLOperation):
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=Block must not set any source payload"
                 )
-
-
-class ArgOwnershipKind(StrEnum):
-    """Does the cap own this scheme arg, or does its data come from outside?
-
-    Decided once, upfront -- before suite_cap.py builds the suite's own
-    subroutine signature -- unlike ArgSourceKind/ResolvedArgOp above, which
-    only classifies args that already survived *not* being SuiteOwned (an
-    interstitial/advected/allocatable-real arg never becomes a dummy arg at
-    all, so it never reaches ResolvedArgOp's world -- there is deliberately
-    no SuiteOwned case there). Phase 7 (see ccpp_cap_refactor_plan.md) is
-    where suite_cap.py's _is_framework_managed and ccpp_cap.py's
-    _build_cap_var_map -- today two independently-computed heuristics for
-    this same ownership question -- both migrate to reading this instead.
-
-    SuiteOwned:   interstitial, or advected/allocatable real array -- suite
-                  cap owns storage; never a dummy arg on the suite's
-                  subroutine signature at all.
-    HostMatched:  resolved against host metadata (module var or DDT member --
-                  ArgSourceKind's Host/DdtMember split is a finer, later-stage
-                  distinction this classification doesn't need).
-    CapScratch:   no host match; promoted to a cap-owned module variable
-                  (framework array like ccpp_constituents, or scheme-local
-                  scratch with no host counterpart). Equivalent to
-                  ArgSourceKind.CapVar.
-    Block:        genuinely unresolved -- becomes a caller-supplied block
-                  argument. Equivalent to ArgSourceKind.Block.
-    """
-
-    SuiteOwned = "suite_owned"
-    HostMatched = "host_matched"
-    CapScratch = "cap_scratch"
-    Block = "block"
-
-
-@irdl_attr_definition
-class ArgOwnershipKindAttr(EnumAttribute[ArgOwnershipKind], SpacedOpaqueSyntaxAttribute):
-    name = "ccpp.arg_ownership_kind"
 
 
 @irdl_op_definition

@@ -444,6 +444,15 @@ class ccppMain:
         passes = ["generate-meta-cap"]
         if has_host:
             passes.append("generate-host-match")
+        # Phase 7, Stage 2 (see ccpp_cap_refactor_plan.md): computes the
+        # SuiteOwned/HostMatched/CapScratch/Block ownership classification
+        # durably, before any suite's subroutine signature exists. Nothing
+        # reads it yet (suite_cap.py/ccpp_cap.py/run_dispatch.py still use
+        # their own independent heuristics) -- dual-build only, no observable
+        # effect on generated output. Runs unconditionally, even without host
+        # metadata: HostMatched simply never triggers in that case, same as
+        # generate-host-match's own annotations.
+        passes.append("generate-arg-ownership")
         passes.append(meta_kinds_pass)
         passes.append("generate-suite-cap")
         if directive:
