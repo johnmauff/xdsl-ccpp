@@ -1511,7 +1511,6 @@ class ftnPrintContext:
                         )
                     inner.print(f"{c_name}(len_trim({ftn_local})+1) = c_null_char")
 
-    @contextmanager
     def _emit_acc_directive(
         self, keyword: str, clauses: list[tuple[str, list[str]]], *, sentinel: str = "!$acc"
     ) -> None:

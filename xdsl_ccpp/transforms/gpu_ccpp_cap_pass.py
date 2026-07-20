@@ -530,6 +530,17 @@ class GPUCcppCapPass(ModulePass):
         # copy/copyin/copyout/tofrom: use array sections for efficiency.
         # present / alloc: use base variable names — the host put the
         #   whole array on device, not just the active columns.
+        # data_begin_op/data_end_op are captured so the enter-data/exit-data
+        # insertions below can anchor to them explicitly. InsertPoint.before/
+        # after(suite_call) always targets suite_call itself regardless of
+        # what's already been inserted around it, so anchoring every tier
+        # directly to suite_call would let whichever tier's insertion code
+        # runs last win the position closest to suite_call -- interleaving
+        # AccEnterDataOp/AccExitDataOp inside the structured region instead
+        # of outside it. Anchoring to the actual ops enforces the nesting
+        # documented above regardless of insertion order.
+        data_begin_op = None
+        data_end_op = None
         present_names = legacy_present + passthrough_present
         if present_names or legacy_copy or legacy_copyin or legacy_copyout:
             copy_refs    = self._resolve_array_refs(true_block, set(legacy_copy),    use_sections=True)
@@ -539,46 +550,46 @@ class GPUCcppCapPass(ModulePass):
             if self.directive == "omp":
                 # OMP uses map(tofrom:) for copy and map(to:) for copyin,
                 # map(from:) for copyout; map(alloc:) for present.
-                Rewriter.insert_op(
-                    OmpTargetDataBeginOp(
-                        tofrom=copy_refs + copyin_refs + copyout_refs,
-                        alloc=base_refs,
-                    ),
-                    InsertPoint.before(suite_call),
+                data_begin_op = OmpTargetDataBeginOp(
+                    tofrom=copy_refs + copyin_refs + copyout_refs,
+                    alloc=base_refs,
                 )
-                Rewriter.insert_op(
-                    OmpTargetDataEndOp(),
-                    InsertPoint.after(suite_call),
-                )
+                data_end_op = OmpTargetDataEndOp()
             else:  # acc (default)
-                Rewriter.insert_op(
-                    AccDataBeginOp(
-                        copy=copy_refs,
-                        copyin=copyin_refs,
-                        copyout=copyout_refs,
-                        present=base_refs,
-                    ),
-                    InsertPoint.before(suite_call),
+                data_begin_op = AccDataBeginOp(
+                    copy=copy_refs,
+                    copyin=copyin_refs,
+                    copyout=copyout_refs,
+                    present=base_refs,
                 )
-                Rewriter.insert_op(
-                    AccDataEndOp(),
-                    InsertPoint.after(suite_call),
-                )
+                data_end_op = AccDataEndOp()
+            Rewriter.insert_op(data_begin_op, InsertPoint.before(suite_call))
+            Rewriter.insert_op(data_end_op, InsertPoint.after(suite_call))
 
         if enter_copyin or enter_create:
             enter_copyin_refs = self._resolve_array_refs(true_block, set(enter_copyin), use_sections=False)
             enter_create_refs = self._resolve_array_refs(true_block, set(enter_create), use_sections=False)
+            enter_anchor = (
+                InsertPoint.before(data_begin_op)
+                if data_begin_op is not None
+                else InsertPoint.before(suite_call)
+            )
             Rewriter.insert_op(
                 AccEnterDataOp(copyin=enter_copyin_refs, create=enter_create_refs),
-                InsertPoint.before(suite_call),
+                enter_anchor,
             )
 
         if exit_copyout or exit_delete:
             exit_copyout_refs = self._resolve_array_refs(true_block, set(exit_copyout), use_sections=False)
             exit_delete_refs  = self._resolve_array_refs(true_block, set(exit_delete),  use_sections=False)
+            exit_anchor = (
+                InsertPoint.after(data_end_op)
+                if data_end_op is not None
+                else InsertPoint.after(suite_call)
+            )
             Rewriter.insert_op(
                 AccExitDataOp(copyout=exit_copyout_refs, delete=exit_delete_refs),
-                InsertPoint.after(suite_call),
+                exit_anchor,
             )
 
         # Update directives go inside the inner scf.IfOp's true region,
