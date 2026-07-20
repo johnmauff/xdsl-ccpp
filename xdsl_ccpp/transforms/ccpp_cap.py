@@ -30,9 +30,11 @@ from xdsl_ccpp.transforms.run_dispatch import (
     _generate_suite_part_list_fn,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
+    FRAMEWORK_STD_NAME_TO_CAP_VAR,
     _bare,
     _build_host_var_map,
     _collect_ddt_use_stubs,
+    _collect_host_block_std_names,
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
@@ -115,19 +117,8 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     # tables.  HOST-type tables are caller-provided interfaces, not modules.
     host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
 
-    _FRAMEWORK_TO_CAP_VAR = {
-        "ccpp_constituents": "lc_constituent_array",
-        "ccpp_constituent_tendencies": "lc_const_tend",
-    }
-    _host_block_std: set = set()
-    for _tbl_cv, _props_cv in meta_data.items():
-        if _props_cv.getAttr("type") != CCPPType.HOST:
-            continue
-        if _tbl_cv not in _props_cv.arg_tables:
-            continue
-        for _var_cv in _props_cv.getArgTable(_tbl_cv).getFunctionArguments():
-            if _var_cv.hasAttr("standard_name"):
-                _host_block_std.add(_var_cv.getAttr("standard_name").lower())
+    _FRAMEWORK_TO_CAP_VAR = FRAMEWORK_STD_NAME_TO_CAP_VAR
+    _host_block_std = _collect_host_block_std_names(meta_data)
     _DIM_TO_ALLOC = {
         CCPP_LOOP_EXTENT_STD_NAME: "ncols",
         CCPP_HORIZ_DIM_STD_NAME: "ncols",

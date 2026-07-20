@@ -20,9 +20,11 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_FRAMEWORK_STD_NAMES,
 )
 
-# Known framework arrays ccpp_cap.py's _build_cap_var_map promotes to a fixed
-# cap-owned module variable name, rather than a freshly-allocated scratch var.
-# Shared with classify_arg_ownership below so both land on the same decision.
+# Known framework arrays promoted to a fixed cap-owned module variable name,
+# rather than a freshly-allocated scratch var. Used directly by both
+# ccpp_cap.py's _build_cap_var_map and classify_arg_ownership below -- a
+# single definition, not two independently-maintained copies, so the two
+# heuristics can't silently diverge on this list.
 FRAMEWORK_STD_NAME_TO_CAP_VAR: dict = {
     "ccpp_constituents": "lc_constituent_array",
     "ccpp_constituent_tendencies": "lc_const_tend",
@@ -342,12 +344,18 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
     not the CCPPArgument descriptor _is_framework_managed uses (hasAttr/getAttr) --
     the two representations expose the same underlying data differently.
 
-    Returns a constructed, verified ArgOwnershipOp -- not inserted into the
-    module. Callers (generate-arg-ownership) copy .ownership_kind onto the
-    real ArgumentOp's own `ownership_kind` property, reusing the arg's
-    existing `standard_name` rather than storing std_name a second time.
+    Returns a constructed, verified (verify() is called before returning)
+    ArgOwnershipOp -- not inserted into the module. Callers
+    (generate-arg-ownership) copy .ownership_kind onto the real
+    ArgumentOp's own `ownership_kind` property, reusing the arg's existing
+    `standard_name` rather than storing std_name a second time.
     """
     arg_name = arg_op.arg_name.data
+
+    def _make(kind, std_name=None):
+        ownership = ArgOwnershipOp(arg_name, kind, std_name=std_name)
+        ownership.verify()
+        return ownership
 
     is_suite_owned = arg_op.is_interstitial is not None or (
         arg_op.arg_type.data == "real"
@@ -356,17 +364,21 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
         and (arg_op.advected is not None or arg_op.allocatable is not None)
     )
     if is_suite_owned:
-        return ArgOwnershipOp(arg_name, ArgOwnershipKind.SuiteOwned)
+        return _make(ArgOwnershipKind.SuiteOwned)
 
     std_name = arg_op.standard_name.data.lower() if arg_op.standard_name is not None else None
 
     if arg_op.model_var_name is not None:
-        return ArgOwnershipOp(
-            arg_name, ArgOwnershipKind.HostMatched, std_name=std_name or arg_name
-        )
+        # HostVariableMatchPass only ever sets model_var_name when
+        # standard_name is present (host_var_match_pass.py's match loop skips
+        # any arg with no standard_name before it ever sets model_var_name),
+        # so std_name is expected non-None here. Passed through as-is rather
+        # than substituted -- if that invariant is ever broken elsewhere,
+        # verify() should raise, not be silently masked by a wrong fallback.
+        return _make(ArgOwnershipKind.HostMatched, std_name=std_name)
 
     if std_name is not None and std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR:
-        return ArgOwnershipOp(arg_name, ArgOwnershipKind.CapScratch, std_name=std_name)
+        return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
 
     if std_name is None or (
         std_name in CCPP_FRAMEWORK_STD_NAMES
@@ -374,6 +386,6 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
         or std_name in host_block_std_names
         or std_name in host_var_map_lc
     ):
-        return ArgOwnershipOp(arg_name, ArgOwnershipKind.Block)
+        return _make(ArgOwnershipKind.Block)
 
-    return ArgOwnershipOp(arg_name, ArgOwnershipKind.CapScratch, std_name=std_name)
+    return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
