@@ -407,6 +407,16 @@ starting 3b):
       shares the same `_resolve_lifetime`/`_role_at` machinery) via two new tests in
       `TestFinalizeAlongsidePerTimestepHoisting`. Full suite green (361 unit + 44 FileCheck, 1
       xfailed unchanged), `ruff check` clean.
+    - **Third Copilot review comment (2026-07-19), on the same PR: already resolved by the fix
+      above.** Flagged the `if not candidates:` branch's comment ("no ... per-timestep usage") as
+      claiming a stronger invariant than the code enforced (`not candidates` only means no
+      register/initialize usage — per-timestep usage, e.g. `run` + `finalize`, was still
+      possible). Checked against the current file: this exact comment was already reworded by the
+      fix immediately above (which turned that branch into a fallthrough rather than an
+      unconditional return, and rewrote its comment to say "no register/initialize usage"
+      precisely, calling out the per-timestep fallthrough explicitly). Confirmed via a repo-wide
+      grep that the old phrasing no longer exists anywhere in the file — Copilot's review was
+      against the pre-fix commit; no further change needed.
   - **Making the `scheme=host + model=device` (update self/update device) clause path robust —
     (a) done (2026-07-19), (b)/(c) still not implemented, not scheduled.**
     - **(a): hoisting extended to "update" variables — done.** Turned out different from the
