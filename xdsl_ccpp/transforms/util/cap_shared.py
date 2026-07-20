@@ -149,6 +149,45 @@ def _bare(name: str) -> str:
     return name
 
 
+# Ordered (longest/most-specific first) so a longer suffix is never shadowed
+# by a shorter one it contains as a trailing substring:
+#   - '_timestep_finalize' before '_finalize' ('foo_timestep_finalize' ends
+#     with both).
+#   - '_timestep_init'/'_timestep_final' before '_init'/'_finalize'
+#     ('foo_timestep_init' ends with both '_timestep_init' and '_init').
+# Canonical spellings ('_timestep_initialize'/'_timestep_finalize') come from
+# ccpp_cap.py's lifecycle_specs; the short-form aliases ('_timestep_init'/
+# '_timestep_final') come from lifecycle_cap.py's _lc_postfix_aliases, for
+# schemes following the atmospheric_physics/kessler_update convention.
+_PHASE_SUFFIXES = (
+    ("_timestep_initialize", "timestep_initial"),
+    ("_timestep_finalize",   "timestep_final"),
+    ("_timestep_init",       "timestep_initial"),
+    ("_timestep_final",      "timestep_final"),
+    ("_run",                 "run"),
+    ("_init",                "initialize"),
+    ("_finalize",            "finalize"),
+    ("_register",            "register"),
+)
+
+
+def split_scheme_table_name(table_name: str) -> "tuple[str, str] | None":
+    """Split a scheme argument-table name into (scheme_base_name, phase).
+
+    e.g. 'kessler_update_timestep_final' -> ('kessler_update', 'timestep_final')
+         'hello_scheme_run'              -> ('hello_scheme', 'run')
+
+    phase is one of 'register'/'initialize'/'finalize'/'timestep_initial'/
+    'run'/'timestep_final' -- the same six lifecycle phases ccpp_cap.py's
+    lifecycle_specs generates a dispatcher for. Returns None if table_name
+    doesn't end with any known lifecycle suffix.
+    """
+    for suffix, phase in _PHASE_SUFFIXES:
+        if table_name.endswith(suffix):
+            return table_name[: -len(suffix)], phase
+    return None
+
+
 def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     """Build a standard_name → (var_name, table_name) map from host metadata.
 
