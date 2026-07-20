@@ -507,6 +507,102 @@ class ResolvedArgOp(IRDLOperation):
                 )
 
 
+class ArgOwnershipKind(StrEnum):
+    """Does the cap own this scheme arg, or does its data come from outside?
+
+    Decided once, upfront -- before suite_cap.py builds the suite's own
+    subroutine signature -- unlike ArgSourceKind/ResolvedArgOp above, which
+    only classifies args that already survived *not* being SuiteOwned (an
+    interstitial/advected/allocatable-real arg never becomes a dummy arg at
+    all, so it never reaches ResolvedArgOp's world -- there is deliberately
+    no SuiteOwned case there). Phase 7 (see ccpp_cap_refactor_plan.md) is
+    where suite_cap.py's _is_framework_managed and ccpp_cap.py's
+    _build_cap_var_map -- today two independently-computed heuristics for
+    this same ownership question -- both migrate to reading this instead.
+
+    SuiteOwned:   interstitial, or advected/allocatable real array -- suite
+                  cap owns storage; never a dummy arg on the suite's
+                  subroutine signature at all.
+    HostMatched:  resolved against host metadata (module var or DDT member --
+                  ArgSourceKind's Host/DdtMember split is a finer, later-stage
+                  distinction this classification doesn't need).
+    CapScratch:   no host match; promoted to a cap-owned module variable
+                  (framework array like ccpp_constituents, or scheme-local
+                  scratch with no host counterpart). Equivalent to
+                  ArgSourceKind.CapVar.
+    Block:        genuinely unresolved -- becomes a caller-supplied block
+                  argument. Equivalent to ArgSourceKind.Block.
+    """
+
+    SuiteOwned = "suite_owned"
+    HostMatched = "host_matched"
+    CapScratch = "cap_scratch"
+    Block = "block"
+
+
+@irdl_attr_definition
+class ArgOwnershipKindAttr(EnumAttribute[ArgOwnershipKind], SpacedOpaqueSyntaxAttribute):
+    name = "ccpp.arg_ownership_kind"
+
+
+@irdl_op_definition
+class ArgOwnershipOp(IRDLOperation):
+    """Durable record of one scheme arg's ownership bucket (see
+    ArgOwnershipKind).
+
+    Stage 1 of Phase 7 ("define, don't wire") -- not called by any pass yet.
+    Future stages compute this early (right after HostVariableMatchPass, before
+    generate-suite-cap runs) and migrate suite_cap.py/ccpp_cap.py/run_dispatch.py
+    to read it instead of their own independently-computed heuristics.
+
+    Required properties by ``ownership_kind``:
+      - SuiteOwned:  none of the below
+      - HostMatched: ``std_name``
+      - CapScratch:  ``std_name``
+      - Block:       none of the below
+    """
+
+    name = "ccpp.arg_ownership"
+
+    arg_name = prop_def(StringAttr)
+    ownership_kind = prop_def(ArgOwnershipKindAttr)
+    std_name = opt_prop_def(StringAttr)
+
+    def __init__(
+        self,
+        arg_name: str | StringAttr,
+        ownership_kind: "str | ArgOwnershipKind | ArgOwnershipKindAttr",
+        std_name: str | StringAttr | None = None,
+    ):
+        if isa(arg_name, str):
+            arg_name = StringAttr(arg_name)
+        if isinstance(ownership_kind, str):
+            ownership_kind = ArgOwnershipKindAttr(ArgOwnershipKind(ownership_kind))
+        elif isinstance(ownership_kind, ArgOwnershipKind):
+            ownership_kind = ArgOwnershipKindAttr(ownership_kind)
+
+        properties: dict = {"arg_name": arg_name, "ownership_kind": ownership_kind}
+        if std_name is not None:
+            properties["std_name"] = StringAttr(std_name) if isa(std_name, str) else std_name
+
+        super().__init__(properties=properties)
+
+    def verify_(self) -> None:
+        kind = self.ownership_kind.data
+        has_std = self.std_name is not None
+
+        if kind in (ArgOwnershipKind.HostMatched, ArgOwnershipKind.CapScratch):
+            if not has_std:
+                raise VerifyException(
+                    f"ArgOwnershipOp: ownership_kind={kind} requires std_name"
+                )
+        else:
+            if has_std:
+                raise VerifyException(
+                    f"ArgOwnershipOp: ownership_kind={kind} must not set std_name"
+                )
+
+
 CCPP = Dialect(
     "ccpp",
     [
@@ -521,9 +617,11 @@ CCPP = Dialect(
         ArgumentTableOp,
         ArgumentOp,
         ResolvedArgOp,
+        ArgOwnershipOp,
     ],
     [
         TableTypeKindAttr,
         ArgSourceKindAttr,
+        ArgOwnershipKindAttr,
     ],
 )
