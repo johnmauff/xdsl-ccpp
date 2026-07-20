@@ -594,12 +594,12 @@ class ArgOwnershipOp(IRDLOperation):
         if kind in (ArgOwnershipKind.HostMatched, ArgOwnershipKind.CapScratch):
             if not has_std:
                 raise VerifyException(
-                    f"ArgOwnershipOp: ownership_kind={kind} requires std_name"
+                    f"ArgOwnershipOp: ownership_kind={kind.value} requires std_name"
                 )
         else:
             if has_std:
                 raise VerifyException(
-                    f"ArgOwnershipOp: ownership_kind={kind} must not set std_name"
+                    f"ArgOwnershipOp: ownership_kind={kind.value} must not set std_name"
                 )
 
 
