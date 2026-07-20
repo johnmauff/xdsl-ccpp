@@ -44,6 +44,8 @@ from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
+from xdsl_ccpp.dialects.ccpp_utils import AccEnterDataOp as CCPPAccEnterDataOp
+from xdsl_ccpp.dialects.ccpp_utils import AccExitDataOp as CCPPAccExitDataOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataBeginOp as CCPPOmpTargetDataBeginOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp    as CCPPOmpTargetDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp
@@ -619,6 +621,24 @@ class ftnPrintContext:
             case CCPPAccDataEndOp():
                 self.print("#ifdef USE_GPU", use_prefix=False)
                 self.print("!$acc end data")
+                self.print("#endif", use_prefix=False)
+            case CCPPAccEnterDataOp():
+                copyin_names = [self._get_variable_name_for(v) for v in op.copyin_arrays]
+                create_names = [self._get_variable_name_for(v) for v in op.create_arrays]
+                self.print("#ifdef USE_GPU", use_prefix=False)
+                self._emit_acc_directive("enter data", [
+                    ("copyin", copyin_names),
+                    ("create", create_names),
+                ])
+                self.print("#endif", use_prefix=False)
+            case CCPPAccExitDataOp():
+                copyout_names = [self._get_variable_name_for(v) for v in op.copyout_arrays]
+                delete_names  = [self._get_variable_name_for(v) for v in op.delete_arrays]
+                self.print("#ifdef USE_GPU", use_prefix=False)
+                self._emit_acc_directive("exit data", [
+                    ("copyout", copyout_names),
+                    ("delete",  delete_names),
+                ])
                 self.print("#endif", use_prefix=False)
             case CCPPModuleVarOp():
                 pass  # declared in _print_module preamble, not here

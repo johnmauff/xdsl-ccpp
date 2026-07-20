@@ -400,6 +400,58 @@ class AccUpdateDeviceOp(IRDLOperation):
 
     def __init__(self, array_refs):
         super().__init__(operands=[list(array_refs)])
+
+@irdl_op_definition
+class AccEnterDataOp(IRDLOperation):
+    """Emit !$acc enter data copyin(...) create(...) -- unstructured: no
+    matching 'begin/end' pairing is enforced by the compiler, unlike
+    AccDataBeginOp/AccDataEndOp. Must be balanced by hand with exactly one
+    later AccExitDataOp on the same variables, or the device reference count
+    never reaches zero (a silent per-run device-memory leak, not a compile
+    or runtime error).
+
+    copyin_arrays: host->device transfer, establishing residency for
+        variables some caller reads before writing (needs_in).
+    create_arrays: device allocation only, no initial transfer -- variables
+        that are always written before being read (needs_in is False).
+    """
+    name = "ccpp_utils.acc_enter_data"
+    copyin_arrays = var_operand_def()
+    create_arrays = var_operand_def()
+
+    irdl_options = [AttrSizedOperandSegments()]
+
+    def __init__(self, copyin=None, create=None):
+        super().__init__(operands=[
+            list(copyin or []),
+            list(create or []),
+        ])
+
+@irdl_op_definition
+class AccExitDataOp(IRDLOperation):
+    """Emit !$acc exit data copyout(...) delete(...) -- unstructured, the
+    exit half of an AccEnterDataOp/AccExitDataOp pair (see AccEnterDataOp).
+
+    copyout_arrays: device->host transfer, then release residency --
+        variables some caller reads back after the hoisted region closes
+        (needs_out).
+    delete_arrays: release residency only, no transfer back -- variables
+        nothing reads back on the host side (needs_out is False). Still
+        required to balance the matching AccEnterDataOp's reference count
+        even though no data moves.
+    """
+    name = "ccpp_utils.acc_exit_data"
+    copyout_arrays = var_operand_def()
+    delete_arrays  = var_operand_def()
+
+    irdl_options = [AttrSizedOperandSegments()]
+
+    def __init__(self, copyout=None, delete=None):
+        super().__init__(operands=[
+            list(copyout or []),
+            list(delete or []),
+        ])
+
 @irdl_op_definition
 class OmpTargetDataBeginOp(IRDLOperation):
     """Emit !$omp target data map(tofrom:...) map(alloc:...) directive."""
@@ -1072,6 +1124,8 @@ CCPPUtils = Dialect(
         AccDataEndOp,
         AccUpdateSelfOp,
         AccUpdateDeviceOp,
+        AccEnterDataOp,
+        AccExitDataOp,
         OmpTargetDataBeginOp,
         OmpTargetDataEndOp,
         OmpTargetUpdateFromOp,
