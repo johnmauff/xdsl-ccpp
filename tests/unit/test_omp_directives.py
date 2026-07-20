@@ -181,10 +181,11 @@ class TestOmpTargetUpdateClause:
 
 # ── OmpTargetEnterDataOp / OmpTargetExitDataOp -- op-level printer coverage ──
 #
-# Not wired into any pass yet (that's the next step in the OMP hoisting
-# plan), so there's no pipeline that can produce these ops today -- tested
-# directly at the IR/printer level instead, the same way the ops themselves
-# were smoke-tested at construction time when they were added.
+# These ops are now produced by the normal pipeline too -- GPUCcppCapPass's
+# cross-function hoisting emits them for directive="omp", exercised
+# end-to-end in test_omp_hoisting.py. This class instead constructs and
+# prints the ops directly, isolating the printer's clause-rendering logic
+# from the hoisting analysis that decides when to emit them.
 
 def _make_host_var_ref(var_name: str) -> HostVarRefOp:
     return HostVarRefOp(var_name, "some_mod", f64)

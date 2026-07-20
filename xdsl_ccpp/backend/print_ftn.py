@@ -1551,10 +1551,12 @@ class ftnPrintContext:
                       added (e.g. "copyin" -> "copyin(var)"). OMP's map-based
                       clauses have a two-level shape instead -- "map(" then a
                       map-type modifier then ":" then the list, e.g.
-                      "map(tofrom: var)" -- which doesn't fit a single
-                      auto-added "(": pass clause_name as the complete literal
-                      prefix (e.g. "map(tofrom:") with opener="" so nothing
-                      extra is inserted.
+                      "map(tofrom:var)" (no space after the colon -- no
+                      whitespace is inserted beyond what clause_name itself
+                      contains) -- which doesn't fit a single auto-added "(":
+                      pass clause_name as the complete literal prefix (e.g.
+                      "map(tofrom:") with opener="" so nothing extra is
+                      inserted.
 
         Example output for a long copyin list::
 

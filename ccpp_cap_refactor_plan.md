@@ -514,14 +514,16 @@ starting 3b):
       `OmpTargetUpdateToOp` already exist and are the direct equivalents of
       `AccUpdateSelfOp`/`AccUpdateDeviceOp` used for that path. Printer support added too (case
       arms in `print_ftn.py`, using the `opener=""` mechanism from the paren-bug fix above — both
-      new directives render with balanced parens by construction, not by luck). **Not yet wired
-      into any pass** — `GPUCcppCapPass`/`GPUDataPass` never construct these ops today; that's
-      the next step (the `_role_at` gate + `_wrap_scheme_call` branches below). Verified via
-      direct construction (`OmpTargetEnterDataOp(to=[], alloc=[])` etc.) and two new op-level
-      printer tests in `TestOmpTargetEnterExitDataPrinter` (`test_omp_directives.py`) confirming
-      correct, balanced output through the actual `case` dispatch, not just the shared helper
-      called directly. Full suite green (368 unit + 44 FileCheck, 1 xfailed unchanged), `ruff
-      check` clean.
+      new directives render with balanced parens by construction, not by luck). At this point in
+      the work these ops weren't wired into any pass yet — `GPUCcppCapPass`/`GPUDataPass` didn't
+      construct them, verified only via direct construction (`OmpTargetEnterDataOp(to=[],
+      alloc=[])` etc.) and two op-level printer tests in `TestOmpTargetEnterExitDataPrinter`
+      (`test_omp_directives.py`) confirming correct, balanced output through the actual `case`
+      dispatch. **That gap is closed by the very next sub-bullet below** (the `_role_at` gate
+      removal + `_wrap_scheme_call` branches) — both ops are now constructed by
+      `GPUCcppCapPass`'s hoisting for `directive="omp"` and exercised end-to-end in
+      `test_omp_hoisting.py`; nothing here is still pending. Full suite green at this snapshot
+      (368 unit + 44 FileCheck, 1 xfailed unchanged), `ruff check` clean.
     - **The actual unlock was a single removed gate, not new analysis, confirmed correct.**
       `_role_at` (and a second copy of the same gate in `_wrap_scheme_call`'s forced-anchor loop)
       hard-coded `self.directive != "acc"` → always `"legacy"`. Both removed — the underlying
