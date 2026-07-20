@@ -117,7 +117,11 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     # tables.  HOST-type tables are caller-provided interfaces, not modules.
     host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
 
-    _FRAMEWORK_TO_CAP_VAR = FRAMEWORK_STD_NAME_TO_CAP_VAR
+    # Shallow copy, not an alias: this is a local variable by naming
+    # convention (like every other _-prefixed name in this function) and
+    # must stay safe to mutate locally without ever touching the shared
+    # module-level FRAMEWORK_STD_NAME_TO_CAP_VAR dict other callers rely on.
+    _FRAMEWORK_TO_CAP_VAR = dict(FRAMEWORK_STD_NAME_TO_CAP_VAR)
     _host_block_std = _collect_host_block_std_names(meta_data)
     _DIM_TO_ALLOC = {
         CCPP_LOOP_EXTENT_STD_NAME: "ncols",
