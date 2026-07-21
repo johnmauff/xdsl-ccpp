@@ -548,6 +548,36 @@ starting 3b):
       (`suite_cap.py`/`suite_variable_model.py`'s own allocation-and-storage logic, not
       `ccpp_cap.py`'s) is different. Track as its own backlog item, separate from `CapScratch`
       residency above — not scheduled, not scoped in detail yet.
+    - **A fourth, related gap found the same day: module-private scheme state (not a
+      ccpp-arg-table entry at all) has no GPU-residency story, and can't, without first making
+      it CCPP-visible somehow.** Surfaced concretely by `cld_ice.F90`'s own `tcld` — a
+      `real(kind_phys), private` module variable (not a dummy argument, not in any `.meta` file),
+      set on the host in `cld_ice_init` and read inside `cld_ice_run`'s `!$acc parallel` region.
+      xdsl-ccpp's cap-generation pipeline only ever knows about what's declared in `.meta` files
+      — a variable that's genuinely private to the scheme's own module is invisible to it by
+      construction, so there is no way for xdsl-ccpp to emit `!$acc declare create(...)`/
+      `update device(...)` for it automatically, *regardless* of `HostMatched`/`CapScratch`/
+      `SuiteOwned` residency support: none of those apply to something that was never an
+      arg-table entry in the first place. Two genuinely different paths exist, and they're
+      mutually exclusive:
+      1. **Chosen for now (2026-07-21): keep it module-private, hand-write the OpenACC
+         directives in the scheme's own source** — `!$acc declare create(tcld)` at module scope,
+         `!$acc update device(tcld)` right after computing it in `cld_ice_init`. Self-contained,
+         no xdsl-ccpp changes, works today; the tradeoff is it's manual, not something xdsl-ccpp
+         manages or could ever validate.
+      2. **Not chosen — would require real, unscoped work:** make the variable CCPP-visible by
+         turning it into a real arg-table entry (as `cld_liq`'s equivalent `tcld` already is) and
+         marking it `memory_space=device`, which would only actually do something once the
+         `SuiteOwned` residency capability above is built to consume that annotation at
+         `suite_cap.py`'s suite-level allocation site. This was the path first tried for
+         `cld_ice`'s `tcld` before backing it out in favor of option 1 — reverting it changed the
+         scheme's own call signature, which the project owner didn't want as a side effect of a
+         GPU-residency fix.
+      Worth deciding later, once `SuiteOwned` residency is actually scoped: should xdsl-ccpp gain
+      some way to flag "this module has private state read inside an `!$acc` region with no
+      corresponding arg-table entry" at all — genuinely hard, since it would require parsing
+      scheme `.F90` source (which xdsl-ccpp never does today, treating schemes as opaque behind
+      their declared metadata interface), not just reading `.meta` files.
     - **Future test vehicle for the above, once it's actually built (2026-07-21, not scheduled,
       not part of (b)/(c)) — a third `advection` variant with `apply_constituent_tendencies`
       GPU-enabled.** Discussed with the project owner: `CapScratch` residency is a real

@@ -13,6 +13,9 @@ MODULE cld_ice
    PUBLIC :: cld_ice_run
    PUBLIC :: cld_ice_final
 
+   real(kind_phys), private :: tcld = HUGE(1.0_kind_phys)
+   !$acc declare create(tcld)
+
 CONTAINS
 
    !> \section arg_table_cld_ice_register  Argument Table
@@ -46,12 +49,11 @@ CONTAINS
    !> \section arg_table_cld_ice_run  Argument Table
    !! \htmlinclude arg_table_cld_ice_run.html
    !!
-   subroutine cld_ice_run(ncol, timestep, tcld, temp, qv, ps, cld_ice_array,        &
+   subroutine cld_ice_run(ncol, timestep, temp, qv, ps, cld_ice_array,              &
         errmsg, errflg)
 
       integer,            intent(in)    :: ncol
       real(kind_phys),    intent(in)    :: timestep
-      real(kind_phys),    intent(in)    :: tcld
       real(kind_phys),    intent(inout) :: temp(:,:)
       real(kind_phys),    intent(inout) :: qv(:,:)
       real(kind_phys),    intent(in)    :: ps(:)
@@ -88,11 +90,10 @@ CONTAINS
    !> \section arg_table_cld_ice_init  Argument Table
    !! \htmlinclude arg_table_cld_ice_init.html
    !!
-   subroutine cld_ice_init(tfreeze, cld_ice_array, tcld, errmsg, errflg)
+   subroutine cld_ice_init(tfreeze, cld_ice_array, errmsg, errflg)
 
       real(kind_phys),    intent(in)    :: tfreeze
       real(kind_phys),    intent(inout) :: cld_ice_array(:,:)
-      real(kind_phys),    intent(out)   :: tcld
       character(len=512), intent(out)   :: errmsg
       integer,            intent(out)   :: errflg
 
@@ -100,6 +101,7 @@ CONTAINS
       errmsg = ''
       errflg = 0
       tcld = tfreeze - 20.0_kind_phys
+      !$acc update device(tcld)
       n1 = size(cld_ice_array,1)
       n2 = size(cld_ice_array,2)
       !$acc parallel loop collapse(2) gang vector present(cld_ice_array)
