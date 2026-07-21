@@ -328,8 +328,8 @@ class GPUCcppCapPass(ModulePass):
     @staticmethod
     def _check_no_clause_conflicts(contributors) -> None:
         """Raise if any host var was classified into more than one of the
-        present/update/copy-family categories by different schemes within
-        the same suite -- e.g. one scheme declares memory_space=device
+        present/update/copy-family categories within the same suite (either
+        across different schemes or across entry points) -- e.g. one scheme declares memory_space=device
         while the host is also device-resident (present), while another
         scheme in the same suite leaves memory_space unset for the same
         host var against the same device-resident host (update). Today's
@@ -347,11 +347,10 @@ class GPUCcppCapPass(ModulePass):
                 for category, schemes in sorted(by_category.items())
             )
             raise ValueError(
-                f"generate-gpu-ccpp-cap: host variable '{host_var}' has "
-                f"conflicting GPU residency requirements across schemes in "
-                f"the same suite: {detail}. Per-scheme-call clause routing "
-                f"is not yet supported (see ccpp_cap_refactor_plan.md's "
-                f"GPU/OpenACC backlog item (b)) -- give these schemes "
+                f"Host variable '{host_var}' has conflicting GPU residency requirements "
+                f"within the same suite: {detail}. Per-scheme-call clause routing is "
+                f"not yet supported (see GPU/OpenACC backlog item (b) in "
+                f"ccpp_cap_refactor_plan.md) -- give all involved scheme entry points "
                 f"consistent memory_space declarations for '{host_var}'."
             )
 
