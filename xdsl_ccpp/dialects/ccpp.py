@@ -292,10 +292,10 @@ class ArgOwnershipKind(StrEnum):
     only classifies args that already survived *not* being SuiteOwned (an
     interstitial/advected/allocatable-real arg never becomes a dummy arg at
     all, so it never reaches ResolvedArgOp's world -- there is deliberately
-    no SuiteOwned case there). Phase 7 (see ccpp_cap_refactor_plan.md) is
-    where suite_cap.py's _is_framework_managed and ccpp_cap.py's
-    _build_cap_var_map -- today two independently-computed heuristics for
-    this same ownership question -- both migrate to reading this instead.
+    no SuiteOwned case there). Phase 7 (see ccpp_cap_refactor_plan.md) unified
+    what were previously two independently-computed heuristics for this same
+    ownership question (suite_cap.py's SuiteOwned gate and ccpp_cap.py's
+    HostMatched/CapScratch/Block split) into reading this classification.
 
     SuiteOwned:   interstitial, or advected/allocatable real array -- suite
                   cap owns storage; never a dummy arg on the suite's

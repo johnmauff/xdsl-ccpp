@@ -232,18 +232,6 @@ def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     return result
 
 
-def _is_framework_managed(a) -> bool:
-    """True for suite-cap-owned variables: interstitials of any type,
-    and advected/allocatable real arrays."""
-    if a.hasAttr("is_interstitial"):
-        return True
-    if a.getAttr("type") != "real":
-        return False
-    if not (a.hasAttr("dimensions") and a.getAttr("dimensions") > 0):
-        return False
-    return a.hasAttr("advected") or a.hasAttr("allocatable")
-
-
 def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
     """Return [(mlir_type, arg_name, standard_name)] for intent=out scalar args.
 
@@ -265,16 +253,12 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
         arg_table = meta_data[scheme_name].getArgTable(table_name)
         for fn_arg in arg_table.getFunctionArguments():
             has_dims = fn_arg.hasAttr("dimensions") and fn_arg.getAttr("dimensions") > 0
-            # Phase 7, Stage 3: reads the durable ownership classification
-            # (generate-arg-ownership, Stage 2) instead of re-deriving
-            # SuiteOwned-ness here via _is_framework_managed. The dims > 0
-            # note below still applies to why this reduces to exactly the
-            # is_interstitial-equivalent case for every arg reaching the
-            # `not has_dims` filter. Missing ownership_kind means the
-            # pipeline forgot generate-arg-ownership -- raise rather than
-            # silently treating the arg as not-framework-managed, which
-            # would let it leak into the lifecycle return signature instead
-            # of failing obviously.
+            # Reads the durable ownership classification (generate-arg-
+            # ownership) rather than re-deriving SuiteOwned-ness here.
+            # Missing ownership_kind means the pipeline forgot
+            # generate-arg-ownership -- raise rather than silently treating
+            # the arg as not-framework-managed, which would let it leak into
+            # the lifecycle return signature instead of failing obviously.
             if not fn_arg.hasAttr("ownership_kind"):
                 raise ValueError(
                     f"Arg '{fn_arg.name}' in scheme '{scheme_name}' has no "
@@ -324,8 +308,8 @@ def _collect_host_block_std_names(meta_data) -> set:
     Shared by ccpp_cap.py's _build_cap_var_map and classify_arg_ownership
     below -- previously computed inline only inside _build_cap_var_map; Stage 2
     of Phase 7 (full IR unification, see ccpp_cap_refactor_plan.md) needs the
-    identical set independently, at the same early point _is_framework_managed
-    already runs, before any suite's subroutine signature exists.
+    identical set independently, at the same early point ownership
+    classification runs, before any suite's subroutine signature exists.
     """
     host_block_std: set = set()
     for tbl_name, props in meta_data.items():
@@ -344,19 +328,18 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
     ArgOwnershipKind in ccpp.py) -- does the cap own this arg, or does its
     data come from outside?
 
-    Mirrors suite_cap.py's _is_framework_managed (the SuiteOwned gate) and
-    ccpp_cap.py's _build_cap_var_map (the HostMatched/CapScratch/Block split),
-    but computed purely from this arg's own properties plus module-wide,
-    meta_data-only lookups (host_var_map_lc, host_block_std_names,
-    FRAMEWORK_STD_NAME_TO_CAP_VAR, and the static CCPP_FRAMEWORK_STD_NAMES/
-    CCPP_ERROR_STD_NAMES sets) -- no dependency on any suite's already-built
-    subroutine signature, unlike _build_cap_var_map's current implementation
-    (see the Phase 7 Stage 2 plan for why that dependency is an
-    implementation artifact, not a real ordering requirement).
+    The single source of truth for this ownership question -- suite_cap.py's
+    SuiteOwned gate and ccpp_cap.py's HostMatched/CapScratch/Block split
+    (independently (re-)computed heuristics, prior to Phase 7 Stage 3) both
+    now read the result of this classification instead. Computed purely from
+    this arg's own properties plus module-wide, meta_data-only lookups
+    (host_var_map_lc, host_block_std_names, FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    and the static CCPP_FRAMEWORK_STD_NAMES/CCPP_ERROR_STD_NAMES sets) -- no
+    dependency on any suite's already-built subroutine signature.
 
     Operates on the real ccpp.ArgumentOp (typed property access: is_interstitial,
     arg_type, dimensions, advected, allocatable, model_var_name, standard_name),
-    not the CCPPArgument descriptor _is_framework_managed uses (hasAttr/getAttr) --
+    not the CCPPArgument descriptor's generic hasAttr/getAttr interface --
     the two representations expose the same underlying data differently.
 
     Returns a constructed, verified (verify() is called before returning)
