@@ -27,16 +27,21 @@ conflated that gap with the one this example is actually meant to exercise.
   undeclared (→ wants `update`). Two schemes in the *same group* genuinely disagree about
   the same host variable's residency.
 
-Generating this suite through `generate-gpu-ccpp-cap` shows the actual gap concretely:
-`_analyze_one_suite` processes `present_vars` before `update_vars` when building lifetimes,
-so `update` silently wins for `qv` — `cld_liq`'s `present` classification is discarded with
-no error, and the emitted code brackets *both* schemes' calls with a single `update self`/
-`update device` pair spanning the whole group call, not scoped to either scheme
-individually. `cld_liq_run`'s own `!$acc parallel loop present(qv,...)` is then asserting
-residency the surrounding cap-generated code never actually establishes for it specifically.
+Generating this suite through `generate-gpu-ccpp-cap` (`--directive acc`) shows the actual
+gap concretely: `cld_liq` wants `present(qv)`, `cld_ice` wants `update self`/`update device`,
+and today's per-*suite*-group granularity has no way to satisfy both at once. As of the (c)
+fix, `_analyze_one_suite` detects this and raises a `ValueError` naming `qv` and both
+conflicting schemes, instead of the prior behavior (`update` silently winning — `cld_liq`'s
+`present` classification discarded with no error, emitting a single `update self`/`update
+device` pair around the whole group call that `cld_liq_run`'s own
+`!$acc parallel loop present(qv,...)` would then be asserting residency for that the
+surrounding code never actually established). `make caps`/`make check` (no `--directive`)
+are unaffected — this only fires when generating with `--directive acc`/`omp`.
 
-This is the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work: per-scheme-call
-clause routing and conflict detection, not per-suite/per-group.
+This is the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work. (c) — turning
+the silent conflict into a hard error — is done; (b) — true per-scheme-call clause routing,
+so `qv` compiles correctly with each scheme getting its own directive instead of raising at
+all — remains unimplemented (see `ccpp_cap_refactor_plan.md`'s GPU/OpenACC backlog).
 
 ## Building and verifying (CPU only)
 
