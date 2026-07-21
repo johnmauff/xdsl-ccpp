@@ -3,7 +3,7 @@
 // + hello_scheme.meta + temp_adjust.meta and should produce identical Fortran.
 // Also exercises the ccpp_param mechanism (hello_repeats=1 is the default).
 //
-// RUN: python3 examples/helloworld/helloworld_py.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 examples/helloworld/helloworld_py.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // The Python frontend must produce the same module structure as the XML one.
 

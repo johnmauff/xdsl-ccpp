@@ -23,6 +23,7 @@ from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
 from xdsl_ccpp.transforms.suite_kinds import MetaKind
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
+from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
@@ -71,7 +72,7 @@ def _run_pipeline(
             ir_ops.append(frontend.build_meta_ir(meta))
 
     module = ModuleOp(ir_ops)
-    for pass_cls in [MetaCAP, MetaKind, HostVariableMatchPass,
+    for pass_cls in [MetaCAP, MetaKind, HostVariableMatchPass, ArgOwnershipPass,
                      SuiteCAP, CCPPCAP, GenerateKinds, StripCCPP]:
         pass_cls().apply(ctx, module)
 

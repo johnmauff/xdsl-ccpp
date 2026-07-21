@@ -1489,8 +1489,8 @@ scheduled, and not a prerequisite for anything above.
 ## Phase 7 — Full IR unification (deferred sub-plan — not part of the original 6-phase scope)
 
 Added 2026-07-19, after the Phase 4 investigation (see above) showed this is genuinely
-stageable rather than the monolithic rewrite first assumed. **Stages 1-2 done (2026-07-20);
-Stages 3-4 not scheduled** — no obligation to pick those up soon; tracked here with an actionable
+stageable rather than the monolithic rewrite first assumed. **Stages 1-3 done (2026-07-20);
+Stage 4 not scheduled** — no obligation to pick it up soon; tracked here with an actionable
 staged plan so whoever does isn't starting from a paragraph of rationale alone.
 
 **Goal:** a single "does the cap own this variable, or does it come from outside" decision,
@@ -1615,21 +1615,77 @@ Phase 4 above; this section is the execution plan.
     isolation — produces zero observable difference in any generated Fortran output). `ruff
     check` clean on every new/touched file; pre-existing baseline findings in `ccpp.py`/
     `ccpp_dsl.py`/`ccpp_opt.py` confirmed unchanged via `git stash` comparison.
-- **Stage 3 — Migrate one consumer at a time.**
-  - `suite_cap.py`'s `_classify_args`: swap the inline `_is_framework_managed` call for reading
-    the Stage 2 IR.
-  - `ccpp_cap.py`'s cap-ownership check: swap re-scanning `public_fns` for reading the same IR
-    directly. Scratch-var *allocation* (rank/shape) still needs `suite_cap.py`'s own concrete
-    xDSL types, so that part stays a downstream consumer of both the classification IR and the
-    type info — don't try to move type construction earlier too (this is the one real wrinkle
-    Phase 3b never had, since `ResolvedArgOp` didn't carry type-construction concerns).
-  - `run_dispatch.py`'s `ArgSourceKind.CapVar` check: swap `std_name in cap_var_map` for reading
-    the same IR.
-  - Verify byte-identical after each switch, same rigor as every prior stage in this plan.
-- **Stage 4 — Remove the old paths.** Delete `_is_framework_managed` (once `suite_cap.py` no
-  longer calls it directly) and the cap_var_map re-derivation logic in `_build_cap_var_map`
-  (keeping only whatever's still needed for the type-dependent scratch-var construction), once
-  nothing computes the classification independently anymore.
+- **Stage 3 — Migrate one consumer at a time. ✅ done (2026-07-20).**
+  - **Foundation, not named in the original plan text: `known_props` extension.** `_classify_args`
+    and `_get_suite_lifecycle_ret_info` (see below) don't operate on real `ArgumentOp`s — they
+    operate on `CCPPArgument` descriptors, built by `BuildMetaDataDescriptions.traverse_argument_op`
+    copying a fixed `known_props` list from the real op's properties. Added `"ownership_kind"` to
+    that list — one line, and every descriptor-based consumer gets the Stage 2 classification for
+    free, with no other architecture change.
+  - **Real consumer count: two, not three, as scoping suspected.** `suite_cap.py`'s `_classify_args`
+    (line ~811): swapped `_is_framework_managed(a)` for
+    `a.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned`. `ccpp_cap.py`'s
+    `_build_cap_var_map`: the membership decision (which args are HostMatched/CapScratch/Block)
+    now reads a per-group `bare_name -> ownership_kind` map (built alongside the existing
+    `_sno_cv`/`_dno_cv`/`_cno_cv` per-scheme scan, same loop, no new traversal) instead of
+    re-deriving `_matched_cv` plus the `CCPP_FRAMEWORK_STD_NAMES`/`CCPP_ERROR_STD_NAMES`/
+    `host_block_std`/`host_var_map_lc` exclusion-set check — all four folded into one
+    `ownership_kind != CapScratch: continue`. The value construction (the `lc_<name>` var name,
+    rank, alloc dims, constituent-tendency slicing) stayed exactly as before, per the wrinkle
+    this stage's scoping flagged. `run_dispatch.py`'s `ArgSourceKind.CapVar` check needed **zero
+    code changes** — confirmed it's a pure membership test against the `cap_var_map` dict
+    `ccpp_cap.py` passes in, with no independent classification logic of its own for that case;
+    migrating `_build_cap_var_map`'s membership decision already makes it read the same IR
+    transitively.
+  - **A fourth, previously-unnamed consumer, found by grepping for every `_is_framework_managed`
+    call site rather than trusting the plan text's list of three:** `cap_shared.py`'s own
+    `_get_suite_lifecycle_ret_info` (used for suite lifecycle return-value types) calls it too.
+    Migrated identically (same `ownership_kind == SuiteOwned` swap). Stage 4 could not have
+    actually deleted `_is_framework_managed` without this — it would have been deleting a
+    function with a live caller left in place.
+  - **A fifth thing found and *not* pulled into this stage's scope:** `run_dispatch.py` has its
+    own separate, independent re-derivation of `host_var_map`/`host_block_std_names`/
+    `constituent_std_names` (`_build_run_metadata_maps`) for its Host/DdtMember/Block decisions
+    (a different concern than the CapVar case above) — including a **third** copy of the same
+    HOST-type-table scan already found duplicated twice and consolidated into
+    `_collect_host_block_std_names` during Stage 2. Real drift risk, but it also carries
+    DDT-instance-path resolution (`ddt_instance_map`/`ddt_parent_map`) that `ownership_kind`
+    doesn't model at all — migrating it properly is a bigger, separate job than this stage's
+    scope. Left alone, flagged as a follow-on rather than folded in, matching this project's
+    established discipline of not bundling unrelated cleanup into a structural-migration change.
+  - **A real regression caught mid-migration, not by inspection but by the test suite doing its
+    job:** after migrating `suite_cap.py`, two FileCheck tests failed — `advection`'s
+    `cld_liq_array`/`cld_ice_array` (both genuinely `advected=true` real arrays, correctly
+    `SuiteOwned`) started appearing in generated signatures where they shouldn't. Root cause:
+    those FileCheck `.mlir` files have their own hardcoded `-p` pass list (bypassing
+    `ccpp_dsl.py`'s pipeline construction entirely), and none of them included
+    `generate-arg-ownership` — so `ownership_kind` was never set, and the migrated
+    `_classify_args` silently treated every arg as "not SuiteOwned" (since
+    `hasAttr("ownership_kind")` was always false) instead of correctly excluding them. Swept the
+    entire repo for this gap rather than patching just the one failure: **33 FileCheck `.mlir`
+    files** and **5 unit test files** (`test_ccpp_t_threading.py`,
+    `test_gpu_directives.py`/`test_omp_directives.py`/`test_omp_hoisting.py`/
+    `test_gpu_data_hoisting.py`) had a hardcoded pipeline invoking `generate-suite-cap`/`SuiteCAP`
+    without `generate-arg-ownership`/`ArgOwnershipPass`. Only the `advection` FileCheck tests and
+    `test_ccpp_t_threading.py` actually *failed* — the other 4 unit test files' fixtures simply
+    don't happen to use any interstitial/advected/allocatable-real args, so the gap was silent
+    there (same wrong answer either way, no observable difference) rather than loud. Fixed all
+    38 by inserting the missing pass, confirmed via a repo-wide grep that zero files invoking
+    `generate-suite-cap`/`SuiteCAP` are missing it anymore.
+  - Also fixed 4 `test_ccpp_cap.py::TestBuildCapVarMap`/`TestBuildCapVarMapFlattensSubcycles`
+    tests that construct `CCPPArgument` fixtures directly (bypassing IR/`ArgOwnershipPass`
+    entirely) by setting `ownership_kind` explicitly on each fixture arg, matching what the real
+    pass would compute for each case.
+  - Verified byte-identical throughout: full suite 398 passed, 1 xfailed (unchanged from the
+    pre-Stage-3 baseline) once all 38 pipeline-completeness gaps were closed. `ruff check` clean
+    on every touched file; pre-existing baseline findings in `ccpp_cap.py`/`suite_cap.py`/
+    `test_ccpp_t_threading.py` confirmed unchanged via `git stash` comparison.
+- **Stage 4 — Remove the old paths.** Not scheduled. Delete `_is_framework_managed` (now that
+  neither of its two real callers — `suite_cap.py`'s `_classify_args` nor `cap_shared.py`'s own
+  `_get_suite_lifecycle_ret_info` — call it directly anymore) and the now-dead exclusion-set
+  variables Stage 3 already stopped reading in `_build_cap_var_map` (kept in place, unused, per
+  Stage 3's own "migrate, don't remove yet" discipline — removing them is exactly what's left
+  for this stage), once nothing computes the classification independently anymore.
 
 **Scope note:** bigger and riskier than any single Phase 3b stage — Phase 3b's producer and
 every consumer lived inside one file's function-call chain; this needs a new early computation

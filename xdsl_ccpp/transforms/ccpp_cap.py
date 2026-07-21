@@ -34,7 +34,6 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _bare,
     _build_host_var_map,
     _collect_ddt_use_stubs,
-    _collect_host_block_std_names,
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
@@ -50,7 +49,6 @@ from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_STD_NAMES,
     CCPP_ERRMSG_LEN,
-    CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
@@ -98,13 +96,17 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     are allocated at cap module scope so they never appear as physics_run
     block arguments.
 
-    This is a separate, later-stage heuristic from suite_cap.py's
-    _is_framework_managed: that one decides the suite's own subroutine
-    signature (by is_interstitial/advected/allocatable attributes) *before*
-    the signature exists; this one re-scans the suite's already-built public
-    signature (public_fns) and catches whatever's left unresolved once
-    host-var matching has also run. The two are not meant to compute the
-    same thing -- see the Phase 4 plan notes for why they aren't merged.
+    Phase 7, Stage 3: the HostMatched/CapScratch/Block membership decision
+    below now reads the durable ownership classification
+    (generate-arg-ownership, Stage 2) instead of re-deriving it by re-scanning
+    the suite's already-built public signature (public_fns) against
+    host/framework/error standard-name exclusion sets. public_fns is still
+    used to know *which* args are actually on the group's dummy signature at
+    all (that population itself is suite_cap.py's own job, already migrated
+    in this same stage) and to build the scratch-var's concrete allocation
+    shape (rank, dims) -- the one wrinkle this stage's plan flagged: that
+    type-dependent construction stays here, downstream of both the
+    classification and suite_cap.py's own concrete xDSL types.
 
     Returns:
         (cap_var_map, host_var_map_lc, scratch_var_list):
@@ -115,6 +117,9 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     cap_var_map: dict = {}
     # MODULE only: write-back targets (like num_model_times) live in MODULE
     # tables.  HOST-type tables are caller-provided interfaces, not modules.
+    # Still returned for callers (e.g. run_dispatch.py's Host resolution);
+    # no longer consulted for the CapScratch/Block decision below, which
+    # ownership_kind already accounts for.
     host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
 
     # Shallow copy, not an alias: this is a local variable by naming
@@ -122,7 +127,6 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     # must stay safe to mutate locally without ever touching the shared
     # module-level FRAMEWORK_STD_NAME_TO_CAP_VAR dict other callers rely on.
     _FRAMEWORK_TO_CAP_VAR = dict(FRAMEWORK_STD_NAME_TO_CAP_VAR)
-    _host_block_std = _collect_host_block_std_names(meta_data)
     _DIM_TO_ALLOC = {
         CCPP_LOOP_EXTENT_STD_NAME: "ncols",
         CCPP_HORIZ_DIM_STD_NAME: "ncols",
@@ -142,7 +146,7 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
             _sno_cv: dict = {}
             _dno_cv: dict = {}
             _cno_cv: dict = {}  # bare_name → True when constituent=True
-            _matched_cv: set = set()
+            _own_cv: dict = {}  # bare_name → ArgOwnershipKind
             for _scheme_cv in _grp_schemes:
                 _run_tbl_cv = _scheme_cv + "_run"
                 if _scheme_cv not in meta_data:
@@ -159,23 +163,23 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                         _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
                     if _fa_cv.hasAttr("constituent"):
                         _cno_cv[_bn_cv] = True
-                    if _fa_cv.hasAttr("model_var_name"):
-                        _matched_cv.add(_bn_cv)
+                    if _bn_cv not in _own_cv and _fa_cv.hasAttr("ownership_kind"):
+                        _own_cv[_bn_cv] = _fa_cv.getAttr("ownership_kind")
             for _an_cv, _at_cv in zip(_ci_names, _ci_types):
                 _bn_cv = _bare(_an_cv)
-                if _bn_cv in _matched_cv:
-                    continue  # host-matched (including DDT members)
+                # Anything not classified CapScratch (HostMatched, Block, or
+                # unclassified) has nothing to promote here -- this single
+                # check replaces the old _matched_cv / CCPP_FRAMEWORK_STD_NAMES
+                # / CCPP_ERROR_STD_NAMES / host_block_std / host_var_map_lc
+                # exclusion-set checks, all folded into ownership_kind already.
+                if _own_cv.get(_bn_cv) != ccpp.ArgOwnershipKind.CapScratch:
+                    continue
                 _std_cv = _sno_cv.get(_bn_cv)
                 if not _std_cv:
                     continue
                 if _std_cv in _FRAMEWORK_TO_CAP_VAR:
                     if _std_cv not in cap_var_map:
                         cap_var_map[_std_cv] = (_FRAMEWORK_TO_CAP_VAR[_std_cv], None, None)
-                    continue
-                if (_std_cv in CCPP_FRAMEWORK_STD_NAMES
-                        or _std_cv in CCPP_ERROR_STD_NAMES
-                        or _std_cv in _host_block_std
-                        or _std_cv in host_var_map_lc):
                     continue
                 if _std_cv not in scratch_var_seen:
                     scratch_var_seen.add(_std_cv)

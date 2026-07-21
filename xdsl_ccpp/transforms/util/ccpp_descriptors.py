@@ -326,7 +326,13 @@ class BuildMetaDataDescriptions(Visitor):
                        "memory_space", "model_var_name", "model_module_name",
                        "model_var_memory_space", "model_var_kind_mismatch",
                        "model_var_unit_mismatch",
-                       "default_value", "promoted_dim"]
+                       "default_value", "promoted_dim",
+                       # Phase 7, Stage 2's durable ownership classification
+                       # (ArgOwnershipKind) -- .data here is the enum member
+                       # itself, not a string, same access pattern Stage 3
+                       # consumers compare directly against (e.g.
+                       # ArgOwnershipKind.SuiteOwned).
+                       "ownership_kind"]
         for kp in known_props:
             if kp in arg_op.properties:
                 arg.setAttr(kp, arg_op.properties[kp].data)

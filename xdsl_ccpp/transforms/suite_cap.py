@@ -34,9 +34,9 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     UnitConvertOp,
     UnitWriteBackOp,
 )
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
     _collect_ddt_use_stubs,
-    _is_framework_managed,
     _iter_schemes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -805,10 +805,24 @@ class GenerateSuiteSubroutine(RewritePattern):
         that arg in input_arg_list with synthetic col_start/col_end scalars.
         Returns the final lists and the ncol_meta arg (or None).
         """
+        # Phase 7, Stage 3: reads the durable ownership classification
+        # (generate-arg-ownership, Stage 2) instead of re-deriving
+        # SuiteOwned-ness here via _is_framework_managed. Missing
+        # ownership_kind means the pipeline forgot generate-arg-ownership --
+        # raise rather than silently treating every arg as not-SuiteOwned,
+        # which would produce a wrong-but-plausible suite signature instead
+        # of an obvious failure.
+        missing = [a.name for a in all_args.values() if not a.hasAttr("ownership_kind")]
+        if missing:
+            raise ValueError(
+                f"Arg(s) {sorted(missing)} have no ownership_kind set. "
+                f"generate-arg-ownership (ArgOwnershipPass) must run before "
+                f"generate-suite-cap -- check the pass pipeline."
+            )
         framework_vars = {
             a.name: a
             for a in all_args.values()
-            if _is_framework_managed(a)
+            if a.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
         }
         input_arg_list = [
             a

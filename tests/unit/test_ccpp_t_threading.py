@@ -24,6 +24,7 @@ from xdsl_ccpp.dialects.ccpp_utils import DerivedType
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
+from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
 from xdsl_ccpp.transforms.suite_kinds import MetaKind
@@ -114,9 +115,10 @@ def _host_meta(module_name: str, extra_args: str = "") -> str:
 
 def _run_full_pipeline(run_host_match, ccpp_context, scheme_metas, host_metas, suite_xml,
                        num_instances=None):
-    """Run MetaCAP + HostVariableMatchPass + SuiteCAP + CCPPCAP."""
+    """Run MetaCAP + HostVariableMatchPass + ArgOwnershipPass + SuiteCAP + CCPPCAP."""
     module = run_host_match(scheme_metas=scheme_metas, host_metas=host_metas,
                             suite_xml=suite_xml)
+    ArgOwnershipPass().apply(ccpp_context, module)
     suite_cap = SuiteCAP(num_instances=num_instances) if num_instances is not None else SuiteCAP()
     suite_cap.apply(ccpp_context, module)
     CCPPCAP().apply(ccpp_context, module)

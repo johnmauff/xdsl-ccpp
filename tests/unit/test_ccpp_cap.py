@@ -6,6 +6,7 @@ function. This is its first direct unit test -- previously only exercised
 indirectly via end-to-end examples.
 """
 
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.ccpp_cap import _build_cap_var_map
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
@@ -53,15 +54,23 @@ class TestBuildCapVarMap:
         scheme_props = _make_table_props(
             "phys_scheme", "scheme",
             _make_arg_table("phys_scheme_run", [
-                _make_arg("cnst", standard_name="ccpp_constituents"),
-                _make_arg("scratch1", standard_name="some_scratch_quantity"),
+                _make_arg(
+                    "cnst", standard_name="ccpp_constituents",
+                    ownership_kind=ArgOwnershipKind.CapScratch,
+                ),
+                _make_arg(
+                    "scratch1", standard_name="some_scratch_quantity",
+                    ownership_kind=ArgOwnershipKind.CapScratch,
+                ),
                 _make_arg(
                     "matched1", standard_name="matched_quantity",
                     model_var_name="host_var",
+                    ownership_kind=ArgOwnershipKind.HostMatched,
                 ),
                 _make_arg(
                     "tend1", standard_name="tendency_of_water_vapor",
                     constituent=True,
+                    ownership_kind=ArgOwnershipKind.CapScratch,
                 ),
             ], "scheme"),
         )
@@ -132,7 +141,10 @@ class TestBuildCapVarMapFlattensSubcycles:
         scheme_props = _make_table_props(
             "phys_scheme", "scheme",
             _make_arg_table("phys_scheme_run", [
-                _make_arg("scratch1", standard_name="some_scratch_quantity"),
+                _make_arg(
+                    "scratch1", standard_name="some_scratch_quantity",
+                    ownership_kind=ArgOwnershipKind.CapScratch,
+                ),
             ], "scheme"),
         )
         scheme_props.arg_tables["phys_scheme_run"] = scheme_props.arg_tables.pop(

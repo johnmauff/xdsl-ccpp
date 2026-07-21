@@ -1,7 +1,7 @@
 // Test the completed IR for the ddthost Python frontend.
 // Should produce the same IR structure as the XML frontend.
 //
-// RUN: python3 examples/ddthost/scheme/ddthost_py.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
+// RUN: python3 examples/ddthost/scheme/ddthost_py.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
 // --- Suite cap module ---
 
