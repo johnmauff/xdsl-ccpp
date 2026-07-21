@@ -270,10 +270,20 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
             # SuiteOwned-ness here via _is_framework_managed. The dims > 0
             # note below still applies to why this reduces to exactly the
             # is_interstitial-equivalent case for every arg reaching the
-            # `not has_dims` filter.
+            # `not has_dims` filter. Missing ownership_kind means the
+            # pipeline forgot generate-arg-ownership -- raise rather than
+            # silently treating the arg as not-framework-managed, which
+            # would let it leak into the lifecycle return signature instead
+            # of failing obviously.
+            if not fn_arg.hasAttr("ownership_kind"):
+                raise ValueError(
+                    f"Arg '{fn_arg.name}' in scheme '{scheme_name}' has no "
+                    f"ownership_kind set. generate-arg-ownership "
+                    f"(ArgOwnershipPass) must run before generate-suite-cap "
+                    f"-- check the pass pipeline."
+                )
             is_framework_managed = (
-                fn_arg.hasAttr("ownership_kind")
-                and fn_arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+                fn_arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
             )
             # Deduplicate by standard_name so different local names for the
             # same logical arg (e.g. errflg vs errcode for ccpp_error_code)
