@@ -13,8 +13,6 @@ MODULE cld_ice
    PUBLIC :: cld_ice_run
    PUBLIC :: cld_ice_final
 
-   real(kind_phys), private :: tcld = HUGE(1.0_kind_phys)
-
 CONTAINS
 
    !> \section arg_table_cld_ice_register  Argument Table
@@ -48,11 +46,12 @@ CONTAINS
    !> \section arg_table_cld_ice_run  Argument Table
    !! \htmlinclude arg_table_cld_ice_run.html
    !!
-   subroutine cld_ice_run(ncol, timestep, temp, qv, ps, cld_ice_array,              &
+   subroutine cld_ice_run(ncol, timestep, tcld, temp, qv, ps, cld_ice_array,        &
         errmsg, errflg)
 
       integer,            intent(in)    :: ncol
       real(kind_phys),    intent(in)    :: timestep
+      real(kind_phys),    intent(in)    :: tcld
       real(kind_phys),    intent(inout) :: temp(:,:)
       real(kind_phys),    intent(inout) :: qv(:,:)
       real(kind_phys),    intent(in)    :: ps(:)
@@ -62,15 +61,17 @@ CONTAINS
       !----------------------------------------------------------------
 
       integer         :: icol
-      integer         :: ilev
+      integer         :: ilev, nlev
       real(kind_phys) :: frz
 
       errmsg = ''
       errflg = 0
 
+      nlev = size(temp, 2)
       ! Apply state-of-the-art thermodynamics :)
+      !$acc parallel loop collapse(2) gang vector present(qv,cld_ice_array,temp)
       do icol = 1, ncol
-         do ilev = 1, size(temp, 2)
+         do ilev = 1, nlev
             if (temp(icol, ilev) < tcld) then
                frz = MAX(qv(icol, ilev) - 0.5_kind_phys, 0.0_kind_phys)
                cld_ice_array(icol, ilev) = cld_ice_array(icol, ilev) + frz
@@ -87,17 +88,26 @@ CONTAINS
    !> \section arg_table_cld_ice_init  Argument Table
    !! \htmlinclude arg_table_cld_ice_init.html
    !!
-   subroutine cld_ice_init(tfreeze, cld_ice_array, errmsg, errflg)
+   subroutine cld_ice_init(tfreeze, cld_ice_array, tcld, errmsg, errflg)
 
       real(kind_phys),    intent(in)    :: tfreeze
       real(kind_phys),    intent(inout) :: cld_ice_array(:,:)
+      real(kind_phys),    intent(out)   :: tcld
       character(len=512), intent(out)   :: errmsg
       integer,            intent(out)   :: errflg
 
+      integer :: i,j,n1, n2
       errmsg = ''
       errflg = 0
-      cld_ice_array = 0.0_kind_phys
       tcld = tfreeze - 20.0_kind_phys
+      n1 = size(cld_ice_array,1)
+      n2 = size(cld_ice_array,2)
+      !$acc parallel loop collapse(2) gang vector present(cld_ice_array)
+      do i=1,n1
+        do j=1,n2
+          cld_ice_array(i,j) = 0.0_kind_phys
+        enddo
+      enddo
 
    end subroutine cld_ice_init
 

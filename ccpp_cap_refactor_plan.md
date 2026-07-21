@@ -458,15 +458,153 @@ starting 3b):
       reach down into suite-level function bodies itself) rather than a small patch; (c) handling a
       group where two schemes touching the same host var need conflicting clauses — not separable
       work, falls out naturally once (b) is done.
+  - **A fourth, previously-unnamed sub-item found while scoping (b), now Phase 7 is done
+    (2026-07-20): the multi-group `_ccpp_physics_run` discovery gap.** `GPUCcppCapPass`'s
+    `_find_inner_suite_part_if` does a flat scan of the outer suite branch's block and returns on
+    the *first* `scf.IfOp` it finds whose true-region contains a `_suite_physics*` call. Traced
+    `run_dispatch.py`'s actual construction of the suite-part dispatch chain: when a suite has
+    more than one XML `<group>`, each group's dispatch `IfOp` is nested in the *false-region* of
+    the next, so only the last-processed group's `IfOp` is a direct sibling in the block being
+    scanned — every other group's call site is silently never instrumented for cross-function
+    hoisting. Confirmed currently unexercised (not just theoretical): `examples/capgen` and
+    `examples/ddthost`'s `temp_suite.xml` are the only two-group suites in the repo, and neither
+    declares any `memory_space` metadata, so `GPUCcppCapPass.apply()` exits before ever reaching
+    this code path.
+    - **Investigated whether this is a small standalone fix — it is not.** Naively walking the
+      whole nested if/else chain and calling `_wrap_scheme_call` once per discovered group would
+      not just add coverage, it would introduce two new bugs, because `_wrap_scheme_call`'s
+      role/reference lookup scans the *shared* outer block for `HostVarRefOp`s — and that block
+      is genuinely shared across every group (`run_dispatch.py` accumulates
+      `suite_host_refs`/`suite_array_secs` from *all* groups into one list, placed once in the
+      common ancestor block specifically so it dominates every nested group branch, per SSA
+      scoping rules). The lookup has no concept of "does *this specific group's* call actually use
+      this var" — only "does a ref for this var exist anywhere in the suite, at this phase."
+      Confirmed via `run_dispatch.py`'s `ccpp_physics_suite_part_list` machinery that each group
+      is invoked as a genuinely separate, host-driver-issued call per timestep (not one combined
+      call), which makes both failure modes real rather than hypothetical: (1) *misattribution* —
+      a var used only by group1's scheme could get a directive inserted around group2's call too;
+      (2) *duplicate reference-counted directives* — a var whose hoisted entry/exit phase is
+      `"run"` and genuinely used by multiple groups would get `AccEnterDataOp`/`AccExitDataOp`
+      fired once per group's separate invocation per timestep, an unbalanced enter:exit ratio
+      under OpenACC/OMP's reference-counted semantics — a real device-memory bug, not just
+      redundant work. A correct fix needs per-*group* variable usage tracking (not just
+      per-phase) and directive insertion driven by each group's own call operands, not a blind
+      scan of the shared block — genuinely the same class of work as (b)'s redesign, not a
+      separable small patch.
+    - **Decision (2026-07-20, explicit user choice): defer entirely to (b).** A narrower
+      "detect multi-group suites and skip run-phase hoisting for them" guard was offered as a
+      smaller, safe interim option and declined in favor of folding this into (b)'s eventual
+      redesign. No code changed as a result of this investigation.
   - **Sequencing finding: (b)/(c) should wait for Phase 7 (full IR unification, below), not be
-    attempted before it.** Phase 7's whole point is making "which bucket does this scheme arg
-    fall into" a single durable-IR decision instead of the three independently-computed
-    heuristics scattered across `suite_cap.py`/`ccpp_cap.py`/`run_dispatch.py` today (and its own
-    text already flags `lifecycle_cap.py` as blocked on it). Per-scheme-call GPU clause routing
-    needs exactly that same per-argument classification; building it before Phase 7 would mean a
-    fourth ad hoc heuristic Phase 7 would then have to reconcile or replace. Option 2 and the
-    enter/exit-data lifecycle piece of (a) don't have this dependency and can proceed
-    independently, whenever picked up.
+    attempted before it — Phase 7 is now done (2026-07-20), so this is no longer a live blocker.**
+    Phase 7's whole point was making "which bucket does this scheme arg fall into" a single
+    durable-IR decision instead of the three independently-computed heuristics scattered across
+    `suite_cap.py`/`ccpp_cap.py`/`run_dispatch.py` (and its own text already flagged
+    `lifecycle_cap.py` as blocked on it). Per-scheme-call GPU clause routing needs an analogous
+    per-argument, computed-once classification; building it before Phase 7 would have meant a
+    fourth ad hoc heuristic Phase 7 would then have to reconcile or replace. Note this connection
+    is looser than it first sounds: `ownership_kind` doesn't decide *which* GPU clause an arg
+    needs (that's still a fresh, separate memory_space-based question) — the real overlap is that
+    GPU-clause-relevant args are exactly the `ownership_kind == HostMatched` subset (both gate on
+    the same underlying `model_var_name` presence), so (b) could read that instead of
+    re-deriving the same check, but still has to build its own new per-scheme-call classification
+    from scratch, following Phase 7's pattern rather than reusing its actual enum. Option 2 and
+    the enter/exit-data lifecycle piece of (a) never had this dependency and proceeded
+    independently, as already recorded above.
+  - **Two new backlog items found while scoping (b)/the advection example (2026-07-20), neither
+    scheduled:**
+    - **Silent no-op: `memory_space` declared on a non-`HostMatched` arg does nothing, with zero
+      feedback.** Metadata parsing has no schema validation — `CCPPArgument`/`ArgumentOp` just
+      store whatever properties are set. Both `GPUDataPass` and `GPUCcppCapPass` gate their whole
+      analysis on `arg.hasAttr("model_var_name")` before ever consulting `memory_space`, so a
+      scheme author declaring `memory_space = device` on a `CapScratch`-classified arg (e.g.
+      `apply_constituent_tendencies`'s `const_tend`/`const`, which resolve via
+      `FRAMEWORK_STD_NAME_TO_CAP_VAR` to cap-owned module variables, never matched against host
+      metadata at all) gets no error, no warning, nothing — exactly the silent-misconfiguration
+      pattern this session has repeatedly hunted down elsewhere (Stage 3's 38-file pipeline gap,
+      the Copilot-flagged `ownership_kind` fallback). Small, independent fix: a validation
+      check (in `HostVariableMatchPass` or a small new pass) that raises/warns whenever an arg
+      declares `memory_space` but isn't `HostMatched`.
+    - **Missing capability, not a bug: `CapScratch` args have no GPU-residency story at all.**
+      Actually making `memory_space=device` do something useful for e.g.
+      `apply_constituent_tendencies` would mean teaching `cap_var_map`'s scratch-array allocation
+      path (`lc_constituent_array`, `lc_const_tend`, etc. — cap-module-scope arrays, potentially
+      large, dimensioned by ncol×pver×ntracers) about `!$acc enter data create(...)`/OMP
+      equivalents — a genuinely new capability, not a routing fix, and a plausible real want for
+      CCPP-GPU users given how large constituent-tendency arrays typically are. Separate, larger
+      backlog item from (b)/(c), which are scoped to `HostMatched` args only.
+    - **A third, distinct missing capability, found 2026-07-21 while reviewing the project
+      owner's manual OpenACC edits to `examples/advection`: `SuiteOwned` args have no
+      GPU-residency story either, and it's a genuinely separate gap from `CapScratch` above, not
+      the same one under a different name.** Concretely hit this reviewing `cld_ice.meta`'s
+      `cld_ice_array` (`advected = .true.`, so `SuiteOwned` per `classify_arg_ownership`) marked
+      `memory_space = device` — inert today, for a different reason than the `CapScratch` case.
+      `SuiteOwned` variables are allocated and owned by `suite_cap.py`/`suite_variable_model.py`
+      at the *suite* level (inside the generated `<suite>_suite_cap` module) — a structurally
+      different allocation path from `CapScratch`'s `cap_var_map` in `ccpp_cap.py` (the top-level
+      `ccpp_cap` dispatcher module). They share a conceptual shape — both are framework-owned
+      scratch memory the host never sees — but building `CapScratch` residency would not, by
+      itself, do anything for `SuiteOwned` variables; the actual code that would need to change
+      (`suite_cap.py`/`suite_variable_model.py`'s own allocation-and-storage logic, not
+      `ccpp_cap.py`'s) is different. Track as its own backlog item, separate from `CapScratch`
+      residency above — not scheduled, not scoped in detail yet.
+    - **Future test vehicle for the above, once it's actually built (2026-07-21, not scheduled,
+      not part of (b)/(c)) — a third `advection` variant with `apply_constituent_tendencies`
+      GPU-enabled.** Discussed with the project owner: `CapScratch` residency is a real
+      efficiency (arguably correctness) requirement, not just a nice-to-have, the moment a
+      GPU-resident scheme's output has to flow through cap-owned scratch memory to reach another
+      scheme — and `advection` already has a live preview of exactly this shape: `cld_liq`'s/
+      `cld_ice`'s own `cld_liq_tend`/`cld_ice_tend` args (each `CapScratch` themselves, confirmed
+      via `classify_arg_ownership` — no host match, not in `FRAMEWORK_STD_NAME_TO_CAP_VAR`, falls
+      through to the generic scratch case) feed into the combined `lc_const_tend`/
+      `lc_constituent_array` that `apply_constituent_tendencies` consumes directly. For this to be
+      a *meaningful* test once the capability exists — not just "does allocation-time `enter data
+      create(...)` work in isolation" — it needs `memory_space=device` on **both ends**: the
+      producer (`cld_liq_tend`/`cld_ice_tend`) and the consumer (`apply_constituent_tendencies`'s
+      `const`/`const_tend`), so it actually exercises data written by a GPU-resident producer
+      correctly reaching a GPU-resident consumer through cap-owned scratch memory. Deliberately
+      not the same `advection` variant as the (b)/(c) validation plan below (which explicitly
+      leaves the constituent-tendency plumbing untouched, since the mechanism doesn't exist yet) —
+      a separate variant, for a separate, later capability.
+  - **Plan for validating (b)/(c) against a real example, not just synthetic fixtures
+    (2026-07-20, not yet implemented) — modify `examples/advection/` directly, single group,
+    no new example directory.** Originally proposed splitting `cld_suite.xml`'s one "physics"
+    group into two, specifically so `cld_liq`/`cld_ice` would land in *different* groups and
+    exercise the multi-group `_ccpp_physics_run` discovery bug above at the same time. Rejected
+    (2026-07-20): changes the form of the existing, shared advection example (5 other test files
+    depend on it) for a benefit the actual data-movement scoping work doesn't need — an intra-group
+    transition between two schemes that genuinely disagree about a host var's residency needs
+    only two *different schemes* with divergent `memory_space` settings, not two *groups*.
+    `cld_liq`/`cld_ice` already sit in the same single group today, so this is achievable as
+    metadata-only additions to the existing example, no restructuring, no new directory:
+    - `temp` (real DDT member, `phys_state%Temp`, referenced by both `cld_liq_run` and
+      `cld_ice_run`): `memory_space=device` on both — the DDT-residency validation (never
+      exercised by any real example today) plus the compatible-union case (two schemes agree).
+    - `qv` (`phys_state%q(:,:,index_of_water_vapor_specific_humidity)`, also referenced by both):
+      host side (`test_host_data.meta`) gets `memory_space=device`; `cld_liq_run`'s `qv` stays
+      unset (→ `update`); `cld_ice_run`'s `qv` gets `memory_space=device` (→ `present`) — a
+      genuine, deliberate `present`-vs-`update` conflict between two schemes in the *same group*,
+      the exact scenario (c) needs a conflict-raise for. Deliberately not `ps` — it already has
+      its own dedicated unit-mismatch test in `test_ccpp_track_variables.py` not worth entangling.
+    - `tfreeze` (already host-matched in both `_init` tables against `test_host_mod`'s `tfreeze`):
+      `memory_space=device` on `cld_liq_init`'s arg only, for whole-sim-scope entry. Exit needs a
+      **new**, correctly-named `cld_liq_finalize` table with a `tfreeze` arg
+      (`memory_space=device`) — `cld_liq` has no finalize table today, and `cld_ice_final` hits
+      a real, separate bug (`lifecycle_cap.py`'s `_lc_postfix_aliases` has no bare
+      `_finalize`↔`_final` alias, so `cld_ice_final` is silently never recognized at all) —
+      deliberately sidestepping that bug rather than depending on it being fixed first.
+    - Confirmed low blast radius: none of advection's 3 existing FileCheck goldens invoke any
+      GPU pass, so `memory_space` itself won't appear in the `completed_ir`/`end_to_end` outputs
+      (both run past `strip-ccpp`, which drops scheme metadata) — only `frontend`'s raw parse
+      dump would show it directly. The new `cld_liq_finalize` table does add a new dispatch
+      entry point, so all 3 goldens still need regenerating, but this is a small, local,
+      mechanical regeneration — nothing like the group-split version's ripple.
+      `test_ccpp_track_variables.py`'s `TestAdvectionIntegration` (the `ps` unit-mismatch test)
+      is unaffected — confirmed its assertions never touch `qv`, `temp`, or `tfreeze`.
+    - **The multi-group `_ccpp_physics_run` discovery bug still needs its own validation**, but
+      now clearly separately from this — a small synthetic fixture (mirroring
+      `test_gpu_data_hoisting.py`'s existing `TestMultiSuiteScoping` pattern, just multi-*group*
+      instead of multi-*suite*) is enough; it doesn't need a real example or advection at all.
   - **OMP backend equivalent ("item #2"): done (2026-07-20).** `directive="omp"` now gets the
     same cross-function hoisting Option 2 built for ACC — `OmpTargetEnterDataOp`/
     `OmpTargetExitDataOp` and `OmpTargetUpdateFromOp`/`OmpTargetUpdateToOp` fire once at the
@@ -1756,6 +1894,130 @@ above: one branch per stage, byte-identical verification, full test suite green 
 **Also revisit when this is done:** the Phase 6 pass-status decision for
 `run_dispatch.py`/`lifecycle_cap.py`/`constituent_cap.py` — this is the prerequisite that
 decision was waiting on.
+
+---
+
+## Backlog — capgen-v1 end-to-end-tests capability gaps (added 2026-07-20)
+
+Classified 2026-07-20 by cloning `NCAR/ccpp-framework` at `feature/capgen-v1` and comparing its
+`end-to-end-tests/` directory against xdsl-ccpp's current source (duplicates: `advection`,
+`capgen`, `ddthost`; low-priority partial: `advection_auto_clone`, which capgen-v1's own code
+labels a transient legacy shim for one host). What follows is an implementation plan with effort
+estimates for every genuine gap found, so picking one up later doesn't require re-deriving scope
+from scratch. Effort tiers are relative to this session's own completed work as a yardstick: **S**
+≈ a focused session, comparable to one Copilot-review-fix round; **M** ≈ comparable to one Phase 7
+stage (Stage 3/4-sized); **L** ≈ bigger than any single Phase 7 stage, a multi-session effort in
+its own right. None of this is scheduled — pick items independently, in any order, except where a
+dependency is noted.
+
+- **Nested `<subcycle>` support — M/L.** The single highest-value item: `var_compat`'s real suite
+  XML nests `<subcycle>` two levels deep, but xdsl-ccpp actively rejects this today
+  (`ccpp_xml.py`'s `XMLSubcycle.__init__` raises `ValueError` on a nested `<subcycle>` child, with
+  a defense-in-depth second raise in `ccpp_descriptors.py`'s `traverse_group_op`). Read both
+  rejection sites: this was a deliberate, considered decision (the `XMLSubcycle` docstring
+  literally says "If a real need for nesting turns up later, this is the place to lift the
+  restriction" — that need has now turned up). Fix requires, in order:
+  1. `ccpp_xml.py`: `XMLSubcycle.__init__` recursively parses a nested `<subcycle>` child as
+     another `XMLSubcycle` instead of raising.
+  2. `ccpp_descriptors.py`'s mirrored IR-side rebuild: same recursive change.
+  3. `cap_shared.py`'s `_iter_schemes` (its own docstring already flags this: "only exercising the
+     one-level-deep subcycle case") needs to recursively descend, not just one level.
+  4. `suite_variable_model.py`'s independently-duplicated subcycle-flattening copy (duck-typed via
+     `"loop_count" in child.attributes`, per its own comment on why it isn't unified with
+     `_iter_schemes`) needs the same recursive treatment, separately.
+  5. `suite_cap.py`'s call-sequence builder (the `("subcycle", loop_count, is_literal, [...])`
+     flat-tuple structure feeding its Fortran loop-emission code around line ~1107) needs to
+     become recursive, and the actual generated-Fortran loop emission needs nested `do` loops with
+     distinct, non-shadowing loop-index variable names per nesting level — the real design work
+     here, not the parsing changes above.
+  6. New unit + FileCheck coverage for nested-loop generation, replacing/extending
+     `test_subcycle.py::test_nested_subcycle_is_rejected`.
+  - Not verified: whether `run_dispatch.py` has its own independent subcycle-flattening
+    assumption beyond what `_iter_schemes` covers — check this first before scoping further.
+- **`var_compat`'s other two pieces, separate from nested-subcycle:**
+  - **Vertical array flipping (`top_at_one=true`) — M.** Reverses vertical-index array sections
+    when a scheme's declared top-at-one convention differs from the host's. Architecturally
+    similar to the existing `RowMajorConvertOp`/`RowMajorWriteBackOp` pair (row-major/column-major
+    conversion at the Fortran/C++ interop boundary) — likely a new `VerticalFlipOp` inserted at
+    the same host/scheme arg-marshaling boundary, reusing that established pattern rather than
+    inventing a new mechanism.
+  - **Kind conversion (`kind_phys`↔`8`) — S/M, verify before assuming unbuilt.** xdsl-ccpp already
+    has `generate-meta-kinds`/`--kind-map`/`extra_kind`/`extra_iso` machinery
+    (`ccpp_dsl.py::_build_pipeline`, `TypeConversions`) for exactly this class of problem — check
+    whether `var_compat`'s specific `kind_phys`↔`8` case is already handled by that machinery
+    before scoping new work.
+- **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
+  cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
+  *named group* from a *different* suite XML file, nestable 2 levels deep, under schema
+  `version="2.0"`, plus suite-level `<init>`/`<final>` scheme hooks (today `XMLSuite` only ever
+  reads one file and only parses `<group>` children — `<nested_suite>`, `<init>`, `<final>` are
+  currently silently skipped, not rejected, since the parser just ignores unrecognized child
+  tags). Needs: recursive cross-file loading with cycle detection, named-group extraction, and new
+  suite-level (not group-level) lifecycle codegen for `<init>`/`<final>` hooks. Its scheme `.meta`
+  files are byte-identical to `var_compat`'s, meaning its actual expanded suite structure likely
+  *also* needs nested-subcycle support — do that item first. Open unknown: `version="2.0"` may
+  imply other undiscovered schema changes beyond what's described here.
+- **`constituents_dim` — two independent sub-items:**
+  - **General suite-workspace vars sized by the live constituent count — M.** Both
+    framework-allocated and scheme-allocated variants. Today `ccpp_cap.py`'s `_build_cap_var_map`
+    only special-cases exactly two hardcoded framework arrays via `_DIM_TO_ALLOC`'s
+    `number_of_ccpp_constituents → "lc_num"` entry — needs generalizing to any suite-workspace var
+    dimensioned by the constituent count, not just those two names.
+  - **Cross-scheme constituent-flag inference — M/L.** A consumer scheme reads a
+    producer-flagged `advected`/`constituent` var without redeclaring the flag itself; capgen-v1
+    infers constituent-hood from the producer alone. Today `constituent_cap.py`'s
+    `_collect_constituent_info` and `cap_shared.py`'s `classify_arg_ownership` both check
+    `advected`/`constituent` as purely local, per-arg properties — no cross-scheme propagation
+    exists anywhere. Needs a new analysis step building a module-wide "which standard_names are
+    advected/constituent, per any scheme's declaration" set, consulted during classification — a
+    real architectural addition, not a small patch.
+- **`suite_allocate` — L, plus one cheap independent bugfix.**
+  - **Cheap fix, do first, unrelated to the rest — S.** `_build_cap_var_map`'s scratch-var
+    allocation silently falls back to allocating size `"1"` for any dimension name not in
+    `_DIM_TO_ALLOC` — a latent mis-allocation bug found while scoping this, unrelated to whether
+    the larger `suite_allocate` pattern ever gets built. Should raise instead (same "raise, don't
+    silently mask" precedent as the Phase 7 Copilot-review fixes), independent of everything else
+    here.
+  - **The actual pattern — L.** Scheme-allocated (not framework-allocated) suite-scoped scratch
+    memory, dimensioned by a *different* scheme's `timestep_init`-phase output, allocated at
+    run-time rather than init-time, relying on CCPP's phase-then-scheme execution ordering.
+    `suite_variable_model.py`'s own docstring assumes init-time allocation with statically-known
+    dimensions throughout — this needs a genuine new allocation-timing model plus
+    cross-scheme-phase dependency awareness, not a variant of the existing path.
+- **`chunked_data` — size unconfirmed, verify before assuming it needs work.** A host driver
+  dispatching physics over `[lb,ub]` sub-ranges per thread (`thread_num`/`nphys_threads` as plain
+  scheme args). The generated cap subroutines already accept `col_start`/`col_end`
+  (`horizontal_loop_begin`/`horizontal_loop_end`) as bounds throughout this codebase — it's
+  plausible the host driver just calls the same generated subroutine repeatedly with different
+  `[lb,ub]` ranges per thread, with `thread_num`/`nphys_threads` being ordinary host-matched
+  scalar args needing no special code-gen support at all. **Do a quick feasibility test first**
+  (run `chunked_data_scheme.meta` through today's pipeline) before scoping this as new work — if
+  it already works, this is **S** (just add the test); only escalate to **M** if something about
+  sub-range handling genuinely breaks.
+- **`instances`/`instances_advection` — M, and a real decision point, not just an estimate.**
+  xdsl-ccpp already has a working multi-instance mechanism (`--num-instances` CLI flag →
+  `ccpp_t`-handle-based per-instance state, exercised in `examples/helloworld`). Capgen-v1's
+  pattern here is architecturally different: explicit `instance_number`/`number_of_instances`
+  **scalar args** threaded directly into scheme signatures, plus host DDT arrays literally
+  dimensioned by `number_of_instances` — no `ccpp_t` handle involved at all. Building this means
+  recognizing `instance_number`/`number_of_instances` as ordinary host-matchable standard names
+  and confirming array-dimensioning-by-them works generically (likely does, if dimension-name
+  handling elsewhere is already name-agnostic — needs verification, not assumed). **Open
+  question for the project owner:** is a second, structurally different multi-instance model
+  actually wanted, given a working one already exists — or is this intentionally out of scope?
+- **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
+  (a Fortran logical expression for conditional variable presence) is already a real
+  `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
+  ever read it. Likely reuses the existing `present()`-guard pattern already built for promoted
+  optional args (Phase 1/2 of `test_optional_args.py`) rather than needing a new mechanism.
+  Separately, S: add test coverage for optional args at `_timestep_init`/`_timestep_final` (not
+  just `_run`) and optional+unit-conversion combined — likely already work today, just untested.
+- **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
+  Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
+  `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified
+  whether xdsl-ccpp's own constituent-registration code (`constituent_cap.py`) validates this at
+  all today, or would silently accept/mishandle it. Small, self-contained check-and-raise if
+  missing, matching this session's established validation-gap pattern.
 
 ---
 

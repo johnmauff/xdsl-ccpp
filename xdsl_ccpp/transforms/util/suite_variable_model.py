@@ -30,7 +30,10 @@ class SuiteVarEntry:
     """
 
     standard_name: str
-    local_name: str            # canonical Fortran name (from the first writer)
+    local_name: str            # canonical Fortran name (from the first writer) --
+                                # qualified with producing_scheme if this name
+                                # collided with a *different* standard_name's
+                                # first-writer name; see _resolve_name_collisions.
     fortran_type: str          # "real", "integer", "character", or DDT type name
     kind: str                  # kind string (e.g. "kind_phys"), "" for non-real
     rank: int                  # 0 = scalar, >0 = array
@@ -38,6 +41,7 @@ class SuiteVarEntry:
     is_ddt: bool               # True for Derived-Data-Type interstitials
     producing_phase: str       # phase postfix in which this var is first written
     producing_group: str       # group name if produced in _run, else ""
+    producing_scheme: str      # name of the scheme whose arg first wrote this var
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +205,36 @@ class SuiteVariableModel:
                 self._process_table(
                     arg_table, scheme_name, phase_postfix, group_name
                 )
+        self._resolve_name_collisions()
+
+    def _resolve_name_collisions(self) -> None:
+        """Qualify local_name for any suite-owned variables that would
+        otherwise collide at Fortran module scope.
+
+        Two *different* standard_names can independently pick the same
+        local_name (e.g. two schemes each naming their own scalar "tcld") --
+        harmless in each scheme's own signature, but suite-owned variables
+        are all declared in one shared module scope, so an unqualified
+        collision would emit two conflicting declarations of the same
+        identifier. Only the colliding subset is touched -- every
+        non-colliding name (the overwhelming majority) is emitted exactly as
+        the scheme author wrote it, unchanged from today's behavior.
+
+        Processes colliding groups in sorted (local_name, producing_scheme)
+        order so the qualified names are a pure function of the suite's own
+        standard_names/scheme names -- independent of scheme-file processing
+        order, unlike a "first writer keeps the plain name" rule would be.
+        """
+        by_local_name: dict[str, list[SuiteVarEntry]] = {}
+        for entry in self._suite_owned.values():
+            by_local_name.setdefault(entry.local_name, []).append(entry)
+
+        for local_name, entries in sorted(by_local_name.items()):
+            distinct_std_names = {e.standard_name for e in entries}
+            if len(distinct_std_names) <= 1:
+                continue
+            for entry in sorted(entries, key=lambda e: e.producing_scheme):
+                entry.local_name = f"{entry.producing_scheme}_{local_name}"
 
     def _process_table(
         self,
@@ -247,14 +281,14 @@ class SuiteVariableModel:
             # the first scheme entry writes (out) or reads/writes (inout) them.
             if arg.hasAttr("advected") or arg.hasAttr("allocatable"):
                 self._suite_owned[std_name] = self._make_entry(
-                    arg, std_name, phase, group_name
+                    arg, std_name, phase, group_name, scheme_name
                 )
                 continue
 
             # Case 2: first occurrence is intent(out) → suite-owned.
             if intent == "out":
                 self._suite_owned[std_name] = self._make_entry(
-                    arg, std_name, phase, group_name
+                    arg, std_name, phase, group_name, scheme_name
                 )
                 continue
 
@@ -286,6 +320,7 @@ class SuiteVariableModel:
         std_name: str,
         phase: str,
         group_name: str,
+        scheme_name: str,
     ) -> SuiteVarEntry:
         """Construct a SuiteVarEntry from a CCPPArgument."""
         local_name   = arg.name
@@ -310,4 +345,5 @@ class SuiteVariableModel:
             is_ddt=is_ddt,
             producing_phase=phase,
             producing_group=group_name,
+            producing_scheme=scheme_name,
         )

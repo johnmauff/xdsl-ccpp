@@ -44,6 +44,12 @@
   type = real
   kind = kind_phys
   intent = in
+[ tcld ]
+  standard_name = minimum_temperature_for_cloud_ice
+  units = K
+  dimensions = ()
+  type = real | kind = kind_phys
+  intent = in
 [ temp ]
   standard_name = temperature
   units = K
@@ -51,6 +57,7 @@
   type = real
   kind = kind_phys
   intent = inout
+  memory_space = device
 [ qv ]
   standard_name = water_vapor_specific_humidity
   units = kg kg-1
@@ -58,6 +65,7 @@
   type = real
   kind = kind_phys
   intent = inout
+  memory_space = device
 [ ps ]
   standard_name = surface_air_pressure
   state_variable = true
@@ -108,6 +116,12 @@
   type = real |  kind = kind_phys
   # Advected species that needs to be supplied by framework
   intent = inout
+[ tcld ]
+  standard_name = minimum_temperature_for_cloud_ice
+  units = K
+  dimensions = ()
+  type = real | kind = kind_phys
+  intent = out
 [ errmsg ]
   standard_name = ccpp_error_message
   long_name = Error message for error handling in CCPP

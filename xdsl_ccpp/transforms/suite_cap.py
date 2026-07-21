@@ -486,7 +486,15 @@ class GenerateSuiteSubroutine(RewritePattern):
             is_excluded = arg.name in exclude_args
             if intent == "in" or intent == "inout":
                 if not is_overridden and not is_excluded:
-                    val = data_ops[arg.name]
+                    # Prefer the standard_name-tagged entry over the bare
+                    # arg-name one: two different schemes in this group can
+                    # independently pick the same local arg name for two
+                    # logically different SuiteOwned variables (see
+                    # _build_framework_refs), making the bare-name entry
+                    # genuinely ambiguous in that case. Every arg still has a
+                    # bare-name entry regardless (block args and non-tagged
+                    # framework refs alike), so the fallback always resolves.
+                    val = data_ops.get(("std_name", self._std_key(arg)), data_ops[arg.name])
                     actual_type = (
                         val.type if isinstance(val, SSAValue) else val.results[0].type
                     )
@@ -510,7 +518,15 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # Treating out args as return values breaks positional order when
                 # scalars and arrays are interspersed. Pass everything by reference.
                 if not is_overridden and not is_excluded:
-                    val = data_ops[arg.name]
+                    # Prefer the standard_name-tagged entry over the bare
+                    # arg-name one: two different schemes in this group can
+                    # independently pick the same local arg name for two
+                    # logically different SuiteOwned variables (see
+                    # _build_framework_refs), making the bare-name entry
+                    # genuinely ambiguous in that case. Every arg still has a
+                    # bare-name entry regardless (block args and non-tagged
+                    # framework refs alike), so the fallback always resolves.
+                    val = data_ops.get(("std_name", self._std_key(arg)), data_ops[arg.name])
                     actual_type = (
                         val.type if isinstance(val, SSAValue) else val.results[0].type
                     )
@@ -818,8 +834,15 @@ class GenerateSuiteSubroutine(RewritePattern):
                 f"generate-arg-ownership (ArgOwnershipPass) must run before "
                 f"generate-suite-cap -- check the pass pipeline."
             )
+        # Keyed by standard_name (matching all_args's own keying), not by
+        # bare arg name -- two different schemes in the same group can
+        # independently pick the same local arg name for two logically
+        # different SuiteOwned variables (e.g. both naming a scalar "tcld"),
+        # and keying by bare name here would silently collide the two
+        # entries into one, dropping the other from framework_vars/
+        # _build_framework_refs entirely.
         framework_vars = {
-            a.name: a
+            self._std_key(a): a
             for a in all_args.values()
             if a.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
         }
@@ -827,13 +850,13 @@ class GenerateSuiteSubroutine(RewritePattern):
             a
             for a in all_args.values()
             if (a.getAttr("intent") in ("in", "inout") or self._has_dims(a))
-            and a.name not in framework_vars
+            and self._std_key(a) not in framework_vars
         ]
         output_arg_list = [
             a
             for a in all_args.values()
             if a.getAttr("intent") == "out" and not self._has_dims(a)
-            and a.name not in framework_vars
+            and self._std_key(a) not in framework_vars
         ]
 
         ncol_meta = None
@@ -1176,6 +1199,17 @@ class GenerateSuiteSubroutine(RewritePattern):
                 data_ops[fw_arg.name] = ref_op
                 if _var_name != fw_arg.name:
                     data_ops[_var_name] = ref_op
+                # Tagged (never a plain string, so it can't collide with any
+                # bare-name key already in data_ops) entry keyed by this arg's
+                # own standard_name. generateSchemeSubroutineCallOps prefers
+                # this when building THIS scheme's own call, since two
+                # different schemes in the same group can independently pick
+                # the same local arg name (e.g. both naming a scalar "tcld")
+                # for two logically different SuiteOwned variables -- the
+                # bare-name entry above is genuinely ambiguous in that case,
+                # sharing whichever scheme's ref_op was built last, but each
+                # scheme's own standard_name is never ambiguous.
+                data_ops[("std_name", _fw_std_key)] = ref_op
 
                 _horiz_std_names = {
                     CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME,
