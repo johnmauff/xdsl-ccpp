@@ -449,15 +449,45 @@ starting 3b):
       an initialize+run-only span confirming the synthesized-reference path forces the device
       sync to `finalize`). Full suite green (359 unit + 44 FileCheck, 1 xfailed unchanged),
       `ruff check` clean.
-    - **(b)/(c): still not implemented, not scheduled.** (b) moving clause insertion from
-      bracketing the *entire* suite-group dispatch call (today's granularity in
-      `GPUCcppCapPass._wrap_scheme_call`) down to *individual* scheme calls within a group —
-      `GPUDataPass._find_call_in_if` already finds calls at that granularity for host-less scratch
-      vars, so this is an ownership/architecture question (does per-scheme-call clause routing move
-      into `GPUDataPass`, which today only handles the host-less case, or does `GPUCcppCapPass`
-      reach down into suite-level function bodies itself) rather than a small patch; (c) handling a
-      group where two schemes touching the same host var need conflicting clauses — not separable
-      work, falls out naturally once (b) is done.
+    - **(c): done (2026-07-21).** Re-scoped after tracing the actual architecture in detail (see
+      the follow-on plan below): (c) turned out to be fully solvable today, with no dependency on
+      (b). `_analyze_one_suite` now tracks, per host var, which scheme(s) contributed to each of
+      the three top-level clause categories (present/update/copy-family) via a new `contributors`
+      dict, and a new `_check_no_clause_conflicts` raises a `ValueError` naming the suite, the host
+      var, and every conflicting scheme+category, called right before the (unchanged)
+      `lifetimes` dict is built. Root cause confirmed precisely, and it's narrower than first
+      described: the prior "silent last-write-wins" wasn't actually order-dependent on the
+      unordered `scheme_names` set iteration — `present_vars.add(...)`/`update_vars.add(...)` are
+      independent sets that both legitimately end up containing a conflicting host var regardless
+      of scheme-processing order; the real overwrite was the three lifetimes-construction loops'
+      *fixed* code order (present, then update, then copy-family always wins), silent and
+      undetected either way. Validated two ways: a new synthetic fixture,
+      `TestGPUCcppCapClauseConflict` in `test_gpu_directives.py` (two schemes, one wanting
+      `present`, the other `update`, for the same host var in the same suite — asserts the
+      `ValueError` fires with both scheme names in the message); and regenerating
+      `examples/advection_flat_host`'s caps with `--directive acc` directly, confirming the pass
+      now raises for `qv` naming `cld_liq` (present) vs `cld_ice` (update) instead of silently
+      emitting the incoherent code the README previously described. README updated to match the
+      new loud-error behavior. Full suite green (345 unit + 1 pre-existing unrelated
+      environmental failure, 44 FileCheck + 1 xfailed — both unchanged from the pre-fix baseline),
+      `ruff check` clean on both touched files.
+    - **(b): still not implemented, not scheduled — now scoped in more detail, tracked in a
+      dedicated plan file rather than only here (2026-07-21).** Confirmed via direct code tracing
+      (not assumption) that (b) is real, multi-stage design work, not a small patch: the individual
+      scheme calls (`call cld_liq_run(...)`, etc.) live inside the separately-generated
+      `<suite>_suite_cap` module's functions, as flat sibling `scf.IfOp`s with **no `HostVarRefOp`
+      in that scope at all** (host vars arrive as plain block arguments) — this is also *why*
+      DDT-member support (gap #5 below) is independently broken, for the same underlying reason.
+      `GPUDataPass` already operates at exactly this module/granularity via `_find_call_in_if`, but
+      today only for host-less `CapScratch` args; `GPUCcppCapPass` owns the entry/exit-phase
+      hoisting bookkeeping but only ever sees the *outer* `_ccpp_cap` module's single call to the
+      whole group. Recommended direction: extend `GPUDataPass` to also classify
+      `HostMatched`/`memory_space`-tagged args per individual call (reusing its existing
+      per-call scan rather than having `GPUCcppCapPass` reach down into a module it doesn't own),
+      with `GPUCcppCapPass`'s hoisting continuing to own *when* data moves, and the multi-group
+      outer-dispatch discovery bug (next item below) folded in since correct group enumeration is
+      a prerequisite for that bookkeeping regardless of per-call granularity. Not further speced
+      here — needs its own dedicated scoping/planning pass before implementation.
   - **A fourth, previously-unnamed sub-item found while scoping (b), now Phase 7 is done
     (2026-07-20): the multi-group `_ccpp_physics_run` discovery gap.** `GPUCcppCapPass`'s
     `_find_inner_suite_part_if` does a flat scan of the outer suite branch's block and returns on

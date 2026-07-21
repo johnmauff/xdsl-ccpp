@@ -282,3 +282,97 @@ class TestGetSchemeName:
     )
     def test_recognizes_both_timestep_spellings(self, callee_name, expected):
         assert GPUDataPass()._get_scheme_name(callee_name) == expected
+
+
+# ── clause-conflict fixtures ───────────────────────────────────────────────────
+#
+# Two schemes in the *same* group/suite reference the same host-matched
+# variable ("conflict_var") with genuinely incompatible memory_space
+# declarations against the same device-resident host var: scheme_a wants
+# present() (device scheme + device host), scheme_b wants update self/device
+# (host scheme + device host). This is the real shape backlog item (c)
+# describes -- and the exact scenario examples/advection_flat_host's qv was
+# built to reproduce, just as a small synthetic fixture here instead of
+# requiring the real example.
+
+_CONFLICT_SCHEME_A = f"""\
+[ccpp-table-properties]
+  name = test_conflict_scheme_a
+  type = scheme
+[ccpp-arg-table]
+  name = test_conflict_scheme_a_run
+  type = scheme
+[ qv_a ]
+  standard_name = test_conflict_var
+  long_name = wants present -- device scheme, device host
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  memory_space = device
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_CONFLICT_SCHEME_B = f"""\
+[ccpp-table-properties]
+  name = test_conflict_scheme_b
+  type = scheme
+[ccpp-arg-table]
+  name = test_conflict_scheme_b_run
+  type = scheme
+[ qv_b ]
+  standard_name = test_conflict_var
+  long_name = wants update -- host scheme, device host
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_CONFLICT_HOST_META = """\
+[ccpp-table-properties]
+  name = test_conflict_host
+  type = module
+[ccpp-arg-table]
+  name = test_conflict_host
+  type = module
+[ conflict_var ]
+  standard_name = test_conflict_var
+  long_name = host var kept resident on device
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  memory_space = device
+"""
+
+_CONFLICT_SUITE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_conflict_suite" version="1.0">
+  <group name="physics">
+    <scheme>test_conflict_scheme_a</scheme>
+    <scheme>test_conflict_scheme_b</scheme>
+  </group>
+</suite>
+"""
+
+
+class TestGPUCcppCapClauseConflict:
+    """Backlog item (c): two schemes in the same suite wanting incompatible
+    GPU residency treatment for the same host var must raise a clear error,
+    not silently resolve to whichever of present/update/copy-family the
+    fixed construction order in _analyze_one_suite happens to process last.
+    """
+
+    def test_present_vs_update_conflict_raises(self, run_host_match, ccpp_context):
+        module = run_host_match(
+            scheme_metas=[_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B],
+            host_metas=[_CONFLICT_HOST_META],
+            suite_xml=_CONFLICT_SUITE_XML,
+        )
+        ArgOwnershipPass().apply(ccpp_context, module)
+        SuiteCAP().apply(ccpp_context, module)
+        GPUDataPass(directive="acc").apply(ccpp_context, module)
+        CCPPCAP().apply(ccpp_context, module)
+        with pytest.raises(ValueError, match="conflict_var.*conflicting GPU residency"):
+            GPUCcppCapPass(directive="acc").apply(ccpp_context, module)
