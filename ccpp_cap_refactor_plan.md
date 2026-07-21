@@ -578,6 +578,29 @@ starting 3b):
       corresponding arg-table entry" at all — genuinely hard, since it would require parsing
       scheme `.F90` source (which xdsl-ccpp never does today, treating schemes as opaque behind
       their declared metadata interface), not just reading `.meta` files.
+    - **A fifth gap, found 2026-07-21 while trying to build a real (b)/(c) test case in
+      `advection`, and more fundamental than any of the above: `GPUCcppCapPass` has *zero*
+      support for `HostMatched` args that are DDT members.** `temp`/`qv`/`ps` in `advection` all
+      resolve to `phys_state%Temp`/`phys_state%q(:,:,index_of_water_vapor_specific_humidity)`/
+      `phys_state%ps` — real DDT members, not plain module scalars/arrays. Confirmed directly by
+      running `GPUCcppCapPass` on `advection`'s generated cap and inspecting the actual IR: a DDT
+      member's host reference is a `HostVarRefOp("phys_state", ...)` (the DDT *instance*) plus a
+      separate member-access mechanism — never a `HostVarRefOp` named `"Temp"` or
+      `"q(:,:,...)"` directly. `_wrap_scheme_call`'s reference-scanning loop only ever looks for
+      a `HostVarRefOp` whose `var_name` matches the lifetime dict's key exactly, so a DDT member
+      is silently invisible to it — not misclassified, never found at all. Verified the
+      *classification* itself is fine (`_analyze_suite_var_lifetimes` correctly computes
+      `kind="copy"`/`"update"` for these), it's purely the directive-insertion side that never
+      fires — so neither `cld_liq` nor `cld_ice` ever got *any* `!$acc` treatment for `temp`/`qv`
+      in the example, agreement or conflict, the whole time this was being built. This closes an
+      "open question" flagged much earlier in this same GPU backlog ("no example anywhere in
+      this repo exercises a DDT member's device residency... is currently an open question") —
+      it's now confirmed broken, not just unverified. Independent of `(b)`/`(c)`: this is about
+      *reference resolution* for directive insertion, not per-scheme-call classification
+      granularity — fixing one doesn't require or unblock the other. Not scheduled, not scoped
+      in detail yet (would need `_wrap_scheme_call`/`_resolve_array_refs`/`_synthesize_ref` to
+      recognize a DDT-instance-plus-member-access reference shape, presumably mirroring however
+      `host_var_match_pass.py`/`suite_cap.py` already represent DDT member access elsewhere).
     - **Future test vehicle for the above, once it's actually built (2026-07-21, not scheduled,
       not part of (b)/(c)) — a third `advection` variant with `apply_constituent_tendencies`
       GPU-enabled.** Discussed with the project owner: `CapScratch` residency is a real

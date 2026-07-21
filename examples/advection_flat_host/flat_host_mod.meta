@@ -1,0 +1,54 @@
+[ccpp-table-properties]
+  name = flat_host_mod
+  type = module
+[ccpp-arg-table]
+  name = flat_host_mod
+  type = module
+[ ncols]
+  standard_name = horizontal_dimension
+  units = count
+  type = integer
+  protected = True
+  dimensions = ()
+[ pver ]
+  standard_name = vertical_layer_dimension
+  units = count
+  type = integer
+  protected = True
+  dimensions = ()
+[ pverP ]
+  standard_name = vertical_interface_dimension
+  type = integer
+  units = count
+  protected = True
+  dimensions = ()
+[ dt ]
+  standard_name = time_step_for_physics
+  long_name = time step
+  units = s
+  dimensions = ()
+  type = real | kind = kind_phys
+[ tfreeze ]
+  standard_name = water_temperature_at_freezing
+  long_name = Freezing temperature of water at sea level
+  units = K
+  dimensions = ()
+  type = real | kind = kind_phys
+[ temp ]
+  standard_name = temperature
+  units = K
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+[ qv ]
+  standard_name = water_vapor_specific_humidity
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  memory_space = device
+[ ps ]
+  standard_name = surface_air_pressure
+  state_variable = true
+  type = real
+  kind = kind_phys
+  units = Pa
+  dimensions = (horizontal_dimension)
