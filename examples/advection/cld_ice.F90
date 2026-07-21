@@ -14,6 +14,7 @@ MODULE cld_ice
    PUBLIC :: cld_ice_final
 
    real(kind_phys), private :: tcld = HUGE(1.0_kind_phys)
+   !$acc declare create(tcld)
 
 CONTAINS
 
@@ -62,15 +63,17 @@ CONTAINS
       !----------------------------------------------------------------
 
       integer         :: icol
-      integer         :: ilev
+      integer         :: ilev, nlev
       real(kind_phys) :: frz
 
       errmsg = ''
       errflg = 0
 
+      nlev = size(temp, 2)
       ! Apply state-of-the-art thermodynamics :)
+      !$acc parallel loop collapse(2) gang vector present(qv,cld_ice_array,temp)
       do icol = 1, ncol
-         do ilev = 1, size(temp, 2)
+         do ilev = 1, nlev
             if (temp(icol, ilev) < tcld) then
                frz = MAX(qv(icol, ilev) - 0.5_kind_phys, 0.0_kind_phys)
                cld_ice_array(icol, ilev) = cld_ice_array(icol, ilev) + frz
@@ -94,10 +97,19 @@ CONTAINS
       character(len=512), intent(out)   :: errmsg
       integer,            intent(out)   :: errflg
 
+      integer :: i,j,n1, n2
       errmsg = ''
       errflg = 0
-      cld_ice_array = 0.0_kind_phys
       tcld = tfreeze - 20.0_kind_phys
+      !$acc update device(tcld)
+      n1 = size(cld_ice_array,1)
+      n2 = size(cld_ice_array,2)
+      !$acc parallel loop collapse(2) gang vector present(cld_ice_array)
+      do i=1,n1
+        do j=1,n2
+          cld_ice_array(i,j) = 0.0_kind_phys
+        enddo
+      enddo
 
    end subroutine cld_ice_init
 

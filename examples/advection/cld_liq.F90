@@ -56,15 +56,17 @@ CONTAINS
       !----------------------------------------------------------------
 
       integer         :: icol
-      integer         :: ilev
+      integer         :: ilev, nlev
       real(kind_phys) :: cond
 
       errmsg = ''
       errflg = 0
 
+      nlev = size(temp, 2)
       ! Apply state-of-the-art thermodynamics :)
+      !$acc parallel loop collapse(2) gang vector present(qv,temp,cld_liq_tend)
       do icol = 1, ncol
-         do ilev = 1, size(temp, 2)
+         do ilev = 1, nlev
             if ( (qv(icol, ilev) > 0.0_kind_phys) .and.                       &
                  (temp(icol, ilev) <= tcld)) then
                cond = MIN(qv(icol, ilev), 0.1_kind_phys)
@@ -90,12 +92,20 @@ CONTAINS
       character(len=512), intent(out) :: errmsg
       integer,            intent(out) :: errflg
 
+      integer :: i, j, n1, n2
       ! This routine currently does nothing
 
       errmsg = ''
       errflg = 0
-      cld_liq_array = 0.0_kind_phys
       tcld = tfreeze - 20.0_kind_phys
+      n1 = size(cld_liq_array,1)
+      n2 = size(cld_liq_array,2)
+      !$acc parallel loop collapse(2) gang vector present(cld_liq_array)
+      do i=1,n1
+        do j=1,n2
+          cld_liq_array(i,j) = 0.0_kind_phys
+        enddo
+      enddo
 
    end subroutine cld_liq_init
 

@@ -51,6 +51,7 @@
   type = real
   kind = kind_phys
   intent = inout
+  memory_space = device
 [ qv ]
   standard_name = water_vapor_specific_humidity
   units = kg kg-1
@@ -58,6 +59,7 @@
   type = real
   kind = kind_phys
   intent = inout
+  memory_space = device
 [ ps ]
   standard_name = surface_air_pressure
   state_variable = true
