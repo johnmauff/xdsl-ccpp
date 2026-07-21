@@ -15,6 +15,7 @@
 program test_flat_host_integration
 
    use ccpp_kinds,        only: kind_phys
+   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
    use flat_host_mod,     only: init_data, temp, qv, ncols, pver
    use flat_host_ccpp_cap, only:                                             &
         flat_host_ccpp_physics_register,                                    &
@@ -23,6 +24,8 @@ program test_flat_host_integration
         flat_host_ccpp_physics_run,                                         &
         flat_host_ccpp_physics_timestep_final,                              &
         flat_host_ccpp_physics_finalize,                                    &
+        flat_host_ccpp_register_constituents,                               &
+        flat_host_ccpp_initialize_constituents,                             &
         ccpp_physics_suite_part_list
 
    implicit none
@@ -36,6 +39,7 @@ program test_flat_host_integration
    real(kind_phys)             :: qv1_before, temp1_before
    real(kind_phys)             :: qv2_before, temp2_before
    logical                     :: passed
+   type(ccpp_constituent_properties_t), allocatable :: host_constituents(:)
 
    passed = .true.
    col_start = 1
@@ -49,6 +53,24 @@ program test_flat_host_integration
    temp2_before = temp(1, 2)
 
    call check('register', flat_host_ccpp_physics_register_wrap())
+
+   ! Constituent registration/allocation is a separate subsystem the host
+   ! must drive explicitly between register and initialize -- it's not part
+   ! of the six standard lifecycle calls. Without this, lc_constituent_array/
+   ! lc_const_tend (used by apply_constituent_tendencies_run/cld_liq_run/
+   ! cld_ice_run) are never allocated. This host declares no constituents of
+   ! its own, so host_constituents is legitimately zero-size; the schemes'
+   ! own dyn_const/dyn_const_ice (populated by the register call above) are
+   ! what actually get registered.
+   allocate(host_constituents(0))
+   call flat_host_ccpp_register_constituents(host_constituents, errmsg, errflg)
+   call check('register_constituents', errflg == 0)
+   if (errflg /= 0) write(6, '(a)') trim(errmsg)
+
+   call flat_host_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
+   call check('initialize_constituents', errflg == 0)
+   if (errflg /= 0) write(6, '(a)') trim(errmsg)
+
    call check('initialize', flat_host_ccpp_physics_initialize_wrap())
    call check('timestep_initial', flat_host_ccpp_physics_timestep_initial_wrap())
 
