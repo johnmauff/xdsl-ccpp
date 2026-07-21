@@ -32,6 +32,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetEnterDataOp,
     OmpTargetExitDataOp,
 )
+from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
@@ -46,6 +47,7 @@ def _omp_fortran_output(run_host_match, ccpp_context) -> str:
         host_metas=[_HOST_META],
         suite_xml=_SUITE_XML,
     )
+    ArgOwnershipPass().apply(ccpp_context, module)
     SuiteCAP().apply(ccpp_context, module)
     GPUDataPass(directive="omp").apply(ccpp_context, module)
     CCPPCAP().apply(ccpp_context, module)
@@ -166,6 +168,7 @@ class TestOmpTargetUpdateClause:
             host_metas=[_UPDATE_HOST],
             suite_xml=_UPDATE_SUITE_XML,
         )
+        ArgOwnershipPass().apply(ccpp_context, module)
         SuiteCAP().apply(ccpp_context, module)
         GPUDataPass(directive="omp").apply(ccpp_context, module)
         CCPPCAP().apply(ccpp_context, module)

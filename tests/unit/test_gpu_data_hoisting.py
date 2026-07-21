@@ -27,6 +27,7 @@ from xdsl_ccpp.backend.print_ftn import print_to_ftn
 from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
+from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
@@ -43,6 +44,7 @@ def _fortran_output(run_host_match, ccpp_context, scheme_metas, host_metas, suit
         host_metas=host_metas,
         suite_xml=suite_xml,
     )
+    ArgOwnershipPass().apply(ccpp_context, module)
     SuiteCAP().apply(ccpp_context, module)
     GPUDataPass(directive="acc").apply(ccpp_context, module)
     CCPPCAP().apply(ccpp_context, module)
@@ -483,6 +485,7 @@ class TestMultiSuiteScoping:
             tmp_path=tmp_path,
             ctx=ctx,
         )
+        ArgOwnershipPass().apply(ctx, module)
         SuiteCAP().apply(ctx, module)
         GPUDataPass(directive="acc").apply(ctx, module)
         CCPPCAP().apply(ctx, module)

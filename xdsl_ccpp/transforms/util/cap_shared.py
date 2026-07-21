@@ -265,11 +265,16 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
         arg_table = meta_data[scheme_name].getArgTable(table_name)
         for fn_arg in arg_table.getFunctionArguments():
             has_dims = fn_arg.hasAttr("dimensions") and fn_arg.getAttr("dimensions") > 0
-            # _is_framework_managed's array-shaped branch requires dims > 0,
-            # which the `not has_dims` filter below already excludes here — so
-            # for every arg that can reach that filter, this call reduces to
-            # exactly the is_interstitial check it used to hand-roll.
-            is_framework_managed = _is_framework_managed(fn_arg)
+            # Phase 7, Stage 3: reads the durable ownership classification
+            # (generate-arg-ownership, Stage 2) instead of re-deriving
+            # SuiteOwned-ness here via _is_framework_managed. The dims > 0
+            # note below still applies to why this reduces to exactly the
+            # is_interstitial-equivalent case for every arg reaching the
+            # `not has_dims` filter.
+            is_framework_managed = (
+                fn_arg.hasAttr("ownership_kind")
+                and fn_arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+            )
             # Deduplicate by standard_name so different local names for the
             # same logical arg (e.g. errflg vs errcode for ccpp_error_code)
             # don't produce duplicate return types.

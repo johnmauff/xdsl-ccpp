@@ -4,7 +4,7 @@
 // propagated through the IR, and produces a correct BIND(C) interface block in
 // the generated suite cap — identical behaviour to language-cxx-interface-py.mlir.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/examples/language_cxx/tiny_suite.xml --scheme-files tests/filecheck/examples/language_cxx/tiny_fortran_scheme.meta,tests/filecheck/examples/language_cxx/tiny_cxx_scheme.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/examples/language_cxx/tiny_suite.xml --scheme-files tests/filecheck/examples/language_cxx/tiny_fortran_scheme.meta,tests/filecheck/examples/language_cxx/tiny_cxx_scheme.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // Suite cap module header: iso_c_binding from C++ scheme; Fortran scheme imported normally.
 // CHECK-LABEL: module tiny_suite_cap
