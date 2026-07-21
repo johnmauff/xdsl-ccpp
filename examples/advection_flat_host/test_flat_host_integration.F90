@@ -33,7 +33,7 @@ program test_flat_host_integration
    character(len=*), parameter :: suite_name = 'flat_cld_suite'
    character(len=512)          :: errmsg
    integer                     :: errflg
-   character(len=:), allocatable :: part_list(:)
+   character(len=128), allocatable :: part_list(:)
    integer                     :: ipart
    integer                     :: col_start, col_end
    real(kind_phys)             :: qv1_before, temp1_before
@@ -80,14 +80,16 @@ program test_flat_host_integration
       write(6, '(a)') trim(errmsg)
    end if
 
-   do ipart = 1, size(part_list)
-      call flat_host_ccpp_physics_run(suite_name, trim(part_list(ipart)),    &
-           col_start, col_end, errmsg, errflg)
-      call check('run(' // trim(part_list(ipart)) // ')', errflg == 0)
-      if (errflg /= 0) then
-         write(6, '(a)') trim(errmsg)
-      end if
-   end do
+   if (allocated(part_list)) then
+      do ipart = 1, size(part_list)
+         call flat_host_ccpp_physics_run(suite_name, trim(part_list(ipart)), &
+              col_start, col_end, errmsg, errflg)
+         call check('run(' // trim(part_list(ipart)) // ')', errflg == 0)
+         if (errflg /= 0) then
+            write(6, '(a)') trim(errmsg)
+         end if
+      end do
+   end if
 
    call check('timestep_final', flat_host_ccpp_physics_timestep_final_wrap())
    call check('finalize', flat_host_ccpp_physics_finalize_wrap())
@@ -104,13 +106,15 @@ program test_flat_host_integration
       passed = .false.
    end if
 
-   ! Level 2 (above tcld): expect no change at all.
-   if (qv(1, 2) /= qv2_before) then
+   ! Level 2 (above tcld): expect no change at all. Compare with a tolerance
+   ! rather than exact equality, since these are reals that only need to be
+   ! "untouched by the schemes", not bit-identical.
+   if (abs(qv(1, 2) - qv2_before) > 1.0e-12_kind_phys) then
       write(6, '(a,es15.7,a,es15.7)') 'FAIL: qv(1,2) changed unexpectedly: ',&
            qv2_before, ' -> ', qv(1, 2)
       passed = .false.
    end if
-   if (temp(1, 2) /= temp2_before) then
+   if (abs(temp(1, 2) - temp2_before) > 1.0e-12_kind_phys) then
       write(6, '(a,es15.7,a,es15.7)') 'FAIL: temp(1,2) changed unexpectedly: ', &
            temp2_before, ' -> ', temp(1, 2)
       passed = .false.

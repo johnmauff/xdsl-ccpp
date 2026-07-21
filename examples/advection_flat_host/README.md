@@ -61,4 +61,5 @@ arrays are private to it and not observable from the driver):
 path `advection`'s/`kessler`'s Makefiles support. `temp`/`qv`'s `memory_space=device`
 annotations are inert without a `--directive acc`/`omp` pass invocation; this target
 exists to confirm the example is otherwise a correct, complete, buildable CCPP host,
-independent of the (b)/(c) GPU work it was built to test. Not yet wired into CI.
+independent of the (b)/(c) GPU work it was built to test. This `check` target is wired
+into CI's compile-tests workflow matrix.
