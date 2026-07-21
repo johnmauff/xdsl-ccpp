@@ -342,6 +342,12 @@ class GenerateSuiteSubroutine(RewritePattern):
                     scalar_indices=scalar_indices_list,
                 )
                 promoted_data_ops[arg.name] = slice_op
+                # Keep the standard_name-tagged entry (see _build_framework_refs)
+                # in sync with this arg's own bare-name entry in THIS local
+                # copy -- generateSchemeSubroutineCallOps prefers the tagged
+                # entry, and without this it would still resolve to the
+                # pre-slice value inherited from the shallow copy above.
+                promoted_data_ops[("std_name", self._std_key(arg))] = slice_op
                 is_opt_promoted = arg.hasAttr("optional") and arg.hasAttr("is_promoted")
                 if is_opt_promoted:
                     opt_slice_ops[arg.name] = slice_op
@@ -1199,17 +1205,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                 data_ops[fw_arg.name] = ref_op
                 if _var_name != fw_arg.name:
                     data_ops[_var_name] = ref_op
-                # Tagged (never a plain string, so it can't collide with any
-                # bare-name key already in data_ops) entry keyed by this arg's
-                # own standard_name. generateSchemeSubroutineCallOps prefers
-                # this when building THIS scheme's own call, since two
-                # different schemes in the same group can independently pick
-                # the same local arg name (e.g. both naming a scalar "tcld")
-                # for two logically different SuiteOwned variables -- the
-                # bare-name entry above is genuinely ambiguous in that case,
-                # sharing whichever scheme's ref_op was built last, but each
-                # scheme's own standard_name is never ambiguous.
-                data_ops[("std_name", _fw_std_key)] = ref_op
 
                 _horiz_std_names = {
                     CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME,
@@ -1294,6 +1289,21 @@ class GenerateSuiteSubroutine(RewritePattern):
                                 init_value=init_val,
                             )
                         )
+
+                # Tagged (never a plain string, so it can't collide with any
+                # bare-name key already in data_ops) entry keyed by this arg's
+                # own standard_name, set at the *end* of this arg's processing
+                # so it mirrors whatever data_ops[fw_arg.name] ends up being
+                # (e.g. the ArraySectionOp-sliced value above, not the plain
+                # ref_op it started as). generateSchemeSubroutineCallOps
+                # prefers this when building THIS scheme's own call, since two
+                # different schemes in the same group can independently pick
+                # the same local arg name (e.g. both naming a scalar "tcld")
+                # for two logically different SuiteOwned variables -- the
+                # bare-name entry is genuinely ambiguous in that case, sharing
+                # whichever scheme's ref_op was built last, but each scheme's
+                # own standard_name is never ambiguous.
+                data_ops[("std_name", _fw_std_key)] = data_ops[fw_arg.name]
 
         if suite_model is not None and tgt_subroutine_postfix in ("_init", "_register"):
             already_allocated = {op.var_name.data for op in lazy_alloc_ops}
