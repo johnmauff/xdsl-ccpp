@@ -1735,8 +1735,17 @@ Phase 4 above; this section is the execution plan.
     `run_dispatch.py`'s own third independent copy of the HOST-table standard_name scan
     (`_build_run_metadata_maps`'s `host_block_std_names`, duplicating
     `cap_shared._collect_host_block_std_names`) — a different duplication (Host/DdtMember/Block
-    decisions, not ownership) than what this stage's migration targeted. Still open as a small,
-    low-risk future cleanup if anyone picks it up.
+    decisions, not ownership) than what this stage's migration targeted.
+
+**Follow-on: `run_dispatch.py` host-block-std-names dedup. ✅ done (2026-07-20).** The item
+deferred above. Swapped `_build_run_metadata_maps`'s inline 9-line HOST-table standard_name scan
+for a direct call to `cap_shared._collect_host_block_std_names(meta_data)` — confirmed
+byte-for-byte identical logic beforehand (same `CCPPType.HOST` filter, same
+`arg_tables`/`getFunctionArguments`/`standard_name.lower()` scan), so this is a pure dedup with
+no behavior change. `CCPPType` import kept (still used elsewhere in the file for the
+DDT/MODULE/SCHEME checks). Verified: full suite 387 passed, 1 xfailed (unchanged from the
+post-Stage-4 baseline); `ruff check` clean, the same 16 pre-existing baseline findings confirmed
+byte-identical via `git stash` comparison.
 
 **Scope note:** bigger and riskier than any single Phase 3b stage — Phase 3b's producer and
 every consumer lived inside one file's function-call chain; this needs a new early computation

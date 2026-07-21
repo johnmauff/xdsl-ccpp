@@ -46,6 +46,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _bare,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
+    _collect_host_block_std_names,
     _get_suite_lifecycle_ret_info,
     _rank_of,
 )
@@ -146,16 +147,7 @@ def _build_run_metadata_maps(meta_data) -> "_RunMetadataMaps":
     Pure read of meta_data — no IR ops created, no side effects.
     """
     host_var_map = _build_host_var_map(meta_data, include_host=False)
-
-    host_block_std_names: set = set()
-    for tbl_name, props in meta_data.items():
-        if props.getAttr("type") != CCPPType.HOST:
-            continue
-        if tbl_name not in props.arg_tables:
-            continue
-        for var in props.getArgTable(tbl_name).getFunctionArguments():
-            if var.hasAttr("standard_name"):
-                host_block_std_names.add(var.getAttr("standard_name").lower())
+    host_block_std_names = _collect_host_block_std_names(meta_data)
 
     constituent_std_names: set = set()
     for _mod_name, props in meta_data.items():
