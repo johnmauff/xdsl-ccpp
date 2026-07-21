@@ -22,13 +22,12 @@ class ArgOwnershipPass(ModulePass):
     ArgOwnershipKind in ccpp.py) -- does the cap own this arg, or does its
     data come from outside?
 
-    Phase 7, Stage 2 ("dual-build, don't switch consumers") of the full IR
-    unification plan in ccpp_cap_refactor_plan.md: computes the same
-    ownership decision suite_cap.py's _is_framework_managed and
-    ccpp_cap.py's _build_cap_var_map each independently (re-)compute today,
-    durable on the arg itself, alongside those existing mechanisms -- neither
-    is switched to read this yet, so this pass has no observable effect on
-    generated output.
+    Part of the full IR unification plan in ccpp_cap_refactor_plan.md
+    (Phase 7): computes this ownership decision durably, once, on the arg
+    itself. suite_cap.py's SuiteOwned gate and ccpp_cap.py's
+    HostMatched/CapScratch/Block split -- previously two independently
+    (re-)computed heuristics for this same question -- both read this
+    classification instead of re-deriving it.
 
     Pipeline position: must run after generate-host-match (needs
     model_var_name to be set to recognize HostMatched args) and before

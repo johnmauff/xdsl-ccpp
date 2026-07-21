@@ -805,13 +805,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         that arg in input_arg_list with synthetic col_start/col_end scalars.
         Returns the final lists and the ncol_meta arg (or None).
         """
-        # Phase 7, Stage 3: reads the durable ownership classification
-        # (generate-arg-ownership, Stage 2) instead of re-deriving
-        # SuiteOwned-ness here via _is_framework_managed. Missing
-        # ownership_kind means the pipeline forgot generate-arg-ownership --
-        # raise rather than silently treating every arg as not-SuiteOwned,
-        # which would produce a wrong-but-plausible suite signature instead
-        # of an obvious failure.
+        # Reads the durable ownership classification (generate-arg-ownership)
+        # rather than re-deriving SuiteOwned-ness here. Missing ownership_kind
+        # means the pipeline forgot generate-arg-ownership -- raise rather
+        # than silently treating every arg as not-SuiteOwned, which would
+        # produce a wrong-but-plausible suite signature instead of an
+        # obvious failure.
         missing = [a.name for a in all_args.values() if not a.hasAttr("ownership_kind")]
         if missing:
             raise ValueError(

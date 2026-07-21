@@ -1489,9 +1489,9 @@ scheduled, and not a prerequisite for anything above.
 ## Phase 7 — Full IR unification (deferred sub-plan — not part of the original 6-phase scope)
 
 Added 2026-07-19, after the Phase 4 investigation (see above) showed this is genuinely
-stageable rather than the monolithic rewrite first assumed. **Stages 1-3 done (2026-07-20);
-Stage 4 not scheduled** — no obligation to pick it up soon; tracked here with an actionable
-staged plan so whoever does isn't starting from a paragraph of rationale alone.
+stageable rather than the monolithic rewrite first assumed. **Stages 1-4 done (2026-07-20)** —
+tracked here with an actionable staged plan so whoever does isn't starting from a paragraph of
+rationale alone.
 
 **Goal:** a single "does the cap own this variable, or does it come from outside" decision,
 computed once and durable in IR, consumed by `suite_cap.py`, `ccpp_cap.py`'s cap_var_map logic,
@@ -1680,12 +1680,63 @@ Phase 4 above; this section is the execution plan.
     pre-Stage-3 baseline) once all 38 pipeline-completeness gaps were closed. `ruff check` clean
     on every touched file; pre-existing baseline findings in `ccpp_cap.py`/`suite_cap.py`/
     `test_ccpp_t_threading.py` confirmed unchanged via `git stash` comparison.
-- **Stage 4 — Remove the old paths.** Not scheduled. Delete `_is_framework_managed` (now that
-  neither of its two real callers — `suite_cap.py`'s `_classify_args` nor `cap_shared.py`'s own
-  `_get_suite_lifecycle_ret_info` — call it directly anymore) and the now-dead exclusion-set
-  variables Stage 3 already stopped reading in `_build_cap_var_map` (kept in place, unused, per
-  Stage 3's own "migrate, don't remove yet" discipline — removing them is exactly what's left
-  for this stage), once nothing computes the classification independently anymore.
+  - **Post-merge hardening from Copilot review (PR #29):** both migrated `ownership_kind` reads
+    (`suite_cap.py`'s `_classify_args`, `cap_shared.py`'s `_get_suite_lifecycle_ret_info`) treated
+    a missing `ownership_kind` as "not SuiteOwned" rather than failing — the same silent-wrong-
+    answer class of bug the 38-file pipeline gap above already demonstrated is real, just not yet
+    guarded against in the production code itself. Rejected Copilot's suggested fix (fall back to
+    the old heuristic when `ownership_kind` is absent): a permanent fallback would keep the exact
+    duplicated logic this stage exists to eliminate, and would mask a misconfigured pipeline
+    instead of surfacing it. Both now raise a `ValueError` naming the missing arg and pointing at
+    `generate-arg-ownership`. Turning that silent case into a hard failure immediately surfaced
+    two more real (previously latent) instances of the same 38-file-class gap that the original
+    sweep's `SuiteCAP()`-call-syntax grep had missed: `test_optional_args.py` and
+    `test_nested_ddt.py` build their pipelines as lists of pass *classes*
+    (`[MetaCAP, MetaKind, SuiteCAP, ...]`) rather than `SuiteCAP().apply(...)` calls. Both fixed.
+    Full suite green again afterward (397 passed, 1 xfailed, minus one pre-existing unrelated
+    environmental failure — see below).
+  - **Aside, not a repo issue:** one `test_build_integration.py` test shells out to the
+    `ccpp_xdsl` CLI on `$PATH`, which on this machine resolves to a completely different, much
+    older local clone (`/Users/dennis/Desktop/Work/xdsl-ccpp` — confirmed via `pip show
+    xdsl-ccpp`'s `Editable project location`, and confirmed that clone still uses the pre-Phase-7
+    `_is_framework_managed` directly). Its pass/fail is meaningless signal for work done in this
+    repo; noted here so it isn't mistaken for a regression in some future stage.
+- **Stage 4 — Remove the old paths. ✅ done (2026-07-20).**
+  - Deleted `_is_framework_managed` from `cap_shared.py` outright — confirmed via grep it had
+    zero remaining production callers (both real call sites were already migrated in Stage 3).
+    `_build_cap_var_map` itself needed no further cleanup: Stage 3, as actually implemented, had
+    already folded away the old `_matched_cv`/`CCPP_FRAMEWORK_STD_NAMES`/`CCPP_ERROR_STD_NAMES`/
+    `host_block_std` exclusion checks and their imports rather than leaving them dead in place, so
+    there was no separate "remove the now-unused locals" step left to do there.
+  - Deleted `TestIsFrameworkManaged` (7 tests) from `test_cap_shared.py`, trimming the module
+    docstring's now-obsolete opening paragraph.
+  - Rewrote `test_arg_ownership_pass.py`: its whole premise was Stage 2's cross-check ("does
+    `ArgOwnershipPass` agree with the old heuristics on real examples?"), which has nothing left
+    to compare against once the heuristics are gone. Deleted `test_ownership_matches_old_heuristics`
+    (3 parametrized cases) and the `expected`-side of its helper (which called
+    `_is_framework_managed` and cross-referenced `_build_cap_var_map`'s `cap_var_map`, requiring
+    `SuiteCAP`/`BuildSchemeDescription`/`_collect_public_suite_functions` just to build a
+    comparison value nothing uses anymore). Kept `test_every_scheme_arg_gets_classified`
+    (still a real, independent check — no scheme arg left unclassified), simplified to build only
+    the `actual` bucket.
+  - Updated docstrings/comments that described `_is_framework_managed` as a still-live, parallel
+    mechanism to compare against (`ArgOwnershipKind` in `ccpp.py`; `ArgOwnershipPass`'s own
+    docstring, which had drifted since Stage 3 — it still said Stage 2's "no observable effect on
+    generated output," which stopped being true the moment Stage 3 shipped; `classify_arg_ownership`'s
+    "Mirrors suite_cap.py's `_is_framework_managed`" docstring line in `cap_shared.py`).
+  - Net: 10 tests removed (7 + 3), 1 function deleted, several stale docstrings brought current.
+    Not a large line-count reduction — Stage 3, as actually executed, had already done most of the
+    real deletion work rather than leaving scaffolding behind for this stage, so what remained
+    here was mostly the dead function itself plus its test/doc fallout.
+  - Verified: full suite 387 passed, 1 xfailed (397 minus the 10 intentionally-removed tests,
+    ignoring the one unrelated environmental CLI test above). `ruff check` clean; the 11
+    pre-existing baseline findings confirmed byte-identical via `git stash` comparison.
+  - **Deliberately left out of this stage** (per explicit user decision, not an oversight):
+    `run_dispatch.py`'s own third independent copy of the HOST-table standard_name scan
+    (`_build_run_metadata_maps`'s `host_block_std_names`, duplicating
+    `cap_shared._collect_host_block_std_names`) — a different duplication (Host/DdtMember/Block
+    decisions, not ownership) than what this stage's migration targeted. Still open as a small,
+    low-risk future cleanup if anyone picks it up.
 
 **Scope note:** bigger and riskier than any single Phase 3b stage — Phase 3b's producer and
 every consumer lived inside one file's function-call chain; this needs a new early computation
