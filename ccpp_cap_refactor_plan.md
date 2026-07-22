@@ -725,8 +725,8 @@ starting 3b):
         correct). New dedicated coverage in `tests/unit/test_gpu_residency.py` (single-phase
         present/update vars, multi-phase hoisted var, copy-family regression — confirms
         `model_var_memory_space != device` vars are completely untouched by this new mechanism).
-      - ACC only; OMP deferred as a separate later follow-on, matching this project's established
-        practice. Inherits the already-known, separately-tracked multi-group `_ccpp_physics_run`
+      - ACC coverage added; OMP directive path implemented but currently untested/deferred as a separate
+        follow-on, matching this project's established practice. Inherits the already-known, separately-tracked multi-group `_ccpp_physics_run`
         discovery limitation (reuses the same call-site discovery `_wrap_scheme_call` already used)
         — not fixed here, same explicit deferral as backlog item (b).
       - Full suite green (360 unit + 44 FileCheck + 1 xfailed, same 1 pre-existing unrelated

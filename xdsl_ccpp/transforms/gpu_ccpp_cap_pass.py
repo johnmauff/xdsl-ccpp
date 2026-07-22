@@ -861,11 +861,11 @@ class GPUCcppCapPass(ModulePass):
         call site instead of one merged one -- a real but minor verbosity/
         redundancy tradeoff, not a correctness one.
 
-        Only ever produces copyin/copyout (never create/delete/present/
-        update) -- residency establishment doesn't have a "kind", every var
-        here just needs the host's current value copied to the device once
-        (entry) and copied back once (exit), reusing _role_at's generic
-        hoisted/entry_phase/exit_phase classification unchanged:
+        Only ever produces data-movement directives (copy/copyin/copyout; never
+        create/delete/present/update) -- residency establishment doesn't have a
+        "kind", every var here just needs the host's current value copied to
+        the device once (entry) and copied back once (exit), reusing _role_at's
+        generic hoisted/entry_phase/exit_phase classification unchanged:
 
           "enter"/"exit"  -> hoisted: AccEnterDataOp(copyin=...)/
                               AccExitDataOp(copyout=...) at the computed
