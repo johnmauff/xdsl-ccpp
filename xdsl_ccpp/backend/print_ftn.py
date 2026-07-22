@@ -691,8 +691,18 @@ class ftnPrintContext:
                 for line in op.body.data.splitlines():
                     self.print(line)
             case CCPPConstituentApiOp():
+                # Preprocessor directives (CapScratch GPU residency's
+                # `#ifdef USE_GPU`/`#endif`, string-templated directly into
+                # this op's raw-text body) must stay at column 0 -- gfortran's
+                # -cpp rejects an indented '#' as invalid Fortran source,
+                # unlike every other emitted case here which goes through
+                # dedicated printer branches that already pass
+                # use_prefix=False for exactly this reason.
                 for line in op.body.data.splitlines():
-                    self.print(line)
+                    if line.lstrip().startswith("#"):
+                        self.print(line.lstrip(), use_prefix=False)
+                    else:
+                        self.print(line)
             case CCPPCHostCapOp():
                 # Complete standalone Fortran module — emit ftn_text verbatim.
                 # Normally emitted via print_to_ftn at the top level, but handled

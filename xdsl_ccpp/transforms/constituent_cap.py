@@ -74,12 +74,28 @@ def _generate_constituent_api(
     dynamic_array_names: list,
     fixed_advected: list,
     scratch_vars: list | None = None,
+    framework_var_residency: dict | None = None,
 ):
     """Generate constituent registration API as raw Fortran text.
+
+    framework_var_residency: cap var name ("lc_constituent_array",
+    "lc_const_tend") -> True if CapScratch GPU residency should be
+    established for it (see ccpp_cap.py's _build_cap_var_map) -- emitted as
+    plain text (`#ifdef USE_GPU` / `!$acc enter data copyin(...)` /
+    `#endif`) directly after each array's existing allocate-and-initialize
+    block in ic_lines, matching the surrounding generation style: this whole
+    subsystem builds Fortran source as raw text (ConstituentApiOp's body is
+    a plain StringAttr), there's no IR op to attach a residency property to
+    the way SuiteOwned's LazyAllocOp allowed. `copyin`, not `create`: each
+    array is host-initialized (a default-value loop or a `= 0.0_kind_phys`
+    fill) immediately before this directive, and `create` would allocate
+    uninitialized device memory without transferring that initialized state
+    -- caught by Copilot review on PR #38.
 
     Returns (module_var_ops, constituent_api_op, global_stub_ops).
     """
     h = camel_name
+    framework_var_residency = framework_var_residency or {}
     dyn_lc = [f"lc_{n}" for n in dynamic_array_names]
 
     # ── Module-level variable declarations ──────────────────────────────
@@ -106,7 +122,7 @@ def _generate_constituent_api(
     module_var_ops.append(
         ModuleVarOp("lc_const_props", "type", ddt_name="ccpp_constituent_prop_ptr_t", ftn_attrs="target", rank=1)
     )
-    for lc_name, rank, _alloc_dims, _cst_std in (scratch_vars or []):
+    for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu in (scratch_vars or []):
         module_var_ops.append(
             ModuleVarOp(lc_name, "real", kind="kind_phys",
                         ftn_attrs="pointer" if _cst_std else None, rank=rank)
@@ -185,7 +201,7 @@ def _generate_constituent_api(
         f"    if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)",
         f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
     ]
-    for lc_name, _rank, _alloc_dims, _cst_std in (scratch_vars or []):
+    for lc_name, _rank, _alloc_dims, _cst_std, _needs_gpu in (scratch_vars or []):
         if _cst_std:
             da_lines.append(f"    nullify({lc_name})")
         else:
@@ -320,11 +336,25 @@ def _generate_constituent_api(
         f"        lc_constituent_array(:, :, lc_i) = lc_all_constituents(lc_i)%default_val",
         f"      end if",
         f"    end do",
+    ]
+    if framework_var_residency.get("lc_constituent_array"):
+        ic_lines += [
+            f"#ifdef USE_GPU",
+            f"    !$acc enter data copyin(lc_constituent_array)",
+            f"#endif",
+        ]
+    ic_lines += [
         f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
         f"    allocate(lc_const_tend(ncols, pver, lc_num))",
         f"    lc_const_tend = 0.0_kind_phys",
     ]
-    for lc_name, _rank, alloc_dims, _cst_std in (scratch_vars or []):
+    if framework_var_residency.get("lc_const_tend"):
+        ic_lines += [
+            f"#ifdef USE_GPU",
+            f"    !$acc enter data copyin(lc_const_tend)",
+            f"#endif",
+        ]
+    for lc_name, _rank, alloc_dims, _cst_std, needs_gpu in (scratch_vars or []):
         if _cst_std:
             ic_lines += [
                 f"    nullify({lc_name})",
@@ -335,12 +365,22 @@ def _generate_constituent_api(
                 f"      end if",
                 f"    end do",
             ]
+            # No separate enter-data here: lc_name is a pointer slice into
+            # lc_const_tend, already made resident above -- OpenACC tracks
+            # residency by the underlying array's actual memory, not the
+            # pointer name used to reference a slice of it.
         else:
             ic_lines += [
                 f"    if (allocated({lc_name})) deallocate({lc_name})",
                 f"    allocate({lc_name}({alloc_dims}))",
                 f"    {lc_name} = 0.0_kind_phys",
             ]
+            if needs_gpu:
+                ic_lines += [
+                    f"#ifdef USE_GPU",
+                    f"    !$acc enter data copyin({lc_name})",
+                    f"#endif",
+                ]
     ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")
 
     # ── 6. constituents_array ────────────────────────────────────────────

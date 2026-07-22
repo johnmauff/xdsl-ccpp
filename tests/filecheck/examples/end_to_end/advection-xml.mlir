@@ -279,6 +279,12 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc exit data delete(lc_qv)
+// CHECK-NEXT:    #endif
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc exit data delete(lc_temp)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:    end subroutine Cld_ccpp_physics_finalize
 // CHECK-LABEL:   subroutine Cld_ccpp_physics_timestep_initial(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
@@ -653,9 +659,15 @@
 // CHECK-NEXT:        if (allocated(lc_temp)) deallocate(lc_temp)
 // CHECK-NEXT:        allocate(lc_temp(ncols, pver))
 // CHECK-NEXT:        lc_temp = 0.0_kind_phys
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data copyin(lc_temp)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_qv)) deallocate(lc_qv)
 // CHECK-NEXT:        allocate(lc_qv(ncols, pver))
 // CHECK-NEXT:        lc_qv = 0.0_kind_phys
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data copyin(lc_qv)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_ps)) deallocate(lc_ps)
 // CHECK-NEXT:        allocate(lc_ps(ncols))
 // CHECK-NEXT:        lc_ps = 0.0_kind_phys
