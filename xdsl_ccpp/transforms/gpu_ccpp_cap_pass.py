@@ -977,11 +977,24 @@ class GPUCcppCapPass(ModulePass):
                         call_sites.extend(self._collect_lifecycle_call_sites(child, phase))
 
         for suite_name, phase, true_block, suite_call in call_sites:
-            lifetimes = suite_lifetimes.get(suite_name)
-            if lifetimes:
-                self._wrap_scheme_call(true_block, suite_call, lifetimes, phase, donor_refs)
+            # Residency must be wrapped *before* _wrap_scheme_call: both
+            # anchor new ops via InsertPoint.before/after(suite_call), and
+            # whichever call runs second ends up closer to suite_call (each
+            # insertion at "before X" lands between the previous insertion
+            # and X). Residency needs to be outermost -- established before
+            # any present()/update self assertion at the same call site
+            # runs, torn down after it -- otherwise a var needing both (e.g.
+            # a present-clause var that also needs hoisted residency at its
+            # entry phase) gets `present(...)` emitted *before* the
+            # `enter data copyin(...)` that's supposed to satisfy it: a real
+            # "data in PRESENT clause was not found on device" bug, caught
+            # by Copilot review on PR #37 and confirmed by inspecting the
+            # actual generated order for exactly this case.
             residency_lifetimes = suite_residency_lifetimes.get(suite_name)
             if residency_lifetimes:
                 self._wrap_residency_directives(
                     true_block, suite_call, residency_lifetimes, phase, donor_refs
                 )
+            lifetimes = suite_lifetimes.get(suite_name)
+            if lifetimes:
+                self._wrap_scheme_call(true_block, suite_call, lifetimes, phase, donor_refs)

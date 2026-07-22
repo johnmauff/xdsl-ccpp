@@ -317,6 +317,21 @@ class TestPerTimestepHoisting:
         assert _no_data_directive_line_mentions(run_fn, "always_present")
         assert "exit data copyout(always_present" in finalize_fn
 
+        # Ordering, not just presence (PR #37 Copilot review): residency
+        # must be established BEFORE the present() check runs, or the
+        # present() assertion fails at runtime against data that isn't on
+        # the device yet -- exactly the reported "PRESENT clause was not
+        # found on device" error. GPUCcppCapPass.apply() must wrap residency
+        # before _wrap_scheme_call at each call site so residency's enter-
+        # data lands outermost (executes first), not nested inside the
+        # present() region.
+        enter_data_pos = init_fn.index("enter data copyin(always_present")
+        present_pos = init_fn.index("present(always_present")
+        assert enter_data_pos < present_pos, (
+            "enter data copyin must execute before the present() check, "
+            "not be nested inside it"
+        )
+
 
 # ── Group B: whole-simulation scope edge cases ────────────────────────────────
 #
