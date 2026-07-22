@@ -667,6 +667,74 @@ starting 3b):
         failure), `ruff check` clean (same 13 pre-existing baseline findings, confirmed unchanged
         via `git stash`). Not yet verified on real GPU hardware — that remains with the project
         owner to confirm the reported error is actually resolved.
+    - **`HostMatched` present/update residency: done (2026-07-22), a third residency capability
+      alongside `SuiteOwned` and (still-unbuilt) `CapScratch`, prompted by the very next expected
+      GPU runtime failure once `SuiteOwned` residency was fixed** —
+      `FATAL ERROR: data in PRESENT clause was not found on device: name=qv(:,:)` on real HPC
+      hardware, for `examples/advection_flat_host`'s `qv` (`HostMatched`, diverging between
+      `cld_liq_run`'s `present` and `cld_ice_run`'s `update` — backlog item (b)'s routing was
+      already correct; nothing had ever established `qv`'s residency in the first place, since
+      `present()`/`update self`/`update device` are pure assertions/syncs that never allocate
+      anything, by this pass's own long-standing design). The project owner asked directly whether
+      hand-writing `!$acc enter data create(qv)` (mirroring `cld_ice.F90`'s `tcld`) was really the
+      right long-term answer, given users have no way to discover they need to — the answer: no,
+      xdsl_ccpp can and should establish this automatically, driven by the same `memory_space =
+      device` metadata already inert here, the same shape of fix as `SuiteOwned` residency. Does
+      **not** weaken the "host model manages present-clause residency independently" principle:
+      OpenACC's `enter data`/`exit data` are reference-counted, so CCPP establishing residency
+      alongside a real host model's own independent management is safe (an extra, balanced
+      increment/decrement), making this a strict improvement with no downside when something else
+      already manages it.
+      - **Built as a new, deliberately separate analysis/emission path in `gpu_ccpp_cap_pass.py`**
+        (`_analyze_one_suite_residency`/`_analyze_suite_residency_lifetimes`/
+        `_wrap_residency_directives`), not integrated into the existing `present_vars`/
+        `update_vars`/`_wrap_scheme_call` machinery — lower risk than modifying that already-
+        intricate, working code, at the cost of a var needing both residency and a present()/update
+        assertion getting two adjacent directives at a call site instead of one merged one (a real
+        but minor, explicitly-flagged verbosity/redundancy tradeoff, not a correctness one).
+        Entirely self-contained within `GPUCcppCapPass` — no changes to `gpu_data_pass.py`, no new
+        IR ops (`AccEnterDataOp`/`AccExitDataOp`/`AccDataBeginOp`/`AccDataEndOp` and OMP equivalents
+        all already existed). Residency doesn't care about present-vs-update divergence at all
+        (unlike clause routing) — it's a simple "does anything declare `model_var_memory_space ==
+        device`" union across every scheme, computed independently of
+        `cap_shared.find_diverged_suite_vars`.
+      - **Key correctness insight, found by tracing two consecutive timesteps, not assumed:**
+        `_resolve_lifetime`'s existing "degenerate" (single-phase) case returns `hoisted=False`,
+        which for copy-family vars does *not* mean "do nothing" — `_wrap_scheme_call`'s "legacy"
+        role still wraps a plain per-call structured `copy()` region around every invocation (this
+        is `temp`'s own existing, unchanged treatment, since it's also single-phase). Naively
+        treating `hoisted=False` as "skip residency" (matching present's *current* clause behavior)
+        would have silently reproduced the exact bug being fixed for `qv`, which is used only at
+        `_run`. The correct model: a degenerate residency var also gets a plain per-call `copy()`
+        region, every invocation — redundant (each timestep's fresh copyin re-uploads whatever the
+        previous timestep's own exit-copyout, or `qv`'s own existing `update device` call, already
+        wrote back to host) but never stale or wrong. A multi-phase var gets real hoisting instead
+        (entry/exit anchors, no per-call re-transfer) — both cases reuse `_resolve_lifetime`/
+        `_role_at` completely unchanged, since neither actually depends on the `kind` string beyond
+        what the caller does with it.
+      - Regenerating `examples/advection_flat_host` with `--directive acc` confirms the concrete
+        fix: `qv`'s new `!$acc data copy(qv(col_start:col_end, 1:pver))` region nests correctly
+        around `temp`'s existing, unchanged one, both wrapping the whole group dispatch call — by
+        the time `cld_liq_run`'s `present(qv)` executes, `qv` is genuinely on the device.
+      - **Several existing tests asserted the old, incorrect-in-hindsight behavior** ("present-
+        clause vars never get enter/exit-data," "finalize/register are always untouched," "diverged
+        vars get zero `!$acc` at the ccpp_cap level") and were updated to assert the new, correct
+        behavior precisely rather than loosened carelessly — e.g. `test_gpu_directives.py`'s
+        `TestGPUDivergedClauseRouting` now separately asserts *no clause routing* at the ccpp_cap
+        level (still true, still `GPUDataPass`'s job) *and* a residency `copy()` region there (new,
+        correct). New dedicated coverage in `tests/unit/test_gpu_residency.py` (single-phase
+        present/update vars, multi-phase hoisted var, copy-family regression — confirms
+        `model_var_memory_space != device` vars are completely untouched by this new mechanism).
+      - ACC coverage added; OMP directive path implemented but currently untested/deferred as a separate
+        follow-on, matching this project's established practice. Inherits the already-known, separately-tracked multi-group `_ccpp_physics_run`
+        discovery limitation (reuses the same call-site discovery `_wrap_scheme_call` already used)
+        — not fixed here, same explicit deferral as backlog item (b).
+      - Full suite green (360 unit + 44 FileCheck + 1 xfailed, same 1 pre-existing unrelated
+        environmental failure), `ruff check` clean. Not yet verified on real GPU hardware.
+      - **Note:** this also means item (a)'s "currently untested in practice: no example in this
+        repo declares a host variable memory_space=device" (above) is no longer accurate — `qv` in
+        `examples/advection_flat_host` now genuinely exercises the update-clause hoisting path too,
+        via this new residency mechanism working alongside it.
     - **A fourth, related gap found the same day: module-private scheme state (not a
       ccpp-arg-table entry at all) has no GPU-residency story, and can't, without first making
       it CCPP-visible somehow.** Surfaced concretely by `cld_ice.F90`'s own `tcld` — a
