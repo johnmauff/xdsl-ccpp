@@ -471,23 +471,67 @@ starting 3b):
       new loud-error behavior. Full suite green (345 unit + 1 pre-existing unrelated
       environmental failure, 44 FileCheck + 1 xfailed — both unchanged from the pre-fix baseline),
       `ruff check` clean on both touched files.
-    - **(b): still not implemented, not scheduled — now scoped in more detail, tracked in a
-      dedicated plan file rather than only here (2026-07-21).** Confirmed via direct code tracing
-      (not assumption) that (b) is real, multi-stage design work, not a small patch: the individual
-      scheme calls (`call cld_liq_run(...)`, etc.) live inside the separately-generated
-      `<suite>_suite_cap` module's functions, as flat sibling `scf.IfOp`s with **no `HostVarRefOp`
-      in that scope at all** (host vars arrive as plain block arguments) — this is also *why*
-      DDT-member support (gap #5 below) is independently broken, for the same underlying reason.
-      `GPUDataPass` already operates at exactly this module/granularity via `_find_call_in_if`, but
-      today only for host-less `CapScratch` args; `GPUCcppCapPass` owns the entry/exit-phase
-      hoisting bookkeeping but only ever sees the *outer* `_ccpp_cap` module's single call to the
-      whole group. Recommended direction: extend `GPUDataPass` to also classify
-      `HostMatched`/`memory_space`-tagged args per individual call (reusing its existing
-      per-call scan rather than having `GPUCcppCapPass` reach down into a module it doesn't own),
-      with `GPUCcppCapPass`'s hoisting continuing to own *when* data moves, and the multi-group
-      outer-dispatch discovery bug (next item below) folded in since correct group enumeration is
-      a prerequisite for that bookkeeping regardless of per-call granularity. Not further speced
-      here — needs its own dedicated scoping/planning pass before implementation.
+    - **(b): done (2026-07-21), as a refined hybrid rather than either strawman extreme
+      first considered.** Two candidate designs were rejected before landing on this one:
+      "always per-call" (simpler, one code path, but throws away real efficiency — repeated
+      `update self`/`update device` syncs for consecutive same-classified calls, and losing
+      cross-phase hoisting even for vars that don't need to lose it) and "keep detecting and
+      erroring on divergence" (today's (c) state, never actually fixes anything). The chosen
+      design: `cap_shared.find_diverged_suite_vars(scheme_names, meta_data)` (the same
+      contributor-tracking (c) built, narrowed and shared) computes, per suite, which host vars
+      genuinely diverge between present and update across contributing schemes — proven that
+      divergence can *only* ever be present-vs-update (both require `model_var_memory_space
+      ==device`), never involving the copy-family (`model=host`), since that host-declared
+      attribute is invariant per var regardless of which scheme references it.
+      `GPUCcppCapPass._analyze_one_suite` excludes diverged vars from `present_vars`/
+      `update_vars` entirely (no `VarLifetime`, so `_wrap_scheme_call` does nothing for them) —
+      **zero behavior change for the common, non-diverging case**, all of item (a)'s cross-phase
+      hoisting work stays fully exercised and untouched. `GPUDataPass` (which already operates
+      inside the `<suite>_suite_cap` module at exactly the right per-call granularity, via
+      `_find_call_in_if`, previously only for host-less `CapScratch` args) is extended
+      (`_get_diverged_args`/`_process_diverged_host_vars`) to classify each individual scheme
+      call's own need for a diverged var (a pure per-arg computation, no accumulation) and route
+      it: `present` touches are emitted individually per call (free to repeat, and coalescing
+      them risked producing improperly-nested/criss-crossing `!$acc data` regions across
+      *different* diverged vars); `update` touches are coalesced into maximal runs of consecutive
+      same-classified calls — correctly *breaking* a run at any interleaved present-classified
+      touch for the same var (an unstructured sync spanning across a present call would leave
+      that present call observing a stale device copy — a real correctness bug that a naive
+      "first update touch to last update touch" span would have introduced; caught during
+      implementation, not assumed away). No new IR ops needed — reuses
+      `AccDataBeginOp(present=...)`/`AccDataEndOp`/`AccUpdateSelfOp`/`AccUpdateDeviceOp` (and OMP
+      equivalents) exactly as `GPUCcppCapPass` already used them for the single-classification
+      case.
+      - **A real implementation bug found and fixed before landing:** `suite_cap.py` unifies
+        same-`standard_name` args from *different* schemes into a single shared function
+        parameter, named after whichever scheme's own local arg name was encountered first
+        (confirmed empirically, not assumed) — so a later-contributing scheme's own local name
+        (e.g. `qv_b`) is *never* itself a block-arg key; only the "winning" name (`qv_a`) is.
+        First implementation silently dropped every touch using a losing local name. Fixed by
+        resolving one canonical SSA reference per diverged host var (try every local name any
+        contributing call used until one resolves), rather than trying to reproduce
+        `suite_cap.py`'s own dedup-naming logic.
+      - **DDT-member side benefit, validated not just asserted:** since this all operates on
+        suite_cap's already-resolved plain block arguments (DDT resolution already happened
+        upstream, building the call *into* this suite's dispatch function), it works correctly
+        for DDT-member host vars too — unlike `GPUCcppCapPass`'s `HostVarRefOp`-based lookup
+        (gap #5 below), which can't see them at all. Confirmed with a dedicated new DDT-member
+        unit fixture (`TestGPUDivergedClauseRoutingDDTMember`), not just claimed from the
+        architecture.
+      - Validated against the real reproduction vehicle: regenerating
+        `examples/advection_flat_host` with `--directive acc` now compiles cleanly (no
+        `ValueError`) — `cld_liq_run`'s call wrapped in `present(qv)`, `cld_ice_run`'s in
+        `update self(qv)`/`update device(qv)`, `temp` (non-diverging) unaffected on the
+        unchanged whole-suite `copy(...)` path. README updated accordingly.
+      - **Deliberately excluded from this scope:** the multi-group `_ccpp_physics_run`
+        discovery gap (next item below) — it's a separate, orthogonal bug in the *outer*
+        dispatch's call-site enumeration, affecting every var kind `GPUCcppCapPass` still
+        handles (unified present/update and all copy-family vars), not specific to divergence
+        routing. Bundling it in would have blurred this change's review surface; it remains its
+        own tracked follow-up, unchanged below.
+      - Full suite green (349 passed unit tests, 44 FileCheck + 1 xfailed — same single
+        pre-existing unrelated environmental failure as every prior phase), `ruff check` clean
+        on every touched file.
   - **A fourth, previously-unnamed sub-item found while scoping (b), now Phase 7 is done
     (2026-07-20): the multi-group `_ccpp_physics_run` discovery gap.** `GPUCcppCapPass`'s
     `_find_inner_suite_part_if` does a flat scan of the outer suite branch's block and returns on

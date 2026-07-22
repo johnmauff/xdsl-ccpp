@@ -9,12 +9,24 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccDataBeginOp,
     AccDataEndOp,
+    AccUpdateDeviceOp,
+    AccUpdateSelfOp,
     KeywordCallOp,
     OmpTargetDataBeginOp,
     OmpTargetDataEndOp,
+    OmpTargetUpdateFromOp,
+    OmpTargetUpdateToOp,
 )
-from xdsl_ccpp.transforms.util.cap_shared import _bare, split_scheme_table_name
-from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
+from xdsl_ccpp.transforms.util.cap_shared import (
+    _bare,
+    _iter_schemes,
+    find_diverged_suite_vars,
+    split_scheme_table_name,
+)
+from xdsl_ccpp.transforms.util.ccpp_descriptors import (
+    BuildMetaDataDescriptions,
+    BuildSchemeDescription,
+)
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
 
@@ -33,8 +45,23 @@ class GPUDataPass(ModulePass):
     mapping is available for each device-resident argument and will be used
     when directives are moved to the ccpp_cap level in future work.
 
+    Also handles GPU/OpenACC backlog item (b): host vars where different
+    schemes in the same suite genuinely disagree about present-vs-update
+    treatment (see cap_shared.find_diverged_suite_vars) are excluded
+    entirely from GPUCcppCapPass's whole-suite, cross-phase hoisting (see
+    gpu_ccpp_cap_pass.py's _analyze_one_suite) -- this pass is the only
+    place they get any GPU treatment, routed per individual scheme call
+    instead (_process_diverged_host_vars). This works at the suite_cap
+    level specifically because each scheme call here receives host vars as
+    plain, already-resolved block arguments -- no HostVarRefOp, no DDT-
+    member path to resolve (that happened upstream, building the actual
+    call to this suite's dispatch function) -- so it works correctly for
+    DDT-member host vars too, unlike GPUCcppCapPass's HostVarRefOp-based
+    lookup (backlog gap #5).
+
     Remaining limitation:
-    - Always generates copyin+copyout (no 'present' optimisation yet).
+    - Host-less scratch vars always generate copyin+copyout (no 'present'
+      optimisation yet).
     """
 
     name = "generate-gpu-data"
@@ -116,24 +143,143 @@ class GPUDataPass(ModulePass):
             return call_op.callee.data
         return call_op.callee.root_reference.data
 
-    def _process_physics_fn(self, fn_op, meta_data):
+    def _get_diverged_args(self, scheme_name, table_name, meta_data, diverged_vars):
+        """Return {local_name: (category, host_var)} for every arg in this
+        scheme's <table_name> argument table whose model_var_name is in
+        diverged_vars.
+
+        category is "present" if this scheme declares memory_space=device
+        for the arg, "update" otherwise -- a pure per-arg computation, since
+        model_var_memory_space (the host's own declaration) is already
+        known to be "device" for every var in diverged_vars (see
+        cap_shared.find_diverged_suite_vars). Unlike _get_device_args, this
+        scans every host-matched arg, not only device-declared ones -- the
+        "update" side of a divergence is exactly a scheme that does NOT
+        declare device for a var the host keeps device-resident, so it
+        would never show up in _get_device_args's device-only scan.
+        """
+        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+            return {}
+        result = {}
+        for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments():
+            if not arg.hasAttr("model_var_name"):
+                continue
+            host_var = arg.getAttr("model_var_name")
+            if host_var not in diverged_vars:
+                continue
+            scheme_space = (
+                arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
+            )
+            category = "present" if scheme_space == "device" else "update"
+            result[arg.name] = (category, host_var)
+        return result
+
+    def _emit_present(self, ref, call_op):
+        """Wrap a single call in its own present()-only data region.
+
+        present() is a pure runtime assertion, no data movement -- emitted
+        individually per touching call rather than coalesced across a run
+        (unlike _emit_update below): repeating it is free, and coalescing
+        it across multiple calls would risk producing improperly-nested
+        (criss-crossing) !$acc data regions if another diverged var's own
+        present run happens to overlap without nesting inside this one.
+        """
+        if self.directive == "omp":
+            Rewriter.insert_op(OmpTargetDataBeginOp(alloc=[ref]), InsertPoint.before(call_op))
+            Rewriter.insert_op(OmpTargetDataEndOp(), InsertPoint.after(call_op))
+        else:
+            Rewriter.insert_op(AccDataBeginOp(present=[ref]), InsertPoint.before(call_op))
+            Rewriter.insert_op(AccDataEndOp(), InsertPoint.after(call_op))
+
+    def _emit_update(self, ref, first_op, last_op):
+        """Sync once before/after a whole run of consecutive update-only
+        touches for one host var, instead of once per call."""
+        if self.directive == "omp":
+            Rewriter.insert_op(OmpTargetUpdateFromOp(array_refs=[ref]), InsertPoint.before(first_op))
+            Rewriter.insert_op(OmpTargetUpdateToOp(array_refs=[ref]), InsertPoint.after(last_op))
+        else:
+            Rewriter.insert_op(AccUpdateSelfOp(array_refs=[ref]), InsertPoint.before(first_op))
+            Rewriter.insert_op(AccUpdateDeviceOp(array_refs=[ref]), InsertPoint.after(last_op))
+
+    def _process_diverged_host_vars(self, calls, meta_data, diverged_vars, arg_by_name):
+        """Route present/update clauses per individual scheme call for host
+        vars in `diverged_vars` (backlog item (b)) -- these get no
+        VarLifetime at the ccpp_cap level (gpu_ccpp_cap_pass.py excludes
+        them entirely), so this is the only place they get any GPU
+        treatment at all.
+
+        For each such host var, walk every call that references it (in
+        order) and split into maximal runs of consecutive equal
+        classification -- a differently-classified touch for the same var
+        breaks the run, since an interleaved present-classified call
+        genuinely needs the device copy synced (via the surrounding
+        update run's boundary) before it executes; blindly hoisting an
+        update sync across it would leave that present call observing a
+        stale device copy. present touches are still emitted individually
+        within a "run" (see _emit_present) since coalescing them has no
+        correctness or performance upside; only update runs are actually
+        coalesced into one sync pair (see _emit_update).
+
+        suite_cap.py unifies same-standard_name args from different
+        schemes into a single shared function parameter, named after
+        whichever scheme's own local arg name was encountered first when
+        the suite cap was built (generateSchemeSubroutineCallOps) -- so a
+        later-contributing scheme's own local name (e.g. "qv_b") is never
+        itself a block-arg key; only the "winning" name is. Rather than
+        reproduce that dedup-order logic here, resolve one canonical SSA
+        reference per host var by trying every local name any contributing
+        call used until one is found in arg_by_name -- since exactly one of
+        them must be the real (shared) block argument, and Fortran call-by-
+        reference means every call passing that host var passes the exact
+        same value regardless of which local name it used to do so.
+        """
+        touches: dict = {}  # host_var -> ordered [(op, category, local_name), ...]
+        for call_op, scheme_name, table_name in calls:
+            for local_name, (category, host_var) in self._get_diverged_args(
+                scheme_name, table_name, meta_data, diverged_vars
+            ).items():
+                touches.setdefault(host_var, []).append((call_op, category, local_name))
+
+        for touch_list in touches.values():
+            ref = next(
+                (arg_by_name[name] for _, _, name in touch_list if name in arg_by_name),
+                None,
+            )
+            if ref is None:
+                continue
+
+            update_run: list = []
+            for call_op, category, _ in touch_list:
+                if category == "present":
+                    self._emit_present(ref, call_op)
+                    if update_run:
+                        self._emit_update(ref, first_op=update_run[0], last_op=update_run[-1])
+                        update_run = []
+                else:  # update
+                    update_run.append(call_op)
+            if update_run:
+                self._emit_update(ref, first_op=update_run[0], last_op=update_run[-1])
+
+    def _process_physics_fn(self, fn_op, meta_data, diverged_vars=frozenset()):
         """Insert acc.data markers around GPU scheme calls in one subroutine.
 
-        Finds all error-guarded scheme calls that have at least one
-        device-resident argument, collects the union of their device variable
-        names, and wraps the entire group in a single !$acc data region.
-
-        This is the simplified single-region approach — one region per
-        physics subroutine covering all GPU-capable calls together.
+        Finds all error-guarded scheme calls, in order, then:
+        - hostless scratch args (no host match at all): collects the union
+          of their device variable names across every GPU-capable call and
+          wraps the entire group in a single !$acc data region (unchanged
+          from before this feature -- see the block below).
+        - diverged host vars (backlog item (b)): routed per individual
+          scheme call instead -- see _process_diverged_host_vars.
         """
         if not fn_op.body.blocks:
             return
 
         block = fn_op.body.blocks[0]
 
-        # Collect (scf.IfOp, device_vars) for each GPU-capable scheme call.
-        # device_vars is a dict: scheme_local_name → model_var_name (or None)
-        gpu_calls = []
+        # Collect every GPU-capable call in this function, in order, with its
+        # scheme/table identity -- shared by both the hostless-scratch path
+        # below and the diverged-host-var routing.
+        calls = []  # list of (scf.IfOp, scheme_name, table_name)
         for op in block.ops:
             if not isa(op, scf.IfOp):
                 continue
@@ -144,72 +290,78 @@ class GPUDataPass(ModulePass):
             scheme_name = self._get_scheme_name(callee_name)
             if scheme_name is None:
                 continue
-            device_vars = self._get_device_args(scheme_name, callee_name, meta_data)
-            if device_vars:
-                gpu_calls.append((op, device_vars))
+            calls.append((op, scheme_name, callee_name))
 
-        if not gpu_calls:
+        if not calls:
             return
-
-        # Only emit suite_cap level directives for variables that have NO host
-        # variable match.  Variables with a host match are handled at the
-        # ccpp_cap level by GPUCcppCapPass, which uses the host variable name
-        # directly.  Emitting directives at both levels would create nested
-        # !$acc data regions with redundant data movement.
-        all_local_vars = set()
-        for _, device_vars in gpu_calls:
-            for local_name, host_var in device_vars.items():
-                if host_var is None:
-                    all_local_vars.add(local_name)
-
-        if not all_local_vars:
-            return
-
-        first_if = gpu_calls[0][0]
-        last_if  = gpu_calls[-1][0]
 
         # At the suite_cap level the variables are function block arguments —
         # assumed-shape arrays that already represent the active column slice.
         # No further subsectioning is needed; just pass the block arg SSA values.
         # Optional/allocatable args carry a __opt/__alloc suffix on their
-        # block-arg name_hint (see suite_cap.py) that metadata names (and
-        # therefore all_local_vars) never have -- bare both sides so a
-        # hostless optional/allocatable device var isn't silently dropped.
+        # block-arg name_hint (see suite_cap.py) that metadata names never
+        # have -- bare both sides so a hostless optional/allocatable device
+        # var isn't silently dropped.
         arg_by_name = {
             _bare(arg.name_hint): arg
             for arg in block.args
             if arg.name_hint is not None
         }
-        copyin_refs = [
-            arg_by_name[name]
-            for name in sorted(all_local_vars)
-            if name in arg_by_name
-        ]
 
-        if not copyin_refs:
-            return
+        # --- hostless scratch vars: unchanged single-region approach ---
+        gpu_calls = []  # (scf.IfOp, device_vars) for calls with >=1 device arg
+        for op, scheme_name, table_name in calls:
+            device_vars = self._get_device_args(scheme_name, table_name, meta_data)
+            if device_vars:
+                gpu_calls.append((op, device_vars))
 
-        if self.directive == "omp":
-            Rewriter.insert_op(
-                OmpTargetDataBeginOp(tofrom=copyin_refs),
-                InsertPoint.before(first_if),
-            )
-            Rewriter.insert_op(
-                OmpTargetDataEndOp(),
-                InsertPoint.after(last_if),
-            )
-        else:  # acc (default)
-            Rewriter.insert_op(
-                AccDataBeginOp(
-                    copyin=copyin_refs,
-                    copyout=copyin_refs,
-                ),
-                InsertPoint.before(first_if),
-            )
-            Rewriter.insert_op(
-                AccDataEndOp(),
-                InsertPoint.after(last_if),
-            )
+        if gpu_calls:
+            # Only emit suite_cap level directives for variables that have NO
+            # host variable match. Variables with a host match are handled at
+            # the ccpp_cap level by GPUCcppCapPass (unified vars) or by
+            # _process_diverged_host_vars below (diverged vars). Emitting
+            # directives here too would create nested !$acc data regions
+            # with redundant data movement.
+            all_local_vars = set()
+            for _, device_vars in gpu_calls:
+                for local_name, host_var in device_vars.items():
+                    if host_var is None:
+                        all_local_vars.add(local_name)
+
+            if all_local_vars:
+                first_if = gpu_calls[0][0]
+                last_if  = gpu_calls[-1][0]
+                copyin_refs = [
+                    arg_by_name[name]
+                    for name in sorted(all_local_vars)
+                    if name in arg_by_name
+                ]
+                if copyin_refs:
+                    if self.directive == "omp":
+                        Rewriter.insert_op(
+                            OmpTargetDataBeginOp(tofrom=copyin_refs),
+                            InsertPoint.before(first_if),
+                        )
+                        Rewriter.insert_op(
+                            OmpTargetDataEndOp(),
+                            InsertPoint.after(last_if),
+                        )
+                    else:  # acc (default)
+                        Rewriter.insert_op(
+                            AccDataBeginOp(
+                                copyin=copyin_refs,
+                                copyout=copyin_refs,
+                            ),
+                            InsertPoint.before(first_if),
+                        )
+                        Rewriter.insert_op(
+                            AccDataEndOp(),
+                            InsertPoint.after(last_if),
+                        )
+
+        # --- diverged host vars: per-scheme-call routing (backlog item (b)) ---
+        if diverged_vars:
+            self._process_diverged_host_vars(calls, meta_data, diverged_vars, arg_by_name)
 
     # Suffixes of the suite-level lifecycle subroutines built by
     # suite_cap.py (suite_name + "_suite" + generated_subroutine_posfix; see
@@ -235,6 +387,12 @@ class GPUDataPass(ModulePass):
         bmdd.traverse(ccpp_mod)
         meta_data = bmdd.meta_data
 
+        # Suite -> scheme membership, needed to compute each suite's
+        # diverged host vars (backlog item (b)) -- same descriptor
+        # BuildSchemeDescription already builds for SuiteCAP/GPUCcppCapPass.
+        bsd = BuildSchemeDescription()
+        bsd.traverse(ccpp_mod)
+
         # Find all suite cap modules and process their _physics subroutines,
         # plus the register/initialize/finalize/timestep_initial/
         # timestep_final lifecycle subroutines built alongside them —
@@ -247,6 +405,22 @@ class GPUDataPass(ModulePass):
                 and module_op.sym_name.data.endswith("_cap")
             ):
                 continue
+
+            # Each <suite>_cap module corresponds to exactly one suite
+            # (suite_cap.py names it suite_name + "_cap"). Compute its
+            # diverged host vars once per module, reused across every
+            # lifecycle/physics function inside it.
+            suite_name = module_op.sym_name.data[: -len("_cap")]
+            suite_desc = bsd.schemes.get(suite_name)
+            diverged_vars = frozenset()
+            if suite_desc is not None:
+                scheme_names = {
+                    scheme.attributes["name"]
+                    for group in suite_desc
+                    for scheme in _iter_schemes(group)
+                }
+                diverged_vars = find_diverged_suite_vars(scheme_names, meta_data)
+
             for child in module_op.body.block.ops:
                 if not (isa(child, func.FuncOp) and not child.is_declaration):
                     continue
@@ -254,4 +428,4 @@ class GPUDataPass(ModulePass):
                 if "_suite_physics" in fn_name or fn_name.endswith(
                     self._LIFECYCLE_SUITE_FN_SUFFIXES
                 ):
-                    self._process_physics_fn(child, meta_data)
+                    self._process_physics_fn(child, meta_data, diverged_vars)

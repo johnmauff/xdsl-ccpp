@@ -27,21 +27,23 @@ conflated that gap with the one this example is actually meant to exercise.
   undeclared (→ wants `update`). Two schemes in the *same group* genuinely disagree about
   the same host variable's residency.
 
-Generating this suite through `generate-gpu-ccpp-cap` (`--directive acc`) shows the actual
-gap concretely: `cld_liq` wants `present(qv)`, `cld_ice` wants `update self`/`update device`,
-and today's per-*suite*-group granularity has no way to satisfy both at once. As of the (c)
-fix, `_analyze_one_suite` detects this and raises a `ValueError` naming `qv` and both
-conflicting schemes, instead of the prior behavior (`update` silently winning — `cld_liq`'s
-`present` classification discarded with no error, emitting a single `update self`/`update
-device` pair around the whole group call that `cld_liq_run`'s own
-`!$acc parallel loop present(qv,...)` would then be asserting residency for that the
-surrounding code never actually established). `make caps`/`make check` (no `--directive`)
-are unaffected — this only fires when generating with `--directive acc`/`omp`.
+Generating this suite through `generate-gpu-ccpp-cap`/`generate-gpu-data` (`--directive acc`)
+now compiles this correctly: `cld_liq_run`'s call is individually wrapped in
+`!$acc data present(qv) ... !$acc end data`, and `cld_ice_run`'s call gets its own
+`!$acc update self(qv)` before / `!$acc update device(qv)` after — each scheme gets exactly
+the clause it declared, with `qv` excluded entirely from the whole-suite/cross-phase hoisting
+path (`GPUCcppCapPass`) and routed instead per individual scheme call, at the suite_cap level
+(`GPUDataPass`). `temp` (both schemes agree, host side left undeclared) is unaffected — still
+handled exactly as before, on the unchanged whole-suite hoisted `copy(...)` path.
+`make caps`/`make check` (no `--directive`) are unaffected either way, since `memory_space`
+is inert without a `--directive acc`/`omp` pass invocation.
 
-This is the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work. (c) — turning
-the silent conflict into a hard error — is done; (b) — true per-scheme-call clause routing,
-so `qv` compiles correctly with each scheme getting its own directive instead of raising at
-all — remains unimplemented (see `ccpp_cap_refactor_plan.md`'s GPU/OpenACC backlog).
+This was the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work — both are now
+done: (c) (turning a silent conflict into a hard error) and (b) (true per-scheme-call clause
+routing, so `qv` actually compiles correctly instead of raising) — see
+`ccpp_cap_refactor_plan.md`'s GPU/OpenACC backlog for the full design history. The multi-group
+`_ccpp_physics_run` discovery gap (a separate, orthogonal bug affecting every var kind
+`GPUCcppCapPass` still handles) remains deferred, unexercised by this single-group example.
 
 ## Building and verifying (CPU only)
 
