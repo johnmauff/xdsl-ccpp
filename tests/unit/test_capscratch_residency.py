@@ -100,7 +100,8 @@ class TestConstituentTendencyScratchResidency:
         # The pointer slice itself is never separately made resident --
         # OpenACC tracks residency by lc_const_tend's actual memory, not
         # the pointer name used to reference a slice of it.
-        assert "lc_test_capscratch_quantity" not in init_fn or "create(lc_test_capscratch_quantity" not in init_fn
+        assert "enter data copyin(lc_test_capscratch_quantity)" not in init_fn
+        assert "enter data create(lc_test_capscratch_quantity)" not in init_fn
 
 
 # ── Direct framework-mapped path (apply_constituent_tendencies-style) ───────

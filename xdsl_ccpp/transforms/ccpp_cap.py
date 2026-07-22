@@ -249,7 +249,8 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
 
 
 def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var_residency, scratch_var_list):
-    """Emit AccExitDataOp for CapScratch cap-module arrays whose enter-data-create
+    """Emit AccExitDataOp for CapScratch cap-module arrays whose enter-data copyin
+
     actually fired (CapScratch GPU residency backlog item), in the generated
     ``_ccpp_physics_finalize`` function.
 

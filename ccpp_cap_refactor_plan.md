@@ -826,7 +826,7 @@ starting 3b):
         pointer slices into `lc_const_tend`, not separately allocated — their residency request
         rolls up into `lc_const_tend`'s, not a separate entry.
       - Enter side: `constituent_cap.py`'s `_generate_constituent_api` emits
-        `#ifdef USE_GPU` / `!$acc enter data create(...)` / `#endif` directly after each array's
+        `#ifdef USE_GPU` / `!$acc enter data copyin(...)` / `#endif` directly after each array's
         `allocate(...)` in `ic_lines`, for `lc_constituent_array`, `lc_const_tend`, and any generic
         (non-constituent-pointer) scratch array whose residency flag is set.
       - Exit side: a new `_inject_capscratch_gpu_exit` in `ccpp_cap.py`, mirroring
