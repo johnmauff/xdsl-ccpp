@@ -203,6 +203,62 @@ def split_scheme_table_name(table_name: str) -> "tuple[str, str] | None":
     return None
 
 
+def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
+    """Return the set of host-var names (model_var_name values) for which
+    different schemes in `scheme_names` genuinely disagree about GPU
+    residency treatment -- one wants `present` (scheme declares
+    memory_space=device against a device-resident host var), another wants
+    `update` (scheme leaves memory_space unset against that same
+    device-resident host var).
+
+    `model_var_memory_space` is a single, host-declared attribute -- the
+    same value for every scheme referencing that host var, since it's
+    propagated from the host's own metadata by generate-host-match, not the
+    scheme's. `present` requires model=device; `copyin`/`copy`/`copyout`
+    require model=host. These are mutually exclusive, so a host var can
+    only ever diverge between present and update (both require
+    model=device) -- never between either of those and the copy-family
+    (which requires model=host). Divergence is therefore purely a question
+    of whether every contributing scheme's own `memory_space` declaration
+    agrees for a given model=device host var.
+
+    Shared by GPUCcppCapPass (which excludes diverged vars from its
+    whole-suite, cross-phase hoisting entirely -- see
+    gpu_ccpp_cap_pass.py's _analyze_one_suite) and GPUDataPass (which routes
+    them to per-scheme-call handling instead -- see gpu_data_pass.py), so
+    the two passes can never disagree about which vars are diverged.
+    """
+    by_host_var: dict = {}  # host_var -> category ("present" | "update") -> set[scheme_name]
+
+    for scheme_name in scheme_names:
+        props = meta_data.get(scheme_name)
+        if props is None:
+            continue
+        for table_name, table in props.arg_tables.items():
+            if split_scheme_table_name(table_name) is None:
+                continue
+            for arg in table.getFunctionArguments():
+                if not arg.hasAttr("model_var_name"):
+                    continue
+                model_space = (
+                    arg.getAttr("model_var_memory_space")
+                    if arg.hasAttr("model_var_memory_space")
+                    else "host"
+                )
+                if model_space != "device":
+                    continue
+                scheme_space = (
+                    arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
+                )
+                category = "present" if scheme_space == "device" else "update"
+                host_var = arg.getAttr("model_var_name")
+                by_host_var.setdefault(host_var, {}).setdefault(category, set()).add(scheme_name)
+
+    return frozenset(
+        host_var for host_var, categories in by_host_var.items() if len(categories) > 1
+    )
+
+
 def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     """Build a standard_name → (var_name, table_name) map from host metadata.
 

@@ -23,7 +23,11 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetUpdateToOp,
     StrCmpOp,
 )
-from xdsl_ccpp.transforms.util.cap_shared import _iter_schemes, split_scheme_table_name
+from xdsl_ccpp.transforms.util.cap_shared import (
+    _iter_schemes,
+    find_diverged_suite_vars,
+    split_scheme_table_name,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
@@ -240,24 +244,25 @@ class GPUCcppCapPass(ModulePass):
         to scheme_names, and additionally tracking which lifecycle phase
         each reference belongs to.
 
-        Also tracks, per host var, which scheme(s) contributed to each of
-        the three top-level classification categories (present / update /
-        copy-family), so genuine cross-scheme disagreement about a host
-        var's residency treatment (e.g. one scheme wants present(), another
-        wants update self/device, for the same var in the same suite) can be
-        detected and reported instead of silently resolved by whichever of
-        the three fixed-order lifetimes-construction loops below happens to
-        run last for that var.
+        Host vars where different schemes genuinely disagree about
+        present-vs-update treatment (see cap_shared.find_diverged_suite_vars)
+        are excluded entirely from present_vars/update_vars here -- they get
+        no VarLifetime, so _wrap_scheme_call does nothing for them at this
+        (whole-suite) granularity. GPUDataPass routes those instead, per
+        individual scheme call, at the suite_cap level (backlog item (b)).
+        This split can never affect the copy-family (needs_in/needs_out)
+        accumulation below: model_var_memory_space is a single, host-
+        declared attribute, and present/update both require model=device
+        while copy-family requires model=host, so a host var can never be
+        both diverged (present-vs-update) and copy-family at once.
         """
         needs_in: dict = {}   # host_var -> bool
         needs_out: dict = {}  # host_var -> bool
         present_vars: set = set()
         update_vars: set = set()
         phases_used: dict = {}  # host_var -> set[phase]
-        # host_var -> category -> set of contributing scheme names, where
-        # category is one of "present", "update", "copy" -- used purely for
-        # conflict detection/reporting, never for classification itself.
-        contributors: dict = {}
+
+        diverged = find_diverged_suite_vars(scheme_names, meta_data)
 
         for scheme_name in scheme_names:
             props = meta_data.get(scheme_name)
@@ -284,11 +289,11 @@ class GPUCcppCapPass(ModulePass):
                         else "host"
                     )
 
+                    if host_var in diverged:
+                        continue
+
                     if scheme_space == "device" and model_space == "device":
                         present_vars.add(host_var)
-                        contributors.setdefault(host_var, {}).setdefault(
-                            "present", set()
-                        ).add(scheme_name)
                     elif scheme_space == "device" and model_space == "host":
                         intent = arg.getAttr("intent") if arg.hasAttr("intent") else "inout"
                         reads  = intent in ("in",  "inout")
@@ -296,18 +301,10 @@ class GPUCcppCapPass(ModulePass):
                         needs_in[host_var]  = needs_in.get(host_var,  False) or reads
                         needs_out[host_var] = needs_out.get(host_var, False) or writes
                         phases_used.setdefault(host_var, set()).add(phase)
-                        contributors.setdefault(host_var, {}).setdefault(
-                            "copy", set()
-                        ).add(scheme_name)
                     elif scheme_space == "host" and model_space == "device":
                         update_vars.add(host_var)
                         phases_used.setdefault(host_var, set()).add(phase)
-                        contributors.setdefault(host_var, {}).setdefault(
-                            "update", set()
-                        ).add(scheme_name)
                     # else: both host -- no directive needed
-
-        self._check_no_clause_conflicts(contributors)
 
         lifetimes = {}
         for host_var in present_vars:
@@ -324,35 +321,6 @@ class GPUCcppCapPass(ModulePass):
                 kind = "copyout"
             lifetimes[host_var] = self._resolve_lifetime(kind, phases_used.get(host_var, set()))
         return lifetimes
-
-    @staticmethod
-    def _check_no_clause_conflicts(contributors) -> None:
-        """Raise if any host var was classified into more than one of the
-        present/update/copy-family categories within the same suite (either
-        across different schemes or across entry points) -- e.g. one scheme declares memory_space=device
-        while the host is also device-resident (present), while another
-        scheme in the same suite leaves memory_space unset for the same
-        host var against the same device-resident host (update). Today's
-        per-scheme-call granularity has no way to satisfy both schemes at
-        once (backlog item (b)), so this is a hard configuration error, not
-        a warning -- silently picking one and discarding the other (this
-        pass's prior behavior) can emit a `present()` assertion the
-        surrounding code never actually established, or vice versa.
-        """
-        for host_var, by_category in contributors.items():
-            if len(by_category) <= 1:
-                continue
-            detail = ", ".join(
-                f"{category} (from {', '.join(sorted(schemes))})"
-                for category, schemes in sorted(by_category.items())
-            )
-            raise ValueError(
-                f"Host variable '{host_var}' has conflicting GPU residency requirements "
-                f"within the same suite: {detail}. Per-scheme-call clause routing is "
-                f"not yet supported (see GPU/OpenACC backlog item (b) in "
-                f"ccpp_cap_refactor_plan.md) -- give all involved scheme entry points "
-                f"consistent memory_space declarations for '{host_var}'."
-            )
 
     def _resolve_lifetime(self, kind, used) -> VarLifetime:
         """Apply the whole-sim vs per-timestep entry/exit anchor rules
