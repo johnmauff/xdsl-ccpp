@@ -1283,10 +1283,15 @@ class GenerateSuiteSubroutine(RewritePattern):
                         )
                         lazy_alloc_ops.append(
                             LazyAllocOp(
-                                var_name=fw_arg.name,
+                                var_name=_var_name,
                                 kind_name=kind,
                                 dim_var_refs=dim_var_refs,
                                 init_value=init_val,
+                                needs_device_residency=(
+                                    _suite_entry.needs_device_residency
+                                    if _suite_entry is not None
+                                    else False
+                                ),
                             )
                         )
 
@@ -1343,6 +1348,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                             kind_name=kind,
                             dim_var_refs=dim_var_refs,
                             init_value=None,
+                            needs_device_residency=entry.needs_device_residency,
                         )
                     )
 
@@ -1680,6 +1686,72 @@ class GenerateSuiteSubroutine(RewritePattern):
                     Rewriter.insert_op(SafeDeallocOp(var_decl.var_name.data),
                                        InsertPoint.before(ret_op))
 
+    @staticmethod
+    def _inject_suite_owned_gpu_exit(generated_fns, suite_model):
+        """Emit AccExitDataOp for every SuiteOwned var whose enter-data-create
+        actually fired (SuiteOwned residency backlog item), in the true
+        _finalize function -- not _timestep_final, where
+        _inject_safe_deallocs's own SafeDeallocOps (if any ever fire) live.
+        These arrays are never deallocated in practice (confirmed: no
+        `deallocate` appears anywhere in generated output for this project's
+        real examples), so they persist for the whole simulation -- the same
+        whole-sim scope GPUCcppCapPass already uses for HostMatched vars
+        (entry at register/initialize, exit at finalize).
+
+        Deliberately keyed off which LazyAllocOps actually got
+        needs_device_residency set in the *generated IR* (scanned here),
+        not off suite_model's static classification alone: a SuiteOwned
+        var's allocation dimensions aren't always resolvable outside
+        physics_mode (e.g. an arg declared with horizontal_loop_extent
+        rather than horizontal_dimension -- confirmed via examples/
+        helloworld's own temp_layer), in which case _build_framework_refs
+        never actually emits a LazyAllocOp for it in _register/_init at
+        all. Emitting an exit-data-delete for such a var would be an
+        unmatched, invalid exit-data call with no corresponding enter --
+        enter and exit must stay balanced.
+        """
+        resident_var_names: set = set()
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp) or not fn.body.blocks:
+                continue
+            for block_op in fn.body.blocks[0].ops:
+                if (
+                    isa(block_op, LazyAllocOp)
+                    and block_op.needs_device_residency is not None
+                    and bool(block_op.needs_device_residency.value.data)
+                ):
+                    resident_var_names.add(block_op.var_name.data)
+
+        if not resident_var_names:
+            return
+
+        entries_by_name = {e.local_name: e for e in suite_model.suite_owned_vars()}
+
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp):
+                continue
+            if not fn.sym_name.data.endswith("_suite_finalize"):
+                continue
+            if not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
+            if ret_op is None:
+                continue
+            for var_name in sorted(resident_var_names):
+                entry = entries_by_name.get(var_name)
+                if entry is None:
+                    continue
+                var_type = TypeConversions.convert(
+                    entry.fortran_type, entry.kind if entry.kind else None, entry.rank
+                )
+                ref_op = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
+                Rewriter.insert_op(ref_op, InsertPoint.before(ret_op))
+                Rewriter.insert_op(
+                    ccpp_utils.AccExitDataOp(delete=[ref_op.res]),
+                    InsertPoint.before(ret_op),
+                )
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ccpp.SuiteOp, rewriter: PatternRewriter):
         """Generate the complete cap module for one ccpp.SuiteOp."""
@@ -1701,6 +1773,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         allocatable_mod_vars, interstitial_var_names = self._build_module_vars(suite_model)
         if allocatable_mod_vars:
             self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
+        self._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
         seen_stubs: set = set()
         deduped_stubs = []

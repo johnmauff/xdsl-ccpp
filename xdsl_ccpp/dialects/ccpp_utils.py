@@ -633,25 +633,45 @@ class LazyAllocOp(IRDLOperation):
         if (.not. allocated(var_name)) then
           allocate(var_name(d1, d2, ...))
           var_name = init_value
+    #ifdef USE_GPU
+          !$acc enter data create(var_name)
+    #endif
         end if
 
     dim_vars are SSA values whose variable names supply the dimension extents.
+
+    needs_device_residency (SuiteOwned GPU residency): when set, the printer
+    also emits the enter-data-create line above, INSIDE this same
+    `if (.not. allocated(...))` block -- deliberately not a separately
+    inserted AccEnterDataOp, since this array can be allocated from either
+    of two lifecycle functions (_suite_register/_suite_initialize, whichever
+    runs first at simulation start), each emitting its own LazyAllocOp for
+    the same var. A separate, unconditionally-inserted enter-data op after
+    each occurrence would double-fire (both would execute regardless of
+    which one's allocate actually ran), double-incrementing the OpenACC
+    reference count. Baking it into this op's own printer means it inherits
+    the exact same "already done" runtime guard the allocate itself uses,
+    with no extra bookkeeping.
     """
 
     name = "ccpp_utils.lazy_alloc"
     var_name   = prop_def(StringAttr)
     kind_name  = prop_def(StringAttr)
     init_value = opt_prop_def(StringAttr)  # Fortran literal, e.g. "0.0_kind_phys"
+    needs_device_residency = opt_prop_def(BoolAttr)
     dim_vars   = var_operand_def()          # SSA values giving dimension sizes
 
     def __init__(self, var_name: str, kind_name: str, dim_var_refs: list,
-                 init_value: str | None = None):
+                 init_value: str | None = None,
+                 needs_device_residency: bool = False):
         props: dict = {
             "var_name":  StringAttr(var_name),
             "kind_name": StringAttr(kind_name),
         }
         if init_value is not None:
             props["init_value"] = StringAttr(init_value)
+        if needs_device_residency:
+            props["needs_device_residency"] = BoolAttr.from_bool(needs_device_residency)
         super().__init__(operands=[dim_var_refs], properties=props)
 
 
