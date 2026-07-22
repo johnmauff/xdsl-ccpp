@@ -620,8 +620,53 @@ starting 3b):
       scratch memory the host never sees — but building `CapScratch` residency would not, by
       itself, do anything for `SuiteOwned` variables; the actual code that would need to change
       (`suite_cap.py`/`suite_variable_model.py`'s own allocation-and-storage logic, not
-      `ccpp_cap.py`'s) is different. Track as its own backlog item, separate from `CapScratch`
-      residency above — not scheduled, not scoped in detail yet.
+      `ccpp_cap.py`'s) is different.
+      - **Done (2026-07-22), triggered by a real GPU runtime failure**, not just the earlier
+        static observation above: running `examples/advection_flat_host`'s GPU-compiled code on
+        real HPC hardware produced `FATAL ERROR: data in PRESENT clause was not found on device:
+        name=cld_liq_array(:,:)` — `cld_liq_init`'s own hand-written
+        `!$acc parallel loop ... present(cld_liq_array)` asserting residency nothing established.
+        `SuiteVarEntry` (`suite_variable_model.py`) gained a `needs_device_residency: bool` field,
+        computed from `memory_space=device` on *any* occurrence of the var across every scheme/
+        phase table (an OR, not a first-writer-only read — `_process_table`'s "Case 4: already in
+        suite data" branch previously discarded every later occurrence's attributes entirely,
+        confirmed real via `cld_ice_array` appearing in both `cld_ice_init` and `cld_ice_run`).
+        No present-vs-update-style divergence check needed here, unlike `HostMatched` — a
+        `SuiteOwned` var's residency need is a simple boolean, never conflicting across schemes.
+        `LazyAllocOp` (`ccpp_utils.py`) gained a `needs_device_residency` property, and its own
+        printer (not a separately-inserted op) now emits `!$acc enter data create(x)` *inside* the
+        same `if (.not. allocated(x))` guard the allocate itself uses — deliberately not a
+        separate `AccEnterDataOp` insertion, since these vars can be allocated from either of two
+        lifecycle functions (`_suite_register`/`_suite_initialize`, whichever runs first); a
+        separately-inserted enter-data op after each of the two `LazyAllocOp` occurrences would
+        double-fire regardless of which one's allocate actually ran, double-incrementing the
+        OpenACC reference count. `_suite_finalize` (confirmed to have zero competing ops and to
+        run exactly once) gets a matching `AccExitDataOp`/`exit data delete` — but only for vars
+        whose enter-data-create is confirmed, by scanning the actual generated IR, to have really
+        fired: a `SuiteOwned` var's allocation dimensions aren't always resolvable outside
+        physics_mode (found via `examples/helloworld`'s own `temp_layer`, which declares
+        `memory_space=device` but uses `horizontal_loop_extent` as its dimension — never
+        resolvable in `_register`/`_init`, so `_build_framework_refs` never emits a `LazyAllocOp`
+        for it there at all). The first implementation keyed the exit side purely off
+        `suite_model`'s static classification and produced exactly this bug — an unmatched
+        `exit data delete` with no corresponding enter, caught via `examples/helloworld`'s
+        existing FileCheck goldens (legitimately regenerated once for `temp_layer`'s new residency
+        treatment, then regenerated back to byte-identical once the fix was in, since the fix
+        correctly excludes it). ACC only; OMP deferred as its own later follow-on, matching this
+        project's established practice (`SuiteCAP` has no `directive` field today, and adding one
+        for this alone isn't justified). New unit tests in
+        `tests/unit/test_suite_owned_residency.py` cover: enter-data inside the alloc guard,
+        matching exit-data in `_suite_finalize`, a non-resident regression guard, and the
+        second-table-occurrence OR fix. `examples/advection_flat_host/cld_liq.meta`'s
+        `cld_liq_array` and `cld_ice.meta`'s `cld_ice_array` both gained the
+        `memory_space = device` declaration needed to actually activate this (the code alone
+        doesn't retroactively fix the reported error without it) — regenerating with
+        `--directive acc` now shows the correct `enter data create`/`exit data delete` pair for
+        both, with `temp` (the unrelated, non-diverging `HostMatched` var) unaffected. Full suite
+        green (353 unit + 44 FileCheck + 1 xfailed, same 1 pre-existing unrelated environmental
+        failure), `ruff check` clean (same 13 pre-existing baseline findings, confirmed unchanged
+        via `git stash`). Not yet verified on real GPU hardware — that remains with the project
+        owner to confirm the reported error is actually resolved.
     - **A fourth, related gap found the same day: module-private scheme state (not a
       ccpp-arg-table entry at all) has no GPU-residency story, and can't, without first making
       it CCPP-visible somehow.** Surfaced concretely by `cld_ice.F90`'s own `tcld` — a

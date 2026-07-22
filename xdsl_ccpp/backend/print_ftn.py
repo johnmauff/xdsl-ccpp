@@ -655,6 +655,10 @@ class ftnPrintContext:
                         inner.print(
                             f"{vname} = {op.init_value.data}"
                         )
+                    if op.needs_device_residency is not None and bool(op.needs_device_residency.value.data):
+                        inner.print("#ifdef USE_GPU", use_prefix=False)
+                        inner.print(f"!$acc enter data create({vname})")
+                        inner.print("#endif", use_prefix=False)
                 self.print("end if")
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data

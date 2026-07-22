@@ -42,6 +42,13 @@ class SuiteVarEntry:
     producing_phase: str       # phase postfix in which this var is first written
     producing_group: str       # group name if produced in _run, else ""
     producing_scheme: str      # name of the scheme whose arg first wrote this var
+    needs_device_residency: bool = False  # True if ANY occurrence (any scheme/
+                                # phase, not just the first writer) declares
+                                # memory_space=device -- a simple OR, unlike
+                                # HostMatched's present-vs-update split; a
+                                # SuiteOwned var's residency need can't
+                                # conflict across schemes, only be requested
+                                # or not. See _process_table's Case 4 handling.
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +269,17 @@ class SuiteVariableModel:
                 else "in"
             )
 
-            # Case 4: already in suite data from a prior phase/group — no-op.
+            # Case 4: already in suite data from a prior phase/group. Other
+            # attributes stay pinned to the first writer, but a *later*
+            # occurrence declaring memory_space=device should still be
+            # enough to request GPU residency -- OR it into the existing
+            # entry rather than silently dropping it (unlike a full
+            # divergence check, there's nothing to reconcile: residency is
+            # a simple "does anything ask for it", not a per-scheme clause
+            # that could conflict).
             if std_name in self._suite_owned:
+                if arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device":
+                    self._suite_owned[std_name].needs_device_residency = True
                 continue
 
             # DDT allocatable arrays (e.g. ccpp_constituent_properties_t from
@@ -335,6 +351,10 @@ class SuiteVariableModel:
         primitive_types = {"real", "integer", "character", "logical", "complex"}
         is_ddt = arg_type.lower() not in primitive_types
 
+        needs_device_residency = (
+            arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"
+        )
+
         return SuiteVarEntry(
             standard_name=std_name,
             local_name=local_name,
@@ -346,4 +366,5 @@ class SuiteVariableModel:
             producing_phase=phase,
             producing_group=group_name,
             producing_scheme=scheme_name,
+            needs_device_residency=needs_device_residency,
         )

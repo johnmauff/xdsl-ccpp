@@ -37,7 +37,7 @@
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "temp_adjust_run", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "nbox", type = "integer", standard_name = "horizontal_loop_extent", intent = "in", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "lev", type = "integer", standard_name = "vertical_layer_dimension", intent = "in", units = "count"}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_layer", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_loop_extent,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "inout", units = "K", memory_space = "device"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_layer", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_loop_extent,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "inout", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "timestep", type = "real", standard_name = "time_step_for_physics", long_name = "time step", kind = "kind_phys", intent = "in", units = "s"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
