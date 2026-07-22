@@ -27,6 +27,15 @@ ARCH ?= CPU
 # Same three-way compiler-family branch as examples/kessler's Makefile.
 # No C/C++ objects in this example (single Fortran driver), so there's no
 # ACC_OFF_C-style accelerator-runtime-hook concern to carry over here.
+#
+# NOTE: This example uses OpenACC directives ("!$acc") in its Fortran sources and
+# `make caps` generates OpenACC directives via `--directive acc`, so ARCH=GPU
+# currently requires an OpenACC-capable compiler.
+ifeq ($(ARCH),GPU)
+  ifneq ($(FC),nvfortran)
+    $(error ARCH=GPU requires FC=nvfortran for OpenACC; got FC=$(FC))
+  endif
+endif
 ifeq ($(FC),nvfortran)
   FC_CPU  = -g -O2 -Mfree -Mpreprocess -noacc
   FC_GPU  = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
