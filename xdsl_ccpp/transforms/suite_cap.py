@@ -1281,16 +1281,15 @@ class GenerateSuiteSubroutine(RewritePattern):
                             if fw_arg.hasAttr("default_value")
                             else None
                         )
-                        _fw_suite_entry = suite_model.get(_fw_std_key) if suite_model is not None else None
                         lazy_alloc_ops.append(
                             LazyAllocOp(
-                                var_name=fw_arg.name,
+                                var_name=_var_name,
                                 kind_name=kind,
                                 dim_var_refs=dim_var_refs,
                                 init_value=init_val,
                                 needs_device_residency=(
-                                    _fw_suite_entry.needs_device_residency
-                                    if _fw_suite_entry is not None
+                                    _suite_entry.needs_device_residency
+                                    if _suite_entry is not None
                                     else False
                                 ),
                             )
