@@ -859,6 +859,39 @@ starting 3b):
         failure as every prior phase), `ruff check` clean on touched files. Not verified: actual
         GPU hardware behavior — this sandbox has no compiler/accelerator access; the user
         confirms on their HPC system.
+      - **Post-merge fix #1 (2026-07-22): real CI build failure, not just a local-test gap.**
+        `constituent_cap.py`'s raw-text `ConstituentApiOp` body prints every line through the
+        same indentation-prefixing path as ordinary Fortran statements
+        (`print_ftn.py`'s `case CCPPConstituentApiOp():` just called `self.print(line)` for
+        each line unconditionally) — so the new `#ifdef USE_GPU`/`#endif` lines picked up the
+        module-body indent along with everything else, landing as `  #ifdef USE_GPU` in the
+        generated `.F90`. gfortran's `-cpp` rejects an indented `#` as invalid Fortran source
+        rather than recognizing it as a directive (`Error: Invalid character in name`) — this
+        broke the real `examples/advection_flat_host` build in CI (`make check`) even though the
+        local FileCheck suite passed, since FileCheck's whitespace matching is lenient and never
+        would have caught it. Fixed in `print_ftn.py`: lines starting with `#` inside
+        `CCPPConstituentApiOp`'s body are now printed with `use_prefix=False` (stripped of
+        leading whitespace first), matching the pattern every other `#ifdef`-emitting op
+        (`CCPPAccEnterDataOp`/`CCPPAccExitDataOp`/`CCPPLazyAllocOp`) already used. Confirmed by
+        regenerating `flat_host_ccpp_cap.F90` directly and checking column position; user
+        confirmed the real CI build (which does invoke gfortran, unlike anything in this
+        sandbox) now succeeds.
+      - **Post-merge fix #2 (2026-07-22): Copilot review on PR #38 — `create` vs `copyin`.**
+        Flagged at all three CapScratch enter-data sites in `constituent_cap.py`
+        (`lc_constituent_array`, `lc_const_tend`, and the generic per-scratch-var case):
+        `!$acc enter data create(...)` allocates uninitialized device memory — it does **not**
+        copy the host-initialized values from the default-value loop (`lc_constituent_array`) or
+        the `= 0.0_kind_phys` fills (`lc_const_tend`, generic scratch vars) that immediately
+        precede each directive. Any device kernel reading these arrays before writing them would
+        see garbage, not the initialized host state. A real, confirmed bug — `copyin` (already
+        the established pattern for `HostMatched` residency's own enter-data, see
+        `gpu_ccpp_cap_pass.py`) copies host to device instead of leaving it uninitialized, and is
+        the correct fix for all three sites since each is genuinely preceded by host
+        initialization. Fixed by changing all three `create(...)` calls to `copyin(...)`; updated
+        `tests/unit/test_capscratch_residency.py`'s assertions and both `examples/advection`
+        FileCheck fixtures (`lc_temp`/`lc_qv`, which hit the same generic-scratch-var code path)
+        to match. Full suite re-verified green; `ruff check` clean (no new findings beyond the
+        pre-existing, unrelated F541 baseline already present throughout this file).
   - **Plan for validating (b)/(c) against a real example, not just synthetic fixtures
     (2026-07-20, not yet implemented) — modify `examples/advection/` directly, single group,
     no new example directory.** Originally proposed splitting `cld_suite.xml`'s one "physics"

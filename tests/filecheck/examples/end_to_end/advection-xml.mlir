@@ -660,13 +660,13 @@
 // CHECK-NEXT:        allocate(lc_temp(ncols, pver))
 // CHECK-NEXT:        lc_temp = 0.0_kind_phys
 // CHECK-NEXT:    #ifdef USE_GPU
-// CHECK-NEXT:        !$acc enter data create(lc_temp)
+// CHECK-NEXT:        !$acc enter data copyin(lc_temp)
 // CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_qv)) deallocate(lc_qv)
 // CHECK-NEXT:        allocate(lc_qv(ncols, pver))
 // CHECK-NEXT:        lc_qv = 0.0_kind_phys
 // CHECK-NEXT:    #ifdef USE_GPU
-// CHECK-NEXT:        !$acc enter data create(lc_qv)
+// CHECK-NEXT:        !$acc enter data copyin(lc_qv)
 // CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_ps)) deallocate(lc_ps)
 // CHECK-NEXT:        allocate(lc_ps(ncols))

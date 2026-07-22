@@ -81,12 +81,16 @@ def _generate_constituent_api(
     framework_var_residency: cap var name ("lc_constituent_array",
     "lc_const_tend") -> True if CapScratch GPU residency should be
     established for it (see ccpp_cap.py's _build_cap_var_map) -- emitted as
-    plain text (`#ifdef USE_GPU` / `!$acc enter data create(...)` /
-    `#endif`) directly after each array's existing allocate block in
-    ic_lines, matching the surrounding generation style: this whole
+    plain text (`#ifdef USE_GPU` / `!$acc enter data copyin(...)` /
+    `#endif`) directly after each array's existing allocate-and-initialize
+    block in ic_lines, matching the surrounding generation style: this whole
     subsystem builds Fortran source as raw text (ConstituentApiOp's body is
     a plain StringAttr), there's no IR op to attach a residency property to
-    the way SuiteOwned's LazyAllocOp allowed.
+    the way SuiteOwned's LazyAllocOp allowed. `copyin`, not `create`: each
+    array is host-initialized (a default-value loop or a `= 0.0_kind_phys`
+    fill) immediately before this directive, and `create` would allocate
+    uninitialized device memory without transferring that initialized state
+    -- caught by Copilot review on PR #38.
 
     Returns (module_var_ops, constituent_api_op, global_stub_ops).
     """
@@ -336,7 +340,7 @@ def _generate_constituent_api(
     if framework_var_residency.get("lc_constituent_array"):
         ic_lines += [
             f"#ifdef USE_GPU",
-            f"    !$acc enter data create(lc_constituent_array)",
+            f"    !$acc enter data copyin(lc_constituent_array)",
             f"#endif",
         ]
     ic_lines += [
@@ -347,7 +351,7 @@ def _generate_constituent_api(
     if framework_var_residency.get("lc_const_tend"):
         ic_lines += [
             f"#ifdef USE_GPU",
-            f"    !$acc enter data create(lc_const_tend)",
+            f"    !$acc enter data copyin(lc_const_tend)",
             f"#endif",
         ]
     for lc_name, _rank, alloc_dims, _cst_std, needs_gpu in (scratch_vars or []):
@@ -374,7 +378,7 @@ def _generate_constituent_api(
             if needs_gpu:
                 ic_lines += [
                     f"#ifdef USE_GPU",
-                    f"    !$acc enter data create({lc_name})",
+                    f"    !$acc enter data copyin({lc_name})",
                     f"#endif",
                 ]
     ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")

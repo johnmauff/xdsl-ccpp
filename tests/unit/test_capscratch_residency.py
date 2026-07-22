@@ -7,8 +7,9 @@ constituent_cap.py. This is the third and last residency gap (after
 SuiteOwned's LazyAllocOp and HostMatched's present/update residency),
 covering the shared cap-module-scope arrays constituent-tendency scratch
 vars (e.g. cld_liq_tend) resolve into -- lc_constituent_array/lc_const_tend
--- established via #ifdef USE_GPU / !$acc enter data create(...) directly
-after each array's allocate() in ccpp_initialize_constituents, and torn
+-- established via #ifdef USE_GPU / !$acc enter data copyin(...) directly
+after each array's allocate-and-initialize block in
+ccpp_initialize_constituents, and torn
 down via !$acc exit data delete(...) in ccpp_physics_finalize (mirroring
 suite_cap.py's _inject_suite_owned_gpu_exit exactly, but unconditional
 since these arrays are cap-module-global, not suite-scoped).
@@ -94,7 +95,7 @@ class TestConstituentTendencyScratchResidency:
         init_fn = _fn_body(fortran, "TestCapscratchTend_ccpp_initialize_constituents")
         finalize_fn = _fn_body(fortran, "TestCapscratchTend_ccpp_physics_finalize")
 
-        assert "enter data create(lc_const_tend)" in init_fn
+        assert "enter data copyin(lc_const_tend)" in init_fn
         assert "exit data delete(lc_const_tend)" in finalize_fn
         # The pointer slice itself is never separately made resident --
         # OpenACC tracks residency by lc_const_tend's actual memory, not
@@ -172,8 +173,8 @@ class TestFrameworkMappedResidency:
         init_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_initialize_constituents")
         finalize_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_physics_finalize")
 
-        assert "enter data create(lc_constituent_array)" in init_fn
-        assert "enter data create(lc_const_tend)" not in init_fn
+        assert "enter data copyin(lc_constituent_array)" in init_fn
+        assert "enter data copyin(lc_const_tend)" not in init_fn
         assert "exit data delete(lc_constituent_array)" in finalize_fn
         assert "exit data delete(lc_const_tend)" not in finalize_fn
 
@@ -262,5 +263,5 @@ class TestOrAcrossOccurrencesResidency:
         init_fn = _fn_body(fortran, "TestCapscratchOr_ccpp_initialize_constituents")
         finalize_fn = _fn_body(fortran, "TestCapscratchOr_ccpp_physics_finalize")
 
-        assert "enter data create(lc_const_tend)" in init_fn
+        assert "enter data copyin(lc_const_tend)" in init_fn
         assert "exit data delete(lc_const_tend)" in finalize_fn
