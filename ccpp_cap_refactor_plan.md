@@ -806,6 +806,59 @@ starting 3b):
       not the same `advection` variant as the (b)/(c) validation plan below (which explicitly
       leaves the constituent-tendency plumbing untouched, since the mechanism doesn't exist yet) —
       a separate variant, for a separate, later capability.
+    - **`CapScratch` residency: implemented (2026-07-22).** The third and last residency gap,
+      closing this whole GPU-residency backlog thread (`SuiteOwned`'s `LazyAllocOp` and
+      `HostMatched`'s `_analyze_one_suite_residency`/`_wrap_residency_directives` were already
+      done). Triggered by the exact reported runtime error this backlog anticipated: `FATAL ERROR:
+      data in PRESENT clause was not found on device: name=cld_liq_tend(:,:)`. Key finding: unlike
+      `SuiteOwned`'s `LazyAllocOp` (a real IRDL op that could carry a `needs_device_residency`
+      property), `constituent_cap.py`'s `_generate_constituent_api` builds the entire constituent
+      registration/query API as raw Fortran **text** in a single `ConstituentApiOp` (plain
+      `StringAttr` body) — there's no IR-level mechanism to attach a residency property to, so the
+      fix is string-templated directly into that generation code.
+      - `ccpp_cap.py`'s `_build_cap_var_map` gained OR-across-occurrences residency tracking (same
+        fix shape as `suite_variable_model.py`'s Case 4): the generic-scratch path
+        (`scratch_var_list`, now a 5-tuple with a `needs_device_residency` flag) and the direct
+        framework-mapped path (`const`/`const_tend` → `lc_constituent_array`/`lc_const_tend`, now
+        tracked via a new `framework_var_residency` dict) both OR every occurrence's own
+        `memory_space=device` into the shared entry, rather than "first occurrence wins."
+        Constituent-tendency scratch vars (e.g. `cld_liq_tend` → `lc_cld_liq_tend`) are Fortran
+        pointer slices into `lc_const_tend`, not separately allocated — their residency request
+        rolls up into `lc_const_tend`'s, not a separate entry.
+      - Enter side: `constituent_cap.py`'s `_generate_constituent_api` emits
+        `#ifdef USE_GPU` / `!$acc enter data create(...)` / `#endif` directly after each array's
+        `allocate(...)` in `ic_lines`, for `lc_constituent_array`, `lc_const_tend`, and any generic
+        (non-constituent-pointer) scratch array whose residency flag is set.
+      - Exit side: a new `_inject_capscratch_gpu_exit` in `ccpp_cap.py`, mirroring
+        `suite_cap.py`'s `_inject_suite_owned_gpu_exit` exactly (same `HostVarRefOp`+
+        `AccExitDataOp(delete=...)` pattern, inserted before the target function's
+        `func.ReturnOp`) but **unconditional**, not per-suite-gated — these arrays are
+        cap-module-global, not suite-scoped, so the insertion targets the combined cap's own
+        `_ccpp_physics_finalize` directly rather than each suite's `_suite_finalize`.
+      - Companion metadata: `memory_space = device` added to `examples/advection_flat_host`'s
+        `cld_liq.meta`'s `cld_liq_tend` (the producer; no `cld_ice`-equivalent tendency arg exists
+        in this example, so nothing to add there) and `apply_constituent_tendencies.meta`'s
+        `const`/`const_tend` (the consumer) — activating the mechanism for the reported scenario.
+      - Regenerating `advection_flat_host` confirms `lc_constituent_array`/`lc_const_tend` now get
+        `!$acc enter data create(...)` in `flat_host_ccpp_initialize_constituents` and
+        `!$acc exit data delete(...)` in `flat_host_ccpp_physics_finalize`.
+      - Side effect, not a regression: `examples/advection`'s existing FileCheck fixtures changed
+        too — `temp`/`qv` in that example already carry `memory_space=device` (for the unrelated,
+        still-unfixed HostMatched-DDT-member gap noted above) and, in `advection` specifically,
+        fall through to `CapScratch` (no host match resolves for them there), so they now
+        correctly get `lc_temp`/`lc_qv` enter/exit-data treatment they were silently missing
+        before. Fixtures updated to match.
+      - New coverage: `tests/unit/test_capscratch_residency.py` — constituent-tendency scratch var
+        residency (enter/exit for `lc_const_tend`), the direct framework-mapped path activating
+        `lc_constituent_array` independently of `lc_const_tend`, a non-resident regression guard,
+        and the OR-across-occurrences fix itself (two different groups feeding the same
+        constituent-tendency standard_name, only the second declaring `memory_space=device`,
+        still activates residency for the shared array — the exact case the old
+        first-occurrence-wins gate would have silently dropped).
+      - Full suite green throughout (unit + FileCheck, same one pre-existing environmental
+        failure as every prior phase), `ruff check` clean on touched files. Not verified: actual
+        GPU hardware behavior — this sandbox has no compiler/accelerator access; the user
+        confirms on their HPC system.
   - **Plan for validating (b)/(c) against a real example, not just synthetic fixtures
     (2026-07-20, not yet implemented) — modify `examples/advection/` directly, single group,
     no new example directory.** Originally proposed splitting `cld_suite.xml`'s one "physics"

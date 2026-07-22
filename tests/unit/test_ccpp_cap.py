@@ -103,26 +103,26 @@ class TestBuildCapVarMap:
         )
 
     def test_framework_array_maps_to_known_cap_var(self):
-        cap_var_map, _host_var_map_lc, _scratch = self._build()
+        cap_var_map, _host_var_map_lc, _scratch, _residency = self._build()
         assert cap_var_map["ccpp_constituents"] == ("lc_constituent_array", None, None)
 
     def test_unmatched_scratch_var_becomes_cap_owned(self):
-        cap_var_map, _host_var_map_lc, scratch_var_list = self._build()
+        cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
         assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
-        assert ("lc_scratch1", 0, "ncols, pver", None) in scratch_var_list
+        assert ("lc_scratch1", 0, "ncols, pver", None, False) in scratch_var_list
 
     def test_host_matched_arg_is_excluded(self):
-        cap_var_map, _host_var_map_lc, scratch_var_list = self._build()
+        cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
         assert "matched_quantity" not in cap_var_map
         assert not any(entry[0] == "lc_matched1" for entry in scratch_var_list)
 
     def test_constituent_tendency_scratch_var_records_const_std_name(self):
-        cap_var_map, _host_var_map_lc, scratch_var_list = self._build()
+        cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
         assert cap_var_map["tendency_of_water_vapor"] == ("lc_tend1", None, None)
-        assert ("lc_tend1", 0, "ncols, pver", "water_vapor") in scratch_var_list
+        assert ("lc_tend1", 0, "ncols, pver", "water_vapor", False) in scratch_var_list
 
     def test_host_var_map_lc_empty_when_no_module_tables(self):
-        _cap_var_map, host_var_map_lc, _scratch = self._build()
+        _cap_var_map, host_var_map_lc, _scratch, _residency = self._build()
         assert host_var_map_lc == {}
 
 
@@ -173,8 +173,8 @@ class TestBuildCapVarMapFlattensSubcycles:
         }
 
     def test_scheme_nested_in_subcycle_is_found(self):
-        cap_var_map, _host_var_map_lc, scratch_var_list = _build_cap_var_map(
+        cap_var_map, _host_var_map_lc, scratch_var_list, _residency = _build_cap_var_map(
             self._meta_data(), self._suite_descriptions(), self._public_fns()
         )
         assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
-        assert ("lc_scratch1", 0, "ncols, pver", None) in scratch_var_list
+        assert ("lc_scratch1", 0, "ncols, pver", None, False) in scratch_var_list

@@ -12,11 +12,15 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.ir import Block, Region
 from xdsl.passes import ModulePass
+from xdsl.pattern_rewriter import InsertPoint
+from xdsl.rewriter import Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AccExitDataOp,
     DerivedType,
+    HostVarRefOp,
     SetStringOp,
     SuiteVariablesOp,
 )
@@ -47,12 +51,13 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
-    CCPP_ERROR_STD_NAMES,
     CCPP_ERRMSG_LEN,
+    CCPP_ERROR_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
 )
+
 
 def _collect_public_suite_functions(ops):
     """Scan all named ModuleOps in ops and return a map of public function info.
@@ -86,7 +91,7 @@ def _collect_public_suite_functions(ops):
 
 
 
-def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict, dict, list]":
+def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict, dict, list, dict]":
     """Build cap_var_map: interstitial DDT values returned from lifecycle.
 
     These need module-level storage in the cap so they persist between calls.
@@ -108,11 +113,29 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     type-dependent construction stays here, downstream of both the
     classification and suite_cap.py's own concrete xDSL types.
 
+    CapScratch GPU residency: memory_space=device on a CapScratch arg means
+    xdsl_ccpp itself should establish device residency for whichever
+    cap-module-scope array that arg resolves to -- unlike HostMatched
+    present/update residency (backlog item scoped to HostMatched only),
+    CapScratch args are pure framework-owned scratch memory with no host
+    model to defer to. Tracked as a simple OR across every occurrence (any
+    scheme/group asking for it is enough), same fix shape as
+    suite_variable_model.py's Case 4 for SuiteOwned vars -- not gated by
+    "first occurrence wins" the way the rest of this function's std_name
+    dedup is, since memory_space is exactly the one thing that can
+    legitimately differ per occurrence.
+
     Returns:
-        (cap_var_map, host_var_map_lc, scratch_var_list):
+        (cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency):
           - cap_var_map: standard_name -> (var_name, mlir_type, fortran_type_str)
           - host_var_map_lc: standard_name -> (var_name, table_name), MODULE tables only
-          - scratch_var_list: [(var_name, rank, alloc_dims_str, const_std_name_or_None)]
+          - scratch_var_list: [(var_name, rank, alloc_dims_str, const_std_name_or_None,
+            needs_device_residency)] -- one entry per distinct CapScratch scratch
+            var (excluding ones that resolve directly to a shared framework var)
+          - framework_var_residency: cap var name (e.g. "lc_constituent_array",
+            "lc_const_tend") -> True if any contributing occurrence (direct
+            framework-mapped arg, or a constituent-tendency scratch var
+            resolving into it) asked for memory_space=device
     """
     cap_var_map: dict = {}
     # MODULE only: write-back targets (like num_model_times) live in MODULE
@@ -134,7 +157,8 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
         "number_of_ccpp_constituents": "lc_num",
     }
     scratch_var_list: list = []
-    scratch_var_seen: set = set()
+    scratch_var_index: dict = {}  # std_name -> index into scratch_var_list
+    framework_var_residency: dict = {}  # cap var name -> True
     for _sn_cv, _sd_cv in suite_descriptions.items():
         for _grp_cv in _sd_cv:
             _grp_name_cv = _grp_cv.attributes["name"]
@@ -147,6 +171,7 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
             _dno_cv: dict = {}
             _cno_cv: dict = {}  # bare_name → True when constituent=True
             _own_cv: dict = {}  # bare_name → ArgOwnershipKind
+            _msp_cv: dict = {}  # bare_name → True if ANY occurrence wants memory_space=device
             for _scheme_cv in _grp_schemes:
                 _run_tbl_cv = _scheme_cv + "_run"
                 if _scheme_cv not in meta_data:
@@ -165,6 +190,8 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                         _cno_cv[_bn_cv] = True
                     if _bn_cv not in _own_cv and _fa_cv.hasAttr("ownership_kind"):
                         _own_cv[_bn_cv] = _fa_cv.getAttr("ownership_kind")
+                    if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
+                        _msp_cv[_bn_cv] = True
             for _an_cv, _at_cv in zip(_ci_names, _ci_types):
                 _bn_cv = _bare(_an_cv)
                 # Anything not classified CapScratch (HostMatched, Block, or
@@ -177,12 +204,15 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                 _std_cv = _sno_cv.get(_bn_cv)
                 if not _std_cv:
                     continue
+                _needs_gpu_cv = _msp_cv.get(_bn_cv, False)
                 if _std_cv in _FRAMEWORK_TO_CAP_VAR:
+                    _cap_name_cv = _FRAMEWORK_TO_CAP_VAR[_std_cv]
                     if _std_cv not in cap_var_map:
-                        cap_var_map[_std_cv] = (_FRAMEWORK_TO_CAP_VAR[_std_cv], None, None)
+                        cap_var_map[_std_cv] = (_cap_name_cv, None, None)
+                    if _needs_gpu_cv:
+                        framework_var_residency[_cap_name_cv] = True
                     continue
-                if _std_cv not in scratch_var_seen:
-                    scratch_var_seen.add(_std_cv)
+                if _std_cv not in scratch_var_index:
                     _lc_cv = f"lc_{_bn_cv}"
                     _rank_cv = _rank_of(_at_cv)
                     _dims_cv = _dno_cv.get(_bn_cv, [])
@@ -195,9 +225,71 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                     if _cno_cv.get(_bn_cv) and _std_cv.startswith("tendency_of_"):
                         _const_std_name = _std_cv[len("tendency_of_"):]
                     cap_var_map[_std_cv] = (_lc_cv, None, None)
-                    scratch_var_list.append((_lc_cv, _rank_cv, _alloc_cv, _const_std_name))
+                    scratch_var_index[_std_cv] = len(scratch_var_list)
+                    scratch_var_list.append(
+                        [_lc_cv, _rank_cv, _alloc_cv, _const_std_name, _needs_gpu_cv]
+                    )
+                    if _const_std_name and _needs_gpu_cv:
+                        framework_var_residency["lc_const_tend"] = True
+                elif _needs_gpu_cv:
+                    # Repeat occurrence of an already-seen scratch var (e.g.
+                    # referenced again from a later group/suite) -- OR this
+                    # occurrence's own memory_space into the existing entry
+                    # instead of silently discarding it, same as the
+                    # framework-mapped branch above.
+                    _entry_cv = scratch_var_list[scratch_var_index[_std_cv]]
+                    _entry_cv[4] = True
+                    if _entry_cv[3]:
+                        framework_var_residency["lc_const_tend"] = True
 
-    return cap_var_map, host_var_map_lc, scratch_var_list
+    # Built as mutable lists above (to allow in-place OR-updates on repeat
+    # occurrences); returned as tuples to preserve the established
+    # "scratch_var_list is a list of tuples" contract callers rely on.
+    return cap_var_map, host_var_map_lc, [tuple(e) for e in scratch_var_list], framework_var_residency
+
+
+def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var_residency, scratch_var_list):
+    """Emit AccExitDataOp for CapScratch cap-module arrays whose enter-data-create
+    actually fired (CapScratch GPU residency backlog item), in the generated
+    ``_ccpp_physics_finalize`` function.
+
+    Unlike suite_cap.py's ``_inject_suite_owned_gpu_exit`` (per-suite
+    ``_suite_finalize``), these arrays (``lc_constituent_array``,
+    ``lc_const_tend``, and any generic CapScratch scratch array) are
+    module-global, not suite-scoped -- the exit is unconditional, in the
+    combined cap's own finalize function, not gated on any suite dispatch
+    branch. Constituent-tendency scratch vars (``const_std_name`` set) are
+    Fortran pointer slices into ``lc_const_tend`` -- already covered via
+    ``framework_var_residency["lc_const_tend"]`` -- so only generic scratch
+    vars need their own entry here.
+    """
+    resident: dict = {
+        name: 3 for name, needed in framework_var_residency.items() if needed
+    }
+    for lc_name, rank, _alloc_dims, cst_std, needs_gpu in scratch_var_list:
+        if needs_gpu and not cst_std:
+            resident[lc_name] = rank
+
+    if not resident:
+        return
+
+    for fn in all_definitions:
+        if not isa(fn, func.FuncOp) or fn.sym_name.data != finalize_fn_name:
+            continue
+        if not fn.body.blocks:
+            continue
+        block = fn.body.blocks[0]
+        ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
+        if ret_op is None:
+            continue
+        for var_name in sorted(resident):
+            var_type = TypeConversions.convert("real", "kind_phys", resident[var_name])
+            ref_op = HostVarRefOp(var_name, "", var_type)
+            Rewriter.insert_op(ref_op, InsertPoint.before(ret_op))
+            Rewriter.insert_op(
+                AccExitDataOp(delete=[ref_op.res]), InsertPoint.before(ret_op)
+            )
+        break
 
 
 @dataclass(frozen=True)
@@ -529,7 +621,7 @@ class CCPPCAP(ModulePass):
         # a DDT instance used in the run function may also appear in lifecycle functions).
         shared_seen_host_globals: set = set()
 
-        cap_var_map, host_var_map_lc, scratch_var_list = _build_cap_var_map(
+        cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency = _build_cap_var_map(
             meta_data, suite_descriptions, public_fns
         )
 
@@ -747,7 +839,8 @@ class CCPPCAP(ModulePass):
         dyn_names, fixed_adv = _collect_constituent_info(meta_data)
         if dyn_names or fixed_adv or scratch_var_list:
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
-                camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list
+                camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,
+                framework_var_residency=framework_var_residency,
             )
             for var_op in const_var_ops:
                 _key = (var_op.var_name.data, "_cap_module_var")
@@ -761,6 +854,11 @@ class CCPPCAP(ModulePass):
                     shared_seen_host_globals.add(_key)
                     all_globals.append(stub)
             all_definitions.append(const_api_op)
+
+        _inject_capscratch_gpu_exit(
+            all_definitions, camel_name + "_ccpp_physics_finalize",
+            framework_var_residency, scratch_var_list,
+        )
 
         # Emit USE-association stubs for DDT types used in any scheme across all suites.
         if ddt_source_module:
