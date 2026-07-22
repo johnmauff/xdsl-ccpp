@@ -289,20 +289,33 @@ class TestPerTimestepHoisting:
             body = _fn_body(fortran, fn_name)
             assert _no_data_directive_line_mentions(body, "single_phase")
 
-    def test_present_clause_var_excluded_from_hoisting(self, run_host_match, ccpp_context):
-        """always_present spans _init and _run (two phases) but is a
-        present-clause variable (scheme=device + model=device) -- it must
-        stay plain present() at both, with NO enter/exit-data, since CCPP
-        doesn't own its residency (the host model does)."""
+    def test_present_clause_var_excluded_from_clause_hoisting(self, run_host_match, ccpp_context):
+        """always_present spans _init and _run (two phases) and is a
+        present-clause variable (scheme=device + model=device) -- its
+        *clause* stays plain present() at both phases, unchanged, since
+        present()/update self/device are pure assertions/syncs that never
+        allocate anything, and clause routing still doesn't hoist present()
+        itself (see _wrap_scheme_call).
+
+        It *does* now get residency established separately (see
+        _analyze_one_suite_residency/_wrap_residency_directives): whole-sim
+        scope (spans initialize, a one-time phase), entry=initialize,
+        exit=finalize, nothing at the run passthrough -- this is the fix for
+        the reported "PRESENT clause was not found on device" runtime error,
+        deliberately independent of and additional to the present() clause
+        checked below.
+        """
         fortran = _group_a_fortran(run_host_match, ccpp_context)
         init_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_initialize")
         run_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_finalize")
 
         assert "present(always_present" in init_fn
         assert "present(always_present" in run_fn
-        for fn_name in ("HoistSuiteA_ccpp_physics_initialize", "HoistSuiteA_ccpp_physics_run"):
-            body = _fn_body(fortran, fn_name)
-            assert _no_data_directive_line_mentions(body, "always_present")
+
+        assert "enter data copyin(always_present" in init_fn
+        assert _no_data_directive_line_mentions(run_fn, "always_present")
+        assert "exit data copyout(always_present" in finalize_fn
 
 
 # ── Group B: whole-simulation scope edge cases ────────────────────────────────
@@ -686,8 +699,12 @@ class TestUpdateClauseHoisting:
         # -- the variable is still a plain call argument there (the CPU-only
         # scheme genuinely needs it), just with no ACC directive.
         assert _no_acc_directive_line_mentions(run_fn, "three_phase_upd")
-        assert "enter data" not in initial_fn
-        assert "exit data" not in final_fn
+        # Residency establishment (separate from the update self/device sync
+        # above -- neither of those allocate anything) hoists the same
+        # entry/exit anchors: enter data copyin at timestep_initial, exit
+        # data copyout at timestep_final, in addition to the update pair.
+        assert "enter data copyin(three_phase_upd" in initial_fn
+        assert "exit data copyout(three_phase_upd" in final_fn
 
     def test_init_run_only_update_var_syncs_device_at_finalize_via_synthesized_ref(
         self, run_host_match, ccpp_context

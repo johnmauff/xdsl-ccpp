@@ -187,17 +187,33 @@ class TestGPUCcppCapLifecycleCoverage:
         final_fn = final_fn.split("end subroutine TestGpu_ccpp_physics_timestep_final")[0]
         assert "copyin(hosted2" in final_fn
 
-    def test_finalize_and_register_are_untouched_noops(self, run_host_match, ccpp_context):
-        """Lifecycle entry points with no device-resident args must not gain
-        a spurious !$acc data region."""
+    def test_register_is_untouched_noop(self, run_host_match, ccpp_context):
+        """No var in this fixture is referenced at the register phase (the
+        earliest 'hosted' is used is 'initialize'), so register must not
+        gain a spurious !$acc data region -- not even from residency
+        establishment, whose entry anchor for 'hosted' is 'initialize'."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        for fn_name in (
-            "TestGpu_ccpp_physics_register",
-            "TestGpu_ccpp_physics_finalize",
-        ):
-            body = fortran.split(f"subroutine {fn_name}")[1]
-            body = body.split(f"end subroutine {fn_name}")[0]
-            assert "!$acc" not in body, f"unexpected acc directive in {fn_name}"
+        body = fortran.split("subroutine TestGpu_ccpp_physics_register")[1]
+        body = body.split("end subroutine TestGpu_ccpp_physics_register")[0]
+        assert "!$acc" not in body
+
+    def test_finalize_gets_synthesized_residency_exit_for_wholesim_var(
+        self, run_host_match, ccpp_context
+    ):
+        """'hosted' (device+device, first used at 'initialize' -- a one-time
+        phase) gets whole-simulation-scope residency established
+        (_analyze_one_suite_residency): exit is always finalize, via a
+        synthesized HostVarRefOp since finalize's own schemes never
+        reference 'hosted' at all -- same mechanism already used for
+        copy-family/update vars' whole-sim exit anchor. This is new,
+        correct behavior (the fix for the reported "PRESENT clause was not
+        found on device" runtime error), not a regression: finalize
+        previously had no clause-routing reason to be touched, but it was
+        never claimed to have no *residency* reason either."""
+        fortran = _fortran_output(run_host_match, ccpp_context)
+        body = fortran.split("subroutine TestGpu_ccpp_physics_finalize")[1]
+        body = body.split("end subroutine TestGpu_ccpp_physics_finalize")[0]
+        assert "exit data copyout(hosted" in body
 
     def test_timestep_initial_has_no_ccpp_cap_directive_for_hostless_var(
         self, run_host_match, ccpp_context
@@ -439,18 +455,45 @@ class TestGPUDivergedClauseRouting:
         assert "update self(qv_a" in suite_fn
         assert "update device(qv_a" in suite_fn
 
-    def test_no_directive_at_ccpp_cap_level(self, run_host_match, ccpp_context):
-        """GPUCcppCapPass must not touch this var at all -- it has no
-        VarLifetime entry once excluded as diverged, so the ccpp_cap-level
-        run dispatcher should have zero !$acc directives for this suite."""
+    def test_no_clause_directive_at_ccpp_cap_level(self, run_host_match, ccpp_context):
+        """GPUCcppCapPass must not do per-call *clause routing* for this var
+        -- it has no VarLifetime entry once excluded as diverged, so
+        present()/update self/device are still entirely GPUDataPass's job
+        (see test_present_scheme_gets_present_clause/
+        test_update_scheme_gets_update_clauses above, both scoped to
+        test_conflict_suite_suite_physics -- the suite_cap level).
+
+        It *does* now get residency established at the ccpp_cap level
+        (_analyze_one_suite_residency doesn't care about divergence, only
+        whether model_var_memory_space=="device") -- see
+        test_ccpp_cap_level_gets_residency_copy_region below. The two are
+        deliberately independent."""
         fortran = _diverged_fortran_output(
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
             run_host_match, ccpp_context,
         )
         run_fn = fortran.split("subroutine TestConflict_ccpp_physics_run")
-        if len(run_fn) > 1:
-            body = run_fn[1].split("end subroutine TestConflict_ccpp_physics_run")[0]
-            assert "!$acc" not in body
+        assert len(run_fn) > 1
+        body = run_fn[1].split("end subroutine TestConflict_ccpp_physics_run")[0]
+        assert "present(" not in body
+        assert "update self(" not in body
+        assert "update device(" not in body
+
+    def test_ccpp_cap_level_gets_residency_copy_region(self, run_host_match, ccpp_context):
+        """conflict_var is used only at the 'run' phase (degenerate, single-
+        phase) in both schemes -- residency establishment wraps the whole
+        suite-part dispatch call in a plain per-call copy() region at the
+        ccpp_cap level, exactly like copy-family's own degenerate treatment,
+        independent of the diverged present/update clause routing that still
+        happens one level down in GPUDataPass."""
+        fortran = _diverged_fortran_output(
+            [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
+            run_host_match, ccpp_context,
+        )
+        run_fn = fortran.split("subroutine TestConflict_ccpp_physics_run")[1]
+        run_fn = run_fn.split("end subroutine TestConflict_ccpp_physics_run")[0]
+        assert "!$acc data copy(conflict_var" in run_fn
+        assert "!$acc end data" in run_fn
 
     def test_consecutive_update_calls_coalesce_into_one_pair(self, run_host_match, ccpp_context):
         """scheme_b and scheme_c both want update, back-to-back after

@@ -392,6 +392,88 @@ class GPUCcppCapPass(ModulePass):
             return "passthrough"
         return "unused"
 
+    # ---- Analysis: per-suite residency establishment (HostMatched present/ --
+    # ---- update residency, distinct from clause routing above) --------------
+
+    def _analyze_one_suite_residency(self, scheme_names, meta_data):
+        """Return {host_var: VarLifetime} for every host var this suite
+        references with model_var_memory_space == "device" -- regardless of
+        the *scheme's* own memory_space (i.e. regardless of whether the var
+        resolves to present, update, or is diverged between the two in
+        _analyze_one_suite above). Establishing device residency is a
+        genuinely separate concern from clause routing: none of
+        present()/update self/update device *allocate* anything (see this
+        pass's class docstring), so whenever the host declares a var
+        device-resident, CCPP needs to establish that residency itself
+        (OpenACC's enter/exit-data are reference-counted, so this is safe
+        even if a larger host model also manages the same var
+        independently -- see ccpp_cap_refactor_plan.md's backlog entry).
+
+        No divergence check needed here (unlike present_vars/update_vars):
+        residency is a plain "does anything need this on the device" union
+        across every contributing scheme, not a per-scheme clause choice
+        that could conflict.
+
+        Every returned VarLifetime is resolved via the same whole-sim/per-
+        timestep anchor rules _resolve_lifetime already applies to copy-
+        family vars -- including its degenerate (single-phase) case, which
+        does NOT mean "no residency needed" here: _wrap_residency_directives
+        treats a degenerate var exactly like copy-family's own "legacy_copy"
+        vars, wrapping the one phase's call in a plain per-call copy()
+        region every invocation (see this pass's docstring/plan history for
+        why: a var used only at `_run` still needs residency established on
+        every call, since register/initialize don't reference it at all).
+        """
+        phases_used: dict = {}  # host_var -> set[phase]
+        for scheme_name in scheme_names:
+            props = meta_data.get(scheme_name)
+            if props is None:
+                continue
+            for table_name, table in props.arg_tables.items():
+                split = split_scheme_table_name(table_name)
+                if split is None:
+                    continue
+                _, phase = split
+                for arg in table.getFunctionArguments():
+                    if not arg.hasAttr("model_var_name"):
+                        continue
+                    model_space = (
+                        arg.getAttr("model_var_memory_space")
+                        if arg.hasAttr("model_var_memory_space")
+                        else "host"
+                    )
+                    if model_space != "device":
+                        continue
+                    host_var = arg.getAttr("model_var_name")
+                    phases_used.setdefault(host_var, set()).add(phase)
+
+        return {
+            host_var: self._resolve_lifetime("residency", used)
+            for host_var, used in phases_used.items()
+        }
+
+    def _analyze_suite_residency_lifetimes(self, ccpp_mod):
+        """Return {suite_name: {host_var_name: VarLifetime}} for residency
+        establishment -- mirrors _analyze_suite_var_lifetimes's per-suite
+        scoping exactly (own BuildMetaDataDescriptions/BuildSchemeDescription
+        traversal; the minor duplication is deliberate, lower risk than
+        threading this through the existing, working method).
+        """
+        bmdd = BuildMetaDataDescriptions()
+        bmdd.traverse(ccpp_mod)
+        bsd = BuildSchemeDescription()
+        bsd.traverse(ccpp_mod)
+
+        result = {}
+        for suite_name, suite_desc in bsd.schemes.items():
+            scheme_names = {
+                scheme.attributes["name"]
+                for group in suite_desc
+                for scheme in _iter_schemes(group)
+            }
+            result[suite_name] = self._analyze_one_suite_residency(scheme_names, bmdd.meta_data)
+        return result
+
     # ---- Discovery: find every per-suite dispatch call site -----------------
 
     def _suite_name_of(self, if_op):
@@ -768,13 +850,105 @@ class GPUCcppCapPass(ModulePass):
                     InsertPoint.after(suite_call),
                 )
 
+    def _wrap_residency_directives(self, true_block, suite_call, residency_lifetimes, phase, donor_refs):
+        """Establish/tear down device residency for HostMatched vars that
+        need it (see _analyze_one_suite_residency), independently of and in
+        addition to whatever _wrap_scheme_call already did for the same call
+        site. Deliberately a separate, parallel pass rather than integrated
+        into _wrap_scheme_call: lower risk than modifying that already-
+        intricate method, at the cost of a var needing both residency and a
+        present()/update assertion getting two adjacent directives at one
+        call site instead of one merged one -- a real but minor verbosity/
+        redundancy tradeoff, not a correctness one.
+
+        Only ever produces copyin/copyout (never create/delete/present/
+        update) -- residency establishment doesn't have a "kind", every var
+        here just needs the host's current value copied to the device once
+        (entry) and copied back once (exit), reusing _role_at's generic
+        hoisted/entry_phase/exit_phase classification unchanged:
+
+          "enter"/"exit"  -> hoisted: AccEnterDataOp(copyin=...)/
+                              AccExitDataOp(copyout=...) at the computed
+                              anchors (OMP: OmpTargetEnterDataOp(to=...)/
+                              OmpTargetExitDataOp(from_=...)).
+          "legacy"/"unused" -> degenerate (single-phase): a plain structured
+                              copy() region wrapping this one call, every
+                              invocation (OMP: OmpTargetDataBeginOp(tofrom=...)/
+                              OmpTargetDataEndOp()) -- NOT a no-op; see
+                              _analyze_one_suite_residency's docstring for
+                              why a var used only at `_run` still needs this.
+          "passthrough"    -> nothing: the existing present()/update-self-
+                              device logic (_wrap_scheme_call, unaffected by
+                              this method) already handles per-call
+                              correctness at phases strictly between entry
+                              and exit.
+        """
+        if not residency_lifetimes:
+            return
+
+        enter_vars, exit_vars, legacy_vars = [], [], []
+
+        seen_here = set()
+        for ref_op in true_block.ops:
+            if not isa(ref_op, HostVarRefOp):
+                continue
+            var_name = ref_op.var_name.data
+            lt = residency_lifetimes.get(var_name)
+            if lt is None:
+                continue
+            seen_here.add(var_name)
+            role = self._role_at(lt, phase)
+            if role in ("legacy", "unused"):
+                legacy_vars.append(var_name)
+            elif role == "enter":
+                enter_vars.append(var_name)
+            elif role == "exit":
+                exit_vars.append(var_name)
+            # "passthrough": nothing to do.
+
+        for var_name, lt in residency_lifetimes.items():
+            if not lt.hoisted or var_name in seen_here:
+                continue
+            if phase == lt.entry_phase:
+                if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
+                    enter_vars.append(var_name)
+            elif phase == lt.exit_phase:
+                if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
+                    exit_vars.append(var_name)
+
+        if legacy_vars:
+            legacy_refs = self._resolve_array_refs(true_block, set(legacy_vars), use_sections=True)
+            if self.directive == "omp":
+                data_begin_op = OmpTargetDataBeginOp(tofrom=legacy_refs)
+                data_end_op = OmpTargetDataEndOp()
+            else:
+                data_begin_op = AccDataBeginOp(copy=legacy_refs)
+                data_end_op = AccDataEndOp()
+            Rewriter.insert_op(data_begin_op, InsertPoint.before(suite_call))
+            Rewriter.insert_op(data_end_op, InsertPoint.after(suite_call))
+
+        if enter_vars:
+            enter_refs = self._resolve_array_refs(true_block, set(enter_vars), use_sections=False)
+            if self.directive == "omp":
+                Rewriter.insert_op(OmpTargetEnterDataOp(to=enter_refs), InsertPoint.before(suite_call))
+            else:
+                Rewriter.insert_op(AccEnterDataOp(copyin=enter_refs), InsertPoint.before(suite_call))
+
+        if exit_vars:
+            exit_refs = self._resolve_array_refs(true_block, set(exit_vars), use_sections=False)
+            if self.directive == "omp":
+                Rewriter.insert_op(OmpTargetExitDataOp(from_=exit_refs), InsertPoint.after(suite_call))
+            else:
+                Rewriter.insert_op(AccExitDataOp(copyout=exit_refs), InsertPoint.after(suite_call))
+
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         if ccpp_mod is None:
             return
 
         suite_lifetimes = self._analyze_suite_var_lifetimes(ccpp_mod)
-        if not any(suite_lifetimes.values()):
+        suite_residency_lifetimes = self._analyze_suite_residency_lifetimes(ccpp_mod)
+        if not any(suite_lifetimes.values()) and not any(suite_residency_lifetimes.values()):
             return
 
         donor_refs = self._collect_donor_host_var_refs(op)
@@ -804,6 +978,10 @@ class GPUCcppCapPass(ModulePass):
 
         for suite_name, phase, true_block, suite_call in call_sites:
             lifetimes = suite_lifetimes.get(suite_name)
-            if not lifetimes:
-                continue
-            self._wrap_scheme_call(true_block, suite_call, lifetimes, phase, donor_refs)
+            if lifetimes:
+                self._wrap_scheme_call(true_block, suite_call, lifetimes, phase, donor_refs)
+            residency_lifetimes = suite_residency_lifetimes.get(suite_name)
+            if residency_lifetimes:
+                self._wrap_residency_directives(
+                    true_block, suite_call, residency_lifetimes, phase, donor_refs
+                )
