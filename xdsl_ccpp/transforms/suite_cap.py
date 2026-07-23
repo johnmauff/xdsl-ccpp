@@ -2,7 +2,15 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
-from xdsl.dialects.builtin import ArrayAttr, DictionaryAttr, IntegerAttr, MemRefType, StringAttr, i32, i8
+from xdsl.dialects.builtin import (
+    ArrayAttr,
+    DictionaryAttr,
+    IntegerAttr,
+    MemRefType,
+    StringAttr,
+    i8,
+    i32,
+)
 from xdsl.ir import Block, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
@@ -17,15 +25,15 @@ from xdsl.rewriter import Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
-from xdsl_ccpp.dialects.ccpp import CcppHandleOp
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, CcppHandleOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     ClearStringOp,
+    KeywordCallOp,
     KindCastOp,
     KindWriteBackOp,
-    ModuleVarOp,
-    KeywordCallOp,
     LazyAllocOp,
+    ModuleVarOp,
     PresentCheckOp,
     PromotionLoopOp,
     RankReducingSliceOp,
@@ -34,8 +42,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     UnitConvertOp,
     UnitWriteBackOp,
 )
-from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
+    LIFECYCLE_POSTFIX_ALIASES,
     _collect_ddt_use_stubs,
     _iter_schemes,
 )
@@ -52,11 +60,11 @@ from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
+    CCPP_HORIZ_DIM_STD_NAME,
     CCPP_KIND_PHYS,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
-    CCPP_HORIZ_DIM_STD_NAME,
     CCPP_NUM_INSTANCES,
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
@@ -898,10 +906,6 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def _build_arg_tables(self, suite_description, tgt_subroutine_postfix) -> "_ArgTableResult":
         """Build argument tables, overrides, and canonical arg map for all schemes."""
-        _POSTFIX_ALIASES: dict[str, str] = {
-            "_timestep_initialize": "_timestep_init",
-            "_timestep_finalize": "_timestep_final",
-        }
         scheme_entries = self.getSchemeNames(suite_description)
         arg_tables = {}
         scheme_overrides: dict[str, dict[str, str]] = {}
@@ -910,8 +914,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         suite_use_stubs: list = []
         if tgt_subroutine_postfix is not None:
             _postfix_candidates = [tgt_subroutine_postfix]
-            if tgt_subroutine_postfix in _POSTFIX_ALIASES:
-                _postfix_candidates.append(_POSTFIX_ALIASES[tgt_subroutine_postfix])
+            if tgt_subroutine_postfix in LIFECYCLE_POSTFIX_ALIASES:
+                _postfix_candidates.append(LIFECYCLE_POSTFIX_ALIASES[tgt_subroutine_postfix])
             for scheme_name, overrides in scheme_entries:
                 for _candidate in _postfix_candidates:
                     table = self.getArgumentTable(
@@ -1577,7 +1581,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         """Clone collected scheme function signatures, annotating each with its module name."""
         sub_to_module: dict[str, str] = {}
         for scheme_name, _ in scheme_entries:
-            for postfix in ("_run", "_init", "_finalize", "_register",
+            for postfix in ("_run", "_init", "_finalize", "_final", "_register",
                             "_timestep_initialize", "_timestep_finalize",
                             "_timestep_init", "_timestep_final"):
                 sub_to_module[scheme_name + postfix] = scheme_name

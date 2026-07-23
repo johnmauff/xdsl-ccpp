@@ -16,6 +16,14 @@ ccpp_cap.py/run_dispatch.py's identical type-rank expression respectively.
 _assert_call_arg_count_matches_signature consolidates lifecycle_cap.py's and
 run_dispatch.py's identical "Signature mismatch" check-and-raise, whose
 wording had already started to diverge between the two copies.
+
+split_scheme_table_name's _PHASE_SUFFIXES previously had no bare '_final'
+entry (only '_finalize'/'_timestep_final'/'_timestep_finalize'), so a scheme
+following the atmospheric_physics/kessler_update bare-form convention (e.g.
+examples/advection's cld_ice_final) was silently never recognized as a
+finalize table by any of its three consumers (lifecycle_cap.py's dispatch,
+suite_cap.py's arg-table lookup, and the GPU passes' phase classification) --
+not an error, just a table that never matched and so was never called.
 """
 
 import pytest
@@ -23,11 +31,13 @@ from xdsl.dialects import memref, scf
 
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
 from xdsl_ccpp.transforms.util.cap_shared import (
+    LIFECYCLE_POSTFIX_ALIASES,
     _assert_call_arg_count_matches_signature,
     _build_no_suite_matched_false_ops,
     _collect_ddt_use_stubs,
     _iter_schemes,
     _rank_of,
+    split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
@@ -251,3 +261,30 @@ class TestAssertCallArgCountMatchesSignature:
         assert "generated 1 input arg(s) but callee expects 2" in msg
         assert "Callee inputs:" in msg
         assert "Generated args:" in msg
+
+
+class TestSplitSchemeTableNameFinalAlias:
+    """split_scheme_table_name: a scheme's finalize table can be named either
+    the canonical '<scheme>_finalize' or the atmospheric_physics/
+    kessler_update bare-form '<scheme>_final' -- both must resolve to the
+    same ('<scheme>', 'finalize') phase, matching the '_init'/'_timestep_init'
+    /'_timestep_final' short-form aliases this function already accepted."""
+
+    def test_bare_final_suffix_resolves_to_finalize_phase(self):
+        assert split_scheme_table_name("cld_ice_final") == ("cld_ice", "finalize")
+
+    def test_canonical_finalize_suffix_still_resolves(self):
+        assert split_scheme_table_name("cld_ice_finalize") == ("cld_ice", "finalize")
+
+    def test_timestep_final_not_shadowed_by_bare_final(self):
+        assert split_scheme_table_name("kessler_update_timestep_final") == (
+            "kessler_update", "timestep_final",
+        )
+
+    def test_timestep_finalize_not_shadowed_by_bare_final(self):
+        assert split_scheme_table_name("kessler_update_timestep_finalize") == (
+            "kessler_update", "timestep_final",
+        )
+
+    def test_lifecycle_postfix_aliases_maps_finalize_to_final(self):
+        assert LIFECYCLE_POSTFIX_ALIASES["_finalize"] == "_final"

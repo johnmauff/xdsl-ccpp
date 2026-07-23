@@ -25,15 +25,16 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
+    LIFECYCLE_POSTFIX_ALIASES,
     _assert_call_arg_count_matches_signature,
     _bare,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERRMSG_LEN,
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
-    CCPP_ERRMSG_LEN,
 )
 
 
@@ -144,14 +145,11 @@ def _generate_lifecycle_fn(
         # Build {bare_arg_name → standard_name} from the scheme entry-point tables
         std_name_of: dict = {}
         if entry_postfix is not None:
-            # atmospheric_physics uses _timestep_init/_timestep_final; accept both.
-            _lc_postfix_aliases: dict[str, str] = {
-                "_timestep_initialize": "_timestep_init",
-                "_timestep_finalize": "_timestep_final",
-            }
+            # atmospheric_physics uses _timestep_init/_timestep_final/_final;
+            # accept all of LIFECYCLE_POSTFIX_ALIASES' short forms too.
             _lc_candidates = [entry_postfix]
-            if entry_postfix in _lc_postfix_aliases:
-                _lc_candidates.append(_lc_postfix_aliases[entry_postfix])
+            if entry_postfix in LIFECYCLE_POSTFIX_ALIASES:
+                _lc_candidates.append(LIFECYCLE_POSTFIX_ALIASES[entry_postfix])
             for scheme_name in scheme_names:
                 if scheme_name not in meta_data:
                     continue
