@@ -288,6 +288,154 @@ def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     return result
 
 
+def _build_ddt_resolution_maps(meta_data) -> "tuple[dict, dict]":
+    """Build (ddt_instance_map, ddt_parent_map) from host/module/DDT metadata.
+
+    ddt_instance_map: DDT type/table name -> (instance_var_name, table_name)
+        for the module-level variable of that DDT type (e.g.
+        "physics_state" -> ("phys_state", "physics_module")).
+    ddt_parent_map: DDT type/table name -> [(member_var_name, parent_ddt_type), ...]
+        for nested DDTs (a DDT type that is itself a member of another DDT).
+
+    Pure read of meta_data -- no IR ops created, no side effects. Shared by
+    run_dispatch.py (resolving a DDT member's actual Fortran instance
+    variable when building its HostVarRefOp) and gpu_ccpp_cap_pass.py
+    (resolving the same instance variable so its lifetime-tracking dicts key
+    on the same identity a HostVarRefOp actually carries -- see
+    _resolve_host_var_key below).
+    """
+    ddt_type_names = {
+        tbl_name
+        for tbl_name, props in meta_data.items()
+        if props.getAttr("type") == CCPPType.DDT
+    }
+    ddt_instance_map: dict = {}
+    for tbl_name, props in meta_data.items():
+        if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if var.hasAttr("type"):
+                var_type = var.getAttr("type")
+                if var_type in ddt_type_names:
+                    ddt_instance_map[var_type] = (var.name, tbl_name)
+
+    ddt_parent_map: dict = {}
+    for tbl_name, props in meta_data.items():
+        if props.getAttr("type") != CCPPType.DDT:
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if var.hasAttr("type"):
+                child_type = var.getAttr("type")
+                if child_type in ddt_type_names:
+                    ddt_parent_map.setdefault(child_type, []).append(
+                        (var.name, tbl_name)
+                    )
+
+    return ddt_instance_map, ddt_parent_map
+
+
+def _resolve_ddt_access_path(
+    ddt_type_name: str,
+    ddt_instance_map: dict,
+    ddt_parent_map: dict,
+    _depth: int = 0,
+) -> "tuple[str, str, str] | None":
+    """Resolve a DDT type name to (instance_var, instance_module, path_prefix).
+
+    For a type that has a direct module-level instance, path_prefix is "".
+    For a nested DDT — e.g. type B is a member of type A, and A has a
+    module-level instance — path_prefix is "b_member%" so the full Fortran
+    accessor becomes ``instance_var%path_prefix%leaf_member``
+    (e.g. ``phys_state%rad%temperature``).
+
+    Returns None when no reachable module-level instance exists.
+    The depth limit guards against circular DDT type definitions.
+    """
+    if _depth > 8:
+        return None
+    if ddt_type_name in ddt_instance_map:
+        instance_var, instance_module = ddt_instance_map[ddt_type_name]
+        return instance_var, instance_module, ""
+    for member_var_name, parent_ddt_type in ddt_parent_map.get(ddt_type_name, []):
+        result = _resolve_ddt_access_path(
+            parent_ddt_type, ddt_instance_map, ddt_parent_map, _depth + 1
+        )
+        if result is not None:
+            instance_var, instance_module, parent_prefix = result
+            return instance_var, instance_module, parent_prefix + member_var_name + "%"
+    return None
+
+
+def _resolve_member_subscripts(member_name: str, host_var_map: dict) -> tuple:
+    """Resolve standard_name tokens in a DDT member subscript to local var names.
+
+    For 'q(:,:,index_of_water_vapor_specific_humidity)' with a host_var_map that
+    maps the standard_name to ('index_qv', 'test_host_mod'), returns
+    ('q(:,:,index_qv)', [('index_qv', 'test_host_mod')]).
+
+    Bare colons and integer literals are passed through unchanged.
+    """
+    paren = member_name.find("(")
+    if paren < 0:
+        return member_name, []
+    base = member_name[:paren]
+    subscript = member_name[paren + 1: member_name.rfind(")")]
+    resolved_tokens = []
+    sub_vars = []
+    for token in subscript.split(","):
+        t = token.strip()
+        if t == ":" or t.isdigit():
+            resolved_tokens.append(t)
+        else:
+            t_lower = t.lower()
+            if t_lower in host_var_map:
+                local_name, module_name = host_var_map[t_lower]
+                resolved_tokens.append(local_name)
+                sub_vars.append((local_name, module_name))
+            else:
+                resolved_tokens.append(t)
+    return f"{base}({', '.join(resolved_tokens)})", sub_vars
+
+
+def _resolve_host_var_key(arg, ddt_instance_map: dict, ddt_parent_map: dict, host_var_map: dict) -> str:
+    """Identity key for a host-matched ArgumentOp, matching exactly what the
+    real HostVarRefOp built for the same host var carries.
+
+    For a plain host var, this is just its bare model_var_name, unchanged.
+    For a DDT member (model_var_is_ddt set), model_module_name is the DDT
+    TYPE table's name, not the actual Fortran instance variable -- this
+    resolves that type name to its module-level instance (following nested
+    DDTs via _resolve_ddt_access_path) and any array-section subscript
+    tokens (via _resolve_member_subscripts), returning
+    "{instance_var}%{resolved_member}" -- exactly what run_dispatch.py's own
+    HostVarRefOp construction produces (var_name=instance_var,
+    member_name=resolved_member) and what print_ftn.py prints
+    (var_name%member_name). Any code that needs to recognize "is this
+    HostVarRefOp the same host var as this metadata arg" must compare
+    against this key, not the bare model_var_name -- see
+    gpu_ccpp_cap_pass.py's _ref_key, its IR-side counterpart.
+
+    Falls back to the bare model_var_name if no module-level instance is
+    reachable (matches run_dispatch.py's own soft-fail behavior for this
+    case -- should not happen for an arg host_var_match_pass already
+    accepted as DDT-matched).
+    """
+    host_var = arg.getAttr("model_var_name")
+    if not arg.hasAttr("model_var_is_ddt"):
+        return host_var
+    ddt_type_name = arg.getAttr("model_module_name")
+    result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
+    if result is None:
+        return host_var
+    instance_var, _instance_module, path_prefix = result
+    resolved_member, _sub_vars = _resolve_member_subscripts(path_prefix + host_var, host_var_map)
+    return f"{instance_var}%{resolved_member}"
+
+
 def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
     """Return [(mlir_type, arg_name, standard_name)] for intent=out scalar args.
 

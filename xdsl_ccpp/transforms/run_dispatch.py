@@ -44,11 +44,14 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     _assert_call_arg_count_matches_signature,
     _bare,
+    _build_ddt_resolution_maps,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
     _collect_host_block_std_names,
     _get_suite_lifecycle_ret_info,
     _rank_of,
+    _resolve_ddt_access_path,
+    _resolve_member_subscripts,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
@@ -64,38 +67,6 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
 )
-
-
-def _resolve_ddt_access_path(
-    ddt_type_name: str,
-    ddt_instance_map: dict,
-    ddt_parent_map: dict,
-    _depth: int = 0,
-) -> "tuple[str, str, str] | None":
-    """Resolve a DDT type name to (instance_var, instance_module, path_prefix).
-
-    For a type that has a direct module-level instance, path_prefix is "".
-    For a nested DDT — e.g. type B is a member of type A, and A has a
-    module-level instance — path_prefix is "b_member%" so the full Fortran
-    accessor becomes ``instance_var%path_prefix%leaf_member``
-    (e.g. ``phys_state%rad%temperature``).
-
-    Returns None when no reachable module-level instance exists.
-    The depth limit guards against circular DDT type definitions.
-    """
-    if _depth > 8:
-        return None
-    if ddt_type_name in ddt_instance_map:
-        instance_var, instance_module = ddt_instance_map[ddt_type_name]
-        return instance_var, instance_module, ""
-    for member_var_name, parent_ddt_type in ddt_parent_map.get(ddt_type_name, []):
-        result = _resolve_ddt_access_path(
-            parent_ddt_type, ddt_instance_map, ddt_parent_map, _depth + 1
-        )
-        if result is not None:
-            instance_var, instance_module, parent_prefix = result
-            return instance_var, instance_module, parent_prefix + member_var_name + "%"
-    return None
 
 
 @dataclass
@@ -163,31 +134,7 @@ def _build_run_metadata_maps(meta_data) -> "_RunMetadataMaps":
         for tbl_name, props in meta_data.items()
         if props.getAttr("type") == CCPPType.DDT
     }
-    ddt_instance_map: dict = {}
-    for tbl_name, props in meta_data.items():
-        if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
-            continue
-        if tbl_name not in props.arg_tables:
-            continue
-        for var in props.getArgTable(tbl_name).getFunctionArguments():
-            if var.hasAttr("type"):
-                var_type = var.getAttr("type")
-                if var_type in ddt_type_names:
-                    ddt_instance_map[var_type] = (var.name, tbl_name)
-
-    ddt_parent_map: dict = {}
-    for tbl_name, props in meta_data.items():
-        if props.getAttr("type") != CCPPType.DDT:
-            continue
-        if tbl_name not in props.arg_tables:
-            continue
-        for var in props.getArgTable(tbl_name).getFunctionArguments():
-            if var.hasAttr("type"):
-                child_type = var.getAttr("type")
-                if child_type in ddt_type_names:
-                    ddt_parent_map.setdefault(child_type, []).append(
-                        (var.name, tbl_name)
-                    )
+    ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data)
 
     return _RunMetadataMaps(
         host_var_map=host_var_map,
@@ -1265,36 +1212,6 @@ def _assemble_run_fn(
     body = Region()
     body.add_block(sig.new_block)
     return func.FuncOp(fn_name, fn_type, body, visibility="public")
-
-def _resolve_member_subscripts(member_name: str, host_var_map: dict) -> tuple:
-    """Resolve standard_name tokens in a DDT member subscript to local var names.
-
-    For 'q(:,:,index_of_water_vapor_specific_humidity)' with a host_var_map that
-    maps the standard_name to ('index_qv', 'test_host_mod'), returns
-    ('q(:,:,index_qv)', [('index_qv', 'test_host_mod')]).
-
-    Bare colons and integer literals are passed through unchanged.
-    """
-    paren = member_name.find("(")
-    if paren < 0:
-        return member_name, []
-    base = member_name[:paren]
-    subscript = member_name[paren + 1: member_name.rfind(")")]
-    resolved_tokens = []
-    sub_vars = []
-    for token in subscript.split(","):
-        t = token.strip()
-        if t == ":" or t.isdigit():
-            resolved_tokens.append(t)
-        else:
-            t_lower = t.lower()
-            if t_lower in host_var_map:
-                local_name, module_name = host_var_map[t_lower]
-                resolved_tokens.append(local_name)
-                sub_vars.append((local_name, module_name))
-            else:
-                resolved_tokens.append(t)
-    return f"{base}({', '.join(resolved_tokens)})", sub_vars
 
 def _generate_run_fn(
     fn_name,

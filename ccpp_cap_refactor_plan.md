@@ -788,6 +788,57 @@ starting 3b):
       in detail yet (would need `_wrap_scheme_call`/`_resolve_array_refs`/`_synthesize_ref` to
       recognize a DDT-instance-plus-member-access reference shape, presumably mirroring however
       `host_var_match_pass.py`/`suite_cap.py` already represent DDT member access elsewhere).
+    - **Fifth gap: implemented (2026-07-22).** Prompted by a direct question — since
+      `advection_flat_host` was built flat specifically to avoid this, was the DDT problem still
+      open? Confirmed empirically first (not from this note alone): running `examples/advection`
+      through the *actual* full production pipeline (its own two FileCheck fixtures happen to omit
+      `generate-host-match` from their `RUN` line, an unrelated pre-existing quirk, which is why an
+      earlier session's inspection looked like `temp`/`qv` were `CapScratch`, not `HostMatched` —
+      with `generate-host-match` included, they correctly resolve `HostMatched`, DDT and all) showed
+      `GPUCcppCapPass` established **zero** `!$acc` treatment for `phys_state%Temp`/`phys_state%q`
+      — not just missing present/update residency as originally scoped above, but missing even the
+      ordinary `copy()` region an equivalent plain host var already got. Root cause, traced in both
+      directions: `host_var_match_pass.py` annotates a DDT-member scheme arg with `model_var_name`
+      = the bare member name (e.g. `"Temp"`) and `model_module_name` = the DDT *type table's* name
+      (e.g. `"physics_state"`, not the Fortran instance variable); `run_dispatch.py` separately
+      resolves that type name to the real instance (`"phys_state"`, via `_resolve_ddt_access_path`
+      + `ddt_instance_map`/`ddt_parent_map`, plus `_resolve_member_subscripts` for array-section
+      members) when building the actual `HostVarRefOp(var_name="phys_state", member_name="Temp")`.
+      Every place in `gpu_ccpp_cap_pass.py` that scanned for a matching `HostVarRefOp`
+      (`_wrap_scheme_call`, `_resolve_array_refs`, `_wrap_residency_directives`,
+      `_collect_donor_host_var_refs`/`_synthesize_ref`) compared against `op.var_name.data` alone
+      (`"phys_state"`) — never equal to the lifetime dict's key (`"Temp"`). Classification was
+      computed correctly; directive insertion silently found nothing to attach to.
+      - Fixed by extracting `_resolve_ddt_access_path`/`_resolve_member_subscripts` from
+        `run_dispatch.py` into `cap_shared.py` (pure functions, zero coupling to
+        `run_dispatch.py`'s own internals — a clean relocation, not a duplication;
+        `run_dispatch.py` now imports them back), adding `_build_ddt_resolution_maps` and
+        `_resolve_host_var_key` there too, and using `_resolve_host_var_key`'s resolved
+        `"instance%member"` identity (matching a new `_ref_key` helper on the IR-scanning side) as
+        the dict key everywhere in `gpu_ccpp_cap_pass.py` instead of the bare `model_var_name` —
+        for a plain host var this is a no-op (same bare name), so every existing non-DDT test is
+        unaffected by construction.
+      - Deliberately did **not** touch `find_diverged_suite_vars` (`cap_shared.py`) — it's purely
+        metadata-driven, shared with `GPUDataPass` (which already handles DDT members correctly,
+        working on already-resolved `suite_cap`-level block arguments rather than scanning
+        `HostVarRefOp`s), and changing its key convention would have broken that working path. The
+        existing diverged-DDT-member regression test
+        (`test_gpu_directives.py::TestGPUDivergedClauseRoutingDDTMember`) still passes unchanged,
+        confirming this.
+      - New coverage: `tests/unit/test_ddt_member_residency.py` — present, copy-family, multi-phase
+        hoisting, and residency-establishment cases for a DDT-member host var, each verified to
+        fail without the fix (temporarily reverted, confirmed all four fail) and pass with it.
+      - Regenerating `examples/advection` with the real full pipeline (`generate-host-match`
+        included) confirms `phys_state%Temp`/`phys_state%q(...)` now get a real
+        `!$acc data copy(...)` region — the concrete backlog scenario, resolved. Deliberately did
+        not modify `examples/advection`'s own two FileCheck fixtures (they omit
+        `generate-host-match` on purpose/by long-standing accident — out of scope here) or its
+        metadata (shared example, other tests depend on its current form) — verification here is
+        read-only regeneration + grep, not a new permanent fixture.
+      - Full suite green (`pytest tests/unit -q`/`tests/filecheck -q`, same one pre-existing
+        environmental failure as every prior phase; 412 unit passed, up from 408 by exactly the 4
+        new tests), `ruff check` clean (same 16 pre-existing, unrelated findings in
+        `run_dispatch.py` as before this change — zero new findings).
     - **Future test vehicle for the above, once it's actually built (2026-07-21, not scheduled,
       not part of (b)/(c)) — a third `advection` variant with `apply_constituent_tendencies`
       GPU-enabled.** Discussed with the project owner: `CapScratch` residency is a real

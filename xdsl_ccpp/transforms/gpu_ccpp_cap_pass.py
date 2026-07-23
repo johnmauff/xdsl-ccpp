@@ -24,7 +24,10 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     StrCmpOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
+    _build_ddt_resolution_maps,
+    _build_host_var_map,
     _iter_schemes,
+    _resolve_host_var_key,
     find_diverged_suite_vars,
     split_scheme_table_name,
 )
@@ -226,6 +229,8 @@ class GPUCcppCapPass(ModulePass):
         bmdd.traverse(ccpp_mod)
         bsd = BuildSchemeDescription()
         bsd.traverse(ccpp_mod)
+        ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(bmdd.meta_data)
+        host_var_map = _build_host_var_map(bmdd.meta_data, include_host=False)
 
         result = {}
         for suite_name, suite_desc in bsd.schemes.items():
@@ -234,10 +239,12 @@ class GPUCcppCapPass(ModulePass):
                 for group in suite_desc
                 for scheme in _iter_schemes(group)
             }
-            result[suite_name] = self._analyze_one_suite(scheme_names, bmdd.meta_data)
+            result[suite_name] = self._analyze_one_suite(
+                scheme_names, bmdd.meta_data, ddt_instance_map, ddt_parent_map, host_var_map
+            )
         return result
 
-    def _analyze_one_suite(self, scheme_names, meta_data):
+    def _analyze_one_suite(self, scheme_names, meta_data, ddt_instance_map, ddt_parent_map, host_var_map):
         """Same union math _build_model_var_clause_map (this pass's
         predecessor) always used -- any read/write across every scheme
         entry point that references a host var, per host var -- restricted
@@ -255,6 +262,15 @@ class GPUCcppCapPass(ModulePass):
         declared attribute, and present/update both require model=device
         while copy-family requires model=host, so a host var can never be
         both diverged (present-vs-update) and copy-family at once.
+
+        The diverged check itself stays keyed on the bare model_var_name
+        (find_diverged_suite_vars's own convention, shared with GPUDataPass
+        -- must not change). Everything downstream of that check keys on
+        _resolve_host_var_key's resolved identity instead: for a plain host
+        var this is the same bare name, but for a DDT member it's
+        "instance_var%member_name" -- exactly what the real HostVarRefOp for
+        that arg carries (see _ref_key), so present/update/copy directives
+        can actually find their reference to attach to (backlog gap #5).
         """
         needs_in: dict = {}   # host_var -> bool
         needs_out: dict = {}  # host_var -> bool
@@ -277,7 +293,7 @@ class GPUCcppCapPass(ModulePass):
                     if not arg.hasAttr("model_var_name"):
                         continue
 
-                    host_var = arg.getAttr("model_var_name")
+                    bare_host_var = arg.getAttr("model_var_name")
                     scheme_space = (
                         arg.getAttr("memory_space")
                         if arg.hasAttr("memory_space")
@@ -289,8 +305,12 @@ class GPUCcppCapPass(ModulePass):
                         else "host"
                     )
 
-                    if host_var in diverged:
+                    if bare_host_var in diverged:
                         continue
+
+                    host_var = _resolve_host_var_key(
+                        arg, ddt_instance_map, ddt_parent_map, host_var_map
+                    )
 
                     if scheme_space == "device" and model_space == "device":
                         present_vars.add(host_var)
@@ -395,7 +415,7 @@ class GPUCcppCapPass(ModulePass):
     # ---- Analysis: per-suite residency establishment (HostMatched present/ --
     # ---- update residency, distinct from clause routing above) --------------
 
-    def _analyze_one_suite_residency(self, scheme_names, meta_data):
+    def _analyze_one_suite_residency(self, scheme_names, meta_data, ddt_instance_map, ddt_parent_map, host_var_map):
         """Return {host_var: VarLifetime} for every host var this suite
         references with model_var_memory_space == "device" -- regardless of
         the *scheme's* own memory_space (i.e. regardless of whether the var
@@ -444,7 +464,9 @@ class GPUCcppCapPass(ModulePass):
                     )
                     if model_space != "device":
                         continue
-                    host_var = arg.getAttr("model_var_name")
+                    host_var = _resolve_host_var_key(
+                        arg, ddt_instance_map, ddt_parent_map, host_var_map
+                    )
                     phases_used.setdefault(host_var, set()).add(phase)
 
         return {
@@ -463,6 +485,8 @@ class GPUCcppCapPass(ModulePass):
         bmdd.traverse(ccpp_mod)
         bsd = BuildSchemeDescription()
         bsd.traverse(ccpp_mod)
+        ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(bmdd.meta_data)
+        host_var_map = _build_host_var_map(bmdd.meta_data, include_host=False)
 
         result = {}
         for suite_name, suite_desc in bsd.schemes.items():
@@ -471,7 +495,9 @@ class GPUCcppCapPass(ModulePass):
                 for group in suite_desc
                 for scheme in _iter_schemes(group)
             }
-            result[suite_name] = self._analyze_one_suite_residency(scheme_names, bmdd.meta_data)
+            result[suite_name] = self._analyze_one_suite_residency(
+                scheme_names, bmdd.meta_data, ddt_instance_map, ddt_parent_map, host_var_map
+            )
         return result
 
     # ---- Discovery: find every per-suite dispatch call site -----------------
@@ -547,6 +573,19 @@ class GPUCcppCapPass(ModulePass):
                 continue
             yield suite_name, phase, true_block, suite_call
 
+    @staticmethod
+    def _ref_key(op) -> str:
+        """Identity key for a HostVarRefOp, matching _resolve_host_var_key's
+        metadata-side key exactly: the bare var_name unchanged for a plain
+        host var, or "var_name%member_name" when the op's member_name
+        attribute is set (a DDT member) -- exactly what print_ftn.py prints
+        as the Fortran reference. Every scan below that matches a
+        HostVarRefOp against a lifetime/residency-lifetime/donor dict must
+        use this, not op.var_name.data alone, or DDT members silently never
+        match (backlog gap #5)."""
+        member = op.attributes.get("member_name")
+        return f"{op.var_name.data}%{member.data}" if member is not None else op.var_name.data
+
     def _resolve_array_refs(self, true_block, var_names, use_sections=True):
         """For each variable name in var_names, return the best SSA value to
         use in a data/update directive -- preferring the ArraySectionOp result
@@ -585,7 +624,7 @@ class GPUCcppCapPass(ModulePass):
         for op in true_block.ops:
             if not isa(op, HostVarRefOp):
                 continue
-            if op.var_name.data not in var_names:
+            if self._ref_key(op) not in var_names:
                 continue
             # use_sections=True: prefer array section (efficiency for copyin/copyout/update)
             # use_sections=False: use bare ref (correct semantics for present/hoisted)
@@ -608,13 +647,15 @@ class GPUCcppCapPass(ModulePass):
         """
         donors = {}
         for op in top_module.walk():
-            if isa(op, HostVarRefOp) and op.var_name.data not in donors:
-                member = op.attributes.get("member_name")
-                donors[op.var_name.data] = (
-                    op.module_name,
-                    op.res.type,
-                    member.data if member is not None else None,
-                )
+            if isa(op, HostVarRefOp):
+                key = self._ref_key(op)
+                if key not in donors:
+                    member = op.attributes.get("member_name")
+                    donors[key] = (
+                        op.module_name,
+                        op.res.type,
+                        member.data if member is not None else None,
+                    )
         return donors
 
     def _synthesize_ref(self, true_block, var_name, donor_refs):
@@ -623,12 +664,20 @@ class GPUCcppCapPass(ModulePass):
         module. Returns the new op's result, or None if no donor exists
         (shouldn't happen in practice -- would mean the variable was never
         referenced anywhere, contradicting it being in phases_used).
+
+        var_name may be a composite "instance%member" key (see _ref_key) --
+        splitting on the first "%" always recovers the true instance
+        variable name, even for a nested-DDT member path (itself containing
+        further "%" separators), since HostVarRefOp's own first positional
+        arg must be the bare instance name, with the rest carried separately
+        via member_name.
         """
         donor = donor_refs.get(var_name)
         if donor is None:
             return None
         module_name, res_type, member_name = donor
-        new_ref = HostVarRefOp(var_name, module_name, res_type, member_name=member_name)
+        instance_name = var_name.split("%", 1)[0]
+        new_ref = HostVarRefOp(instance_name, module_name, res_type, member_name=member_name)
         Rewriter.insert_op(new_ref, InsertPoint.at_start(true_block))
         return new_ref.res
 
@@ -664,7 +713,7 @@ class GPUCcppCapPass(ModulePass):
         for ref_op in true_block.ops:
             if not isa(ref_op, HostVarRefOp):
                 continue
-            var_name = ref_op.var_name.data
+            var_name = self._ref_key(ref_op)
             lt = lifetimes.get(var_name)
             if lt is None:
                 continue
@@ -892,7 +941,7 @@ class GPUCcppCapPass(ModulePass):
         for ref_op in true_block.ops:
             if not isa(ref_op, HostVarRefOp):
                 continue
-            var_name = ref_op.var_name.data
+            var_name = self._ref_key(ref_op)
             lt = residency_lifetimes.get(var_name)
             if lt is None:
                 continue
