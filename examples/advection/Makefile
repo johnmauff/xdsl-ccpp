@@ -9,14 +9,55 @@
 # Verification:
 #   make check  — build, run, and verify pass/fail
 #
+# GPU (OpenACC, same pattern as examples/advection_flat_host's Makefile):
+#   make ARCH=GPU [FC=nvfortran]
+#
 # Code generation (requires xdsl-ccpp):
 #   make caps   — regenerate CCPP caps into examples/advection/
 #
 # Utility:
 #   make clean  — remove build artefacts and generated caps
 
-FC     = gfortran
-FFLAGS = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none
+# ── Compilers & flags ─────────────────────────────────────────────────────────
+ifeq ($(origin FC),default)
+FC   := gfortran
+endif
+ARCH ?= CPU
+
+# Same three-way compiler-family branch as examples/advection_flat_host's
+# Makefile. No C/C++ objects in this example (single Fortran driver), so
+# there's no ACC_OFF_C-style accelerator-runtime-hook concern to carry over
+# here.
+#
+# NOTE: This example uses OpenACC directives ("!$acc") in its Fortran sources
+# and `make caps` generates OpenACC directives via `--directive acc`, so
+# ARCH=GPU currently requires an OpenACC-capable compiler.
+ifeq ($(ARCH),GPU)
+  ifneq ($(FC),nvfortran)
+    $(error ARCH=GPU requires FC=nvfortran for OpenACC; got FC=$(FC))
+  endif
+endif
+ifeq ($(FC),nvfortran)
+  FC_CPU  = -g -O2 -Mfree -Mpreprocess -noacc
+  FC_GPU  = -g -O2 -Mfree -mp=gpu -Minfo=accel -Mpreprocess -DUSE_GPU
+  MOD_OUT = -module
+else ifeq ($(FC),ifx)
+  FC_CPU  = -g -O2 -fpp
+  FC_GPU  = -g -O2 -fpp -fiopenmp -fopenmp-targets=spir64 -DUSE_GPU
+  MOD_OUT = -module
+else
+  # GNU (gfortran)
+  FC_CPU  = -g -Wall -Wno-unused-dummy-argument -ffree-line-length-none -O2 -cpp
+  FC_GPU  = -g -O2 -ffree-line-length-none -fiopenmp -fopenmp-targets=spir64 -cpp -DUSE_GPU
+  MOD_OUT = -J
+endif
+
+ifeq ($(ARCH),GPU)
+  FFLAGS = $(FC_GPU)
+else
+  FFLAGS = $(FC_CPU)
+endif
+
 DIR    = examples/advection
 BUILD_DIR = $(DIR)/build
 
@@ -90,6 +131,7 @@ caps: $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS)
 
 $(GEN_SUITE_CAP) $(GEN_CCPP_CAP) $(GEN_KINDS): $(CAPS_PREREQS)
 	$(CCPP_XDSL) \
+	    --directive    acc \
 	    --suites       $(CAPS_SUITES) \
 	    --scheme-files $(CAPS_SCHEMES) \
 	    --host-files   $(CAPS_HOSTS) \
@@ -100,10 +142,10 @@ $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
 $(BUILD_DIR)/%.o: $(DIR)/%.F90 | $(BUILD_DIR)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD_DIR) -I $(BUILD_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD_DIR) -I $(BUILD_DIR)
 
 $(BUILD_DIR)/test_utils.o: examples/capgen/host_ftn/test_utils.F90 | $(BUILD_DIR)
-	$(FC) $(FFLAGS) -c $< -o $@ -J $(BUILD_DIR) -I $(BUILD_DIR)
+	$(FC) $(FFLAGS) -c $< -o $@ $(MOD_OUT) $(BUILD_DIR) -I $(BUILD_DIR)
 
 $(TEST_EXE): $(OBJS) $(TEST_EXTRA_OBJS) $(BUILD_DIR)/test_advection_host_integration.o
 	$(FC) $(FFLAGS) -o $@ $^
