@@ -109,6 +109,11 @@
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real |  kind = kind_phys
   # Advected species that needs to be supplied by framework
+  # memory_space=device: cld_ice_init's own !$acc parallel loop
+  # present(cld_ice_array) asserts device residency for this SuiteOwned
+  # array -- this declaration is what makes xdsl-ccpp actually establish
+  # it (SuiteOwned GPU residency).
+  memory_space = device
   intent = inout
 [ errmsg ]
   standard_name = ccpp_error_message

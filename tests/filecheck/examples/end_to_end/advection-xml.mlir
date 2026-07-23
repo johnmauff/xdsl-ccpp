@@ -55,9 +55,15 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(cld_liq_array)) then
 // CHECK-NEXT:        allocate(cld_liq_array(ncols, pver))
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data create(cld_liq_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(cld_ice_array)) then
 // CHECK-NEXT:        allocate(cld_ice_array(ncols, pver))
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data create(cld_ice_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call cld_liq_register(dyn_const, errmsg, errflg)
@@ -81,10 +87,16 @@
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(cld_liq_array)) then
 // CHECK-NEXT:        allocate(cld_liq_array(ncols, pver))
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data create(cld_liq_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(cld_ice_array)) then
 // CHECK-NEXT:        allocate(cld_ice_array(ncols, pver))
 // CHECK-NEXT:        cld_ice_array = 0.0_kind_phys
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data create(cld_ice_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(const_inds)) then
 // CHECK-NEXT:        allocate(const_inds(num_consts))
@@ -117,6 +129,12 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc exit data delete(cld_ice_array)
+// CHECK-NEXT:    #endif
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc exit data delete(cld_liq_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:    end subroutine cld_suite_suite_finalize
 // CHECK-LABEL:   subroutine cld_suite_suite_timestep_initial(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
@@ -279,6 +297,12 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc exit data delete(lc_const_tend)
+// CHECK-NEXT:    #endif
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc exit data delete(lc_constituent_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:    #ifdef USE_GPU
 // CHECK-NEXT:        !$acc exit data delete(lc_qv)
 // CHECK-NEXT:    #endif
@@ -650,9 +674,15 @@
 // CHECK-NEXT:            lc_constituent_array(:, :, lc_i) = lc_all_constituents(lc_i)%default_val
 // CHECK-NEXT:          end if
 // CHECK-NEXT:        end do
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data copyin(lc_constituent_array)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_const_tend)) deallocate(lc_const_tend)
 // CHECK-NEXT:        allocate(lc_const_tend(ncols, pver, lc_num))
 // CHECK-NEXT:        lc_const_tend = 0.0_kind_phys
+// CHECK-NEXT:    #ifdef USE_GPU
+// CHECK-NEXT:        !$acc enter data copyin(lc_const_tend)
+// CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_tcld)) deallocate(lc_tcld)
 // CHECK-NEXT:        allocate(lc_tcld(ncols, pver))
 // CHECK-NEXT:        lc_tcld = 0.0_kind_phys
