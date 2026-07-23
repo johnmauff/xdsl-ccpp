@@ -63,16 +63,48 @@ work:
   the generated `var_compatibility_suite_suite_radiation` allocates a
   `real(kind=8)` cast temporary, casts in before the call sequence, and
   casts back out afterward.
-- **Unit conversion — confirmed NOT automatic for these specific unit
-  pairs.** `effr_pre`'s `effrr_inout` (units `m`) vs `effr_calc`'s
-  `effrr_in` (units `um`), same standard_name — and several others in this
-  suite (`km`/`m`, `j kg-1`/`m2 s-2`, `m+2 s-2`/`m2 s-2`). Confirmed by
-  actually running generation: xdsl-ccpp's unit-conversion machinery
-  recognizes each mismatch and warns "no conversion available (passed
-  as-is)" rather than crashing, but does not have a conversion factor for
-  any of these specific unit pairs — so unit conversion is a real, mature
-  feature in general, just not a comprehensive one; these particular pairs
-  aren't in its table.
+- **Unit conversion — table entries added, plus a real cross-scheme
+  marshaling bug found and fixed.** `effr_pre`'s `effrr_inout` (units `m`)
+  vs `effr_calc`'s `effrr_in` (units `um`), same standard_name — and several
+  others in this suite (`km`/`m`, `j kg-1`/`m2 s-2`, `m+2 s-2`/`m2 s-2`).
+  `UNIT_CONVERSIONS` (`xdsl_ccpp/util/ccpp_conventions.py`) now has entries
+  for all of these; `m+2 s-2`/`m2 s-2` turned out to be the identical unit
+  written two ways, fixed via a `normalize_units` tweak rather than a real
+  conversion factor.
+
+  Regenerating this example's real output after adding those entries
+  surfaced something bigger: two standard_names here are declared with
+  genuinely different units or kind by *different schemes*, not just
+  different from the host. `effr_pre`/`effr_post` declare the rain-particle
+  radius (`effective_radius_of_stratiform_cloud_rain_particle`) in meters,
+  matching the host; `effr_calc`/`effr_diag` declare the *same*
+  standard_name in micrometers. `effrs_calc` declares the snow-particle
+  radius in meters/`kind_phys`, matching the host; `effr_calc` declares the
+  *same* standard_name in micrometers/`kind = 8`. `suite_cap.py` used to
+  build one combined suite-level dummy argument per standard_name, convert
+  it once against the host based on whichever scheme's declaration happened
+  to be first in scheme order, and pass that same converted value to every
+  other scheme sharing the name — so `effr_calc`/`effr_diag` were silently
+  receiving the rain-particle radius still in raw meters (off by a factor of
+  a million, no warning at all), and `effrs_calc` was silently receiving the
+  snow-particle radius already converted to micrometers/`kind = 8` for
+  `effr_calc`'s benefit, when its own declaration needed no conversion at
+  all.
+
+  **Fixed**: `_build_arg_tables` now flags a standard_name as divergent when
+  two or more schemes sharing it disagree on kind or units with each other.
+  For a divergent standard_name, the suite-level dummy argument stays in the
+  host's own native representation for the whole function body, and
+  `generateSchemeSubroutineCallOps` independently marshals *each individual
+  call* to that call's own scheme's already-known mismatch against the host
+  (detected per-scheme, completely independently, by
+  `HostVariableMatchPass` all along) — converting immediately before the
+  call and writing back immediately after, reusing the same
+  `KindCastOp`/`UnitConvertOp`/`KindWriteBackOp`/`UnitWriteBackOp` already
+  used for the ordinary case. Every non-divergent standard_name is
+  completely unaffected. See
+  `tests/unit/test_suite_cross_scheme_unit_kind.py` for direct regression
+  coverage and `ccpp_cap_refactor_plan.md`'s backlog for the full writeup.
 - **Dummy-argument-name collision — found here, fixed in `suite_cap.py`,
   unrelated to subcycling, and not a `.meta`-authoring mistake.**
   `effr_pre`/`effr_calc`/`effr_post`/`effr_diag` each independently use the

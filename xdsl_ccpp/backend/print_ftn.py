@@ -1460,15 +1460,27 @@ class ftnPrintContext:
                 else:
                     inner.print(f"{type_str} :: {ftn_name}")
 
-            # Declare kind-cast and unit-convert temporaries (top-level ops in suite caps)
-            for op in bdy.block.ops:
+            # Declare kind-cast and unit-convert temporaries. These are usually
+            # top-level ops in suite caps (the suite-boundary conversion), but
+            # the per-call, cross-scheme-divergent marshaling in suite_cap.py's
+            # generateSchemeSubroutineCallOps can nest them inside scf.IfOps
+            # and subcycle loop bodies -- walk() finds both.
+            for op in bdy.block.walk():
                 if isa(op, CCPPKindCastOp):
-                    var_name = (
+                    # Two or more per-call marshaling instances (see
+                    # suite_cap.py's generateSchemeSubroutineCallOps) can share
+                    # the same name_hint -- e.g. one scheme's own call and
+                    # another scheme's own call both adapting the same shared
+                    # argument -- de-duplicate through _get_variable_name_for
+                    # the same way local_allocas above does, rather than
+                    # assigning the raw name_hint directly, which would print
+                    # the identical declaration twice.
+                    hint = (
                         op.res.name_hint
                         if op.res.name_hint is not None
                         else f"kind_cast_{id(op)}"
                     )
-                    inner.variables[op.res] = var_name
+                    var_name = inner._get_variable_name_for(op.res, hint=hint)
                     type_str = inner.mlir_type_to_ftn_type(op.res.type)
                     dim_suffix = inner._ftn_dim_suffix(op.res.type)
                     if dim_suffix:
@@ -1477,12 +1489,13 @@ class ftnPrintContext:
                         inner.print(f"{type_str} :: {var_name}")
                 elif isa(op, CCPPUnitConvertOp):
                     # Local-copy conversion: declare a temp in the same type as source.
-                    var_name = (
+                    # Same de-duplication reasoning as CCPPKindCastOp above.
+                    hint = (
                         op.res.name_hint
                         if op.res.name_hint is not None
                         else f"unit_conv_{id(op)}"
                     )
-                    inner.variables[op.res] = var_name
+                    var_name = inner._get_variable_name_for(op.res, hint=hint)
                     type_str = inner.mlir_type_to_ftn_type(op.res.type)
                     dim_suffix = inner._ftn_dim_suffix(op.res.type)
                     if dim_suffix:

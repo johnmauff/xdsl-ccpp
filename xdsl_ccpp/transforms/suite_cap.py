@@ -69,6 +69,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
+    normalize_units,
 )
 from xdsl_ccpp.util.visitor import Visitor
 
@@ -97,6 +98,7 @@ class _ArgTableResult:
     actual_postfixes: dict
     all_args: dict
     suite_use_stubs: list
+    divergent_std_keys: frozenset
 
 
 @dataclass
@@ -466,7 +468,7 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def generateSchemeSubroutineCallOps(
         self, subroutine_name, arg_table, data_ops, overrides=None,
-        exclude_args=frozenset(),
+        exclude_args=frozenset(), divergent_std_keys: frozenset = frozenset(),
     ):
         """Build the IR for a single scheme subroutine call guarded by errflg.
 
@@ -483,6 +485,15 @@ class GenerateSuiteSubroutine(RewritePattern):
         When *overrides* is non-empty a KeywordCallOp is emitted instead of a
         plain func.CallOp; overridden arguments are omitted from the SSA
         operand/result lists and carried as compile-time literals in the op.
+
+        divergent_std_keys are standard_names where two or more schemes
+        sharing the name declare a genuinely different kind or units from
+        each other (see _build_arg_tables); for these, the shared value in
+        data_ops stays in the host's own native representation always, and
+        this specific call independently marshals to its own known kind/unit
+        mismatch (already annotated per-scheme by HostVariableMatchPass),
+        converting immediately before the call and writing back immediately
+        after -- see _apply_divergent_marshaling below.
         """
         if overrides is None:
             overrides = {}
@@ -504,8 +515,59 @@ class GenerateSuiteSubroutine(RewritePattern):
         out_names = []
         out_tracking = []
         cast_ops = []  # casts inserted before the call inside the if-body
+        divergent_writeback_ops = []  # write-backs inserted after the call
         in_idx = 0
         out_idx = 0
+
+        def _apply_divergent_marshaling(arg, val):
+            """Adapt val (the shared, host-native value) to this specific
+            scheme's own known kind/unit mismatch, for a cross-scheme
+            divergent standard_name. Appends the forward cast(s) to
+            cast_ops and schedules the matching write-back(s) -- applied in
+            reverse order, since a kind cast followed by a unit convert
+            must be undone unit-first, kind-second -- into
+            divergent_writeback_ops. Returns the value to pass to the call.
+            """
+            if self._std_key(arg) not in divergent_std_keys:
+                return val
+            intent = arg.getAttr("intent") if arg.hasAttr("intent") else "in"
+            chain: list = []  # (kind_or_unit, result_ssa, source_ssa, param)
+            cur = val
+            if arg.hasAttr("model_var_kind_mismatch") and arg.getAttr("type") != "character":
+                scheme_kind, host_kind = arg.getAttr("model_var_kind_mismatch").split(":")
+                scheme_type = TypeConversions.convert(
+                    arg.getAttr("type"), scheme_kind, self._arg_dims(arg)
+                )
+                cast_op = KindCastOp(cur, scheme_kind, scheme_type)
+                cast_op.res.name_hint = f"{arg.name}_kind_cast"
+                cast_ops.append(cast_op)
+                chain.append(("kind", cast_op.res, cur, host_kind))
+                cur = cast_op.res
+            if arg.hasAttr("model_var_unit_mismatch"):
+                scheme_units, host_units = arg.getAttr("model_var_unit_mismatch").split(":", 1)
+                to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+                arg_type = TypeConversions.convert(
+                    arg.getAttr("type"),
+                    arg.getAttr("kind") if arg.hasAttr("kind") else None,
+                    self._arg_dims(arg),
+                )
+                pre_expr = "" if intent == "out" else to_scheme_expr
+                conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+                conv_op.res.name_hint = f"{arg.name}_unit_conv"
+                cast_ops.append(conv_op)
+                chain.append(("unit", conv_op.res, cur, to_host_expr))
+                cur = conv_op.res
+            if intent in ("inout", "out"):
+                for kind_or_unit, result_ssa, source_ssa, param in reversed(chain):
+                    if kind_or_unit == "kind":
+                        divergent_writeback_ops.append(
+                            KindWriteBackOp(result_ssa, source_ssa, param)
+                        )
+                    else:
+                        divergent_writeback_ops.append(
+                            UnitWriteBackOp(result_ssa, source_ssa, param)
+                        )
+            return cur
 
         # Classify each argument as an input, output, or both (inout)
         for arg in arg_table.getFunctionArguments():
@@ -523,6 +585,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     # bare-name entry regardless (block args and non-tagged
                     # framework refs alike), so the fallback always resolves.
                     val = data_ops.get(("std_name", self._std_key(arg)), data_ops[arg.name])
+                    val = _apply_divergent_marshaling(arg, val)
                     actual_type = (
                         val.type if isinstance(val, SSAValue) else val.results[0].type
                     )
@@ -555,6 +618,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     # bare-name entry regardless (block args and non-tagged
                     # framework refs alike), so the fallback always resolves.
                     val = data_ops.get(("std_name", self._std_key(arg)), data_ops[arg.name])
+                    val = _apply_divergent_marshaling(arg, val)
                     actual_type = (
                         val.type if isinstance(val, SSAValue) else val.results[0].type
                     )
@@ -614,7 +678,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         load_op = memref.LoadOp.get(data_ops["errflg"], [])
         cmp = arith.CmpiOp(load_op, err_const_comp, 0)
         conditional_op = scf.IfOp(
-            cmp, [], cast_ops + [call_op] + store_ops + [scf.YieldOp()]
+            cmp, [],
+            cast_ops + [call_op] + store_ops + divergent_writeback_ops + [scf.YieldOp()],
         )
 
         return [err_const_comp, cmp, load_op, conditional_op]
@@ -723,8 +788,21 @@ class GenerateSuiteSubroutine(RewritePattern):
             return a.getAttr("model_var_kind_mismatch").split(":")[1]
         return a.getAttr("kind") if a.hasAttr("kind") else None
 
-    def _build_block_signature(self, input_arg_list, output_arg_list) -> "_BlockSignature":
-        """Build the Block, populate data_ops from block args, and apply kind/unit casts."""
+    def _build_block_signature(
+        self, input_arg_list, output_arg_list, divergent_std_keys: frozenset = frozenset(),
+    ) -> "_BlockSignature":
+        """Build the Block, populate data_ops from block args, and apply kind/unit casts.
+
+        divergent_std_keys are standard_names where two or more schemes sharing
+        the name declare a genuinely different kind or units from each other
+        (see _build_arg_tables). For these, the suite-boundary conversion below
+        is skipped entirely -- the dummy argument stays in the host's own
+        native representation for the whole function body, and each
+        individual scheme call marshals to its own kind/units independently
+        (see generateSchemeSubroutineCallOps). Converting once here, to
+        whichever scheme happened to become canonical, would be wrong for
+        every other scheme sharing the name.
+        """
         input_arg_types = [
             TypeConversions.convert(a.getAttr("type"), self._block_arg_kind(a), self._arg_dims(a))
             for a in input_arg_list
@@ -827,6 +905,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         kind_cast_ops: list = []
         kind_writeback_pairs: list = []
         for idx, fn_arg in enumerate(input_arg_list):
+            if self._std_key(fn_arg) in divergent_std_keys:
+                continue
             if not fn_arg.hasAttr("model_var_kind_mismatch"):
                 continue
             # Character length mismatches are resolved by declaring the block arg
@@ -841,8 +921,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
             cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
             kind_cast_ops.append(cast_op)
-            data_ops[fn_arg.name] = cast_op
-            final_values[idx] = cast_op
+            data_ops[fn_arg.name] = cast_op.res
+            final_values[idx] = cast_op.res
 
             intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
             if intent in ("inout", "out"):
@@ -851,6 +931,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         unit_convert_ops: list = []
         unit_writeback_pairs: list = []
         for idx, fn_arg in enumerate(input_arg_list):
+            if self._std_key(fn_arg) in divergent_std_keys:
+                continue
             if not fn_arg.hasAttr("model_var_unit_mismatch"):
                 continue
             scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
@@ -869,8 +951,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
             conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
             unit_convert_ops.append(conv_op)
-            data_ops[fn_arg.name] = conv_op
-            final_values[idx] = conv_op
+            data_ops[fn_arg.name] = conv_op.res
+            final_values[idx] = conv_op.res
 
             if intent in ("inout", "out"):
                 unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
@@ -1040,6 +1122,33 @@ class GenerateSuiteSubroutine(RewritePattern):
                     else:
                         all_args[std_key] = fn_arg
 
+        # Two or more schemes sharing a standard_name can each independently
+        # declare a genuinely different kind or units for it -- not just
+        # different from the host, but different from each other (e.g.
+        # examples/var_compat: effr_pre/effr_post declare the rain-particle
+        # radius in meters, effr_calc/effr_diag declare the same
+        # standard_name in micrometers). all_args above only ever keeps ONE
+        # scheme's declaration per standard_name (whichever came first), so a
+        # suite-boundary conversion decision based on that single entry is
+        # wrong for every other scheme sharing the name. Flag these
+        # standard_names so the block signature and call-building code can
+        # switch to per-call marshaling for just these entries, leaving every
+        # other, agreeing standard_name completely unaffected.
+        signatures_seen: dict[str, set] = {}
+        for scheme_name in arg_tables:
+            for fn_arg in arg_tables[scheme_name].getFunctionArguments():
+                if fn_arg.getAttr("type") != "real":
+                    continue
+                std_key = self._std_key(fn_arg)
+                kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
+                units = normalize_units(
+                    fn_arg.getAttr("units") if fn_arg.hasAttr("units") else None
+                )
+                signatures_seen.setdefault(std_key, set()).add((kind, units))
+        divergent_std_keys = frozenset(
+            std_key for std_key, sigs in signatures_seen.items() if len(sigs) > 1
+        )
+
         return _ArgTableResult(
             scheme_entries=scheme_entries,
             arg_tables=arg_tables,
@@ -1047,6 +1156,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             actual_postfixes=actual_postfixes,
             all_args=all_args,
             suite_use_stubs=suite_use_stubs,
+            divergent_std_keys=divergent_std_keys,
         )
 
     def _assemble_func(
@@ -1144,6 +1254,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         actual_postfixes,
         arg_tables,
         scheme_overrides,
+        divergent_std_keys: frozenset = frozenset(),
     ):
         """Build scheme call ops and collect fn_sigs for all items in the call sequence."""
         call_ops = []
@@ -1171,6 +1282,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
                     ops += self.generateSchemeSubroutineCallOps(
                         full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
+                        divergent_std_keys=divergent_std_keys,
                     )
                     if full_name not in fn_sigs:
                         fn_sigs[full_name] = self.meta_fn_sigs[full_name]
@@ -1230,6 +1342,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     cur_pdim = None
                     result += self.generateSchemeSubroutineCallOps(
                         full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
+                        divergent_std_keys=divergent_std_keys,
                     )
             result += _flush_promoted(cur_pdim, cur_pgroup)
             return result
@@ -1585,6 +1698,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         actual_postfixes = _tables.actual_postfixes
         all_args = _tables.all_args
         suite_use_stubs = _tables.suite_use_stubs
+        divergent_std_keys = _tables.divergent_std_keys
 
         _cls = self._classify_args(all_args, physics_mode)
         framework_vars = _cls.framework_vars
@@ -1592,7 +1706,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
 
-        _sig = self._build_block_signature(input_arg_list, output_arg_list)
+        _sig = self._build_block_signature(
+            input_arg_list, output_arg_list, divergent_std_keys=divergent_std_keys,
+        )
         new_block = _sig.new_block
         input_arg_types = _sig.input_arg_types
         data_ops = _sig.data_ops
@@ -1628,6 +1744,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             actual_postfixes=actual_postfixes,
             arg_tables=arg_tables,
             scheme_overrides=scheme_overrides,
+            divergent_std_keys=divergent_std_keys,
         )
 
         new_func = self._assemble_func(
