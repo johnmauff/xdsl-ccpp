@@ -259,6 +259,92 @@ def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
     )
 
 
+def resolve_capscratch_cap_var_name(std_name: str, is_constituent: bool) -> "str | None":
+    """Resolve a CapScratch-classified arg's standard_name to the shared
+    cap-module-scope array it's backed by, or None if it isn't backed by one
+    of the two known shared constituent arrays.
+
+    Two cases: a direct match to FRAMEWORK_STD_NAME_TO_CAP_VAR (const/
+    const_tend's own standard names, ccpp_constituents/
+    ccpp_constituent_tendencies, mapping directly to
+    lc_constituent_array/lc_const_tend); or a constituent-tendency scratch
+    var (constituent=True, standard_name starting with tendency_of_, e.g.
+    cld_liq_tend) -- a Fortran pointer slice into lc_const_tend, not a
+    separately-allocated array, but backed by the same shared memory for
+    residency purposes.
+
+    Single source of truth for this resolution, shared by ccpp_cap.py's
+    _build_cap_var_map (building the array/allocate mechanics) and this
+    module's find_diverged_capscratch_vars (detecting per-scheme residency
+    disagreement for the same shared array) -- so the two can never
+    disagree about which cap var a given arg resolves to.
+    """
+    std_name = std_name.lower()
+    if std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR:
+        return FRAMEWORK_STD_NAME_TO_CAP_VAR[std_name]
+    if is_constituent and std_name.startswith("tendency_of_"):
+        return "lc_const_tend"
+    return None
+
+
+def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
+    """Return the set of cap var names (e.g. lc_const_tend,
+    lc_constituent_array) for which different schemes in scheme_names
+    genuinely disagree about GPU residency treatment -- one scheme declares
+    memory_space=device on its own CapScratch-classified occurrence
+    (wants present), another does not (wants update), for an arg resolving
+    to the same shared cap var via resolve_capscratch_cap_var_name.
+
+    Mirrors find_diverged_suite_vars exactly, substituting the CapScratch
+    cap-var identity in place of a host-matched model_var_name/
+    model_var_memory_space pair: since CapScratch args have no host match at
+    all, there's no host-declared "model_var_memory_space" to consult --
+    whether the shared array is device-resident at all is instead the OR
+    across every contributing scheme's own memory_space declaration (the
+    same computation ccpp_cap.py's _build_cap_var_map already performs for
+    residency establishment). A cap var only shows up here when that OR is
+    true (at least one scheme wants device) AND at least one other
+    contributing scheme does not -- a genuine disagreement, not just "no
+    one asked for residency".
+
+    Consumed by gpu_data_pass.py, which routes these to per-scheme-call
+    update self/update device handling instead of the blanket
+    enter-once/exit-once whole-suite residency treatment every occurrence
+    would otherwise get lumped into.
+    """
+    by_cap_var: dict = {}  # cap_var_name -> category ("present" | "update") -> set[scheme_name]
+
+    for scheme_name in scheme_names:
+        props = meta_data.get(scheme_name)
+        if props is None:
+            continue
+        for table_name, table in props.arg_tables.items():
+            if split_scheme_table_name(table_name) is None:
+                continue
+            for arg in table.getFunctionArguments():
+                if (
+                    not arg.hasAttr("ownership_kind")
+                    or arg.getAttr("ownership_kind") != ArgOwnershipKind.CapScratch
+                ):
+                    continue
+                if not arg.hasAttr("standard_name"):
+                    continue
+                cap_var = resolve_capscratch_cap_var_name(
+                    arg.getAttr("standard_name"), arg.hasAttr("constituent")
+                )
+                if cap_var is None:
+                    continue
+                scheme_space = (
+                    arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
+                )
+                category = "present" if scheme_space == "device" else "update"
+                by_cap_var.setdefault(cap_var, {}).setdefault(category, set()).add(scheme_name)
+
+    return frozenset(
+        cap_var for cap_var, categories in by_cap_var.items() if len(categories) > 1
+    )
+
+
 def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     """Build a standard_name → (var_name, table_name) map from host metadata.
 

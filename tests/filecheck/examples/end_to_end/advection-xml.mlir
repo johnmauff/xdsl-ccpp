@@ -301,9 +301,6 @@
 // CHECK-NEXT:        !$acc exit data delete(lc_const_tend)
 // CHECK-NEXT:    #endif
 // CHECK-NEXT:    #ifdef USE_GPU
-// CHECK-NEXT:        !$acc exit data delete(lc_constituent_array)
-// CHECK-NEXT:    #endif
-// CHECK-NEXT:    #ifdef USE_GPU
 // CHECK-NEXT:        !$acc exit data delete(lc_qv)
 // CHECK-NEXT:    #endif
 // CHECK-NEXT:    #ifdef USE_GPU
@@ -674,9 +671,6 @@
 // CHECK-NEXT:            lc_constituent_array(:, :, lc_i) = lc_all_constituents(lc_i)%default_val
 // CHECK-NEXT:          end if
 // CHECK-NEXT:        end do
-// CHECK-NEXT:    #ifdef USE_GPU
-// CHECK-NEXT:        !$acc enter data copyin(lc_constituent_array)
-// CHECK-NEXT:    #endif
 // CHECK-NEXT:        if (allocated(lc_const_tend)) deallocate(lc_const_tend)
 // CHECK-NEXT:        allocate(lc_const_tend(ncols, pver, lc_num))
 // CHECK-NEXT:        lc_const_tend = 0.0_kind_phys
