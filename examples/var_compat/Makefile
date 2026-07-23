@@ -96,23 +96,14 @@ TEST_EXTRA_SRCS = \
 TEST_EXTRA_OBJS = $(addprefix $(BUILD_DIR)/,$(notdir $(TEST_EXTRA_SRCS:.F90=.o)))
 TEST_EXE = $(BUILD_DIR)/test_var_compat
 
-.PHONY: all run check clean caps known-issue
+.PHONY: all run check clean caps
 
-# Printed unconditionally before any build attempt below (not just on
-# failure) so a compile error is understood rather than mysterious -- see
-# README.md's "Other features this example carries" section and
-# ccpp_cap_refactor_plan.md's backlog for the full writeup.
-known-issue:
-	@echo "NOTE: examples/var_compat has a known compile blocker unrelated to"
-	@echo "      nested-subcycle support -- a dummy-argument-name collision"
-	@echo "      (see README.md). If the build below fails, this is why."
+all: $(TEST_EXE)
 
-all: known-issue $(TEST_EXE)
-
-run: known-issue $(TEST_EXE)
+run: $(TEST_EXE)
 	$(TEST_EXE)
 
-check: known-issue $(TEST_EXE)
+check: $(TEST_EXE)
 	@echo "Running var_compat integration test..."
 	@$(TEST_EXE) && echo "TEST PASSED" || (echo "TEST FAILED"; exit 1)
 
