@@ -69,8 +69,10 @@ program test
     call test_host(run_okay, test_suites)
 
     if (run_okay) then
+       write(6, '(a)') 'advection: TEST PASSED'
        STOP 0
     else
+       write(6, '(a)') 'advection: TEST FAILED'
        STOP -1
     end if
 
