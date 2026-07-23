@@ -123,8 +123,8 @@ class TestBuildNoSuiteMatchedFalseOps:
 
 
 class TestIterSchemes:
-    """_iter_schemes: yield a group's XMLScheme leaves, flattening one level
-    of XMLSubcycle nesting."""
+    """_iter_schemes: yield a group's XMLScheme leaves, flattening a group's
+    XMLSubcycle nesting recursively, to arbitrary depth."""
 
     def test_plain_schemes_yielded_directly(self):
         group = XMLGroup("physics")
@@ -156,6 +156,21 @@ class TestIterSchemes:
     def test_empty_group_yields_nothing(self):
         group = XMLGroup("physics")
         assert list(_iter_schemes(group)) == []
+
+    def test_nested_subcycle_schemes_flattened_recursively(self):
+        """A subcycle nested inside another subcycle -- real CCPP pattern,
+        see examples/var_compat/var_compatibility_suite.xml (ported from
+        NCAR ccpp-framework's feature/capgen-v1), which nests three levels
+        deep in one branch."""
+        group = XMLGroup("physics")
+        inner = XMLSubcycle(loop_count=2)
+        inner.addChild(XMLScheme("inner_scheme"))
+        outer = XMLSubcycle(loop_count=3)
+        outer.addChild(XMLScheme("outer_scheme"))
+        outer.addChild(inner)
+        group.addChild(outer)
+        names = [s.attributes["name"] for s in _iter_schemes(group)]
+        assert names == ["outer_scheme", "inner_scheme"]
 
 
 class TestCollectDdtUseStubs:

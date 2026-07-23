@@ -1434,7 +1434,15 @@ class ftnPrintContext:
                         type_str = type_str + ", target"
                     inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
 
-            # Declare local variables (non-returned allocas, e.g. computed scalars)
+            # Declare local variables (non-returned allocas, e.g. computed scalars).
+            #
+            # Two or more sibling subcycles (nested or not) each allocate their
+            # own loop-count variable with the same "ccpp_loop_cnt" name_hint
+            # (see suite_cap.py's _build_call_ops) -- de-duplicate through
+            # _get_variable_name_for (the same mechanism the do-loop body's own
+            # references already use) rather than printing the raw name_hint
+            # directly, which would emit the identical declaration line twice
+            # (a Fortran compile error) whenever that collision happens.
             for alloca_op in local_allocas:
                 var_name = (
                     alloca_op.memref.name_hint
@@ -1442,15 +1450,15 @@ class ftnPrintContext:
                     else f"local_{id(alloca_op)}"
                 )
                 is_alloc = var_name.endswith("__alloc")
-                ftn_name = var_name[: -len("__alloc")] if is_alloc else var_name
-                inner.variables[alloca_op.memref] = ftn_name
+                hint = var_name[: -len("__alloc")] if is_alloc else var_name
+                ftn_name = inner._get_variable_name_for(alloca_op.memref, hint=hint)
                 type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
                 if is_alloc:
                     rank = len(alloca_op.memref.type.shape.data)
                     dim_suffix = "(" + ", ".join(":" for _ in range(rank)) + ")"
                     inner.print(f"{type_str}, allocatable :: {ftn_name}{dim_suffix}")
                 else:
-                    inner.print(f"{type_str} :: {var_name}")
+                    inner.print(f"{type_str} :: {ftn_name}")
 
             # Declare kind-cast and unit-convert temporaries (top-level ops in suite caps)
             for op in bdy.block.ops:

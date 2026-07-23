@@ -114,12 +114,14 @@ def _assert_call_arg_count_matches_signature(
 
 
 def _iter_schemes(group):
-    """Yield all XMLScheme leaves from a group, descending into XMLSubcycle nodes.
+    """Yield all XMLScheme leaves from a group, descending recursively into
+    (possibly nested) XMLSubcycle nodes.
 
     Shared by ccpp_cap.py and suite_cap.py's getSchemeNames -- previously two
-    independent copies of the same flattening logic, each only exercising the
-    one-level-deep subcycle case (nested subcycles are untested repo-wide --
-    see the refactor plan's backlog).
+    independent copies of the same flattening logic. Nested subcycles are a
+    real pattern -- see examples/var_compat/var_compatibility_suite.xml
+    (ported from NCAR ccpp-framework's feature/capgen-v1), which nests three
+    levels deep in one branch.
 
     suite_variable_model.py has a third, deliberately separate copy (duck-typed
     via "loop_count" in child.attributes rather than this isinstance check) --
@@ -129,7 +131,7 @@ def _iter_schemes(group):
     """
     for child in group:
         if isinstance(child, XMLSubcycle):
-            yield from child
+            yield from _iter_schemes(child)
         else:
             yield child
 
