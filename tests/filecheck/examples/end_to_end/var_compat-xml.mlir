@@ -144,8 +144,8 @@
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrs_inout(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: ncl_out(:, :)
 // CHECK-NEXT:      logical, intent(in) :: has_graupel
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_var
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tke_inout
+// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: scalar_var
+// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: tke_inout
 // CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: tke2_inout
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
 // CHECK-NEXT:      integer, intent(in) :: scalar_varC

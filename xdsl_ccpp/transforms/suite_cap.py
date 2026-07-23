@@ -1181,9 +1181,20 @@ class GenerateSuiteSubroutine(RewritePattern):
         lazy_alloc_ops,
     ):
         """Assemble all op lists into the body block and return the FuncOp."""
+        # Use the ORIGINAL block arg (by position), not data_ops[a.name] --
+        # for a scalar arg with a kind or unit mismatch, data_ops[a.name] has
+        # been reassigned to the suite-boundary conversion temp (see
+        # _build_block_signature's kind_cast_ops/unit_convert_ops loops), not
+        # the original block arg. The write-back ops already restore the
+        # original block arg's own value correctly; ReturnOp's job here is
+        # only to mark, by identity, which block args the printer should
+        # declare intent(inout) (it scans this list for exactly that -- see
+        # print_ftn.py). Returning the conversion temp instead would make the
+        # printer declare the arg intent(in), which is invalid Fortran the
+        # moment the write-back later assigns into it.
         inout_return_vals = [
-            data_ops[a.name]
-            for a in input_arg_list
+            new_block.args[idx]
+            for idx, a in enumerate(input_arg_list)
             if a.getAttr("intent") == "inout" and not self._has_dims(a)
         ]
         if self.ccpp_handle is not None:

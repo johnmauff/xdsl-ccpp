@@ -261,7 +261,7 @@
 // CHECK-NEXT:        "ccpp_utils.unit_write_back"(%effri_out_unit_conv, %effri_out__opt) <{to_host_expr = "* 1.0E-6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        "ccpp_utils.unit_write_back"(%scalar_var_unit_conv, %scalar_var) <{to_host_expr = "* 1000.0"}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        "ccpp_utils.unit_write_back"(%tke_inout_unit_conv, %tke_inout) <{to_host_expr = "* 1.0"}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>) -> ()
-// CHECK-NEXT:        func.return %scalar_var_unit_conv, %tke_inout_unit_conv, %tke2_inout, %errmsg, %errflg : memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>
+// CHECK-NEXT:        func.return %scalar_var, %tke_inout, %tke2_inout, %errmsg, %errflg : memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func private @effr_pre_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_pre"}
 // CHECK-LABEL:     func.func private @effr_calc_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_calc"}
