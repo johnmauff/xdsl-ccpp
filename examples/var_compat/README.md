@@ -73,33 +73,33 @@ work:
   any of these specific unit pairs — so unit conversion is a real, mature
   feature in general, just not a comprehensive one; these particular pairs
   aren't in its table.
-- **Dummy-argument-name collision — a real compile blocker, unrelated to
-  subcycling, not a `.meta`-authoring mistake.** `effr_pre`/`effr_calc`/
-  `effr_post`/`effr_diag` each independently use the bare Fortran name
-  `scalar_var` for four different, unrelated standard_names
-  (`scalar_variable_for_testing_a`/plain/`_b`/`_c`) — correct, idiomatic
-  CCPP metadata: a scheme's local arg name is private and arbitrary by
-  design, only `standard_name` needs to be consistent. `test_host_data.meta`
-  (this example's own real host metadata) already gives all four
-  standard_names distinct, collision-free local names of its own
+- **Dummy-argument-name collision — found here, fixed in `suite_cap.py`,
+  unrelated to subcycling, and not a `.meta`-authoring mistake.**
+  `effr_pre`/`effr_calc`/`effr_post`/`effr_diag` each independently use the
+  bare Fortran name `scalar_var` for four different, unrelated
+  standard_names (`scalar_variable_for_testing_a`/plain/`_b`/`_c`) —
+  correct, idiomatic CCPP metadata: a scheme's local arg name is private and
+  arbitrary by design, only `standard_name` needs to be consistent.
+  `test_host_data.meta` (this example's own real host metadata) gives all
+  four standard_names distinct, collision-free local names of its own
   (`scalar_var`/`scalar_varA`/`scalar_varB`/`scalar_varC`) precisely so a
-  generated cap can use the host's name instead of each scheme's — but
-  `suite_cap.py`'s signature construction never consults the host-matched
-  canonical name (`model_var_name`) at all, always using each scheme's own
-  bare name instead. The generated
-  `var_compatibility_suite_suite_radiation` subroutine signature ends up
-  with `scalar_var` as a dummy-argument name three times over (two
-  `real(kind=kind_phys)` and one `integer`) — invalid, duplicate-dummy-argument
-  Fortran — even though `scalar_varA`/`scalar_varB`/`scalar_varC` were
-  sitting right there in the host metadata, unused. This is the same general
-  *class* of bug as the `ccpp_loop_cnt` duplicate-declaration bug this work
-  found and fixed (two unrelated things independently choosing the same bare
-  name, with no de-duplication step), but a different, unrelated site — it
-  has nothing to do with subcycling and would occur in any suite with this
-  naming pattern. See `ccpp_cap_refactor_plan.md`'s backlog for the full
-  writeup, including the precise fix location. Not fixed here — this means
-  `examples/var_compat` cannot actually compile today, for a reason entirely
-  unrelated to its nested-subcycle content.
+  generated cap can use the host's name instead of each scheme's.
+  `suite_cap.py`'s signature construction now detects the collision and
+  falls back to the host-matched canonical name (`model_var_name`) for just
+  the colliding entries — every non-colliding arg elsewhere keeps its
+  original name, unchanged. The data wiring was fixed alongside the printed
+  name: each colliding scheme's own value is now tracked by argument
+  position (not by the colliding bare name) so every scheme call still
+  receives its own correct value. This requires the `generate-host-match`
+  pass to run — which the production `ccpp_xdsl` tool always does whenever
+  host files are supplied, so `make caps`/`run`/`check` below need no special
+  invocation. See `tests/unit/test_suite_arg_name_collision.py` for direct
+  regression coverage and `ccpp_cap_refactor_plan.md`'s backlog for the full
+  writeup. This is the same general *class* of bug as the `ccpp_loop_cnt`
+  duplicate-declaration bug this work found and fixed (two unrelated things
+  independently choosing the same bare name, with no de-duplication step),
+  but a different, unrelated site — it has nothing to do with subcycling and
+  would occur in any suite with this naming pattern.
 
 ## Adaptations made during porting (not present in the upstream capgen-v1 files)
 
@@ -178,9 +178,7 @@ work:
 ## Running with ccpp_xdsl
 
 ```
-make caps   # generation succeeds; see "Other features this example carries"
-            # above -- a real, unrelated dummy-argument-name collision means
-            # the generated Fortran does not actually compile yet
-make run    # build and run (blocked on the above until it's fixed)
+make caps   # generate the suite/ccpp/kinds caps
+make run    # build and run
 make check  # build, run, and verify pass/fail
 ```

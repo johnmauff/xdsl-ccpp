@@ -2545,61 +2545,55 @@ dependency is noted.
     *table-type modeling* gap (`control` vs `host`), not about any one
     variable's semantics.
 
-- **Suite signature generation ignores the host's own already-unique local
-  name and uses each scheme's own (colliding) local name instead — a real,
-  currently-blocking compile bug, found by actually running the real driver
-  end-to-end against the ported var_compat example (2026-07-23, root cause
-  refined same day after the user asked whether this was a `.meta`-authoring
-  mistake).** `effr_pre`/`effr_post`/`effr_calc`/`effr_diag` each
-  independently declare an unrelated scalar argument
-  (`scalar_variable_for_testing_a`/`_b`/plain/`_c` respectively — capgen-v1's
-  own README calls these out by name as a deliberate test of this exact
-  scenario) using the identical bare Fortran name `scalar_var` in their own
-  scheme source. **This is correct, idiomatic CCPP metadata, not a mistake
-  to fix in the `.meta` files** — CCPP's whole design point is that a
-  scheme's local dummy-argument name is private and arbitrary; only
-  `standard_name` needs to be consistent across schemes, and different
-  physics teams choosing the same generic local name (`scalar_var`, `tmp`,
-  `flux`, ...) for unrelated quantities in independently-developed schemes
-  is exactly the case CCPP's data model exists to decouple. **Proof this is
-  meant to be supported, not just tolerated:** var_compat's own real host
-  metadata (`test_host_data.meta`, the `physics_state` DDT) already declares
-  all four standard_names with distinct, collision-free local names of its
-  own — `scalar_var`/`scalar_varA`/`scalar_varB`/`scalar_varC` — precisely
-  so a generated cap can reference each via the host's own unique name
-  instead of the scheme's. Confirmed via `python3 -m xdsl_ccpp.tools.ccpp_dsl`
-  emitting no "no host variable match" warning for any of these four args
-  (i.e. all four *do* get host-matched) yet
-  `var_compatibility_suite_suite_radiation`'s generated dummy-argument list
-  still shows `scalar_var` three times over regardless — `scalar_varA`/
-  `scalar_varB`/`scalar_varC` never appear anywhere in the output. So the
-  host match happens, but its already-unique local name is never consulted
-  when the suite's own combined signature is built. Confirmed via
-  `grep -n model_var_name xdsl_ccpp/transforms/suite_cap.py`: zero hits --
-  `suite_cap.py`'s `_build_arg_tables`/signature-construction path never
-  reads `model_var_name` (the host-matched canonical name
-  `host_var_match_pass.py` already annotates onto each `ArgumentOp` when a
-  match is found) at all; it always uses each arg's own bare `.name`
-  unconditionally, host-matched or not. This is the exact same *class* of
-  bug as the `ccpp_loop_cnt` duplicate-declaration bug fixed during the
+- **Suite signature generation ignored the host's own already-unique local
+  name and used each scheme's own (colliding) local name instead — found by
+  actually running the real driver end-to-end against the ported var_compat
+  example, fixed in `suite_cap.py` (2026-07-23).** `effr_pre`/`effr_post`/
+  `effr_calc`/`effr_diag` each independently declare an unrelated scalar
+  argument (`scalar_variable_for_testing_a`/`_b`/plain/`_c` respectively —
+  capgen-v1's own README calls these out by name as a deliberate test of this
+  exact scenario) using the identical bare Fortran name `scalar_var` in their
+  own scheme source. This is correct, idiomatic CCPP metadata, not a
+  `.meta`-authoring mistake — a scheme's local dummy-argument name is private
+  and arbitrary; only `standard_name` needs to be consistent across schemes.
+  **Proof this was meant to be supported, not just tolerated:** var_compat's
+  own real host metadata (`test_host_data.meta`, the `physics_state` DDT)
+  already declares all four standard_names with distinct, collision-free
+  local names of its own — `scalar_var`/`scalar_varA`/`scalar_varB`/
+  `scalar_varC` — precisely so a generated cap can reference each via the
+  host's own unique name instead of the scheme's, but `suite_cap.py`'s
+  `_build_block_signature` never consulted `model_var_name` (the
+  host-matched canonical name `host_var_match_pass.py` already annotates
+  onto each `ArgumentOp` when a match is found) at all, always using each
+  arg's own bare `.name` unconditionally. This is the same *class* of bug as
+  the `ccpp_loop_cnt` duplicate-declaration bug fixed during the
   nested-subcycle work's Stage 4 (two unrelated things independently
-  choosing the same bare name, nothing de-duplicates) -- but a different
-  site, and **not introduced by or related to nested-subcycle support** --
-  it would occur in any suite with this naming collision, subcycle or not,
-  and would be trivially avoidable by preferring `model_var_name` over the
-  scheme's own name whenever a host match exists (which var_compat's own
-  host metadata shows was the intended fix all along).
-  - **Confirmed real and currently blocking**: this is why
-    `examples/var_compat` cannot actually compile today, independent of and
-    unrelated to the top_at_one/kind-conversion items already documented in
-    its README — that doc has been updated with this finding too.
-  - **Not scoped or fixed here** — deliberately out of scope for the
-    nested-subcycle effort (this finding surfaced only because that effort's
-    own Stage 4 called for attempting a real build once codegen was done).
-    Given the root-cause is now precisely located (prefer `model_var_name`
-    over `.name` when building the suite signature's dummy-argument list in
-    `suite_cap.py`), this is likely a small, well-scoped fix for whoever
-    picks it up next -- not re-derived from scratch.
+  choosing the same bare name, nothing de-duplicates) — a different,
+  unrelated site with nothing to do with subcycling.
+  - **Fixed** in `_build_block_signature`: computes each arg's default hint
+    (its own scheme's local name, unchanged for the common case) first, and
+    only when two different standard_names' schemes genuinely collide on
+    the same default hint does it fall back to `model_var_name` for just
+    those entries (raising a clear `ValueError` if no host match is
+    available to disambiguate with) — every non-colliding arg keeps its
+    exact original name. The data wiring needed the same treatment: `data_ops`
+    (keyed by the scheme's own bare arg name) can't distinguish colliding
+    entries either, so each entry is also registered under a
+    `("std_name", ...)`-tagged key, populated from an index-keyed
+    `final_values` list (not from the name-keyed dict, which is itself
+    collision-prone) so every scheme call still receives its own correct
+    value regardless of which one is processed last.
+  - This fix requires the `generate-host-match` pass to have already run so
+    `model_var_name` is set — which the production `ccpp_xdsl` tool always
+    does whenever host files are supplied (`ccpp_dsl.py`'s `_build_pipeline`),
+    so no user-facing invocation changes. The two var_compat FileCheck
+    goldens' hand-written `-p` pass lists (copied from examples/advection's
+    pattern, which never needed host-matching) were missing this pass and
+    have been corrected to match.
+  - Regression coverage: `tests/unit/test_suite_arg_name_collision.py`
+    (collision resolved via host name, both the printed signature and each
+    scheme's actual call-site value; and a negative test confirming a clear
+    `ValueError` when no host match exists to disambiguate with).
 
 ---
 

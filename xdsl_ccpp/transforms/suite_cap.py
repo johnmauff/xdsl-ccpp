@@ -735,22 +735,91 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         new_block = Block(arg_types=input_arg_types)
 
-        data_ops = {}
-        for idx, fn_arg in enumerate(input_arg_list):
-            hint = fn_arg.name
+        def _hint_for(fn_arg, base_name: str) -> str:
             if fn_arg.hasAttr("allocatable"):
-                hint = fn_arg.name + "__alloc"
-            elif fn_arg.hasAttr("optional"):
-                hint = fn_arg.name + "__opt"
-            elif (self._has_dims(fn_arg)
-                  and fn_arg.getAttr("intent") == "in"):
+                return base_name + "__alloc"
+            if fn_arg.hasAttr("optional"):
+                return base_name + "__opt"
+            if self._has_dims(fn_arg) and fn_arg.getAttr("intent") == "in":
                 # Array args that are truly intent(in) get __in so the printer
                 # emits intent(in) rather than the default intent(inout).
                 # Unit-mismatched args are now converted into a local copy so
                 # the host's array is never modified — intent(in) is correct.
-                hint = fn_arg.name + "__in"
+                return base_name + "__in"
+            return base_name
+
+        def _printed_name(hint: str) -> str:
+            # print_ftn.py strips this exact __alloc/__opt/__in suffix before
+            # emitting the Fortran identifier (see its input_names comprehension),
+            # so collision detection must compare on this stripped form -- e.g. a
+            # scalar "x" and an array intent(in) "x" have different hints ("x" vs
+            # "x__in") but print as the same duplicate dummy-argument name.
+            if hint.endswith("__alloc"):
+                return hint[: -len("__alloc")]
+            if hint.endswith("__opt"):
+                return hint[: -len("__opt")]
+            if hint.endswith("__in"):
+                return hint[: -len("__in")]
+            return hint
+
+        # input_arg_list comes from all_args.values() (a dict keyed by
+        # std_key), so every entry here is a genuinely distinct standard_name.
+        # Compute each arg's default hint (its own scheme's local name, exactly
+        # as before) first, unchanged for the common case. Only when two
+        # different standard_names' schemes independently chose the same
+        # local name -- a real collision, e.g. examples/var_compat's four
+        # schemes all using "scalar_var" for four unrelated standard_names --
+        # fall back to the host-matched canonical name (model_var_name) for
+        # just those colliding entries, since the host routinely already
+        # gives each standard_name a distinct name for this exact reason
+        # (var_compat's own host table: scalar_var/scalar_varA/scalar_varB/
+        # scalar_varC). Every non-colliding arg keeps its original name,
+        # byte-identical to before this existed.
+        default_hints = [_hint_for(fn_arg, fn_arg.name) for fn_arg in input_arg_list]
+        collision_counts: dict[str, int] = {}
+        for h in default_hints:
+            printed = _printed_name(h)
+            collision_counts[printed] = collision_counts.get(printed, 0) + 1
+
+        data_ops = {}
+        printed_seen: dict[str, str] = {}  # printed dummy-arg name -> the fn_arg.name that claimed it
+        for idx, fn_arg in enumerate(input_arg_list):
+            hint = default_hints[idx]
+            printed = _printed_name(hint)
+            if collision_counts[printed] > 1:
+                if not fn_arg.hasAttr("model_var_name"):
+                    raise ValueError(
+                        f"Suite dummy-argument name collision on {printed!r}: "
+                        f"scheme argument {fn_arg.name!r} shares this local name "
+                        f"with another, unrelated standard_name, and has no "
+                        f"host-matched canonical name (model_var_name) to "
+                        f"disambiguate with. Give the host a distinct local "
+                        f"name for this standard_name, or rename one of the "
+                        f"colliding schemes' arguments."
+                    )
+                hint = _hint_for(fn_arg, fn_arg.getAttr("model_var_name"))
+                printed = _printed_name(hint)
+                if printed in printed_seen:
+                    raise ValueError(
+                        f"Suite dummy-argument name collision: both "
+                        f"{printed_seen[printed]!r} and {fn_arg.name!r} (different "
+                        f"standard_names) resolve to the same dummy-argument "
+                        f"name {printed!r} even after preferring model_var_name. "
+                        f"Give the host a distinct local name for one of these "
+                        f"standard_names."
+                    )
+            printed_seen[printed] = fn_arg.name
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
+
+        # Index-keyed (not name-keyed) record of each input arg's current
+        # resolved SSA value, updated alongside data_ops[fn_arg.name] below
+        # by the kind-cast/unit-cast loops. Needed because data_ops is keyed
+        # by fn_arg.name, which -- for the very args this collision handling
+        # exists for -- is NOT unique across entries (that's the collision);
+        # tracking by position instead means a later entry's write can never
+        # clobber an earlier entry's value, unlike the name-keyed dict.
+        final_values: list = [new_block.args[idx] for idx in range(len(input_arg_list))]
 
         if self.ccpp_handle is not None:
             new_block.args[len(input_arg_list)].name_hint = self.ccpp_handle[0]
@@ -773,6 +842,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
             kind_cast_ops.append(cast_op)
             data_ops[fn_arg.name] = cast_op
+            final_values[idx] = cast_op
 
             intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
             if intent in ("inout", "out"):
@@ -800,6 +870,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
             unit_convert_ops.append(conv_op)
             data_ops[fn_arg.name] = conv_op
+            final_values[idx] = conv_op
 
             if intent in ("inout", "out"):
                 unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
@@ -830,6 +901,26 @@ class GenerateSuiteSubroutine(RewritePattern):
             alloc_op.memref.name_hint = "errmsg"
             alloc_ops["errmsg"] = alloc_op
             data_ops["errmsg"] = alloc_op
+
+        # Also register every input arg under the ("std_name", ...) tagged key
+        # that generateSchemeSubroutineCallOps already prefers when resolving
+        # a scheme's own call arguments (see its "val = data_ops.get(
+        # ('std_name', ...), data_ops[arg.name])" lookups). Sourced from
+        # final_values (index-keyed) rather than data_ops[fn_arg.name]
+        # (name-keyed): for exactly the args this collision handling exists
+        # for, fn_arg.name is NOT unique across entries (that's the
+        # collision), so data_ops[fn_arg.name] itself only ever holds
+        # whichever entry was processed last -- reading from it here would
+        # silently tag every colliding std_name with that same last value.
+        # Purely additive for the common, non-colliding case (same value
+        # data_ops[arg.name] already holds) -- but without it, two different
+        # standard_names whose schemes independently chose the same local
+        # arg name would ALSO collide on the bare-name key, so every scheme
+        # sharing that bare name would be called with the same wrong value
+        # regardless of which standard_name it actually declared -- not just
+        # a naming cosmetic, a real wrong-value bug.
+        for idx, fn_arg in enumerate(input_arg_list):
+            data_ops[("std_name", self._std_key(fn_arg))] = final_values[idx]
 
         return _BlockSignature(
             new_block=new_block,
