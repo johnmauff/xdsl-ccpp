@@ -24,6 +24,19 @@ Two things had to be fixed together in suite_cap.py's _build_block_signature:
     actually declared -- a silent wrong-value bug, not just a naming
     cosmetic. Confirmed and fixed by tracing this exact failure mode with
     examples/var_compat's real generated code before landing the final fix.
+
+A Copilot review comment on the PR carrying this fix (#42) pointed out that
+the original test's own duplicate check could miss a collision between args
+of different shape (scalar vs array) or intent, since it compared raw
+declaration text instead of just the dummy-argument name. Investigating
+that led to a real gap in the *production* code, not just the test:
+suite_cap.py's collision detection compared the internal, possibly-suffixed
+name_hint (e.g. "x" vs "x__in" for a scalar vs. an intent(in) array), but
+print_ftn.py strips that suffix before printing -- so both would print as
+the identical duplicate name "x" while going undetected as a collision.
+Fixed by comparing the *printed* name (suffix stripped) everywhere
+suite_cap.py does collision bookkeeping; see
+TestCollisionAcrossShapeAndIntent for direct regression coverage.
 """
 
 from io import StringIO
@@ -81,6 +94,16 @@ def _fn_body(fortran: str, fn_name: str) -> str:
     return fortran.split(f"subroutine {fn_name}")[1].split(f"end subroutine {fn_name}")[0]
 
 
+def _declared_arg_name(line: str) -> str:
+    """Extract just the dummy-argument name from a Fortran declaration line,
+    stripping any array-shape suffix (e.g. "x(:, :)" -> "x") so a scalar and
+    an array sharing the same name are correctly seen as the same
+    (duplicate) declared identifier -- a real collision, as flagged by a
+    Copilot review comment on PR #42 pointing out the original version of
+    this check compared the raw, un-stripped declaration text instead."""
+    return line.strip().split("::")[1].strip().split("(")[0].strip()
+
+
 class TestCollisionResolvedViaHostName:
     """Both schemes' own arg is named "x", for two different standard_names
     -- but the host gives each standard_name a distinct local name, so the
@@ -119,9 +142,9 @@ class TestCollisionResolvedViaHostName:
         assert "host_x_a" in fortran
         assert "host_x_b" in fortran
         declared = [
-            line.strip().split("::")[1].strip()
+            _declared_arg_name(line)
             for line in fn.splitlines()
-            if "intent(in)" in line and "::" in line
+            if "intent(" in line and "::" in line
         ]
         assert len(declared) == len(set(declared)), (
             f"duplicate dummy-argument declaration(s): {declared}"
@@ -135,6 +158,90 @@ class TestCollisionResolvedViaHostName:
         fortran = _fortran_output(
             run_host_match, ccpp_context,
             [_scheme_meta("scheme_a", "std_a"), _scheme_meta("scheme_b", "std_b")],
+            [self._HOST_META],
+        )
+        fn = _fn_body(fortran, "test_suite_suite_physics")
+        call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
+        call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
+        assert "host_x_a" in call_a
+        assert "host_x_b" not in call_a
+        assert "host_x_b" in call_b
+        assert "host_x_a" not in call_b
+
+
+class TestCollisionAcrossShapeAndIntent:
+    """Both schemes' own arg is named "x" for two different standard_names,
+    but one is a scalar intent(in) arg (no name_hint suffix) and the other is
+    an array intent(in) arg (gets an internal "__in" name_hint suffix, which
+    print_ftn.py strips before emitting the Fortran identifier). Collision
+    detection must compare on the *printed* name, not the raw, suffixed
+    name_hint -- otherwise "x" and "x__in" look like different names and the
+    collision goes undetected, even though both print as the literal
+    duplicate dummy-argument name "x". Found via a Copilot review comment on
+    PR #42 questioning whether the original collision test could miss a
+    shape/intent-driven case like this one.
+    """
+
+    _HOST_META = """\
+[ccpp-table-properties]
+  name = test_host_mod
+  type = module
+[ccpp-arg-table]
+  name = test_host_mod
+  type = module
+[ host_x_a ]
+  standard_name = std_a
+  units = 1
+  type = real
+  kind = kind_phys
+  dimensions = ()
+[ host_x_b ]
+  standard_name = std_b
+  units = 1
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension)
+"""
+
+    _SCALAR_SCHEME = _scheme_meta("scheme_a", "std_a")
+
+    _ARRAY_SCHEME = f"""\
+[ccpp-table-properties]
+  name = scheme_b
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_b_run
+  type = scheme
+[ x ]
+  standard_name = std_b
+  units = 1
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension)
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+    def test_signature_has_no_duplicate_dummy_arg_names(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            [self._SCALAR_SCHEME, self._ARRAY_SCHEME],
+            [self._HOST_META],
+        )
+        fn = _fn_body(fortran, "test_suite_suite_physics")
+        declared = [
+            _declared_arg_name(line)
+            for line in fn.splitlines()
+            if "intent(" in line and "::" in line
+        ]
+        assert len(declared) == len(set(declared)), (
+            f"duplicate dummy-argument declaration(s): {declared}"
+        )
+
+    def test_each_scheme_call_gets_its_own_correct_value(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            [self._SCALAR_SCHEME, self._ARRAY_SCHEME],
             [self._HOST_META],
         )
         fn = _fn_body(fortran, "test_suite_suite_physics")

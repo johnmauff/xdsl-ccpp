@@ -748,6 +748,20 @@ class GenerateSuiteSubroutine(RewritePattern):
                 return base_name + "__in"
             return base_name
 
+        def _printed_name(hint: str) -> str:
+            # print_ftn.py strips this exact __alloc/__opt/__in suffix before
+            # emitting the Fortran identifier (see its input_names comprehension),
+            # so collision detection must compare on this stripped form -- e.g. a
+            # scalar "x" and an array intent(in) "x" have different hints ("x" vs
+            # "x__in") but print as the same duplicate dummy-argument name.
+            if hint.endswith("__alloc"):
+                return hint[: -len("__alloc")]
+            if hint.endswith("__opt"):
+                return hint[: -len("__opt")]
+            if hint.endswith("__in"):
+                return hint[: -len("__in")]
+            return hint
+
         # input_arg_list comes from all_args.values() (a dict keyed by
         # std_key), so every entry here is a genuinely distinct standard_name.
         # Compute each arg's default hint (its own scheme's local name, exactly
@@ -764,16 +778,18 @@ class GenerateSuiteSubroutine(RewritePattern):
         default_hints = [_hint_for(fn_arg, fn_arg.name) for fn_arg in input_arg_list]
         collision_counts: dict[str, int] = {}
         for h in default_hints:
-            collision_counts[h] = collision_counts.get(h, 0) + 1
+            printed = _printed_name(h)
+            collision_counts[printed] = collision_counts.get(printed, 0) + 1
 
         data_ops = {}
-        hints_seen: dict[str, str] = {}  # dummy-arg name -> the fn_arg.name that claimed it
+        printed_seen: dict[str, str] = {}  # printed dummy-arg name -> the fn_arg.name that claimed it
         for idx, fn_arg in enumerate(input_arg_list):
             hint = default_hints[idx]
-            if collision_counts[hint] > 1:
+            printed = _printed_name(hint)
+            if collision_counts[printed] > 1:
                 if not fn_arg.hasAttr("model_var_name"):
                     raise ValueError(
-                        f"Suite dummy-argument name collision on {hint!r}: "
+                        f"Suite dummy-argument name collision on {printed!r}: "
                         f"scheme argument {fn_arg.name!r} shares this local name "
                         f"with another, unrelated standard_name, and has no "
                         f"host-matched canonical name (model_var_name) to "
@@ -782,16 +798,17 @@ class GenerateSuiteSubroutine(RewritePattern):
                         f"colliding schemes' arguments."
                     )
                 hint = _hint_for(fn_arg, fn_arg.getAttr("model_var_name"))
-                if hint in hints_seen:
+                printed = _printed_name(hint)
+                if printed in printed_seen:
                     raise ValueError(
                         f"Suite dummy-argument name collision: both "
-                        f"{hints_seen[hint]!r} and {fn_arg.name!r} (different "
+                        f"{printed_seen[printed]!r} and {fn_arg.name!r} (different "
                         f"standard_names) resolve to the same dummy-argument "
-                        f"name {hint!r} even after preferring model_var_name. "
+                        f"name {printed!r} even after preferring model_var_name. "
                         f"Give the host a distinct local name for one of these "
                         f"standard_names."
                     )
-            hints_seen[hint] = fn_arg.name
+            printed_seen[printed] = fn_arg.name
             new_block.args[idx].name_hint = hint
             data_ops[fn_arg.name] = new_block.args[idx]
 
