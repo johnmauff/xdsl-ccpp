@@ -80,6 +80,7 @@
   type = real |  kind = kind_phys
   intent = inout
   constituent = True
+  memory_space = device
 [ errmsg ]
   standard_name = ccpp_error_message
   long_name = Error message for error handling in CCPP
@@ -112,6 +113,11 @@
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real |  kind = kind_phys
   # Advected species that needs to be promoted from suite.
+  # memory_space=device: cld_liq_init's own !$acc parallel loop
+  # present(cld_liq_array) asserts device residency for this SuiteOwned
+  # array -- this declaration is what makes xdsl-ccpp actually establish
+  # it (SuiteOwned GPU residency).
+  memory_space = device
   intent = out
 [ tcld]
   standard_name = minimum_temperature_for_cloud_liquid

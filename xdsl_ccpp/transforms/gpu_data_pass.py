@@ -6,6 +6,7 @@ from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccDataBeginOp,
     AccDataEndOp,
@@ -18,9 +19,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetUpdateToOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
+    FRAMEWORK_STD_NAME_TO_CAP_VAR,
     _bare,
     _iter_schemes,
+    find_diverged_capscratch_vars,
     find_diverged_suite_vars,
+    resolve_capscratch_cap_var_name,
     split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -174,6 +178,57 @@ class GPUDataPass(ModulePass):
             result[arg.name] = (category, host_var)
         return result
 
+    def _get_diverged_capscratch_args(self, scheme_name, table_name, meta_data, diverged_capscratch_vars):
+        """Return {local_name: (category, cap_var_name, is_direct)} for
+        every arg in this scheme's <table_name> argument table that is
+        CapScratch-classified and resolves (via
+        cap_shared.resolve_capscratch_cap_var_name) to a cap var name in
+        diverged_capscratch_vars.
+
+        Mirrors _get_diverged_args, substituting the CapScratch cap-var
+        identity (no host match at all) for the host-matched model_var_name
+        identity. category is "present" if this scheme declares
+        memory_space=device for the arg, "update" otherwise -- the "update"
+        side is exactly a scheme sharing the same shared array (e.g.
+        apply_constituent_tendencies_run's const_tend) that does NOT
+        declare device, even though the array is device-resident overall
+        because some other contributing scheme does.
+
+        is_direct is True when this arg's own standard_name is a direct
+        FRAMEWORK_STD_NAME_TO_CAP_VAR match (const/const_tend -- the actual
+        shared array itself), False when it resolved via the constituent-
+        tendency scratch-var path (e.g. cld_liq_tend -- a Fortran pointer
+        slice of the shared array, covering only one constituent's data).
+        Callers must prefer a direct reference when picking which local
+        name's SSA value to sync: an update self/device must cover the
+        whole shared array (every constituent, since a host-only consumer
+        like apply_constituent_tendencies_run reads/writes all of them),
+        not just whichever single constituent a producer scheme's own
+        scratch-var alias happens to slice.
+        """
+        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+            return {}
+        result = {}
+        for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments():
+            if (
+                not arg.hasAttr("ownership_kind")
+                or arg.getAttr("ownership_kind") != ArgOwnershipKind.CapScratch
+            ):
+                continue
+            if not arg.hasAttr("standard_name"):
+                continue
+            std_name = arg.getAttr("standard_name")
+            cap_var = resolve_capscratch_cap_var_name(std_name, arg.hasAttr("constituent"))
+            if cap_var is None or cap_var not in diverged_capscratch_vars:
+                continue
+            scheme_space = (
+                arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
+            )
+            category = "present" if scheme_space == "device" else "update"
+            is_direct = std_name.lower() in FRAMEWORK_STD_NAME_TO_CAP_VAR
+            result[arg.name] = (category, cap_var, is_direct)
+        return result
+
     def _emit_present(self, ref, call_op):
         """Wrap a single call in its own present()-only data region.
 
@@ -240,16 +295,33 @@ class GPUDataPass(ModulePass):
             ).items():
                 touches.setdefault(host_var, []).append((call_op, category, local_name))
 
-        for touch_list in touches.values():
+        resolved: dict = {}
+        for host_var, touch_list in touches.items():
             ref = next(
                 (arg_by_name[name] for _, _, name in touch_list if name in arg_by_name),
                 None,
             )
+            resolved[host_var] = (ref, [(call_op, category) for call_op, category, _ in touch_list])
+        self._emit_diverged_touches(resolved)
+
+    def _emit_diverged_touches(self, resolved_touches):
+        """Shared run-coalescing core for _process_diverged_host_vars and
+        _process_diverged_capscratch_vars: given {identity: (ref, ordered
+        [(call_op, category), ...])} with ref already resolved by the
+        caller (each caller has its own rules for picking the right SSA
+        reference -- see their docstrings), split each identity's touches
+        into maximal runs of consecutive equal classification (see
+        _process_diverged_host_vars's docstring for why: an interleaved
+        present-classified touch genuinely needs the device copy synced
+        before it executes, so it breaks an update run rather than being
+        absorbed into it).
+        """
+        for ref, touch_list in resolved_touches.values():
             if ref is None:
                 continue
 
             update_run: list = []
-            for call_op, category, _ in touch_list:
+            for call_op, category in touch_list:
                 if category == "present":
                     self._emit_present(ref, call_op)
                     if update_run:
@@ -260,16 +332,79 @@ class GPUDataPass(ModulePass):
             if update_run:
                 self._emit_update(ref, first_op=update_run[0], last_op=update_run[-1])
 
-    def _process_physics_fn(self, fn_op, meta_data, diverged_vars=frozenset()):
+    def _process_diverged_capscratch_vars(self, calls, meta_data, diverged_capscratch_vars, arg_by_name):
+        """Route present/update clauses per individual scheme call for
+        CapScratch cap vars in `diverged_capscratch_vars` -- the CapScratch
+        counterpart of _process_diverged_host_vars, for shared cap-owned
+        arrays (e.g. lc_const_tend, backing both const_tend and the
+        cld_liq_tend pointer alias) instead of host-matched variables.
+
+        Unlike the host-var case, there is no host-declared
+        model_var_memory_space to consult for "is this array device-
+        resident at all" -- that's instead the OR across every contributing
+        scheme's own memory_space declaration (see
+        cap_shared.find_diverged_capscratch_vars), already reflected in
+        which cap vars land in diverged_capscratch_vars at all.
+
+        Ref resolution differs from _process_diverged_host_vars in one
+        important way: a constituent-tendency scratch-var alias (e.g.
+        cld_liq_tend) is a Fortran pointer slice covering only ONE
+        constituent's data, not the whole shared array -- syncing just
+        that slice would silently drop every other constituent's data an
+        update self/device is supposed to cover (e.g.
+        apply_constituent_tendencies_run reads/writes ALL constituents).
+        So, unlike the host-var case where any touching local name is
+        equally valid, this prefers a "direct" touch (the arg whose own
+        standard_name is the actual shared array, e.g. const/const_tend --
+        see _get_diverged_capscratch_args's is_direct) when picking which
+        local name's SSA value to sync, falling back to any touch only if
+        no direct one exists for this cap var.
+        """
+        touches: dict = {}  # cap_var_name -> ordered [(op, category, local_name, is_direct), ...]
+        for call_op, scheme_name, table_name in calls:
+            for local_name, (category, cap_var, is_direct) in self._get_diverged_capscratch_args(
+                scheme_name, table_name, meta_data, diverged_capscratch_vars
+            ).items():
+                touches.setdefault(cap_var, []).append((call_op, category, local_name, is_direct))
+
+        resolved: dict = {}
+        for cap_var, touch_list in touches.items():
+            ref = next(
+                (
+                    arg_by_name[name]
+                    for _, _, name, is_direct in touch_list
+                    if is_direct and name in arg_by_name
+                ),
+                None,
+            )
+            if ref is None:
+                ref = next(
+                    (arg_by_name[name] for _, _, name, _ in touch_list if name in arg_by_name),
+                    None,
+                )
+            resolved[cap_var] = (
+                ref, [(call_op, category) for call_op, category, _, _ in touch_list]
+            )
+        self._emit_diverged_touches(resolved)
+
+    def _process_physics_fn(
+        self, fn_op, meta_data, diverged_vars=frozenset(), diverged_capscratch_vars=frozenset()
+    ):
         """Insert acc.data markers around GPU scheme calls in one subroutine.
 
         Finds all error-guarded scheme calls, in order, then:
         - hostless scratch args (no host match at all): collects the union
           of their device variable names across every GPU-capable call and
           wraps the entire group in a single !$acc data region (unchanged
-          from before this feature -- see the block below).
+          from before this feature -- see the block below) -- except any
+          arg whose CapScratch cap var is in diverged_capscratch_vars,
+          which is excluded here and routed per individual scheme call
+          instead (see _process_diverged_capscratch_vars) to avoid double-
+          handling the same shared array two different ways.
         - diverged host vars (backlog item (b)): routed per individual
           scheme call instead -- see _process_diverged_host_vars.
+        - diverged CapScratch cap vars: routed per individual scheme call
+          instead -- see _process_diverged_capscratch_vars.
         """
         if not fn_op.body.blocks:
             return
@@ -309,11 +444,11 @@ class GPUDataPass(ModulePass):
         }
 
         # --- hostless scratch vars: unchanged single-region approach ---
-        gpu_calls = []  # (scf.IfOp, device_vars) for calls with >=1 device arg
+        gpu_calls = []  # (scf.IfOp, scheme_name, table_name, device_vars) for calls with >=1 device arg
         for op, scheme_name, table_name in calls:
             device_vars = self._get_device_args(scheme_name, table_name, meta_data)
             if device_vars:
-                gpu_calls.append((op, device_vars))
+                gpu_calls.append((op, scheme_name, table_name, device_vars))
 
         if gpu_calls:
             # Only emit suite_cap level directives for variables that have NO
@@ -323,9 +458,16 @@ class GPUDataPass(ModulePass):
             # directives here too would create nested !$acc data regions
             # with redundant data movement.
             all_local_vars = set()
-            for _, device_vars in gpu_calls:
+            for _, scheme_name, table_name, device_vars in gpu_calls:
+                diverged_local_names = (
+                    self._get_diverged_capscratch_args(
+                        scheme_name, table_name, meta_data, diverged_capscratch_vars
+                    )
+                    if diverged_capscratch_vars
+                    else {}
+                )
                 for local_name, host_var in device_vars.items():
-                    if host_var is None:
+                    if host_var is None and local_name not in diverged_local_names:
                         all_local_vars.add(local_name)
 
             if all_local_vars:
@@ -362,6 +504,12 @@ class GPUDataPass(ModulePass):
         # --- diverged host vars: per-scheme-call routing (backlog item (b)) ---
         if diverged_vars:
             self._process_diverged_host_vars(calls, meta_data, diverged_vars, arg_by_name)
+
+        # --- diverged CapScratch cap vars: per-scheme-call routing ---
+        if diverged_capscratch_vars:
+            self._process_diverged_capscratch_vars(
+                calls, meta_data, diverged_capscratch_vars, arg_by_name
+            )
 
     # Suffixes of the suite-level lifecycle subroutines built by
     # suite_cap.py (suite_name + "_suite" + generated_subroutine_posfix; see
@@ -413,6 +561,7 @@ class GPUDataPass(ModulePass):
             suite_name = module_op.sym_name.data[: -len("_cap")]
             suite_desc = bsd.schemes.get(suite_name)
             diverged_vars = frozenset()
+            diverged_capscratch_vars = frozenset()
             if suite_desc is not None:
                 scheme_names = {
                     scheme.attributes["name"]
@@ -420,6 +569,7 @@ class GPUDataPass(ModulePass):
                     for scheme in _iter_schemes(group)
                 }
                 diverged_vars = find_diverged_suite_vars(scheme_names, meta_data)
+                diverged_capscratch_vars = find_diverged_capscratch_vars(scheme_names, meta_data)
 
             for child in module_op.body.block.ops:
                 if not (isa(child, func.FuncOp) and not child.is_declaration):
@@ -428,4 +578,6 @@ class GPUDataPass(ModulePass):
                 if "_suite_physics" in fn_name or fn_name.endswith(
                     self._LIFECYCLE_SUITE_FN_SUFFIXES
                 ):
-                    self._process_physics_fn(child, meta_data, diverged_vars)
+                    self._process_physics_fn(
+                        child, meta_data, diverged_vars, diverged_capscratch_vars
+                    )

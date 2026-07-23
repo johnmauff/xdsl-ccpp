@@ -41,6 +41,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
+    resolve_capscratch_cap_var_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -145,11 +146,6 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     # ownership_kind already accounts for.
     host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
 
-    # Shallow copy, not an alias: this is a local variable by naming
-    # convention (like every other _-prefixed name in this function) and
-    # must stay safe to mutate locally without ever touching the shared
-    # module-level FRAMEWORK_STD_NAME_TO_CAP_VAR dict other callers rely on.
-    _FRAMEWORK_TO_CAP_VAR = dict(FRAMEWORK_STD_NAME_TO_CAP_VAR)
     _DIM_TO_ALLOC = {
         CCPP_LOOP_EXTENT_STD_NAME: "ncols",
         CCPP_HORIZ_DIM_STD_NAME: "ncols",
@@ -205,8 +201,10 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                 if not _std_cv:
                     continue
                 _needs_gpu_cv = _msp_cv.get(_bn_cv, False)
-                if _std_cv in _FRAMEWORK_TO_CAP_VAR:
-                    _cap_name_cv = _FRAMEWORK_TO_CAP_VAR[_std_cv]
+                if _std_cv in FRAMEWORK_STD_NAME_TO_CAP_VAR:
+                    _cap_name_cv = resolve_capscratch_cap_var_name(
+                        _std_cv, _cno_cv.get(_bn_cv, False)
+                    )
                     if _std_cv not in cap_var_map:
                         cap_var_map[_std_cv] = (_cap_name_cv, None, None)
                     if _needs_gpu_cv:
@@ -221,16 +219,21 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                     ) if _dims_cv else "ncols, pver"
                     # Constituent-tendency scratch vars (constituent=True in meta)
                     # are pointer slices into lc_const_tend, not separate allocatables.
-                    _const_std_name = None
-                    if _cno_cv.get(_bn_cv) and _std_cv.startswith("tendency_of_"):
-                        _const_std_name = _std_cv[len("tendency_of_"):]
+                    _resolved_cap_var_cv = resolve_capscratch_cap_var_name(
+                        _std_cv, _cno_cv.get(_bn_cv, False)
+                    )
+                    _const_std_name = (
+                        _std_cv[len("tendency_of_"):]
+                        if _resolved_cap_var_cv == "lc_const_tend"
+                        else None
+                    )
                     cap_var_map[_std_cv] = (_lc_cv, None, None)
                     scratch_var_index[_std_cv] = len(scratch_var_list)
                     scratch_var_list.append(
                         [_lc_cv, _rank_cv, _alloc_cv, _const_std_name, _needs_gpu_cv]
                     )
                     if _const_std_name and _needs_gpu_cv:
-                        framework_var_residency["lc_const_tend"] = True
+                        framework_var_residency[_resolved_cap_var_cv] = True
                 elif _needs_gpu_cv:
                     # Repeat occurrence of an already-seen scratch var (e.g.
                     # referenced again from a later group/suite) -- OR this
