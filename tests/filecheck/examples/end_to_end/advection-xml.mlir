@@ -14,6 +14,7 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use apply_constituent_tendencies, only: apply_constituent_tendencies_run
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:    use cld_ice, only: cld_ice_final
 // CHECK-NEXT:    use cld_ice, only: cld_ice_init
 // CHECK-NEXT:    use cld_ice, only: cld_ice_register
 // CHECK-NEXT:    use cld_ice, only: cld_ice_run
@@ -118,15 +119,18 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine cld_suite_suite_initialize
-// CHECK-LABEL:   subroutine cld_suite_suite_finalize(errflg, errmsg)
-// CHECK:           integer, intent(out) :: errflg
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-LABEL:   subroutine cld_suite_suite_finalize(errmsg, errflg)
+// CHECK:           character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in cld_suite_finalize"
 // CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call cld_ice_final(errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    #ifdef USE_GPU
@@ -292,7 +296,7 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
-// CHECK-NEXT:        call cld_suite_suite_finalize(errflg, errmsg)
+// CHECK-NEXT:        call cld_suite_suite_finalize(errmsg, errflg)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1

@@ -164,15 +164,28 @@ def _bare(name: str) -> str:
     return name
 
 
+# Alternate short-form spellings accepted alongside each canonical lifecycle
+# postfix, for schemes following the atmospheric_physics/kessler_update
+# convention (e.g. cld_ice.meta's bare "cld_ice_final" table). Single
+# definition shared by lifecycle_cap.py's dispatch-lookup and suite_cap.py's
+# arg-table lookup, so the two can't silently diverge on which alias forms
+# they accept.
+LIFECYCLE_POSTFIX_ALIASES: dict[str, str] = {
+    "_timestep_initialize": "_timestep_init",
+    "_timestep_finalize": "_timestep_final",
+    "_finalize": "_final",
+}
+
 # Ordered (longest/most-specific first) so a longer suffix is never shadowed
 # by a shorter one it contains as a trailing substring:
 #   - '_timestep_finalize' before '_finalize' ('foo_timestep_finalize' ends
 #     with both).
-#   - '_timestep_init'/'_timestep_final' before '_init'/'_finalize'
-#     ('foo_timestep_init' ends with both '_timestep_init' and '_init').
+#   - '_timestep_init'/'_timestep_final' before '_init'/'_finalize'/'_final'
+#     ('foo_timestep_init' ends with both '_timestep_init' and '_init';
+#     'foo_timestep_final' ends with both '_timestep_final' and '_final').
 # Canonical spellings ('_timestep_initialize'/'_timestep_finalize') come from
 # ccpp_cap.py's lifecycle_specs; the short-form aliases ('_timestep_init'/
-# '_timestep_final') come from lifecycle_cap.py's _lc_postfix_aliases, for
+# '_timestep_final'/'_final') come from LIFECYCLE_POSTFIX_ALIASES above, for
 # schemes following the atmospheric_physics/kessler_update convention.
 _PHASE_SUFFIXES = (
     ("_timestep_initialize", "timestep_initial"),
@@ -182,6 +195,7 @@ _PHASE_SUFFIXES = (
     ("_run",                 "run"),
     ("_init",                "initialize"),
     ("_finalize",            "finalize"),
+    ("_final",               "finalize"),
     ("_register",            "register"),
 )
 
