@@ -9,15 +9,28 @@
 // variables are declared exactly once each -- see
 // ccpp_cap_refactor_plan.md's backlog for the duplicate/missing-declaration
 // bugs this work found and fixed along the way. See examples/var_compat/
-// README.md for what this example does and does not cover (top_at_one/
-// kind-conversion fidelity are separate, already-tracked, out-of-scope
-// issues). The suite's four schemes all use the bare local name 'scalar_var'
-// for four unrelated standard_names -- a dummy-argument-name collision the
-// host's own metadata resolves by giving each standard_name a distinct name
-// (scalar_var/scalar_varA/scalar_varB/scalar_varC); this requires the
-// generate-host-match pass to run (as the production ccpp_xdsl tool always
-// does whenever host files are given) so suite_cap.py has a model_var_name
-// to disambiguate with.
+// README.md for what this example does and does not cover (the vertical
+// array flipping attribute, top_at_one, is a separate, already-tracked,
+// out-of-scope issue). The suite's four schemes all use the bare local name
+// 'scalar_var' for four unrelated standard_names -- a dummy-argument-name
+// collision the host's own metadata resolves by giving each standard_name a
+// distinct name (scalar_var/scalar_varA/scalar_varB/scalar_varC); this
+// requires the generate-host-match pass to run (as the production ccpp_xdsl
+// tool always does whenever host files are given) so suite_cap.py has a
+// model_var_name to disambiguate with.
+//
+// Two standard_names here are declared with genuinely different units or
+// kind by different schemes (not just different from the host):
+// effr_pre/effr_post declare the rain-particle radius in meters (matching
+// the host) while effr_calc/effr_diag declare the same standard_name in
+// micrometers, and effrs_calc declares the snow-particle radius in
+// meters/kind_phys (matching the host) while effr_calc declares the same
+// standard_name in micrometers/kind=8. Each scheme call below marshals to
+// its own known kind/unit mismatch independently -- effrr_in_unit_conv gets
+// freshly built (and, for effr_calc/effr_diag, torn down) around each
+// individual call, effr_pre/effr_post/effrs_calc receive the shared value
+// directly with no conversion at all -- rather than one suite-boundary
+// conversion applied uniformly to every caller.
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
@@ -131,11 +144,11 @@
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrs_inout(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: ncl_out(:, :)
 // CHECK-NEXT:      logical, intent(in) :: has_graupel
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_var
+// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: scalar_var
 // CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: tke_inout
 // CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: tke2_inout
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
-// CHECK-NEXT:      integer, intent(inout) :: scalar_varC
+// CHECK-NEXT:      integer, intent(in) :: scalar_varC
 // CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -143,11 +156,24 @@
 // CHECK-NEXT:      integer :: ccpp_loop_cnt0
 // CHECK-NEXT:      integer :: ccpp_loop_cnt1
 // CHECK-NEXT:      integer :: ccpp_loop_cnt2
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrg_in_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrl_inout_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effri_out_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys) :: scalar_var_unit_conv
+// CHECK-NEXT:      real(kind=kind_phys) :: tke_inout_unit_conv
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv(:, :)
 // CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_kind_cast(:, :)
+// CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv3(:, :)
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      allocate(effrs_inout_kind_cast(size(effrs_inout, 1), size(effrs_inout, 2)))
-// CHECK-NEXT:      effrs_inout_kind_cast = real(effrs_inout, kind=8)
+// CHECK-NEXT:      allocate(effrg_in_unit_conv(size(effrg_in, 1), size(effrg_in, 2)))
+// CHECK-NEXT:      effrg_in_unit_conv = effrg_in * 1.0E6_kind_phys
+// CHECK-NEXT:      allocate(effrl_inout_unit_conv(size(effrl_inout, 1), size(effrl_inout, 2)))
+// CHECK-NEXT:      effrl_inout_unit_conv = effrl_inout * 1.0E6_kind_phys
+// CHECK-NEXT:      allocate(effri_out_unit_conv(size(effri_out, 1), size(effri_out, 2)))
+// CHECK-NEXT:      scalar_var_unit_conv = scalar_var * 0.001_kind_phys
+// CHECK-NEXT:      tke_inout_unit_conv = tke_inout * 1.0_kind_phys
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in var_compatibility_suite_radiation"
@@ -160,11 +186,22 @@
 // CHECK-NEXT:        do ccpp_loop_cnt0 = 1, 2
 // CHECK-NEXT:          do ccpp_loop_cnt = 1, 2
 // CHECK-NEXT:            if (errflg .eq. 0) then
-// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_inout, effrg_in=effrg_in,     &
-// CHECK-NEXT:                ncg_in=ncg_in, nci_out=nci_out, effrl_inout=effrl_inout, effri_out=effri_out,       &
-// CHECK-NEXT:                effrs_inout=effrs_inout_kind_cast, ncl_out=ncl_out, has_graupel=has_graupel,        &
-// CHECK-NEXT:                scalar_var=scalar_var, tke_inout=tke_inout, tke2_inout=tke2_inout, errmsg=errmsg,   &
-// CHECK-NEXT:                errflg=errflg)
+// CHECK-NEXT:              allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))
+// CHECK-NEXT:              effrr_in_unit_conv = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:              allocate(effrs_inout_kind_cast(size(effrs_inout, 1), size(effrs_inout, 2)))
+// CHECK-NEXT:              effrs_inout_kind_cast = real(effrs_inout, kind=8)
+// CHECK-NEXT:              allocate(effrs_inout_unit_conv(size(effrs_inout_kind_cast, 1), size(effrs_inout_kind_cast, 2)))
+// CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_kind_cast * 1.0E6_8
+// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_unit_conv,                 &
+// CHECK-NEXT:                effrg_in=effrg_in_unit_conv, ncg_in=ncg_in, nci_out=nci_out,                        &
+// CHECK-NEXT:                effrl_inout=effrl_inout_unit_conv, effri_out=effri_out_unit_conv,                   &
+// CHECK-NEXT:                effrs_inout=effrs_inout_unit_conv, ncl_out=ncl_out, has_graupel=has_graupel,        &
+// CHECK-NEXT:                scalar_var=scalar_var_unit_conv, tke_inout=tke_inout_unit_conv,                     &
+// CHECK-NEXT:                tke2_inout=tke2_inout, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:              effrs_inout_kind_cast = effrs_inout_unit_conv * 1.0E-6_8
+// CHECK-NEXT:              deallocate(effrs_inout_unit_conv)
+// CHECK-NEXT:              effrs_inout = real(effrs_inout_kind_cast, kind=kind_phys)
+// CHECK-NEXT:              deallocate(effrs_inout_kind_cast)
 // CHECK-NEXT:            end if
 // CHECK-NEXT:          end do
 // CHECK-NEXT:        end do
@@ -174,11 +211,13 @@
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      do ccpp_loop_cnt2 = 1, num_subcycles_for_effr
 // CHECK-NEXT:        if (errflg .eq. 0) then
-// CHECK-NEXT:          call effrs_calc_run(effrs_inout_kind_cast, errmsg, errflg)
+// CHECK-NEXT:          call effrs_calc_run(effrs_inout, errmsg, errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call effr_diag_run(effrr_inout, scalar_varC, errmsg, errflg)
+// CHECK-NEXT:        allocate(effrr_in_unit_conv3(size(effrr_inout, 1), size(effrr_inout, 2)))
+// CHECK-NEXT:        effrr_in_unit_conv3 = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:        call effr_diag_run(effrr_in_unit_conv3, scalar_varC, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call rad_lw_run(ncol, fluxLW, errmsg, errflg)
@@ -186,8 +225,12 @@
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call rad_sw_run(ncol, sfc_up_sw, sfc_down_sw, errmsg, errflg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      effrs_inout = real(effrs_inout_kind_cast, kind=kind_phys)
-// CHECK-NEXT:      deallocate(effrs_inout_kind_cast)
+// CHECK-NEXT:      effrl_inout = effrl_inout_unit_conv * 1.0E-6_kind_phys
+// CHECK-NEXT:      deallocate(effrl_inout_unit_conv)
+// CHECK-NEXT:      effri_out = effri_out_unit_conv * 1.0E-6_kind_phys
+// CHECK-NEXT:      deallocate(effri_out_unit_conv)
+// CHECK-NEXT:      scalar_var = scalar_var_unit_conv * 1000.0_kind_phys
+// CHECK-NEXT:      tke_inout = tke_inout_unit_conv * 1.0_kind_phys
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_radiation
 // CHECK-NEXT:  end module var_compatibility_suite_cap
 // CHECK:       // -----
@@ -317,6 +360,7 @@
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
 // CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_1
+// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_2
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
@@ -325,8 +369,8 @@
 // CHECK-NEXT:            nci_out=nci_out, effrl_inout=effrl_inout, effri_out=effri_out, effrs_inout=effrs_inout, &
 // CHECK-NEXT:            ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=scalar_var,                     &
 // CHECK-NEXT:            tke_inout=tke_inout, tke2_inout=tke2_inout, scalar_varB=scalar_varB,                    &
-// CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, errflg=errflg, _out_1=ccpp_tmp_0,               &
-// CHECK-NEXT:            _out_2=ccpp_tmp_1, errmsg=errmsg)
+// CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1,           &
+// CHECK-NEXT:            _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"

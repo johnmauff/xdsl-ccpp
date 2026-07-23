@@ -5,6 +5,8 @@ frontend, transforms, and backend.  Import from here rather than duplicating
 literals throughout the codebase.
 """
 
+import re
+
 # ── Error handling ──────────────────────────────────────────────────────────
 # CCPP framework-defined standard names for error communication.
 CCPP_ERROR_MESSAGE = "ccpp_error_message"
@@ -150,6 +152,17 @@ UNIT_CONVERSIONS: dict = {
     # Speed
     ("m s-1",  "cm s-1"): ("* 0.01",  "* 100.0"),
     ("cm s-1", "m s-1"):  ("* 100.0", "* 0.01"),
+    # Length (micrometer)
+    ("um", "m"): ("* 1.0E6", "* 1.0E-6"),
+    ("m", "um"): ("* 1.0E-6", "* 1.0E6"),
+    # Length (kilometer)
+    ("km", "m"): ("* 0.001", "* 1000.0"),
+    ("m", "km"): ("* 1000.0", "* 0.001"),
+    # Specific energy — "j kg-1" and "m2 s-2" are dimensionally identical
+    # (1 J/kg = 1 (kg m2 s-2) / kg = 1 m2 s-2), so this is a same-magnitude
+    # relabeling rather than a real numeric conversion.
+    ("m2 s-2", "j kg-1"): ("* 1.0", "* 1.0"),
+    ("j kg-1", "m2 s-2"): ("* 1.0", "* 1.0"),
 }
 
 # Unit strings that are all considered dimensionless — mutually compatible.
@@ -158,10 +171,17 @@ CCPP_DIMENSIONLESS_UNITS: frozenset = frozenset(
 )
 
 def normalize_units(units: str | None) -> str:
-    """Return a canonical lowercase-stripped unit string for comparison."""
+    """Return a canonical lowercase-stripped unit string for comparison.
+
+    Also drops an explicit "+" sign on a positive exponent (e.g. "m+2 s-2"
+    -> "m2 s-2") -- some CCPP metadata spells positive exponents out
+    symmetrically with negative ones ("s-1"), but this is a notation
+    variant of the identical unit, not a distinct one.
+    """
     if units is None:
         return ""
-    return units.strip().lower()
+    normalized = units.strip().lower()
+    return re.sub(r"(?<=[a-z])\+(?=\d)", "", normalized)
 
 # ── Kind (precision) mappings ───────────────────────────────────────────────
 # Maps CCPP kind names to ISO_FORTRAN_ENV named constants.

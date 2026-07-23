@@ -2311,18 +2311,92 @@ dependency is noted.
      `test_subcycle.py::test_nested_subcycle_is_rejected`.
   - Not verified: whether `run_dispatch.py` has its own independent subcycle-flattening
     assumption beyond what `_iter_schemes` covers — check this first before scoping further.
-- **`var_compat`'s other two pieces, separate from nested-subcycle:**
-  - **Vertical array flipping (`top_at_one=true`) — M.** Reverses vertical-index array sections
-    when a scheme's declared top-at-one convention differs from the host's. Architecturally
-    similar to the existing `RowMajorConvertOp`/`RowMajorWriteBackOp` pair (row-major/column-major
-    conversion at the Fortran/C++ interop boundary) — likely a new `VerticalFlipOp` inserted at
-    the same host/scheme arg-marshaling boundary, reusing that established pattern rather than
-    inventing a new mechanism.
-  - **Kind conversion (`kind_phys`↔`8`) — S/M, verify before assuming unbuilt.** xdsl-ccpp already
-    has `generate-meta-kinds`/`--kind-map`/`extra_kind`/`extra_iso` machinery
-    (`ccpp_dsl.py::_build_pipeline`, `TypeConversions`) for exactly this class of problem — check
-    whether `var_compat`'s specific `kind_phys`↔`8` case is already handled by that machinery
-    before scoping new work.
+- **`var_compat`'s other pieces, separate from nested-subcycle:**
+  - **Vertical array flipping (`top_at_one=true`) — M. Not yet fixed.** Reverses vertical-index
+    array sections when a scheme's declared top-at-one convention differs from the host's.
+    `effr_calc`'s `effrr_in`/`effrs_inout` and `effr_diag`'s `effrr_in` declare it;
+    `effr_pre`/`effr_post`/`effrs_calc` don't, and no host file in this port declares an explicit
+    counterpart to compare against, so the assumed default for schemes that don't declare it is
+    not-flipped, matching the host's actual data layout. Confirmed the existing
+    `RowMajorConvertOp`/`RowMajorWriteBackOp` pair (row-major/column-major conversion) is inserted
+    at a *different* generated subroutine (the host-facing run-dispatch chain in
+    `run_dispatch.py`) than the one that actually matters here (`suite_cap.py`'s suite-cap
+    subroutine, which is where `effr_calc`/`effr_diag` are actually called) — the directly
+    relevant, already-established pattern to reuse instead is the kind-mismatch/unit-mismatch
+    detect-and-convert pattern in `suite_cap.py` (see the divergent-standard-name fix immediately
+    below, which this would plug into at the identical per-call insertion point). Needs: add
+    `top_at_one` to the recognized metadata keys (currently silently dropped with an
+    unrecognised-key warning), a new `VerticalFlipOp`/`VerticalFlipWriteBackOp` pair modeled on
+    `KindCastOp`/`KindWriteBackOp` but reversing an array section along the vertical dimension
+    rather than converting a value, and a case in `print_ftn.py`. `effr_calc`'s/`effr_diag`'s own
+    arithmetic on these variables is uniform across vertical levels, so this specific synthetic
+    example's own numeric check can't independently distinguish a correct flip from a no-op one —
+    verification here will necessarily be about correct, valid generated Fortran syntax and
+    correct call-site placement, not an independent numeric proof from this particular test.
+  - **Kind conversion (`kind_phys`↔`8`) — confirmed working, and a real, unrelated bug found and
+    fixed along the way.** `effr_calc`'s `effrs_inout` declares `kind = 8`; every other occurrence
+    of the same standard_name uses `kind_phys`. The `generate-meta-kinds`/`KindCastOp`/
+    `KindWriteBackOp` machinery (`ccpp_dsl.py::_build_pipeline`, `TypeConversions`) already
+    handles this class of problem correctly for the ordinary case. While exercising it against
+    this example's real output, found and fixed a real, pre-existing bug in `suite_cap.py`'s
+    `_build_block_signature`: its `data_ops`/`final_values` bookkeeping stored the raw
+    `KindCastOp`/`UnitConvertOp` operation objects instead of their result values, unlike every
+    other entry in that dict — harmless everywhere else because operand-consuming constructors
+    auto-unwrap a single-result operation, but it crashed the moment a scalar `intent(inout)` arg
+    with a real unit mismatch hit `_assemble_func`'s `return_types = [v.type for v in
+    inout_return_vals]`, which accesses `.type` directly. Fixed by storing `.res` consistently.
+  - **Unit conversion for `m`↔`um`, `km`↔`m`, and `j kg-1`↔`m2 s-2` — fixed; these were simply
+    missing `UNIT_CONVERSIONS` table entries, not a mechanism gap.** `effr_pre`'s `effrr_inout`
+    (units `m`) vs `effr_calc`'s `effrr_in` (units `um`), same standard_name, and several others in
+    this suite. The unit-conversion mechanism itself (`UNIT_CONVERSIONS` in
+    `ccpp_conventions.py`, and its detection/insertion pipeline in `host_var_match_pass.py`/
+    `suite_cap.py`) was already correct and proven for other pairs (K↔°C, Pa↔hPa, m↔cm, ...) —
+    the specific pairs this example needs just weren't in the table. Added `um`↔`m` and `km`↔`m` as
+    real conversions; `j kg-1`↔`m2 s-2` and `m+2 s-2`↔`m2 s-2` turned out to be the same physical
+    unit written two ways (the latter fixed via a `normalize_units` tweak stripping an explicit
+    `+` sign on a positive exponent, rather than a real conversion factor).
+  - **Suite signature construction assumed every scheme sharing a standard_name declares the same
+    kind/units as each other — a real, previously-unknown bug, found and fixed while regenerating
+    this example's output after the unit-table fix above.** Two standard_names here are declared
+    with genuinely different units or kind by *different schemes*, not just different from the
+    host: `effr_pre`/`effr_post` declare the rain-particle radius in meters (matching the host)
+    while `effr_calc`/`effr_diag` declare the *same* standard_name in micrometers; `effrs_calc`
+    declares the snow-particle radius in meters/`kind_phys` (matching the host) while `effr_calc`
+    declares the *same* standard_name in micrometers/`kind = 8`. `suite_cap.py`'s
+    `_build_arg_tables` only ever keeps ONE scheme's declaration per standard_name (`all_args`,
+    first-write-wins), and `_build_block_signature` converted the whole suite-level dummy argument
+    ONCE, against the host, based on that single canonical entry — so every OTHER scheme sharing
+    the name silently received whichever representation the canonical scheme happened to need,
+    regardless of its own actual declaration. Confirmed via the real generated output:
+    `effr_calc_run`/`effr_diag_run` were receiving the rain-particle radius still in raw,
+    unconverted meters (their own metadata says micrometers — off by a factor of a million, no
+    warning at all), and `effrs_calc_run` was receiving the snow-particle radius already converted
+    to micrometers/`kind = 8` for `effr_calc`'s benefit, when its own declaration matches the host
+    exactly and needs no conversion. The underlying per-scheme detection was never actually
+    missing — `HostVariableMatchPass` already loops over every scheme's own copy of every argument
+    independently (not deduplicated by standard_name at all) and annotates
+    `model_var_kind_mismatch`/`model_var_unit_mismatch` directly on each scheme's own
+    `ArgumentOp`; the gap was entirely in how `suite_cap.py`'s call-building code consumed it.
+    **Fixed**: `_build_arg_tables` now also computes a `divergent_std_keys` set (standard_names
+    where two or more schemes' own declarations disagree with each other on kind or units).
+    `_build_block_signature` skips its suite-boundary conversion entirely for these — the shared
+    value stays in the host's own native representation for the whole function body — and
+    `generateSchemeSubroutineCallOps` independently marshals *each individual call* to that call's
+    own scheme's already-known mismatch, converting immediately before the call and writing back
+    immediately after (reusing the exact same `KindCastOp`/`UnitConvertOp`/`KindWriteBackOp`/
+    `UnitWriteBackOp` already used for the non-divergent case — no new IR). A kind mismatch and a
+    unit mismatch on the same argument chain together, and the write-back correctly unwinds in
+    reverse (unit first, then kind). Fixing this also surfaced and required a matching fix in
+    `print_ftn.py`: its kind-cast/unit-convert declaration scan only walked top-level block ops
+    (these conversions had only ever been emitted at the top level before), so a per-call
+    conversion nested inside a subcycle loop body went undeclared — fixed by switching to a
+    recursive walk, matching the already-established pattern used for `RowMajorConvertOp`
+    declarations right below it. Two per-call conversion instances sharing the same scheme-derived
+    name (e.g. `effr_calc`'s and `effr_diag`'s own `effrr_in_unit_conv`) also needed the same
+    `_get_variable_name_for` de-duplication already used for local allocas, for the identical
+    reason as the historic `ccpp_loop_cnt` duplicate-declaration bug. Every non-divergent
+    standard_name (the vast majority) is completely unaffected. Regression coverage:
+    `tests/unit/test_suite_cross_scheme_unit_kind.py`.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema
