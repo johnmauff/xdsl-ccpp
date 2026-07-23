@@ -2398,6 +2398,41 @@ dependency is noted.
 
 ---
 
+## Backlog — other flagged issues
+
+- **`generateSchemeSubroutineCallOps`'s errflg-guard ops are inserted out of
+  SSA def-use order — S, cosmetic only, but repo-wide blast radius if fixed
+  (flagged 2026-07-23, via a Copilot review comment on PR #40).** `suite_cap.py`
+  (~line 606) returns `[err_const_comp, cmp, load_op, conditional_op]` for the
+  `scf.if errflg == 0` guard wrapping every scheme call in a suite's lifecycle
+  functions — `cmp` (the `arith.cmpi`) is listed, and therefore inserted into
+  the block, *before* `load_op`, even though `cmp` consumes `load_op`'s result.
+  Should be `[err_const_comp, load_op, cmp, conditional_op]`.
+  - **Not introduced by PR #40** (the `cld_ice_final` alias fix) — confirmed via
+    repo-wide grep that the identical pattern already exists in 56 other places
+    across 7 `tests/filecheck/examples/completed_ir/*.mlir` golden files
+    (advection, ddthost ×2, capgen, helloworld ×2, kw-override). PR #40 only
+    added one more instance of an already long-standing, systemic quirk by
+    faithfully matching real generator output in its two updated goldens.
+  - **Confirmed cosmetic, not a real correctness bug:** the ordering artifact
+    only ever surfaces in the raw MLIR text dump (`completed_ir` goldens) — the
+    Fortran printer collapses this same comparison+load into a clean
+    `if (errflg .eq. 0) then` regardless of block insertion order, and the
+    pattern never appears in any `end_to_end` (Fortran) golden file. Zero
+    effect on any actually-compiled output.
+  - **Why not fixed inline with PR #40:** fixing the root cause means
+    regenerating and re-diffing all 7 affected `completed_ir` golden files
+    repo-wide, not just the two this PR touched — a separate, independently
+    verifiable change, per this project's established practice of not
+    bundling unrelated fixes into one PR.
+  - Project owner is replying to the Copilot comment on PR #40 directly
+    (its suggested fix — swapping the two `CHECK` lines — is wrong on its own:
+    the golden file must match real generator output, so swapping only the
+    `CHECK` lines without also fixing `generateSchemeSubroutineCallOps` would
+    make the test fail instead of passing).
+
+---
+
 ## Guiding principles throughout
 
 - **Order by risk, not just size.** Extract the most self-contained clusters first (chost/C++
