@@ -218,8 +218,16 @@ class TestDDTMemberMultiPhaseHoisting:
         run_fn = _fn_body(fortran, "TestDdtMulti_ccpp_physics_run")
         finalize_fn = _fn_body(fortran, "TestDdtMulti_ccpp_physics_finalize")
 
-        assert "present(phys_state%temp_member" in init_fn
-        assert "present(phys_state%temp_member" in finalize_fn
+        # The residency-hoisting mechanism (this test's actual subject) is
+        # enter data copyin at initialize / exit data copyout at finalize --
+        # matching test_gpu_residency.py's TestMultiPhaseResidency for the
+        # non-DDT case exactly. present(phys_state%temp_member) also shows
+        # up at both of those phases (a separate, unrelated per-call clause-
+        # routing mechanism that happens to also touch this var here), but
+        # asserting only on that would not catch a regression in the
+        # hoisting mechanism itself -- caught by Copilot review on PR #39.
+        assert "enter data copyin(phys_state%temp_member" in init_fn
+        assert "exit data copyout(phys_state%temp_member" in finalize_fn
         for line in run_fn.splitlines():
             stripped = line.strip()
             if "phys_state" in stripped and "!$acc" in stripped:
