@@ -67,11 +67,16 @@ class MetaKind(ModulePass):
                 for arg_op in arg_table_op.body.ops:
                     if not isa(arg_op, ccpp.ArgumentOp):
                         continue
-                    # A real arg with a named kind qualifier (not a len= qualifier)
+                    # A real arg with a named kind qualifier (not a len= qualifier,
+                    # and not a bare numeric kind literal e.g. `kind = 8` -- that's
+                    # already valid, self-contained Fortran (`real(kind=8)`) with no
+                    # ccpp_kinds dependency, so treating it as a symbolic name to
+                    # declare/export would emit an invalid `public :: 8`).
                     if (
                         arg_op.arg_type.data == "real"
                         and arg_op.kind is not None
                         and "len=" not in arg_op.kind.data
+                        and not arg_op.kind.data.isdigit()
                     ):
                         kind_names[arg_op.kind.data] = None
 

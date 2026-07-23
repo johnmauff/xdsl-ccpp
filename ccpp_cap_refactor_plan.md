@@ -2545,34 +2545,50 @@ dependency is noted.
     *table-type modeling* gap (`control` vs `host`), not about any one
     variable's semantics.
 
-- **Suite signature generation doesn't rename a dummy argument name that
-  collides across two unrelated standard_names — a real, currently-blocking
-  compile bug, found by actually running the real driver end-to-end against
-  the ported var_compat example (2026-07-23).** `effr_pre`/`effr_post`/
-  `effr_calc`/`effr_diag` each independently declare an unrelated scalar
-  argument (`scalar_variable_for_testing_a`/`_b`/plain/`_c` respectively —
-  capgen-v1's own README calls these out by name as a deliberate test of
-  this exact scenario) using the identical bare Fortran name `scalar_var`.
-  `suite_cap.py`'s `_build_arg_tables` correctly keys `all_args` by
-  `std_key` (the lowercased standard_name), so the four are correctly kept
-  as four distinct entries — the bug is one layer up: whatever builds the
-  suite's combined subroutine's actual dummy-argument list from
-  `all_args.values()` uses each entry's own `.name` (the bare name each
-  scheme happened to pick locally) directly, with no cross-scheme collision
-  check or rename. Confirmed empirically: running
-  `python3 -m xdsl_ccpp.tools.ccpp_dsl` against the real, unmodified ported
-  `examples/var_compat` files (all five nested-subcycle stages already
-  landed) produces `var_compatibility_suite_suite_radiation`'s dummy
-  argument list with the literal name `scalar_var` repeated three times —
-  once `real(kind=kind_phys), intent(in)`, once identically, once
-  `integer, intent(inout)` — an invalid, duplicate-dummy-argument Fortran
-  subroutine signature. This is the exact same *class* of bug as the
-  `ccpp_loop_cnt` duplicate-declaration bug fixed during the nested-subcycle
-  work's Stage 4 (two unrelated things independently choosing the same bare
-  name, with no de-duplication step) — but a different site (the suite's
-  own dummy-argument list, not a locally-declared temporary), and **not
-  introduced by or related to nested-subcycle support** — it would occur in
-  any suite with this naming collision, subcycle or not.
+- **Suite signature generation ignores the host's own already-unique local
+  name and uses each scheme's own (colliding) local name instead — a real,
+  currently-blocking compile bug, found by actually running the real driver
+  end-to-end against the ported var_compat example (2026-07-23, root cause
+  refined same day after the user asked whether this was a `.meta`-authoring
+  mistake).** `effr_pre`/`effr_post`/`effr_calc`/`effr_diag` each
+  independently declare an unrelated scalar argument
+  (`scalar_variable_for_testing_a`/`_b`/plain/`_c` respectively — capgen-v1's
+  own README calls these out by name as a deliberate test of this exact
+  scenario) using the identical bare Fortran name `scalar_var` in their own
+  scheme source. **This is correct, idiomatic CCPP metadata, not a mistake
+  to fix in the `.meta` files** — CCPP's whole design point is that a
+  scheme's local dummy-argument name is private and arbitrary; only
+  `standard_name` needs to be consistent across schemes, and different
+  physics teams choosing the same generic local name (`scalar_var`, `tmp`,
+  `flux`, ...) for unrelated quantities in independently-developed schemes
+  is exactly the case CCPP's data model exists to decouple. **Proof this is
+  meant to be supported, not just tolerated:** var_compat's own real host
+  metadata (`test_host_data.meta`, the `physics_state` DDT) already declares
+  all four standard_names with distinct, collision-free local names of its
+  own — `scalar_var`/`scalar_varA`/`scalar_varB`/`scalar_varC` — precisely
+  so a generated cap can reference each via the host's own unique name
+  instead of the scheme's. Confirmed via `python3 -m xdsl_ccpp.tools.ccpp_dsl`
+  emitting no "no host variable match" warning for any of these four args
+  (i.e. all four *do* get host-matched) yet
+  `var_compatibility_suite_suite_radiation`'s generated dummy-argument list
+  still shows `scalar_var` three times over regardless — `scalar_varA`/
+  `scalar_varB`/`scalar_varC` never appear anywhere in the output. So the
+  host match happens, but its already-unique local name is never consulted
+  when the suite's own combined signature is built. Confirmed via
+  `grep -n model_var_name xdsl_ccpp/transforms/suite_cap.py`: zero hits --
+  `suite_cap.py`'s `_build_arg_tables`/signature-construction path never
+  reads `model_var_name` (the host-matched canonical name
+  `host_var_match_pass.py` already annotates onto each `ArgumentOp` when a
+  match is found) at all; it always uses each arg's own bare `.name`
+  unconditionally, host-matched or not. This is the exact same *class* of
+  bug as the `ccpp_loop_cnt` duplicate-declaration bug fixed during the
+  nested-subcycle work's Stage 4 (two unrelated things independently
+  choosing the same bare name, nothing de-duplicates) -- but a different
+  site, and **not introduced by or related to nested-subcycle support** --
+  it would occur in any suite with this naming collision, subcycle or not,
+  and would be trivially avoidable by preferring `model_var_name` over the
+  scheme's own name whenever a host match exists (which var_compat's own
+  host metadata shows was the intended fix all along).
   - **Confirmed real and currently blocking**: this is why
     `examples/var_compat` cannot actually compile today, independent of and
     unrelated to the top_at_one/kind-conversion items already documented in
@@ -2580,10 +2596,10 @@ dependency is noted.
   - **Not scoped or fixed here** — deliberately out of scope for the
     nested-subcycle effort (this finding surfaced only because that effort's
     own Stage 4 called for attempting a real build once codegen was done).
-    A fix needs a collision-detection/rename step wherever the suite's
-    combined dummy-argument list actually gets assembled from `all_args`
-    (not yet located precisely — `_build_arg_tables` itself only builds
-    `all_args`, doesn't emit the signature) before this can be scoped further.
+    Given the root-cause is now precisely located (prefer `model_var_name`
+    over `.name` when building the suite signature's dummy-argument list in
+    `suite_cap.py`), this is likely a small, well-scoped fix for whoever
+    picks it up next -- not re-derived from scratch.
 
 ---
 

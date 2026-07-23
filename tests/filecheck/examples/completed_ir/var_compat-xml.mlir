@@ -453,6 +453,5 @@
 // CHECK-NEXT:   }
 // CHECK-NEXT:   builtin.module @ccpp_kinds {
 // CHECK-NEXT:     "ccpp_utils.kind_def"() <{kind_name = "kind_phys", kind_value = "REAL64"}> : () -> ()
-// CHECK-NEXT:     "ccpp_utils.kind_def"() <{kind_name = "8", kind_value = "8"}> : () -> ()
 // CHECK-NEXT:   }
 // CHECK-NEXT: }

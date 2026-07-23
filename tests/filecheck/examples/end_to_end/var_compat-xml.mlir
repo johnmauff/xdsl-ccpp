@@ -625,5 +625,4 @@
 // CHECK:   implicit none
 // CHECK-NEXT:      private
 // CHECK:   public :: kind_phys
-// CHECK-NEXT:      public :: 8
 // CHECK-NEXT:    end module ccpp_kinds
