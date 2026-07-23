@@ -234,10 +234,15 @@ class SubcycleDescriptor:
     """A block of schemes that execute inside a loop.
 
     Produced by :func:`forLoop`.  Corresponds to
-    ``<subcycle loop="N">`` in a suite XML file.
+    ``<subcycle loop="N">`` in a suite XML file.  ``schemes`` may itself
+    contain another `SubcycleDescriptor` (a nested ``forLoop()``), to
+    arbitrary depth -- corresponding to a nested ``<subcycle>``.
     """
 
-    def __init__(self, count: "int | str", schemes: "list[SchemeDescriptor]"):
+    def __init__(
+        self, count: "int | str",
+        schemes: "list[SchemeDescriptor | SubcycleDescriptor]",
+    ):
         # Integer → literal loop count baked in at IR-generation time.
         # String → CCPP standard name resolved at runtime (is_literal=False).
         self.count = count
@@ -246,12 +251,14 @@ class SubcycleDescriptor:
 
 def forLoop(
     count: "int | str",
-    schemes: "list[SchemeDescriptor]",
+    schemes: "list[SchemeDescriptor | SubcycleDescriptor]",
 ) -> SubcycleDescriptor:
     """Declare a loop block: *schemes* repeated *count* times.
 
     Corresponds to ``<subcycle loop="N">`` in a suite XML file.  May appear
-    anywhere in a group's scheme list.
+    anywhere in a group's scheme list. *schemes* may itself contain another
+    ``forLoop()`` result, nested to arbitrary depth, corresponding to a
+    nested ``<subcycle>``.
 
     Use this function when the loop count is a **CCPP standard name** resolved
     at runtime by the host model.  For a fixed integer count known at
@@ -288,7 +295,8 @@ def forLoop(
                  :func:`ccpp_param`) for a literal baked in at IR-generation
                  time, or a ``str`` CCPP standard name resolved at runtime.
         schemes: Ordered list of :class:`SchemeDescriptor` objects forming the
-                 loop body.
+                 loop body -- may itself contain a nested :func:`forLoop`
+                 result for a nested ``<subcycle>``.
     """
     return SubcycleDescriptor(count=count, schemes=schemes)
 
@@ -776,18 +784,23 @@ def _group_item_to_op(
     item: "tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor",
     seen_schemes: "dict[str, SchemeDescriptor]",
 ) -> "SchemeOp | SubcycleOp":
-    """Convert one group-list item to its MLIR op, registering schemes seen."""
+    """Convert one group-list item to its MLIR op, registering schemes seen.
+
+    A `SubcycleDescriptor`'s own `schemes` list may itself contain another
+    `SubcycleDescriptor` (a nested `forLoop()`), which recurses through this
+    same function to arbitrary depth -- mirroring the XML frontend's nested
+    `<subcycle>` support (see examples/var_compat/var_compatibility_suite.xml,
+    ported from NCAR ccpp-framework's feature/capgen-v1, which nests three
+    levels deep).
+    """
     if isinstance(item, SubcycleDescriptor):
         inner_ops = []
         for sd in item.schemes:
             if isinstance(sd, SubcycleDescriptor):
-                raise ValueError(
-                    "Nested forLoop() blocks are not supported -- forLoop's "
-                    "schemes list must contain only schemes, not another "
-                    "forLoop(). Use multiple sibling forLoop() blocks instead."
-                )
-            inner_ops.append(SchemeOp(sd.name, None))
-            seen_schemes.setdefault(sd.name, sd)
+                inner_ops.append(_group_item_to_op(sd, seen_schemes))
+            else:
+                inner_ops.append(SchemeOp(sd.name, None))
+                seen_schemes.setdefault(sd.name, sd)
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
     sd, overrides = item
     seen_schemes.setdefault(sd.name, sd)

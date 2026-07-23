@@ -2431,6 +2431,176 @@ dependency is noted.
     `CHECK` lines without also fixing `generateSchemeSubroutineCallOps` would
     make the test fail instead of passing).
 
+- **Move examples' build system from hand-written per-example Makefiles to
+  CMake — size TBD, project owner preference (flagged 2026-07-23).** Every
+  example under `examples/` (11 today, 12 once the var_compat port lands) has
+  its own hand-maintained `Makefile`, none using CMake — confirmed via a
+  repo-wide search: zero `CMakeLists.txt` files exist anywhere in this repo.
+  Project owner prefers CMake over raw Makefiles. Worth noting: capgen-v1's
+  own upstream `end-to-end-tests/*` examples (the source every one of this
+  project's examples gets ported from) already ship a `CMakeLists.txt` +
+  `ctest` setup — today's port process explicitly *drops* that file in favor
+  of a hand-written Makefile (see e.g. `examples/advection`'s own port), so a
+  move to CMake could mean future ports carry the upstream `CMakeLists.txt`
+  over with much lighter adaptation instead of hand-authoring an equivalent
+  Makefile from scratch each time.
+  - **Not scoped or investigated yet** — no design decided on scope (all
+    examples at once vs. incremental/one-at-a-time, matching this project's
+    usual staged-migration discipline) or on preserving today's per-example
+    `make [all|run|check|clean|caps]` target vocabulary that
+    `.github/workflows/compile-tests.yml` already depends on directly (its
+    `run: make -f examples/${{ matrix.example }}/Makefile check` step would
+    need an equivalent `ctest`-based invocation, or a compatibility shim, for
+    every example in that workflow's matrix).
+  - **Sequencing note:** the var_compat port (in progress) still uses the
+    existing Makefile convention, per the approved plan for that work —
+    revisit this item once that lands, so a build-system migration doesn't
+    get tangled up with an in-flight example port.
+
+- **`.meta` argument-bracket parser requires exact spacing (`[ name ]`, not
+  `[name]`) to tell an argument name apart from an unrecognized token — S,
+  low-risk, found while porting var_compat (2026-07-23).** `ccpp_xml.py`'s
+  `parse_meta_file` (~line 313 onward) strips only the `[`/`]` characters
+  from a bracketed line, then disambiguates purely on whether the
+  *remaining* string has a leading or trailing space:
+  `elif token[0] == " " or token[-1] == " ": ... current_arg = CCPPArgument(token.strip())`,
+  `else: raise AssertionError(...)`. capgen-v1's own `.meta` files
+  (`var_compat`'s `effr_pre.meta`/`effr_calc.meta`/etc., 14+ occurrences
+  across the ported files) use the tight `[effrr_in]` form with no reader
+  that requires spacing either way — this project's own convention is simply
+  a stricter subset of what's actually valid CCPP metadata.
+  - **Should be easy to support both, not a real complication.** The
+    header check immediately above the `elif` (`if token in
+    ("ccpp-table-properties", "ccpp-arg-table"): ...`) already does an exact
+    literal match against the two known keywords, regardless of spacing —
+    it isn't what relies on the space heuristic. By the time execution
+    reaches the `elif`, the token is already known *not* to be one of those
+    two keywords, so within a `.meta` file's grammar (the only bracketed
+    constructs that ever appear are those two headers and an argument name)
+    there's no real ambiguity left for the space check to resolve. The fix
+    is to drop the `token[0] == " " or token[-1] == " "` condition entirely
+    and treat *any* non-header bracketed token as an argument name (still
+    calling `.strip()` to get the bare name either way, so both spaced and
+    tight forms produce the identical result) — this removes a fragile
+    heuristic rather than adding one, and needs no change to the writer
+    side (`meta_from_module` et al. already only ever emit the spaced form,
+    so existing generated `.meta` output is unaffected regardless).
+  - Confirmed via the var_compat port: all 14+ occurrences ported so far
+    were mechanically normalized to the spaced form as a workaround: see
+    `examples/var_compat/README.md`'s "Adaptations made during porting"
+    section. Fixing this would let a future port skip that normalization
+    step entirely.
+
+- **`[ccpp-table-properties]`'s `module_name` override isn't supported — S,
+  found while porting var_compat (2026-07-23).** capgen-v1 lets a table's
+  logical/suite-visible name (e.g. `effr_pre`, the name used in
+  `<scheme>effr_pre</scheme>`) differ from the Fortran module that actually
+  implements it (e.g. `mod_effr_pre`), via a `module_name` key on
+  `[ccpp-table-properties]`. `xdsl_ccpp/transforms/util/ccpp_descriptors.py`'s
+  `CCPPTableProperties.setAttr` only allows `name`/`type`/`dependencies`/
+  `relative_path`/`array_layout`/`language` — `module_name` raises
+  (`CCPPItem.setAttr`'s allow-list check). xdsl-ccpp assumes the Fortran
+  module name always equals the table name; every existing example already
+  follows that convention, so this has never surfaced before. Ported
+  `var_compat`'s `effr_pre.F90`/`module_rad_ddt.F90` had their real
+  capgen-v1 module names (`mod_effr_pre`/`mod_rad_ddt`) renamed to match the
+  table/file name instead of teaching the parser the real attribute — see
+  the same README section. Not scoped further; would need a plan for how
+  the renamed-module name flows through to `print_ftn.py`'s `use` statement
+  generation and any other place that currently assumes table name == module
+  name.
+
+- **`type = control` (capgen-v1) has no xdsl-ccpp equivalent — a real,
+  currently-inconsequential modeling gap, found while porting var_compat
+  (2026-07-23).** Checked capgen-v1's own validator source directly
+  (`ccpp_validator.py`, `VALID_TABLE_TYPES` in `metadata_table.py`):
+  `control` is a distinct table type from `host`, not just a naming
+  variant. `host` tables describe variables with a real backing Fortran
+  declaration, cross-validated against actual source; `control` tables
+  (`suite_name`/`group_name`/`thread_num`/`col_start`/`col_end`/`errmsg`/
+  `errflg` in `var_compat`'s real `test_host.meta`) have **no** backing
+  Fortran declaration at all — the validator's own docstring says they are
+  "framework-injected at the cap call sites" and are explicitly
+  silent-skipped by source-cross-validation for that reason.
+  `xdsl_ccpp/transforms/util/ccpp_descriptors.py`'s `CCPPType` enum has only
+  `SCHEME`/`MODULE`/`DDT`/`HOST` — no `CONTROL` — so this project's own
+  `examples/advection`/ported-`var_compat` `test_host.meta` already declares
+  exactly this same category of variable (`col_start`/`col_end`/`errmsg`/
+  `errflg`) under `type = host`, collapsing capgen-v1's two concepts into
+  one.
+  - **Why this doesn't bite today:** xdsl-ccpp has no equivalent of
+    capgen-v1's meta-vs-Fortran-source cross-validation step for host
+    tables in the first place, so there's currently nothing for the missing
+    `real declaration` vs. `framework-injected, no declaration` distinction
+    to break.
+  - **Worth tracking anyway** in case a future feature needs to tell the two
+    apart (e.g. if xdsl-ccpp ever adds its own host-side meta-vs-source
+    validation, or needs to know which host vars are safe to assume have a
+    real Fortran symbol behind them vs. which are purely call-site
+    conventions). Not scoped further.
+  - Distinct from (but related in spirit to) the already-tracked
+    `chunked_data`/`instances` backlog items above, which cover
+    `thread_num`/`nthreads`/`nphys_threads` specifically (real,
+    thread-parallel-dispatch capability gaps) — this item is about the
+    *table-type modeling* gap (`control` vs `host`), not about any one
+    variable's semantics.
+
+- **Suite signature generation ignores the host's own already-unique local
+  name and uses each scheme's own (colliding) local name instead — a real,
+  currently-blocking compile bug, found by actually running the real driver
+  end-to-end against the ported var_compat example (2026-07-23, root cause
+  refined same day after the user asked whether this was a `.meta`-authoring
+  mistake).** `effr_pre`/`effr_post`/`effr_calc`/`effr_diag` each
+  independently declare an unrelated scalar argument
+  (`scalar_variable_for_testing_a`/`_b`/plain/`_c` respectively — capgen-v1's
+  own README calls these out by name as a deliberate test of this exact
+  scenario) using the identical bare Fortran name `scalar_var` in their own
+  scheme source. **This is correct, idiomatic CCPP metadata, not a mistake
+  to fix in the `.meta` files** — CCPP's whole design point is that a
+  scheme's local dummy-argument name is private and arbitrary; only
+  `standard_name` needs to be consistent across schemes, and different
+  physics teams choosing the same generic local name (`scalar_var`, `tmp`,
+  `flux`, ...) for unrelated quantities in independently-developed schemes
+  is exactly the case CCPP's data model exists to decouple. **Proof this is
+  meant to be supported, not just tolerated:** var_compat's own real host
+  metadata (`test_host_data.meta`, the `physics_state` DDT) already declares
+  all four standard_names with distinct, collision-free local names of its
+  own — `scalar_var`/`scalar_varA`/`scalar_varB`/`scalar_varC` — precisely
+  so a generated cap can reference each via the host's own unique name
+  instead of the scheme's. Confirmed via `python3 -m xdsl_ccpp.tools.ccpp_dsl`
+  emitting no "no host variable match" warning for any of these four args
+  (i.e. all four *do* get host-matched) yet
+  `var_compatibility_suite_suite_radiation`'s generated dummy-argument list
+  still shows `scalar_var` three times over regardless — `scalar_varA`/
+  `scalar_varB`/`scalar_varC` never appear anywhere in the output. So the
+  host match happens, but its already-unique local name is never consulted
+  when the suite's own combined signature is built. Confirmed via
+  `grep -n model_var_name xdsl_ccpp/transforms/suite_cap.py`: zero hits --
+  `suite_cap.py`'s `_build_arg_tables`/signature-construction path never
+  reads `model_var_name` (the host-matched canonical name
+  `host_var_match_pass.py` already annotates onto each `ArgumentOp` when a
+  match is found) at all; it always uses each arg's own bare `.name`
+  unconditionally, host-matched or not. This is the exact same *class* of
+  bug as the `ccpp_loop_cnt` duplicate-declaration bug fixed during the
+  nested-subcycle work's Stage 4 (two unrelated things independently
+  choosing the same bare name, nothing de-duplicates) -- but a different
+  site, and **not introduced by or related to nested-subcycle support** --
+  it would occur in any suite with this naming collision, subcycle or not,
+  and would be trivially avoidable by preferring `model_var_name` over the
+  scheme's own name whenever a host match exists (which var_compat's own
+  host metadata shows was the intended fix all along).
+  - **Confirmed real and currently blocking**: this is why
+    `examples/var_compat` cannot actually compile today, independent of and
+    unrelated to the top_at_one/kind-conversion items already documented in
+    its README — that doc has been updated with this finding too.
+  - **Not scoped or fixed here** — deliberately out of scope for the
+    nested-subcycle effort (this finding surfaced only because that effort's
+    own Stage 4 called for attempting a real build once codegen was done).
+    Given the root-cause is now precisely located (prefer `model_var_name`
+    over `.name` when building the suite signature's dummy-argument list in
+    `suite_cap.py`), this is likely a small, well-scoped fix for whoever
+    picks it up next -- not re-derived from scratch.
+
 ---
 
 ## Guiding principles throughout

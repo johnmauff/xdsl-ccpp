@@ -52,6 +52,27 @@ class SuiteVarEntry:
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _iter_schemes_duck_typed(node):
+    """Recursively yield scheme descriptors from a group/subcycle node.
+
+    Duck-types the subcycle check ("loop_count" in child.attributes) instead
+    of `isinstance(child, XMLSubcycle)`, so this module never imports
+    cap_shared/xDSL -- see SuiteVariableModel's own comment at its one call
+    site for why this can't just be cap_shared._iter_schemes. Descends
+    recursively into a (possibly nested) subcycle, mirroring _iter_schemes'
+    own recursion.
+    """
+    for child in node:
+        if "loop_count" in child.attributes:
+            yield from _iter_schemes_duck_typed(child)
+        else:
+            yield child
+
+
+# ---------------------------------------------------------------------------
 # SuiteVariableModel
 # ---------------------------------------------------------------------------
 
@@ -127,17 +148,14 @@ class SuiteVariableModel:
         # isinstance and is not imported here, since this module's own contract
         # (see the module docstring) is zero xDSL/MLIR imports, and cap_shared
         # transitively imports xdsl.dialects. Not unified with _iter_schemes for
-        # that reason; keep both in sync if the subcycle model ever changes.
+        # that reason; keep both in sync if the subcycle model ever changes --
+        # including recursing into a (possibly nested) subcycle, mirroring
+        # _iter_schemes' own recursive descent.
         scheme_groups: list[tuple[str, str]] = []
         for group in suite_description:
             gname = group.attributes["name"]
-            for child in group:
-                if "loop_count" in child.attributes:
-                    # XMLSubcycle: iterate its scheme children
-                    for scheme in child:
-                        scheme_groups.append((scheme.attributes["name"], gname))
-                else:
-                    scheme_groups.append((child.attributes["name"], gname))
+            for scheme in _iter_schemes_duck_typed(group):
+                scheme_groups.append((scheme.attributes["name"], gname))
 
         self._build(scheme_groups, meta_data)
 

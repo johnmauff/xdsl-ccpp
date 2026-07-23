@@ -191,14 +191,11 @@ class XMLSubcycle(XMLSuiteBase):
     """Intermediate node representing a ``<subcycle loop="N">`` within a group.
 
     Parses all ``<scheme>`` children and stores them as `XMLScheme` nodes.
-
-    Nested ``<subcycle>`` elements are not supported -- rejected explicitly
-    rather than silently dropped. Real CCPP suites (e.g. CAM4's diagnostic
-    radiation subcycles, examples/atmospheric_physics/suite_cam4_py.py) use
-    multiple *sibling* subcycles, never one nested inside another, and the
-    Python suite-authoring API (`forLoop`) is itself typed to only accept a
-    list of schemes, not another subcycle. If a real need for nesting turns
-    up later, this is the place to lift the restriction.
+    ``<subcycle>`` children are parsed recursively as nested `XMLSubcycle`
+    nodes, to arbitrary depth -- real CCPP suites do this (e.g. NCAR
+    ccpp-framework's feature/capgen-v1 end-to-end-tests/var_compat, ported
+    into examples/var_compat, nests subcycles three levels deep in one
+    branch). This mirrors `XMLGroup`'s own scheme/subcycle dispatch exactly.
     """
 
     def __init__(self, xml_node):
@@ -215,12 +212,7 @@ class XMLSubcycle(XMLSuiteBase):
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))
             elif child.tag == "subcycle":
-                raise ValueError(
-                    "Nested <subcycle> elements are not supported "
-                    f"(found a <subcycle loop=\"{child.attrib.get('loop', '1')}\"> "
-                    f"inside <subcycle loop=\"{raw}\">). "
-                    "Use multiple sibling <subcycle> blocks instead."
-                )
+                self.children.append(XMLSubcycle(child))
 
 
 class XMLGroup(XMLSuiteBase):
@@ -456,6 +448,21 @@ class ccppXML:
 
         return options_db
 
+    def _build_subcycle_op(self, subcycle) -> "SubcycleOp":
+        """Recursively build a `SubcycleOp` from an `XMLSubcycle`.
+
+        A child that is itself an `XMLSubcycle` (nested `<subcycle>`) becomes
+        a nested `SubcycleOp`, to arbitrary depth -- mirrors `build_suite_ir`'s
+        own scheme/subcycle dispatch one level up.
+        """
+        child_ops = []
+        for child in subcycle:
+            if isinstance(child, XMLSubcycle):
+                child_ops.append(self._build_subcycle_op(child))
+            else:
+                child_ops.append(SchemeOp(child.scheme_name))
+        return SubcycleOp(subcycle.loop_count, child_ops, is_literal=subcycle.is_literal)
+
     def build_suite_ir(self, suite):
         """Convert a parsed `XMLSuite` tree into CCPP dialect IR ops.
 
@@ -471,9 +478,7 @@ class ccppXML:
             group_ops = []
             for child in grp:
                 if isinstance(child, XMLSubcycle):
-                    scheme_ops = [SchemeOp(s.scheme_name) for s in child]
-                    group_ops.append(SubcycleOp(child.loop_count, scheme_ops,
-                                                is_literal=child.is_literal))
+                    group_ops.append(self._build_subcycle_op(child))
                 else:
                     group_ops.append(SchemeOp(child.scheme_name))
             groups.append(GroupOp(grp.attributes["name"], group_ops))

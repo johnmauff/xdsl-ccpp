@@ -421,6 +421,26 @@ class BuildSchemeDescription(Visitor):
 
         self.schemes[suite_op.suite_name.data] = current_suite
 
+    def _build_subcycle(self, subcycle_op: ccpp.SubcycleOp) -> "XMLSubcycle":
+        """Recursively rebuild an `XMLSubcycle` from one `ccpp.SubcycleOp`.
+
+        Handles `SchemeOp` and `SubcycleOp` children, to arbitrary nesting
+        depth, mirroring `traverse_group_op`'s own scheme/subcycle dispatch.
+        """
+        subcycle = XMLSubcycle(subcycle_op.loop_count.data, bool(subcycle_op.is_literal.value.data))
+        for child_op in subcycle_op.body.ops:
+            if isa(child_op, ccpp.SchemeOp):
+                overrides = {}
+                if child_op.arg_overrides is not None:
+                    overrides = {
+                        k: v.data
+                        for k, v in child_op.arg_overrides.data.items()
+                    }
+                subcycle.addChild(XMLScheme(child_op.scheme_name.data, overrides))
+            elif isa(child_op, ccpp.SubcycleOp):
+                subcycle.addChild(self._build_subcycle(child_op))
+        return subcycle
+
     def traverse_group_op(self, group_op: ccpp.GroupOp):
         """Build an `XMLGroup` from one `ccpp.GroupOp` node.
 
@@ -432,29 +452,7 @@ class BuildSchemeDescription(Visitor):
 
         for op in group_op.body.ops:
             if isa(op, ccpp.SubcycleOp):
-                subcycle = XMLSubcycle(op.loop_count.data, bool(op.is_literal.value.data))
-                for child_op in op.body.ops:
-                    if isa(child_op, ccpp.SchemeOp):
-                        overrides = {}
-                        if child_op.arg_overrides is not None:
-                            overrides = {
-                                k: v.data
-                                for k, v in child_op.arg_overrides.data.items()
-                            }
-                        subcycle.addChild(XMLScheme(child_op.scheme_name.data, overrides))
-                    elif isa(child_op, ccpp.SubcycleOp):
-                        # Defense in depth: the frontend XML parser already
-                        # rejects nested <subcycle> elements, so this should
-                        # be unreachable via the normal XML path. Guards
-                        # against a nested SubcycleOp reaching the IR by any
-                        # other route (e.g. the Python suite-authoring API)
-                        # silently losing every scheme inside it.
-                        raise ValueError(
-                            "Nested ccpp.subcycle ops are not supported "
-                            f"(found one inside subcycle loop_count="
-                            f"{op.loop_count.data!r})."
-                        )
-                self.current_group.addChild(subcycle)
+                self.current_group.addChild(self._build_subcycle(op))
             elif isa(op, ccpp.SchemeOp):
                 overrides = {}
                 if op.arg_overrides is not None:

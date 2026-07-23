@@ -162,31 +162,45 @@ class GenerateSuiteSubroutine(RewritePattern):
             for scheme in _iter_schemes(group)
         ]
 
+    def _build_call_sequence_items(self, node):
+        """Recursively build the ordered item list for one group/subcycle's
+        direct children.
+
+        Each element is one of:
+          ``('scheme',   scheme_name, overrides)``                              — flat call
+          ``('subcycle', loop_count, is_literal, [item, item, ...])``           — subcycle block
+
+        A subcycle's own item list uses this same shape recursively, so a
+        nested `XMLSubcycle` child (a `<subcycle>` inside another
+        `<subcycle>`) becomes a nested ``('subcycle', ...)`` item, to
+        arbitrary depth, rather than a flat scheme list -- e.g.
+        examples/var_compat/var_compatibility_suite.xml, which nests three
+        levels deep in one branch. Shared by `getCallSequence` (called once
+        per group) and itself (called recursively per nested subcycle).
+        """
+        items = []
+        for child in node:
+            if isinstance(child, XMLSubcycle):
+                items.append((
+                    "subcycle", child.attributes["loop_count"],
+                    child.attributes["is_literal"],
+                    self._build_call_sequence_items(child),
+                ))
+            else:
+                items.append((
+                    "scheme", child.attributes["name"],
+                    child.attributes.get("arg_overrides", {}),
+                ))
+        return items
+
     def getCallSequence(self, suite_description):
         """Return the ordered call sequence, preserving subcycle boundaries.
 
-        Each element is one of:
-          ``('scheme',   scheme_name, overrides)``                         — flat call
-          ``('subcycle', loop_count, is_literal, [(scheme_name, overrides), ...])``  — subcycle block
+        See `_build_call_sequence_items` for the item shape.
         """
         sequence = []
         for group in suite_description:
-            for child in group:
-                if isinstance(child, XMLSubcycle):
-                    schemes = [
-                        (s.attributes["name"], s.attributes.get("arg_overrides", {}))
-                        for s in child
-                    ]
-                    sequence.append(("subcycle", child.attributes["loop_count"],
-                                     child.attributes["is_literal"], schemes))
-                else:
-                    sequence.append(
-                        (
-                            "scheme",
-                            child.attributes["name"],
-                            child.attributes.get("arg_overrides", {}),
-                        )
-                    )
+            sequence.extend(self._build_call_sequence_items(group))
         return sequence
 
     def _scheme_has_promoted_args(self, arg_table) -> bool:
@@ -1129,6 +1143,67 @@ class GenerateSuiteSubroutine(RewritePattern):
             result += _flush_promoted(cur_pdim, cur_pgroup)
             return result
 
+        def _emit_subcycle_items(items):
+            """Build call ops for one subcycle's own children.
+
+            Consecutive flat scheme siblings are grouped into a single
+            _emit_ordered_list call each (preserving the original
+            whole-subcycle-body promotion-loop coalescing for the common,
+            non-nested case), and a nested subcycle item recurses via
+            _emit_subcycle -- so grouping never crosses a nested-subcycle
+            boundary, and a nested subcycle's own body is built the same way
+            as this one's, to arbitrary depth.
+            """
+            result: list = []
+            pending: list = []
+            for sub_item in items:
+                if sub_item[0] == "scheme":
+                    _, sn, _ = sub_item
+                    if sn in arg_tables:
+                        pending.append((sn, arg_tables[sn]))
+                else:
+                    if pending:
+                        result += _emit_ordered_list(pending)
+                        pending = []
+                    _, nested_loop_count, nested_is_literal, nested_items = sub_item
+                    result += _emit_subcycle(nested_loop_count, nested_is_literal, nested_items)
+            if pending:
+                result += _emit_ordered_list(pending)
+            return result
+
+        # Every subcycle's own loop-count alloca is hoisted here rather than
+        # embedded next to its SubcycleLoopOp -- print_ftn.py's declaration
+        # collection (_print_fn's local_allocas) only scans the function's
+        # top-level block, not recursively into nested bodies, so a nested
+        # subcycle's own alloca would otherwise sit inside its parent
+        # SubcycleLoopOp's body region and never get declared at all (an
+        # AllocaOp is a pure declaration with no Fortran statement of its own
+        # -- see print_ftn.py's case memref.AllocaOp(): pass -- so where it
+        # physically sits in the IR doesn't affect the generated code, only
+        # whether print_ftn.py's declaration scan can find it). This mirrors
+        # exactly where a single (non-nested) subcycle's alloca already lived
+        # before nesting was supported: as a top-level sibling of its
+        # SubcycleLoopOp, never inside another loop's body.
+        hoisted_allocas: list = []
+
+        def _emit_subcycle(loop_count, is_literal, items):
+            body_ops = _emit_subcycle_items(items)
+            _lc_int = (int(loop_count) if is_literal
+                       else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
+            if _lc_int > 1 and physics_mode and body_ops:
+                sc_alloc = memref.AllocaOp.get(
+                    TypeConversions.getBaseType("integer"), shape=[]
+                )
+                sc_alloc.memref.name_hint = "ccpp_loop_cnt"
+                hoisted_allocas.append(sc_alloc)
+                return [SubcycleLoopOp(
+                    loop_count=loop_count,
+                    loop_var=sc_alloc.memref,
+                    body_ops=body_ops,
+                    is_literal=is_literal,
+                )]
+            return body_ops
+
         for item in call_sequence:
             if item[0] == "scheme":
                 _, scheme_name, _ = item
@@ -1138,30 +1213,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                     [(scheme_name, arg_tables[scheme_name])]
                 )
             elif item[0] == "subcycle":
-                _, loop_count, is_literal, subcycle_scheme_list = item
-                flat = [
-                    (sn, arg_tables[sn])
-                    for sn, _ in subcycle_scheme_list
-                    if sn in arg_tables
-                ]
-                body_ops = _emit_ordered_list(flat)
-                _lc_int = (int(loop_count) if is_literal
-                           else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
-                if _lc_int > 1 and physics_mode and body_ops:
-                    sc_alloc = memref.AllocaOp.get(
-                        TypeConversions.getBaseType("integer"), shape=[]
-                    )
-                    sc_alloc.memref.name_hint = "ccpp_loop_cnt"
-                    call_ops += [sc_alloc, SubcycleLoopOp(
-                        loop_count=loop_count,
-                        loop_var=sc_alloc.memref,
-                        body_ops=body_ops,
-                        is_literal=is_literal,
-                    )]
-                else:
-                    call_ops += body_ops
+                _, loop_count, is_literal, subcycle_items = item
+                call_ops += _emit_subcycle(loop_count, is_literal, subcycle_items)
 
-        return call_ops, fn_sigs
+        return hoisted_allocas + call_ops, fn_sigs
 
     def _build_framework_refs(
         self,
