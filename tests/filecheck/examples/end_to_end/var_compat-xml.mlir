@@ -36,7 +36,19 @@
 // marshaling together; the write-back unwinds in the opposite order (flip,
 // then unit, then kind).
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// module_rad_ddt.meta is included here -- it wasn't in the original port,
+// which silently produced a suite-cap module missing the "use module_rad_ddt,
+// only: ty_rad_lw" import fluxLW needs (see the declarations below) and,
+// separately, caused rad_sw's DDT-member arguments (sfc_up_sw/sfc_down_sw,
+// now visible in var_compatibility_suite_suite_radiation's own signature
+// below) to never be matched or declared at all -- found by actually trying
+// to compile this example with gfortran for the first time. A separate,
+// still-open subcycle-loop-bound resolution gap (num_subcycles_for_effr
+// emitted as a raw standard_name instead of the host's own local variable
+// name) and a wrapper intent(in)/intent(inout) mismatch are tracked in
+// ccpp_cap_refactor_plan.md's backlog, not fixed here.
+//
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: // FILE: var_compatibility_suite_cap.F90
 // CHECK-LABEL: module var_compatibility_suite_cap
@@ -50,6 +62,7 @@
 // CHECK-NEXT:    use effr_pre, only: effr_pre_init
 // CHECK-NEXT:    use effr_pre, only: effr_pre_run
 // CHECK-NEXT:    use effrs_calc, only: effrs_calc_run
+// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
 // CHECK-NEXT:    use rad_lw, only: rad_lw_run
 // CHECK-NEXT:    use rad_sw, only: rad_sw_run
 // CHECK:         implicit none
@@ -135,7 +148,8 @@
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_timestep_final
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_radiation(effrr_inout, scalar_varA, ncol, nlev,        &
 // CHECK:           effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, ncl_out, has_graupel,         &
-// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, errmsg, errflg)
+// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, sfc_up_sw, sfc_down_sw,  &
+// CHECK-NEXT:      errmsg, errflg)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varA
 // CHECK-NEXT:      integer, intent(in) :: ncol
@@ -154,6 +168,8 @@
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
 // CHECK-NEXT:      integer, intent(in) :: scalar_varC
 // CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_up_sw(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_down_sw(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      integer :: ccpp_loop_cnt
@@ -254,6 +270,8 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
+// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_sw
 // CHECK-NEXT:    use test_host_data, only: physics_state
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_finalize
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_initialize
@@ -351,7 +369,8 @@
 // CHECK-NEXT:    end subroutine VarCompatibility_ccpp_physics_timestep_final
 // CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, effrr_inout, scalar_varA,  &
 // CHECK:           ncol, nlev, effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, has_graupel,      &
-// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, errmsg, errflg)
+// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, sfc_up_sw, sfc_down_sw,  &
+// CHECK-NEXT:      errmsg, errflg)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
@@ -371,6 +390,8 @@
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
 // CHECK-NEXT:      integer, intent(in) :: scalar_varC
 // CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_up_sw(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_down_sw(:)
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
@@ -384,8 +405,8 @@
 // CHECK-NEXT:            nci_out=nci_out, effrl_inout=effrl_inout, effri_out=effri_out, effrs_inout=effrs_inout, &
 // CHECK-NEXT:            ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=scalar_var,                     &
 // CHECK-NEXT:            tke_inout=tke_inout, tke2_inout=tke2_inout, scalar_varB=scalar_varB,                    &
-// CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1,           &
-// CHECK-NEXT:            _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, sfc_up_sw=sfc_up_sw, sfc_down_sw=sfc_down_sw,   &
+// CHECK-NEXT:            _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1, _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"
@@ -432,7 +453,7 @@
 // CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        if (do_input .and. .not. do_output) then
-// CHECK-NEXT:          allocate(var_list(14))
+// CHECK-NEXT:          allocate(var_list(16))
 // CHECK-NEXT:          var_list(1) = 'cloud_graupel_number_concentration  '
 // CHECK-NEXT:          var_list(2) = 'effective_radius_of_stratiform_cloud_graupel'
 // CHECK-NEXT:          var_list(3) = 'effective_radius_of_stratiform_cloud_liquid_water_particle'
@@ -445,10 +466,12 @@
 // CHECK-NEXT:          var_list(10) = 'scalar_variable_for_testing_b       '
 // CHECK-NEXT:          var_list(11) = 'scalar_variable_for_testing_c       '
 // CHECK-NEXT:          var_list(12) = 'scheme_order_in_suite               '
-// CHECK-NEXT:          var_list(13) = 'turbulent_kinetic_energy            '
-// CHECK-NEXT:          var_list(14) = 'turbulent_kinetic_energy2           '
+// CHECK-NEXT:          var_list(13) = 'surface_downwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(14) = 'surface_upwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(15) = 'turbulent_kinetic_energy            '
+// CHECK-NEXT:          var_list(16) = 'turbulent_kinetic_energy2           '
 // CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(13))
+// CHECK-NEXT:          allocate(var_list(15))
 // CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
 // CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
 // CHECK-NEXT:          var_list(3) = 'cloud_ice_number_concentration      '
@@ -460,10 +483,12 @@
 // CHECK-NEXT:          var_list(9) = 'longwave_radiation_fluxes           '
 // CHECK-NEXT:          var_list(10) = 'scalar_variable_for_testing         '
 // CHECK-NEXT:          var_list(11) = 'scheme_order_in_suite               '
-// CHECK-NEXT:          var_list(12) = 'turbulent_kinetic_energy            '
-// CHECK-NEXT:          var_list(13) = 'turbulent_kinetic_energy2           '
+// CHECK-NEXT:          var_list(12) = 'surface_downwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(13) = 'surface_upwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(14) = 'turbulent_kinetic_energy            '
+// CHECK-NEXT:          var_list(15) = 'turbulent_kinetic_energy2           '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(19))
+// CHECK-NEXT:          allocate(var_list(21))
 // CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
 // CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
 // CHECK-NEXT:          var_list(3) = 'cloud_graupel_number_concentration  '
@@ -481,8 +506,10 @@
 // CHECK-NEXT:          var_list(15) = 'scalar_variable_for_testing_b       '
 // CHECK-NEXT:          var_list(16) = 'scalar_variable_for_testing_c       '
 // CHECK-NEXT:          var_list(17) = 'scheme_order_in_suite               '
-// CHECK-NEXT:          var_list(18) = 'turbulent_kinetic_energy            '
-// CHECK-NEXT:          var_list(19) = 'turbulent_kinetic_energy2           '
+// CHECK-NEXT:          var_list(18) = 'surface_downwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(19) = 'surface_upwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(20) = 'turbulent_kinetic_energy            '
+// CHECK-NEXT:          var_list(21) = 'turbulent_kinetic_energy2           '
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"

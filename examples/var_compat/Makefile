@@ -52,7 +52,7 @@ GEN_SUITE_CAP = $(DIR)/var_compatibility_suite_cap.F90
 GEN_CCPP_CAP  = $(DIR)/test_host_ccpp_cap.F90
 
 CAPS_SUITES  = $(DIR)/var_compatibility_suite.xml
-CAPS_SCHEMES = $(DIR)/effr_pre.meta,$(DIR)/effr_calc.meta,$(DIR)/effr_post.meta,$(DIR)/effrs_calc.meta,$(DIR)/effr_diag.meta,$(DIR)/rad_lw.meta,$(DIR)/rad_sw.meta
+CAPS_SCHEMES = $(DIR)/effr_pre.meta,$(DIR)/effr_calc.meta,$(DIR)/effr_post.meta,$(DIR)/effrs_calc.meta,$(DIR)/effr_diag.meta,$(DIR)/rad_lw.meta,$(DIR)/rad_sw.meta,$(DIR)/module_rad_ddt.meta
 CAPS_HOSTS   = $(DIR)/test_host_data.meta,$(DIR)/test_host_mod.meta,$(DIR)/test_host.meta
 CAPS_PREREQS = \
     $(DIR)/var_compatibility_suite.xml \
@@ -63,6 +63,7 @@ CAPS_PREREQS = \
     $(DIR)/effr_diag.meta \
     $(DIR)/rad_lw.meta \
     $(DIR)/rad_sw.meta \
+    $(DIR)/module_rad_ddt.meta \
     $(DIR)/test_host_data.meta \
     $(DIR)/test_host_mod.meta \
     $(DIR)/test_host.meta

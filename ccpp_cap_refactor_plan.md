@@ -2426,6 +2426,39 @@ dependency is noted.
     computation entirely, or a stale intermediate representation it reads instead). Not scoped or
     fixed here; this is likely a small, well-scoped fix for whoever picks it up next, but the
     exact mechanism in `ccpp_cap.py` hasn't been traced yet.
+  - **Two more real gaps found trying to actually build `examples/var_compat` with gfortran for
+    the first time.**
+    - **Fixed — `module_rad_ddt.meta` was missing from this port's generation inputs (a port
+      mistake, not an `xdsl_ccpp` code gap).** Initial investigation (via a research fork)
+      hypothesized this was a real code gap in `suite_cap.py`'s `use`-statement construction not
+      consulting `ddt_source_module` the way `ccpp_cap.py` does — that hypothesis was wrong.
+      The actual root cause, confirmed by directly regenerating with the file added: the real
+      capgen-v1 source keeps `rad_lw`/`rad_sw`'s DDT type definitions (`ty_rad_lw`/`ty_rad_sw`) in
+      their own separate file rather than bundled into a scheme's own `.meta` (unlike e.g.
+      `examples/ddthost`'s `make_ddt.meta`, which declares its DDT type and the scheme that uses
+      it in the same file) — but this port's `--scheme-files` list (the Makefile's
+      `CAPS_SCHEMES` and all three `tests/filecheck` var_compat-xml.mlir RUN lines) never included
+      `module_rad_ddt.meta`, so its DDT table definitions were never parsed at all. This one
+      omission silently caused two separate, real symptoms once actually compiled: (1) the
+      suite-cap module declared `fluxLW` as `type(ty_rad_lw)` (a whole-DDT host match) without
+      ever importing the module that defines it, since `collect_ddt_source_modules` had no DDT
+      table to map `ty_rad_lw` to a source module at all; (2) `rad_sw_run`'s `sfc_up_sw`/
+      `sfc_down_sw` arguments (individual DDT-*member* standard_names, members of the host's
+      `ty_rad_sw` DDT, not a whole-DDT match like `fluxLW`) were silently dropped from the suite
+      signature entirely, since the DDT-member-matching machinery had no DDT definition to match
+      against at all. **Fixed** by adding `module_rad_ddt.meta` to the four input-file lists;
+      confirmed both symptoms disappear with zero `xdsl_ccpp` code changes.
+    - **Not yet fixed — a dynamic-count subcycle's loop bound is emitted as the raw standard_name
+      string, never resolved to the host's own local name.** `suite_cap.py`'s `_emit_subcycle`
+      passes the XML's `loop="..."` string straight through unresolved when it isn't a literal
+      integer — for `<subcycle loop="num_subcycles_for_effr">`, that string is the
+      *standard_name* (`num_subcycles_for_effr`), not a real Fortran identifier; the host's own
+      local name for it is `num_subcycles` (`test_host_data.meta`). Nothing in this path looks up
+      `all_args`/`data_ops` to substitute the host-matched name the way every other host-var
+      reference in the generator already does. No other example in the repo uses a named
+      (non-literal) subcycle loop count, so this path has never been exercised before — needs the
+      same standard_name-to-host-name resolution already used elsewhere in `suite_cap.py`. This is
+      a real `xdsl_ccpp` code gap, unrelated to the DDT file-list issue above.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

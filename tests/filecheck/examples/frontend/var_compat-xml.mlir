@@ -7,11 +7,16 @@
 // frontend-level regression coverage for the nested-subcycle-support work.
 // See examples/var_compat/README.md for what this example does and does not
 // cover. The vertical-flip attribute (top_at_one) is now recognized and
-// parsed as a real attribute (see effr_calc/effr_diag's args below) rather
-// than silently dropped with an unrecognised-key warning, but nothing acts
-// on it yet -- that lands in a later stage of this same work.
+// parsed as a real attribute (see effr_calc/effr_diag's args below) and
+// fully implemented (see the end_to_end tier for the generated flip code).
+// module_rad_ddt.meta is included here -- it wasn't in the original port,
+// which silently produced a suite-cap module missing the "use module_rad_ddt,
+// only: ty_rad_lw" import its own fluxLW argument needs (and, separately,
+// caused rad_sw's DDT-member arguments to never be matched at all) -- found
+// by actually trying to compile this example with gfortran for the first
+// time.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m filecheck %s
 
 // CHECK:       builtin.module {
 // CHECK-NEXT:    "ccpp.suite"() <{suite_name = "var_compatibility_suite", version = "1.0"}> ({
@@ -121,6 +126,18 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) {source_module = "rad_sw"} : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "ty_rad_lw", type = #ccpp<table_type_kind ddt>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "ty_rad_lw", type = #ccpp<table_type_kind ddt>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "sfc_up_lw", type = "real", standard_name = "surface_upwelling_longwave_radiation_flux", kind = "kind_phys", units = "W m2"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "sfc_down_lw", type = "real", standard_name = "surface_downwelling_longwave_radiation_flux", kind = "kind_phys", units = "W m2"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) {source_module = "module_rad_ddt"} : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "ty_rad_sw", type = #ccpp<table_type_kind ddt>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "ty_rad_sw", type = #ccpp<table_type_kind ddt>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "sfc_up_sw", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "surface_upwelling_shortwave_radiation_flux", kind = "kind_phys", units = "W m2"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "sfc_down_sw", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "surface_downwelling_shortwave_radiation_flux", kind = "kind_phys", units = "W m2"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) {source_module = "module_rad_ddt"} : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "physics_state", type = #ccpp<table_type_kind ddt>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "physics_state", type = #ccpp<table_type_kind ddt>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "effrr", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "effective_radius_of_stratiform_cloud_rain_particle", long_name = "effective radius of cloud rain particle in meter", kind = "kind_phys", units = "m"}> : () -> ()
