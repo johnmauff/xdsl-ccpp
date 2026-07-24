@@ -540,12 +540,11 @@
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: var_array(:, :, :, :)
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
-// CHECK-NEXT:      type(vmr_type) :: ccpp_tmp_0
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'data_prep') then
 // CHECK-NEXT:          call ddt_suite_suite_data_prep(cols, cole, lc_O3(cols:cole), lc_HNO3(cols:cole), lc_vmr,  &
-// CHECK-NEXT:            lc_psurf(cols:cole), ccpp_tmp_0, errmsg, errflg)
+// CHECK-NEXT:            lc_psurf(cols:cole), errmsg, errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite ddt_suite"
 // CHECK-NEXT:          errflg = 1

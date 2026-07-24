@@ -1150,11 +1150,25 @@ class ftnPrintContext:
         Compile-time literal overrides are emitted first as ``name=literal``,
         then SSA input operands as ``name=var_name``, then SSA output results
         as ``name=dest_var``.  Inout arguments (present in both operand_names
-        and result_names) are deduplicated via a seen-names set.
+        and result_names under the SAME keyword name) are deduplicated via a
+        seen-names set.
+
+        A leading inout-echo result (see run_dispatch.py's
+        _get_suite_leading_inout_ret_info) is a SEPARATE case that name-based
+        dedup above misses: the callee's own combined signature only ever
+        gives it ONE real dummy argument, but the synthetic result keyword
+        name generated for it (e.g. "_out_0") never string-matches the
+        operand keyword name that already passed the same variable (e.g.
+        "scalar_var") -- so without an extra value-based check here, the
+        same variable would get bound twice under two different keyword
+        names to what is really the same dummy argument, which is invalid
+        Fortran (mirrors _print_call's own input_var_names check for the
+        positional-call case).
         """
         self.print(f"call {op.callee.data}(", end="")
         idx = 0
         seen: set[str] = set()
+        printed_operand_values: set[str] = set()
         for name, val_attr in op.overrides.data.items():
             if idx > 0:
                 self.print(", ", end="", use_prefix=False)
@@ -1164,25 +1178,22 @@ class ftnPrintContext:
         for name_attr, arg in zip(op.operand_names.data, op.args):
             name = name_attr.data
             if name not in seen:
+                resolved = self._get_variable_name_for(arg)
                 if idx > 0:
                     self.print(", ", end="", use_prefix=False)
-                self.print(
-                    f"{name}={self._get_variable_name_for(arg)}",
-                    end="",
-                    use_prefix=False,
-                )
+                self.print(f"{name}={resolved}", end="", use_prefix=False)
                 seen.add(name)
+                printed_operand_values.add(resolved)
                 idx += 1
         for name_attr, res in zip(op.result_names.data, op.res):
             name = name_attr.data
             if name not in seen:
+                dest = self.get_call_result_var_ssa(res)
+                if dest is not None and dest in printed_operand_values:
+                    continue  # inout echo — same dummy arg already passed as an input
                 if idx > 0:
                     self.print(", ", end="", use_prefix=False)
-                self.print(
-                    f"{name}={self.get_call_result_var_ssa(res)}",
-                    end="",
-                    use_prefix=False,
-                )
+                self.print(f"{name}={dest}", end="", use_prefix=False)
                 seen.add(name)
                 idx += 1
         self.print(")", use_prefix=False)

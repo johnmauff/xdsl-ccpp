@@ -605,6 +605,69 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
     return result
 
 
+def _get_suite_leading_inout_ret_info(scheme_names, meta_data, table_postfix):
+    """Return [(arg_name, standard_name)] for ordinary intent=inout scalar args.
+
+    These occupy the LEADING section of the suite cap's own return list (see
+    suite_cap.py's ``_assemble_func``: ``inout_return_vals`` is built from
+    ``input_arg_list`` filtered to intent=inout, no dims, before any trailing
+    intent=out allocs) -- in the callee's own declared dummy-argument order,
+    matching this function's own filters:
+    - intent=inout only
+    - Scalar (dimensions = 0 or absent) -- arrays are always intent(inout)
+      regardless of return-list membership, so they need no echo here
+    - Not framework-managed (SuiteOwned args never become dummy args at all)
+
+    Used by run_dispatch.py's leading-region copy-back loop to name-resolve
+    callee_output_types positions that its errmsg/errflg/ccpp_t special cases
+    don't already claim -- e.g. a scheme-declared inout scalar with no
+    dedicated framework meaning at all (examples/var_compat's scalar_var/
+    tke_inout/tke2_inout). Before this, such a position had no copy-back at
+    all, and the wrapper had no way to learn the value needed echoing back,
+    so it always declared the argument intent(in) even though the suite
+    callee it calls declares it intent(inout) -- invalid Fortran.
+    """
+    all_inout_args = {}
+    for scheme_name in scheme_names:
+        table_name = scheme_name + table_postfix
+        if scheme_name not in meta_data:
+            continue
+        if table_name not in meta_data[scheme_name].arg_tables:
+            continue
+        arg_table = meta_data[scheme_name].getArgTable(table_name)
+        for fn_arg in arg_table.getFunctionArguments():
+            has_dims = fn_arg.hasAttr("dimensions") and fn_arg.getAttr("dimensions") > 0
+            if not fn_arg.hasAttr("ownership_kind"):
+                raise ValueError(
+                    f"Arg '{fn_arg.name}' in scheme '{scheme_name}' has no "
+                    f"ownership_kind set. generate-arg-ownership "
+                    f"(ArgOwnershipPass) must run before generate-suite-cap "
+                    f"-- check the pass pipeline."
+                )
+            is_framework_managed = (
+                fn_arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+            )
+            _dedup_key = (
+                fn_arg.getAttr("standard_name").lower()
+                if fn_arg.hasAttr("standard_name")
+                else fn_arg.name
+            )
+            if (
+                fn_arg.getAttr("intent") == "inout"
+                and _dedup_key not in all_inout_args
+                and not has_dims
+                and not is_framework_managed
+            ):
+                all_inout_args[_dedup_key] = fn_arg
+
+    result = []
+    for arg in all_inout_args.values():
+        raw = arg.getAttr("standard_name") if arg.hasAttr("standard_name") else None
+        std_name = raw.lower() if raw else None
+        result.append((arg.name, std_name))
+    return result
+
+
 def _collect_host_block_std_names(meta_data) -> set:
     """Standard names declared in HOST-type (not MODULE-type) metadata tables --
     caller-provided-each-call values with no persisted host module storage, so

@@ -33,6 +33,22 @@
 // matched or declared at all) -- found by actually trying to compile this
 // example with gfortran for the first time.
 //
+// scalar_var/tke_inout/tke2_inout are ordinary scheme-declared intent=inout
+// scalars with no dedicated framework meaning of their own (unlike
+// ccpp_error_message/ccpp_error_code or a ccpp_t handle) -- run_dispatch.py's
+// combined VarCompatibility_ccpp_physics_run wrapper used to have no
+// copy-back at all for this case, so it always declared them intent(in)
+// even though the suite callee it calls (var_compatibility_suite_suite_
+// radiation) correctly declares them intent(inout) -- invalid Fortran.
+// Fixed by a new _get_suite_leading_inout_ret_info helper (cap_shared.py)
+// that name-resolves this leading-region case the same way the trailing
+// alloc-region case was already resolved, plus a matching fix in
+// print_ftn.py's keyword-call printer, which had a separate but related
+// bug: printing the same variable twice under two different keyword names
+// bound to what is really the same dummy argument once the copy-back
+// above made that variable eligible for the (pre-existing) inout-echo
+// suppression the positional-call printer already had.
+//
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
 // CHECK:       builtin.module {
@@ -392,7 +408,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @VarCompatibility_ccpp_physics_run(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %effrr_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %scalar_varA : memref<!ccpp_utils.real_kind<"kind_phys">>, %ncol : memref<i32>, %nlev : memref<i32>, %effrg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ncg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %nci_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrl_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effri_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrs_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %has_graupel : memref<i1>, %scalar_var : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke2_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varB : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varC : memref<i32>, %fluxLW : memref<?x!ccpp_utils.derived_type<"ty_rad_lw">>, %sfc_up_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %sfc_down_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %num_subcycles : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @VarCompatibility_ccpp_physics_run(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %effrr_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %scalar_varA : memref<!ccpp_utils.real_kind<"kind_phys">>, %ncol : memref<i32>, %nlev : memref<i32>, %effrg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ncg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %nci_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrl_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effri_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrs_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %has_graupel : memref<i1>, %scalar_var : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke2_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varB : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varC : memref<i32>, %fluxLW : memref<?x!ccpp_utils.derived_type<"ty_rad_lw">>, %sfc_up_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %sfc_down_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %num_subcycles : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -403,6 +419,9 @@
 // CHECK-NEXT:          %5 = "ccpp_utils.strcmp"(%3) <{literal = "radiation"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %5 {
 // CHECK-NEXT:            %6, %7, %8, %9, %10 = "ccpp_utils.kw_call"(%effrr_inout, %scalar_varA, %ncol, %nlev, %effrg_in__opt, %ncg_in__opt, %nci_out__opt, %effrl_inout, %effri_out__opt, %effrs_inout, %4, %has_graupel, %scalar_var, %tke_inout, %tke2_inout, %scalar_varB, %scalar_varC, %fluxLW, %sfc_up_sw, %sfc_down_sw, %num_subcycles) <{callee = "var_compatibility_suite_suite_radiation", operand_names = ["effrr_inout", "scalar_varA", "ncol", "nlev", "effrg_in", "ncg_in", "nci_out", "effrl_inout", "effri_out", "effrs_inout", "ncl_out", "has_graupel", "scalar_var", "tke_inout", "tke2_inout", "scalar_varB", "scalar_varC", "fluxLW", "sfc_up_sw", "sfc_down_sw", "num_subcycles"], result_names = ["_out_0", "_out_1", "_out_2", "errmsg", "errflg"], overrides = {}}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i1>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<?x!ccpp_utils.derived_type<"ty_rad_lw">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>) -> (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>)
+// CHECK-NEXT:            "memref.copy"(%6, %scalar_var) : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>) -> ()
+// CHECK-NEXT:            "memref.copy"(%7, %tke_inout) : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>) -> ()
+// CHECK-NEXT:            "memref.copy"(%8, %tke2_inout) : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:            "memref.copy"(%9, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:            "memref.copy"(%10, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {
@@ -415,7 +434,7 @@
 // CHECK-NEXT:          %12 = arith.constant 1 : i32
 // CHECK-NEXT:          memref.store %12, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
+// CHECK-NEXT:        func.return %scalar_var, %tke_inout, %tke2_inout, %errmsg, %errflg : memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_physics_suite_list(%suites : memref<memref<?xi8>>) {
 // CHECK:             %0 = arith.constant 23 : index

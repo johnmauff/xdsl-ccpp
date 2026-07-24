@@ -326,18 +326,20 @@
 // CHECK-NEXT:          %9 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_psurf(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %10 = "ccpp_utils.strcmp"(%3) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %10 {
-// CHECK-NEXT:            %11, %12, %13 = func.call @ddt_suite_suite_data_prep(%4, %5, %6, %7, %8, %9) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>)
-// CHECK-NEXT:            "memref.copy"(%12, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
-// CHECK-NEXT:            "memref.copy"(%13, %errflg) : (memref<i32>, memref<i32>) -> ()
+// CHECK-NEXT:            %11 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_vmr"}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
+// CHECK-NEXT:            %12, %13, %14 = func.call @ddt_suite_suite_data_prep(%4, %5, %6, %7, %8, %9) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>)
+// CHECK-NEXT:            "memref.copy"(%12, %11) : (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<!ccpp_utils.derived_type<"vmr_type">>) -> ()
+// CHECK-NEXT:            "memref.copy"(%13, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
+// CHECK-NEXT:            "memref.copy"(%14, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {
 // CHECK-NEXT:            "ccpp_utils.write_errmsg"(%errmsg, %3) <{prefix = "No suite part named ", suffix = " found in suite ddt_suite"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:            %14 = arith.constant 1 : i32
-// CHECK-NEXT:            memref.store %14, %errflg[] : memref<i32>
+// CHECK-NEXT:            %15 = arith.constant 1 : i32
+// CHECK-NEXT:            memref.store %15, %errflg[] : memref<i32>
 // CHECK-NEXT:          }
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:          %15 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %15, %errflg[] : memref<i32>
+// CHECK-NEXT:          %16 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %16, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }

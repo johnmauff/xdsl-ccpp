@@ -48,6 +48,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
     _collect_host_block_std_names,
+    _get_suite_leading_inout_ret_info,
     _get_suite_lifecycle_ret_info,
     _rank_of,
     _resolve_ddt_access_path,
@@ -671,13 +672,23 @@ def _build_run_dispatch_chain(
 
     seen_host_globals is mutated in place (shared deduplication set).
 
-    Returns (main_chain_ops, decls, chain_global_ops):
+    Returns (main_chain_ops, decls, chain_global_ops, wrapper_inout_echo_args):
       - main_chain_ops: inner ops for the main block (excluding trailing YieldOp)
       - decls: external FuncOp declarations for every suite callee
       - chain_global_ops: GlobalOp USE stubs emitted during chain construction
+      - wrapper_inout_echo_args: block args (already part of new_block's own
+        args) that some suite callee declares intent(inout) for an ordinary
+        scheme-declared scalar with no dedicated framework meaning -- must
+        also appear in the wrapper's own ReturnOp so the printer declares
+        them intent(inout) at the wrapper level too, matching the callee.
+        Deduplicated by identity across every suite/suite-part processed
+        here, since the same host-caller block arg can be echoed by more
+        than one suite part.
     """
     decls = []
     chain_global_ops = []
+    wrapper_inout_echo_args: list = []
+    _wrapper_inout_echo_seen: set = set()
 
     for suite_name, suite_infos in reversed(list(per_suite_grouped.items())):
         # trim_suite_part is created once and shared across all parts of this suite.
@@ -1048,6 +1059,17 @@ def _build_run_dispatch_chain(
                 scheme_names, meta_data, "_run"
             )
             _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
+            # Positional info IS available for the rest of the leading region:
+            # an ordinary scheme-declared intent=inout scalar with no
+            # framework meaning of its own (e.g. examples/var_compat's
+            # scalar_var/tke_inout/tke2_inout) occupies the same relative
+            # position here as it does in suite_cap.py's own
+            # inout_return_vals (built from input_arg_list in the callee's
+            # own declared dummy-arg order) -- see
+            # _get_suite_leading_inout_ret_info's own docstring.
+            _leading_inout_ret = _get_suite_leading_inout_ret_info(
+                scheme_names, meta_data, "_run"
+            )
 
             cap_var_inout_refs: list = []
             copy_ops = []
@@ -1068,6 +1090,53 @@ def _build_run_dispatch_chain(
                         # ccpp_t is intent(inout) — mirror back to the block arg
                         # so the printer's inout-echo detection fires.
                         copy_ops.append(memref.CopyOp(result, ccpp_data_block_arg))
+                    elif idx < len(_leading_inout_ret):
+                        # Ordinary scheme-declared inout scalar -- route the
+                        # copy-back the same way the trailing alloc-style
+                        # branch below does, and record the echoed block arg
+                        # (see wrapper_inout_echo_args) so it also appears in
+                        # the wrapper's own ReturnOp -- without that, the
+                        # printer has no way to know this argument needs
+                        # intent(inout) at the wrapper level, and it silently
+                        # stays intent(in) even though the suite callee it's
+                        # passed into declares it intent(inout).
+                        _leading_local_name, _leading_std_name = _leading_inout_ret[idx]
+                        canonical = non_host_std_to_canonical.get(
+                            _leading_std_name, _leading_local_name
+                        ) if _leading_std_name else _leading_local_name
+                        if canonical and canonical in block_arg_map:
+                            target = block_arg_map[canonical]
+                            copy_ops.append(memref.CopyOp(result, target))
+                            if target not in _wrapper_inout_echo_seen:
+                                _wrapper_inout_echo_seen.add(target)
+                                wrapper_inout_echo_args.append(target)
+                        elif _leading_std_name and _leading_std_name in host_var_map:
+                            hv_name, hv_module = host_var_map[_leading_std_name]
+                            hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
+                            cap_var_inout_refs.append(hv_ref)
+                            copy_ops.append(memref.CopyOp(result, hv_ref.res))
+                            hv_key = (hv_name, hv_module)
+                            if hv_key not in seen_host_globals:
+                                seen_host_globals.add(hv_key)
+                                hv_glob = llvm.GlobalOp(
+                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                    hv_name, "external",
+                                )
+                                hv_glob.attributes["module"] = StringAttr(hv_module)
+                                chain_global_ops.append(hv_glob)
+                        elif cap_var_map:
+                            for i, (a_name, a_type) in enumerate(
+                                zip(callee_input_names, callee_input_types)
+                            ):
+                                if (a_type == ret_type
+                                        and resolved_arg_ops[i].source_kind.data
+                                        == ArgSourceKind.CapVar):
+                                    std_name_cv = resolved_arg_ops[i].std_name.data
+                                    cv_name, cv_type, _ = cap_var_map[std_name_cv]
+                                    cap_ref = CapVarRefOp(cv_name, a_type)
+                                    cap_var_inout_refs.append(cap_ref)
+                                    copy_ops.append(memref.CopyOp(result, cap_ref.res))
+                                    break
                 else:
                     ri_idx = idx - _n_inout_ret
                     ret_std_name = _run_ret_alloc[ri_idx][2]
@@ -1162,7 +1231,7 @@ def _build_run_dispatch_chain(
         current_false_ops = [strcmp_op, if_op, scf.YieldOp()]
 
     main_chain_ops = current_false_ops[:-1]
-    return main_chain_ops, decls, chain_global_ops
+    return main_chain_ops, decls, chain_global_ops, wrapper_inout_echo_args
 
 def _assemble_run_fn(
     fn_name: str,
@@ -1171,30 +1240,46 @@ def _assemble_run_fn(
     main_chain_ops: list,
     errmsg_type,
     errflg_type,
+    wrapper_inout_echo_args: list = (),
 ):
     """Assemble the FuncOp from the block signature, preamble ops, and dispatch chain.
 
     Determines the return type and preamble based on the host framework
     pattern (ccpp_info_t, ccpp_t, or standard capgen), fills new_block
     with all ops in execution order, and returns a public FuncOp.
+
+    wrapper_inout_echo_args are extra, already-existing block args (see
+    _build_run_dispatch_chain) that some suite callee declares intent(inout)
+    for -- an ordinary scheme-declared scalar with no dedicated framework
+    meaning of its own. Prepending them to the ReturnOp doesn't add a new
+    dummy argument (print_ftn.py only turns AllocaOp-owned return values into
+    new output args; a plain block arg in return position just flips that
+    EXISTING argument's own declared intent from in to inout), so fn_type's
+    outputs must be extended to match, in the same order, or the ReturnOp's
+    operand list won't match the enclosing FuncOp's function_type.
     """
+    wrapper_inout_echo_args = list(wrapper_inout_echo_args)
+    echo_types = [a.type for a in wrapper_inout_echo_args]
+
     if sig.ccpp_info_type is not None:
-        ret_op = func.ReturnOp(sig.ccpp_info_block_arg)  # ccpp_info is inout
+        ret_op = func.ReturnOp(*wrapper_inout_echo_args, sig.ccpp_info_block_arg)
         fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, [sig.ccpp_info_type]
+            sig.all_block_types, echo_types + [sig.ccpp_info_type]
         )
         # Place col_start/col_end/errmsg/errflg HostVarRefOps before dispatch
         preamble_ops = [sig.col_start_ref, sig.col_end_ref, sig.errmsg_alloc, sig.errflg_alloc]
     elif sig.ccpp_t_type is not None:
-        ret_op = func.ReturnOp(sig.ccpp_data_block_arg, sig.errmsg_arg, sig.errflg_arg)
+        ret_op = func.ReturnOp(
+            *wrapper_inout_echo_args, sig.ccpp_data_block_arg, sig.errmsg_arg, sig.errflg_arg
+        )
         fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, [sig.ccpp_t_type, errmsg_type, errflg_type]
+            sig.all_block_types, echo_types + [sig.ccpp_t_type, errmsg_type, errflg_type]
         )
         preamble_ops = []
     else:
-        ret_op = func.ReturnOp(sig.errmsg_arg, sig.errflg_arg)
+        ret_op = func.ReturnOp(*wrapper_inout_echo_args, sig.errmsg_arg, sig.errflg_arg)
         fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, [errmsg_type, errflg_type]
+            sig.all_block_types, echo_types + [errmsg_type, errflg_type]
         )
         preamble_ops = []
 
@@ -1300,29 +1385,32 @@ def _generate_run_fn(
     per_suite_grouped = _pre.per_suite_grouped
 
     # ── Build nested if/else chain from inside out ─────────────────────────
-    main_chain_ops, all_decls, chain_global_ops = _build_run_dispatch_chain(
-        per_suite_grouped=per_suite_grouped,
-        trim_suite_name=trim_suite_name,
-        suite_part_arg=suite_part_arg,
-        errmsg_arg=errmsg_arg,
-        errflg_arg=errflg_arg,
-        errmsg_type=errmsg_type,
-        errflg_type=errflg_type,
-        block_arg_map=block_arg_map,
-        non_host_std_to_canonical=non_host_std_to_canonical,
-        host_var_map=host_var_map,
-        meta_data=meta_data,
-        cap_var_map=cap_var_map,
-        seen_host_globals=seen_host_globals,
-        current_false_ops=current_false_ops,
-        ccpp_t_type=ccpp_t_type,
-        ccpp_data_block_arg=ccpp_data_block_arg,
+    main_chain_ops, all_decls, chain_global_ops, wrapper_inout_echo_args = (
+        _build_run_dispatch_chain(
+            per_suite_grouped=per_suite_grouped,
+            trim_suite_name=trim_suite_name,
+            suite_part_arg=suite_part_arg,
+            errmsg_arg=errmsg_arg,
+            errflg_arg=errflg_arg,
+            errmsg_type=errmsg_type,
+            errflg_type=errflg_type,
+            block_arg_map=block_arg_map,
+            non_host_std_to_canonical=non_host_std_to_canonical,
+            host_var_map=host_var_map,
+            meta_data=meta_data,
+            cap_var_map=cap_var_map,
+            seen_host_globals=seen_host_globals,
+            current_false_ops=current_false_ops,
+            ccpp_t_type=ccpp_t_type,
+            ccpp_data_block_arg=ccpp_data_block_arg,
+        )
     )
     all_host_global_ops.extend(chain_global_ops)
 
     # ── Assemble the function ──────────────────────────────────────────────
     cap_fn = _assemble_run_fn(
-        fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type
+        fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type,
+        wrapper_inout_echo_args,
     )
     return cap_fn, all_decls, all_host_global_ops
 

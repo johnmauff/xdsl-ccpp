@@ -6,7 +6,6 @@
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/ddthost/scheme/ddt_suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta,examples/ddthost/scheme/environ_conditions.meta --host-files examples/ddthost/host_ftn/test_host_data.meta,examples/ddthost/host_ftn/test_host_mod.meta,examples/ddthost/scheme/host_ccpp_ddt.meta,examples/ddthost/host_ftn/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
 // --- Suite cap module ---
-
 // CHECK:       builtin.module {
 // CHECK-LABEL:   builtin.module @ddt_suite_cap {
 // CHECK:           "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "ccpp_suite_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, value = "uninitialized"}> ({
@@ -356,18 +355,20 @@
 // CHECK-NEXT:          %13 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_psurf(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %14 = "ccpp_utils.strcmp"(%7) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %14 {
-// CHECK-NEXT:            %15, %16, %17 = func.call @ddt_suite_suite_data_prep(%8, %9, %10, %11, %12, %13) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>)
-// CHECK-NEXT:            "memref.copy"(%16, %2) : (memref<512xi8>, memref<512xi8>) -> ()
-// CHECK-NEXT:            "memref.copy"(%17, %3) : (memref<i32>, memref<i32>) -> ()
+// CHECK-NEXT:            %15 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_vmr"}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
+// CHECK-NEXT:            %16, %17, %18 = func.call @ddt_suite_suite_data_prep(%8, %9, %10, %11, %12, %13) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>)
+// CHECK-NEXT:            "memref.copy"(%16, %15) : (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<!ccpp_utils.derived_type<"vmr_type">>) -> ()
+// CHECK-NEXT:            "memref.copy"(%17, %2) : (memref<512xi8>, memref<512xi8>) -> ()
+// CHECK-NEXT:            "memref.copy"(%18, %3) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {
 // CHECK-NEXT:            "ccpp_utils.write_errmsg"(%2, %7) <{prefix = "No suite part named ", suffix = " found in suite ddt_suite"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:            %18 = arith.constant 1 : i32
-// CHECK-NEXT:            memref.store %18, %3[] : memref<i32>
+// CHECK-NEXT:            %19 = arith.constant 1 : i32
+// CHECK-NEXT:            memref.store %19, %3[] : memref<i32>
 // CHECK-NEXT:          }
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          "ccpp_utils.write_errmsg"(%2, %5) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:          %19 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %19, %3[] : memref<i32>
+// CHECK-NEXT:          %20 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %20, %3[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
