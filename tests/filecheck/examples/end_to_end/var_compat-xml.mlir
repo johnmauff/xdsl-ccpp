@@ -9,28 +9,32 @@
 // variables are declared exactly once each -- see
 // ccpp_cap_refactor_plan.md's backlog for the duplicate/missing-declaration
 // bugs this work found and fixed along the way. See examples/var_compat/
-// README.md for what this example does and does not cover (the vertical
-// array flipping attribute, top_at_one, is a separate, already-tracked,
-// out-of-scope issue). The suite's four schemes all use the bare local name
-// 'scalar_var' for four unrelated standard_names -- a dummy-argument-name
-// collision the host's own metadata resolves by giving each standard_name a
-// distinct name (scalar_var/scalar_varA/scalar_varB/scalar_varC); this
-// requires the generate-host-match pass to run (as the production ccpp_xdsl
-// tool always does whenever host files are given) so suite_cap.py has a
-// model_var_name to disambiguate with.
+// README.md for what this example does and does not cover. The suite's four
+// schemes all use the bare local name 'scalar_var' for four unrelated
+// standard_names -- a dummy-argument-name collision the host's own metadata
+// resolves by giving each standard_name a distinct name (scalar_var/
+// scalar_varA/scalar_varB/scalar_varC); this requires the generate-host-match
+// pass to run (as the production ccpp_xdsl tool always does whenever host
+// files are given) so suite_cap.py has a model_var_name to disambiguate with.
 //
-// Two standard_names here are declared with genuinely different units or
-// kind by different schemes (not just different from the host):
-// effr_pre/effr_post declare the rain-particle radius in meters (matching
-// the host) while effr_calc/effr_diag declare the same standard_name in
-// micrometers, and effrs_calc declares the snow-particle radius in
+// Two standard_names here are declared with genuinely different units,
+// kind, or vertical-layer convention (top_at_one) by different schemes (not
+// just different from the host): effr_pre/effr_post declare the
+// rain-particle radius in meters (matching the host) while effr_calc/
+// effr_diag declare the same standard_name in micrometers with
+// top_at_one = True, and effrs_calc declares the snow-particle radius in
 // meters/kind_phys (matching the host) while effr_calc declares the same
-// standard_name in micrometers/kind=8. Each scheme call below marshals to
-// its own known kind/unit mismatch independently -- effrr_in_unit_conv gets
-// freshly built (and, for effr_calc/effr_diag, torn down) around each
-// individual call, effr_pre/effr_post/effrs_calc receive the shared value
-// directly with no conversion at all -- rather than one suite-boundary
-// conversion applied uniformly to every caller.
+// standard_name in micrometers/kind=8 also with top_at_one = True. Each
+// scheme call below marshals to its own known mismatch independently --
+// effrr_in_unit_conv/effrr_in_vert_flip get freshly built (and, for
+// effr_calc/effr_diag, torn down) around each individual call,
+// effr_pre/effr_post/effrs_calc receive the shared value directly with no
+// conversion at all -- rather than one suite-boundary conversion applied
+// uniformly to every caller. effrs_inout's chain (kind cast, then unit
+// convert, then vertical flip, all on the same call) is the primary
+// end-to-end regression coverage for chaining more than one kind of per-call
+// marshaling together; the write-back unwinds in the opposite order (flip,
+// then unit, then kind).
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
@@ -162,9 +166,12 @@
 // CHECK-NEXT:      real(kind=kind_phys) :: scalar_var_unit_conv
 // CHECK-NEXT:      real(kind=kind_phys) :: tke_inout_unit_conv
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_vert_flip(:, :)
 // CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_kind_cast(:, :)
 // CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_vert_flip(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv3(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_vert_flip4(:, :)
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      allocate(effrg_in_unit_conv(size(effrg_in, 1), size(effrg_in, 2)))
@@ -188,16 +195,22 @@
 // CHECK-NEXT:            if (errflg .eq. 0) then
 // CHECK-NEXT:              allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))
 // CHECK-NEXT:              effrr_in_unit_conv = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:              allocate(effrr_in_vert_flip(size(effrr_in_unit_conv, 1), size(effrr_in_unit_conv, 2)))
+// CHECK-NEXT:              effrr_in_vert_flip = effrr_in_unit_conv(:, size(effrr_in_unit_conv, 2):1:-1)
 // CHECK-NEXT:              allocate(effrs_inout_kind_cast(size(effrs_inout, 1), size(effrs_inout, 2)))
 // CHECK-NEXT:              effrs_inout_kind_cast = real(effrs_inout, kind=8)
 // CHECK-NEXT:              allocate(effrs_inout_unit_conv(size(effrs_inout_kind_cast, 1), size(effrs_inout_kind_cast, 2)))
 // CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_kind_cast * 1.0E6_8
-// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_unit_conv,                 &
+// CHECK-NEXT:              allocate(effrs_inout_vert_flip(size(effrs_inout_unit_conv, 1), size(effrs_inout_unit_conv, 2)))
+// CHECK-NEXT:              effrs_inout_vert_flip = effrs_inout_unit_conv(:, size(effrs_inout_unit_conv, 2):1:-1)
+// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_vert_flip,                 &
 // CHECK-NEXT:                effrg_in=effrg_in_unit_conv, ncg_in=ncg_in, nci_out=nci_out,                        &
 // CHECK-NEXT:                effrl_inout=effrl_inout_unit_conv, effri_out=effri_out_unit_conv,                   &
-// CHECK-NEXT:                effrs_inout=effrs_inout_unit_conv, ncl_out=ncl_out, has_graupel=has_graupel,        &
+// CHECK-NEXT:                effrs_inout=effrs_inout_vert_flip, ncl_out=ncl_out, has_graupel=has_graupel,        &
 // CHECK-NEXT:                scalar_var=scalar_var_unit_conv, tke_inout=tke_inout_unit_conv,                     &
 // CHECK-NEXT:                tke2_inout=tke2_inout, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_vert_flip(:, size(effrs_inout_vert_flip, 2):1:-1)
+// CHECK-NEXT:              deallocate(effrs_inout_vert_flip)
 // CHECK-NEXT:              effrs_inout_kind_cast = effrs_inout_unit_conv * 1.0E-6_8
 // CHECK-NEXT:              deallocate(effrs_inout_unit_conv)
 // CHECK-NEXT:              effrs_inout = real(effrs_inout_kind_cast, kind=kind_phys)
@@ -217,7 +230,9 @@
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        allocate(effrr_in_unit_conv3(size(effrr_inout, 1), size(effrr_inout, 2)))
 // CHECK-NEXT:        effrr_in_unit_conv3 = effrr_inout * 1.0E6_kind_phys
-// CHECK-NEXT:        call effr_diag_run(effrr_in_unit_conv3, scalar_varC, errmsg, errflg)
+// CHECK-NEXT:        allocate(effrr_in_vert_flip4(size(effrr_in_unit_conv3, 1), size(effrr_in_unit_conv3, 2)))
+// CHECK-NEXT:        effrr_in_vert_flip4 = effrr_in_unit_conv3(:, size(effrr_in_unit_conv3, 2):1:-1)
+// CHECK-NEXT:        call effr_diag_run(effrr_in_vert_flip4, scalar_varC, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call rad_lw_run(ncol, fluxLW, errmsg, errflg)

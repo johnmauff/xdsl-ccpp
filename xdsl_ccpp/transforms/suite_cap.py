@@ -41,6 +41,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     SubcycleLoopOp,
     UnitConvertOp,
     UnitWriteBackOp,
+    VerticalFlipOp,
+    VerticalFlipWriteBackOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
@@ -69,6 +71,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
+    is_vertical_dimension,
     normalize_units,
 )
 from xdsl_ccpp.util.visitor import Visitor
@@ -218,6 +221,23 @@ class GenerateSuiteSubroutine(RewritePattern):
         if arg.hasAttr("standard_name"):
             return arg.getAttr("standard_name").lower()
         return arg.name
+
+    @staticmethod
+    def _vertical_dim_index(fn_arg) -> "int | None":
+        """Return the 1-based Fortran dimension index of fn_arg's vertical
+        (layer) dimension, or None if it has no recognized one.
+
+        dim_names (set by BuildSchemeDescription from the ArgumentOp's own
+        dim_names property) preserves the scheme's own declared dimension
+        order, so this is per-scheme -- correct even if two schemes sharing
+        a standard_name order their dimensions differently.
+        """
+        if not fn_arg.hasAttr("dim_names"):
+            return None
+        for idx, dim_name in enumerate(fn_arg.getAttr("dim_names")):
+            if is_vertical_dimension(dim_name):
+                return idx + 1
+        return None
 
     def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops,
                                framework_ref_ops=None, suite_use_stubs=None):
@@ -521,17 +541,23 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         def _apply_divergent_marshaling(arg, val):
             """Adapt val (the shared, host-native value) to this specific
-            scheme's own known kind/unit mismatch, for a cross-scheme
-            divergent standard_name. Appends the forward cast(s) to
-            cast_ops and schedules the matching write-back(s) -- applied in
-            reverse order, since a kind cast followed by a unit convert
-            must be undone unit-first, kind-second -- into
+            scheme's own known kind/unit mismatch and vertical-layer
+            (top_at_one) convention, for a cross-scheme divergent
+            standard_name. Appends the forward cast(s) to cast_ops and
+            schedules the matching write-back(s) -- applied in reverse
+            order, since e.g. a kind cast followed by a unit convert must
+            be undone unit-first, kind-second -- into
             divergent_writeback_ops. Returns the value to pass to the call.
+
+            A vertical flip is type/kind-invariant (it only reorders array
+            elements along one axis), so it composes with the kind/unit
+            steps in either order without changing the final result;
+            applied last here purely for a stable, deterministic order.
             """
             if self._std_key(arg) not in divergent_std_keys:
                 return val
             intent = arg.getAttr("intent") if arg.hasAttr("intent") else "in"
-            chain: list = []  # (kind_or_unit, result_ssa, source_ssa, param)
+            chain: list = []  # (kind/unit/flip, result_ssa, source_ssa, param)
             cur = val
             if arg.hasAttr("model_var_kind_mismatch") and arg.getAttr("type") != "character":
                 scheme_kind, host_kind = arg.getAttr("model_var_kind_mismatch").split(":")
@@ -557,15 +583,27 @@ class GenerateSuiteSubroutine(RewritePattern):
                 cast_ops.append(conv_op)
                 chain.append(("unit", conv_op.res, cur, to_host_expr))
                 cur = conv_op.res
+            if arg.hasAttr("top_at_one"):
+                vert_dim = self._vertical_dim_index(arg)
+                if vert_dim is not None:
+                    flip_op = VerticalFlipOp(cur, vert_dim, cur.type)
+                    flip_op.res.name_hint = f"{arg.name}_vert_flip"
+                    cast_ops.append(flip_op)
+                    chain.append(("flip", flip_op.res, cur, vert_dim))
+                    cur = flip_op.res
             if intent in ("inout", "out"):
                 for kind_or_unit, result_ssa, source_ssa, param in reversed(chain):
                     if kind_or_unit == "kind":
                         divergent_writeback_ops.append(
                             KindWriteBackOp(result_ssa, source_ssa, param)
                         )
-                    else:
+                    elif kind_or_unit == "unit":
                         divergent_writeback_ops.append(
                             UnitWriteBackOp(result_ssa, source_ssa, param)
+                        )
+                    else:
+                        divergent_writeback_ops.append(
+                            VerticalFlipWriteBackOp(result_ssa, source_ssa, param)
                         )
             return cur
 
@@ -1123,17 +1161,19 @@ class GenerateSuiteSubroutine(RewritePattern):
                         all_args[std_key] = fn_arg
 
         # Two or more schemes sharing a standard_name can each independently
-        # declare a genuinely different kind or units for it -- not just
-        # different from the host, but different from each other (e.g.
-        # examples/var_compat: effr_pre/effr_post declare the rain-particle
-        # radius in meters, effr_calc/effr_diag declare the same
-        # standard_name in micrometers). all_args above only ever keeps ONE
-        # scheme's declaration per standard_name (whichever came first), so a
-        # suite-boundary conversion decision based on that single entry is
-        # wrong for every other scheme sharing the name. Flag these
-        # standard_names so the block signature and call-building code can
-        # switch to per-call marshaling for just these entries, leaving every
-        # other, agreeing standard_name completely unaffected.
+        # declare a genuinely different kind, units, or vertical-layer
+        # convention (top_at_one) for it -- not just different from the
+        # host, but different from each other (e.g. examples/var_compat:
+        # effr_pre/effr_post declare the rain-particle radius in meters,
+        # effr_calc/effr_diag declare the same standard_name in
+        # micrometers with top_at_one = True). all_args above only ever
+        # keeps ONE scheme's declaration per standard_name (whichever came
+        # first), so a suite-boundary conversion decision based on that
+        # single entry is wrong for every other scheme sharing the name.
+        # Flag these standard_names so the block signature and
+        # call-building code can switch to per-call marshaling for just
+        # these entries, leaving every other, agreeing standard_name
+        # completely unaffected.
         signatures_seen: dict[str, set] = {}
         for scheme_name in arg_tables:
             for fn_arg in arg_tables[scheme_name].getFunctionArguments():
@@ -1144,7 +1184,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                 units = normalize_units(
                     fn_arg.getAttr("units") if fn_arg.hasAttr("units") else None
                 )
-                signatures_seen.setdefault(std_key, set()).add((kind, units))
+                top_at_one = fn_arg.hasAttr("top_at_one")
+                signatures_seen.setdefault(std_key, set()).add((kind, units, top_at_one))
         divergent_std_keys = frozenset(
             std_key for std_key, sigs in signatures_seen.items() if len(sigs) > 1
         )

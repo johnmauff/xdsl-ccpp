@@ -1115,6 +1115,85 @@ class KindWriteBackOp(IRDLOperation):
 
 
 @irdl_op_definition
+class VerticalFlipOp(IRDLOperation):
+    """Allocate a local temp and reverse an array section along the vertical
+    (layer) dimension, for a scheme call whose own top_at_one convention
+    differs from the shared value's current convention.
+
+    Represents::
+
+        allocate(result(size(source,1), ...))
+        result = source(:, ..., size(source, vertical_dim):1:-1, ..., :)
+
+    ``vertical_dim`` is the 1-based Fortran dimension index (matching the
+    argument's own dimensions/dim_names) to reverse; every other dimension
+    copies through unchanged (``:``). The host's source array is never
+    modified. Use ``VerticalFlipWriteBackOp`` to flip back after the scheme
+    call for ``intent(inout)`` / ``intent(out)`` arguments.
+    """
+
+    name = "ccpp_utils.vertical_flip"
+
+    source       = operand_def()
+    vertical_dim = prop_def(IntegerAttr)   # 1-based Fortran dimension index
+
+    res = result_def()
+
+    def __init__(
+        self,
+        source: "SSAValue | IRDLOperation",
+        vertical_dim: "int | IntegerAttr",
+        result_type,
+    ):
+        if isinstance(vertical_dim, int):
+            vertical_dim = IntegerAttr.from_int_and_width(vertical_dim, 64)
+        super().__init__(
+            operands=[source],
+            properties={"vertical_dim": vertical_dim},
+            result_types=[result_type],
+        )
+
+
+@irdl_op_definition
+class VerticalFlipWriteBackOp(IRDLOperation):
+    """Write a vertically-flipped value back to the original host variable.
+
+    Represents::
+
+        original_dest = conv_result(:, ..., size(conv_result, vertical_dim):1:-1, ..., :)
+        deallocate(conv_result)
+
+    Reversing a reversed section restores the original order, so the
+    write-back applies the identical reversed-section expression to the
+    *source* side of the assignment (``conv_result``) and assigns into the
+    plain, unreversed destination.
+
+    Emitted after the scheme call for ``intent(inout)`` / ``intent(out)``
+    arguments that required a vertical flip.
+    """
+
+    name = "ccpp_utils.vertical_flip_write_back"
+
+    conv_result   = operand_def()   # temp with the scheme's own vertical convention
+    original_dest = operand_def()   # block arg with the host's convention
+
+    vertical_dim = prop_def(IntegerAttr)   # same index as the matching VerticalFlipOp
+
+    def __init__(
+        self,
+        conv_result:   "SSAValue | IRDLOperation",
+        original_dest: "SSAValue | IRDLOperation",
+        vertical_dim:  "int | IntegerAttr",
+    ):
+        if isinstance(vertical_dim, int):
+            vertical_dim = IntegerAttr.from_int_and_width(vertical_dim, 64)
+        super().__init__(
+            operands=[conv_result, original_dest],
+            properties={"vertical_dim": vertical_dim},
+        )
+
+
+@irdl_op_definition
 class RowMajorConvertOp(IRDLOperation):
     """Transpose a row-major host array to column-major order for Fortran scheme consumption.
 
@@ -1227,6 +1306,8 @@ CCPPUtils = Dialect(
         UnitWriteBackOp,
         RowMajorConvertOp,
         RowMajorWriteBackOp,
+        VerticalFlipOp,
+        VerticalFlipWriteBackOp,
     ],
     [RealKindType, DerivedType],
 )

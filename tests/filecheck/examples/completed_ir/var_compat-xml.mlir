@@ -9,22 +9,22 @@
 // regression coverage for the nested-subcycle-support work. Four distinct
 // loop-count allocas (ccpp_loop_cnt/ccpp_loop_cnt0/ccpp_loop_cnt1/
 // ccpp_loop_cnt2), each declared exactly once. See examples/var_compat/README.md
-// for what this example does and does not cover (the vertical array
-// flipping attribute, top_at_one, is a separate, already-tracked,
-// out-of-scope issue). The suite's four schemes all use the bare local name
-// 'scalar_var' for four unrelated standard_names -- a dummy-argument-name
-// collision the host's own metadata resolves by giving each standard_name a
-// distinct name (scalar_var/scalar_varA/scalar_varB/scalar_varC); this
-// requires the generate-host-match pass to run (as the production ccpp_xdsl
-// tool always does whenever host files are given) so suite_cap.py has a
-// model_var_name to disambiguate with.
+// for what this example does and does not cover. The suite's four schemes
+// all use the bare local name 'scalar_var' for four unrelated
+// standard_names -- a dummy-argument-name collision the host's own metadata
+// resolves by giving each standard_name a distinct name (scalar_var/
+// scalar_varA/scalar_varB/scalar_varC); this requires the generate-host-match
+// pass to run (as the production ccpp_xdsl tool always does whenever host
+// files are given) so suite_cap.py has a model_var_name to disambiguate with.
 //
-// Two standard_names here are declared with genuinely different units or
-// kind by different schemes (not just different from the host): the
-// rain-particle and snow-particle radius variables. Each scheme call
-// marshals to its own known kind/unit mismatch independently at the call
-// site, rather than one conversion applied uniformly to every caller
-// sharing the standard_name.
+// Two standard_names here are declared with genuinely different units,
+// kind, or vertical-layer convention (top_at_one) by different schemes (not
+// just different from the host): the rain-particle and snow-particle radius
+// variables. Each scheme call marshals to its own known mismatch
+// independently at the call site -- a VerticalFlipOp/VerticalFlipWriteBackOp
+// pair alongside the existing KindCastOp/UnitConvertOp machinery -- rather
+// than one conversion applied uniformly to every caller sharing the
+// standard_name.
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
@@ -215,9 +215,12 @@
 // CHECK-NEXT:              %15 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:              scf.if %14 {
 // CHECK-NEXT:                %effrr_in_unit_conv = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:                %effrr_in_vert_flip = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                %effrs_inout_kind_cast = "ccpp_utils.kind_cast"(%effrs_inout) <{target_kind = "8"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
 // CHECK-NEXT:                %effrs_inout_unit_conv = "ccpp_utils.unit_convert"(%effrs_inout_kind_cast) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"8">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
-// CHECK-NEXT:                "ccpp_utils.kw_call"(%ncol, %nlev, %effrr_in_unit_conv, %effrg_in_unit_conv, %ncg_in__opt, %nci_out__opt, %effrl_inout_unit_conv, %effri_out_unit_conv, %effrs_inout_unit_conv, %ncl_out__opt, %has_graupel, %scalar_var_unit_conv, %tke_inout_unit_conv, %tke2_inout, %errmsg, %errflg) <{callee = "effr_calc_run", operand_names = ["ncol", "nlev", "effrr_in", "effrg_in", "ncg_in", "nci_out", "effrl_inout", "effri_out", "effrs_inout", "ncl_out", "has_graupel", "scalar_var", "tke_inout", "tke2_inout", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i1>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:                %effrs_inout_vert_flip = "ccpp_utils.vertical_flip"(%effrs_inout_unit_conv) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"8">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
+// CHECK-NEXT:                "ccpp_utils.kw_call"(%ncol, %nlev, %effrr_in_vert_flip, %effrg_in_unit_conv, %ncg_in__opt, %nci_out__opt, %effrl_inout_unit_conv, %effri_out_unit_conv, %effrs_inout_vert_flip, %ncl_out__opt, %has_graupel, %scalar_var_unit_conv, %tke_inout_unit_conv, %tke2_inout, %errmsg, %errflg) <{callee = "effr_calc_run", operand_names = ["ncol", "nlev", "effrr_in", "effrg_in", "ncg_in", "nci_out", "effrl_inout", "effri_out", "effrs_inout", "ncl_out", "has_graupel", "scalar_var", "tke_inout", "tke2_inout", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i1>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:                "ccpp_utils.vertical_flip_write_back"(%effrs_inout_vert_flip, %effrs_inout_unit_conv) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"8">>) -> ()
 // CHECK-NEXT:                "ccpp_utils.unit_write_back"(%effrs_inout_unit_conv, %effrs_inout_kind_cast) <{to_host_expr = "* 1.0E-6"}> : (memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"8">>) -> ()
 // CHECK-NEXT:                "ccpp_utils.kind_write_back"(%effrs_inout_kind_cast, %effrs_inout) <{original_kind = "kind_phys"}> : (memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:              }
@@ -243,7 +246,8 @@
 // CHECK-NEXT:        %24 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %23 {
 // CHECK-NEXT:          %effrr_in_unit_conv_1 = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          func.call @effr_diag_run(%effrr_in_unit_conv_1, %scalar_varC, %errmsg, %errflg) : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          %effrr_in_vert_flip_1 = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv_1) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          func.call @effr_diag_run(%effrr_in_vert_flip_1, %scalar_varC, %errmsg, %errflg) : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %25 = arith.constant 0 : i32
 // CHECK-NEXT:        %26 = arith.cmpi eq, %27, %25 : i32

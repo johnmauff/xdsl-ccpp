@@ -2312,27 +2312,40 @@ dependency is noted.
   - Not verified: whether `run_dispatch.py` has its own independent subcycle-flattening
     assumption beyond what `_iter_schemes` covers — check this first before scoping further.
 - **`var_compat`'s other pieces, separate from nested-subcycle:**
-  - **Vertical array flipping (`top_at_one=true`) — M. Not yet fixed.** Reverses vertical-index
-    array sections when a scheme's declared top-at-one convention differs from the host's.
-    `effr_calc`'s `effrr_in`/`effrs_inout` and `effr_diag`'s `effrr_in` declare it;
-    `effr_pre`/`effr_post`/`effrs_calc` don't, and no host file in this port declares an explicit
-    counterpart to compare against, so the assumed default for schemes that don't declare it is
-    not-flipped, matching the host's actual data layout. Confirmed the existing
+  - **Vertical array flipping (`top_at_one=true`) — fixed.** Reverses vertical-index array
+    sections when a scheme's own declared top-at-one convention differs from other schemes
+    sharing the same standard_name. `effr_calc`'s `effrr_in`/`effrs_inout` and `effr_diag`'s
+    `effrr_in` declare it; `effr_pre`/`effr_post`/`effrs_calc` don't, and no host file in this
+    port declares an explicit counterpart to compare against, so schemes that don't declare it
+    define the shared, not-flipped representation. Confirmed the existing
     `RowMajorConvertOp`/`RowMajorWriteBackOp` pair (row-major/column-major conversion) is inserted
     at a *different* generated subroutine (the host-facing run-dispatch chain in
     `run_dispatch.py`) than the one that actually matters here (`suite_cap.py`'s suite-cap
-    subroutine, which is where `effr_calc`/`effr_diag` are actually called) — the directly
-    relevant, already-established pattern to reuse instead is the kind-mismatch/unit-mismatch
-    detect-and-convert pattern in `suite_cap.py` (see the divergent-standard-name fix immediately
-    below, which this would plug into at the identical per-call insertion point). Needs: add
-    `top_at_one` to the recognized metadata keys (currently silently dropped with an
-    unrecognised-key warning), a new `VerticalFlipOp`/`VerticalFlipWriteBackOp` pair modeled on
-    `KindCastOp`/`KindWriteBackOp` but reversing an array section along the vertical dimension
-    rather than converting a value, and a case in `print_ftn.py`. `effr_calc`'s/`effr_diag`'s own
-    arithmetic on these variables is uniform across vertical levels, so this specific synthetic
-    example's own numeric check can't independently distinguish a correct flip from a no-op one —
-    verification here will necessarily be about correct, valid generated Fortran syntax and
-    correct call-site placement, not an independent numeric proof from this particular test.
+    subroutine, which is where `effr_calc`/`effr_diag` are actually called), so it wasn't reused
+    directly.
+    - **Fixed**: added `top_at_one` to the recognized metadata keys (`ccpp.py`'s
+      `ArgumentOp.KNOWN_PROPS`/boolean-flag list, `ccpp_descriptors.py`'s
+      `BuildSchemeDescription`) — previously silently dropped with an unrecognised-key warning.
+      Added a new `VerticalFlipOp`/`VerticalFlipWriteBackOp` pair in
+      `xdsl_ccpp/dialects/ccpp_utils.py`, modeled directly on `KindCastOp`/`KindWriteBackOp` but
+      reversing an array section along the vertical dimension (identified per-scheme from the
+      argument's own `dim_names`, via a new `is_vertical_dimension`-based
+      `_vertical_dim_index` helper) rather than converting a value, using `size(...)`-based
+      section bounds so no named dimension variable needs to be in scope. Generalized the
+      divergent-standard-name detection built for the kind/unit fix above (add `top_at_one`
+      presence to the per-scheme signature tuple `_build_arg_tables` compares) and extended
+      `generateSchemeSubroutineCallOps`'s per-call marshaling chain to include the flip as a
+      third step alongside kind cast and unit convert — `effrs_inout`'s real case chains all
+      three on the same call (kind, then units, then flip forward; write-back unwinds flip, then
+      units, then kind, in reverse), confirmed correct against the real regenerated output. A
+      vertical flip is type/kind-invariant, so it composes with the other two steps in either
+      order without changing the result. `effr_calc`'s/`effr_diag`'s own arithmetic on these
+      variables is uniform across vertical levels, so this specific synthetic example's own
+      numeric check can't independently distinguish a correct flip from a no-op one —
+      verification here is about correct, valid generated Fortran syntax and correct call-site
+      placement, not an independent numeric proof from this particular test. Regression coverage:
+      `tests/unit/test_top_at_one_recognized.py`, `tests/unit/test_vertical_flip_op.py`,
+      `tests/unit/test_suite_vertical_flip_marshaling.py`.
   - **Kind conversion (`kind_phys`↔`8`) — confirmed working, and a real, unrelated bug found and
     fixed along the way.** `effr_calc`'s `effrs_inout` declares `kind = 8`; every other occurrence
     of the same standard_name uses `kind_phys`. The `generate-meta-kinds`/`KindCastOp`/
@@ -2397,6 +2410,22 @@ dependency is noted.
     reason as the historic `ccpp_loop_cnt` duplicate-declaration bug. Every non-divergent
     standard_name (the vast majority) is completely unaffected. Regression coverage:
     `tests/unit/test_suite_cross_scheme_unit_kind.py`.
+  - **Host-facing wrapper subroutine declares `scalar_var`/`tke_inout` `intent(in)` while the
+    suite-cap subroutine it calls now correctly declares them `intent(inout)` — found while
+    verifying the ReturnOp fix above, root cause not yet located, not fixed here.** After fixing
+    `_assemble_func`'s `inout_return_vals` (see the kind-conversion entry above — a Copilot review
+    comment on the PR carrying that fix), `var_compatibility_suite_suite_radiation` correctly
+    declares these two scalar arguments `intent(inout)`. But `VarCompatibility_ccpp_physics_run`
+    (the host-facing wrapper generated by `ccpp_cap.py`, a completely separate code path from
+    `suite_cap.py`) still declares its own copies of the same two arguments `intent(in)`, and
+    passes them straight through into the call to the suite-cap subroutine. Passing an
+    `intent(in)` actual argument into an `intent(inout)` dummy argument is also invalid Fortran,
+    so `examples/var_compat` likely still won't compile even with every fix above in place.
+    Whatever determines the wrapper's own intent for these arguments in `ccpp_cap.py` isn't kept
+    in sync with `suite_cap.py`'s corrected signature — not yet investigated why (a different
+    computation entirely, or a stale intermediate representation it reads instead). Not scoped or
+    fixed here; this is likely a small, well-scoped fix for whoever picks it up next, but the
+    exact mechanism in `ccpp_cap.py` hasn't been traced yet.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

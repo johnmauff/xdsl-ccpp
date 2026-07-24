@@ -34,6 +34,8 @@ from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipOp as CCPPVerticalFlipOp
+from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipWriteBackOp as CCPPVerticalFlipWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
@@ -819,6 +821,36 @@ class ftnPrintContext:
                 self.print(f"{dest_name} = {conv_name} {to_expr}")
                 if self._ftn_dim_suffix(op.conv_result.type):
                     self.print(f"deallocate({conv_name})")
+            case CCPPVerticalFlipOp():
+                # Local-copy vertical flip: reverse an array section along the
+                # vertical dimension into a local temp; the host's array is
+                # never modified.
+                src_name    = self._get_variable_name_for(op.source)
+                result_name = self._get_variable_name_for(op.res)
+                vert_dim = op.vertical_dim.value.data
+                dim_suffix = self._ftn_dim_suffix(op.res.type)
+                rank = dim_suffix.count(":")
+                sizes = ", ".join(f"size({src_name}, {i + 1})" for i in range(rank))
+                self.print(f"allocate({result_name}({sizes}))")
+                sections = [
+                    f"size({src_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
+                    for i in range(rank)
+                ]
+                self.print(f"{result_name} = {src_name}({', '.join(sections)})")
+            case CCPPVerticalFlipWriteBackOp():
+                # Post-flip: write the local temp back to the host, reversed
+                # along the same vertical dimension (a second reversal
+                # restores the original order).
+                conv_name = self._get_variable_name_for(op.conv_result)
+                dest_name = self._get_variable_name_for(op.original_dest)
+                vert_dim = op.vertical_dim.value.data
+                rank = self._ftn_dim_suffix(op.conv_result.type).count(":")
+                sections = [
+                    f"size({conv_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
+                    for i in range(rank)
+                ]
+                self.print(f"{dest_name} = {conv_name}({', '.join(sections)})")
+                self.print(f"deallocate({conv_name})")
             case CCPPRowMajorConvertOp():
                 # Forward transpose: row-major host → column-major local temp.
                 src_name    = self._get_variable_name_for(op.source)
@@ -1502,6 +1534,18 @@ class ftnPrintContext:
                         inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
                     else:
                         inner.print(f"{type_str} :: {var_name}")
+                elif isa(op, CCPPVerticalFlipOp):
+                    # Always an array (a vertical flip is meaningless for a
+                    # scalar). Same de-duplication reasoning as above.
+                    hint = (
+                        op.res.name_hint
+                        if op.res.name_hint is not None
+                        else f"vertical_flip_{id(op)}"
+                    )
+                    var_name = inner._get_variable_name_for(op.res, hint=hint)
+                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                    inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
 
             # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
             for op in bdy.block.walk():

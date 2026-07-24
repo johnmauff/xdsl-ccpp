@@ -377,6 +377,11 @@ class BuildMetaDataDescriptions(Visitor):
         if "is_promoted" in arg_op.properties:
             arg.setAttr("is_promoted", True)
 
+        # 'top_at_one' marks a scheme's own vertical-layer convention as
+        # top-of-atmosphere at index 1; absent means not-flipped.
+        if "top_at_one" in arg_op.properties:
+            arg.setAttr("top_at_one", True)
+
         # Surface the completed argument to the parent traversal via self.arg_token
         self.arg_token = arg
 
