@@ -2448,17 +2448,27 @@ dependency is noted.
       signature entirely, since the DDT-member-matching machinery had no DDT definition to match
       against at all. **Fixed** by adding `module_rad_ddt.meta` to the four input-file lists;
       confirmed both symptoms disappear with zero `xdsl_ccpp` code changes.
-    - **Not yet fixed — a dynamic-count subcycle's loop bound is emitted as the raw standard_name
+    - **Fixed — a dynamic-count subcycle's loop bound used to be emitted as the raw standard_name
       string, never resolved to the host's own local name.** `suite_cap.py`'s `_emit_subcycle`
-      passes the XML's `loop="..."` string straight through unresolved when it isn't a literal
+      passed the XML's `loop="..."` string straight through unresolved when it wasn't a literal
       integer — for `<subcycle loop="num_subcycles_for_effr">`, that string is the
       *standard_name* (`num_subcycles_for_effr`), not a real Fortran identifier; the host's own
-      local name for it is `num_subcycles` (`test_host_data.meta`). Nothing in this path looks up
-      `all_args`/`data_ops` to substitute the host-matched name the way every other host-var
-      reference in the generator already does. No other example in the repo uses a named
-      (non-literal) subcycle loop count, so this path has never been exercised before — needs the
-      same standard_name-to-host-name resolution already used elsewhere in `suite_cap.py`. This is
-      a real `xdsl_ccpp` code gap, unrelated to the DDT file-list issue above.
+      local name for it is `num_subcycles` (`test_host_data.meta`). Unlike `scheme_order_in_suite`
+      (which flows through the ordinary scheme-arg host-matching path because several schemes
+      declare it as their own arg), no scheme anywhere declares a matching arg for
+      `num_subcycles_for_effr`, so it never entered `all_args`/`data_ops` through any existing
+      pathway. **Fixed** by a new `_synthesize_dynamic_loop_count_args` method in `suite_cap.py`
+      that scans the suite's subcycle structure for dynamic loop counts with no scheme-arg match,
+      resolves the host's own local name for the standard_name by scanning every non-scheme host
+      table (module, host, or ddt), and synthesizes a fresh `HostMatched` `CCPPArgument` for it —
+      so it becomes a genuine, correctly-declared dummy argument the same way any other
+      host-matched value does, and `_emit_subcycle` prints that argument's own name as the do-loop
+      bound instead of the raw standard_name. Scoped to only the `_run` (physics) postfix that
+      actually emits a `SubcycleLoopOp` using it — a scheme can have both a `_run` and an `_init`
+      entry point, so an `arg_tables`-only check isn't sufficient on its own; the synthesis is
+      additionally gated on `physics_mode`. Covered by `tests/unit/test_suite_dynamic_loop_count.py`
+      (4 tests, sabotage-verified). If a dynamic loop count has no matching host variable anywhere,
+      a clear `ValueError` is raised instead of emitting invalid Fortran.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

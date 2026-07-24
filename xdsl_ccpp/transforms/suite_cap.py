@@ -294,6 +294,99 @@ class GenerateSuiteSubroutine(RewritePattern):
                     return data_ops[var.name]
         return None
 
+    def _resolve_host_only_std_name(self, std_name: str):
+        """Find a host-declared arg with this exact standard_name, scanning
+        every non-scheme table in self.meta_data (module, host, or ddt --
+        unlike _find_loop_upper_bound's fallback above, which only scans
+        MODULE-type tables for a different case, a promotion loop's upper
+        bound). Used for a subcycle's own dynamic loop-count standard_name
+        when no scheme anywhere declares a matching arg of its own, so it
+        never enters all_args through the ordinary scheme-arg host-matching
+        path the way e.g. scheme_order_in_suite does (several schemes'
+        own .meta files declare that one as their own arg; nothing declares
+        num_subcycles_for_effr as its own arg anywhere in examples/var_compat).
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") == CCPPType.SCHEME:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if var.hasAttr("standard_name") and var.getAttr("standard_name") == std_name:
+                    return var
+        return None
+
+    def _synthesize_dynamic_loop_count_args(self, suite_description, arg_tables, all_args) -> None:
+        """Mutate all_args in place: for every subcycle in suite_description
+        with a dynamic (non-literal) loop count whose standard_name has no
+        matching scheme arg anywhere, synthesize a fresh HostMatched
+        CCPPArgument for it -- named after the host's own local variable --
+        so it becomes a genuine, correctly-declared dummy argument of the
+        suite subroutine the same way any other host-matched value already
+        does. Without this, _emit_subcycle would have nothing but the raw,
+        undeclared standard_name to print as the Fortran do-loop bound.
+
+        arg_tables is per-postfix (only schemes with an entry point matching
+        the CURRENT tgt_subroutine_postfix, e.g. "_init" vs "_run" vs
+        "_finalize"). A subcycle's loop count is only actually needed for
+        postfixes where at least one of its own schemes (recursively) is in
+        arg_tables -- matching _emit_subcycle_items's own "if sn in
+        arg_tables" filter exactly -- so this only fires for the specific
+        postfix that will actually emit a SubcycleLoopOp using it, not every
+        lifecycle postfix the suite happens to have (register/finalize/
+        timestep_initial/timestep_final have no subcycles of their own to
+        emit at all, and must not gain an unused dummy argument here).
+
+        Only called when physics_mode is True (see the caller in
+        _build_arg_tables): _emit_subcycle itself only ever emits a
+        SubcycleLoopOp under that same condition (its own "if _lc_int > 1
+        and physics_mode and body_ops" guard) -- a postfix like "_init" can
+        still have every one of a subcycle's own schemes present in
+        arg_tables (e.g. effr_calc has both a _run and an _init entry
+        point), so the arg_tables-based check above isn't sufficient on its
+        own to avoid adding an unused argument to non-physics postfixes.
+        """
+        def _subcycle_has_active_schemes(items) -> bool:
+            for item in items:
+                if item[0] == "scheme":
+                    _, sn, _ = item
+                    if sn in arg_tables:
+                        return True
+                else:
+                    _, _, _, sub_items = item
+                    if _subcycle_has_active_schemes(sub_items):
+                        return True
+            return False
+
+        def _collect_dynamic_counts(items) -> set:
+            counts: set = set()
+            for item in items:
+                if item[0] == "subcycle":
+                    _, loop_count, is_literal, sub_items = item
+                    if not is_literal and _subcycle_has_active_schemes(sub_items):
+                        counts.add(loop_count)
+                    counts |= _collect_dynamic_counts(sub_items)
+            return counts
+
+        call_sequence = self.getCallSequence(suite_description)
+        for std_name in _collect_dynamic_counts(call_sequence):
+            std_key = std_name.lower()
+            if std_key in all_args:
+                continue
+            host_var = self._resolve_host_only_std_name(std_name)
+            if host_var is None:
+                continue
+            new_arg = CCPPArgument(host_var.name)
+            new_arg.setAttr("standard_name", std_name)
+            new_arg.setAttr("type", host_var.getAttr("type"))
+            new_arg.setAttr("intent", "in")
+            if host_var.hasAttr("kind"):
+                new_arg.setAttr("kind", host_var.getAttr("kind"))
+            new_arg.setAttr("dimensions", 0)
+            new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+            all_args[std_key] = new_arg
+
     def _build_promoted_call_ops(
         self,
         subroutine_name,
@@ -1129,7 +1222,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             ncol_meta=ncol_meta,
         )
 
-    def _build_arg_tables(self, suite_description, tgt_subroutine_postfix) -> "_ArgTableResult":
+    def _build_arg_tables(
+        self, suite_description, tgt_subroutine_postfix, physics_mode: bool = False,
+    ) -> "_ArgTableResult":
         """Build argument tables, overrides, and canonical arg map for all schemes."""
         scheme_entries = self.getSchemeNames(suite_description)
         arg_tables = {}
@@ -1159,6 +1254,9 @@ class GenerateSuiteSubroutine(RewritePattern):
                         assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
                     else:
                         all_args[std_key] = fn_arg
+
+            if physics_mode:
+                self._synthesize_dynamic_loop_count_args(suite_description, arg_tables, all_args)
 
         # Two or more schemes sharing a standard_name can each independently
         # declare a genuinely different kind, units, or vertical-layer
@@ -1452,8 +1550,30 @@ class GenerateSuiteSubroutine(RewritePattern):
                 )
                 sc_alloc.memref.name_hint = "ccpp_loop_cnt"
                 hoisted_allocas.append(sc_alloc)
+                # A non-literal loop_count is a CCPP standard_name, not a
+                # Fortran identifier -- resolve it to the matching arg's own
+                # dummy-argument name (all_args, keyed by std_key) before
+                # printing, whether that arg arrived through the ordinary
+                # scheme-arg host-matching path or through
+                # _synthesize_dynamic_loop_count_args (for a standard_name no
+                # scheme declares its own arg for, e.g. examples/var_compat's
+                # num_subcycles_for_effr). Printing the raw standard_name
+                # directly is not valid Fortran and would not compile.
+                printed_loop_count = loop_count
+                if not is_literal:
+                    resolved = all_args.get(loop_count.lower())
+                    if resolved is None:
+                        raise ValueError(
+                            f"Subcycle loop count {loop_count!r} is not a "
+                            f"literal integer and has no matching "
+                            f"host-declared variable anywhere -- give the "
+                            f"host a variable with this standard_name, or "
+                            f"make the subcycle's loop count a literal "
+                            f"integer."
+                        )
+                    printed_loop_count = resolved.name
                 return [SubcycleLoopOp(
-                    loop_count=loop_count,
+                    loop_count=printed_loop_count,
                     loop_var=sc_alloc.memref,
                     body_ops=body_ops,
                     is_literal=is_literal,
@@ -1743,7 +1863,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             assert tgt_subroutine_postfix is not None
             generated_subroutine_posfix = tgt_subroutine_postfix
 
-        _tables = self._build_arg_tables(suite_description, tgt_subroutine_postfix)
+        _tables = self._build_arg_tables(suite_description, tgt_subroutine_postfix, physics_mode)
         scheme_entries = _tables.scheme_entries
         arg_tables = _tables.arg_tables
         scheme_overrides = _tables.scheme_overrides

@@ -42,11 +42,19 @@
 // separately, caused rad_sw's DDT-member arguments (sfc_up_sw/sfc_down_sw,
 // now visible in var_compatibility_suite_suite_radiation's own signature
 // below) to never be matched or declared at all -- found by actually trying
-// to compile this example with gfortran for the first time. A separate,
-// still-open subcycle-loop-bound resolution gap (num_subcycles_for_effr
-// emitted as a raw standard_name instead of the host's own local variable
-// name) and a wrapper intent(in)/intent(inout) mismatch are tracked in
-// ccpp_cap_refactor_plan.md's backlog, not fixed here.
+// to compile this example with gfortran for the first time.
+//
+// The effr subcycle's loop count (num_subcycles_for_effr) is a dynamic
+// standard_name with no scheme declaring a matching arg of its own (unlike
+// e.g. scheme_order_in_suite, which flows through the ordinary scheme-arg
+// host-matching path because several schemes declare it as their own arg) --
+// it used to be emitted as the raw, undeclared standard_name string, not
+// valid Fortran. suite_cap.py now synthesizes a fresh host-matched argument
+// for it (see num_subcycles below, declared and passed through exactly like
+// any other host-matched value), scoped to only the "_run" postfix that
+// actually emits the do-loop using it. A remaining wrapper
+// intent(in)/intent(inout) mismatch is tracked in ccpp_cap_refactor_plan.md's
+// backlog, not fixed here.
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
@@ -149,7 +157,7 @@
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_radiation(effrr_inout, scalar_varA, ncol, nlev,        &
 // CHECK:           effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, ncl_out, has_graupel,         &
 // CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, sfc_up_sw, sfc_down_sw,  &
-// CHECK-NEXT:      errmsg, errflg)
+// CHECK-NEXT:      num_subcycles, errmsg, errflg)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varA
 // CHECK-NEXT:      integer, intent(in) :: ncol
@@ -170,6 +178,7 @@
 // CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_up_sw(:)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_down_sw(:)
+// CHECK-NEXT:      integer, intent(in) :: num_subcycles
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      integer :: ccpp_loop_cnt
@@ -202,7 +211,7 @@
 // CHECK-NEXT:          "' in var_compatibility_suite_radiation"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      do ccpp_loop_cnt1 = 1, num_subcycles_for_effr
+// CHECK-NEXT:      do ccpp_loop_cnt1 = 1, num_subcycles
 // CHECK-NEXT:        if (errflg .eq. 0) then
 // CHECK-NEXT:          call effr_pre_run(effrr_inout, scalar_varA, errmsg, errflg)
 // CHECK-NEXT:        end if
@@ -238,7 +247,7 @@
 // CHECK-NEXT:          call effr_post_run(effrr_inout, scalar_varB, errmsg, errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
-// CHECK-NEXT:      do ccpp_loop_cnt2 = 1, num_subcycles_for_effr
+// CHECK-NEXT:      do ccpp_loop_cnt2 = 1, num_subcycles
 // CHECK-NEXT:        if (errflg .eq. 0) then
 // CHECK-NEXT:          call effrs_calc_run(effrs_inout, errmsg, errflg)
 // CHECK-NEXT:        end if
@@ -370,7 +379,7 @@
 // CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, effrr_inout, scalar_varA,  &
 // CHECK:           ncol, nlev, effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, has_graupel,      &
 // CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, sfc_up_sw, sfc_down_sw,  &
-// CHECK-NEXT:      errmsg, errflg)
+// CHECK-NEXT:      num_subcycles, errmsg, errflg)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
@@ -392,6 +401,7 @@
 // CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_up_sw(:)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_down_sw(:)
+// CHECK-NEXT:      integer, intent(in) :: num_subcycles
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
@@ -406,7 +416,8 @@
 // CHECK-NEXT:            ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=scalar_var,                     &
 // CHECK-NEXT:            tke_inout=tke_inout, tke2_inout=tke2_inout, scalar_varB=scalar_varB,                    &
 // CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, sfc_up_sw=sfc_up_sw, sfc_down_sw=sfc_down_sw,   &
-// CHECK-NEXT:            _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1, _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:            num_subcycles=num_subcycles, _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1, _out_2=ccpp_tmp_2,   &
+// CHECK-NEXT:            errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"
