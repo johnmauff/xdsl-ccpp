@@ -72,8 +72,18 @@ CAPS_PREREQS = \
 # scheme and host dependencies. module_rad_ddt.F90 must come before
 # rad_lw.F90/rad_sw.F90 -- both schemes' .meta declare
 # "dependencies = module_rad_ddt.F90" (a real Fortran USE dependency).
+#
+# ccpp_constituent_prop_mod.F90 and ccpp_scheme_utils.F90 are stubs for the
+# CCPP framework library modules (same stubs used by examples/advection,
+# examples/advection_flat_host, examples/constadv, examples/constprop) --
+# GEN_CCPP_CAP always emits a <Host>_model_const_properties() entry point
+# and a USE of both modules regardless of whether this example itself
+# declares any constituents, since it's part of the mandatory CCPP
+# host-facing API surface, not something scheme-specific.
 SRCS = \
     $(GEN_KINDS) \
+    $(DIR)/ccpp_constituent_prop_mod.F90 \
+    $(DIR)/ccpp_scheme_utils.F90 \
     $(DIR)/module_rad_ddt.F90 \
     $(DIR)/test_host_data.F90 \
     $(DIR)/test_host_mod.F90 \

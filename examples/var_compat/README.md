@@ -102,6 +102,26 @@ more known issues:
   bound twice under two different keyword names, also invalid Fortran). See
   `ccpp_cap_refactor_plan.md`'s backlog.
 
+- **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
+  "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`
+  and `ccpp_scheme_utils`.** Not an `xdsl_ccpp` code gap: every generated
+  ccpp-cap module unconditionally emits a `<Host>_model_const_properties()`
+  entry point (part of the mandatory CCPP host-facing API, not something
+  scheme-specific — this example declares no constituents of its own), and
+  that entry point's `use ccpp_constituent_prop_mod`/`use ccpp_scheme_utils`
+  need real Fortran module files to compile against. Those two modules are
+  part of the real CCPP framework library, not `xdsl_ccpp`'s job to
+  generate — every other example that's actually been compiled
+  (`examples/advection`, `examples/advection_flat_host`,
+  `examples/constadv`, `examples/constprop`) carries its own small, fully
+  generic stub implementation of both and wires them into its own Makefile;
+  this port's Makefile simply never got the same two files. Fixed by
+  copying the (byte-identical across all four of those examples) stub files
+  in as `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` and adding
+  them to `SRCS` right after `GEN_KINDS`, ahead of everything that uses
+  them, matching the existing ordering convention already used for
+  `module_rad_ddt.F90`.
+
 - **Vertical array flipping (`top_at_one`) — implemented.** `effr_calc`'s
   `effrr_in`/`effrs_inout` and `effr_diag`'s `effrr_in` declare
   `top_at_one = True`; `effr_pre`/`effr_post`/`effrs_calc` don't declare it

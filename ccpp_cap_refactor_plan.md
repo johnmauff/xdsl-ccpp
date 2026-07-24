@@ -2492,6 +2492,23 @@ dependency is noted.
       additionally gated on `physics_mode`. Covered by `tests/unit/test_suite_dynamic_loop_count.py`
       (4 tests, sabotage-verified). If a dynamic loop count has no matching host variable anywhere,
       a clear `ValueError` is raised instead of emitting invalid Fortran.
+    - **Fixed — a third gap found compiling with ifx after the two fixes above: "Error in
+      opening the compiled module file" for `ccpp_constituent_prop_mod` and `ccpp_scheme_utils`,
+      not an `xdsl_ccpp` code gap.** Every generated ccpp-cap module unconditionally emits a
+      `<Host>_model_const_properties()` entry point (part of the mandatory CCPP host-facing API
+      surface, not scheme-specific — this example declares no constituents at all), and its `use
+      ccpp_constituent_prop_mod`/`use ccpp_scheme_utils` need real module files to compile
+      against. Those two modules belong to the real CCPP framework library; every other example
+      that's actually been build-tested (`examples/advection`, `examples/advection_flat_host`,
+      `examples/constadv`, `examples/constprop`) carries its own small, fully generic stub
+      implementation of both (byte-identical across all four) and wires it into its own
+      Makefile — `examples/var_compat`'s Makefile simply never got the same two files, and
+      neither did `examples/capgen` or `examples/ddthost` (both FileCheck-tested only, never
+      actually compiled with a real Fortran compiler until now). **Fixed** for `var_compat` by
+      copying the stub files in as `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` and
+      adding them to the Makefile's `SRCS` right after `GEN_KINDS`. `examples/capgen` and
+      `examples/ddthost` would hit the identical error if actually compiled; not fixed here
+      (out of scope — the user asked specifically about `var_compat`).
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema
