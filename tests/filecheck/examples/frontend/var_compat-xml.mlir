@@ -17,7 +17,6 @@
 // time.
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m filecheck %s
-
 // CHECK:       builtin.module {
 // CHECK-NEXT:    "ccpp.suite"() <{suite_name = "var_compatibility_suite", version = "1.0"}> ({
 // CHECK-NEXT:      "ccpp.group"() <{group_name = "radiation"}> ({
@@ -158,8 +157,8 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "num_subcycles", type = "integer", standard_name = "num_subcycles_for_effr", long_name = "Number of times to subcycle the effr calculation", units = "None"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) {source_module = "test_host_data"} : () -> ()
-// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host_mod", type = #ccpp<table_type_kind host>}> ({
-// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host_mod", type = #ccpp<table_type_kind host>}> ({
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host_mod", type = #ccpp<table_type_kind module>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host_mod", type = #ccpp<table_type_kind module>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ncols", type = "integer", standard_name = "horizontal_dimension", units = "count", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "pver", type = "integer", standard_name = "vertical_layer_dimension", units = "count", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "phys_state", type = "physics_state", standard_name = "physics_state_derived_type", long_name = "Physics State DDT"}> : () -> ()

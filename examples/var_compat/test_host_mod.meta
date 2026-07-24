@@ -1,9 +1,9 @@
 [ccpp-table-properties]
   name = test_host_mod
-  type = host
+  type = module
 [ccpp-arg-table]
   name = test_host_mod
-  type = host
+  type = module
 [ ncols]
   standard_name = horizontal_dimension
   units = count

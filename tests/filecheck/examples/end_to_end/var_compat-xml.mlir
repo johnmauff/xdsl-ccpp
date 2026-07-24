@@ -92,6 +92,8 @@
 // CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
 // CHECK-NEXT:    use rad_lw, only: rad_lw_run
 // CHECK-NEXT:    use rad_sw, only: rad_sw_run
+// CHECK-NEXT:    use test_host_mod, only: ncols
+// CHECK-NEXT:    use test_host_mod, only: pver
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         character(len=16) :: ccpp_suite_state = 'uninitialized'
@@ -111,6 +113,9 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (.not. allocated(ncl_out)) then
+// CHECK-NEXT:        allocate(ncl_out(ncols, pver))
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_register
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_initialize(scheme_order, errmsg, errflg)
 // CHECK:           integer, intent(inout) :: scheme_order
@@ -118,6 +123,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (.not. allocated(ncl_out)) then
+// CHECK-NEXT:        allocate(ncl_out(ncols, pver))
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in var_compatibility_suite_initialize"
@@ -301,6 +309,11 @@
 // CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
 // CHECK-NEXT:    use module_rad_ddt, only: ty_rad_sw
 // CHECK-NEXT:    use test_host_data, only: physics_state
+// CHECK-NEXT:    use test_host_mod, only: effrs
+// CHECK-NEXT:    use test_host_mod, only: has_graupel
+// CHECK-NEXT:    use test_host_mod, only: ncols
+// CHECK-NEXT:    use test_host_mod, only: phys_state
+// CHECK-NEXT:    use test_host_mod, only: pver
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_finalize
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_initialize
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_radiation
@@ -395,44 +408,31 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine VarCompatibility_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, effrr_inout, scalar_varA,  &
-// CHECK:           ncol, nlev, effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, has_graupel,      &
-// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, sfc_up_sw, sfc_down_sw,  &
-// CHECK-NEXT:      num_subcycles, errmsg, errflg)
+// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, scalar_varA, scalar_varB,  &
+// CHECK:           scalar_varC, num_subcycles, errmsg, errflg)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varA
-// CHECK-NEXT:      integer, intent(in) :: ncol
-// CHECK-NEXT:      integer, intent(in) :: nlev
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: effrg_in(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: ncg_in(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: nci_out(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrl_inout(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: effri_out(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrs_inout(:, :)
-// CHECK-NEXT:      logical, intent(in) :: has_graupel
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: scalar_var
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: tke_inout
-// CHECK-NEXT:      real(kind=kind_phys), intent(inout) :: tke2_inout
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
 // CHECK-NEXT:      integer, intent(in) :: scalar_varC
-// CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_up_sw(:)
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_down_sw(:)
 // CHECK-NEXT:      integer, intent(in) :: num_subcycles
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
+// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
+// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_1
+// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_2
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
-// CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=effrr_inout,                     &
-// CHECK-NEXT:            scalar_varA=scalar_varA, ncol=ncol, nlev=nlev, effrg_in=effrg_in, ncg_in=ncg_in,        &
-// CHECK-NEXT:            nci_out=nci_out, effrl_inout=effrl_inout, effri_out=effri_out, effrs_inout=effrs_inout, &
-// CHECK-NEXT:            ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=scalar_var,                     &
-// CHECK-NEXT:            tke_inout=tke_inout, tke2_inout=tke2_inout, scalar_varB=scalar_varB,                    &
-// CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, sfc_up_sw=sfc_up_sw, sfc_down_sw=sfc_down_sw,   &
-// CHECK-NEXT:            num_subcycles=num_subcycles, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=phys_state%effrr,                &
+// CHECK-NEXT:            scalar_varA=scalar_varA, ncol=ncols, nlev=pver, effrg_in=phys_state%effrg,              &
+// CHECK-NEXT:            ncg_in=phys_state%ncg, nci_out=phys_state%nci, effrl_inout=phys_state%effrl,            &
+// CHECK-NEXT:            effri_out=phys_state%effri, effrs_inout=effrs, ncl_out=lc_ncl_out,                      &
+// CHECK-NEXT:            has_graupel=has_graupel, scalar_var=phys_state%scalar_varA, tke_inout=phys_state%tke,   &
+// CHECK-NEXT:            tke2_inout=phys_state%tke2, scalar_varB=scalar_varB, scalar_varC=scalar_varC,           &
+// CHECK-NEXT:            fluxLW=phys_state%fluxLW, sfc_up_sw=phys_state%fluxSW%sfc_up_sw,                        &
+// CHECK-NEXT:            sfc_down_sw=phys_state%fluxSW%sfc_down_sw, num_subcycles=num_subcycles,                 &
+// CHECK-NEXT:            _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1, _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"

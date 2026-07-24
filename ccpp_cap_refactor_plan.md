@@ -2509,6 +2509,64 @@ dependency is noted.
       adding them to the Makefile's `SRCS` right after `GEN_KINDS`. `examples/capgen` and
       `examples/ddthost` would hit the identical error if actually compiled; not fixed here
       (out of scope — the user asked specifically about `var_compat`).
+    - **Fixed — a fourth gap found while investigating why `test_host.F90` (a hand-written
+      driver — deliberately not modified; verified by diffing against upstream capgen-v1's own
+      `end-to-end-tests/var_compat/test_host.F90`, which confirmed this port's version was
+      already a deliberate, intentional adaptation to `xdsl_ccpp`'s own generated-API
+      conventions, not something to bring back in line with upstream byte-for-byte) only passes
+      `suite_name`/`suite_part`/`col_start`/`col_end`/`errmsg`/`errflg` to
+      `test_host_ccpp_physics_run`, while the generated signature required ~20 more arguments.**
+      Root cause: `test_host_mod.meta`'s `[ccpp-table-properties]`/`[ccpp-arg-table]` blocks
+      both declared `type = host` instead of `type = module` — a metadata typo, not a driver
+      bug. `test_host_mod.F90` is a real, persistent Fortran module (module-level `phys_state`
+      DDT instance, `effrs` array, `has_graupel`/`has_ice` parameters, initialized once via
+      `init_data()`), not a caller-provided-each-call interface; `examples/capgen` and
+      `examples/ddthost`'s own equivalent `test_host_mod.meta` files both correctly declare
+      `type = module`, confirming this was an isolated port mistake. Because of the typo,
+      `run_dispatch.py` treated `phys_state`'s own module-level instance as HOST-interface-only
+      (never eligible for DDT-member `use`-based resolution — see its own "HOST-type tables are
+      caller-provided interfaces, not Fortran modules" comment), so every DDT member (effrr,
+      effrl, scalar_var, tke, tke2, fluxLW, sfc_up_sw/down_sw, etc.) got flattened into its own
+      top-level caller-supplied dummy argument instead of being resolved internally via
+      `use test_host_mod, only: phys_state`. **Fixed** by correcting both `type = host` lines to
+      `type = module`; confirmed this collapses `test_host_ccpp_physics_run`'s signature from
+      ~24 arguments down to `suite_name, suite_part, scalar_varA, scalar_varB, scalar_varC,
+      num_subcycles, errmsg, errflg` — matching what the (unmodified) driver already expects,
+      apart from the remaining four. All three var_compat FileCheck goldens (`frontend`,
+      `completed_ir`, `end_to_end`) regenerated and passing.
+    - **Not yet fixed — two separate, real `run_dispatch.py` bugs, found while diagnosing why
+      `scalar_varA`/`scalar_varB`/`scalar_varC`/`num_subcycles` still don't resolve after the
+      metadata fix above.**
+      1. *Bare-name collision bug.* Confirmed directly in the IR: `HostVariableMatchPass`
+         correctly resolves all three of `effr_pre`/`effr_post`/`effr_diag`'s own
+         `scalar_var`-named args to their distinct `physics_state` DDT members (`model_var_name
+         = scalar_varA`/`scalar_varB`/`scalar_varC` respectively) — the deliberate bare-name
+         collision this example exists to test is resolved correctly at the host-matching layer.
+         But `run_dispatch.py`'s own `_build_per_suite_run_info` builds `local_to_host_info`
+         (and `std_name_of`) keyed by each scheme's own literal `fn_arg.name` — "scalar_var" for
+         all three, since the IR's `name` attribute is never rewritten to the disambiguated
+         `model_var_name` — while the *lookup* uses the suite's already-disambiguated combined
+         name (`_bare("scalar_varB")` = `"scalar_varB"`, a string that was never inserted as a
+         key at all). Only the first-processed scheme's entry (which happens to keep the
+         un-suffixed combined name `scalar_var`) resolves correctly; the other two silently fall
+         back to `ArgSourceKind.Block`. A real fix needs `local_to_host_info` built or looked up
+         using the same per-scheme disambiguation suite_cap.py's own `_hint_for`/model_var_name
+         substitution already performs — not a one-line change; not attempted here (paused given
+         the user's token budget for this session).
+      2. *`num_subcycles` DDT-table gap.* `num_subcycles` is a suite-level argument synthesized
+         entirely by `suite_cap.py`'s `_synthesize_dynamic_loop_count_args` (see the subcycle
+         loop-bound fix above) — it isn't declared in any scheme's own `.meta` at all. The
+         fallback in `_build_per_suite_run_info` that resolves a callee arg's std_name when no
+         scheme table has it only scans `CCPPType.HOST`/`CCPPType.MODULE` tables, never
+         `CCPPType.DDT` — so even now that `physics_state` is correctly module-hosted, this
+         fallback still never discovers that `num_subcycles` is really one of its members.
+         Needs that scan extended to DDT tables (plus the same DDT-member resolution
+         `local_to_host_info`'s own "if is_ddt" branch already does). Not attempted here.
+
+      If both were fixed, `test_host_ccpp_physics_run`'s signature would collapse to just
+      `suite_name, suite_part, errmsg, errflg` — matching the driver exactly (`col_start`/
+      `col_end` aside: no scheme here declares `horizontal_loop_extent`, so it's not established
+      that chunking is even part of this example's design at all; not investigated).
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema
