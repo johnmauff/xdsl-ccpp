@@ -133,15 +133,62 @@ more known issues:
     a caller-block argument.
 
   With both fixed, `VarCompatibility_ccpp_physics_run`'s signature collapses
-  to exactly `suite_name, suite_part, errmsg, errflg`. `test_host.F90`'s own
-  hand-written call still additionally passes `col_start`/`col_end` (6
-  arguments total) — a separate, pre-existing driver/example mismatch, not
-  addressed by this fix and not yet investigated (no scheme in this example
-  declares `horizontal_loop_extent`, so it isn't established that column
-  chunking is even part of this example's design). See
+  to exactly `suite_name, suite_part, errmsg, errflg`. See
   `tests/unit/test_run_dispatch_host_wrapper_resolution.py` for direct
   regression coverage (sabotage-verified against both fixes independently)
   and `ccpp_cap_refactor_plan.md`'s backlog for the full writeup.
+
+- **Fixed — `col_start`/`col_end` missing from `VarCompatibility_ccpp_physics_run`,
+  found immediately after the fix above: `test_host.F90`'s hand-written call
+  (which must not be modified) additionally passes `col_start`/`col_end` (6
+  arguments total), 2 more than the signature above.** Diffing against real
+  upstream capgen-v1 confirmed this example's schemes genuinely don't chunk
+  by column — every one of them is dimensioned by the full
+  `horizontal_dimension`, matching upstream's own design, not a porting
+  omission. `col_start`/`col_end` only ever enter a suite callee's own
+  signature via `suite_cap.py`'s `_classify_args`, which replaces a
+  scheme-declared `horizontal_loop_extent` arg with synthetic `col_start`/
+  `col_end` scalars — gated entirely on some scheme declaring
+  `horizontal_loop_extent`. Since no scheme here does, `run_dispatch.py`'s
+  per-suite-arg classification had nothing to discover, and the wrapper's own
+  signature never picked them up either — this is true upstream too (its own
+  `ccpp_physics_run` bundles `col_start`/`col_end` into a fixed,
+  always-present framework argument list regardless of scheme content, a
+  convention xdsl-ccpp doesn't otherwise have).
+
+  **Fixed generically for every Fortran example**, not specially for
+  `var_compat`: `run_dispatch.py`'s `_build_run_block_signature` now accepts
+  `col_start`/`col_end` unconditionally whenever the host itself declares
+  `horizontal_loop_begin`/`horizontal_loop_end` (every example's host
+  metadata already does) and no suite here already supplied a
+  `col_start`/`col_end`-equivalent under some other local name — mirroring
+  how `errmsg`/`errflg` are already always present regardless of scheme
+  content. Confirmed safe against every other example (`helloworld`,
+  `capgen`, `ddthost`, `advection`, and the chost/bind-c examples): all of
+  them already receive `col_start`/`col_end` via the pre-existing
+  `horizontal_loop_extent`-driven path, and the new fallback correctly
+  detects that and adds nothing extra, so their generated output is
+  byte-identical. `VarCompatibility_ccpp_physics_run`'s signature is now
+  exactly `suite_name, suite_part, col_start, col_end, errmsg, errflg` —
+  matching `test_host.F90`'s existing call precisely, in both arity and
+  argument order, with zero changes to any hand-written file.
+
+  **One caveat this fix does not (and cannot, from the generator side)
+  resolve:** `col_start`/`col_end` are accepted but genuinely unused inside
+  `physics_run`'s body, since none of this example's schemes are
+  chunk-aware. `test_host.F90` calls this suite part inside a 5-column
+  chunking loop, so — if actually compiled and run — the suite executes
+  redundantly once per chunk over the *entire* array each time, and
+  `effr_calc.F90` has a real accumulation
+  (`effrs_inout = effrs_inout + (10.0 / 6.0)`), so the redundant calls would
+  over-increment it. That's an inherent mismatch between the driver's
+  chunking assumption (modeled on `examples/advection`'s own driver
+  convention) and this suite's genuinely unchunked design (matching
+  upstream) — not a bug this fix claims to paper over. See
+  `tests/unit/test_run_dispatch_col_bounds_fallback.py` for direct
+  regression coverage (sabotage-verified, including a guard against
+  double-inserting `col_start`/`col_end` for the already-working chunked
+  examples) and `ccpp_cap_refactor_plan.md`'s backlog for the full writeup.
 
 - **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
   "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`
@@ -347,13 +394,14 @@ more known issues:
 make caps   # generate the suite/ccpp/kinds caps
 make run    # build and run -- no known xdsl_ccpp cap-generation compile
             # blockers remain as of this writing (see the bullets above);
-            # not independently confirmed with a real gfortran build in this
-            # environment, and test_host.F90's own hand-written call to
-            # test_host_ccpp_physics_run passes suite_name/suite_part/
-            # col_start/col_end/errmsg/errflg (6 arguments), while the
-            # current generated signature is now just suite_name/suite_part/
-            # errmsg/errflg (4 arguments, no col_start/col_end) -- a
-            # separate, pre-existing driver/example mismatch, not addressed
-            # by the run_dispatch.py fixes above and not yet investigated
+            # test_host_ccpp_physics_run's generated signature now matches
+            # test_host.F90's hand-written call exactly (suite_name,
+            # suite_part, col_start, col_end, errmsg, errflg); not
+            # independently confirmed with a real gfortran build in this
+            # environment, and col_start/col_end are accepted but unused
+            # (this example's schemes don't chunk by column -- see the
+            # col_start/col_end bullet above for why the driver's 5-column
+            # chunking loop would still redundantly re-run the suite and
+            # over-increment effrs_inout if actually executed)
 make check  # build, run, and verify pass/fail
 ```

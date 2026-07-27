@@ -408,9 +408,12 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine VarCompatibility_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, errmsg, errflg)
-// CHECK:           character(len=*), intent(in) :: suite_name
+// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, col_start, col_end,        &
+// CHECK:           errmsg, errflg)
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:      integer, intent(in) :: col_start
+// CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0

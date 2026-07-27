@@ -2581,15 +2581,67 @@ dependency is noted.
 
       With both fixed, `test_host_ccpp_physics_run`'s signature collapses to just
       `suite_name, suite_part, errmsg, errflg`, confirmed by regenerating this example's real
-      output. `col_start`/`col_end` remain a separate, still-open matter: no scheme here declares
-      `horizontal_loop_extent`, so it's not established that column chunking is even part of this
-      example's design at all — `test_host.F90`'s own hand-written driver call still passes
-      `col_start`/`col_end` in addition to the four resolved args (6 total vs. the generated
-      cap's 4), a pre-existing driver/example mismatch not addressed by this fix and not yet
-      investigated. Both var_compat FileCheck goldens (`completed_ir`, `end_to_end`) regenerated
+      output. Both var_compat FileCheck goldens (`completed_ir`, `end_to_end`) regenerated
       and passing; direct regression coverage (sabotage-verified against both fixes
       independently, including the two rejected fix attempts above) in
       `tests/unit/test_run_dispatch_host_wrapper_resolution.py`.
+    - **Fixed — `col_start`/`col_end` missing from `test_host_ccpp_physics_run`, found
+      immediately after the two fixes above.** `test_host.F90`'s hand-written driver call
+      (which must not be modified — see the "never change handwritten files" feedback memory)
+      additionally passes `col_start`/`col_end` (6 arguments total), 2 more than the signature
+      above. Diffing against real upstream capgen-v1 confirmed this example's schemes genuinely
+      don't chunk by column: every one of them is dimensioned by the full `horizontal_dimension`,
+      matching upstream's own design, not a porting omission — upstream's own `ccpp_physics_run`
+      bundles `col_start`/`col_end`/`thread_num`/`nthreads`/`nphys_threads` into a fixed,
+      always-present framework argument list regardless of scheme content, a convention
+      xdsl-ccpp doesn't otherwise have. `col_start`/`col_end` only ever enter a suite callee's
+      own signature via `suite_cap.py`'s `_classify_args`, which replaces a scheme-declared
+      `horizontal_loop_extent` arg with synthetic `col_start`/`col_end` scalars — gated entirely
+      on some scheme declaring `horizontal_loop_extent`. Since no scheme here does,
+      `run_dispatch.py`'s per-suite-arg classification had nothing to discover, and the wrapper's
+      own signature never picked them up either.
+
+      Two candidate fixes were considered and rejected before this one: (a) making the generator
+      unconditionally expose `col_start`/`col_end` whenever the host declares them, regardless of
+      scheme content — rejected because every host `.meta` in this repo already declares them
+      (universal boilerplate), but `examples/tinyddt`/`examples/nestedddt` (chost, C++ host) have
+      no scheme declaring `horizontal_loop_extent` either and their already-working C++ drivers
+      correctly don't pass `col_start`/`col_end` at all (the chost convention removes them
+      entirely) — this would have silently added required arguments those drivers don't supply;
+      (b) modifying `test_host.F90` itself to drop `col_start`/`col_end`, matching the precedent
+      already set for `thread_num`/`nthreads`/`nphys_threads` at port time — rejected per explicit,
+      unconditional user instruction: hand-written files are never modified, regardless of how
+      well-evidenced the case for an edit looks.
+
+      **Fixed generically for every Fortran example instead:** `run_dispatch.py`'s
+      `_build_run_block_signature` now accepts `col_start`/`col_end` unconditionally whenever the
+      host itself declares `horizontal_loop_begin`/`horizontal_loop_end` (every example's host
+      metadata already does) and no suite here already supplied a `col_start`/`col_end`-equivalent
+      under some other local name (checked via `seen_non_host_std_names`, keyed by standard_name
+      so a differently-named host variable, e.g. `cols`/`cole`, still counts as already-supplied)
+      — mirroring how `errmsg`/`errflg` are already always present regardless of scheme content.
+      Confirmed safe: full suite is 480 passed, 1 pre-existing xfail, and every example other
+      than `var_compat` is byte-identical, since
+      they already receive `col_start`/`col_end` via the pre-existing `horizontal_loop_extent`-
+      driven path and the new fallback correctly detects that and adds nothing extra.
+      `test_host_ccpp_physics_run`'s signature is now exactly
+      `suite_name, suite_part, col_start, col_end, errmsg, errflg` — matching `test_host.F90`'s
+      existing call precisely, in both arity and argument order, with zero changes to any
+      hand-written file.
+
+      **One caveat this fix does not (and cannot, from the generator side) resolve:**
+      `col_start`/`col_end` are accepted but genuinely unused inside `physics_run`'s body, since
+      none of this example's schemes are chunk-aware. `test_host.F90` calls this suite part
+      inside a 5-column chunking loop (modeled on `examples/advection`'s own driver convention),
+      so — if actually compiled and run — the suite executes redundantly once per chunk over the
+      *entire* array each time, and `effr_calc.F90` has a real accumulation
+      (`effrs_inout = effrs_inout + (10.0 / 6.0)`), so the redundant calls would over-increment
+      it. That's an inherent mismatch between the driver's chunking assumption and this suite's
+      genuinely unchunked (upstream-matching) design — not something a generator-side fix can or
+      should paper over. Both var_compat FileCheck goldens regenerated and passing; direct
+      regression coverage (sabotage-verified, including a guard against double-inserting
+      `col_start`/`col_end` for the already-working chunked examples) in
+      `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

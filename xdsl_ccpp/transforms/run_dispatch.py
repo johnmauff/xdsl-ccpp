@@ -547,6 +547,37 @@ def _build_run_block_signature(
             if k != ccpp_t_var_name
         }
 
+    # A CCPP Fortran host always calls ccpp_physics_run with col_start/col_end
+    # (see every example's own driver), regardless of whether any scheme in
+    # the suite actually declares horizontal_loop_extent. suite_cap.py only
+    # ever synthesizes a col_start/col_end parameter on a suite callee when
+    # some scheme pulls it in via horizontal_loop_extent (_classify_args's
+    # ncol-replacement) -- when no scheme does that (e.g. a suite whose
+    # schemes are all dimensioned by the full horizontal_dimension, not
+    # chunked), the per-suite classification above has nothing to discover,
+    # and union_non_host_args never gets a col_start/col_end entry at all.
+    # Accept them here unconditionally whenever the host itself declares
+    # horizontal_loop_begin/horizontal_loop_end (every example's host
+    # metadata does) and no suite here already supplied one under a
+    # different local name -- unused inside this wrapper is fine (every
+    # Makefile in this repo already builds with -Wno-unused-dummy-argument
+    # for exactly this class of argument).
+    if (
+        ccpp_info_type is None
+        and CCPP_LOOP_BEGIN_STD_NAME not in seen_non_host_std_names
+        and CCPP_LOOP_END_STD_NAME not in seen_non_host_std_names
+    ):
+        _all_host_vars = _build_host_var_map(meta_data, include_host=True)
+        _col_start_host = _all_host_vars.get(CCPP_LOOP_BEGIN_STD_NAME)
+        _col_end_host = _all_host_vars.get(CCPP_LOOP_END_STD_NAME)
+        if _col_start_host is not None and _col_end_host is not None:
+            _col_int_type = memref.MemRefType(int_base, [])
+            union_non_host_args = {
+                _col_start_host[0]: _col_int_type,
+                _col_end_host[0]: _col_int_type,
+                **union_non_host_args,
+            }
+
     n_non_host = len(union_non_host_args)
 
     if ccpp_info_type is not None:
