@@ -2872,10 +2872,86 @@ dependency is noted.
       function but isn't separately fixtured, lower marginal risk) in
       `tests/unit/test_print_ftn_conversion_temp_dealloc.py`.
 
-      **Still open:** whether `make check` reports PASS is still unconfirmed — the col_start/
-      col_end chunking-correctness question above remains untested, and further real-execution
-      bugs of this same general shape may yet surface, matching this project's own established
-      pattern of one new gap per actual build-and-run attempt.
+      Confirmed via the real `Makefile` path: `make check` then reported a real numeric mismatch
+      (see below), not a build/link failure.
+
+    - **Fixed — the col_start/col_end chunking-correctness gap flagged above as unresolvable
+      from the generator side turned out to be a real, fixable generator bug, found by actually
+      running capgen-v1's own generator on this same example (metadata/suite XML) and diffing
+      its output against xdsl-ccpp's:**
+      ```
+      Error: max diff of            effrs from expected value exceeds tolerance:    0.6000000E-04 >    0.5300000E-09
+      ```
+      capgen-v1 slices every host-array reference passed into a suite-part call by
+      `col_start:col_end` (e.g. `phys_state%effrr(col_start:col_end, pver:1:-1)`) and recomputes
+      any `horizontal_dimension`-standard_name scalar as `col_end - col_start + 1` (e.g.
+      `ncol=(col_end - col_start + 1)`), so a chunked call only ever touches its own column
+      window. xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/`col_end`
+      (the fix above) but called `var_compatibility_suite_suite_radiation` with the whole,
+      unsliced host array and the host's raw, full column count every time — so each of
+      `test_host.F90`'s 3 chunked driver calls redundantly reprocessed the entire array, and
+      `effrs_inout`'s real `+=` accumulation (the only non-idempotent operation among this
+      suite's schemes) over-accumulated by exactly 3x (90 µm actual vs. 30 µm correct — the
+      reported diff is exactly that 60 µm excess). Every other checked value happened to be
+      idempotent under repetition (constant overwrites, min/max clamps, or never touched by the
+      scheme body), which is why only `effrs` surfaced a failure.
+
+      Traced to three independent, precisely-located bugs, all in `run_dispatch.py`:
+      1. `_build_run_block_signature`'s host-driven col_start/col_end fallback (the fix above)
+         registered them into `union_non_host_args` but never into `non_host_std_to_canonical` —
+         the dict `_build_run_dispatch_chain`'s already-existing `ArraySectionOp`-slicing logic
+         actually looks up, so that logic's own guard always saw nothing and skipped slicing
+         unconditionally.
+      2. A scheme-declared scalar arg whose own standard_name is `horizontal_dimension`
+         (var_compat's own `ncol`, matching `rad_lw`/`rad_sw`/`effr_calc`) was passed the host's
+         raw, full column count through the ordinary host-var-reference path, with nothing
+         recomputing it as `col_end - col_start + 1`.
+      3. A pre-existing, previously-unreachable bug in the same `ArraySectionOp` block required
+         at least 2 resolved dimensions before slicing anything — silently skipping any
+         genuinely 1-D `horizontal_dimension`-only host array (var_compat's own `fluxLW`,
+         `sfc_up_sw`, `sfc_down_sw`), which would otherwise have regressed those checked values
+         from correct-but-redundant to actively wrong (only ever writing the first chunk's
+         columns) once (1) started slicing their 2-D siblings correctly.
+
+      **Fixed** by (a) also registering the canonical col_start/col_end mapping in the same
+      fallback block, (b) recomputing a `horizontal_dimension`-standard_name scalar via the same
+      alloc/load/sub/add-one/store op sequence `suite_cap.py`'s own `_build_ncol_compute_ops`
+      already uses for this exact computation, and (c) relaxing the 2-dimension requirement to
+      accept a single resolved dimension. No changes needed to `suite_cap.py`'s `_classify_args`
+      (`advection`'s separate, already-correct legacy `horizontal_loop_extent` mechanism —
+      confirmed untouched and unaffected), `print_ftn.py` (temp allocation sizes already derive
+      from whatever shape the sliced actual argument has), the suite callee's own Fortran
+      signature (assumed-shape dummies adapt automatically to a sliced actual argument), or the
+      existing `optional`/`target` handling (confirmed orthogonal).
+
+      Confirmed via the real `Makefile` path: `test_host_ccpp_physics_run`'s call now reads
+      `effrr_inout=phys_state%effrr(col_start:col_end, 1:pver)`, `ncol=ncol` with
+      `ncol = col_end - col_start + 1` computed just above, and
+      `fluxLW=phys_state%fluxLW(col_start:col_end)` /
+      `sfc_up_sw=phys_state%fluxSW%sfc_up_sw(col_start:col_end)` — matching capgen-v1's own
+      generated shape. Affects every example whose host declares
+      `horizontal_loop_begin`/`horizontal_loop_end` and whose schemes rely on the
+      `horizontal_dimension`-only fallback rather than `horizontal_loop_extent` (`var_compat`,
+      `helloworld`, and the synthetic `array-layout-reshape` FileCheck fixture, whose stale
+      "temperature passed through directly" comment was also corrected); every
+      `horizontal_loop_extent`-based example (`advection`, `capgen`, `ddthost`, chost/bind-c) is
+      confirmed unaffected. Full suite: 452 unit + 47 filecheck (1 pre-existing xfail, 1
+      pre-existing unrelated failure in `test_ccpp_xdsl_generates_caps`, confirmed present before
+      this change too via `git stash`). Direct regression coverage (sabotage-verified against all
+      three fixes independently, including the pre-existing `advection`-style no-double-insert
+      guard) in `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+
+      **Still open:** confirmed correct by inspecting the generated Fortran text (matching
+      capgen-v1's own shape exactly) and by the full unit + FileCheck suites, but not yet
+      verified by an actual gfortran/ifx build-and-run on real hardware. Separately, `effr_calc`'s
+      optional, unmatched, cap-scratch-only `ncl_out` output
+      (`cloud_liquid_number_concentration`) is `CapVar`-sourced and rank-2, hitting a different,
+      narrower gap in the same `ArraySectionOp` block (its own gate is still keyed to the legacy
+      `horizontal_loop_extent` name, and even fixing that would need a genuinely multi-dimensional
+      `CapVar` section, which the current one-shot single-dimension construction doesn't support)
+      — left unfixed since `ncl_out`/`cloud_liquid_number_concentration` isn't referenced anywhere
+      in this test's checks or required-variable lists, so it isn't a regression, just a known,
+      pre-existing, untested edge case.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

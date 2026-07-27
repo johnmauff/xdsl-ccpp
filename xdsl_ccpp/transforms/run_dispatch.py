@@ -577,6 +577,22 @@ def _build_run_block_signature(
                 _col_end_host[0]: _col_int_type,
                 **union_non_host_args,
             }
+            # Register the canonical std_name -> local-name mapping too, not
+            # just the block-arg types above -- _build_run_dispatch_chain's
+            # ArraySectionOp slicing (and the horizontal_dimension scalar
+            # recompute) look these up via non_host_std_to_canonical, not
+            # union_non_host_args. Without this, col_start/col_end reach the
+            # wrapper's own signature but never get threaded into the actual
+            # suite-part call, so host arrays are passed whole and unsliced.
+            # setdefault: never override an entry a scheme's own
+            # horizontal_loop_extent already supplied for this or another
+            # suite in the same build.
+            non_host_std_to_canonical.setdefault(
+                CCPP_LOOP_BEGIN_STD_NAME, _col_start_host[0]
+            )
+            non_host_std_to_canonical.setdefault(
+                CCPP_LOOP_END_STD_NAME, _col_end_host[0]
+            )
 
     n_non_host = len(union_non_host_args)
 
@@ -845,10 +861,51 @@ def _build_run_dispatch_chain(
                 op = resolved_arg_ops[i]
                 if op.source_kind.data == ArgSourceKind.Host:
                     host_var_name, host_module_name = op.var_name.data, op.module_name.data
-                    ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
-                    host_var_ref_ops.append(ref_op)
-                    host_var_ref_results[arg_name] = ref_op.res
-                    host_name_to_ref_result[host_var_name] = ref_op.res
+                    _col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                    _col_end_key = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                    if (
+                        std_name_of.get(_bare(arg_name)) == CCPP_HORIZ_DIM_STD_NAME
+                        and _rank_of(arg_type) == 0
+                        and _col_begin_key is not None
+                        and _col_end_key is not None
+                        and _col_begin_key in block_arg_map
+                        and _col_end_key in block_arg_map
+                    ):
+                        # This scalar means "how many columns in THIS call"
+                        # (capgen-v1's own ncol=(col_end - col_start + 1)),
+                        # not the host's total column count -- the ArraySectionOp
+                        # block below slices this call's array args down to
+                        # col_start:col_end, so the scheme must be told the
+                        # matching (possibly smaller) chunk width, not ncols.
+                        # Mirrors suite_cap.py's _build_ncol_compute_ops (same
+                        # alloc/load/sub/add-one/store op sequence), just built
+                        # against block_arg_map's plain block-argument memrefs
+                        # instead of that method's own data_ops dict.
+                        _ncol_alloc = memref.AllocaOp.get(
+                            TypeConversions.getBaseType("integer"), shape=[]
+                        )
+                        _ncol_alloc.memref.name_hint = _bare(arg_name)
+                        _load_col_start = memref.LoadOp.get(
+                            block_arg_map[_col_begin_key], []
+                        )
+                        _load_col_end = memref.LoadOp.get(
+                            block_arg_map[_col_end_key], []
+                        )
+                        sub_op = arith.SubiOp(_load_col_end, _load_col_start)
+                        one_const = arith.ConstantOp.from_int_and_width(1, 32)
+                        add_op = arith.AddiOp(sub_op, one_const)
+                        store_op = memref.StoreOp.get(add_op, _ncol_alloc, [])
+                        host_var_ref_ops.extend([
+                            _ncol_alloc, _load_col_start, _load_col_end,
+                            sub_op, one_const, add_op, store_op,
+                        ])
+                        host_var_ref_results[arg_name] = _ncol_alloc.memref
+                        host_name_to_ref_result[host_var_name] = _ncol_alloc.memref
+                    else:
+                        ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
+                        host_var_ref_ops.append(ref_op)
+                        host_var_ref_results[arg_name] = ref_op.res
+                        host_name_to_ref_result[host_var_name] = ref_op.res
                 elif op.source_kind.data == ArgSourceKind.DdtMember:
                     instance_var, instance_module, member_name = (
                         op.var_name.data, op.module_name.data, op.member_path.data
@@ -1021,7 +1078,13 @@ def _build_run_dispatch_chain(
                     lowers.append(one_const_for_sections.result)
                     uppers.append(dim_upper_ref)
 
-                if not valid or len(lowers) < 2:
+                # lowers/uppers always has >= 1 entry (the horizontal_dimension
+                # bound seeded above); a genuinely 1-D horizontal-only host
+                # array (e.g. var_compat's fluxLW, sfc_up_sw, sfc_down_sw) has
+                # no further dim_names to append and is still a fully valid
+                # single-dimension ArraySectionOp -- do not require a second
+                # dimension to have been found.
+                if not valid:
                     continue
 
                 section = ArraySectionOp(

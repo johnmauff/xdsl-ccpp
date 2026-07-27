@@ -29,14 +29,38 @@ declares them and no suite already supplied a col_start/col_end-equivalent
 under some other local name (checked via seen_non_host_std_names, keyed by
 standard_name so a differently-named host variable, e.g. "cols"/"cole",
 still counts as already-supplied) -- mirroring how errmsg/errflg are already
-always present regardless of scheme content. Unused inside the wrapper body
-is fine: every Makefile in this repo already builds with
--Wno-unused-dummy-argument for exactly this class of argument.
+always present regardless of scheme content.
 
 Must NOT double-insert col_start/col_end for suites where a scheme already
 pulls them in via horizontal_loop_extent (helloworld, capgen, ddthost,
 advection all rely on this) -- TestNoDuplicateWhenSchemeAlreadyProvidesThem
 guards this.
+
+Follow-up (found comparing xdsl-ccpp's generated Fortran against capgen-v1's
+own): accepting col_start/col_end into the wrapper's own signature was
+necessary but not sufficient. A second, separate bug meant they were never
+actually threaded into the call to the suite callee: _build_run_block_
+signature's fallback (above) only ever updated union_non_host_args, never
+non_host_std_to_canonical -- the dict _build_run_dispatch_chain's
+ArraySectionOp-slicing logic actually looks up. So a host array dimensioned
+by horizontal_dimension (var_compat's real effrr/effrl/effrs/fluxLW/
+sfc_up_sw/sfc_down_sw, and this test's own x_host) was passed to the suite
+callee whole and unsliced on every call, regardless of col_start/col_end --
+and a scheme scalar declaring standard_name=horizontal_dimension (var_compat's
+own "ncol") was passed the host's raw, full column count instead of
+col_end - col_start + 1. Under a driver that calls ccpp_physics_run in
+column chunks (var_compat's test_host.F90 does; this was the confirmed root
+cause of a real gfortran-verified effrs numerical mismatch), every chunk call
+redundantly reprocessed the full array. Fixed by (a) also registering
+non_host_std_to_canonical's CCPP_LOOP_BEGIN_STD_NAME/CCPP_LOOP_END_STD_NAME
+entries in the same fallback block, (b) recomputing a horizontal_dimension-
+standard_name scalar as col_end - col_start + 1 instead of passing the host's
+raw value through, and (c) fixing a pre-existing, previously-unreachable bug
+in the same ArraySectionOp block that required at least 2 resolved
+dimensions (silently skipping any genuinely 1-D horizontal_dimension-only
+array, e.g. var_compat's own fluxLW/sfc_up_sw/sfc_down_sw).
+TestColBoundsSlicedWhenNoSchemeChunks (below, renamed from
+TestColBoundsAcceptedWhenNoSchemeChunks) now asserts the corrected behavior.
 """
 
 from io import StringIO
@@ -84,6 +108,54 @@ _HOST_MOD_META = """\
   type = real
   kind = kind_phys
   dimensions = (horizontal_dimension)
+"""
+
+_HOST_MOD_META_2D = """\
+[ccpp-table-properties]
+  name = test_host_mod
+  type = module
+[ccpp-arg-table]
+  name = test_host_mod
+  type = module
+[ ncols ]
+  standard_name = horizontal_dimension
+  units = count
+  type = integer
+  dimensions = ()
+[ pver ]
+  standard_name = vertical_layer_dimension
+  units = count
+  type = integer
+  dimensions = ()
+[ y_host ]
+  standard_name = some_2d_array_var
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension,vertical_layer_dimension)
+"""
+
+_NCOL_SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = ncol_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = ncol_scheme_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_dimension
+  units = count
+  type = integer
+  dimensions = ()
+  intent = in
+[ y ]
+  standard_name = some_2d_array_var
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension,vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
 """
 
 _WHOLE_ARRAY_SCHEME_META = f"""\
@@ -141,6 +213,20 @@ def _fortran_output(run_host_match, ccpp_context, scheme_meta) -> str:
     return out.getvalue()
 
 
+def _fortran_output_ncol_scheme(run_host_match, ccpp_context) -> str:
+    module = run_host_match(
+        scheme_metas=[_NCOL_SCHEME_META],
+        host_metas=[_HOST_META, _HOST_MOD_META_2D],
+        suite_xml=minimal_suite_xml("ncol_scheme"),
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
 def _fn_signature_line(fortran: str, fn_name: str) -> str:
     """Return the (possibly line-wrapped) subroutine header, joined into one
     line, up to the first declaration statement."""
@@ -153,11 +239,14 @@ def _fn_signature_line(fortran: str, fn_name: str) -> str:
     return " ".join(header_lines)
 
 
-class TestColBoundsAcceptedWhenNoSchemeChunks:
+class TestColBoundsSlicedWhenNoSchemeChunks:
     """whole_array_scheme is dimensioned by horizontal_dimension (the full
     array, matching var_compat's real schemes) -- no scheme here declares
     horizontal_loop_extent, so suite_cap.py never synthesizes a col_start/
-    col_end parameter on the suite callee at all."""
+    col_end parameter on the suite callee's own Fortran signature (that part
+    is unchanged). But the wrapper-level col_start/col_end must still get
+    threaded into the call as an ArraySectionOp slice on the host array
+    (x_host), via non_host_std_to_canonical -- see module docstring."""
 
     def test_wrapper_signature_includes_col_start_col_end(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _WHOLE_ARRAY_SCHEME_META)
@@ -172,7 +261,7 @@ class TestColBoundsAcceptedWhenNoSchemeChunks:
         )
         assert names[-2:] == ["errmsg", "errflg"]
 
-    def test_col_start_col_end_declared_integer_and_unused_in_call(self, run_host_match, ccpp_context):
+    def test_col_start_col_end_declared_integer_and_sliced_into_call(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _WHOLE_ARRAY_SCHEME_META)
         fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
             "end subroutine Test_ccpp_physics_run"
@@ -184,12 +273,55 @@ class TestColBoundsAcceptedWhenNoSchemeChunks:
         call_line = next(
             line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
         )
-        # The suite callee never declared col_start/col_end (no scheme here
-        # pulls them in), so they must not appear in the call at all --
-        # confirms they're a genuine, honest pass-through accept-and-ignore,
-        # not silently (and wrongly) threaded into the callee.
-        assert "col_start" not in call_line
-        assert "col_end" not in call_line
+        # x_host is dimensioned by horizontal_dimension -- it must be sliced
+        # by col_start:col_end at the call site, even though the suite
+        # callee's own signature never declared col_start/col_end itself
+        # (Fortran's assumed-shape dummy adapts to whatever section is
+        # passed in). Passing the whole array here regardless of col_start/
+        # col_end is exactly the bug that caused var_compat's real,
+        # gfortran-verified effrs miscalculation under a chunked driver.
+        assert "x_host(col_start:col_end)" in call_line, call_line
+
+
+class TestHorizontalDimensionScalarRecomputedFromColBounds:
+    """ncol_scheme declares a scalar arg (its own "ncol") with
+    standard_name=horizontal_dimension -- matching var_compat's real
+    effr_calc_run/rad_lw_run/rad_sw_run "ncol" args exactly. Passing the
+    host's raw, full ncols through here (rather than recomputing
+    col_end - col_start + 1) would tell the scheme its sliced array argument
+    (y_host, below) is longer than it actually is -- confirmed to matter
+    for var_compat's own rad_lw_run/rad_sw_run, whose `do icol = 1, ncol`
+    loops would otherwise repeatedly write only the first chunk's columns
+    and never reach the later chunks at all."""
+
+    def test_ncol_recomputed_as_col_end_minus_col_start_plus_one(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output_ncol_scheme(run_host_match, ccpp_context)
+        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
+            "end subroutine Test_ccpp_physics_run"
+        )[0]
+        assert "col_end - col_start + 1" in fn_body, fn_body
+        call_line = next(
+            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+        )
+        assert "ncols" not in call_line, call_line
+
+    def test_2d_horizontal_dimension_array_sliced_on_first_axis_only(
+        self, run_host_match, ccpp_context
+    ):
+        # y_host is (horizontal_dimension, vertical_layer_dimension) --
+        # matching effrr/effrl/effrs's real shape. Only the first axis is a
+        # column-chunk bound; the second (pver) must stay the full 1:pver
+        # range regardless of col_start/col_end.
+        fortran = _fortran_output_ncol_scheme(run_host_match, ccpp_context)
+        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
+            "end subroutine Test_ccpp_physics_run"
+        )[0]
+        call_line = next(
+            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+        )
+        assert "y_host(col_start:col_end, 1:pver)" in call_line, call_line
 
 
 class TestNoDuplicateWhenSchemeAlreadyProvidesThem:
