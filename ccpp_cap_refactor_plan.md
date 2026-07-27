@@ -2534,39 +2534,62 @@ dependency is noted.
       num_subcycles, errmsg, errflg` — matching what the (unmodified) driver already expects,
       apart from the remaining four. All three var_compat FileCheck goldens (`frontend`,
       `completed_ir`, `end_to_end`) regenerated and passing.
-    - **Not yet fixed — two separate, real `run_dispatch.py` bugs, found while diagnosing why
-      `scalar_varA`/`scalar_varB`/`scalar_varC`/`num_subcycles` still don't resolve after the
+    - **Fixed — two separate, real `run_dispatch.py` bugs, found while diagnosing why
+      `scalar_varA`/`scalar_varB`/`scalar_varC`/`num_subcycles` still didn't resolve after the
       metadata fix above.**
       1. *Bare-name collision bug.* Confirmed directly in the IR: `HostVariableMatchPass`
          correctly resolves all three of `effr_pre`/`effr_post`/`effr_diag`'s own
          `scalar_var`-named args to their distinct `physics_state` DDT members (`model_var_name
          = scalar_varA`/`scalar_varB`/`scalar_varC` respectively) — the deliberate bare-name
          collision this example exists to test is resolved correctly at the host-matching layer.
-         But `run_dispatch.py`'s own `_build_per_suite_run_info` builds `local_to_host_info`
-         (and `std_name_of`) keyed by each scheme's own literal `fn_arg.name` — "scalar_var" for
-         all three, since the IR's `name` attribute is never rewritten to the disambiguated
-         `model_var_name` — while the *lookup* uses the suite's already-disambiguated combined
-         name (`_bare("scalar_varB")` = `"scalar_varB"`, a string that was never inserted as a
-         key at all). Only the first-processed scheme's entry (which happens to keep the
-         un-suffixed combined name `scalar_var`) resolves correctly; the other two silently fall
-         back to `ArgSourceKind.Block`. A real fix needs `local_to_host_info` built or looked up
-         using the same per-scheme disambiguation suite_cap.py's own `_hint_for`/model_var_name
-         substitution already performs — not a one-line change; not attempted here (paused given
-         the user's token budget for this session).
+         But `run_dispatch.py`'s own `_build_per_suite_run_info` built `local_to_host_info`
+         keyed by each scheme's own literal `fn_arg.name` — "scalar_var" for all three, since the
+         IR's `name` attribute is never rewritten to the disambiguated `model_var_name` — while
+         the *lookup* uses the suite's already-disambiguated combined name
+         (`_bare("scalar_varB")` = `"scalar_varB"`, a string that was never inserted as a key at
+         all). Only the first-processed scheme's entry (which happened to keep the un-suffixed
+         combined name `scalar_var`) resolved correctly; the other two silently fell back to
+         `ArgSourceKind.Block`.
+
+         **Fixed** by grouping host-matched `fn_args` by bare local name, deduplicated by
+         standard_name (mirroring `suite_cap.py`'s own `all_args` construction, which dedupes by
+         `std_key` — without this dedup step, several schemes correctly sharing one bare name for
+         the *same* standard_name, e.g. every scheme's own `ncol`, get miscounted as a collision
+         too, an over-eager first attempt at this fix that broke `ncol`/`effrr_inout`/
+         `effrs_inout` resolution before landing on this version). A bare name backed by only one
+         distinct standard_name keeps the simple bare-name key, unchanged from before; a bare name
+         genuinely shared by 2+ distinct standard_names is instead keyed by each sibling's own
+         `model_var_name` — precisely what `suite_cap.py` renamed that sibling's own dummy
+         argument to. A second, blunter attempt (unconditionally also keying by `model_var_name`,
+         without the collision/dedup grouping) was tried and rejected: it clobbered an unrelated
+         arg's correct entry whenever one arg's `model_var_name` happened to coincide with a
+         *different* arg's own bare local name — caught directly by the pre-existing
+         `test_run_dispatch.py::TestBuildPerSuiteRunInfoResolvedArgOps` fixture (its `temp`/
+         `rad_temp` args have exactly this coincidental collision).
       2. *`num_subcycles` DDT-table gap.* `num_subcycles` is a suite-level argument synthesized
          entirely by `suite_cap.py`'s `_synthesize_dynamic_loop_count_args` (see the subcycle
          loop-bound fix above) — it isn't declared in any scheme's own `.meta` at all. The
          fallback in `_build_per_suite_run_info` that resolves a callee arg's std_name when no
-         scheme table has it only scans `CCPPType.HOST`/`CCPPType.MODULE` tables, never
-         `CCPPType.DDT` — so even now that `physics_state` is correctly module-hosted, this
-         fallback still never discovers that `num_subcycles` is really one of its members.
-         Needs that scan extended to DDT tables (plus the same DDT-member resolution
-         `local_to_host_info`'s own "if is_ddt" branch already does). Not attempted here.
+         scheme table has it only scanned `CCPPType.HOST`/`CCPPType.MODULE` tables, never
+         `CCPPType.DDT` — so even with `physics_state` correctly module-hosted, this fallback
+         never discovered that `num_subcycles` is really one of its members.
 
-      If both were fixed, `test_host_ccpp_physics_run`'s signature would collapse to just
-      `suite_name, suite_part, errmsg, errflg` — matching the driver exactly (`col_start`/
-      `col_end` aside: no scheme here declares `horizontal_loop_extent`, so it's not established
-      that chunking is even part of this example's design at all; not investigated).
+         **Fixed** by extending that scan to `DDT` tables too, and folding any such match into
+         `local_to_host_info` as a `(member_name, ddt_type_name, is_ddt=True)` entry — the same
+         shape the scheme-arg path already produces — so it resolves through the existing
+         `_resolve_ddt_access_path` machinery instead of falling back to a caller-block argument.
+
+      With both fixed, `test_host_ccpp_physics_run`'s signature collapses to just
+      `suite_name, suite_part, errmsg, errflg`, confirmed by regenerating this example's real
+      output. `col_start`/`col_end` remain a separate, still-open matter: no scheme here declares
+      `horizontal_loop_extent`, so it's not established that column chunking is even part of this
+      example's design at all — `test_host.F90`'s own hand-written driver call still passes
+      `col_start`/`col_end` in addition to the four resolved args (6 total vs. the generated
+      cap's 4), a pre-existing driver/example mismatch not addressed by this fix and not yet
+      investigated. Both var_compat FileCheck goldens (`completed_ir`, `end_to_end`) regenerated
+      and passing; direct regression coverage (sabotage-verified against both fixes
+      independently, including the two rejected fix attempts above) in
+      `tests/unit/test_run_dispatch_host_wrapper_resolution.py`.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

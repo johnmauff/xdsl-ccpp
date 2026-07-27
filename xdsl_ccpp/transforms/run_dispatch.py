@@ -197,21 +197,33 @@ def _build_per_suite_run_info(
                 ):
                     std_name_of[fn_arg.name] = fn_arg.getAttr("standard_name").lower()
 
-        # Also check HOST and MODULE tables for suite-level args (like col_start/
-        # col_end) that don't appear directly in any scheme _run table but are
-        # part of the suite cap's signature for loop bounds / array sectioning.
+        # Also check HOST, MODULE, and DDT tables for suite-level args (like
+        # col_start/col_end, or a dynamic subcycle loop count synthesized by
+        # suite_cap.py's _synthesize_dynamic_loop_count_args) that don't
+        # appear directly in any scheme _run table but are part of the suite
+        # cap's signature for loop bounds / array sectioning. DDT tables are
+        # included because such a synthesized arg's host-side local name may
+        # only exist as a member of a module-level DDT instance (e.g.
+        # var_compat's num_subcycles, a member of the physics_state DDT) --
+        # scoping this to HOST/MODULE alone would silently miss it and its
+        # standard_name would never be recorded here.
+        _ddt_table_matches: dict = {}
         for callee_arg in callee_input_names:
             if _bare(callee_arg) in std_name_of:
                 continue
             bare = _bare(callee_arg)
             for tbl_name, props in meta_data.items():
-                if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
+                if props.getAttr("type") not in (
+                    CCPPType.HOST, CCPPType.MODULE, CCPPType.DDT,
+                ):
                     continue
                 if tbl_name not in props.arg_tables:
                     continue
                 for var in props.getArgTable(tbl_name).getFunctionArguments():
                     if var.name == bare and var.hasAttr("standard_name"):
                         std_name_of[bare] = var.getAttr("standard_name").lower()
+                        if props.getAttr("type") == CCPPType.DDT:
+                            _ddt_table_matches[bare] = (var.name, tbl_name)
                         break
 
         # Build local_name → (host_var, host_module, is_ddt) from the match pass
@@ -220,7 +232,20 @@ def _build_per_suite_run_info(
         # and stored them as properties on the IR ops; BuildMetaDataDescriptions
         # copies those into the CCPPArgument descriptors via known_props.
         # Using this avoids re-deriving the same information from raw metadata.
-        local_to_host_info: dict = {}
+        # First collect every host-matched fn_arg's info grouped by its own
+        # bare local name, deduplicated by standard_name (matching how
+        # suite_cap.py's _build_arg_tables builds all_args -- one entry per
+        # distinct std_key, first-seen wins across schemes that redeclare the
+        # same standard_name). A bare name whose group still has more than
+        # one *distinct-standard_name* entry after that dedup is exactly the
+        # case suite_cap.py's _build_block_signature (_hint_for) detects as
+        # a collision and renames every one of, so it needs different
+        # handling below than the (common) single-owner case. Without this
+        # dedup step, several schemes independently declaring the same local
+        # name for the *same* standard_name (e.g. every scheme's own "ncol")
+        # would be miscounted as a collision, even though suite_cap.py only
+        # ever sees one such entry per std_key.
+        _by_bare_name: dict = {}
         for scheme_name in scheme_names:
             table_name = scheme_name + "_run"
             if scheme_name not in meta_data:
@@ -232,15 +257,53 @@ def _build_per_suite_run_info(
                 .getArgTable(table_name)
                 .getFunctionArguments()
             ):
-                bare_name = _bare(fn_arg.name)
-                if bare_name not in local_to_host_info and fn_arg.hasAttr(
-                    "model_var_name"
-                ):
-                    local_to_host_info[bare_name] = (
-                        fn_arg.getAttr("model_var_name"),
-                        fn_arg.getAttr("model_module_name"),
-                        fn_arg.hasAttr("model_var_is_ddt"),
-                    )
+                if not fn_arg.hasAttr("model_var_name"):
+                    continue
+                host_info = (
+                    fn_arg.getAttr("model_var_name"),
+                    fn_arg.getAttr("model_module_name"),
+                    fn_arg.hasAttr("model_var_is_ddt"),
+                )
+                std_key = (
+                    fn_arg.getAttr("standard_name").lower()
+                    if fn_arg.hasAttr("standard_name")
+                    else fn_arg.name
+                )
+                group = _by_bare_name.setdefault(_bare(fn_arg.name), {})
+                if std_key not in group:
+                    group[std_key] = host_info
+
+        local_to_host_info: dict = {}
+        for bare_name, std_key_group in _by_bare_name.items():
+            host_infos = list(std_key_group.values())
+            if len(host_infos) == 1:
+                # No local-name collision for this bare name within the
+                # current scheme group -- suite_cap.py prints this dummy
+                # argument under its own original (unrenamed) name, so the
+                # bare local name is the correct lookup key.
+                local_to_host_info[bare_name] = host_infos[0]
+            else:
+                # Two or more schemes reused the same local argument name for
+                # genuinely different standard_names (a real collision).
+                # suite_cap.py renames every one of them to its own
+                # model_var_name instead (_hint_for's fallback), so the bare
+                # local name is no longer a meaningful key for any of them --
+                # index each sibling by its own host-matched canonical name,
+                # which is what actually appears in the printed suite-callee
+                # signature for that sibling.
+                for host_info in host_infos:
+                    local_to_host_info[host_info[0]] = host_info
+
+        # Fold in DDT-table matches found above for callee args with no
+        # scheme-declared arg at all (e.g. a synthesized dynamic subcycle
+        # loop count) -- these never go through the scheme-arg loop above,
+        # so they need their own local_to_host_info entry to be resolved via
+        # the DDT-member path below rather than falling back to a plain
+        # caller-block argument. Only fills in bare names not already
+        # resolved from an actual scheme arg.
+        for bare_name, (member_name, ddt_type_name) in _ddt_table_matches.items():
+            if bare_name not in local_to_host_info:
+                local_to_host_info[bare_name] = (member_name, ddt_type_name, True)
 
         # Build bare_name → (dim_std_names, intent) for rank≥2 row_major args.
         # These will be transposed via RowMajorConvertOp in the dispatch chain.

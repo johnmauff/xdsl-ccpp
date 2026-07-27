@@ -101,6 +101,47 @@ more known issues:
   variable already passed as an input — otherwise the same variable gets
   bound twice under two different keyword names, also invalid Fortran). See
   `ccpp_cap_refactor_plan.md`'s backlog.
+- **Fixed — two more real `run_dispatch.py` bugs, found after correcting
+  `test_host_mod.meta`'s `type = host` → `type = module` typo (see
+  `ccpp_cap_refactor_plan.md`'s backlog) still left `scalar_varA`/
+  `scalar_varB`/`scalar_varC`/`num_subcycles` unresolved on the host-facing
+  wrapper.**
+  - *Bare-name collision.* `HostVariableMatchPass` correctly resolves
+    `effr_pre`/`effr_post`/`effr_diag`'s own `scalar_var`-named args to their
+    distinct `physics_state` DDT members (`scalar_varA`/`scalar_varB`/
+    `scalar_varC`), but `run_dispatch.py`'s `local_to_host_info` map was keyed
+    by each scheme's own un-renamed local name — since all three literally
+    declare `scalar_var`, only the first-processed scheme's entry was ever
+    kept, and the wrapper's own dummy args for `suite_cap.py`'s already-
+    disambiguated `scalar_varA`/`scalar_varB`/`scalar_varC` had no matching
+    key at all. Fixed by grouping host-matched args by bare local name,
+    deduplicated by standard_name (mirroring `suite_cap.py`'s own `all_args`
+    construction): a bare name with only one distinct standard_name keeps its
+    simple key exactly as before, while a bare name genuinely shared by 2+
+    distinct standard_names is instead keyed by each sibling's own
+    host-matched canonical name — precisely what `suite_cap.py` renamed that
+    sibling's dummy argument to.
+  - *`num_subcycles` DDT-scan gap.* `num_subcycles` is a suite-level argument
+    synthesized entirely by `suite_cap.py`'s `_synthesize_dynamic_loop_count_args`
+    (see the loop-bound fix above) — it isn't declared in any scheme's own
+    `.meta` at all. The fallback that resolves such a suite-level arg's
+    standard_name only ever scanned `HOST`/`MODULE` tables, never `DDT`, so it
+    could never discover that `num_subcycles` is really a `physics_state`
+    member. Fixed by extending that scan to `DDT` tables too, and folding any
+    such match into `local_to_host_info` as a DDT-member entry, so it resolves
+    through the existing DDT-access-path machinery instead of falling back to
+    a caller-block argument.
+
+  With both fixed, `VarCompatibility_ccpp_physics_run`'s signature collapses
+  to exactly `suite_name, suite_part, errmsg, errflg`. `test_host.F90`'s own
+  hand-written call still additionally passes `col_start`/`col_end` (6
+  arguments total) — a separate, pre-existing driver/example mismatch, not
+  addressed by this fix and not yet investigated (no scheme in this example
+  declares `horizontal_loop_extent`, so it isn't established that column
+  chunking is even part of this example's design). See
+  `tests/unit/test_run_dispatch_host_wrapper_resolution.py` for direct
+  regression coverage (sabotage-verified against both fixes independently)
+  and `ccpp_cap_refactor_plan.md`'s backlog for the full writeup.
 
 - **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
   "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`
@@ -308,9 +349,11 @@ make run    # build and run -- no known xdsl_ccpp cap-generation compile
             # blockers remain as of this writing (see the bullets above);
             # not independently confirmed with a real gfortran build in this
             # environment, and test_host.F90's own hand-written call to
-            # test_host_ccpp_physics_run passes only suite_name/suite_part/
-            # col_start/col_end/errmsg/errflg, fewer arguments than the
-            # current generated signature requires -- a separate,
-            # pre-existing driver/example mismatch, not investigated
+            # test_host_ccpp_physics_run passes suite_name/suite_part/
+            # col_start/col_end/errmsg/errflg (6 arguments), while the
+            # current generated signature is now just suite_name/suite_part/
+            # errmsg/errflg (4 arguments, no col_start/col_end) -- a
+            # separate, pre-existing driver/example mismatch, not addressed
+            # by the run_dispatch.py fixes above and not yet investigated
 make check  # build, run, and verify pass/fail
 ```

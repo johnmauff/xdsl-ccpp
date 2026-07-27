@@ -408,14 +408,9 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine VarCompatibility_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, scalar_varA, scalar_varB,  &
-// CHECK:           scalar_varC, num_subcycles, errmsg, errflg)
-// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varA
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
-// CHECK-NEXT:      integer, intent(in) :: scalar_varC
-// CHECK-NEXT:      integer, intent(in) :: num_subcycles
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
 // CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
@@ -425,14 +420,15 @@
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
 // CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=phys_state%effrr,                &
-// CHECK-NEXT:            scalar_varA=scalar_varA, ncol=ncols, nlev=pver, effrg_in=phys_state%effrg,              &
+// CHECK-NEXT:            scalar_varA=phys_state%scalar_varA, ncol=ncols, nlev=pver, effrg_in=phys_state%effrg,   &
 // CHECK-NEXT:            ncg_in=phys_state%ncg, nci_out=phys_state%nci, effrl_inout=phys_state%effrl,            &
 // CHECK-NEXT:            effri_out=phys_state%effri, effrs_inout=effrs, ncl_out=lc_ncl_out,                      &
-// CHECK-NEXT:            has_graupel=has_graupel, scalar_var=phys_state%scalar_varA, tke_inout=phys_state%tke,   &
-// CHECK-NEXT:            tke2_inout=phys_state%tke2, scalar_varB=scalar_varB, scalar_varC=scalar_varC,           &
-// CHECK-NEXT:            fluxLW=phys_state%fluxLW, sfc_up_sw=phys_state%fluxSW%sfc_up_sw,                        &
-// CHECK-NEXT:            sfc_down_sw=phys_state%fluxSW%sfc_down_sw, num_subcycles=num_subcycles,                 &
-// CHECK-NEXT:            _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1, _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:            has_graupel=has_graupel, scalar_var=phys_state%scalar_var, tke_inout=phys_state%tke,    &
+// CHECK-NEXT:            tke2_inout=phys_state%tke2, scalar_varB=phys_state%scalar_varB,                         &
+// CHECK-NEXT:            scalar_varC=phys_state%scalar_varC, fluxLW=phys_state%fluxLW,                           &
+// CHECK-NEXT:            sfc_up_sw=phys_state%fluxSW%sfc_up_sw, sfc_down_sw=phys_state%fluxSW%sfc_down_sw,       &
+// CHECK-NEXT:            num_subcycles=phys_state%num_subcycles, _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1,           &
+// CHECK-NEXT:            _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"
