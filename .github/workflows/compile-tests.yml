@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         example:
-	  - var_compat
+          - var_compat
           - advection
           - advection_flat_host
           - capgen
