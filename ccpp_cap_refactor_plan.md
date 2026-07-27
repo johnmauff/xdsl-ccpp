@@ -2777,11 +2777,47 @@ dependency is noted.
       all three fixes independently, plus guard tests for the two false-positive traps found
       along the way) in `tests/unit/test_suite_variables_gaps.py`.
 
-      **Still open, unverified:** whether `make check` actually reports PASS given the separate,
-      already-documented `col_start`/`col_end` unused-but-driver-chunks issue above (the driver's
-      5-column chunking loop would redundantly re-run the suite and over-increment
-      `effrs_inout`'s real accumulation in `effr_calc.F90`) — no Fortran compiler available in
-      this environment to confirm either way.
+      **Still open at the time this was written:** whether `make check` actually reports PASS
+      given the separate, already-documented `col_start`/`col_end` unused-but-driver-chunks issue
+      above — no Fortran compiler available in this environment to confirm either way. In
+      practice the project owner's next actual run instead hit a different, real *runtime* bug
+      first (see immediately below), before column-chunking correctness could even be reached.
+    - **Fixed — a real runtime failure, found by the project owner actually running the built
+      executable:** `ERROR in initialize of var_compatibility_suite: ERROR: effr_pre_init()
+      needs to be called first`. Root cause, in a third code path from every fix above (none of
+      which touch lifecycle — init/finalize/timestep — dispatch at all): `effr_pre_init`/
+      `effr_calc_init`/`effr_post_init`/`effr_diag_init` all share one `intent(inout)`
+      `scheme_order` scalar (`scheme_order_in_suite`) that `HostVariableMatchPass` correctly
+      resolves to a DDT member, `phys_state%scheme_order` — `test_host_data.F90` initializes it
+      to `1` before `physics_initialize` runs, and each scheme's own `_init` checks it against
+      its expected call position, then increments it, relying on Fortran's pass-by-reference
+      semantics to thread the running count across the whole call sequence. `lifecycle_cap.py`'s
+      `_generate_lifecycle_fn` (a separate module from `run_dispatch.py`, covering init/finalize/
+      timestep dispatch rather than the physics "_run" dispatch) only ever checked whether a
+      standard_name was a plain `MODULE`-table variable (`host_var_map`, built with
+      `include_host=False`) — it had **no DDT-member resolution branch at all**, unlike
+      `run_dispatch.py`'s own "_run" dispatch. A DDT-member match fell through to the same
+      fallback used for genuinely unmatched optional/allocatable args: a fresh, uninitialized
+      local alloca (`lc_scheme_order`), silently discarding the host's real initial value.
+
+      **Fixed** by teaching `_generate_lifecycle_fn` the same DDT-member resolution
+      `run_dispatch.py` already has, reusing (not duplicating) `cap_shared.py`'s
+      `_build_ddt_resolution_maps`/`_resolve_ddt_access_path`/`_resolve_member_subscripts`: the
+      scheme-arg scan now also captures each arg's own `model_var_name`/`model_module_name`/
+      `model_var_is_ddt` (previously discarded — only `standard_name` was kept), and the
+      resolution loop tries DDT-member resolution before falling back to a fresh local.
+      Confirmed via the real `Makefile` path: `test_host_ccpp_physics_initialize`'s call to
+      `var_compatibility_suite_suite_initialize` now passes `phys_state%scheme_order` directly,
+      with no `lc_scheme_order` anywhere. Both var_compat FileCheck goldens regenerated and
+      passing; full suite 495 passed, 1 pre-existing xfail; no other example affected (this gap
+      was never exercised by any other example's lifecycle dispatch). Direct regression coverage
+      (sabotage-verified) in `tests/unit/test_lifecycle_ddt_member_resolution.py`.
+
+      **Still open:** whether `make check` reports PASS is still unconfirmed — the col_start/
+      col_end chunking-correctness question above remains untested, and further real-execution
+      bugs of this same general shape (a code path lifecycle_cap.py/run_dispatch.py/ccpp_cap.py
+      never previously exercised together with DDT-member resolution) may yet surface, matching
+      this project's own established pattern of one new gap per actual build-and-run attempt.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

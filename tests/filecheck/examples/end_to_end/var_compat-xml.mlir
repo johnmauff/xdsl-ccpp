@@ -363,10 +363,9 @@
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK-NEXT:      integer :: lc_scheme_order
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
-// CHECK-NEXT:        call var_compatibility_suite_suite_initialize(lc_scheme_order, errmsg, errflg)
+// CHECK-NEXT:        call var_compatibility_suite_suite_initialize(phys_state%scheme_order, errmsg, errflg)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1

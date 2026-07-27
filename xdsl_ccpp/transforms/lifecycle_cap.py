@@ -28,8 +28,11 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
     _assert_call_arg_count_matches_signature,
     _bare,
+    _build_ddt_resolution_maps,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
+    _resolve_ddt_access_path,
+    _resolve_member_subscripts,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
@@ -79,6 +82,7 @@ def _generate_lifecycle_fn(
     # work for MODULE-type tables.  HOST-type tables are caller-provided args
     # (not Fortran modules) so they must not generate USE stubs.
     host_var_map = _build_host_var_map(meta_data, include_host=False)
+    ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data)
 
     ccpp_info_type = kwargs.get("ccpp_info_type")
     ccpp_info_module = kwargs.get("ccpp_info_module")
@@ -144,6 +148,16 @@ def _generate_lifecycle_fn(
 
         # Build {bare_arg_name → standard_name} from the scheme entry-point tables
         std_name_of: dict = {}
+        # {bare_arg_name → (model_var_name, model_module_name)} for args
+        # HostVariableMatchPass resolved to a DDT member (e.g. var_compat's
+        # scheme_order, matched to phys_state%scheme_order) -- module-level
+        # host vars are already handled below via host_var_map, but nothing
+        # in this function previously resolved a DDT-member match at all, so
+        # such an arg silently fell through to a fresh, uninitialized local
+        # alloca instead (a real runtime bug: any inout scalar threaded this
+        # way, like a scheme-call-order sanity counter, starts from garbage
+        # instead of the host's actual persisted value).
+        ddt_member_info: dict = {}
         if entry_postfix is not None:
             # atmospheric_physics uses _timestep_init/_timestep_final/_final;
             # accept all of LIFECYCLE_POSTFIX_ALIASES' short forms too.
@@ -166,6 +180,15 @@ def _generate_lifecycle_fn(
                         bare = _bare(fn_arg.name)
                         if bare not in std_name_of and fn_arg.hasAttr("standard_name"):
                             std_name_of[bare] = fn_arg.getAttr("standard_name").lower()
+                        if (
+                            bare not in ddt_member_info
+                            and fn_arg.hasAttr("model_var_is_ddt")
+                            and fn_arg.hasAttr("model_var_name")
+                        ):
+                            ddt_member_info[bare] = (
+                                fn_arg.getAttr("model_var_name"),
+                                fn_arg.getAttr("model_module_name"),
+                            )
                     break  # found entry for this scheme; stop trying candidates
 
         # Resolve each input arg: host-mapped → HostVarRefOp, other → alloca
@@ -192,6 +215,55 @@ def _generate_lifecycle_fn(
                     )
                     glob.attributes["module"] = StringAttr(host_module_name)
                     all_host_global_ops.append(glob)
+            elif bare in ddt_member_info:
+                # Host-matched to a DDT member (e.g. var_compat's
+                # scheme_order, resolved to phys_state%scheme_order) --
+                # mirrors run_dispatch.py's own DdtMember resolution for the
+                # "_run" dispatch. Follows parent DDTs for nested types
+                # (A contains B contains x -> a%b%x), same as there.
+                model_var_name, model_module_name = ddt_member_info[bare]
+                result = _resolve_ddt_access_path(
+                    model_module_name, ddt_instance_map, ddt_parent_map
+                )
+                if result is not None:
+                    instance_var, instance_module, path_prefix = result
+                    resolved_member, sub_vars = _resolve_member_subscripts(
+                        path_prefix + model_var_name, host_var_map
+                    )
+                    ref_op = HostVarRefOp(
+                        instance_var, instance_module, arg_type,
+                        member_name=resolved_member,
+                    )
+                    true_branch_pre_ops.append(ref_op)
+                    call_inputs.append(ref_op.res)
+                    for local_name, module_name in sub_vars:
+                        key = (local_name, module_name)
+                        if key not in seen_host_globals:
+                            seen_host_globals.add(key)
+                            glob = llvm.GlobalOp(
+                                llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                local_name, "external",
+                            )
+                            glob.attributes["module"] = StringAttr(module_name)
+                            all_host_global_ops.append(glob)
+                    key = (instance_var, instance_module)
+                    if key not in seen_host_globals:
+                        seen_host_globals.add(key)
+                        glob = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(1, i8),
+                            instance_var, "external",
+                        )
+                        glob.attributes["module"] = StringAttr(instance_module)
+                        all_host_global_ops.append(glob)
+                else:
+                    # No module-level instance reachable -- fall back to a
+                    # fresh local rather than silently resolving nothing.
+                    alloc_op = memref.AllocaOp.get(
+                        arg_type.element_type, shape=list(arg_type.shape.data)
+                    )
+                    alloc_op.memref.name_hint = f"lc_{bare}"
+                    true_branch_pre_ops.append(alloc_op)
+                    call_inputs.append(alloc_op.memref)
             elif (
                 ccpp_info_type is not None
                 and std_name == "host_standard_ccpp_type"

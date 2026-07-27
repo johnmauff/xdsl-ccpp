@@ -304,6 +304,47 @@ more known issues:
   along the way) and `ccpp_cap_refactor_plan.md`'s backlog for the full
   writeup.
 
+- **Fixed — a real runtime failure, found by actually running the built
+  executable:**
+  ```
+  ERROR in initialize of var_compatibility_suite: ERROR: effr_pre_init() needs to be called first
+  ```
+  Root cause, in a third code path from every fix above (none of which touch
+  lifecycle — init/finalize/timestep — dispatch): `effr_pre_init`/
+  `effr_calc_init`/`effr_post_init`/`effr_diag_init` all share one
+  `intent(inout)` `scheme_order` scalar (`scheme_order_in_suite`) that
+  `HostVariableMatchPass` correctly resolves to a DDT member,
+  `phys_state%scheme_order` — `test_host_data.F90` initializes it to `1`
+  before `physics_initialize` runs, and each scheme's own `_init` checks it
+  against its expected call position, then increments it, relying on
+  Fortran's pass-by-reference semantics to thread the running count across
+  the whole call sequence. `lifecycle_cap.py`'s `_generate_lifecycle_fn`
+  (covering init/finalize/timestep dispatch, separate from
+  `run_dispatch.py`'s "_run" dispatch) only ever checked whether a
+  standard_name was a plain `MODULE`-table variable — it had **no
+  DDT-member resolution branch at all**. A DDT-member match fell through to
+  the same fallback used for genuinely unmatched args: a fresh,
+  uninitialized local (`lc_scheme_order`), silently discarding the host's
+  real initial value.
+
+  **Fixed** by teaching `_generate_lifecycle_fn` the same DDT-member
+  resolution `run_dispatch.py` already has, reusing `cap_shared.py`'s
+  existing DDT-resolution helpers rather than duplicating them. Confirmed
+  via the real `Makefile` path: `test_host_ccpp_physics_initialize`'s call
+  to `var_compatibility_suite_suite_initialize` now passes
+  `phys_state%scheme_order` directly, with no `lc_scheme_order` anywhere.
+  No other example was affected — this gap was never exercised by any other
+  example's lifecycle dispatch. See
+  `tests/unit/test_lifecycle_ddt_member_resolution.py` for direct
+  regression coverage (sabotage-verified) and `ccpp_cap_refactor_plan.md`'s
+  backlog for the full writeup.
+
+  **Still open:** whether `make check` reports PASS is still unconfirmed —
+  the `col_start`/`col_end` chunking-correctness question above (see that
+  bullet) remains untested, and further real-execution bugs of this same
+  general shape may yet surface — this project's own track record is one
+  new gap per actual build-and-run attempt.
+
 - **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
   "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`
   and `ccpp_scheme_utils`.** Not an `xdsl_ccpp` code gap: every generated
