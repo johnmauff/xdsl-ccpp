@@ -1119,36 +1119,15 @@ def _build_run_dispatch_chain(
             # ── Inner if for suite_part ───────────────────────────────────
             suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
 
-            # Use keyword-argument call when any suite cap input is optional
-            # so that Fortran correctly forwards the OPTIONAL absence status.
-            suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
-            if suite_has_optional:
-                # Derive result keyword names from output types
-                _result_names = [
-                    "errmsg" if rt == errmsg_type
-                    else "errflg" if rt == errflg_type
-                    else f"_out_{_i}"
-                    for _i, rt in enumerate(callee_output_types)
-                ]
-                call_op = KeywordCallOp(
-                    suite_callee,
-                    ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
-                    ArrayAttr([StringAttr(n) for n in _result_names]),
-                    DictionaryAttr({}),
-                    call_args,
-                    callee_output_types,
-                )
-            else:
-                call_op = func.CallOp(suite_callee, call_args, callee_output_types)
-
-            # CapVarRefOps for inout-echo returns must be placed BEFORE the call
-            # so the printer can resolve their names when processing return positions.
-            #
             # Use _get_suite_lifecycle_ret_info to get std_names for alloc returns
             # (intent=out scalars).  Suite cap returns: inout_vals first, then
             # alloc_vals.  Compute the offset so alloc positions are matched by
             # standard_name rather than type, preventing false errflg matches when
             # another intent=out scalar (e.g. const_index) has the same MLIR type.
+            #
+            # Computed here, before call_op is built, so the keyword-call path
+            # below can look up each output position's REAL callee dummy-argument
+            # name instead of a placeholder (see _result_keyword_name).
             _run_ret_alloc = _get_suite_lifecycle_ret_info(
                 scheme_names, meta_data, "_run"
             )
@@ -1164,6 +1143,65 @@ def _build_run_dispatch_chain(
             _leading_inout_ret = _get_suite_leading_inout_ret_info(
                 scheme_names, meta_data, "_run"
             )
+
+            def _result_keyword_name(idx, ret_type):
+                """The real callee dummy-argument name for output position idx.
+
+                Mirrors the copy-back loop's own idx/type-based classification
+                below exactly (errmsg/errflg by type, ccpp_t by type, then the
+                leading-inout region via _leading_inout_ret, then the trailing
+                alloc region via _run_ret_alloc) so a KeywordCallOp's result
+                name always matches the SAME string already used for that same
+                argument's own operand-side keyword whenever one exists --
+                needed so print_ftn.py's name-based dedup in _print_kw_call
+                recognizes an inout echo and skips re-printing it. The
+                previous code used a synthetic "_out_N" placeholder here,
+                which the callee's own signature never declares -- an
+                invalid-Fortran arity mismatch caught only by a real compiler
+                (ifx), not by FileCheck goldens or gfortran's more permissive
+                diagnostics.
+                """
+                if ret_type == errmsg_type:
+                    return "errmsg"
+                if ret_type == errflg_type:
+                    return "errflg"
+                if idx < _n_inout_ret:
+                    if (
+                        ccpp_t_type is not None
+                        and hasattr(ret_type, "element_type")
+                        and hasattr(ret_type.element_type, "type_name")
+                        and ret_type.element_type.type_name.data == "ccpp_t"
+                    ):
+                        return ccpp_data_block_arg.name_hint
+                    if idx < len(_leading_inout_ret):
+                        return _leading_inout_ret[idx][0]
+                    return f"_out_{idx}"
+                ri_idx = idx - _n_inout_ret
+                if ri_idx < len(_run_ret_alloc):
+                    return _run_ret_alloc[ri_idx][1]
+                return f"_out_{idx}"
+
+            # Use keyword-argument call when any suite cap input is optional
+            # so that Fortran correctly forwards the OPTIONAL absence status.
+            suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
+            if suite_has_optional:
+                _result_names = [
+                    _result_keyword_name(_i, rt)
+                    for _i, rt in enumerate(callee_output_types)
+                ]
+                call_op = KeywordCallOp(
+                    suite_callee,
+                    ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
+                    ArrayAttr([StringAttr(n) for n in _result_names]),
+                    DictionaryAttr({}),
+                    call_args,
+                    callee_output_types,
+                )
+            else:
+                call_op = func.CallOp(suite_callee, call_args, callee_output_types)
+
+            # CapVarRefOps for inout-echo returns must be placed BEFORE the call
+            # so the printer can resolve their names when processing return positions.
 
             cap_var_inout_refs: list = []
             copy_ops = []
@@ -1218,6 +1256,35 @@ def _build_run_dispatch_chain(
                                 )
                                 hv_glob.attributes["module"] = StringAttr(hv_module)
                                 chain_global_ops.append(hv_glob)
+                        elif canonical is not None and any(
+                            a_name == canonical
+                            and resolved_arg_ops[i].source_kind.data == ArgSourceKind.DdtMember
+                            for i, a_name in enumerate(callee_input_names)
+                        ) and canonical in host_var_ref_results:
+                            # Ordinary scheme-declared inout scalar host-matched
+                            # to a DDT member (e.g. var_compat's scalar_var/
+                            # tke_inout/tke2_inout, resolved to
+                            # phys_state%scalar_var) -- reuse the exact same
+                            # HostVarRefOp already built as this argument's own
+                            # INPUT reference (the per-callee-arg
+                            # host_var_ref_results loop above) as the copy-back
+                            # target too. Functionally a no-op (Fortran already
+                            # reflects the update through the same aliased
+                            # reference -- nothing needs copying), but marks
+                            # this result as having a real copy consumer so it
+                            # never falls into print_ftn.py's
+                            # untracked-call-result fallback, which otherwise
+                            # invents a throwaway "ccpp_tmp_N" local and
+                            # (whenever the suite callee is dispatched via a
+                            # plain positional call rather than a keyword call)
+                            # prints it as a genuine EXTRA positional argument
+                            # -- a real arity mismatch that also silently
+                            # shifts every later positional argument (including
+                            # errmsg/errflg) into the wrong dummy-argument slot,
+                            # not merely a cosmetic unused-variable warning.
+                            copy_ops.append(
+                                memref.CopyOp(result, host_var_ref_results[canonical])
+                            )
                         elif cap_var_map:
                             for i, (a_name, a_type) in enumerate(
                                 zip(callee_input_names, callee_input_types)

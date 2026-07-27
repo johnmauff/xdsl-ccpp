@@ -416,9 +416,6 @@
 // CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_1
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_2
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
@@ -430,8 +427,7 @@
 // CHECK-NEXT:            tke2_inout=phys_state%tke2, scalar_varB=phys_state%scalar_varB,                         &
 // CHECK-NEXT:            scalar_varC=phys_state%scalar_varC, fluxLW=phys_state%fluxLW,                           &
 // CHECK-NEXT:            sfc_up_sw=phys_state%fluxSW%sfc_up_sw, sfc_down_sw=phys_state%fluxSW%sfc_down_sw,       &
-// CHECK-NEXT:            num_subcycles=phys_state%num_subcycles, _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1,           &
-// CHECK-NEXT:            _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:            num_subcycles=phys_state%num_subcycles, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"

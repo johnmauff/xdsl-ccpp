@@ -2642,6 +2642,59 @@ dependency is noted.
       regression coverage (sabotage-verified, including a guard against double-inserting
       `col_start`/`col_end` for the already-working chunked examples) in
       `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+    - **Fixed — a real `ifx` compile failure, found by the project owner actually trying to
+      build `var_compat` with `ifx` after the fixes above.** gfortran silently accepted the
+      offending Fortran and every FileCheck golden matched it byte-for-byte, so this survived
+      completely undetected until a real, standards-strict compiler was tried:
+      ```
+      error #5192: Lead underscore not allowed
+                num_subcycles=phys_state%num_subcycles, _out_0=ccpp_tmp_0, ...
+      error #6784: The number of actual arguments cannot be greater than the number of dummy
+                   arguments.
+      error #6627: This is an actual argument keyword name, and not a dummy argument name.
+                   [_OUT_0]
+      ```
+      Root cause, one layer deeper than either symptom: `run_dispatch.py`'s
+      `_build_run_dispatch_chain` had no copy-back branch at all for a suite callee's own
+      leading `intent(inout)` **scalar** return value when it's host-matched to a DDT member
+      (`scalar_var`/`tke_inout`/`tke2_inout`, resolved to `phys_state%scalar_var` etc.) rather
+      than a plain caller-block argument or plain host/cap-owned module variable — every
+      existing branch (`block_arg_map`/`host_var_map`/`cap_var_map`) missed it. With no
+      `CopyOp` consumer at all, `print_ftn.py`'s own "untracked call result" fallback took
+      over: it invents a throwaway `ccpp_tmp_N` local for the value and, in the **plain
+      positional-call path**, prints it as a genuine extra positional argument — a real arity
+      mismatch that also silently shifts every later argument (including `errmsg`/`errflg`)
+      into the wrong dummy-argument slot. In the **keyword-call path** (used whenever any of
+      the suite's own inputs is optional, so Fortran correctly forwards `OPTIONAL` absence
+      status — `var_compat`'s radiation group has several optional array args), the same
+      untracked value additionally got a synthetic `_out_{i}` placeholder keyword name from a
+      separate, earlier list comprehension that only recognized `errmsg`/`errflg` by type —
+      invalid Fortran on two counts: the leading underscore (not a legal Fortran identifier
+      start) and the resulting arity mismatch.
+
+      **Fixed** with two complementary changes: (1) a new copy-back branch in the same `idx <
+      len(_leading_inout_ret)` region reuses the exact same `HostVarRefOp` already built as
+      the argument's own *input* reference (`host_var_ref_results`, populated once per callee
+      arg before the call is built) as the copy-back target too — functionally a no-op
+      (Fortran already reflects the update through the same aliased reference, so nothing
+      needs copying), but it gives the result a real `CopyOp` consumer, so it never reaches
+      the untracked-call-result fallback in the first place; this alone fixes the
+      positional-call arity bug and eliminates the dead `ccpp_tmp_N` declaration entirely, not
+      just its use. (2) The keyword-call path's `_result_names` construction was moved to
+      after, and now reuses, the same leading-inout/trailing-alloc classification the
+      copy-back loop already uses (`_get_suite_leading_inout_ret_info`/
+      `_get_suite_lifecycle_ret_info`), computing each output position's real callee
+      dummy-argument name instead of a synthetic `_out_{i}` placeholder — belt-and-suspenders
+      alongside (1), and the only thing needed for positions (1) doesn't cover (a genuine
+      trailing alloc-region scalar with no operand-side entry at all, which legitimately does
+      need its own real keyword name printed).
+
+      Confirmed via the real `Makefile` path (not just the raw CLI):
+      `test_host_ccpp_physics_run`'s call to `var_compatibility_suite_suite_radiation` now has
+      exactly the right argument count, with no `_out_N`/`ccpp_tmp_N` anywhere. Both var_compat
+      FileCheck goldens regenerated and passing; full suite 487 passed, 1 pre-existing xfail.
+      Direct regression coverage (sabotage-verified against both the positional- and
+      keyword-call symptoms independently) in `tests/unit/test_run_dispatch_kw_call_result_names.py`.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

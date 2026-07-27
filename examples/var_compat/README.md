@@ -190,6 +190,63 @@ more known issues:
   double-inserting `col_start`/`col_end` for the already-working chunked
   examples) and `ccpp_cap_refactor_plan.md`'s backlog for the full writeup.
 
+- **Fixed — a real `ifx` compile failure, found only by an actual
+  standards-strict compiler (gfortran silently accepted the offending
+  Fortran, and every FileCheck golden matched it byte-for-byte — this
+  survived undetected until an actual build was tried):**
+  ```
+  error #5192: Lead underscore not allowed
+            num_subcycles=phys_state%num_subcycles, _out_0=ccpp_tmp_0, ...
+  error #6784: The number of actual arguments cannot be greater than the
+               number of dummy arguments.
+  error #6627: This is an actual argument keyword name, and not a dummy
+               argument name.   [_OUT_0]
+  ```
+  Root cause, one layer deeper than either symptom: `run_dispatch.py`'s
+  `_build_run_dispatch_chain` had no copy-back branch at all for a suite
+  callee's own leading `intent(inout)` **scalar** return value when it's
+  host-matched to a DDT member (`scalar_var`/`tke_inout`/`tke2_inout`,
+  resolved to `phys_state%scalar_var` etc.) rather than a plain
+  caller-block argument or plain host/cap-owned module variable — every
+  existing branch (`block_arg_map`/`host_var_map`/`cap_var_map`) missed it.
+  With no `CopyOp` consumer at all, `print_ftn.py`'s own "untracked call
+  result" fallback took over: it invents a throwaway `ccpp_tmp_N` local for
+  the value and, in the **plain positional-call path**, prints it as a
+  genuine *extra positional argument* — a real arity mismatch that also
+  silently shifts every later argument (including `errmsg`/`errflg`) into
+  the wrong dummy-argument slot. In the **keyword-call path** (used
+  whenever any of the suite's own inputs is optional, so Fortran correctly
+  forwards `OPTIONAL` absence status — `var_compat`'s radiation group has
+  several optional array args), the same untracked value additionally got
+  a synthetic `_out_{i}` placeholder keyword name from a separate list
+  comprehension that only recognized `errmsg`/`errflg` by type — invalid
+  Fortran on two counts: the leading underscore, and the resulting arity
+  mismatch.
+
+  **Fixed with two complementary changes:** (1) a new copy-back branch
+  reuses the exact same `HostVarRefOp` already built as the argument's own
+  *input* reference as the copy-back target too — functionally a no-op
+  (Fortran already reflects the update through the same aliased
+  reference), but it gives the result a real `CopyOp` consumer, so it never
+  reaches the untracked-call-result fallback at all; this alone fixes the
+  positional-call arity bug and eliminates the dead `ccpp_tmp_N`
+  declaration entirely, not just its use. (2) The keyword-call path's
+  result-name construction was moved after, and now reuses, the same
+  leading-inout/trailing-alloc classification the copy-back loop already
+  uses, computing each output position's real callee dummy-argument name
+  instead of a synthetic placeholder — belt-and-suspenders alongside (1),
+  and the only thing needed for positions (1) doesn't cover (a genuine
+  trailing alloc-region scalar with no operand-side entry at all, which
+  legitimately does need its own real keyword name printed).
+
+  Confirmed via the real `Makefile` path: `test_host_ccpp_physics_run`'s
+  call to `var_compatibility_suite_suite_radiation` now has exactly the
+  right argument count with no `_out_N`/`ccpp_tmp_N` anywhere. See
+  `tests/unit/test_run_dispatch_kw_call_result_names.py` for direct
+  regression coverage (sabotage-verified against both the positional- and
+  keyword-call symptoms independently) and `ccpp_cap_refactor_plan.md`'s
+  backlog for the full writeup.
+
 - **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
   "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`
   and `ccpp_scheme_utils`.** Not an `xdsl_ccpp` code gap: every generated
@@ -396,12 +453,15 @@ make run    # build and run -- no known xdsl_ccpp cap-generation compile
             # blockers remain as of this writing (see the bullets above);
             # test_host_ccpp_physics_run's generated signature now matches
             # test_host.F90's hand-written call exactly (suite_name,
-            # suite_part, col_start, col_end, errmsg, errflg); not
-            # independently confirmed with a real gfortran build in this
-            # environment, and col_start/col_end are accepted but unused
-            # (this example's schemes don't chunk by column -- see the
-            # col_start/col_end bullet above for why the driver's 5-column
-            # chunking loop would still redundantly re-run the suite and
-            # over-increment effrs_inout if actually executed)
+            # suite_part, col_start, col_end, errmsg, errflg). Actually
+            # tried with ifx: hit a real _out_N/ccpp_tmp_N arity-mismatch
+            # bug (see the "real ifx compile failure" bullet above), now
+            # fixed; a full successful ifx/gfortran build has not yet been
+            # independently reconfirmed in this environment (no Fortran
+            # compiler available here). col_start/col_end are accepted but
+            # unused (this example's schemes don't chunk by column -- see
+            # the col_start/col_end bullet above for why the driver's
+            # 5-column chunking loop would still redundantly re-run the
+            # suite and over-increment effrs_inout if actually executed)
 make check  # build, run, and verify pass/fail
 ```
