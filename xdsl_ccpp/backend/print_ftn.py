@@ -787,6 +787,17 @@ class ftnPrintContext:
                     # mold= requires matching kind; use explicit size() dims instead
                     rank = dim_suffix.count(":")
                     sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    # Guard against re-entry into this same code with no
+                    # intervening deallocate -- e.g. a subcycle loop calling
+                    # the consuming scheme (and this conversion) more than
+                    # once per suite invocation. The paired *WriteBackOp
+                    # case below only ever deallocates when a write-back is
+                    # actually needed (intent=inout/out); a pure intent=in
+                    # value has no write-back at all, so without this guard
+                    # its temp is never deallocated between iterations,
+                    # crashing on the second allocate ("Attempting to
+                    # allocate already allocated variable").
+                    self.print(f"if (allocated({result_name})) deallocate({result_name})")
                     self.print(f"allocate({result_name}({sizes}))")
                 self.print(f"{result_name} = real({src_name}, kind={target_kind})")
             case CCPPKindWriteBackOp():
@@ -808,6 +819,12 @@ class ftnPrintContext:
                 if dim_suffix:
                     rank = dim_suffix.count(":")
                     sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    # See CCPPKindCastOp's own comment above: guards against
+                    # re-entry (e.g. a subcycle loop) with no intervening
+                    # deallocate when this value is pure intent=in (no
+                    # write-back, so the *WriteBackOp case's own deallocate
+                    # never runs at all).
+                    self.print(f"if (allocated({result_name})) deallocate({result_name})")
                     self.print(f"allocate({result_name}({sizes}))")
                 if to_expr:
                     self.print(f"{result_name} = {src_name} {to_expr}")
@@ -831,6 +848,12 @@ class ftnPrintContext:
                 dim_suffix = self._ftn_dim_suffix(op.res.type)
                 rank = dim_suffix.count(":")
                 sizes = ", ".join(f"size({src_name}, {i + 1})" for i in range(rank))
+                # See CCPPKindCastOp's own comment above: guards against
+                # re-entry (e.g. a subcycle loop) with no intervening
+                # deallocate when this value is pure intent=in (no
+                # write-back, so the *WriteBackOp case's own deallocate
+                # never runs at all).
+                self.print(f"if (allocated({result_name})) deallocate({result_name})")
                 self.print(f"allocate({result_name}({sizes}))")
                 sections = [
                     f"size({src_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
@@ -859,6 +882,12 @@ class ftnPrintContext:
                 dims = [e.data for e in op.dim_exprs.data]
                 dims_str  = ", ".join(dims)
                 order_str = ", ".join(str(rank - i) for i in range(rank))
+                # See CCPPKindCastOp's own comment above: guards against
+                # re-entry (e.g. a subcycle loop) with no intervening
+                # deallocate when this value is pure intent=in (no
+                # write-back, so the *WriteBackOp case's own deallocate
+                # never runs at all).
+                self.print(f"if (allocated({result_name})) deallocate({result_name})")
                 self.print(f"allocate({result_name}({dims_str}))")
                 self.print(f"{result_name} = reshape({src_name}, [{dims_str}], order=[{order_str}])")
             case CCPPRowMajorWriteBackOp():

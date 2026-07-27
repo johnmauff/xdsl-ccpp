@@ -121,8 +121,10 @@
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      ncol = col_end - col_start + 1
 // CHECK-NEXT:      ccpp_lbound_one = 1
+// CHECK-NEXT:      if (allocated(temp_level_kind_cast)) deallocate(temp_level_kind_cast)
 // CHECK-NEXT:      allocate(temp_level_kind_cast(size(temp_level, 1), size(temp_level, 2)))
 // CHECK-NEXT:      temp_level_kind_cast = real(temp_level, kind=kind_dyn)
+// CHECK-NEXT:      if (allocated(temp_layer_unit_conv)) deallocate(temp_layer_unit_conv)
 // CHECK-NEXT:      allocate(temp_layer_unit_conv(size(temp_layer, 1), size(temp_layer, 2)))
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state(ccpp_data%ccpp_instance))) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '",                                      &

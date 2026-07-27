@@ -2813,11 +2813,69 @@ dependency is noted.
       was never exercised by any other example's lifecycle dispatch). Direct regression coverage
       (sabotage-verified) in `tests/unit/test_lifecycle_ddt_member_resolution.py`.
 
+    - **Fixed — a hand-written-file bug, found once `ifx` actually built the example
+      successfully: `gfortran` refused to compile `test_var_compat_host_integration.F90` at
+      all**, on all three of its string-array constructors (`test_invars1`/`test_outvars1`/
+      `test_reqvars1`):
+      ```
+      Error: Different CHARACTER lengths (58/59) in array constructor at (1)
+      ```
+      Confirmed by diffing directly against upstream capgen-v1's own
+      `test_var_compatibility_integration.F90`: upstream is perfectly consistent — all 54 string
+      literals across the three arrays are exactly 58 characters, uniformly (Fortran array
+      constructors require every element to share one length; `gfortran` enforces this strictly,
+      `ifx` apparently pads/truncates silently instead). The ported version had 30 of 54 entries
+      off by ±1–3 characters — a padding-count slip introduced when the array literals were
+      reflowed/reformatted during the port, not an upstream issue and not a design problem with
+      the data itself (every variable name was already correct — confirmed by comparing stripped
+      identifier lists between the two versions, in order, before touching anything).
+
+      **Fixed, per explicit user authorization to touch this specific hand-written file for this
+      specific issue** (the project's standing rule is to never modify hand-written files
+      without explicit authorization — see the "never change handwritten files" feedback memory)
+      — every string literal re-padded to exactly 58 characters, matching upstream exactly.
+      Verified programmatically both ways: all 54 entries now uniformly 58 characters, and every
+      identifier's stripped text is byte-identical to before across all three arrays, in the same
+      order — only trailing whitespace changed.
+    - **Fixed — a real `gfortran` runtime crash, found by actually running the built
+      executable:**
+      ```
+      At line 184 of file examples/var_compat/var_compatibility_suite_cap.F90
+      Fortran runtime error: Attempting to allocate already allocated variable 'effrr_in_unit_conv'
+      ```
+      Root cause, in `print_ftn.py` (the Fortran backend, a different layer from every fix
+      above): each "forward" conversion op (`CCPPKindCastOp`/`CCPPUnitConvertOp`/
+      `CCPPVerticalFlipOp`/`CCPPRowMajorConvertOp` — allocates a local temp, converts into it) is
+      paired with a "write-back" op that writes the temp back to the host and deallocates it —
+      but the deallocate only ever happened inside the write-back case. `effrr_in` (consumed by
+      `effr_calc_run`) is pure `intent(in)`, so it has no write-back at all — nothing ever
+      deallocated its conversion temp. Invisible for a subroutine called only once (Fortran
+      auto-deallocates non-`SAVE` locals on return), but
+      `var_compatibility_suite_suite_radiation` calls `effr_calc_run` inside a nested 3-level
+      subcycle loop (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
+      allocated a second time within the same subroutine invocation, before Fortran ever gets a
+      chance to deallocate it.
+
+      **Fixed** by printing a guarded deallocate (`if (allocated(x)) deallocate(x)` — the same
+      pattern `CCPPSafeDeallocOp` already uses elsewhere in this file) immediately before every
+      `allocate(...)` statement all four of these op cases print, independent of whether a
+      write-back exists — safe for pure `intent(in)` values, and a no-op on first entry so it
+      doesn't change behavior for the ordinary, non-looped case either. Confirmed via the real
+      `Makefile` path: every conversion temp in `var_compatibility_suite_suite_radiation`
+      (`effrr_in_unit_conv`, `effrr_in_vert_flip`, `effrs_inout_kind_cast`, etc.) now has a guard
+      immediately before its `allocate`. Generator-wide fix, not var_compat-specific:
+      `examples/helloworld`'s own `ccpp_t` variant golden also legitimately changed (same guard,
+      same reason) and was regenerated; no other example was affected. Full suite 498 passed, 1
+      pre-existing xfail; ruff unchanged (3 pre-existing errors in `print_ftn.py`, none new).
+      Direct regression coverage (sabotage-verified, covering three of the four affected op
+      cases — `CCPPRowMajorConvertOp` shares the identical one-line fix in the same printer
+      function but isn't separately fixtured, lower marginal risk) in
+      `tests/unit/test_print_ftn_conversion_temp_dealloc.py`.
+
       **Still open:** whether `make check` reports PASS is still unconfirmed — the col_start/
       col_end chunking-correctness question above remains untested, and further real-execution
-      bugs of this same general shape (a code path lifecycle_cap.py/run_dispatch.py/ccpp_cap.py
-      never previously exercised together with DDT-member resolution) may yet surface, matching
-      this project's own established pattern of one new gap per actual build-and-run attempt.
+      bugs of this same general shape may yet surface, matching this project's own established
+      pattern of one new gap per actual build-and-run attempt.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema
