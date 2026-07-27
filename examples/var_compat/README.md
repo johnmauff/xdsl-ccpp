@@ -247,6 +247,63 @@ more known issues:
   keyword-call symptoms independently) and `ccpp_cap_refactor_plan.md`'s
   backlog for the full writeup.
 
+- **Milestone: `examples/var_compat` builds and runs with `ifx` for the
+  first time** — the fix above closed the last real compile blocker. The
+  actual run then hit a real *runtime* mismatch (`test_host.F90`'s own
+  `check_suite()` compares `ccpp_physics_suite_variables`'s output against
+  hardcoded expected counts):
+  ```
+  ERROR: Found 16 input variable names for suite, var_compatibility_suite, should be 18
+  ERROR: Found 15 output variable names for suite, var_compatibility_suite, should be 14
+  ERROR: Found 21 required variable names for suite, var_compatibility_suite, should be 22
+  ```
+  **Fixed — three independent gaps in `ccpp_cap.py`'s `_build_suite_variables_fn`,**
+  none previously exercised by any other example:
+  1. **Spurious extra output.** `effr_calc`'s `ncl_out`
+     (`cloud_liquid_number_concentration`) is `optional`, `intent = out`,
+     and no host `.meta` anywhere declares a match for it — it resolves to
+     a throwaway cap-owned scratch variable (`lc_ncl_out`) that never
+     reaches the host in either direction, but was being listed as a real
+     output anyway (declared intent alone drove the old logic). Fixed by
+     excluding an *optional*, unmatched, `CapScratch`-classified arg whose
+     standard_name isn't a recognized framework array (`ccpp_constituents`
+     and friends still correctly appear) — **and** only when host files were
+     actually supplied to this run in the first place (a scheme-only
+     FileCheck invocation with no `--host-files` at all makes *every*
+     scheme var look unmatched, which isn't the same fact) — **and** only
+     for genuinely-optional args (a *mandatory* unmatched `CapScratch` arg,
+     like `examples/advection`'s own `tendency_of_cloud_liquid_dry_mixing_ratio`,
+     represents a real suite requirement, not something silently absent).
+  2. **Two missing inputs.** `num_subcycles_for_effr` is a suite-level
+     dynamic subcycle loop count synthesized directly by `suite_cap.py`'s
+     `_synthesize_dynamic_loop_count_args` — it never becomes a real
+     scheme-table `ArgumentOp` anywhere, so the scheme-table scan had
+     nothing to discover. Fixed by scanning the suite's own subcycle
+     structure directly for non-literal loop counts.
+  3. **The other missing input.** `flag_indicating_cloud_microphysics_has_ice`
+     is referenced only inside `test_host_data.meta`'s own `active =
+     (flag_indicating_cloud_microphysics_has_ice)` conditional-presence
+     expressions on the `effri`/`nci` DDT members — never itself a scheme
+     argument. `active` is a real `ArgumentOp` property but no pass
+     currently evaluates it as a conditional (see the "opt_arg's dead
+     `active` property" backlog item); the flag it names is still a
+     genuine host requirement regardless. Fixed by scanning every
+     `active =` expression module-wide for referenced standard_names —
+     scoped to modules with exactly one suite (`examples/capgen` generates
+     two suites from one invocation sharing a host file with this same
+     `active =` pattern; without the single-suite scope, the referenced
+     name leaked into both suites' lists even though only one actually
+     uses it).
+
+  All three confirmed via the real `Makefile` path: `ccpp_physics_suite_variables`
+  now reports exactly 18 input / 14 output / 22 required variables, matching
+  `test_var_compat_host_integration.F90`'s hardcoded expected lists exactly
+  (content, not just counts). See `tests/unit/test_suite_variables_gaps.py`
+  for direct regression coverage (sabotage-verified against all three fixes
+  independently, plus the guard tests for the two false-positive traps found
+  along the way) and `ccpp_cap_refactor_plan.md`'s backlog for the full
+  writeup.
+
 - **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
   "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`
   and `ccpp_scheme_utils`.** Not an `xdsl_ccpp` code gap: every generated
@@ -449,19 +506,24 @@ more known issues:
 
 ```
 make caps   # generate the suite/ccpp/kinds caps
-make run    # build and run -- no known xdsl_ccpp cap-generation compile
-            # blockers remain as of this writing (see the bullets above);
-            # test_host_ccpp_physics_run's generated signature now matches
-            # test_host.F90's hand-written call exactly (suite_name,
-            # suite_part, col_start, col_end, errmsg, errflg). Actually
-            # tried with ifx: hit a real _out_N/ccpp_tmp_N arity-mismatch
-            # bug (see the "real ifx compile failure" bullet above), now
-            # fixed; a full successful ifx/gfortran build has not yet been
+make run    # build and run -- actually built successfully with ifx for the
+            # first time after the "real ifx compile failure" fix above (no
+            # remaining known xdsl_ccpp compile blockers as of this
+            # writing). The resulting executable then ran and hit a real
+            # *runtime* variable-count mismatch (see the "milestone" bullet
+            # above), now also fixed and confirmed matching exactly via the
+            # real Makefile path. A full `make check` PASS has not yet been
             # independently reconfirmed in this environment (no Fortran
-            # compiler available here). col_start/col_end are accepted but
-            # unused (this example's schemes don't chunk by column -- see
-            # the col_start/col_end bullet above for why the driver's
+            # compiler available here) -- and one open, unverified question
+            # remains even if it compiles and the variable-count check now
+            # passes: col_start/col_end are accepted but unused (this
+            # example's schemes don't chunk by column), so test_host.F90's
             # 5-column chunking loop would still redundantly re-run the
-            # suite and over-increment effrs_inout if actually executed)
+            # suite once per chunk, and effrs_inout's real accumulation
+            # (`effrs_inout = effrs_inout + (10.0 / 6.0)` in effr_calc.F90)
+            # would over-increment as a result -- see the col_start/col_end
+            # bullet above for the full detail. Whether this actually
+            # causes make check to report FAIL rather than PASS has not
+            # been confirmed either way.
 make check  # build, run, and verify pass/fail
 ```

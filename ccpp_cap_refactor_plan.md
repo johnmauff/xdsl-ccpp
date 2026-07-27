@@ -2695,6 +2695,93 @@ dependency is noted.
       FileCheck goldens regenerated and passing; full suite 487 passed, 1 pre-existing xfail.
       Direct regression coverage (sabotage-verified against both the positional- and
       keyword-call symptoms independently) in `tests/unit/test_run_dispatch_kw_call_result_names.py`.
+    - **Milestone: `examples/var_compat` builds and runs with `ifx` for the first time**,
+      confirmed by the project owner — the fix above closed the last known compile blocker.
+      The actual run then hit a real *runtime* mismatch: `test_host.F90`'s own `check_suite()`
+      compares `ccpp_physics_suite_variables`'s reported input/output/required variable counts
+      against hardcoded expected values (18/14/22) and got 16/15/21.
+
+      **Fixed — three independent gaps in `ccpp_cap.py`'s `_build_suite_variables_fn`, none
+      previously exercised by any other example (all three walk raw scheme/host `ArgumentOp`s
+      directly, a separate code path from every fix above):**
+      1. *Spurious extra output.* `effr_calc`'s `ncl_out` (`cloud_liquid_number_concentration`)
+         is `optional`, `intent = out`, and no host `.meta` anywhere declares a match for it —
+         it resolves to a throwaway cap-owned scratch variable (`lc_ncl_out`, `ArgOwnershipKind.
+         CapScratch`) that never reaches the host in either direction, but was being listed as a
+         real output regardless (declared intent alone drove the old logic, with no check
+         against `ownership_kind` at all).
+
+         **Fixed** by excluding an *optional*, unmatched, `CapScratch`-classified arg whose
+         standard_name isn't a recognized framework array (`FRAMEWORK_STD_NAME_TO_CAP_VAR` —
+         `ccpp_constituents` and friends still correctly appear, matching this function's own
+         pre-existing `_INTERNAL` comment that they must). Two additional guards were needed,
+         found via real regressions in the full repo test suite, not anticipated up front:
+         - `host_std_names` must be non-empty and missing this std_name: `CapScratch` alone
+           isn't enough to conclude "no host ever declares this" — a FileCheck-only invocation
+           with no `--host-files` at all (`tests/filecheck/examples/end_to_end/
+           helloworld-xml.mlir`, which deliberately omits it to exercise the scheme-only
+           frontend path) makes *every* scheme var `CapScratch` regardless of whether a real
+           host would match it — confirmed via helloworld's own `hello_world_mod.meta`, which
+           genuinely does declare `potential_temperature`; only that specific host-less
+           invocation makes it look unmatched.
+         - The arg must be `optional`: `examples/advection`'s own end-to-end FileCheck golden
+           runs a deliberately reduced pass list with no `generate-host-match` at all (confirmed
+           via its own `// RUN:` line — matching `DEVELOPERS.md`'s own caveat that these
+           manually-composed pass lists aren't a stand-in for the real driver pipeline), so
+           `ownership_kind` alone is unreliable there: `tcld` (`minimum_temperature_for_cloud_
+           liquid`, a genuine intra-suite interstitial the real pipeline's `generate-host-match`
+           would mark `is_interstitial` and exclude via `interstitial_std_names` instead) and
+           `cld_liq_tend` (`tendency_of_cloud_liquid_dry_mixing_ratio`, `constituent = True`,
+           `_build_cap_var_map`'s own docstring names this as an intentional `CapScratch`
+           example that must still appear here) both come out `CapScratch`-and-unmatched in that
+           reduced pipeline, but neither is declared optional — unlike `ncl_out`, which is. A
+           mandatory unmatched arg means the suite genuinely needs it; only an optional one can
+           be silently absent, which is what makes exclusion safe for that case and not this one.
+      2. *Two missing inputs, part one.* `num_subcycles_for_effr` is a suite-level dynamic
+         subcycle loop count synthesized directly by `suite_cap.py`'s
+         `_synthesize_dynamic_loop_count_args` — it never becomes a real scheme-table
+         `ArgumentOp` anywhere (the synthesis only ever mutates that function's own in-memory
+         `all_args` dict), so the scheme-table scan had nothing to discover.
+
+         **Fixed** by a new pass scanning the suite's own subcycle structure directly (the same
+         `XMLSubcycle` nodes `suite_descriptions` already exposes) for non-literal loop counts,
+         adding their standard_name to `input_vars` regardless of whether any scheme declares it.
+      3. *Two missing inputs, part two.* `flag_indicating_cloud_microphysics_has_ice` is
+         referenced only inside `test_host_data.meta`'s own `active =
+         (flag_indicating_cloud_microphysics_has_ice)` conditional-presence expressions on the
+         `effri`/`nci` DDT members — never itself a scheme argument anywhere. `active` is a real
+         `ArgumentOp` property (`ccpp.py`) but no pass currently evaluates it as a conditional
+         (see this same backlog's "opt_arg's dead `active` property" item) — the flag it names is
+         still a genuine host requirement regardless.
+
+         **Fixed** by scanning every `active =` expression's referenced identifiers (via a
+         small regex, excluding Fortran logical-expression keywords) module-wide. Deliberately
+         scoped to modules with exactly one suite: this scan isn't filtered to "tables this
+         suite's own schemes actually match", which is only safe with one suite to attribute the
+         match to — confirmed via `examples/capgen` (the one example generating two suites,
+         `ddt_suite` and `temp_suite`, from a single invocation sharing one `host_ftn/
+         test_host_data.meta`, which has this exact same `active = (index_of_water_vapor_
+         specific_humidity > 0)` pattern): without the single-suite guard, that referenced name
+         leaked into both suites' lists, even though nothing in `temp_suite`'s own schemes ever
+         references it. `examples/ddthost` hits the identical `active =` pattern in its own,
+         single-suite `host_ftn/test_host_data.meta` — a genuine, additional correct inclusion
+         confirmed via its own FileCheck goldens (regenerated, not previously exercising this
+         path either).
+
+      All three confirmed via the real `Makefile` path: `ccpp_physics_suite_variables` now
+      reports exactly 18 input / 14 output / 22 required variables, matching
+      `test_var_compat_host_integration.F90`'s hardcoded expected lists exactly (content, not
+      just counts, verified by direct comparison). Full suite 493 passed, 1 pre-existing xfail;
+      var_compat's two goldens plus ddthost's two goldens (a genuine additional fix, not a
+      regression) regenerated and passing. Direct regression coverage (sabotage-verified against
+      all three fixes independently, plus guard tests for the two false-positive traps found
+      along the way) in `tests/unit/test_suite_variables_gaps.py`.
+
+      **Still open, unverified:** whether `make check` actually reports PASS given the separate,
+      already-documented `col_start`/`col_end` unused-but-driver-chunks issue above (the driver's
+      5-column chunking loop would redundantly re-run the suite and over-increment
+      `effrs_inout`'s real accumulation in `effr_calc.F90`) — no Fortran compiler available in
+      this environment to confirm either way.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

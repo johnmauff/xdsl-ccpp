@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 from xdsl.context import Context
@@ -47,6 +48,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
     BuildSchemeDescription,
     CCPPType,
+    XMLSubcycle,
     collect_ddt_source_modules,
 )
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
@@ -447,6 +449,73 @@ class CCPPCAP(ModulePass):
                         if std_name in _INTERNAL:
                             continue
 
+                        # An OPTIONAL CapScratch arg with no host match at all
+                        # and no recognized framework meaning (e.g.
+                        # var_compat's ncl_out/cloud_liquid_number_concentration
+                        # -- an optional intent=out array no host .meta
+                        # declares, resolved to a throwaway cap-owned scratch
+                        # variable) never actually reaches the host in either
+                        # direction, so it must not appear in the suite's
+                        # variable list at all. Recognized framework arrays
+                        # (ccpp_constituents, ccpp_constituent_tendencies --
+                        # also CapScratch, since no host ever declares them
+                        # either) are real physics arrays and must still
+                        # appear, so only exclude when std_name isn't one of
+                        # those known names.
+                        #
+                        # Require "optional" specifically (not just
+                        # CapScratch + unmatched): examples/advection's own
+                        # end-to-end FileCheck golden runs a deliberately
+                        # reduced pass list with no generate-host-match at
+                        # all (see DEVELOPERS.md's own caveat that these
+                        # manually-composed pass lists aren't a stand-in for
+                        # the real driver pipeline), so ownership_kind alone
+                        # is unreliable there -- e.g. cld_liq's tcld
+                        # (minimum_temperature_for_cloud_liquid, a genuine
+                        # intra-suite interstitial the real pipeline's
+                        # generate-host-match would mark and exclude via
+                        # interstitial_std_names instead) and cld_liq_tend
+                        # (tendency_of_cloud_liquid_dry_mixing_ratio,
+                        # constituent=True, _build_cap_var_map's own
+                        # docstring names this as an intentional CapScratch
+                        # example that must still appear here) both come out
+                        # CapScratch-and-unmatched in that reduced pipeline,
+                        # but neither is declared optional -- unlike
+                        # var_compat's ncl_out, which is. A mandatory
+                        # unmatched arg means the suite genuinely needs it
+                        # (interstitial, constituent, or otherwise); only an
+                        # optional one can be silently absent, which is
+                        # exactly what makes it safe to omit from this list.
+                        #
+                        # Also require host_std_names to be non-empty AND
+                        # missing this std_name -- e.g. a FileCheck-only
+                        # invocation with no --host-files at all (see
+                        # tests/filecheck/examples/end_to_end/
+                        # helloworld-xml.mlir, which deliberately omits
+                        # --host-files to exercise the scheme-only frontend
+                        # path) makes EVERY scheme var CapScratch regardless
+                        # of whether a real host would match it -- confirmed
+                        # via helloworld's own hello_world_mod.meta, which
+                        # genuinely does declare potential_temperature; only
+                        # this specific host-less invocation makes it look
+                        # unmatched. host_std_names (built from every
+                        # non-scheme table actually present in the module)
+                        # is empty in exactly that scenario, so guarding on
+                        # it non-empty distinguishes "no host files supplied
+                        # to this run" from "host files supplied, and this
+                        # var genuinely isn't in any of them" (var_compat's
+                        # real case).
+                        ownership_prop = arg_op.properties.get("ownership_kind")
+                        if (
+                            ownership_prop is not None
+                            and ownership_prop.data == ccpp.ArgOwnershipKind.CapScratch
+                            and std_name not in FRAMEWORK_STD_NAME_TO_CAP_VAR
+                            and arg_op.properties.get("optional") is not None
+                            and host_std_names
+                            and std_name not in host_std_names
+                        ):
+                            continue
+
                         # Variables with a default_value that are not matched to a
                         # host variable AND are not advected constituents are managed
                         # internally by the cap and must not appear in the variable list.
@@ -497,6 +566,78 @@ class CCPPCAP(ModulePass):
                                 input_vars.add(std_name)
                             if intent in ("out", "inout"):
                                 output_vars.add(std_name)
+
+            # Pass 2b: add dynamic (non-literal) subcycle loop-count standard
+            # names (e.g. var_compat's num_subcycles_for_effr). These are
+            # suite-level values synthesized directly by suite_cap.py's
+            # _synthesize_dynamic_loop_count_args -- they never become a real
+            # scheme-table ArgumentOp anywhere (the synthesis only ever
+            # mutates suite_cap.py's own in-memory all_args dict, feeding
+            # that suite's generated subroutine signature), so Pass 2's
+            # scheme-table scan above can never discover them on its own.
+            # A host must genuinely supply this value regardless, so it
+            # belongs in the suite's own input/required variable list too.
+            def _collect_dynamic_subcycle_std_names(nodes) -> set:
+                names: set = set()
+                for child in nodes:
+                    if isinstance(child, XMLSubcycle):
+                        if not child.attributes["is_literal"]:
+                            names.add(child.attributes["loop_count"].lower())
+                        names |= _collect_dynamic_subcycle_std_names(child)
+                return names
+
+            for group in suite_desc:
+                for dyn_std_name in _collect_dynamic_subcycle_std_names(group):
+                    if dyn_std_name not in _INTERNAL and dyn_std_name not in _CCPP_ERR:
+                        input_vars.add(dyn_std_name)
+
+            # Pass 2c: add standard_names referenced only inside an `active =
+            # (...)` conditional-presence expression on a HOST/MODULE/DDT
+            # variable (e.g. var_compat's test_host_data.meta declaring
+            # `active = (flag_indicating_cloud_microphysics_has_ice)` on the
+            # `effri`/`nci` DDT members). `active` is a real ArgumentOp
+            # property (ccpp.py) but no pass currently evaluates it as a
+            # conditional (see ccpp_cap_refactor_plan.md's "opt_arg's dead
+            # active property" backlog item) -- the flag it names is still a
+            # genuine value the host must supply, though, so it must appear
+            # in the suite's variable list even though it's never itself a
+            # scheme argument anywhere.
+            #
+            # Only scoped to modules with exactly one suite: this scan is
+            # host-metadata-wide (not filtered to tables this suite's own
+            # schemes actually match), which is only safe when there's just
+            # one suite in the module to attribute the match to. Confirmed
+            # via examples/capgen (the one example that generates two suites,
+            # ddt_suite and temp_suite, from a single invocation sharing one
+            # host_ftn/test_host_data.meta): that host file's own `active =
+            # (index_of_water_vapor_specific_humidity > 0)` was incorrectly
+            # attributed to BOTH suites without this guard, even though
+            # nothing in temp_suite's own schemes ever references it.
+            # Properly scoping this to "tables the current suite's schemes
+            # actually match" would need a much larger cross-reference than
+            # this fix is scoped to justify -- skipping multi-suite modules
+            # entirely is the safe, conservative choice instead.
+            _ACTIVE_EXPR_KEYWORDS = frozenset({
+                "and", "or", "not", "eqv", "neqv", "true", "false",
+            })
+            for tbl_op in (ccpp_mod.body.ops if len(suite_descriptions) == 1 else ()):
+                if not isa(tbl_op, ccpp.TablePropertiesOp):
+                    continue
+                for arg_table_op in tbl_op.body.ops:
+                    if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                        continue
+                    for arg_op in arg_table_op.body.ops:
+                        if not isa(arg_op, ccpp.ArgumentOp):
+                            continue
+                        active_prop = arg_op.properties.get("active")
+                        if active_prop is None:
+                            continue
+                        for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", active_prop.data):
+                            tok_lower = tok.lower()
+                            if (tok_lower not in _ACTIVE_EXPR_KEYWORDS
+                                    and tok_lower not in _INTERNAL
+                                    and tok_lower not in _CCPP_ERR):
+                                input_vars.add(tok_lower)
 
             # Pass 3: add dimension standard names not already covered.
             # Picks up vars like number_of_ccpp_constituents that appear only as
