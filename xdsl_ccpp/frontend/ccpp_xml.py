@@ -308,7 +308,7 @@ def parse_meta_file(filename, is_scheme):
         table_arg_tables = []
 
     with open(filename) as file:
-        for line in file:
+        for line_no, line in enumerate(file, start=1):
             sline = line.strip()
 
             if not sline or sline.startswith("#"):
@@ -341,10 +341,27 @@ def parse_meta_file(filename, is_scheme):
                     # ("[name]", capgen-v1's own upstream convention, e.g.
                     # var_compat's effr_calc.meta). .strip() normalizes both
                     # to the same bare name either way.
+                    #
+                    # Two things a malformed file could do wrong here, both
+                    # validated explicitly rather than left to crash
+                    # confusingly later (a stray argument bracket goes
+                    # unnoticed until the *next* bracket tries to attach it to
+                    # a still-nonexistent table; an empty name would silently
+                    # propagate as a nameless argument):
+                    if current_arg_table is None:
+                        raise ValueError(
+                            f"{filename}:{line_no}: argument '{token.strip()}' "
+                            "declared before any [ccpp-arg-table] header"
+                        )
+                    arg_name = token.strip()
+                    if not arg_name:
+                        raise ValueError(
+                            f"{filename}:{line_no}: empty argument name '[{token}]'"
+                        )
                     if current_arg is not None:
                         current_arg_table.setFunctionArgument(current_arg)
                     parse_state = MetaParseState.ARG
-                    current_arg = CCPPArgument(token.strip())
+                    current_arg = CCPPArgument(arg_name)
             else:
                 assert parse_state != MetaParseState.NONE
                 for part in sline.split("|"):

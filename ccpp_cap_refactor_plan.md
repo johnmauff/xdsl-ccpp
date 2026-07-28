@@ -3185,6 +3185,21 @@ dependency is noted.
   `examples/var_compat/README.md`'s "Adaptations made during porting"
   section) — it only means a *future* port can skip that normalization step.
 
+  **Follow-up (found by Copilot's review of that fix, PR #46):** turning the old space-heuristic
+  `elif`/`else` pair into a single unconditional `else` also removed the only remaining
+  validation in that branch, exposing two malformed-input cases to a confusing crash instead of a
+  clear error. An argument-shaped bracket appearing before any `[ccpp-arg-table]` header
+  (`current_arg_table` still `None`) didn't fail immediately — the crash only surfaced the *next*
+  time a bracket was seen, when the pending argument was attached to a still-nonexistent table
+  (`AttributeError: 'NoneType' object has no attribute 'setFunctionArgument'`), far from the line
+  with the actual mistake. And an empty or whitespace-only bracket (`[]`) silently became an
+  argument with an empty name instead of being rejected. **Fixed** by validating both explicitly
+  (with `ValueError`s naming the file and line number, right at the point the raw `.meta` text is
+  parsed — a system boundary), plus tracking line numbers via `enumerate` for the error messages.
+  Direct regression coverage (sabotage-verified, both cases) added to the same
+  `tests/unit/test_meta_parser_bracket_spacing.py`. Full unit + FileCheck suites re-run clean (514
+  passed, same 1 pre-existing xfail and 1 pre-existing unrelated failure as before).
+
 - **Fixed — three more of the same class of bug, found by auditing the frontend parser for
   other whitespace-has-a-particular-meaning spots after the bracket-spacing fix above
   (2026-07-27).** Same shape each time: user-authored text taken at face value without
