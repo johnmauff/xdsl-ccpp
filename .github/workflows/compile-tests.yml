@@ -13,6 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         example:
+          - nested_suite
           - var_compat
           - advection
           - advection_flat_host
