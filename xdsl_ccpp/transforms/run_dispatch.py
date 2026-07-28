@@ -48,6 +48,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
     _collect_host_block_std_names,
+    _get_suite_leading_inout_ret_info,
     _get_suite_lifecycle_ret_info,
     _rank_of,
     _resolve_ddt_access_path,
@@ -196,21 +197,33 @@ def _build_per_suite_run_info(
                 ):
                     std_name_of[fn_arg.name] = fn_arg.getAttr("standard_name").lower()
 
-        # Also check HOST and MODULE tables for suite-level args (like col_start/
-        # col_end) that don't appear directly in any scheme _run table but are
-        # part of the suite cap's signature for loop bounds / array sectioning.
+        # Also check HOST, MODULE, and DDT tables for suite-level args (like
+        # col_start/col_end, or a dynamic subcycle loop count synthesized by
+        # suite_cap.py's _synthesize_dynamic_loop_count_args) that don't
+        # appear directly in any scheme _run table but are part of the suite
+        # cap's signature for loop bounds / array sectioning. DDT tables are
+        # included because such a synthesized arg's host-side local name may
+        # only exist as a member of a module-level DDT instance (e.g.
+        # var_compat's num_subcycles, a member of the physics_state DDT) --
+        # scoping this to HOST/MODULE alone would silently miss it and its
+        # standard_name would never be recorded here.
+        _ddt_table_matches: dict = {}
         for callee_arg in callee_input_names:
             if _bare(callee_arg) in std_name_of:
                 continue
             bare = _bare(callee_arg)
             for tbl_name, props in meta_data.items():
-                if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
+                if props.getAttr("type") not in (
+                    CCPPType.HOST, CCPPType.MODULE, CCPPType.DDT,
+                ):
                     continue
                 if tbl_name not in props.arg_tables:
                     continue
                 for var in props.getArgTable(tbl_name).getFunctionArguments():
                     if var.name == bare and var.hasAttr("standard_name"):
                         std_name_of[bare] = var.getAttr("standard_name").lower()
+                        if props.getAttr("type") == CCPPType.DDT:
+                            _ddt_table_matches[bare] = (var.name, tbl_name)
                         break
 
         # Build local_name → (host_var, host_module, is_ddt) from the match pass
@@ -219,7 +232,20 @@ def _build_per_suite_run_info(
         # and stored them as properties on the IR ops; BuildMetaDataDescriptions
         # copies those into the CCPPArgument descriptors via known_props.
         # Using this avoids re-deriving the same information from raw metadata.
-        local_to_host_info: dict = {}
+        # First collect every host-matched fn_arg's info grouped by its own
+        # bare local name, deduplicated by standard_name (matching how
+        # suite_cap.py's _build_arg_tables builds all_args -- one entry per
+        # distinct std_key, first-seen wins across schemes that redeclare the
+        # same standard_name). A bare name whose group still has more than
+        # one *distinct-standard_name* entry after that dedup is exactly the
+        # case suite_cap.py's _build_block_signature (_hint_for) detects as
+        # a collision and renames every one of, so it needs different
+        # handling below than the (common) single-owner case. Without this
+        # dedup step, several schemes independently declaring the same local
+        # name for the *same* standard_name (e.g. every scheme's own "ncol")
+        # would be miscounted as a collision, even though suite_cap.py only
+        # ever sees one such entry per std_key.
+        _by_bare_name: dict = {}
         for scheme_name in scheme_names:
             table_name = scheme_name + "_run"
             if scheme_name not in meta_data:
@@ -231,15 +257,53 @@ def _build_per_suite_run_info(
                 .getArgTable(table_name)
                 .getFunctionArguments()
             ):
-                bare_name = _bare(fn_arg.name)
-                if bare_name not in local_to_host_info and fn_arg.hasAttr(
-                    "model_var_name"
-                ):
-                    local_to_host_info[bare_name] = (
-                        fn_arg.getAttr("model_var_name"),
-                        fn_arg.getAttr("model_module_name"),
-                        fn_arg.hasAttr("model_var_is_ddt"),
-                    )
+                if not fn_arg.hasAttr("model_var_name"):
+                    continue
+                host_info = (
+                    fn_arg.getAttr("model_var_name"),
+                    fn_arg.getAttr("model_module_name"),
+                    fn_arg.hasAttr("model_var_is_ddt"),
+                )
+                std_key = (
+                    fn_arg.getAttr("standard_name").lower()
+                    if fn_arg.hasAttr("standard_name")
+                    else fn_arg.name
+                )
+                group = _by_bare_name.setdefault(_bare(fn_arg.name), {})
+                if std_key not in group:
+                    group[std_key] = host_info
+
+        local_to_host_info: dict = {}
+        for bare_name, std_key_group in _by_bare_name.items():
+            host_infos = list(std_key_group.values())
+            if len(host_infos) == 1:
+                # No local-name collision for this bare name within the
+                # current scheme group -- suite_cap.py prints this dummy
+                # argument under its own original (unrenamed) name, so the
+                # bare local name is the correct lookup key.
+                local_to_host_info[bare_name] = host_infos[0]
+            else:
+                # Two or more schemes reused the same local argument name for
+                # genuinely different standard_names (a real collision).
+                # suite_cap.py renames every one of them to its own
+                # model_var_name instead (_hint_for's fallback), so the bare
+                # local name is no longer a meaningful key for any of them --
+                # index each sibling by its own host-matched canonical name,
+                # which is what actually appears in the printed suite-callee
+                # signature for that sibling.
+                for host_info in host_infos:
+                    local_to_host_info[host_info[0]] = host_info
+
+        # Fold in DDT-table matches found above for callee args with no
+        # scheme-declared arg at all (e.g. a synthesized dynamic subcycle
+        # loop count) -- these never go through the scheme-arg loop above,
+        # so they need their own local_to_host_info entry to be resolved via
+        # the DDT-member path below rather than falling back to a plain
+        # caller-block argument. Only fills in bare names not already
+        # resolved from an actual scheme arg.
+        for bare_name, (member_name, ddt_type_name) in _ddt_table_matches.items():
+            if bare_name not in local_to_host_info:
+                local_to_host_info[bare_name] = (member_name, ddt_type_name, True)
 
         # Build bare_name → (dim_std_names, intent) for rank≥2 row_major args.
         # These will be transposed via RowMajorConvertOp in the dispatch chain.
@@ -483,6 +547,53 @@ def _build_run_block_signature(
             if k != ccpp_t_var_name
         }
 
+    # A CCPP Fortran host always calls ccpp_physics_run with col_start/col_end
+    # (see every example's own driver), regardless of whether any scheme in
+    # the suite actually declares horizontal_loop_extent. suite_cap.py only
+    # ever synthesizes a col_start/col_end parameter on a suite callee when
+    # some scheme pulls it in via horizontal_loop_extent (_classify_args's
+    # ncol-replacement) -- when no scheme does that (e.g. a suite whose
+    # schemes are all dimensioned by the full horizontal_dimension, not
+    # chunked), the per-suite classification above has nothing to discover,
+    # and union_non_host_args never gets a col_start/col_end entry at all.
+    # Accept them here unconditionally whenever the host itself declares
+    # horizontal_loop_begin/horizontal_loop_end (every example's host
+    # metadata does) and no suite here already supplied one under a
+    # different local name -- unused inside this wrapper is fine (every
+    # Makefile in this repo already builds with -Wno-unused-dummy-argument
+    # for exactly this class of argument).
+    if (
+        ccpp_info_type is None
+        and CCPP_LOOP_BEGIN_STD_NAME not in seen_non_host_std_names
+        and CCPP_LOOP_END_STD_NAME not in seen_non_host_std_names
+    ):
+        _all_host_vars = _build_host_var_map(meta_data, include_host=True)
+        _col_start_host = _all_host_vars.get(CCPP_LOOP_BEGIN_STD_NAME)
+        _col_end_host = _all_host_vars.get(CCPP_LOOP_END_STD_NAME)
+        if _col_start_host is not None and _col_end_host is not None:
+            _col_int_type = memref.MemRefType(int_base, [])
+            union_non_host_args = {
+                _col_start_host[0]: _col_int_type,
+                _col_end_host[0]: _col_int_type,
+                **union_non_host_args,
+            }
+            # Register the canonical std_name -> local-name mapping too, not
+            # just the block-arg types above -- _build_run_dispatch_chain's
+            # ArraySectionOp slicing (and the horizontal_dimension scalar
+            # recompute) look these up via non_host_std_to_canonical, not
+            # union_non_host_args. Without this, col_start/col_end reach the
+            # wrapper's own signature but never get threaded into the actual
+            # suite-part call, so host arrays are passed whole and unsliced.
+            # setdefault: never override an entry a scheme's own
+            # horizontal_loop_extent already supplied for this or another
+            # suite in the same build.
+            non_host_std_to_canonical.setdefault(
+                CCPP_LOOP_BEGIN_STD_NAME, _col_start_host[0]
+            )
+            non_host_std_to_canonical.setdefault(
+                CCPP_LOOP_END_STD_NAME, _col_end_host[0]
+            )
+
     n_non_host = len(union_non_host_args)
 
     if ccpp_info_type is not None:
@@ -671,13 +782,23 @@ def _build_run_dispatch_chain(
 
     seen_host_globals is mutated in place (shared deduplication set).
 
-    Returns (main_chain_ops, decls, chain_global_ops):
+    Returns (main_chain_ops, decls, chain_global_ops, wrapper_inout_echo_args):
       - main_chain_ops: inner ops for the main block (excluding trailing YieldOp)
       - decls: external FuncOp declarations for every suite callee
       - chain_global_ops: GlobalOp USE stubs emitted during chain construction
+      - wrapper_inout_echo_args: block args (already part of new_block's own
+        args) that some suite callee declares intent(inout) for an ordinary
+        scheme-declared scalar with no dedicated framework meaning -- must
+        also appear in the wrapper's own ReturnOp so the printer declares
+        them intent(inout) at the wrapper level too, matching the callee.
+        Deduplicated by identity across every suite/suite-part processed
+        here, since the same host-caller block arg can be echoed by more
+        than one suite part.
     """
     decls = []
     chain_global_ops = []
+    wrapper_inout_echo_args: list = []
+    _wrapper_inout_echo_seen: set = set()
 
     for suite_name, suite_infos in reversed(list(per_suite_grouped.items())):
         # trim_suite_part is created once and shared across all parts of this suite.
@@ -740,10 +861,51 @@ def _build_run_dispatch_chain(
                 op = resolved_arg_ops[i]
                 if op.source_kind.data == ArgSourceKind.Host:
                     host_var_name, host_module_name = op.var_name.data, op.module_name.data
-                    ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
-                    host_var_ref_ops.append(ref_op)
-                    host_var_ref_results[arg_name] = ref_op.res
-                    host_name_to_ref_result[host_var_name] = ref_op.res
+                    _col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                    _col_end_key = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                    if (
+                        std_name_of.get(_bare(arg_name)) == CCPP_HORIZ_DIM_STD_NAME
+                        and _rank_of(arg_type) == 0
+                        and _col_begin_key is not None
+                        and _col_end_key is not None
+                        and _col_begin_key in block_arg_map
+                        and _col_end_key in block_arg_map
+                    ):
+                        # This scalar means "how many columns in THIS call"
+                        # (capgen-v1's own ncol=(col_end - col_start + 1)),
+                        # not the host's total column count -- the ArraySectionOp
+                        # block below slices this call's array args down to
+                        # col_start:col_end, so the scheme must be told the
+                        # matching (possibly smaller) chunk width, not ncols.
+                        # Mirrors suite_cap.py's _build_ncol_compute_ops (same
+                        # alloc/load/sub/add-one/store op sequence), just built
+                        # against block_arg_map's plain block-argument memrefs
+                        # instead of that method's own data_ops dict.
+                        _ncol_alloc = memref.AllocaOp.get(
+                            TypeConversions.getBaseType("integer"), shape=[]
+                        )
+                        _ncol_alloc.memref.name_hint = _bare(arg_name)
+                        _load_col_start = memref.LoadOp.get(
+                            block_arg_map[_col_begin_key], []
+                        )
+                        _load_col_end = memref.LoadOp.get(
+                            block_arg_map[_col_end_key], []
+                        )
+                        sub_op = arith.SubiOp(_load_col_end, _load_col_start)
+                        one_const = arith.ConstantOp.from_int_and_width(1, 32)
+                        add_op = arith.AddiOp(sub_op, one_const)
+                        store_op = memref.StoreOp.get(add_op, _ncol_alloc, [])
+                        host_var_ref_ops.extend([
+                            _ncol_alloc, _load_col_start, _load_col_end,
+                            sub_op, one_const, add_op, store_op,
+                        ])
+                        host_var_ref_results[arg_name] = _ncol_alloc.memref
+                        host_name_to_ref_result[host_var_name] = _ncol_alloc.memref
+                    else:
+                        ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
+                        host_var_ref_ops.append(ref_op)
+                        host_var_ref_results[arg_name] = ref_op.res
+                        host_name_to_ref_result[host_var_name] = ref_op.res
                 elif op.source_kind.data == ArgSourceKind.DdtMember:
                     instance_var, instance_module, member_name = (
                         op.var_name.data, op.module_name.data, op.member_path.data
@@ -916,7 +1078,13 @@ def _build_run_dispatch_chain(
                     lowers.append(one_const_for_sections.result)
                     uppers.append(dim_upper_ref)
 
-                if not valid or len(lowers) < 2:
+                # lowers/uppers always has >= 1 entry (the horizontal_dimension
+                # bound seeded above); a genuinely 1-D horizontal-only host
+                # array (e.g. var_compat's fluxLW, sfc_up_sw, sfc_down_sw) has
+                # no further dim_names to append and is still a fully valid
+                # single-dimension ArraySectionOp -- do not require a second
+                # dimension to have been found.
+                if not valid:
                     continue
 
                 section = ArraySectionOp(
@@ -1014,15 +1182,74 @@ def _build_run_dispatch_chain(
             # ── Inner if for suite_part ───────────────────────────────────
             suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
 
+            # Use _get_suite_lifecycle_ret_info to get std_names for alloc returns
+            # (intent=out scalars).  Suite cap returns: inout_vals first, then
+            # alloc_vals.  Compute the offset so alloc positions are matched by
+            # standard_name rather than type, preventing false errflg matches when
+            # another intent=out scalar (e.g. const_index) has the same MLIR type.
+            #
+            # Computed here, before call_op is built, so the keyword-call path
+            # below can look up each output position's REAL callee dummy-argument
+            # name instead of a placeholder (see _result_keyword_name).
+            _run_ret_alloc = _get_suite_lifecycle_ret_info(
+                scheme_names, meta_data, "_run"
+            )
+            _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
+            # Positional info IS available for the rest of the leading region:
+            # an ordinary scheme-declared intent=inout scalar with no
+            # framework meaning of its own (e.g. examples/var_compat's
+            # scalar_var/tke_inout/tke2_inout) occupies the same relative
+            # position here as it does in suite_cap.py's own
+            # inout_return_vals (built from input_arg_list in the callee's
+            # own declared dummy-arg order) -- see
+            # _get_suite_leading_inout_ret_info's own docstring.
+            _leading_inout_ret = _get_suite_leading_inout_ret_info(
+                scheme_names, meta_data, "_run"
+            )
+
+            def _result_keyword_name(idx, ret_type):
+                """The real callee dummy-argument name for output position idx.
+
+                Mirrors the copy-back loop's own idx/type-based classification
+                below exactly (errmsg/errflg by type, ccpp_t by type, then the
+                leading-inout region via _leading_inout_ret, then the trailing
+                alloc region via _run_ret_alloc) so a KeywordCallOp's result
+                name always matches the SAME string already used for that same
+                argument's own operand-side keyword whenever one exists --
+                needed so print_ftn.py's name-based dedup in _print_kw_call
+                recognizes an inout echo and skips re-printing it. The
+                previous code used a synthetic "_out_N" placeholder here,
+                which the callee's own signature never declares -- an
+                invalid-Fortran arity mismatch caught only by a real compiler
+                (ifx), not by FileCheck goldens or gfortran's more permissive
+                diagnostics.
+                """
+                if ret_type == errmsg_type:
+                    return "errmsg"
+                if ret_type == errflg_type:
+                    return "errflg"
+                if idx < _n_inout_ret:
+                    if (
+                        ccpp_t_type is not None
+                        and hasattr(ret_type, "element_type")
+                        and hasattr(ret_type.element_type, "type_name")
+                        and ret_type.element_type.type_name.data == "ccpp_t"
+                    ):
+                        return ccpp_data_block_arg.name_hint
+                    if idx < len(_leading_inout_ret):
+                        return _leading_inout_ret[idx][0]
+                    return f"_out_{idx}"
+                ri_idx = idx - _n_inout_ret
+                if ri_idx < len(_run_ret_alloc):
+                    return _run_ret_alloc[ri_idx][1]
+                return f"_out_{idx}"
+
             # Use keyword-argument call when any suite cap input is optional
             # so that Fortran correctly forwards the OPTIONAL absence status.
             suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
             if suite_has_optional:
-                # Derive result keyword names from output types
                 _result_names = [
-                    "errmsg" if rt == errmsg_type
-                    else "errflg" if rt == errflg_type
-                    else f"_out_{_i}"
+                    _result_keyword_name(_i, rt)
                     for _i, rt in enumerate(callee_output_types)
                 ]
                 call_op = KeywordCallOp(
@@ -1038,16 +1265,6 @@ def _build_run_dispatch_chain(
 
             # CapVarRefOps for inout-echo returns must be placed BEFORE the call
             # so the printer can resolve their names when processing return positions.
-            #
-            # Use _get_suite_lifecycle_ret_info to get std_names for alloc returns
-            # (intent=out scalars).  Suite cap returns: inout_vals first, then
-            # alloc_vals.  Compute the offset so alloc positions are matched by
-            # standard_name rather than type, preventing false errflg matches when
-            # another intent=out scalar (e.g. const_index) has the same MLIR type.
-            _run_ret_alloc = _get_suite_lifecycle_ret_info(
-                scheme_names, meta_data, "_run"
-            )
-            _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
 
             cap_var_inout_refs: list = []
             copy_ops = []
@@ -1068,6 +1285,82 @@ def _build_run_dispatch_chain(
                         # ccpp_t is intent(inout) — mirror back to the block arg
                         # so the printer's inout-echo detection fires.
                         copy_ops.append(memref.CopyOp(result, ccpp_data_block_arg))
+                    elif idx < len(_leading_inout_ret):
+                        # Ordinary scheme-declared inout scalar -- route the
+                        # copy-back the same way the trailing alloc-style
+                        # branch below does, and record the echoed block arg
+                        # (see wrapper_inout_echo_args) so it also appears in
+                        # the wrapper's own ReturnOp -- without that, the
+                        # printer has no way to know this argument needs
+                        # intent(inout) at the wrapper level, and it silently
+                        # stays intent(in) even though the suite callee it's
+                        # passed into declares it intent(inout).
+                        _leading_local_name, _leading_std_name = _leading_inout_ret[idx]
+                        canonical = non_host_std_to_canonical.get(
+                            _leading_std_name, _leading_local_name
+                        ) if _leading_std_name else _leading_local_name
+                        if canonical and canonical in block_arg_map:
+                            target = block_arg_map[canonical]
+                            copy_ops.append(memref.CopyOp(result, target))
+                            if target not in _wrapper_inout_echo_seen:
+                                _wrapper_inout_echo_seen.add(target)
+                                wrapper_inout_echo_args.append(target)
+                        elif _leading_std_name and _leading_std_name in host_var_map:
+                            hv_name, hv_module = host_var_map[_leading_std_name]
+                            hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
+                            cap_var_inout_refs.append(hv_ref)
+                            copy_ops.append(memref.CopyOp(result, hv_ref.res))
+                            hv_key = (hv_name, hv_module)
+                            if hv_key not in seen_host_globals:
+                                seen_host_globals.add(hv_key)
+                                hv_glob = llvm.GlobalOp(
+                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                    hv_name, "external",
+                                )
+                                hv_glob.attributes["module"] = StringAttr(hv_module)
+                                chain_global_ops.append(hv_glob)
+                        elif canonical is not None and any(
+                            a_name == canonical
+                            and resolved_arg_ops[i].source_kind.data == ArgSourceKind.DdtMember
+                            for i, a_name in enumerate(callee_input_names)
+                        ) and canonical in host_var_ref_results:
+                            # Ordinary scheme-declared inout scalar host-matched
+                            # to a DDT member (e.g. var_compat's scalar_var/
+                            # tke_inout/tke2_inout, resolved to
+                            # phys_state%scalar_var) -- reuse the exact same
+                            # HostVarRefOp already built as this argument's own
+                            # INPUT reference (the per-callee-arg
+                            # host_var_ref_results loop above) as the copy-back
+                            # target too. Functionally a no-op (Fortran already
+                            # reflects the update through the same aliased
+                            # reference -- nothing needs copying), but marks
+                            # this result as having a real copy consumer so it
+                            # never falls into print_ftn.py's
+                            # untracked-call-result fallback, which otherwise
+                            # invents a throwaway "ccpp_tmp_N" local and
+                            # (whenever the suite callee is dispatched via a
+                            # plain positional call rather than a keyword call)
+                            # prints it as a genuine EXTRA positional argument
+                            # -- a real arity mismatch that also silently
+                            # shifts every later positional argument (including
+                            # errmsg/errflg) into the wrong dummy-argument slot,
+                            # not merely a cosmetic unused-variable warning.
+                            copy_ops.append(
+                                memref.CopyOp(result, host_var_ref_results[canonical])
+                            )
+                        elif cap_var_map:
+                            for i, (a_name, a_type) in enumerate(
+                                zip(callee_input_names, callee_input_types)
+                            ):
+                                if (a_type == ret_type
+                                        and resolved_arg_ops[i].source_kind.data
+                                        == ArgSourceKind.CapVar):
+                                    std_name_cv = resolved_arg_ops[i].std_name.data
+                                    cv_name, cv_type, _ = cap_var_map[std_name_cv]
+                                    cap_ref = CapVarRefOp(cv_name, a_type)
+                                    cap_var_inout_refs.append(cap_ref)
+                                    copy_ops.append(memref.CopyOp(result, cap_ref.res))
+                                    break
                 else:
                     ri_idx = idx - _n_inout_ret
                     ret_std_name = _run_ret_alloc[ri_idx][2]
@@ -1162,7 +1455,7 @@ def _build_run_dispatch_chain(
         current_false_ops = [strcmp_op, if_op, scf.YieldOp()]
 
     main_chain_ops = current_false_ops[:-1]
-    return main_chain_ops, decls, chain_global_ops
+    return main_chain_ops, decls, chain_global_ops, wrapper_inout_echo_args
 
 def _assemble_run_fn(
     fn_name: str,
@@ -1171,30 +1464,46 @@ def _assemble_run_fn(
     main_chain_ops: list,
     errmsg_type,
     errflg_type,
+    wrapper_inout_echo_args: list = (),
 ):
     """Assemble the FuncOp from the block signature, preamble ops, and dispatch chain.
 
     Determines the return type and preamble based on the host framework
     pattern (ccpp_info_t, ccpp_t, or standard capgen), fills new_block
     with all ops in execution order, and returns a public FuncOp.
+
+    wrapper_inout_echo_args are extra, already-existing block args (see
+    _build_run_dispatch_chain) that some suite callee declares intent(inout)
+    for -- an ordinary scheme-declared scalar with no dedicated framework
+    meaning of its own. Prepending them to the ReturnOp doesn't add a new
+    dummy argument (print_ftn.py only turns AllocaOp-owned return values into
+    new output args; a plain block arg in return position just flips that
+    EXISTING argument's own declared intent from in to inout), so fn_type's
+    outputs must be extended to match, in the same order, or the ReturnOp's
+    operand list won't match the enclosing FuncOp's function_type.
     """
+    wrapper_inout_echo_args = list(wrapper_inout_echo_args)
+    echo_types = [a.type for a in wrapper_inout_echo_args]
+
     if sig.ccpp_info_type is not None:
-        ret_op = func.ReturnOp(sig.ccpp_info_block_arg)  # ccpp_info is inout
+        ret_op = func.ReturnOp(*wrapper_inout_echo_args, sig.ccpp_info_block_arg)
         fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, [sig.ccpp_info_type]
+            sig.all_block_types, echo_types + [sig.ccpp_info_type]
         )
         # Place col_start/col_end/errmsg/errflg HostVarRefOps before dispatch
         preamble_ops = [sig.col_start_ref, sig.col_end_ref, sig.errmsg_alloc, sig.errflg_alloc]
     elif sig.ccpp_t_type is not None:
-        ret_op = func.ReturnOp(sig.ccpp_data_block_arg, sig.errmsg_arg, sig.errflg_arg)
+        ret_op = func.ReturnOp(
+            *wrapper_inout_echo_args, sig.ccpp_data_block_arg, sig.errmsg_arg, sig.errflg_arg
+        )
         fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, [sig.ccpp_t_type, errmsg_type, errflg_type]
+            sig.all_block_types, echo_types + [sig.ccpp_t_type, errmsg_type, errflg_type]
         )
         preamble_ops = []
     else:
-        ret_op = func.ReturnOp(sig.errmsg_arg, sig.errflg_arg)
+        ret_op = func.ReturnOp(*wrapper_inout_echo_args, sig.errmsg_arg, sig.errflg_arg)
         fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, [errmsg_type, errflg_type]
+            sig.all_block_types, echo_types + [errmsg_type, errflg_type]
         )
         preamble_ops = []
 
@@ -1300,29 +1609,32 @@ def _generate_run_fn(
     per_suite_grouped = _pre.per_suite_grouped
 
     # ── Build nested if/else chain from inside out ─────────────────────────
-    main_chain_ops, all_decls, chain_global_ops = _build_run_dispatch_chain(
-        per_suite_grouped=per_suite_grouped,
-        trim_suite_name=trim_suite_name,
-        suite_part_arg=suite_part_arg,
-        errmsg_arg=errmsg_arg,
-        errflg_arg=errflg_arg,
-        errmsg_type=errmsg_type,
-        errflg_type=errflg_type,
-        block_arg_map=block_arg_map,
-        non_host_std_to_canonical=non_host_std_to_canonical,
-        host_var_map=host_var_map,
-        meta_data=meta_data,
-        cap_var_map=cap_var_map,
-        seen_host_globals=seen_host_globals,
-        current_false_ops=current_false_ops,
-        ccpp_t_type=ccpp_t_type,
-        ccpp_data_block_arg=ccpp_data_block_arg,
+    main_chain_ops, all_decls, chain_global_ops, wrapper_inout_echo_args = (
+        _build_run_dispatch_chain(
+            per_suite_grouped=per_suite_grouped,
+            trim_suite_name=trim_suite_name,
+            suite_part_arg=suite_part_arg,
+            errmsg_arg=errmsg_arg,
+            errflg_arg=errflg_arg,
+            errmsg_type=errmsg_type,
+            errflg_type=errflg_type,
+            block_arg_map=block_arg_map,
+            non_host_std_to_canonical=non_host_std_to_canonical,
+            host_var_map=host_var_map,
+            meta_data=meta_data,
+            cap_var_map=cap_var_map,
+            seen_host_globals=seen_host_globals,
+            current_false_ops=current_false_ops,
+            ccpp_t_type=ccpp_t_type,
+            ccpp_data_block_arg=ccpp_data_block_arg,
+        )
     )
     all_host_global_ops.extend(chain_global_ops)
 
     # ── Assemble the function ──────────────────────────────────────────────
     cap_fn = _assemble_run_fn(
-        fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type
+        fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type,
+        wrapper_inout_echo_args,
     )
     return cap_fn, all_decls, all_host_global_ops
 

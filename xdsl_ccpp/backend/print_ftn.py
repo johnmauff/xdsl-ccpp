@@ -34,6 +34,8 @@ from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipOp as CCPPVerticalFlipOp
+from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipWriteBackOp as CCPPVerticalFlipWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
@@ -785,6 +787,17 @@ class ftnPrintContext:
                     # mold= requires matching kind; use explicit size() dims instead
                     rank = dim_suffix.count(":")
                     sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    # Guard against re-entry into this same code with no
+                    # intervening deallocate -- e.g. a subcycle loop calling
+                    # the consuming scheme (and this conversion) more than
+                    # once per suite invocation. The paired *WriteBackOp
+                    # case below only ever deallocates when a write-back is
+                    # actually needed (intent=inout/out); a pure intent=in
+                    # value has no write-back at all, so without this guard
+                    # its temp is never deallocated between iterations,
+                    # crashing on the second allocate ("Attempting to
+                    # allocate already allocated variable").
+                    self.print(f"if (allocated({result_name})) deallocate({result_name})")
                     self.print(f"allocate({result_name}({sizes}))")
                 self.print(f"{result_name} = real({src_name}, kind={target_kind})")
             case CCPPKindWriteBackOp():
@@ -806,6 +819,12 @@ class ftnPrintContext:
                 if dim_suffix:
                     rank = dim_suffix.count(":")
                     sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    # See CCPPKindCastOp's own comment above: guards against
+                    # re-entry (e.g. a subcycle loop) with no intervening
+                    # deallocate when this value is pure intent=in (no
+                    # write-back, so the *WriteBackOp case's own deallocate
+                    # never runs at all).
+                    self.print(f"if (allocated({result_name})) deallocate({result_name})")
                     self.print(f"allocate({result_name}({sizes}))")
                 if to_expr:
                     self.print(f"{result_name} = {src_name} {to_expr}")
@@ -819,6 +838,42 @@ class ftnPrintContext:
                 self.print(f"{dest_name} = {conv_name} {to_expr}")
                 if self._ftn_dim_suffix(op.conv_result.type):
                     self.print(f"deallocate({conv_name})")
+            case CCPPVerticalFlipOp():
+                # Local-copy vertical flip: reverse an array section along the
+                # vertical dimension into a local temp; the host's array is
+                # never modified.
+                src_name    = self._get_variable_name_for(op.source)
+                result_name = self._get_variable_name_for(op.res)
+                vert_dim = op.vertical_dim.value.data
+                dim_suffix = self._ftn_dim_suffix(op.res.type)
+                rank = dim_suffix.count(":")
+                sizes = ", ".join(f"size({src_name}, {i + 1})" for i in range(rank))
+                # See CCPPKindCastOp's own comment above: guards against
+                # re-entry (e.g. a subcycle loop) with no intervening
+                # deallocate when this value is pure intent=in (no
+                # write-back, so the *WriteBackOp case's own deallocate
+                # never runs at all).
+                self.print(f"if (allocated({result_name})) deallocate({result_name})")
+                self.print(f"allocate({result_name}({sizes}))")
+                sections = [
+                    f"size({src_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
+                    for i in range(rank)
+                ]
+                self.print(f"{result_name} = {src_name}({', '.join(sections)})")
+            case CCPPVerticalFlipWriteBackOp():
+                # Post-flip: write the local temp back to the host, reversed
+                # along the same vertical dimension (a second reversal
+                # restores the original order).
+                conv_name = self._get_variable_name_for(op.conv_result)
+                dest_name = self._get_variable_name_for(op.original_dest)
+                vert_dim = op.vertical_dim.value.data
+                rank = self._ftn_dim_suffix(op.conv_result.type).count(":")
+                sections = [
+                    f"size({conv_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
+                    for i in range(rank)
+                ]
+                self.print(f"{dest_name} = {conv_name}({', '.join(sections)})")
+                self.print(f"deallocate({conv_name})")
             case CCPPRowMajorConvertOp():
                 # Forward transpose: row-major host → column-major local temp.
                 src_name    = self._get_variable_name_for(op.source)
@@ -827,6 +882,12 @@ class ftnPrintContext:
                 dims = [e.data for e in op.dim_exprs.data]
                 dims_str  = ", ".join(dims)
                 order_str = ", ".join(str(rank - i) for i in range(rank))
+                # See CCPPKindCastOp's own comment above: guards against
+                # re-entry (e.g. a subcycle loop) with no intervening
+                # deallocate when this value is pure intent=in (no
+                # write-back, so the *WriteBackOp case's own deallocate
+                # never runs at all).
+                self.print(f"if (allocated({result_name})) deallocate({result_name})")
                 self.print(f"allocate({result_name}({dims_str}))")
                 self.print(f"{result_name} = reshape({src_name}, [{dims_str}], order=[{order_str}])")
             case CCPPRowMajorWriteBackOp():
@@ -1118,11 +1179,25 @@ class ftnPrintContext:
         Compile-time literal overrides are emitted first as ``name=literal``,
         then SSA input operands as ``name=var_name``, then SSA output results
         as ``name=dest_var``.  Inout arguments (present in both operand_names
-        and result_names) are deduplicated via a seen-names set.
+        and result_names under the SAME keyword name) are deduplicated via a
+        seen-names set.
+
+        A leading inout-echo result (see run_dispatch.py's
+        _get_suite_leading_inout_ret_info) is a SEPARATE case that name-based
+        dedup above misses: the callee's own combined signature only ever
+        gives it ONE real dummy argument, but the synthetic result keyword
+        name generated for it (e.g. "_out_0") never string-matches the
+        operand keyword name that already passed the same variable (e.g.
+        "scalar_var") -- so without an extra value-based check here, the
+        same variable would get bound twice under two different keyword
+        names to what is really the same dummy argument, which is invalid
+        Fortran (mirrors _print_call's own input_var_names check for the
+        positional-call case).
         """
         self.print(f"call {op.callee.data}(", end="")
         idx = 0
         seen: set[str] = set()
+        printed_operand_values: set[str] = set()
         for name, val_attr in op.overrides.data.items():
             if idx > 0:
                 self.print(", ", end="", use_prefix=False)
@@ -1132,25 +1207,22 @@ class ftnPrintContext:
         for name_attr, arg in zip(op.operand_names.data, op.args):
             name = name_attr.data
             if name not in seen:
+                resolved = self._get_variable_name_for(arg)
                 if idx > 0:
                     self.print(", ", end="", use_prefix=False)
-                self.print(
-                    f"{name}={self._get_variable_name_for(arg)}",
-                    end="",
-                    use_prefix=False,
-                )
+                self.print(f"{name}={resolved}", end="", use_prefix=False)
                 seen.add(name)
+                printed_operand_values.add(resolved)
                 idx += 1
         for name_attr, res in zip(op.result_names.data, op.res):
             name = name_attr.data
             if name not in seen:
+                dest = self.get_call_result_var_ssa(res)
+                if dest is not None and dest in printed_operand_values:
+                    continue  # inout echo — same dummy arg already passed as an input
                 if idx > 0:
                     self.print(", ", end="", use_prefix=False)
-                self.print(
-                    f"{name}={self.get_call_result_var_ssa(res)}",
-                    end="",
-                    use_prefix=False,
-                )
+                self.print(f"{name}={dest}", end="", use_prefix=False)
                 seen.add(name)
                 idx += 1
         self.print(")", use_prefix=False)
@@ -1310,10 +1382,15 @@ class ftnPrintContext:
                         inout_block_args.add(ret_val)
                 break
 
-        # Collect local allocas — AllocaOps whose result is not in the return list
+        # Collect local allocas — AllocaOps whose result is not in the return list.
+        # walk() (not just bdy.block.ops): most allocas are top-level, but e.g.
+        # run_dispatch.py's per-suite-part horizontal_dimension scalar recompute
+        # (col_end - col_start + 1) allocates its own local nested inside the
+        # suite_name/suite_part dispatch chain's scf.IfOps -- same reasoning as
+        # the CCPPKindCastOp/CCPPUnitConvertOp walk() below.
         local_allocas = [
             op
-            for op in bdy.block.ops
+            for op in bdy.block.walk()
             if isa(op, memref.AllocaOp) and op.memref not in output_ret_vals
         ]
 
@@ -1502,6 +1579,18 @@ class ftnPrintContext:
                         inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
                     else:
                         inner.print(f"{type_str} :: {var_name}")
+                elif isa(op, CCPPVerticalFlipOp):
+                    # Always an array (a vertical flip is meaningless for a
+                    # scalar). Same de-duplication reasoning as above.
+                    hint = (
+                        op.res.name_hint
+                        if op.res.name_hint is not None
+                        else f"vertical_flip_{id(op)}"
+                    )
+                    var_name = inner._get_variable_name_for(op.res, hint=hint)
+                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                    inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
 
             # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
             for op in bdy.block.walk():

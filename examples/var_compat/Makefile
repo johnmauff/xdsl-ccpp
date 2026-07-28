@@ -44,7 +44,18 @@ DIR    = examples/var_compat
 BUILD_DIR = $(DIR)/build
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
-CCPP_XDSL ?= ccpp_xdsl
+# Default to invoking this checkout directly (via PYTHONPATH), not the bare
+# PATH `ccpp_xdsl` console script -- an unrelated xdsl-ccpp editable install
+# elsewhere on the machine can silently shadow this checkout's own code
+# otherwise (confirmed: `pip show xdsl-ccpp` can point at a completely
+# different clone than the one `make caps` is meant to exercise, and that
+# stale clone can simply fail outright against a newer example like this
+# one rather than just producing stale-but-working output). Override
+# CCPP_XDSL on the command line (e.g. `make caps CCPP_XDSL=ccpp_xdsl`) to
+# use a real installed console script instead.
+XDSL_CCPP_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../..)
+export PYTHONPATH := $(XDSL_CCPP_ROOT):$(PYTHONPATH)
+CCPP_XDSL ?= python3 -m xdsl_ccpp.tools.ccpp_dsl
 
 # ── Generated caps ─────────────────────────────────────────────────────────────
 GEN_KINDS     = $(DIR)/ccpp_kinds.F90
@@ -52,7 +63,7 @@ GEN_SUITE_CAP = $(DIR)/var_compatibility_suite_cap.F90
 GEN_CCPP_CAP  = $(DIR)/test_host_ccpp_cap.F90
 
 CAPS_SUITES  = $(DIR)/var_compatibility_suite.xml
-CAPS_SCHEMES = $(DIR)/effr_pre.meta,$(DIR)/effr_calc.meta,$(DIR)/effr_post.meta,$(DIR)/effrs_calc.meta,$(DIR)/effr_diag.meta,$(DIR)/rad_lw.meta,$(DIR)/rad_sw.meta
+CAPS_SCHEMES = $(DIR)/effr_pre.meta,$(DIR)/effr_calc.meta,$(DIR)/effr_post.meta,$(DIR)/effrs_calc.meta,$(DIR)/effr_diag.meta,$(DIR)/rad_lw.meta,$(DIR)/rad_sw.meta,$(DIR)/module_rad_ddt.meta
 CAPS_HOSTS   = $(DIR)/test_host_data.meta,$(DIR)/test_host_mod.meta,$(DIR)/test_host.meta
 CAPS_PREREQS = \
     $(DIR)/var_compatibility_suite.xml \
@@ -63,6 +74,7 @@ CAPS_PREREQS = \
     $(DIR)/effr_diag.meta \
     $(DIR)/rad_lw.meta \
     $(DIR)/rad_sw.meta \
+    $(DIR)/module_rad_ddt.meta \
     $(DIR)/test_host_data.meta \
     $(DIR)/test_host_mod.meta \
     $(DIR)/test_host.meta
@@ -71,8 +83,18 @@ CAPS_PREREQS = \
 # scheme and host dependencies. module_rad_ddt.F90 must come before
 # rad_lw.F90/rad_sw.F90 -- both schemes' .meta declare
 # "dependencies = module_rad_ddt.F90" (a real Fortran USE dependency).
+#
+# ccpp_constituent_prop_mod.F90 and ccpp_scheme_utils.F90 are stubs for the
+# CCPP framework library modules (same stubs used by examples/advection,
+# examples/advection_flat_host, examples/constadv, examples/constprop) --
+# GEN_CCPP_CAP always emits a <Host>_model_const_properties() entry point
+# and a USE of both modules regardless of whether this example itself
+# declares any constituents, since it's part of the mandatory CCPP
+# host-facing API surface, not something scheme-specific.
 SRCS = \
     $(GEN_KINDS) \
+    $(DIR)/ccpp_constituent_prop_mod.F90 \
+    $(DIR)/ccpp_scheme_utils.F90 \
     $(DIR)/module_rad_ddt.F90 \
     $(DIR)/test_host_data.F90 \
     $(DIR)/test_host_mod.F90 \

@@ -2312,27 +2312,40 @@ dependency is noted.
   - Not verified: whether `run_dispatch.py` has its own independent subcycle-flattening
     assumption beyond what `_iter_schemes` covers — check this first before scoping further.
 - **`var_compat`'s other pieces, separate from nested-subcycle:**
-  - **Vertical array flipping (`top_at_one=true`) — M. Not yet fixed.** Reverses vertical-index
-    array sections when a scheme's declared top-at-one convention differs from the host's.
-    `effr_calc`'s `effrr_in`/`effrs_inout` and `effr_diag`'s `effrr_in` declare it;
-    `effr_pre`/`effr_post`/`effrs_calc` don't, and no host file in this port declares an explicit
-    counterpart to compare against, so the assumed default for schemes that don't declare it is
-    not-flipped, matching the host's actual data layout. Confirmed the existing
+  - **Vertical array flipping (`top_at_one=true`) — fixed.** Reverses vertical-index array
+    sections when a scheme's own declared top-at-one convention differs from other schemes
+    sharing the same standard_name. `effr_calc`'s `effrr_in`/`effrs_inout` and `effr_diag`'s
+    `effrr_in` declare it; `effr_pre`/`effr_post`/`effrs_calc` don't, and no host file in this
+    port declares an explicit counterpart to compare against, so schemes that don't declare it
+    define the shared, not-flipped representation. Confirmed the existing
     `RowMajorConvertOp`/`RowMajorWriteBackOp` pair (row-major/column-major conversion) is inserted
     at a *different* generated subroutine (the host-facing run-dispatch chain in
     `run_dispatch.py`) than the one that actually matters here (`suite_cap.py`'s suite-cap
-    subroutine, which is where `effr_calc`/`effr_diag` are actually called) — the directly
-    relevant, already-established pattern to reuse instead is the kind-mismatch/unit-mismatch
-    detect-and-convert pattern in `suite_cap.py` (see the divergent-standard-name fix immediately
-    below, which this would plug into at the identical per-call insertion point). Needs: add
-    `top_at_one` to the recognized metadata keys (currently silently dropped with an
-    unrecognised-key warning), a new `VerticalFlipOp`/`VerticalFlipWriteBackOp` pair modeled on
-    `KindCastOp`/`KindWriteBackOp` but reversing an array section along the vertical dimension
-    rather than converting a value, and a case in `print_ftn.py`. `effr_calc`'s/`effr_diag`'s own
-    arithmetic on these variables is uniform across vertical levels, so this specific synthetic
-    example's own numeric check can't independently distinguish a correct flip from a no-op one —
-    verification here will necessarily be about correct, valid generated Fortran syntax and
-    correct call-site placement, not an independent numeric proof from this particular test.
+    subroutine, which is where `effr_calc`/`effr_diag` are actually called), so it wasn't reused
+    directly.
+    - **Fixed**: added `top_at_one` to the recognized metadata keys (`ccpp.py`'s
+      `ArgumentOp.KNOWN_PROPS`/boolean-flag list, `ccpp_descriptors.py`'s
+      `BuildSchemeDescription`) — previously silently dropped with an unrecognised-key warning.
+      Added a new `VerticalFlipOp`/`VerticalFlipWriteBackOp` pair in
+      `xdsl_ccpp/dialects/ccpp_utils.py`, modeled directly on `KindCastOp`/`KindWriteBackOp` but
+      reversing an array section along the vertical dimension (identified per-scheme from the
+      argument's own `dim_names`, via a new `is_vertical_dimension`-based
+      `_vertical_dim_index` helper) rather than converting a value, using `size(...)`-based
+      section bounds so no named dimension variable needs to be in scope. Generalized the
+      divergent-standard-name detection built for the kind/unit fix above (add `top_at_one`
+      presence to the per-scheme signature tuple `_build_arg_tables` compares) and extended
+      `generateSchemeSubroutineCallOps`'s per-call marshaling chain to include the flip as a
+      third step alongside kind cast and unit convert — `effrs_inout`'s real case chains all
+      three on the same call (kind, then units, then flip forward; write-back unwinds flip, then
+      units, then kind, in reverse), confirmed correct against the real regenerated output. A
+      vertical flip is type/kind-invariant, so it composes with the other two steps in either
+      order without changing the result. `effr_calc`'s/`effr_diag`'s own arithmetic on these
+      variables is uniform across vertical levels, so this specific synthetic example's own
+      numeric check can't independently distinguish a correct flip from a no-op one —
+      verification here is about correct, valid generated Fortran syntax and correct call-site
+      placement, not an independent numeric proof from this particular test. Regression coverage:
+      `tests/unit/test_top_at_one_recognized.py`, `tests/unit/test_vertical_flip_op.py`,
+      `tests/unit/test_suite_vertical_flip_marshaling.py`.
   - **Kind conversion (`kind_phys`↔`8`) — confirmed working, and a real, unrelated bug found and
     fixed along the way.** `effr_calc`'s `effrs_inout` declares `kind = 8`; every other occurrence
     of the same standard_name uses `kind_phys`. The `generate-meta-kinds`/`KindCastOp`/
@@ -2397,6 +2410,577 @@ dependency is noted.
     reason as the historic `ccpp_loop_cnt` duplicate-declaration bug. Every non-divergent
     standard_name (the vast majority) is completely unaffected. Regression coverage:
     `tests/unit/test_suite_cross_scheme_unit_kind.py`.
+  - **Fixed — host-facing wrapper subroutine used to declare `scalar_var`/`tke_inout`/
+    `tke2_inout` `intent(in)` while the suite-cap subroutine it calls correctly declares them
+    `intent(inout)`.** Root cause, traced in `run_dispatch.py` (a separate code path from
+    `suite_cap.py`, owning the combined `ccpp_cap.py` wrapper's own generation): the suite
+    callee's leading (inout-position) return values get a copy-back in
+    `_build_run_dispatch_chain`, but that loop only ever special-cased three framework things —
+    `ccpp_error_message`, `ccpp_error_code`, and a `ccpp_t` handle. An ordinary scheme-declared
+    `intent=inout` scalar with no dedicated framework meaning of its own (`scalar_var`/
+    `tke_inout`/`tke2_inout` — no host variable match, not one of the three specials) fell
+    through with no copy-back at all, so the value never reached the wrapper's own block
+    argument, and `print_ftn.py` (which declares a scalar dummy argument `intent(inout)` only
+    when it appears in the function's own `ReturnOp`) always saw it as `intent(in)`. **Fixed**
+    by a new `_get_suite_leading_inout_ret_info` helper (`cap_shared.py`) that name-resolves this
+    leading-region case the same way the pre-existing `_get_suite_lifecycle_ret_info` helper
+    already resolves the trailing alloc-region case, plus recording each echoed block arg so
+    `_assemble_run_fn`'s own `ReturnOp` includes it too.
+
+    This surfaced a second, closely related bug in `print_ftn.py`'s `_print_kw_call`: once the
+    copy-back target is the same variable already passed in as an input (the common case here,
+    since these scalars have no host match and flow straight through as caller-supplied block
+    arguments), the keyword-call printer must suppress the synthetic `_out_N=` echo it would
+    otherwise print — printing the same variable under two different keyword names bound to what
+    is really the same dummy argument is also invalid Fortran. The positional-call printer
+    (`_print_call`) already had this suppression (matching on the resolved destination name
+    against the printed input names); `_print_kw_call` needed a matching value-based fix.
+
+    Also fixed retroactively, as a side effect of the same `run_dispatch.py` change: `examples/
+    capgen` and `examples/ddthost` each had a latent call-arity bug in their own combined
+    `_ccpp_physics_run`/lifecycle wrapper — a leading inout return with no copy-back (there, a
+    cap-owned/host-matched DDT scalar, e.g. `vmr`) fell through to a *different*, pre-existing
+    fallback (the "untracked call result" mechanism in `print_ftn.py`'s function printer), which
+    synthesized an anonymous local (`ccpp_tmp_0`) and printed it as an *extra* positional call
+    argument the callee's own declared signature didn't actually have one for — an arity mismatch,
+    also invalid Fortran. Confirmed by direct inspection: `ddt_suite_suite_data_prep` declares
+    exactly 8 dummy arguments, but the call previously passed 9. Covered by
+    `tests/unit/test_run_dispatch_inout_echo.py` (3 tests, sabotage-verified for both the
+    copy-back fix and the keyword-dedup fix independently). All affected FileCheck goldens
+    (`var_compat-xml`, `capgen-xml`, `ddthost-py`, `ddthost-xml`, both `completed_ir` and
+    `end_to_end` tiers) regenerated and passing.
+  - **Two more real gaps found trying to actually build `examples/var_compat` with gfortran for
+    the first time.**
+    - **Fixed — `module_rad_ddt.meta` was missing from this port's generation inputs (a port
+      mistake, not an `xdsl_ccpp` code gap).** Initial investigation (via a research fork)
+      hypothesized this was a real code gap in `suite_cap.py`'s `use`-statement construction not
+      consulting `ddt_source_module` the way `ccpp_cap.py` does — that hypothesis was wrong.
+      The actual root cause, confirmed by directly regenerating with the file added: the real
+      capgen-v1 source keeps `rad_lw`/`rad_sw`'s DDT type definitions (`ty_rad_lw`/`ty_rad_sw`) in
+      their own separate file rather than bundled into a scheme's own `.meta` (unlike e.g.
+      `examples/ddthost`'s `make_ddt.meta`, which declares its DDT type and the scheme that uses
+      it in the same file) — but this port's `--scheme-files` list (the Makefile's
+      `CAPS_SCHEMES` and all three `tests/filecheck` var_compat-xml.mlir RUN lines) never included
+      `module_rad_ddt.meta`, so its DDT table definitions were never parsed at all. This one
+      omission silently caused two separate, real symptoms once actually compiled: (1) the
+      suite-cap module declared `fluxLW` as `type(ty_rad_lw)` (a whole-DDT host match) without
+      ever importing the module that defines it, since `collect_ddt_source_modules` had no DDT
+      table to map `ty_rad_lw` to a source module at all; (2) `rad_sw_run`'s `sfc_up_sw`/
+      `sfc_down_sw` arguments (individual DDT-*member* standard_names, members of the host's
+      `ty_rad_sw` DDT, not a whole-DDT match like `fluxLW`) were silently dropped from the suite
+      signature entirely, since the DDT-member-matching machinery had no DDT definition to match
+      against at all. **Fixed** by adding `module_rad_ddt.meta` to the four input-file lists;
+      confirmed both symptoms disappear with zero `xdsl_ccpp` code changes.
+    - **Fixed — a dynamic-count subcycle's loop bound used to be emitted as the raw standard_name
+      string, never resolved to the host's own local name.** `suite_cap.py`'s `_emit_subcycle`
+      passed the XML's `loop="..."` string straight through unresolved when it wasn't a literal
+      integer — for `<subcycle loop="num_subcycles_for_effr">`, that string is the
+      *standard_name* (`num_subcycles_for_effr`), not a real Fortran identifier; the host's own
+      local name for it is `num_subcycles` (`test_host_data.meta`). Unlike `scheme_order_in_suite`
+      (which flows through the ordinary scheme-arg host-matching path because several schemes
+      declare it as their own arg), no scheme anywhere declares a matching arg for
+      `num_subcycles_for_effr`, so it never entered `all_args`/`data_ops` through any existing
+      pathway. **Fixed** by a new `_synthesize_dynamic_loop_count_args` method in `suite_cap.py`
+      that scans the suite's subcycle structure for dynamic loop counts with no scheme-arg match,
+      resolves the host's own local name for the standard_name by scanning every non-scheme host
+      table (module, host, or ddt), and synthesizes a fresh `HostMatched` `CCPPArgument` for it —
+      so it becomes a genuine, correctly-declared dummy argument the same way any other
+      host-matched value does, and `_emit_subcycle` prints that argument's own name as the do-loop
+      bound instead of the raw standard_name. Scoped to only the `_run` (physics) postfix that
+      actually emits a `SubcycleLoopOp` using it — a scheme can have both a `_run` and an `_init`
+      entry point, so an `arg_tables`-only check isn't sufficient on its own; the synthesis is
+      additionally gated on `physics_mode`. Covered by `tests/unit/test_suite_dynamic_loop_count.py`
+      (4 tests, sabotage-verified). If a dynamic loop count has no matching host variable anywhere,
+      a clear `ValueError` is raised instead of emitting invalid Fortran.
+    - **Fixed — a third gap found compiling with ifx after the two fixes above: "Error in
+      opening the compiled module file" for `ccpp_constituent_prop_mod` and `ccpp_scheme_utils`,
+      not an `xdsl_ccpp` code gap.** Every generated ccpp-cap module unconditionally emits a
+      `<Host>_model_const_properties()` entry point (part of the mandatory CCPP host-facing API
+      surface, not scheme-specific — this example declares no constituents at all), and its `use
+      ccpp_constituent_prop_mod`/`use ccpp_scheme_utils` need real module files to compile
+      against. Those two modules belong to the real CCPP framework library; every other example
+      that's actually been build-tested (`examples/advection`, `examples/advection_flat_host`,
+      `examples/constadv`, `examples/constprop`) carries its own small, fully generic stub
+      implementation of both (byte-identical across all four) and wires it into its own
+      Makefile — `examples/var_compat`'s Makefile simply never got the same two files, and
+      neither did `examples/capgen` or `examples/ddthost` (both FileCheck-tested only, never
+      actually compiled with a real Fortran compiler until now). **Fixed** for `var_compat` by
+      copying the stub files in as `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` and
+      adding them to the Makefile's `SRCS` right after `GEN_KINDS`. `examples/capgen` and
+      `examples/ddthost` would hit the identical error if actually compiled; not fixed here
+      (out of scope — the user asked specifically about `var_compat`).
+    - **Fixed — a fourth gap found while investigating why `test_host.F90` (a hand-written
+      driver — deliberately not modified; verified by diffing against upstream capgen-v1's own
+      `end-to-end-tests/var_compat/test_host.F90`, which confirmed this port's version was
+      already a deliberate, intentional adaptation to `xdsl_ccpp`'s own generated-API
+      conventions, not something to bring back in line with upstream byte-for-byte) only passes
+      `suite_name`/`suite_part`/`col_start`/`col_end`/`errmsg`/`errflg` to
+      `test_host_ccpp_physics_run`, while the generated signature required ~20 more arguments.**
+      Root cause: `test_host_mod.meta`'s `[ccpp-table-properties]`/`[ccpp-arg-table]` blocks
+      both declared `type = host` instead of `type = module` — a metadata typo, not a driver
+      bug. `test_host_mod.F90` is a real, persistent Fortran module (module-level `phys_state`
+      DDT instance, `effrs` array, `has_graupel`/`has_ice` parameters, initialized once via
+      `init_data()`), not a caller-provided-each-call interface; `examples/capgen` and
+      `examples/ddthost`'s own equivalent `test_host_mod.meta` files both correctly declare
+      `type = module`, confirming this was an isolated port mistake. Because of the typo,
+      `run_dispatch.py` treated `phys_state`'s own module-level instance as HOST-interface-only
+      (never eligible for DDT-member `use`-based resolution — see its own "HOST-type tables are
+      caller-provided interfaces, not Fortran modules" comment), so every DDT member (effrr,
+      effrl, scalar_var, tke, tke2, fluxLW, sfc_up_sw/down_sw, etc.) got flattened into its own
+      top-level caller-supplied dummy argument instead of being resolved internally via
+      `use test_host_mod, only: phys_state`. **Fixed** by correcting both `type = host` lines to
+      `type = module`; confirmed this collapses `test_host_ccpp_physics_run`'s signature from
+      ~24 arguments down to `suite_name, suite_part, scalar_varA, scalar_varB, scalar_varC,
+      num_subcycles, errmsg, errflg` — matching what the (unmodified) driver already expects,
+      apart from the remaining four. All three var_compat FileCheck goldens (`frontend`,
+      `completed_ir`, `end_to_end`) regenerated and passing.
+    - **Fixed — two separate, real `run_dispatch.py` bugs, found while diagnosing why
+      `scalar_varA`/`scalar_varB`/`scalar_varC`/`num_subcycles` still didn't resolve after the
+      metadata fix above.**
+      1. *Bare-name collision bug.* Confirmed directly in the IR: `HostVariableMatchPass`
+         correctly resolves all three of `effr_pre`/`effr_post`/`effr_diag`'s own
+         `scalar_var`-named args to their distinct `physics_state` DDT members (`model_var_name
+         = scalar_varA`/`scalar_varB`/`scalar_varC` respectively) — the deliberate bare-name
+         collision this example exists to test is resolved correctly at the host-matching layer.
+         But `run_dispatch.py`'s own `_build_per_suite_run_info` built `local_to_host_info`
+         keyed by each scheme's own literal `fn_arg.name` — "scalar_var" for all three, since the
+         IR's `name` attribute is never rewritten to the disambiguated `model_var_name` — while
+         the *lookup* uses the suite's already-disambiguated combined name
+         (`_bare("scalar_varB")` = `"scalar_varB"`, a string that was never inserted as a key at
+         all). Only the first-processed scheme's entry (which happened to keep the un-suffixed
+         combined name `scalar_var`) resolved correctly; the other two silently fell back to
+         `ArgSourceKind.Block`.
+
+         **Fixed** by grouping host-matched `fn_args` by bare local name, deduplicated by
+         standard_name (mirroring `suite_cap.py`'s own `all_args` construction, which dedupes by
+         `std_key` — without this dedup step, several schemes correctly sharing one bare name for
+         the *same* standard_name, e.g. every scheme's own `ncol`, get miscounted as a collision
+         too, an over-eager first attempt at this fix that broke `ncol`/`effrr_inout`/
+         `effrs_inout` resolution before landing on this version). A bare name backed by only one
+         distinct standard_name keeps the simple bare-name key, unchanged from before; a bare name
+         genuinely shared by 2+ distinct standard_names is instead keyed by each sibling's own
+         `model_var_name` — precisely what `suite_cap.py` renamed that sibling's own dummy
+         argument to. A second, blunter attempt (unconditionally also keying by `model_var_name`,
+         without the collision/dedup grouping) was tried and rejected: it clobbered an unrelated
+         arg's correct entry whenever one arg's `model_var_name` happened to coincide with a
+         *different* arg's own bare local name — caught directly by the pre-existing
+         `test_run_dispatch.py::TestBuildPerSuiteRunInfoResolvedArgOps` fixture (its `temp`/
+         `rad_temp` args have exactly this coincidental collision).
+      2. *`num_subcycles` DDT-table gap.* `num_subcycles` is a suite-level argument synthesized
+         entirely by `suite_cap.py`'s `_synthesize_dynamic_loop_count_args` (see the subcycle
+         loop-bound fix above) — it isn't declared in any scheme's own `.meta` at all. The
+         fallback in `_build_per_suite_run_info` that resolves a callee arg's std_name when no
+         scheme table has it only scanned `CCPPType.HOST`/`CCPPType.MODULE` tables, never
+         `CCPPType.DDT` — so even with `physics_state` correctly module-hosted, this fallback
+         never discovered that `num_subcycles` is really one of its members.
+
+         **Fixed** by extending that scan to `DDT` tables too, and folding any such match into
+         `local_to_host_info` as a `(member_name, ddt_type_name, is_ddt=True)` entry — the same
+         shape the scheme-arg path already produces — so it resolves through the existing
+         `_resolve_ddt_access_path` machinery instead of falling back to a caller-block argument.
+
+      With both fixed, `test_host_ccpp_physics_run`'s signature collapses to just
+      `suite_name, suite_part, errmsg, errflg`, confirmed by regenerating this example's real
+      output. Both var_compat FileCheck goldens (`completed_ir`, `end_to_end`) regenerated
+      and passing; direct regression coverage (sabotage-verified against both fixes
+      independently, including the two rejected fix attempts above) in
+      `tests/unit/test_run_dispatch_host_wrapper_resolution.py`.
+    - **Fixed — `col_start`/`col_end` missing from `test_host_ccpp_physics_run`, found
+      immediately after the two fixes above.** `test_host.F90`'s hand-written driver call
+      (which must not be modified — see the "never change handwritten files" feedback memory)
+      additionally passes `col_start`/`col_end` (6 arguments total), 2 more than the signature
+      above. Diffing against real upstream capgen-v1 confirmed this example's schemes genuinely
+      don't chunk by column: every one of them is dimensioned by the full `horizontal_dimension`,
+      matching upstream's own design, not a porting omission — upstream's own `ccpp_physics_run`
+      bundles `col_start`/`col_end`/`thread_num`/`nthreads`/`nphys_threads` into a fixed,
+      always-present framework argument list regardless of scheme content, a convention
+      xdsl-ccpp doesn't otherwise have. `col_start`/`col_end` only ever enter a suite callee's
+      own signature via `suite_cap.py`'s `_classify_args`, which replaces a scheme-declared
+      `horizontal_loop_extent` arg with synthetic `col_start`/`col_end` scalars — gated entirely
+      on some scheme declaring `horizontal_loop_extent`. Since no scheme here does,
+      `run_dispatch.py`'s per-suite-arg classification had nothing to discover, and the wrapper's
+      own signature never picked them up either.
+
+      Two candidate fixes were considered and rejected before this one: (a) making the generator
+      unconditionally expose `col_start`/`col_end` whenever the host declares them, regardless of
+      scheme content — rejected because every host `.meta` in this repo already declares them
+      (universal boilerplate), but `examples/tinyddt`/`examples/nestedddt` (chost, C++ host) have
+      no scheme declaring `horizontal_loop_extent` either and their already-working C++ drivers
+      correctly don't pass `col_start`/`col_end` at all (the chost convention removes them
+      entirely) — this would have silently added required arguments those drivers don't supply;
+      (b) modifying `test_host.F90` itself to drop `col_start`/`col_end`, matching the precedent
+      already set for `thread_num`/`nthreads`/`nphys_threads` at port time — rejected per explicit,
+      unconditional user instruction: hand-written files are never modified, regardless of how
+      well-evidenced the case for an edit looks.
+
+      **Fixed generically for every Fortran example instead:** `run_dispatch.py`'s
+      `_build_run_block_signature` now accepts `col_start`/`col_end` unconditionally whenever the
+      host itself declares `horizontal_loop_begin`/`horizontal_loop_end` (every example's host
+      metadata already does) and no suite here already supplied a `col_start`/`col_end`-equivalent
+      under some other local name (checked via `seen_non_host_std_names`, keyed by standard_name
+      so a differently-named host variable, e.g. `cols`/`cole`, still counts as already-supplied)
+      — mirroring how `errmsg`/`errflg` are already always present regardless of scheme content.
+      Confirmed safe: full suite is 480 passed, 1 pre-existing xfail, and every example other
+      than `var_compat` is byte-identical, since
+      they already receive `col_start`/`col_end` via the pre-existing `horizontal_loop_extent`-
+      driven path and the new fallback correctly detects that and adds nothing extra.
+      `test_host_ccpp_physics_run`'s signature is now exactly
+      `suite_name, suite_part, col_start, col_end, errmsg, errflg` — matching `test_host.F90`'s
+      existing call precisely, in both arity and argument order, with zero changes to any
+      hand-written file.
+
+      **One caveat this fix does not (and cannot, from the generator side) resolve:**
+      `col_start`/`col_end` are accepted but genuinely unused inside `physics_run`'s body, since
+      none of this example's schemes are chunk-aware. `test_host.F90` calls this suite part
+      inside a 5-column chunking loop (modeled on `examples/advection`'s own driver convention),
+      so — if actually compiled and run — the suite executes redundantly once per chunk over the
+      *entire* array each time, and `effr_calc.F90` has a real accumulation
+      (`effrs_inout = effrs_inout + (10.0 / 6.0)`), so the redundant calls would over-increment
+      it. That's an inherent mismatch between the driver's chunking assumption and this suite's
+      genuinely unchunked (upstream-matching) design — not something a generator-side fix can or
+      should paper over. Both var_compat FileCheck goldens regenerated and passing; direct
+      regression coverage (sabotage-verified, including a guard against double-inserting
+      `col_start`/`col_end` for the already-working chunked examples) in
+      `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+    - **Fixed — a real `ifx` compile failure, found by the project owner actually trying to
+      build `var_compat` with `ifx` after the fixes above.** gfortran silently accepted the
+      offending Fortran and every FileCheck golden matched it byte-for-byte, so this survived
+      completely undetected until a real, standards-strict compiler was tried:
+      ```
+      error #5192: Lead underscore not allowed
+                num_subcycles=phys_state%num_subcycles, _out_0=ccpp_tmp_0, ...
+      error #6784: The number of actual arguments cannot be greater than the number of dummy
+                   arguments.
+      error #6627: This is an actual argument keyword name, and not a dummy argument name.
+                   [_OUT_0]
+      ```
+      Root cause, one layer deeper than either symptom: `run_dispatch.py`'s
+      `_build_run_dispatch_chain` had no copy-back branch at all for a suite callee's own
+      leading `intent(inout)` **scalar** return value when it's host-matched to a DDT member
+      (`scalar_var`/`tke_inout`/`tke2_inout`, resolved to `phys_state%scalar_var` etc.) rather
+      than a plain caller-block argument or plain host/cap-owned module variable — every
+      existing branch (`block_arg_map`/`host_var_map`/`cap_var_map`) missed it. With no
+      `CopyOp` consumer at all, `print_ftn.py`'s own "untracked call result" fallback took
+      over: it invents a throwaway `ccpp_tmp_N` local for the value and, in the **plain
+      positional-call path**, prints it as a genuine extra positional argument — a real arity
+      mismatch that also silently shifts every later argument (including `errmsg`/`errflg`)
+      into the wrong dummy-argument slot. In the **keyword-call path** (used whenever any of
+      the suite's own inputs is optional, so Fortran correctly forwards `OPTIONAL` absence
+      status — `var_compat`'s radiation group has several optional array args), the same
+      untracked value additionally got a synthetic `_out_{i}` placeholder keyword name from a
+      separate, earlier list comprehension that only recognized `errmsg`/`errflg` by type —
+      invalid Fortran on two counts: the leading underscore (not a legal Fortran identifier
+      start) and the resulting arity mismatch.
+
+      **Fixed** with two complementary changes: (1) a new copy-back branch in the same `idx <
+      len(_leading_inout_ret)` region reuses the exact same `HostVarRefOp` already built as
+      the argument's own *input* reference (`host_var_ref_results`, populated once per callee
+      arg before the call is built) as the copy-back target too — functionally a no-op
+      (Fortran already reflects the update through the same aliased reference, so nothing
+      needs copying), but it gives the result a real `CopyOp` consumer, so it never reaches
+      the untracked-call-result fallback in the first place; this alone fixes the
+      positional-call arity bug and eliminates the dead `ccpp_tmp_N` declaration entirely, not
+      just its use. (2) The keyword-call path's `_result_names` construction was moved to
+      after, and now reuses, the same leading-inout/trailing-alloc classification the
+      copy-back loop already uses (`_get_suite_leading_inout_ret_info`/
+      `_get_suite_lifecycle_ret_info`), computing each output position's real callee
+      dummy-argument name instead of a synthetic `_out_{i}` placeholder — belt-and-suspenders
+      alongside (1), and the only thing needed for positions (1) doesn't cover (a genuine
+      trailing alloc-region scalar with no operand-side entry at all, which legitimately does
+      need its own real keyword name printed).
+
+      Confirmed via the real `Makefile` path (not just the raw CLI):
+      `test_host_ccpp_physics_run`'s call to `var_compatibility_suite_suite_radiation` now has
+      exactly the right argument count, with no `_out_N`/`ccpp_tmp_N` anywhere. Both var_compat
+      FileCheck goldens regenerated and passing; full suite 487 passed, 1 pre-existing xfail.
+      Direct regression coverage (sabotage-verified against both the positional- and
+      keyword-call symptoms independently) in `tests/unit/test_run_dispatch_kw_call_result_names.py`.
+    - **Milestone: `examples/var_compat` builds and runs with `ifx` for the first time**,
+      confirmed by the project owner — the fix above closed the last known compile blocker.
+      The actual run then hit a real *runtime* mismatch: `test_host.F90`'s own `check_suite()`
+      compares `ccpp_physics_suite_variables`'s reported input/output/required variable counts
+      against hardcoded expected values (18/14/22) and got 16/15/21.
+
+      **Fixed — three independent gaps in `ccpp_cap.py`'s `_build_suite_variables_fn`, none
+      previously exercised by any other example (all three walk raw scheme/host `ArgumentOp`s
+      directly, a separate code path from every fix above):**
+      1. *Spurious extra output.* `effr_calc`'s `ncl_out` (`cloud_liquid_number_concentration`)
+         is `optional`, `intent = out`, and no host `.meta` anywhere declares a match for it —
+         it resolves to a throwaway cap-owned scratch variable (`lc_ncl_out`, `ArgOwnershipKind.
+         CapScratch`) that never reaches the host in either direction, but was being listed as a
+         real output regardless (declared intent alone drove the old logic, with no check
+         against `ownership_kind` at all).
+
+         **Fixed** by excluding an *optional*, unmatched, `CapScratch`-classified arg whose
+         standard_name isn't a recognized framework array (`FRAMEWORK_STD_NAME_TO_CAP_VAR` —
+         `ccpp_constituents` and friends still correctly appear, matching this function's own
+         pre-existing `_INTERNAL` comment that they must). Two additional guards were needed,
+         found via real regressions in the full repo test suite, not anticipated up front:
+         - `host_std_names` must be non-empty and missing this std_name: `CapScratch` alone
+           isn't enough to conclude "no host ever declares this" — a FileCheck-only invocation
+           with no `--host-files` at all (`tests/filecheck/examples/end_to_end/
+           helloworld-xml.mlir`, which deliberately omits it to exercise the scheme-only
+           frontend path) makes *every* scheme var `CapScratch` regardless of whether a real
+           host would match it — confirmed via helloworld's own `hello_world_mod.meta`, which
+           genuinely does declare `potential_temperature`; only that specific host-less
+           invocation makes it look unmatched.
+         - The arg must be `optional`: `examples/advection`'s own end-to-end FileCheck golden
+           runs a deliberately reduced pass list with no `generate-host-match` at all (confirmed
+           via its own `// RUN:` line — matching `DEVELOPERS.md`'s own caveat that these
+           manually-composed pass lists aren't a stand-in for the real driver pipeline), so
+           `ownership_kind` alone is unreliable there: `tcld` (`minimum_temperature_for_cloud_
+           liquid`, a genuine intra-suite interstitial the real pipeline's `generate-host-match`
+           would mark `is_interstitial` and exclude via `interstitial_std_names` instead) and
+           `cld_liq_tend` (`tendency_of_cloud_liquid_dry_mixing_ratio`, `constituent = True`,
+           `_build_cap_var_map`'s own docstring names this as an intentional `CapScratch`
+           example that must still appear here) both come out `CapScratch`-and-unmatched in that
+           reduced pipeline, but neither is declared optional — unlike `ncl_out`, which is. A
+           mandatory unmatched arg means the suite genuinely needs it; only an optional one can
+           be silently absent, which is what makes exclusion safe for that case and not this one.
+      2. *Two missing inputs, part one.* `num_subcycles_for_effr` is a suite-level dynamic
+         subcycle loop count synthesized directly by `suite_cap.py`'s
+         `_synthesize_dynamic_loop_count_args` — it never becomes a real scheme-table
+         `ArgumentOp` anywhere (the synthesis only ever mutates that function's own in-memory
+         `all_args` dict), so the scheme-table scan had nothing to discover.
+
+         **Fixed** by a new pass scanning the suite's own subcycle structure directly (the same
+         `XMLSubcycle` nodes `suite_descriptions` already exposes) for non-literal loop counts,
+         adding their standard_name to `input_vars` regardless of whether any scheme declares it.
+      3. *Two missing inputs, part two.* `flag_indicating_cloud_microphysics_has_ice` is
+         referenced only inside `test_host_data.meta`'s own `active =
+         (flag_indicating_cloud_microphysics_has_ice)` conditional-presence expressions on the
+         `effri`/`nci` DDT members — never itself a scheme argument anywhere. `active` is a real
+         `ArgumentOp` property (`ccpp.py`) but no pass currently evaluates it as a conditional
+         (see this same backlog's "opt_arg's dead `active` property" item) — the flag it names is
+         still a genuine host requirement regardless.
+
+         **Fixed** by scanning every `active =` expression's referenced identifiers (via a
+         small regex, excluding Fortran logical-expression keywords) module-wide. Deliberately
+         scoped to modules with exactly one suite: this scan isn't filtered to "tables this
+         suite's own schemes actually match", which is only safe with one suite to attribute the
+         match to — confirmed via `examples/capgen` (the one example generating two suites,
+         `ddt_suite` and `temp_suite`, from a single invocation sharing one `host_ftn/
+         test_host_data.meta`, which has this exact same `active = (index_of_water_vapor_
+         specific_humidity > 0)` pattern): without the single-suite guard, that referenced name
+         leaked into both suites' lists, even though nothing in `temp_suite`'s own schemes ever
+         references it. `examples/ddthost` hits the identical `active =` pattern in its own,
+         single-suite `host_ftn/test_host_data.meta` — a genuine, additional correct inclusion
+         confirmed via its own FileCheck goldens (regenerated, not previously exercising this
+         path either).
+
+      All three confirmed via the real `Makefile` path: `ccpp_physics_suite_variables` now
+      reports exactly 18 input / 14 output / 22 required variables, matching
+      `test_var_compat_host_integration.F90`'s hardcoded expected lists exactly (content, not
+      just counts, verified by direct comparison). Full suite 493 passed, 1 pre-existing xfail;
+      var_compat's two goldens plus ddthost's two goldens (a genuine additional fix, not a
+      regression) regenerated and passing. Direct regression coverage (sabotage-verified against
+      all three fixes independently, plus guard tests for the two false-positive traps found
+      along the way) in `tests/unit/test_suite_variables_gaps.py`.
+
+      **Still open at the time this was written:** whether `make check` actually reports PASS
+      given the separate, already-documented `col_start`/`col_end` unused-but-driver-chunks issue
+      above — no Fortran compiler available in this environment to confirm either way. In
+      practice the project owner's next actual run instead hit a different, real *runtime* bug
+      first (see immediately below), before column-chunking correctness could even be reached.
+    - **Fixed — a real runtime failure, found by the project owner actually running the built
+      executable:** `ERROR in initialize of var_compatibility_suite: ERROR: effr_pre_init()
+      needs to be called first`. Root cause, in a third code path from every fix above (none of
+      which touch lifecycle — init/finalize/timestep — dispatch at all): `effr_pre_init`/
+      `effr_calc_init`/`effr_post_init`/`effr_diag_init` all share one `intent(inout)`
+      `scheme_order` scalar (`scheme_order_in_suite`) that `HostVariableMatchPass` correctly
+      resolves to a DDT member, `phys_state%scheme_order` — `test_host_data.F90` initializes it
+      to `1` before `physics_initialize` runs, and each scheme's own `_init` checks it against
+      its expected call position, then increments it, relying on Fortran's pass-by-reference
+      semantics to thread the running count across the whole call sequence. `lifecycle_cap.py`'s
+      `_generate_lifecycle_fn` (a separate module from `run_dispatch.py`, covering init/finalize/
+      timestep dispatch rather than the physics "_run" dispatch) only ever checked whether a
+      standard_name was a plain `MODULE`-table variable (`host_var_map`, built with
+      `include_host=False`) — it had **no DDT-member resolution branch at all**, unlike
+      `run_dispatch.py`'s own "_run" dispatch. A DDT-member match fell through to the same
+      fallback used for genuinely unmatched optional/allocatable args: a fresh, uninitialized
+      local alloca (`lc_scheme_order`), silently discarding the host's real initial value.
+
+      **Fixed** by teaching `_generate_lifecycle_fn` the same DDT-member resolution
+      `run_dispatch.py` already has, reusing (not duplicating) `cap_shared.py`'s
+      `_build_ddt_resolution_maps`/`_resolve_ddt_access_path`/`_resolve_member_subscripts`: the
+      scheme-arg scan now also captures each arg's own `model_var_name`/`model_module_name`/
+      `model_var_is_ddt` (previously discarded — only `standard_name` was kept), and the
+      resolution loop tries DDT-member resolution before falling back to a fresh local.
+      Confirmed via the real `Makefile` path: `test_host_ccpp_physics_initialize`'s call to
+      `var_compatibility_suite_suite_initialize` now passes `phys_state%scheme_order` directly,
+      with no `lc_scheme_order` anywhere. Both var_compat FileCheck goldens regenerated and
+      passing; full suite 495 passed, 1 pre-existing xfail; no other example affected (this gap
+      was never exercised by any other example's lifecycle dispatch). Direct regression coverage
+      (sabotage-verified) in `tests/unit/test_lifecycle_ddt_member_resolution.py`.
+
+    - **Fixed — a hand-written-file bug, found once `ifx` actually built the example
+      successfully: `gfortran` refused to compile `test_var_compat_host_integration.F90` at
+      all**, on all three of its string-array constructors (`test_invars1`/`test_outvars1`/
+      `test_reqvars1`):
+      ```
+      Error: Different CHARACTER lengths (58/59) in array constructor at (1)
+      ```
+      Confirmed by diffing directly against upstream capgen-v1's own
+      `test_var_compatibility_integration.F90`: upstream is perfectly consistent — all 54 string
+      literals across the three arrays are exactly 58 characters, uniformly (Fortran array
+      constructors require every element to share one length; `gfortran` enforces this strictly,
+      `ifx` apparently pads/truncates silently instead). The ported version had 30 of 54 entries
+      off by ±1–3 characters — a padding-count slip introduced when the array literals were
+      reflowed/reformatted during the port, not an upstream issue and not a design problem with
+      the data itself (every variable name was already correct — confirmed by comparing stripped
+      identifier lists between the two versions, in order, before touching anything).
+
+      **Fixed, per explicit user authorization to touch this specific hand-written file for this
+      specific issue** (the project's standing rule is to never modify hand-written files
+      without explicit authorization — see the "never change handwritten files" feedback memory)
+      — every string literal re-padded to exactly 58 characters, matching upstream exactly.
+      Verified programmatically both ways: all 54 entries now uniformly 58 characters, and every
+      identifier's stripped text is byte-identical to before across all three arrays, in the same
+      order — only trailing whitespace changed.
+    - **Fixed — a real `gfortran` runtime crash, found by actually running the built
+      executable:**
+      ```
+      At line 184 of file examples/var_compat/var_compatibility_suite_cap.F90
+      Fortran runtime error: Attempting to allocate already allocated variable 'effrr_in_unit_conv'
+      ```
+      Root cause, in `print_ftn.py` (the Fortran backend, a different layer from every fix
+      above): each "forward" conversion op (`CCPPKindCastOp`/`CCPPUnitConvertOp`/
+      `CCPPVerticalFlipOp`/`CCPPRowMajorConvertOp` — allocates a local temp, converts into it) is
+      paired with a "write-back" op that writes the temp back to the host and deallocates it —
+      but the deallocate only ever happened inside the write-back case. `effrr_in` (consumed by
+      `effr_calc_run`) is pure `intent(in)`, so it has no write-back at all — nothing ever
+      deallocated its conversion temp. Invisible for a subroutine called only once (Fortran
+      auto-deallocates non-`SAVE` locals on return), but
+      `var_compatibility_suite_suite_radiation` calls `effr_calc_run` inside a nested 3-level
+      subcycle loop (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
+      allocated a second time within the same subroutine invocation, before Fortran ever gets a
+      chance to deallocate it.
+
+      **Fixed** by printing a guarded deallocate (`if (allocated(x)) deallocate(x)` — the same
+      pattern `CCPPSafeDeallocOp` already uses elsewhere in this file) immediately before every
+      `allocate(...)` statement all four of these op cases print, independent of whether a
+      write-back exists — safe for pure `intent(in)` values, and a no-op on first entry so it
+      doesn't change behavior for the ordinary, non-looped case either. Confirmed via the real
+      `Makefile` path: every conversion temp in `var_compatibility_suite_suite_radiation`
+      (`effrr_in_unit_conv`, `effrr_in_vert_flip`, `effrs_inout_kind_cast`, etc.) now has a guard
+      immediately before its `allocate`. Generator-wide fix, not var_compat-specific:
+      `examples/helloworld`'s own `ccpp_t` variant golden also legitimately changed (same guard,
+      same reason) and was regenerated; no other example was affected. Full suite 498 passed, 1
+      pre-existing xfail; ruff unchanged (3 pre-existing errors in `print_ftn.py`, none new).
+      Direct regression coverage (sabotage-verified, covering three of the four affected op
+      cases — `CCPPRowMajorConvertOp` shares the identical one-line fix in the same printer
+      function but isn't separately fixtured, lower marginal risk) in
+      `tests/unit/test_print_ftn_conversion_temp_dealloc.py`.
+
+      Confirmed via the real `Makefile` path: `make check` then reported a real numeric mismatch
+      (see below), not a build/link failure.
+
+    - **Fixed — the col_start/col_end chunking-correctness gap flagged above as unresolvable
+      from the generator side turned out to be a real, fixable generator bug, found by actually
+      running capgen-v1's own generator on this same example (metadata/suite XML) and diffing
+      its output against xdsl-ccpp's:**
+      ```
+      Error: max diff of            effrs from expected value exceeds tolerance:    0.6000000E-04 >    0.5300000E-09
+      ```
+      capgen-v1 slices every host-array reference passed into a suite-part call by
+      `col_start:col_end` (e.g. `phys_state%effrr(col_start:col_end, pver:1:-1)`) and recomputes
+      any `horizontal_dimension`-standard_name scalar as `col_end - col_start + 1` (e.g.
+      `ncol=(col_end - col_start + 1)`), so a chunked call only ever touches its own column
+      window. xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/`col_end`
+      (the fix above) but called `var_compatibility_suite_suite_radiation` with the whole,
+      unsliced host array and the host's raw, full column count every time — so each of
+      `test_host.F90`'s 3 chunked driver calls redundantly reprocessed the entire array, and
+      `effrs_inout`'s real `+=` accumulation (the only non-idempotent operation among this
+      suite's schemes) over-accumulated by exactly 3x (90 µm actual vs. 30 µm correct — the
+      reported diff is exactly that 60 µm excess). Every other checked value happened to be
+      idempotent under repetition (constant overwrites, min/max clamps, or never touched by the
+      scheme body), which is why only `effrs` surfaced a failure.
+
+      Traced to three independent, precisely-located bugs, all in `run_dispatch.py`:
+      1. `_build_run_block_signature`'s host-driven col_start/col_end fallback (the fix above)
+         registered them into `union_non_host_args` but never into `non_host_std_to_canonical` —
+         the dict `_build_run_dispatch_chain`'s already-existing `ArraySectionOp`-slicing logic
+         actually looks up, so that logic's own guard always saw nothing and skipped slicing
+         unconditionally.
+      2. A scheme-declared scalar arg whose own standard_name is `horizontal_dimension`
+         (var_compat's own `ncol`, matching `rad_lw`/`rad_sw`/`effr_calc`) was passed the host's
+         raw, full column count through the ordinary host-var-reference path, with nothing
+         recomputing it as `col_end - col_start + 1`.
+      3. A pre-existing, previously-unreachable bug in the same `ArraySectionOp` block required
+         at least 2 resolved dimensions before slicing anything — silently skipping any
+         genuinely 1-D `horizontal_dimension`-only host array (var_compat's own `fluxLW`,
+         `sfc_up_sw`, `sfc_down_sw`), which would otherwise have regressed those checked values
+         from correct-but-redundant to actively wrong (only ever writing the first chunk's
+         columns) once (1) started slicing their 2-D siblings correctly.
+
+      **Fixed** by (a) also registering the canonical col_start/col_end mapping in the same
+      fallback block, (b) recomputing a `horizontal_dimension`-standard_name scalar via the same
+      alloc/load/sub/add-one/store op sequence `suite_cap.py`'s own `_build_ncol_compute_ops`
+      already uses for this exact computation, and (c) relaxing the 2-dimension requirement to
+      accept a single resolved dimension. No changes needed to `suite_cap.py`'s `_classify_args`
+      (`advection`'s separate, already-correct legacy `horizontal_loop_extent` mechanism —
+      confirmed untouched and unaffected), `print_ftn.py` (temp allocation sizes already derive
+      from whatever shape the sliced actual argument has), the suite callee's own Fortran
+      signature (assumed-shape dummies adapt automatically to a sliced actual argument), or the
+      existing `optional`/`target` handling (confirmed orthogonal).
+
+      Confirmed via the real `Makefile` path: `test_host_ccpp_physics_run`'s call now reads
+      `effrr_inout=phys_state%effrr(col_start:col_end, 1:pver)`, `ncol=ncol` with
+      `ncol = col_end - col_start + 1` computed just above, and
+      `fluxLW=phys_state%fluxLW(col_start:col_end)` /
+      `sfc_up_sw=phys_state%fluxSW%sfc_up_sw(col_start:col_end)` — matching capgen-v1's own
+      generated shape. Affects every example whose host declares
+      `horizontal_loop_begin`/`horizontal_loop_end` and whose schemes rely on the
+      `horizontal_dimension`-only fallback rather than `horizontal_loop_extent` (`var_compat`,
+      `helloworld`, and the synthetic `array-layout-reshape` FileCheck fixture, whose stale
+      "temperature passed through directly" comment was also corrected); every
+      `horizontal_loop_extent`-based example (`advection`, `capgen`, `ddthost`, chost/bind-c) is
+      confirmed unaffected. Full suite: 452 unit + 47 filecheck (1 pre-existing xfail, 1
+      pre-existing unrelated failure in `test_ccpp_xdsl_generates_caps`, confirmed present before
+      this change too via `git stash`). Direct regression coverage (sabotage-verified against all
+      three fixes independently, including the pre-existing `advection`-style no-double-insert
+      guard) in `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+
+      Confirmed via the real `Makefile` path that the generated Fortran text now matches
+      capgen-v1's own shape exactly, and the full unit + FileCheck suites re-ran clean.
+
+    - **Follow-up — a real gfortran compile error, found immediately on the first real build
+      attempt of the fix above:**
+      ```
+      Error: Symbol 'ncol' at (1) has no IMPLICIT type
+      ```
+      Root cause, in `print_ftn.py`: the recomputed `ncol` local (a genuinely new
+      `memref.AllocaOp`) is necessarily constructed nested inside the suite_name/suite_part
+      dispatch chain's `scf.IfOp`s, but `print_ftn.py`'s local-alloca declaration collector only
+      ever scanned the function body's own top-level ops (`bdy.block.ops`), not recursively into
+      nested regions — so the assignment and its use in the call were both printed correctly, but
+      the `integer :: ncol` declaration was silently dropped. The very next code block in the same
+      file (declaring `CCPPKindCastOp`/`CCPPUnitConvertOp` temporaries) already solves this
+      identical problem via `bdy.block.walk()` — this collector was simply never updated to match,
+      since no prior code path needed a genuinely new local alloca'd from inside this specific
+      nested dispatch chain.
+
+      **Fixed** by changing that one collector from `bdy.block.ops` to `bdy.block.walk()`,
+      matching the existing pattern two blocks below in the same function. Purely additive (a walk
+      includes the top level, so every previously-found declaration is unaffected) — confirmed via
+      the real `Makefile` path: `test_host_ccpp_physics_run` now declares `integer :: ncol`
+      immediately after `errflg`. Full unit + FileCheck suites re-run clean (500 passed, same 1
+      pre-existing xfail and 1 pre-existing unrelated failure as before); no other example's
+      generated output changed. Direct regression coverage (sabotage-verified) added as
+      `test_ncol_local_is_declared` in `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+
+      **Still open:** both fixes above are now confirmed correct by an actual gfortran compile
+      succeeding (previously failed at this exact line), but the full `make check` run (build,
+      execute, and compare `effrs` against its expected value) has not yet been confirmed.
+      Separately, `effr_calc`'s
+      optional, unmatched, cap-scratch-only `ncl_out` output
+      (`cloud_liquid_number_concentration`) is `CapVar`-sourced and rank-2, hitting a different,
+      narrower gap in the same `ArraySectionOp` block (its own gate is still keyed to the legacy
+      `horizontal_loop_extent` name, and even fixing that would need a genuinely multi-dimensional
+      `CapVar` section, which the current one-shot single-dimension construction doesn't support)
+      — left unfixed since `ncl_out`/`cloud_liquid_number_concentration` isn't referenced anywhere
+      in this test's checks or required-variable lists, so it isn't a regression, just a known,
+      pre-existing, untested edge case.
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

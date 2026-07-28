@@ -9,30 +9,73 @@
 // variables are declared exactly once each -- see
 // ccpp_cap_refactor_plan.md's backlog for the duplicate/missing-declaration
 // bugs this work found and fixed along the way. See examples/var_compat/
-// README.md for what this example does and does not cover (the vertical
-// array flipping attribute, top_at_one, is a separate, already-tracked,
-// out-of-scope issue). The suite's four schemes all use the bare local name
-// 'scalar_var' for four unrelated standard_names -- a dummy-argument-name
-// collision the host's own metadata resolves by giving each standard_name a
-// distinct name (scalar_var/scalar_varA/scalar_varB/scalar_varC); this
-// requires the generate-host-match pass to run (as the production ccpp_xdsl
-// tool always does whenever host files are given) so suite_cap.py has a
-// model_var_name to disambiguate with.
+// README.md for what this example does and does not cover. The suite's four
+// schemes all use the bare local name 'scalar_var' for four unrelated
+// standard_names -- a dummy-argument-name collision the host's own metadata
+// resolves by giving each standard_name a distinct name (scalar_var/
+// scalar_varA/scalar_varB/scalar_varC); this requires the generate-host-match
+// pass to run (as the production ccpp_xdsl tool always does whenever host
+// files are given) so suite_cap.py has a model_var_name to disambiguate with.
 //
-// Two standard_names here are declared with genuinely different units or
-// kind by different schemes (not just different from the host):
-// effr_pre/effr_post declare the rain-particle radius in meters (matching
-// the host) while effr_calc/effr_diag declare the same standard_name in
-// micrometers, and effrs_calc declares the snow-particle radius in
+// Two standard_names here are declared with genuinely different units,
+// kind, or vertical-layer convention (top_at_one) by different schemes (not
+// just different from the host): effr_pre/effr_post declare the
+// rain-particle radius in meters (matching the host) while effr_calc/
+// effr_diag declare the same standard_name in micrometers with
+// top_at_one = True, and effrs_calc declares the snow-particle radius in
 // meters/kind_phys (matching the host) while effr_calc declares the same
-// standard_name in micrometers/kind=8. Each scheme call below marshals to
-// its own known kind/unit mismatch independently -- effrr_in_unit_conv gets
-// freshly built (and, for effr_calc/effr_diag, torn down) around each
-// individual call, effr_pre/effr_post/effrs_calc receive the shared value
-// directly with no conversion at all -- rather than one suite-boundary
-// conversion applied uniformly to every caller.
+// standard_name in micrometers/kind=8 also with top_at_one = True. Each
+// scheme call below marshals to its own known mismatch independently --
+// effrr_in_unit_conv/effrr_in_vert_flip get freshly built (and, for
+// effr_calc/effr_diag, torn down) around each individual call,
+// effr_pre/effr_post/effrs_calc receive the shared value directly with no
+// conversion at all -- rather than one suite-boundary conversion applied
+// uniformly to every caller. effrs_inout's chain (kind cast, then unit
+// convert, then vertical flip, all on the same call) is the primary
+// end-to-end regression coverage for chaining more than one kind of per-call
+// marshaling together; the write-back unwinds in the opposite order (flip,
+// then unit, then kind).
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// module_rad_ddt.meta is included here -- it wasn't in the original port,
+// which silently produced a suite-cap module missing the "use module_rad_ddt,
+// only: ty_rad_lw" import fluxLW needs (see the declarations below) and,
+// separately, caused rad_sw's DDT-member arguments (sfc_up_sw/sfc_down_sw,
+// now visible in var_compatibility_suite_suite_radiation's own signature
+// below) to never be matched or declared at all -- found by actually trying
+// to compile this example with gfortran for the first time.
+//
+// The effr subcycle's loop count (num_subcycles_for_effr) is a dynamic
+// standard_name with no scheme declaring a matching arg of its own (unlike
+// e.g. scheme_order_in_suite, which flows through the ordinary scheme-arg
+// host-matching path because several schemes declare it as their own arg) --
+// it used to be emitted as the raw, undeclared standard_name string, not
+// valid Fortran. suite_cap.py now synthesizes a fresh host-matched argument
+// for it (see num_subcycles below, declared and passed through exactly like
+// any other host-matched value), scoped to only the "_run" postfix that
+// actually emits the do-loop using it.
+//
+// scalar_var/tke_inout/tke2_inout are ordinary scheme-declared intent=inout
+// scalars with no dedicated framework meaning of their own (unlike
+// ccpp_error_message/ccpp_error_code or a ccpp_t handle). The combined
+// VarCompatibility_ccpp_physics_run wrapper below (generated by
+// run_dispatch.py, a separate code path from suite_cap.py) used to have no
+// copy-back at all for this leading-region case, so it always declared
+// these three intent(in) even though var_compatibility_suite_suite_
+// radiation (below) correctly declares them intent(inout) -- passing an
+// intent(in) actual argument into an intent(inout) dummy is invalid
+// Fortran. Fixed by a new _get_suite_leading_inout_ret_info helper
+// (cap_shared.py) that name-resolves this case the same way the trailing
+// alloc-region case (e.g. a lifecycle function's own intent=out scalars)
+// was already resolved -- see the call's own "scalar_var=scalar_var, ...,
+// tke2_inout=tke2_inout" below: since the copy-back target is the same
+// variable already passed in, the keyword-call printer suppresses the
+// redundant "_out_N=" echo it used to print (see print_ftn.py's
+// _print_kw_call, which needed a matching value-based dedup fix to avoid
+// binding the same dummy argument twice under two different keyword
+// names). The suite subroutine's own declared arguments are unaffected --
+// this fix is entirely in the wrapper-generation code.
+//
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: // FILE: var_compatibility_suite_cap.F90
 // CHECK-LABEL: module var_compatibility_suite_cap
@@ -46,8 +89,11 @@
 // CHECK-NEXT:    use effr_pre, only: effr_pre_init
 // CHECK-NEXT:    use effr_pre, only: effr_pre_run
 // CHECK-NEXT:    use effrs_calc, only: effrs_calc_run
+// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
 // CHECK-NEXT:    use rad_lw, only: rad_lw_run
 // CHECK-NEXT:    use rad_sw, only: rad_sw_run
+// CHECK-NEXT:    use test_host_mod, only: ncols
+// CHECK-NEXT:    use test_host_mod, only: pver
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         character(len=16) :: ccpp_suite_state = 'uninitialized'
@@ -67,6 +113,9 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (.not. allocated(ncl_out)) then
+// CHECK-NEXT:        allocate(ncl_out(ncols, pver))
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_register
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_initialize(scheme_order, errmsg, errflg)
 // CHECK:           integer, intent(inout) :: scheme_order
@@ -74,6 +123,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (.not. allocated(ncl_out)) then
+// CHECK-NEXT:        allocate(ncl_out(ncols, pver))
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in var_compatibility_suite_initialize"
@@ -131,7 +183,8 @@
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_timestep_final
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_radiation(effrr_inout, scalar_varA, ncol, nlev,        &
 // CHECK:           effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, ncl_out, has_graupel,         &
-// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, errmsg, errflg)
+// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, sfc_up_sw, sfc_down_sw,  &
+// CHECK-NEXT:      num_subcycles, errmsg, errflg)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varA
 // CHECK-NEXT:      integer, intent(in) :: ncol
@@ -150,6 +203,9 @@
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
 // CHECK-NEXT:      integer, intent(in) :: scalar_varC
 // CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_up_sw(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: sfc_down_sw(:)
+// CHECK-NEXT:      integer, intent(in) :: num_subcycles
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      integer :: ccpp_loop_cnt
@@ -162,15 +218,21 @@
 // CHECK-NEXT:      real(kind=kind_phys) :: scalar_var_unit_conv
 // CHECK-NEXT:      real(kind=kind_phys) :: tke_inout_unit_conv
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_vert_flip(:, :)
 // CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_kind_cast(:, :)
 // CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_unit_conv(:, :)
+// CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_vert_flip(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv3(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_vert_flip4(:, :)
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (allocated(effrg_in_unit_conv)) deallocate(effrg_in_unit_conv)
 // CHECK-NEXT:      allocate(effrg_in_unit_conv(size(effrg_in, 1), size(effrg_in, 2)))
 // CHECK-NEXT:      effrg_in_unit_conv = effrg_in * 1.0E6_kind_phys
+// CHECK-NEXT:      if (allocated(effrl_inout_unit_conv)) deallocate(effrl_inout_unit_conv)
 // CHECK-NEXT:      allocate(effrl_inout_unit_conv(size(effrl_inout, 1), size(effrl_inout, 2)))
 // CHECK-NEXT:      effrl_inout_unit_conv = effrl_inout * 1.0E6_kind_phys
+// CHECK-NEXT:      if (allocated(effri_out_unit_conv)) deallocate(effri_out_unit_conv)
 // CHECK-NEXT:      allocate(effri_out_unit_conv(size(effri_out, 1), size(effri_out, 2)))
 // CHECK-NEXT:      scalar_var_unit_conv = scalar_var * 0.001_kind_phys
 // CHECK-NEXT:      tke_inout_unit_conv = tke_inout * 1.0_kind_phys
@@ -179,25 +241,36 @@
 // CHECK-NEXT:          "' in var_compatibility_suite_radiation"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      do ccpp_loop_cnt1 = 1, num_subcycles_for_effr
+// CHECK-NEXT:      do ccpp_loop_cnt1 = 1, num_subcycles
 // CHECK-NEXT:        if (errflg .eq. 0) then
 // CHECK-NEXT:          call effr_pre_run(effrr_inout, scalar_varA, errmsg, errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        do ccpp_loop_cnt0 = 1, 2
 // CHECK-NEXT:          do ccpp_loop_cnt = 1, 2
 // CHECK-NEXT:            if (errflg .eq. 0) then
+// CHECK-NEXT:              if (allocated(effrr_in_unit_conv)) deallocate(effrr_in_unit_conv)
 // CHECK-NEXT:              allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))
 // CHECK-NEXT:              effrr_in_unit_conv = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:              if (allocated(effrr_in_vert_flip)) deallocate(effrr_in_vert_flip)
+// CHECK-NEXT:              allocate(effrr_in_vert_flip(size(effrr_in_unit_conv, 1), size(effrr_in_unit_conv, 2)))
+// CHECK-NEXT:              effrr_in_vert_flip = effrr_in_unit_conv(:, size(effrr_in_unit_conv, 2):1:-1)
+// CHECK-NEXT:              if (allocated(effrs_inout_kind_cast)) deallocate(effrs_inout_kind_cast)
 // CHECK-NEXT:              allocate(effrs_inout_kind_cast(size(effrs_inout, 1), size(effrs_inout, 2)))
 // CHECK-NEXT:              effrs_inout_kind_cast = real(effrs_inout, kind=8)
+// CHECK-NEXT:              if (allocated(effrs_inout_unit_conv)) deallocate(effrs_inout_unit_conv)
 // CHECK-NEXT:              allocate(effrs_inout_unit_conv(size(effrs_inout_kind_cast, 1), size(effrs_inout_kind_cast, 2)))
 // CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_kind_cast * 1.0E6_8
-// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_unit_conv,                 &
+// CHECK-NEXT:              if (allocated(effrs_inout_vert_flip)) deallocate(effrs_inout_vert_flip)
+// CHECK-NEXT:              allocate(effrs_inout_vert_flip(size(effrs_inout_unit_conv, 1), size(effrs_inout_unit_conv, 2)))
+// CHECK-NEXT:              effrs_inout_vert_flip = effrs_inout_unit_conv(:, size(effrs_inout_unit_conv, 2):1:-1)
+// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_vert_flip,                 &
 // CHECK-NEXT:                effrg_in=effrg_in_unit_conv, ncg_in=ncg_in, nci_out=nci_out,                        &
 // CHECK-NEXT:                effrl_inout=effrl_inout_unit_conv, effri_out=effri_out_unit_conv,                   &
-// CHECK-NEXT:                effrs_inout=effrs_inout_unit_conv, ncl_out=ncl_out, has_graupel=has_graupel,        &
+// CHECK-NEXT:                effrs_inout=effrs_inout_vert_flip, ncl_out=ncl_out, has_graupel=has_graupel,        &
 // CHECK-NEXT:                scalar_var=scalar_var_unit_conv, tke_inout=tke_inout_unit_conv,                     &
 // CHECK-NEXT:                tke2_inout=tke2_inout, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_vert_flip(:, size(effrs_inout_vert_flip, 2):1:-1)
+// CHECK-NEXT:              deallocate(effrs_inout_vert_flip)
 // CHECK-NEXT:              effrs_inout_kind_cast = effrs_inout_unit_conv * 1.0E-6_8
 // CHECK-NEXT:              deallocate(effrs_inout_unit_conv)
 // CHECK-NEXT:              effrs_inout = real(effrs_inout_kind_cast, kind=kind_phys)
@@ -209,15 +282,19 @@
 // CHECK-NEXT:          call effr_post_run(effrr_inout, scalar_varB, errmsg, errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
-// CHECK-NEXT:      do ccpp_loop_cnt2 = 1, num_subcycles_for_effr
+// CHECK-NEXT:      do ccpp_loop_cnt2 = 1, num_subcycles
 // CHECK-NEXT:        if (errflg .eq. 0) then
 // CHECK-NEXT:          call effrs_calc_run(effrs_inout, errmsg, errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        if (allocated(effrr_in_unit_conv3)) deallocate(effrr_in_unit_conv3)
 // CHECK-NEXT:        allocate(effrr_in_unit_conv3(size(effrr_inout, 1), size(effrr_inout, 2)))
 // CHECK-NEXT:        effrr_in_unit_conv3 = effrr_inout * 1.0E6_kind_phys
-// CHECK-NEXT:        call effr_diag_run(effrr_in_unit_conv3, scalar_varC, errmsg, errflg)
+// CHECK-NEXT:        if (allocated(effrr_in_vert_flip4)) deallocate(effrr_in_vert_flip4)
+// CHECK-NEXT:        allocate(effrr_in_vert_flip4(size(effrr_in_unit_conv3, 1), size(effrr_in_unit_conv3, 2)))
+// CHECK-NEXT:        effrr_in_vert_flip4 = effrr_in_unit_conv3(:, size(effrr_in_unit_conv3, 2):1:-1)
+// CHECK-NEXT:        call effr_diag_run(effrr_in_vert_flip4, scalar_varC, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call rad_lw_run(ncol, fluxLW, errmsg, errflg)
@@ -239,7 +316,14 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
+// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_sw
 // CHECK-NEXT:    use test_host_data, only: physics_state
+// CHECK-NEXT:    use test_host_mod, only: effrs
+// CHECK-NEXT:    use test_host_mod, only: has_graupel
+// CHECK-NEXT:    use test_host_mod, only: ncols
+// CHECK-NEXT:    use test_host_mod, only: phys_state
+// CHECK-NEXT:    use test_host_mod, only: pver
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_finalize
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_initialize
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_radiation
@@ -289,10 +373,9 @@
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK-NEXT:      integer :: lc_scheme_order
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
-// CHECK-NEXT:        call var_compatibility_suite_suite_initialize(lc_scheme_order, errmsg, errflg)
+// CHECK-NEXT:        call var_compatibility_suite_suite_initialize(phys_state%scheme_order, errmsg, errflg)
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
@@ -334,43 +417,19 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine VarCompatibility_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, effrr_inout, scalar_varA,  &
-// CHECK:           ncol, nlev, effrg_in, ncg_in, nci_out, effrl_inout, effri_out, effrs_inout, has_graupel,      &
-// CHECK-NEXT:      scalar_var, tke_inout, tke2_inout, scalar_varB, scalar_varC, fluxLW, errmsg, errflg)
+// CHECK-LABEL:   subroutine VarCompatibility_ccpp_physics_run(suite_name, suite_part, col_start, col_end,        &
+// CHECK:           errmsg, errflg)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrr_inout(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varA
-// CHECK-NEXT:      integer, intent(in) :: ncol
-// CHECK-NEXT:      integer, intent(in) :: nlev
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: effrg_in(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: ncg_in(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: nci_out(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrl_inout(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), optional, target, intent(inout) :: effri_out(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: effrs_inout(:, :)
-// CHECK-NEXT:      logical, intent(in) :: has_graupel
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_var
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tke_inout
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: tke2_inout
-// CHECK-NEXT:      real(kind=kind_phys), intent(in) :: scalar_varB
-// CHECK-NEXT:      integer, intent(in) :: scalar_varC
-// CHECK-NEXT:      type(ty_rad_lw), target, intent(inout) :: fluxLW(:)
+// CHECK-NEXT:      integer, intent(in) :: col_start
+// CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_0
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_1
-// CHECK-NEXT:      real(kind=kind_phys) :: ccpp_tmp_2
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
+// CHECK-NEXT:        ncol = col_end - col_start + 1
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
-// CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=effrr_inout,                     &
-// CHECK-NEXT:            scalar_varA=scalar_varA, ncol=ncol, nlev=nlev, effrg_in=effrg_in, ncg_in=ncg_in,        &
-// CHECK-NEXT:            nci_out=nci_out, effrl_inout=effrl_inout, effri_out=effri_out, effrs_inout=effrs_inout, &
-// CHECK-NEXT:            ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=scalar_var,                     &
-// CHECK-NEXT:            tke_inout=tke_inout, tke2_inout=tke2_inout, scalar_varB=scalar_varB,                    &
-// CHECK-NEXT:            scalar_varC=scalar_varC, fluxLW=fluxLW, _out_0=ccpp_tmp_0, _out_1=ccpp_tmp_1,           &
-// CHECK-NEXT:            _out_2=ccpp_tmp_2, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=phys_state%effrr(col_start:col_end, 1:pver), scalar_varA=phys_state%scalar_varA, ncol=ncol, nlev=pver, effrg_in=phys_state%effrg(col_start:col_end, 1:pver), ncg_in=phys_state%ncg(col_start:col_end, 1:pver), nci_out=phys_state%nci(col_start:col_end, 1:pver), effrl_inout=phys_state%effrl(col_start:col_end, 1:pver), effri_out=phys_state%effri(col_start:col_end, 1:pver), effrs_inout=effrs(col_start:col_end, 1:pver), ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=phys_state%scalar_var, tke_inout=phys_state%tke, tke2_inout=phys_state%tke2, scalar_varB=phys_state%scalar_varB, scalar_varC=phys_state%scalar_varC, fluxLW=phys_state%fluxLW(col_start:col_end), sfc_up_sw=phys_state%fluxSW%sfc_up_sw(col_start:col_end), sfc_down_sw=phys_state%fluxSW%sfc_down_sw(col_start:col_end), num_subcycles=phys_state%num_subcycles, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"
@@ -417,57 +476,65 @@
 // CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        if (do_input .and. .not. do_output) then
-// CHECK-NEXT:          allocate(var_list(14))
+// CHECK-NEXT:          allocate(var_list(18))
 // CHECK-NEXT:          var_list(1) = 'cloud_graupel_number_concentration  '
 // CHECK-NEXT:          var_list(2) = 'effective_radius_of_stratiform_cloud_graupel'
 // CHECK-NEXT:          var_list(3) = 'effective_radius_of_stratiform_cloud_liquid_water_particle'
 // CHECK-NEXT:          var_list(4) = 'effective_radius_of_stratiform_cloud_rain_particle'
 // CHECK-NEXT:          var_list(5) = 'effective_radius_of_stratiform_cloud_snow_particle'
 // CHECK-NEXT:          var_list(6) = 'flag_indicating_cloud_microphysics_has_graupel'
-// CHECK-NEXT:          var_list(7) = 'longwave_radiation_fluxes           '
-// CHECK-NEXT:          var_list(8) = 'scalar_variable_for_testing         '
-// CHECK-NEXT:          var_list(9) = 'scalar_variable_for_testing_a       '
-// CHECK-NEXT:          var_list(10) = 'scalar_variable_for_testing_b       '
-// CHECK-NEXT:          var_list(11) = 'scalar_variable_for_testing_c       '
-// CHECK-NEXT:          var_list(12) = 'scheme_order_in_suite               '
-// CHECK-NEXT:          var_list(13) = 'turbulent_kinetic_energy            '
-// CHECK-NEXT:          var_list(14) = 'turbulent_kinetic_energy2           '
+// CHECK-NEXT:          var_list(7) = 'flag_indicating_cloud_microphysics_has_ice'
+// CHECK-NEXT:          var_list(8) = 'longwave_radiation_fluxes           '
+// CHECK-NEXT:          var_list(9) = 'num_subcycles_for_effr              '
+// CHECK-NEXT:          var_list(10) = 'scalar_variable_for_testing         '
+// CHECK-NEXT:          var_list(11) = 'scalar_variable_for_testing_a       '
+// CHECK-NEXT:          var_list(12) = 'scalar_variable_for_testing_b       '
+// CHECK-NEXT:          var_list(13) = 'scalar_variable_for_testing_c       '
+// CHECK-NEXT:          var_list(14) = 'scheme_order_in_suite               '
+// CHECK-NEXT:          var_list(15) = 'surface_downwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(16) = 'surface_upwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(17) = 'turbulent_kinetic_energy            '
+// CHECK-NEXT:          var_list(18) = 'turbulent_kinetic_energy2           '
 // CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(13))
+// CHECK-NEXT:          allocate(var_list(14))
 // CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
 // CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
 // CHECK-NEXT:          var_list(3) = 'cloud_ice_number_concentration      '
-// CHECK-NEXT:          var_list(4) = 'cloud_liquid_number_concentration   '
-// CHECK-NEXT:          var_list(5) = 'effective_radius_of_stratiform_cloud_ice_particle'
-// CHECK-NEXT:          var_list(6) = 'effective_radius_of_stratiform_cloud_liquid_water_particle'
-// CHECK-NEXT:          var_list(7) = 'effective_radius_of_stratiform_cloud_rain_particle'
-// CHECK-NEXT:          var_list(8) = 'effective_radius_of_stratiform_cloud_snow_particle'
-// CHECK-NEXT:          var_list(9) = 'longwave_radiation_fluxes           '
-// CHECK-NEXT:          var_list(10) = 'scalar_variable_for_testing         '
-// CHECK-NEXT:          var_list(11) = 'scheme_order_in_suite               '
-// CHECK-NEXT:          var_list(12) = 'turbulent_kinetic_energy            '
-// CHECK-NEXT:          var_list(13) = 'turbulent_kinetic_energy2           '
+// CHECK-NEXT:          var_list(4) = 'effective_radius_of_stratiform_cloud_ice_particle'
+// CHECK-NEXT:          var_list(5) = 'effective_radius_of_stratiform_cloud_liquid_water_particle'
+// CHECK-NEXT:          var_list(6) = 'effective_radius_of_stratiform_cloud_rain_particle'
+// CHECK-NEXT:          var_list(7) = 'effective_radius_of_stratiform_cloud_snow_particle'
+// CHECK-NEXT:          var_list(8) = 'longwave_radiation_fluxes           '
+// CHECK-NEXT:          var_list(9) = 'scalar_variable_for_testing         '
+// CHECK-NEXT:          var_list(10) = 'scheme_order_in_suite               '
+// CHECK-NEXT:          var_list(11) = 'surface_downwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(12) = 'surface_upwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(13) = 'turbulent_kinetic_energy            '
+// CHECK-NEXT:          var_list(14) = 'turbulent_kinetic_energy2           '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(19))
+// CHECK-NEXT:          allocate(var_list(22))
 // CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
 // CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
 // CHECK-NEXT:          var_list(3) = 'cloud_graupel_number_concentration  '
 // CHECK-NEXT:          var_list(4) = 'cloud_ice_number_concentration      '
-// CHECK-NEXT:          var_list(5) = 'cloud_liquid_number_concentration   '
-// CHECK-NEXT:          var_list(6) = 'effective_radius_of_stratiform_cloud_graupel'
-// CHECK-NEXT:          var_list(7) = 'effective_radius_of_stratiform_cloud_ice_particle'
-// CHECK-NEXT:          var_list(8) = 'effective_radius_of_stratiform_cloud_liquid_water_particle'
-// CHECK-NEXT:          var_list(9) = 'effective_radius_of_stratiform_cloud_rain_particle'
-// CHECK-NEXT:          var_list(10) = 'effective_radius_of_stratiform_cloud_snow_particle'
-// CHECK-NEXT:          var_list(11) = 'flag_indicating_cloud_microphysics_has_graupel'
+// CHECK-NEXT:          var_list(5) = 'effective_radius_of_stratiform_cloud_graupel'
+// CHECK-NEXT:          var_list(6) = 'effective_radius_of_stratiform_cloud_ice_particle'
+// CHECK-NEXT:          var_list(7) = 'effective_radius_of_stratiform_cloud_liquid_water_particle'
+// CHECK-NEXT:          var_list(8) = 'effective_radius_of_stratiform_cloud_rain_particle'
+// CHECK-NEXT:          var_list(9) = 'effective_radius_of_stratiform_cloud_snow_particle'
+// CHECK-NEXT:          var_list(10) = 'flag_indicating_cloud_microphysics_has_graupel'
+// CHECK-NEXT:          var_list(11) = 'flag_indicating_cloud_microphysics_has_ice'
 // CHECK-NEXT:          var_list(12) = 'longwave_radiation_fluxes           '
-// CHECK-NEXT:          var_list(13) = 'scalar_variable_for_testing         '
-// CHECK-NEXT:          var_list(14) = 'scalar_variable_for_testing_a       '
-// CHECK-NEXT:          var_list(15) = 'scalar_variable_for_testing_b       '
-// CHECK-NEXT:          var_list(16) = 'scalar_variable_for_testing_c       '
-// CHECK-NEXT:          var_list(17) = 'scheme_order_in_suite               '
-// CHECK-NEXT:          var_list(18) = 'turbulent_kinetic_energy            '
-// CHECK-NEXT:          var_list(19) = 'turbulent_kinetic_energy2           '
+// CHECK-NEXT:          var_list(13) = 'num_subcycles_for_effr              '
+// CHECK-NEXT:          var_list(14) = 'scalar_variable_for_testing         '
+// CHECK-NEXT:          var_list(15) = 'scalar_variable_for_testing_a       '
+// CHECK-NEXT:          var_list(16) = 'scalar_variable_for_testing_b       '
+// CHECK-NEXT:          var_list(17) = 'scalar_variable_for_testing_c       '
+// CHECK-NEXT:          var_list(18) = 'scheme_order_in_suite               '
+// CHECK-NEXT:          var_list(19) = 'surface_downwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(20) = 'surface_upwelling_shortwave_radiation_flux'
+// CHECK-NEXT:          var_list(21) = 'turbulent_kinetic_energy            '
+// CHECK-NEXT:          var_list(22) = 'turbulent_kinetic_energy2           '
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"

@@ -362,6 +362,9 @@ class ArgumentOp(IRDLOperation):
     diagnostic_name_fixed = opt_prop_def(StringAttr)  # fixed diagnostic name regardless of suite instance
     active                = opt_prop_def(StringAttr)  # Fortran logical expression controlling when variable is active
     optional             = opt_prop_def(UnitAttr)
+    # Scheme's own vertical-layer convention: top-of-atmosphere at index 1.
+    # Absent means not-flipped, matching the host's usual convention.
+    top_at_one           = opt_prop_def(UnitAttr)
 
     # All keys recognised by __init__. Used externally to warn on unrecognised keys.
     KNOWN_PROPS: ClassVar[frozenset] = frozenset([
@@ -369,6 +372,7 @@ class ArgumentOp(IRDLOperation):
         "kind", "intent", "units", "memory_space", "optional",
         "allocatable", "advected", "constituent", "protected", "state_variable",
         "default_value", "diagnostic_name", "diagnostic_name_fixed", "active",
+        "top_at_one",
     ])
 
     def __init__(
@@ -417,7 +421,7 @@ class ArgumentOp(IRDLOperation):
             return str(val).strip().lower() in ("true", ".true.")
 
         for flag in ("optional", "allocatable", "advected", "constituent",
-                     "protected", "state_variable"):
+                     "protected", "state_variable", "top_at_one"):
             if flag in attributes:
                 if _flag_is_true(attributes[flag]):
                     properties[flag] = UnitAttr()

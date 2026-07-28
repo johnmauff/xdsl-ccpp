@@ -41,6 +41,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     SubcycleLoopOp,
     UnitConvertOp,
     UnitWriteBackOp,
+    VerticalFlipOp,
+    VerticalFlipWriteBackOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
@@ -69,6 +71,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
+    is_vertical_dimension,
     normalize_units,
 )
 from xdsl_ccpp.util.visitor import Visitor
@@ -219,6 +222,23 @@ class GenerateSuiteSubroutine(RewritePattern):
             return arg.getAttr("standard_name").lower()
         return arg.name
 
+    @staticmethod
+    def _vertical_dim_index(fn_arg) -> "int | None":
+        """Return the 1-based Fortran dimension index of fn_arg's vertical
+        (layer) dimension, or None if it has no recognized one.
+
+        dim_names (set by BuildSchemeDescription from the ArgumentOp's own
+        dim_names property) preserves the scheme's own declared dimension
+        order, so this is per-scheme -- correct even if two schemes sharing
+        a standard_name order their dimensions differently.
+        """
+        if not fn_arg.hasAttr("dim_names"):
+            return None
+        for idx, dim_name in enumerate(fn_arg.getAttr("dim_names")):
+            if is_vertical_dimension(dim_name):
+                return idx + 1
+        return None
+
     def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops,
                                framework_ref_ops=None, suite_use_stubs=None):
         """Find the SSA value to use as the promotion loop's upper bound.
@@ -273,6 +293,99 @@ class GenerateSuiteSubroutine(RewritePattern):
                         suite_use_stubs.append(stub)
                     return data_ops[var.name]
         return None
+
+    def _resolve_host_only_std_name(self, std_name: str):
+        """Find a host-declared arg with this exact standard_name, scanning
+        every non-scheme table in self.meta_data (module, host, or ddt --
+        unlike _find_loop_upper_bound's fallback above, which only scans
+        MODULE-type tables for a different case, a promotion loop's upper
+        bound). Used for a subcycle's own dynamic loop-count standard_name
+        when no scheme anywhere declares a matching arg of its own, so it
+        never enters all_args through the ordinary scheme-arg host-matching
+        path the way e.g. scheme_order_in_suite does (several schemes'
+        own .meta files declare that one as their own arg; nothing declares
+        num_subcycles_for_effr as its own arg anywhere in examples/var_compat).
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") == CCPPType.SCHEME:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if var.hasAttr("standard_name") and var.getAttr("standard_name") == std_name:
+                    return var
+        return None
+
+    def _synthesize_dynamic_loop_count_args(self, suite_description, arg_tables, all_args) -> None:
+        """Mutate all_args in place: for every subcycle in suite_description
+        with a dynamic (non-literal) loop count whose standard_name has no
+        matching scheme arg anywhere, synthesize a fresh HostMatched
+        CCPPArgument for it -- named after the host's own local variable --
+        so it becomes a genuine, correctly-declared dummy argument of the
+        suite subroutine the same way any other host-matched value already
+        does. Without this, _emit_subcycle would have nothing but the raw,
+        undeclared standard_name to print as the Fortran do-loop bound.
+
+        arg_tables is per-postfix (only schemes with an entry point matching
+        the CURRENT tgt_subroutine_postfix, e.g. "_init" vs "_run" vs
+        "_finalize"). A subcycle's loop count is only actually needed for
+        postfixes where at least one of its own schemes (recursively) is in
+        arg_tables -- matching _emit_subcycle_items's own "if sn in
+        arg_tables" filter exactly -- so this only fires for the specific
+        postfix that will actually emit a SubcycleLoopOp using it, not every
+        lifecycle postfix the suite happens to have (register/finalize/
+        timestep_initial/timestep_final have no subcycles of their own to
+        emit at all, and must not gain an unused dummy argument here).
+
+        Only called when physics_mode is True (see the caller in
+        _build_arg_tables): _emit_subcycle itself only ever emits a
+        SubcycleLoopOp under that same condition (its own "if _lc_int > 1
+        and physics_mode and body_ops" guard) -- a postfix like "_init" can
+        still have every one of a subcycle's own schemes present in
+        arg_tables (e.g. effr_calc has both a _run and an _init entry
+        point), so the arg_tables-based check above isn't sufficient on its
+        own to avoid adding an unused argument to non-physics postfixes.
+        """
+        def _subcycle_has_active_schemes(items) -> bool:
+            for item in items:
+                if item[0] == "scheme":
+                    _, sn, _ = item
+                    if sn in arg_tables:
+                        return True
+                else:
+                    _, _, _, sub_items = item
+                    if _subcycle_has_active_schemes(sub_items):
+                        return True
+            return False
+
+        def _collect_dynamic_counts(items) -> set:
+            counts: set = set()
+            for item in items:
+                if item[0] == "subcycle":
+                    _, loop_count, is_literal, sub_items = item
+                    if not is_literal and _subcycle_has_active_schemes(sub_items):
+                        counts.add(loop_count)
+                    counts |= _collect_dynamic_counts(sub_items)
+            return counts
+
+        call_sequence = self.getCallSequence(suite_description)
+        for std_name in _collect_dynamic_counts(call_sequence):
+            std_key = std_name.lower()
+            if std_key in all_args:
+                continue
+            host_var = self._resolve_host_only_std_name(std_name)
+            if host_var is None:
+                continue
+            new_arg = CCPPArgument(host_var.name)
+            new_arg.setAttr("standard_name", std_name)
+            new_arg.setAttr("type", host_var.getAttr("type"))
+            new_arg.setAttr("intent", "in")
+            if host_var.hasAttr("kind"):
+                new_arg.setAttr("kind", host_var.getAttr("kind"))
+            new_arg.setAttr("dimensions", 0)
+            new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+            all_args[std_key] = new_arg
 
     def _build_promoted_call_ops(
         self,
@@ -521,17 +634,23 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         def _apply_divergent_marshaling(arg, val):
             """Adapt val (the shared, host-native value) to this specific
-            scheme's own known kind/unit mismatch, for a cross-scheme
-            divergent standard_name. Appends the forward cast(s) to
-            cast_ops and schedules the matching write-back(s) -- applied in
-            reverse order, since a kind cast followed by a unit convert
-            must be undone unit-first, kind-second -- into
+            scheme's own known kind/unit mismatch and vertical-layer
+            (top_at_one) convention, for a cross-scheme divergent
+            standard_name. Appends the forward cast(s) to cast_ops and
+            schedules the matching write-back(s) -- applied in reverse
+            order, since e.g. a kind cast followed by a unit convert must
+            be undone unit-first, kind-second -- into
             divergent_writeback_ops. Returns the value to pass to the call.
+
+            A vertical flip is type/kind-invariant (it only reorders array
+            elements along one axis), so it composes with the kind/unit
+            steps in either order without changing the final result;
+            applied last here purely for a stable, deterministic order.
             """
             if self._std_key(arg) not in divergent_std_keys:
                 return val
             intent = arg.getAttr("intent") if arg.hasAttr("intent") else "in"
-            chain: list = []  # (kind_or_unit, result_ssa, source_ssa, param)
+            chain: list = []  # (kind/unit/flip, result_ssa, source_ssa, param)
             cur = val
             if arg.hasAttr("model_var_kind_mismatch") and arg.getAttr("type") != "character":
                 scheme_kind, host_kind = arg.getAttr("model_var_kind_mismatch").split(":")
@@ -557,15 +676,27 @@ class GenerateSuiteSubroutine(RewritePattern):
                 cast_ops.append(conv_op)
                 chain.append(("unit", conv_op.res, cur, to_host_expr))
                 cur = conv_op.res
+            if arg.hasAttr("top_at_one"):
+                vert_dim = self._vertical_dim_index(arg)
+                if vert_dim is not None:
+                    flip_op = VerticalFlipOp(cur, vert_dim, cur.type)
+                    flip_op.res.name_hint = f"{arg.name}_vert_flip"
+                    cast_ops.append(flip_op)
+                    chain.append(("flip", flip_op.res, cur, vert_dim))
+                    cur = flip_op.res
             if intent in ("inout", "out"):
                 for kind_or_unit, result_ssa, source_ssa, param in reversed(chain):
                     if kind_or_unit == "kind":
                         divergent_writeback_ops.append(
                             KindWriteBackOp(result_ssa, source_ssa, param)
                         )
-                    else:
+                    elif kind_or_unit == "unit":
                         divergent_writeback_ops.append(
                             UnitWriteBackOp(result_ssa, source_ssa, param)
+                        )
+                    else:
+                        divergent_writeback_ops.append(
+                            VerticalFlipWriteBackOp(result_ssa, source_ssa, param)
                         )
             return cur
 
@@ -1091,7 +1222,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             ncol_meta=ncol_meta,
         )
 
-    def _build_arg_tables(self, suite_description, tgt_subroutine_postfix) -> "_ArgTableResult":
+    def _build_arg_tables(
+        self, suite_description, tgt_subroutine_postfix, physics_mode: bool = False,
+    ) -> "_ArgTableResult":
         """Build argument tables, overrides, and canonical arg map for all schemes."""
         scheme_entries = self.getSchemeNames(suite_description)
         arg_tables = {}
@@ -1122,18 +1255,23 @@ class GenerateSuiteSubroutine(RewritePattern):
                     else:
                         all_args[std_key] = fn_arg
 
+            if physics_mode:
+                self._synthesize_dynamic_loop_count_args(suite_description, arg_tables, all_args)
+
         # Two or more schemes sharing a standard_name can each independently
-        # declare a genuinely different kind or units for it -- not just
-        # different from the host, but different from each other (e.g.
-        # examples/var_compat: effr_pre/effr_post declare the rain-particle
-        # radius in meters, effr_calc/effr_diag declare the same
-        # standard_name in micrometers). all_args above only ever keeps ONE
-        # scheme's declaration per standard_name (whichever came first), so a
-        # suite-boundary conversion decision based on that single entry is
-        # wrong for every other scheme sharing the name. Flag these
-        # standard_names so the block signature and call-building code can
-        # switch to per-call marshaling for just these entries, leaving every
-        # other, agreeing standard_name completely unaffected.
+        # declare a genuinely different kind, units, or vertical-layer
+        # convention (top_at_one) for it -- not just different from the
+        # host, but different from each other (e.g. examples/var_compat:
+        # effr_pre/effr_post declare the rain-particle radius in meters,
+        # effr_calc/effr_diag declare the same standard_name in
+        # micrometers with top_at_one = True). all_args above only ever
+        # keeps ONE scheme's declaration per standard_name (whichever came
+        # first), so a suite-boundary conversion decision based on that
+        # single entry is wrong for every other scheme sharing the name.
+        # Flag these standard_names so the block signature and
+        # call-building code can switch to per-call marshaling for just
+        # these entries, leaving every other, agreeing standard_name
+        # completely unaffected.
         signatures_seen: dict[str, set] = {}
         for scheme_name in arg_tables:
             for fn_arg in arg_tables[scheme_name].getFunctionArguments():
@@ -1144,7 +1282,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                 units = normalize_units(
                     fn_arg.getAttr("units") if fn_arg.hasAttr("units") else None
                 )
-                signatures_seen.setdefault(std_key, set()).add((kind, units))
+                top_at_one = fn_arg.hasAttr("top_at_one")
+                signatures_seen.setdefault(std_key, set()).add((kind, units, top_at_one))
         divergent_std_keys = frozenset(
             std_key for std_key, sigs in signatures_seen.items() if len(sigs) > 1
         )
@@ -1411,8 +1550,30 @@ class GenerateSuiteSubroutine(RewritePattern):
                 )
                 sc_alloc.memref.name_hint = "ccpp_loop_cnt"
                 hoisted_allocas.append(sc_alloc)
+                # A non-literal loop_count is a CCPP standard_name, not a
+                # Fortran identifier -- resolve it to the matching arg's own
+                # dummy-argument name (all_args, keyed by std_key) before
+                # printing, whether that arg arrived through the ordinary
+                # scheme-arg host-matching path or through
+                # _synthesize_dynamic_loop_count_args (for a standard_name no
+                # scheme declares its own arg for, e.g. examples/var_compat's
+                # num_subcycles_for_effr). Printing the raw standard_name
+                # directly is not valid Fortran and would not compile.
+                printed_loop_count = loop_count
+                if not is_literal:
+                    resolved = all_args.get(loop_count.lower())
+                    if resolved is None:
+                        raise ValueError(
+                            f"Subcycle loop count {loop_count!r} is not a "
+                            f"literal integer and has no matching "
+                            f"host-declared variable anywhere -- give the "
+                            f"host a variable with this standard_name, or "
+                            f"make the subcycle's loop count a literal "
+                            f"integer."
+                        )
+                    printed_loop_count = resolved.name
                 return [SubcycleLoopOp(
-                    loop_count=loop_count,
+                    loop_count=printed_loop_count,
                     loop_var=sc_alloc.memref,
                     body_ops=body_ops,
                     is_literal=is_literal,
@@ -1702,7 +1863,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             assert tgt_subroutine_postfix is not None
             generated_subroutine_posfix = tgt_subroutine_postfix
 
-        _tables = self._build_arg_tables(suite_description, tgt_subroutine_postfix)
+        _tables = self._build_arg_tables(suite_description, tgt_subroutine_postfix, physics_mode)
         scheme_entries = _tables.scheme_entries
         arg_tables = _tables.arg_tables
         scheme_overrides = _tables.scheme_overrides
