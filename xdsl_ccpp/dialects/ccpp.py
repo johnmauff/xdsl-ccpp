@@ -51,6 +51,11 @@ class SuiteOp(IRDLOperation):
 
     suite_name = prop_def(StringAttr)
     version = opt_prop_def(StringAttr)
+    # v2.0 SDF schema: a single scheme's own init/final phase, called once
+    # per suite lifecycle (not per-group) -- see XMLSuite.init_scheme/
+    # final_scheme (ccpp_xml.py) for the frontend-parsing side.
+    init_scheme = opt_prop_def(StringAttr)
+    final_scheme = opt_prop_def(StringAttr)
 
     body = region_def("single_block")
 
@@ -63,6 +68,8 @@ class SuiteOp(IRDLOperation):
         suite_name: str | StringAttr,
         body: Region | Sequence[Operation] | Sequence[Block],
         version: str | StringAttr | None = None,
+        init_scheme: str | StringAttr | None = None,
+        final_scheme: str | StringAttr | None = None,
     ):
 
         if isa(suite_name, str):
@@ -74,6 +81,16 @@ class SuiteOp(IRDLOperation):
             if isa(version, str):
                 version = StringAttr(version)
             properties["version"] = version
+
+        if init_scheme is not None:
+            if isa(init_scheme, str):
+                init_scheme = StringAttr(init_scheme)
+            properties["init_scheme"] = init_scheme
+
+        if final_scheme is not None:
+            if isa(final_scheme, str):
+                final_scheme = StringAttr(final_scheme)
+            properties["final_scheme"] = final_scheme
 
         super().__init__(regions=[body], properties=properties)
 

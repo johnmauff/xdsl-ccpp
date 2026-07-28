@@ -62,6 +62,8 @@ from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
+    CCPP_ERROR_CODE,
+    CCPP_ERROR_MESSAGE,
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_KIND_PHYS,
     CCPP_LOOP_BEGIN_STD_NAME,
@@ -541,6 +543,88 @@ class GenerateSuiteSubroutine(RewritePattern):
             )
         arg_tables = self.meta_data[scheme_name].arg_tables
         return arg_tables.get(subroutine_name)
+
+    def _build_suite_lifecycle_call_ops(
+        self, scheme_name, entry_postfix, data_ops, fn_sigs, suite_use_stubs,
+    ):
+        """Build the guarded call for a suite-level ``<init>``/``<final>`` scheme
+        hook (v2.0 SDF schema): a single scheme's own init/final phase, called
+        once per suite lifecycle -- not part of any group, so it needs its own
+        independent argument resolution rather than the whole-suite all_args/
+        data_ops pipeline every group-scheme call already goes through.
+
+        Mirrors capgen-v1's own suite-level ``<init>``/``<final>`` handling
+        (``suite_resolver.py``'s ``_resolve_one_call``, ``suite_cap.py``'s
+        ``_emit_one_call``): resolved like an ordinary scheme call, with
+        errmsg/errflg shared with the enclosing subroutine and every other
+        argument resolved directly against its own HostVariableMatchPass-
+        annotated ``model_var_name``/``model_module_name`` (the same host
+        match every other scheme arg already went through -- just consumed
+        directly here instead of via the suite-wide ``all_args`` pipeline,
+        since this scheme is never part of any group's own call sequence).
+
+        *fn_sigs* is mutated in place with this call's own signature (mirrors
+        ``_build_call_ops``'s own ``fn_sigs`` accumulation) so the generated
+        module gets a proper external declaration/``use`` stub for it.
+        *suite_use_stubs* is mutated in place with a ``use <module>, only:
+        <var>`` stub per host-matched arg (mirrors ``_find_loop_upper_bound``'s
+        own stub construction) -- duplicates across the init/final calls are
+        fine, deduplicated later by ``match_and_rewrite``'s own
+        ``seen_stubs``/``deduped_stubs`` pass.
+
+        Returns an empty list if *scheme_name* is falsy (no hook declared).
+        """
+        if not scheme_name:
+            return []
+
+        subroutine_name = scheme_name + entry_postfix
+        arg_table = self.getArgumentTable(scheme_name, subroutine_name)
+        if arg_table is None:
+            phase = entry_postfix.strip("_")
+            raise ValueError(
+                f"Suite declares <{phase}>{scheme_name}</{phase}> but scheme "
+                f"'{scheme_name}' has no '{entry_postfix}' phase in its metadata."
+            )
+
+        local_data_ops = {}
+        host_ref_ops = []
+        for fn_arg in arg_table.getFunctionArguments():
+            std_name = fn_arg.getAttr("standard_name") if fn_arg.hasAttr("standard_name") else None
+            if std_name == CCPP_ERROR_MESSAGE:
+                local_data_ops[fn_arg.name] = data_ops["errmsg"]
+            elif std_name == CCPP_ERROR_CODE:
+                local_data_ops[fn_arg.name] = data_ops["errflg"]
+            elif fn_arg.hasAttr("model_var_name"):
+                model_var_name = fn_arg.getAttr("model_var_name")
+                model_module_name = fn_arg.getAttr("model_module_name")
+                ref_op = ccpp_utils.HostVarRefOp(
+                    model_var_name,
+                    model_module_name,
+                    TypeConversions.getBaseType(fn_arg.getAttr("type")),
+                )
+                host_ref_ops.append(ref_op)
+                local_data_ops[fn_arg.name] = ref_op.res
+                stub = llvm.GlobalOp(
+                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                    model_var_name, "external",
+                )
+                stub.attributes["module"] = StringAttr(model_module_name)
+                suite_use_stubs.append(stub)
+            else:
+                raise ValueError(
+                    f"Suite-level <{entry_postfix.strip('_')}> scheme "
+                    f"'{scheme_name}' has arg '{fn_arg.name}' (standard_name "
+                    f"'{std_name}') with no host match -- suite-level init/final "
+                    "hooks currently only support plain host-module-matched "
+                    "scalar args, not DDT members or cap-owned scratch values."
+                )
+
+        call_ops = self.generateSchemeSubroutineCallOps(
+            subroutine_name, arg_table, local_data_ops,
+        )
+        if subroutine_name not in fn_sigs:
+            fn_sigs[subroutine_name] = self.meta_fn_sigs[subroutine_name]
+        return host_ref_ops + call_ops
 
     def generateVariableCreation(self, scheme_names, arg_tables):
         """Allocate a memref for every unique argument across all schemes.
@@ -1319,8 +1403,17 @@ class GenerateSuiteSubroutine(RewritePattern):
         ncol_compute_ops,
         framework_ref_ops,
         lazy_alloc_ops,
+        suite_lifecycle_call_ops=(),
     ):
-        """Assemble all op lists into the body block and return the FuncOp."""
+        """Assemble all op lists into the body block and return the FuncOp.
+
+        suite_lifecycle_call_ops -- the suite-level <init>/<final> scheme
+        hook's own guarded call (see _build_suite_lifecycle_call_ops),
+        empty unless this suite declares one AND this is its "_init"/
+        "_finalize" subroutine. Placed after the ordinary call_ops (mirrors
+        capgen-v1's own placement: after group-scheme init/finalize calls)
+        and before state_ops (before the suite-state transition).
+        """
         # Use the ORIGINAL block arg (by position), not data_ops[a.name] --
         # for a scalar arg with a kind or unit mismatch, data_ops[a.name] has
         # been reassigned to the suite-boundary conversion temp (see
@@ -1374,6 +1467,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             + call_ops
             + kind_writeback_ops
             + unit_writeback_ops
+            + list(suite_lifecycle_call_ops)
             + state_ops
             + [func.ReturnOp(*inout_return_vals, *alloc_return_vals)]
         )
@@ -1920,6 +2014,23 @@ class GenerateSuiteSubroutine(RewritePattern):
             divergent_std_keys=divergent_std_keys,
         )
 
+        # Suite-level <init>/<final> scheme hook (v2.0 SDF schema): note the
+        # entry-point postfix is "_init"/"_final" here, NOT tgt_subroutine_
+        # postfix's own "_init"/"_finalize" -- confirmed against the real
+        # upstream example (suite_lifecycle.F90 declares suite_lifecycle_init/
+        # suite_lifecycle_final, matching the <init>/<final> tag names
+        # themselves, not this codebase's own group-scheme "_finalize"
+        # convention).
+        suite_lifecycle_call_ops = []
+        if tgt_subroutine_postfix == "_init":
+            suite_lifecycle_call_ops = self._build_suite_lifecycle_call_ops(
+                suite_description.init_scheme, "_init", data_ops, fn_sigs, suite_use_stubs,
+            )
+        elif tgt_subroutine_postfix == "_finalize":
+            suite_lifecycle_call_ops = self._build_suite_lifecycle_call_ops(
+                suite_description.final_scheme, "_final", data_ops, fn_sigs, suite_use_stubs,
+            )
+
         new_func = self._assemble_func(
             suite_description=suite_description,
             generated_subroutine_posfix=generated_subroutine_posfix,
@@ -1939,6 +2050,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             ncol_compute_ops=ncol_compute_ops,
             framework_ref_ops=framework_ref_ops,
             lazy_alloc_ops=lazy_alloc_ops,
+            suite_lifecycle_call_ops=suite_lifecycle_call_ops,
         )
         return new_func, list(fn_sigs.values()), suite_use_stubs
 
@@ -2013,10 +2125,18 @@ class GenerateSuiteSubroutine(RewritePattern):
             state_strings_used=state_strings_used,
         )
 
-    def _build_fn_signatures(self, fn_sigs_by_name: dict, scheme_entries: list) -> list:
-        """Clone collected scheme function signatures, annotating each with its module name."""
+    def _build_fn_signatures(
+        self, fn_sigs_by_name: dict, scheme_entries: list, extra_scheme_names: "list | None" = None,
+    ) -> list:
+        """Clone collected scheme function signatures, annotating each with its module name.
+
+        extra_scheme_names -- schemes referenced outside any group's own
+        call sequence (currently just a suite-level <init>/<final> hook, if
+        declared) that still need a module_name -> use-stub mapping here.
+        """
         sub_to_module: dict[str, str] = {}
-        for scheme_name, _ in scheme_entries:
+        all_scheme_names = [s for s, _ in scheme_entries] + list(extra_scheme_names or [])
+        for scheme_name in all_scheme_names:
             for postfix in ("_run", "_init", "_finalize", "_final", "_register",
                             "_timestep_initialize", "_timestep_finalize",
                             "_timestep_init", "_timestep_final"):
@@ -2204,7 +2324,10 @@ class GenerateSuiteSubroutine(RewritePattern):
         suite_host_use_stubs = _lc.suite_host_use_stubs
 
         scheme_entries = self.getSchemeNames(suite_description)
-        fn_sigs = self._build_fn_signatures(fn_sigs_by_name, scheme_entries)
+        suite_lifecycle_schemes = [
+            s for s in (suite_description.init_scheme, suite_description.final_scheme) if s
+        ]
+        fn_sigs = self._build_fn_signatures(fn_sigs_by_name, scheme_entries, suite_lifecycle_schemes)
         type_import_globals = self._build_ddt_use_stubs(scheme_entries)
 
         all_strings_used = _lc.check_strings_used | _lc.state_strings_used
