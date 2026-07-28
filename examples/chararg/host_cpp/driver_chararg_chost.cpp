@@ -46,8 +46,6 @@ int main() {
     check("run", CA::run({
         .ncol      = NCOL,
         .nz        = NZ,
-        .col_start = 1,
-        .col_end   = NCOL,
         .temp      = state.temp,
         .label     = "physics_pass_1",
     }));
@@ -64,8 +62,6 @@ int main() {
         CA::Status s = CA::run({
             .ncol      = NCOL,
             .nz        = NZ,
-            .col_start = 1,
-            .col_end   = NCOL,
             .temp      = state.temp,
             .label     = "",
         });
