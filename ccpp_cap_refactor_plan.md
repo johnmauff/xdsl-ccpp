@@ -3153,9 +3153,10 @@ dependency is noted.
     revisit this item once that lands, so a build-system migration doesn't
     get tangled up with an in-flight example port.
 
-- **`.meta` argument-bracket parser requires exact spacing (`[ name ]`, not
-  `[name]`) to tell an argument name apart from an unrecognized token — S,
-  low-risk, found while porting var_compat (2026-07-23).** `ccpp_xml.py`'s
+- **Fixed — `.meta` argument-bracket parser required exact spacing
+  (`[ name ]`, not `[name]`) to tell an argument name apart from an
+  unrecognized token — found while porting var_compat (2026-07-23), fixed
+  2026-07-27.** `ccpp_xml.py`'s
   `parse_meta_file` (~line 313 onward) strips only the `[`/`]` characters
   from a bracketed line, then disambiguates purely on whether the
   *remaining* string has a leading or trailing space:
@@ -3165,27 +3166,65 @@ dependency is noted.
   across the ported files) use the tight `[effrr_in]` form with no reader
   that requires spacing either way — this project's own convention is simply
   a stricter subset of what's actually valid CCPP metadata.
-  - **Should be easy to support both, not a real complication.** The
-    header check immediately above the `elif` (`if token in
-    ("ccpp-table-properties", "ccpp-arg-table"): ...`) already does an exact
-    literal match against the two known keywords, regardless of spacing —
-    it isn't what relies on the space heuristic. By the time execution
-    reaches the `elif`, the token is already known *not* to be one of those
-    two keywords, so within a `.meta` file's grammar (the only bracketed
-    constructs that ever appear are those two headers and an argument name)
-    there's no real ambiguity left for the space check to resolve. The fix
-    is to drop the `token[0] == " " or token[-1] == " "` condition entirely
-    and treat *any* non-header bracketed token as an argument name (still
-    calling `.strip()` to get the bare name either way, so both spaced and
-    tight forms produce the identical result) — this removes a fragile
-    heuristic rather than adding one, and needs no change to the writer
-    side (`meta_from_module` et al. already only ever emit the spaced form,
-    so existing generated `.meta` output is unaffected regardless).
-  - Confirmed via the var_compat port: all 14+ occurrences ported so far
-    were mechanically normalized to the spaced form as a workaround: see
-    `examples/var_compat/README.md`'s "Adaptations made during porting"
-    section. Fixing this would let a future port skip that normalization
-    step entirely.
+  **Fixed** exactly as scoped above: dropped the `token[0] == " " or
+  token[-1] == " "` condition entirely, replacing the `elif`/`else`
+  (space-heuristic / `AssertionError`) pair with a single unconditional
+  `else` branch that treats any non-header bracketed token as an argument
+  name — the header check above it already does an exact literal match
+  against the two known keywords regardless of spacing, so nothing else
+  relied on the space heuristic, and a `.meta` file's grammar has no other
+  bracketed construct left to disambiguate. `.strip()` still normalizes both
+  spaced and tight forms to the identical bare name. No change needed on the
+  writer side (`meta_from_module` et al. already only ever emit the spaced
+  form). Direct regression coverage (sabotage-verified, confirming both
+  forms parse identically and that the tight form no longer raises) in
+  `tests/unit/test_meta_parser_bracket_spacing.py`. Full unit + FileCheck
+  suites re-run clean (506 passed, same 1 pre-existing xfail and 1
+  pre-existing unrelated failure as before). This does *not* retroactively
+  un-normalize var_compat's own already-ported `.meta` files (see
+  `examples/var_compat/README.md`'s "Adaptations made during porting"
+  section) — it only means a *future* port can skip that normalization step.
+
+  **Follow-up (found by Copilot's review of that fix, PR #46):** turning the old space-heuristic
+  `elif`/`else` pair into a single unconditional `else` also removed the only remaining
+  validation in that branch, exposing two malformed-input cases to a confusing crash instead of a
+  clear error. An argument-shaped bracket appearing before any `[ccpp-arg-table]` header
+  (`current_arg_table` still `None`) didn't fail immediately — the crash only surfaced the *next*
+  time a bracket was seen, when the pending argument was attached to a still-nonexistent table
+  (`AttributeError: 'NoneType' object has no attribute 'setFunctionArgument'`), far from the line
+  with the actual mistake. And an empty or whitespace-only bracket (`[]`) silently became an
+  argument with an empty name instead of being rejected. **Fixed** by validating both explicitly
+  (with `ValueError`s naming the file and line number, right at the point the raw `.meta` text is
+  parsed — a system boundary), plus tracking line numbers via `enumerate` for the error messages.
+  Direct regression coverage (sabotage-verified, both cases) added to the same
+  `tests/unit/test_meta_parser_bracket_spacing.py`. Full unit + FileCheck suites re-run clean (514
+  passed, same 1 pre-existing xfail and 1 pre-existing unrelated failure as before).
+
+- **Fixed — three more of the same class of bug, found by auditing the frontend parser for
+  other whitespace-has-a-particular-meaning spots after the bracket-spacing fix above
+  (2026-07-27).** Same shape each time: user-authored text taken at face value without
+  stripping, relying entirely on everyone happening to format things the same tight way. None
+  were live failures — every suite XML/CLI invocation in this repo already avoids the incidental
+  whitespace — but all three would previously have failed silently or confusingly:
+  1. `XMLScheme.scheme_name` (a `<scheme>` element's text content) was used unstripped. Every
+     suite XML in this repo writes the name tight against the tags on one line, but XML preserves
+     indentation whitespace verbatim in element text — an indented `<scheme>\n  x\n</scheme>`
+     would have produced a `scheme_name` that never matches anything in scheme metadata, with no
+     clear error pointing at whitespace as the cause.
+  2. `XMLSubcycle`'s own `loop` attribute was read unstripped — same bug, lower likelihood
+     (attribute values rarely pick up incidental whitespace, since nobody indents inside a quoted
+     attribute).
+  3. Both `ccpp_xml.py`'s `ccppXML.build_options_db_from_args` and `ccpp_dsl.py`'s
+     `ccppMain.build_options_db_from_args` split `--scheme-files`/`--host-files`/`--suites` on
+     comma with no per-entry stripping — `"a.meta, b.meta"` would silently produce a path with a
+     leading space, failing to open with a confusing error (confirmed directly via sabotage
+     testing: `FileNotFoundError: Input file not found: ' examples/helloworld/temp_adjust.meta'`)
+     instead of being tolerated the way most CLI tools handle incidental whitespace.
+
+  **Fixed** by adding a `.strip()` at the point each raw value is taken, in all four spots (two
+  files for the CLI comma-split). Direct regression coverage (sabotage-verified, all three) in
+  `tests/unit/test_frontend_whitespace_tolerance.py`. Full unit + FileCheck suites re-run clean
+  (512 passed, same 1 pre-existing xfail and 1 pre-existing unrelated failure as before).
 
 - **`[ccpp-table-properties]`'s `module_name` override isn't supported — S,
   found while porting var_compat (2026-07-23).** capgen-v1 lets a table's

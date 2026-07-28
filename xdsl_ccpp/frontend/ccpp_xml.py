@@ -181,8 +181,14 @@ class XMLScheme(XMLSuiteBase):
 
     def __init__(self, xml_node):
         assert xml_node.tag == "scheme"
-        # Text content of the <scheme> element is the scheme base name
-        self.scheme_name = xml_node.text
+        # Text content of the <scheme> element is the scheme base name.
+        # .strip(): every suite XML in this repo writes the name tight
+        # against the tags on one line, but XML preserves indentation
+        # whitespace/newlines verbatim in element text -- an indented
+        # "<scheme>\n  x\n</scheme>" would otherwise silently produce a
+        # scheme_name that never matches anything in scheme metadata, with
+        # no clear error pointing at whitespace as the cause.
+        self.scheme_name = xml_node.text.strip() if xml_node.text else xml_node.text
         super().__init__(xml_node)
         assert len(xml_node) == 0  # scheme elements must be leaf nodes
 
@@ -201,7 +207,11 @@ class XMLSubcycle(XMLSuiteBase):
     def __init__(self, xml_node):
         assert xml_node.tag == "subcycle"
         super().__init__(xml_node)
-        raw = xml_node.attrib.get("loop", "1")
+        # .strip(): attribute values rarely pick up incidental whitespace
+        # (nobody indents inside a quoted attribute), but the same class of
+        # bug applies if one ever did -- e.g. loop=" num_subcycles " would
+        # otherwise silently fail every downstream standard_name lookup.
+        raw = xml_node.attrib.get("loop", "1").strip()
         try:
             int(raw)
             self.is_literal = True
@@ -298,7 +308,7 @@ def parse_meta_file(filename, is_scheme):
         table_arg_tables = []
 
     with open(filename) as file:
-        for line in file:
+        for line_no, line in enumerate(file, start=1):
             sline = line.strip()
 
             if not sline or sline.startswith("#"):
@@ -322,15 +332,36 @@ def parse_meta_file(filename, is_scheme):
                 elif token == "ccpp-arg-table":
                     parse_state = MetaParseState.ARG_TABLE
                     current_arg_table = CCPPArgumentTable()
-                elif token[0] == " " or token[-1] == " ":
+                else:
+                    # Anything reaching here is already known not to be one
+                    # of the two table/arg-table headers (checked above), and
+                    # a .meta file's grammar has no other bracketed construct
+                    # -- so it's always an argument name, spaced ("[ name ]",
+                    # this project's own writer convention) or tight
+                    # ("[name]", capgen-v1's own upstream convention, e.g.
+                    # var_compat's effr_calc.meta). .strip() normalizes both
+                    # to the same bare name either way.
+                    #
+                    # Two things a malformed file could do wrong here, both
+                    # validated explicitly rather than left to crash
+                    # confusingly later (a stray argument bracket goes
+                    # unnoticed until the *next* bracket tries to attach it to
+                    # a still-nonexistent table; an empty name would silently
+                    # propagate as a nameless argument):
+                    if current_arg_table is None:
+                        raise ValueError(
+                            f"{filename}:{line_no}: argument '{token.strip()}' "
+                            "declared before any [ccpp-arg-table] header"
+                        )
+                    arg_name = token.strip()
+                    if not arg_name:
+                        raise ValueError(
+                            f"{filename}:{line_no}: empty argument name '[{token}]'"
+                        )
                     if current_arg is not None:
                         current_arg_table.setFunctionArgument(current_arg)
                     parse_state = MetaParseState.ARG
-                    current_arg = CCPPArgument(token.strip())
-                else:
-                    raise AssertionError(
-                        f"Unexpected token in arg table: {token!r}"
-                    )
+                    current_arg = CCPPArgument(arg_name)
             else:
                 assert parse_state != MetaParseState.NONE
                 for part in sline.split("|"):
@@ -428,21 +459,29 @@ class ccppXML:
         """
         options_db = args.__dict__
 
-        # Split comma-separated scheme file paths into a list
+        # Split comma-separated scheme file paths into a list. .strip() each
+        # entry: a space after a comma (e.g. "a.meta, b.meta") would
+        # otherwise silently become a path with a leading space, failing to
+        # open with a confusing error rather than being tolerated the way
+        # most CLI tools handle incidental whitespace.
         if "scheme_files" in options_db and options_db["scheme_files"] is not None:
-            options_db["scheme_files"] = options_db["scheme_files"].split(",")
+            options_db["scheme_files"] = [
+                p.strip() for p in options_db["scheme_files"].split(",")
+            ]
         else:
             options_db["scheme_files"] = []
 
         # Split comma-separated host file paths into a list
         if "host_files" in options_db and options_db["host_files"] is not None:
-            options_db["host_files"] = options_db["host_files"].split(",")
+            options_db["host_files"] = [
+                p.strip() for p in options_db["host_files"].split(",")
+            ]
         else:
             options_db["host_files"] = []
 
         # Split comma-separated suite XML paths into a list
         if "suites" in options_db and options_db["suites"] is not None:
-            options_db["suites"] = options_db["suites"].split(",")
+            options_db["suites"] = [p.strip() for p in options_db["suites"].split(",")]
         else:
             options_db["suites"] = []
 
