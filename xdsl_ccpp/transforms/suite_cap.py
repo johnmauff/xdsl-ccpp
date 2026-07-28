@@ -397,12 +397,25 @@ class GenerateSuiteSubroutine(RewritePattern):
         data_ops,
         loop_var_memref,
         overrides=None,
+        ncol_ref=None,
     ):
         """Build scheme call ops for a promoted scheme inside the loop body.
 
         For arguments marked is_promoted, replaces the raw 2D data_ops value
         with a RankReducingSliceOp that slices out the current level.
         The dim_pattern is constructed from the promoted_dim annotation.
+
+        ncol_ref is the resolved column-count SSA value (the caller looks it
+        up via _find_loop_upper_bound against CCPP_HORIZ_DIM_STD_NAME) used
+        as the range upper bound for block-arg column slices. Under the
+        legacy horizontal_loop_extent mechanism this used to be reliably
+        available as data_ops["ncol"] (synthesized by _build_ncol_compute_ops
+        whenever a scheme declared col_start/col_end directly); under the
+        horizontal_dimension convention that key is never populated, so
+        falling back to data_ops.get("ncol", loop_var_memref) would silently
+        substitute the promotion loop's own index variable as the column
+        upper bound -- wrong, and easy to miss since it still produces valid-
+        looking Fortran.
         """
         promoted_data_ops = dict(data_ops)  # shallow copy to override promoted args
 
@@ -411,6 +424,24 @@ class GenerateSuiteSubroutine(RewritePattern):
         # Shared slices are emitted unconditionally before any guard.
         shared_slice_ops: list = []
         opt_slice_ops: dict[str, object] = {}  # arg_name -> RankReducingSliceOp
+
+        def _get_lbound_one():
+            # Lazily create (and cache in data_ops for reuse) a constant-1
+            # alloca for block-arg lower bounds. Under the legacy
+            # horizontal_loop_extent mechanism this was always pre-created by
+            # _build_ncol_compute_ops, but that only fires when a scheme
+            # declares col_start/col_end directly -- under the
+            # horizontal_dimension convention col_start/col_end are resolved
+            # elsewhere (run_dispatch.py), so it may not exist yet here.
+            if "ccpp_lbound_one" not in data_ops:
+                _ib = TypeConversions.getBaseType("integer")
+                _alloc = memref.AllocaOp.get(_ib, shape=[])
+                _alloc.memref.name_hint = "ccpp_lbound_one"
+                _const = arith.ConstantOp.from_int_and_width(1, 32)
+                _store = memref.StoreOp.get(_const, _alloc, [])
+                shared_slice_ops.extend([_alloc, _const, _store])
+                data_ops["ccpp_lbound_one"] = _alloc
+            return data_ops["ccpp_lbound_one"]
 
         for arg in arg_table.getFunctionArguments():
             needs_slice = arg.hasAttr("is_promoted")
@@ -454,8 +485,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                         range_lowers.append(data_ops.get("col_start", loop_var_memref))
                         range_uppers.append(data_ops.get("col_end", loop_var_memref))
                     else:
-                        range_lowers.append(data_ops["ccpp_lbound_one"])
-                        range_uppers.append(data_ops.get("ncol", loop_var_memref))
+                        range_lowers.append(_get_lbound_one())
+                        range_uppers.append(
+                            ncol_ref if ncol_ref is not None
+                            else data_ops.get("ncol", loop_var_memref)
+                        )
                 # Promoted dimension(s) appended as scalar index
                 pattern += "S"
                 scalar_indices_list.append(loop_var_memref)
@@ -1536,12 +1570,18 @@ class GenerateSuiteSubroutine(RewritePattern):
                 TypeConversions.getBaseType("integer"), shape=[]
             )
             lv_alloc.memref.name_hint = "vertical_layer_index"
+            ncol_ref = self._find_loop_upper_bound(
+                CCPP_HORIZ_DIM_STD_NAME, all_args, data_ops,
+                framework_ref_ops=framework_ref_ops,
+                suite_use_stubs=suite_use_stubs,
+            )
             body_list: list = []
             for sn, tbl in cur_pgroup:
                 full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
                 body_list += self._build_promoted_call_ops(
                     full_name, tbl, data_ops, lv_alloc.memref,
                     scheme_overrides.get(sn, {}),
+                    ncol_ref=ncol_ref,
                 )
                 if full_name not in fn_sigs:
                     fn_sigs[full_name] = self.meta_fn_sigs[full_name]

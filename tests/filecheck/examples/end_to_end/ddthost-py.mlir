@@ -266,8 +266,8 @@
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'data_prep') then
-// CHECK-NEXT:          call ddt_suite_suite_data_prep(lc_cols, lc_cole, lc_O3(:), lc_HNO3(:), lc_vmr,            &
-// CHECK-NEXT:            lc_psurf(:), errmsg, errflg)
+// CHECK-NEXT:          call ddt_suite_suite_data_prep(lc_cols, lc_cole, lc_O3, lc_HNO3, lc_vmr, lc_psurf,        &
+// CHECK-NEXT:            errmsg, errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite ddt_suite"
 // CHECK-NEXT:          errflg = 1

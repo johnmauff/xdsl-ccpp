@@ -101,10 +101,9 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state(ccpp_data%ccpp_instance) = const_initialized
 // CHECK-NEXT:    end subroutine hello_world_suite_suite_timestep_final
-// CHECK-LABEL:   subroutine hello_world_suite_suite_physics(col_start, col_end, lev, ilev, timestep, temp_level, &
-// CHECK:           temp_layer, ccpp_data, errmsg, errflg)
-// CHECK-NEXT:      integer, intent(in) :: col_start
-// CHECK-NEXT:      integer, intent(in) :: col_end
+// CHECK-LABEL:   subroutine hello_world_suite_suite_physics(ncol, lev, ilev, timestep, temp_level, temp_layer,   &
+// CHECK:           ccpp_data, errmsg, errflg)
+// CHECK-NEXT:      integer, intent(in) :: ncol
 // CHECK-NEXT:      integer, intent(in) :: lev
 // CHECK-NEXT:      integer, intent(in) :: ilev
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: timestep
@@ -113,14 +112,10 @@
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK-NEXT:      integer :: ncol
-// CHECK-NEXT:      integer :: ccpp_lbound_one
 // CHECK-NEXT:      real(kind=kind_dyn), allocatable :: temp_level_kind_cast(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: temp_layer_unit_conv(:, :)
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      ncol = col_end - col_start + 1
-// CHECK-NEXT:      ccpp_lbound_one = 1
 // CHECK-NEXT:      if (allocated(temp_level_kind_cast)) deallocate(temp_level_kind_cast)
 // CHECK-NEXT:      allocate(temp_level_kind_cast(size(temp_level, 1), size(temp_level, 2)))
 // CHECK-NEXT:      temp_level_kind_cast = real(temp_level, kind=kind_dyn)
@@ -150,6 +145,7 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use ccpp_types, only: ccpp_t
 // CHECK-NEXT:    use hello_world_mod, only: dt
+// CHECK-NEXT:    use hello_world_mod, only: ncols
 // CHECK-NEXT:    use hello_world_mod, only: pver
 // CHECK-NEXT:    use hello_world_mod, only: pverp
 // CHECK-NEXT:    use hello_world_mod, only: temp_interfaces
@@ -248,10 +244,12 @@
 // CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
+// CHECK-NEXT:      integer :: ncol
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
+// CHECK-NEXT:        ncol = col_end - col_start + 1
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'physics') then
-// CHECK-NEXT:          call hello_world_suite_suite_physics(col_start, col_end, pver, pverp, dt,                 &
+// CHECK-NEXT:          call hello_world_suite_suite_physics(ncol, pver, pverp, dt,                               &
 // CHECK-NEXT:            temp_interfaces(col_start:col_end, 1:pverp), temp_midpoints(col_start:col_end, 1:pver), &
 // CHECK-NEXT:            ccpp_data, errmsg, errflg)
 // CHECK-NEXT:        else
@@ -300,12 +298,13 @@
 // CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
 // CHECK-NEXT:        if (do_input .and. .not. do_output) then
-// CHECK-NEXT:          allocate(var_list(5))
-// CHECK-NEXT:          var_list(1) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(2) = 'potential_temperature_at_interface  '
-// CHECK-NEXT:          var_list(3) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(4) = 'vertical_interface_dimension        '
-// CHECK-NEXT:          var_list(5) = 'vertical_layer_dimension            '
+// CHECK-NEXT:          allocate(var_list(6))
+// CHECK-NEXT:          var_list(1) = 'horizontal_dimension                '
+// CHECK-NEXT:          var_list(2) = 'potential_temperature               '
+// CHECK-NEXT:          var_list(3) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:          var_list(4) = 'time_step_for_physics               '
+// CHECK-NEXT:          var_list(5) = 'vertical_interface_dimension        '
+// CHECK-NEXT:          var_list(6) = 'vertical_layer_dimension            '
 // CHECK-NEXT:        else if (.not. do_input .and. do_output) then
 // CHECK-NEXT:          allocate(var_list(4))
 // CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
@@ -313,14 +312,15 @@
 // CHECK-NEXT:          var_list(3) = 'potential_temperature               '
 // CHECK-NEXT:          var_list(4) = 'potential_temperature_at_interface  '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(7))
+// CHECK-NEXT:          allocate(var_list(8))
 // CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
 // CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(4) = 'potential_temperature_at_interface  '
-// CHECK-NEXT:          var_list(5) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(6) = 'vertical_interface_dimension        '
-// CHECK-NEXT:          var_list(7) = 'vertical_layer_dimension            '
+// CHECK-NEXT:          var_list(3) = 'horizontal_dimension                '
+// CHECK-NEXT:          var_list(4) = 'potential_temperature               '
+// CHECK-NEXT:          var_list(5) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:          var_list(6) = 'time_step_for_physics               '
+// CHECK-NEXT:          var_list(7) = 'vertical_interface_dimension        '
+// CHECK-NEXT:          var_list(8) = 'vertical_layer_dimension            '
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"

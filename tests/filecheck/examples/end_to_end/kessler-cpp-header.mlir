@@ -6,7 +6,7 @@
 // emitted.  Utility subroutines (ccpp_physics_suite_list) must NOT appear
 // in the header since they are not BIND(C).
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_ftn/kessler_host_mod.meta,examples/kessler/host_ftn/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_ftn/kessler_host_mod.meta,examples/kessler/host_ftn/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
 
 // The cap header file marker and preamble.
 // CHECK:      // FILE: Kessler_ccpp_cap.h
@@ -31,19 +31,16 @@
 // CHECK-LABEL: void Kessler_ccpp_physics_timestep_initial(
 // CHECK-LABEL: void Kessler_ccpp_physics_timestep_final(
 
-// Run: scalar intent(in) args are by-value; real arrays are double* with
-// column-major comments; strings use const char*/char*.
+// Run: with the horizontal_dimension convention, all per-call physics args
+// (nz, dt, cpair, theta, precl, ...) are host-resolved internally via the
+// host module rather than threaded through the framework-level dispatch
+// entry point, so the signature collapses to just the standard 6 args.
 // CHECK-LABEL: void Kessler_ccpp_physics_run(
 // CHECK:          const char*      suite_name,
 // CHECK-NEXT:     const char*      suite_part,
 // CHECK-NEXT:     int              col_start,
 // CHECK-NEXT:     int              col_end,
-// CHECK-NEXT:     int              nz,
-// CHECK-NEXT:     double           dt,
-// CHECK:          double*          cpair,
-// CHECK:          double*          theta,
-// CHECK:          double*          precl,
-// CHECK:          char*            errmsg,
+// CHECK-NEXT:     char*            errmsg,
 // CHECK-NEXT:     int*             errflg
 
 // Utility subroutines are NOT BIND(C) → not emitted in the header.

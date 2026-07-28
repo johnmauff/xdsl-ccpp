@@ -91,7 +91,7 @@
   type = integer
   intent = in
 [ ncol ]
-  standard_name = horizontal_loop_extent
+  standard_name = horizontal_dimension
   long_name = number of columns
   units = count
   dimensions = ()
@@ -108,7 +108,7 @@
   standard_name = air_potential_temperature
   long_name = air potential temperature
   units = K
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
   memory_space = device
   intent = in
@@ -117,13 +117,13 @@
   long_name = exner function
   units = 1
   type = real | kind = kind_phys
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   memory_space = device
   intent = in
 [ temp_prev ]
   standard_name = air_temperature_on_previous_timestep
   units = K
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
   memory_space = device
   intent = in
@@ -131,7 +131,7 @@
   standard_name = tendency_of_air_temperature_due_to_model_physics
   type = real | kind = kind_phys
   units = K s-1
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   memory_space = device
   intent = inout
 [ errmsg ]

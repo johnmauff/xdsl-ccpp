@@ -36,14 +36,14 @@
 [ O3 ]
   standard_name = ozone
   units = ppmv
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   type = real
   kind = kind_phys
   intent = in
 [ HNO3 ]
   standard_name = nitric_acid
   units = ppmv
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   type = real
   kind = kind_phys
   intent = in

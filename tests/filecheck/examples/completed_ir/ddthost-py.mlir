@@ -320,10 +320,10 @@
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:          %4 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_cols"}> : () -> memref<i32>
 // CHECK-NEXT:          %5 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_cole"}> : () -> memref<i32>
-// CHECK-NEXT:          %6 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_O3(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %7 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_HNO3(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %6 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_O3"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %7 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_HNO3"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %8 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_vmr"}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
-// CHECK-NEXT:          %9 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_psurf(:)"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %9 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_psurf"}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %10 = "ccpp_utils.strcmp"(%3) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %10 {
 // CHECK-NEXT:            %11 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_vmr"}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>

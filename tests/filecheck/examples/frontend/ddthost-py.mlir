@@ -17,8 +17,8 @@
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "make_ddt_run", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "cols", type = "integer", standard_name = "horizontal_loop_begin", intent = "in", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "cole", type = "integer", standard_name = "horizontal_loop_end", intent = "in", units = "count"}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "O3", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_loop_extent", standard_name = "ozone", kind = "kind_phys", intent = "in", units = "ppmv"}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "HNO3", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_loop_extent", standard_name = "nitric_acid", kind = "kind_phys", intent = "in", units = "ppmv"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "O3", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "ozone", kind = "kind_phys", intent = "in", units = "ppmv"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "HNO3", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "nitric_acid", kind = "kind_phys", intent = "in", units = "ppmv"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "vmr", type = "vmr_type", standard_name = "volume_mixing_ratio_ddt", intent = "inout"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
@@ -39,7 +39,7 @@
 // CHECK-NEXT:    }) : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "environ_conditions", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "environ_conditions_run", type = #ccpp<table_type_kind scheme>}> ({
-// CHECK-NEXT:        "ccpp.arg"() <{name = "psurf", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_loop_extent", standard_name = "surface_air_pressure", kind = "kind_phys", intent = "in", units = "Pa"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "psurf", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "surface_air_pressure", kind = "kind_phys", intent = "in", units = "Pa"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()

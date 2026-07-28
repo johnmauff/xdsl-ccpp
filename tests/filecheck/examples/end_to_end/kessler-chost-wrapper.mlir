@@ -6,7 +6,7 @@
 //   - inline free functions allocating errmsg/errflg/scheme_name internally.
 //   - Namespace Kessler_chost wraps all declarations.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_cpp/kessler_host_mod.meta,examples/kessler/host_cpp/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_cpp/kessler_host_mod.meta,examples/kessler/host_cpp/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
 
 // Wrapper file marker and includes.
 // CHECK: // FILE: Kessler_chost.hpp
@@ -38,13 +38,14 @@
 // CHECK:     Kessler_chost_physics_finalize(errmsg, &errflg);
 // CHECK:     return {errflg, errflg ? errmsg : ""};
 
-// Run args struct: ncol, nz, col_start, col_end, scalars, then arrays.
-// scheme_name is NOT a struct member (handled internally).
+// Run args struct: ncol, nz, then scalars, then arrays. col_start/col_end
+// are no longer struct members -- they were unused placeholders in the
+// chost API and are dropped now that the horizontal_dimension convention
+// resolves the call window internally.  scheme_name is NOT a struct member
+// (handled internally) either.
 // CHECK-LABEL: struct RunArgs {
 // CHECK:     int              ncol;
 // CHECK:     int              nz;
-// CHECK:     int              col_start;
-// CHECK:     int              col_end;
 // CHECK:     double           dt;
 // CHECK:     const double*    cpair;
 // CHECK:     double*          theta;
@@ -56,7 +57,7 @@
 // CHECK:     char   errmsg[513]      = {};
 // CHECK:     int    errflg           = 0;
 // CHECK:     Kessler_chost_physics_run(
-// CHECK:         a.ncol, a.nz, a.col_start, a.col_end,
+// CHECK:         a.ncol, a.nz, a.dt, a.lyr_surf,
 // CHECK:     return {errflg, errflg ? errmsg : ""};
 
 // State struct aggregates all lifecycle fields; col_start/col_end excluded.
@@ -78,11 +79,11 @@
 // CHECK:     return initialize({
 // CHECK:         .lv=s.lv,
 
-// State overload for run — col_start and col_end passed per-call.
-// CHECK-LABEL: inline Status run(const State& s, int col_start, int col_end) {
+// State overload for run — no loop bounds; ncol/nz already live on State.
+// CHECK-LABEL: inline Status run(const State& s) {
 // CHECK:     return run({
-// CHECK:         .col_start=col_start,
-// CHECK:         .col_end=col_end,
+// CHECK:         .ncol=s.ncol,
+// CHECK:         .nz=s.nz,
 // CHECK:         .dt=s.dt,
 // CHECK:         .theta=s.theta,
 

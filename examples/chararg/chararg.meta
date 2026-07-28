@@ -6,7 +6,7 @@
   name = chararg_run
   type = scheme
 [ ncol ]
-  standard_name = horizontal_loop_extent
+  standard_name = horizontal_dimension
   long_name = number of columns in this chunk
   units = count
   dimensions = ()

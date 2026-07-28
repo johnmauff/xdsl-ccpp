@@ -2995,6 +2995,22 @@ dependency is noted.
 
       Full unit + FileCheck suites re-run clean (504 passed, same 1 pre-existing xfail and 1
       pre-existing unrelated failure as before).
+- **`nested_suite` — Fixed 2026-07-27 (PR #47, merged), per the rescoped plan below.** Both
+  features implemented exactly as scoped: `ccpp_xml.py`'s `_expand_nested_suites`/
+  `_replace_nested_suite`/`_load_nested_suite_reference` (Feature 1, frontend-only, confirmed zero
+  changes needed anywhere downstream); two new `SuiteOp` properties plus `suite_cap.py`'s
+  `_build_suite_lifecycle_call_ops` (Feature 2). Ported `examples/nested_suite` from the real
+  upstream test as the end-to-end proof — both features generated correctly against the real
+  upstream files on the first attempt, no new generator bugs found. A Copilot review on the PR
+  caught one real latent bug (a suite-level `<nested_suite>` naming a multi-child group produced
+  several same-named groups instead of one, never triggered by the real example's own single-child
+  groups) and one error-message typo, both fixed and sabotage-verified
+  (`tests/unit/test_nested_suite_expansion.py`, `tests/unit/test_suite_lifecycle_hooks.py`). Added
+  to `.github/workflows/compile-tests.yml`'s matrix. Not yet verified: an actual `gfortran`/`ifx`
+  build-and-run (no compiler on this laptop) — that's the one remaining open item for this example
+  specifically.
+
+  **Original rescoped plan (2026-07-27), for reference:**
 - **`nested_suite` — L. Rescoped 2026-07-27 after cloning capgen-v1's real
   `end-to-end-tests/nested_suite/` and reading the actual upstream Python source
   (`capgen/metadata/parse_tools/xml_tools.py`'s `expand_nested_suites`/`replace_nested_suite`/
@@ -3049,20 +3065,64 @@ dependency is noted.
   parser bracket-spacing fix). `version="2.0"` itself needs no special handling beyond being
   accepted — xdsl-ccpp does no XML schema validation today, so it's purely a marker upstream uses
   to select schema variants.
-- **`constituents_dim` — two independent sub-items:**
-  - **General suite-workspace vars sized by the live constituent count — M.** Both
-    framework-allocated and scheme-allocated variants. Today `ccpp_cap.py`'s `_build_cap_var_map`
-    only special-cases exactly two hardcoded framework arrays via `_DIM_TO_ALLOC`'s
-    `number_of_ccpp_constituents → "lc_num"` entry — needs generalizing to any suite-workspace var
-    dimensioned by the constituent count, not just those two names.
-  - **Cross-scheme constituent-flag inference — M/L.** A consumer scheme reads a
-    producer-flagged `advected`/`constituent` var without redeclaring the flag itself; capgen-v1
-    infers constituent-hood from the producer alone. Today `constituent_cap.py`'s
-    `_collect_constituent_info` and `cap_shared.py`'s `classify_arg_ownership` both check
-    `advected`/`constituent` as purely local, per-arg properties — no cross-scheme propagation
-    exists anywhere. Needs a new analysis step building a module-wide "which standard_names are
-    advected/constituent, per any scheme's declaration" set, consulted during classification — a
-    real architectural addition, not a small patch.
+- **`constituents_dim` — Rescoped 2026-07-27 after cloning capgen-v1's real
+  `end-to-end-tests/constituents_dim/` and actually running it through today's frontend + cap
+  generation (no compiler needed for this part) instead of reasoning from the code alone. The
+  original two-sub-item framing below is directionally correct about what's missing but
+  **understates the severity** — both sub-items share one common root blocker, one layer earlier
+  than either sub-item's own file:line citations suggest, and both currently produce a hard
+  pipeline crash (unmatched host variable), not silently-wrong output.**
+
+  The real example exercises three cases via `const_dim_producer`/`const_dim_consumer`: (1) a
+  host-owned array dimensioned by `number_of_ccpp_constituents`, where the host never declares that
+  count as its own scalar (the framework owns it); (2a) a non-allocatable suite-scoped scratch var
+  dimensioned singly by the count, meant to be framework-allocated; (2b) an *allocatable*
+  suite-scoped scratch var, scheme-allocated in `_run` using a scalar arg (`n_const`,
+  standard_name `number_of_ccpp_constituents`) passed directly into the scheme.
+
+  **Root blocker (shared prerequisite for everything below):** `HostVariableMatchPass` has no
+  concept of a scalar argument being framework-injected (the way `ccpp_error_message`/
+  `ccpp_error_code` already are) — `number_of_ccpp_constituents` is referenced in this codebase
+  only as a *dimension name* (`ccpp_cap.py`), never recognized as a legitimate framework-provided
+  *scalar argument* value. Confirmed empirically: running `const_dim_producer`'s own `n_const` arg
+  through today's pipeline fails immediately with `ValueError: Host model variable matching/
+  compatibility failed: ... argument 'n_const' ... has no matching host model variable` — well
+  before `ccpp_cap.py`'s allocation-size logic (the code the original sub-item 1 note points at)
+  or `constituent_cap.py`'s per-arg flag scan (sub-item 2's own target) are ever reached.
+
+  - **Sub-item 1 (suite-workspace vars sized by constituent count) — narrower than originally
+    scoped for the non-allocatable case, but case 2b needs the root blocker fixed first.**
+    `ccpp_cap.py`'s `_DIM_TO_ALLOC` is *not* actually hardcoded to two literal variable names the
+    way the phrasing here originally implied — it's already a generic dimension-standard_name →
+    allocation-size-expression lookup, applied uniformly to any `CapScratch` var's declared dims,
+    and its `number_of_ccpp_constituents → "lc_num"` entry is consumed by a genuinely generic loop
+    in `constituent_cap.py` (where `lc_num` is already a real, in-scope local by the time it's
+    used). For case 2a (non-allocatable, framework-allocated) this generic mechanism plausibly
+    already produces valid Fortran with no new work — **this needs direct verification, not
+    assumption**, since it wasn't run end-to-end in isolation. Case 2b (allocatable,
+    scheme-allocated via `n_const`) is fully blocked by the root blocker above and never reaches
+    this code at all.
+  - **Sub-item 2 (cross-scheme constituent-flag inference) — confirmed real, but likely
+    unreachable today for the same root-blocker reason before it would ever matter.**
+    `const_dim_consumer.meta`'s own `qbase`/`qtend` args carry no `advected`/`constituent`
+    property at all — only the producer's matching args do (confirmed directly: the upstream
+    README states this is the deliberate point of the test). Every `advected`/`constituent`
+    property read in this codebase (`constituent_cap.py`'s `_collect_constituent_info`,
+    `cap_shared.py`'s classification checks) is confirmed strictly local to one scheme's own arg
+    table — no module-wide "which standard_names has *any* scheme flagged" set exists anywhere.
+    But since no host anywhere declares the underlying standard_names either (they only exist
+    inside framework-owned constituent storage), the consumer's unflagged args would almost
+    certainly also fail hard at host-matching first — the same class of failure as sub-item 1's
+    `n_const` case, not silently-wrong classification.
+  - **A third, previously-untracked gap surfaced while probing this:** working around the root
+    blocker (via a throwaway fake host declaration, just to see further) reached a *second*,
+    separate crash — an xDSL IR verifier error (`memref.copy` shape mismatch) somewhere in
+    `register_consts`'s constituent-registration path (its own `dyn_const` allocatable DDT-array
+    output). Not diagnosed; worth its own investigation before scoping implementation here.
+  - **Recommended starting point for whoever picks this up:** decide how `HostVariableMatchPass`
+    recognizes framework-injected scalars in general first (the shared prerequisite for both
+    sub-items), rather than jumping straight to `ccpp_cap.py`'s allocation-size dict or
+    `constituent_cap.py`'s per-arg flag scan as originally framed below.
 - **`suite_allocate` — L, plus one cheap independent bugfix.**
   - **Cheap fix, do first, unrelated to the rest — S.** `_build_cap_var_map`'s scratch-var
     allocation silently falls back to allocating size `"1"` for any dimension name not in
@@ -3110,6 +3170,54 @@ dependency is noted.
   whether xdsl-ccpp's own constituent-registration code (`constituent_cap.py`) validates this at
   all today, or would silently accept/mishandle it. Small, self-contained check-and-raise if
   missing, matching this session's established validation-gap pattern.
+- **Retire the legacy `horizontal_loop_extent` vocabulary — migrated 2026-07-27.** xdsl-ccpp
+  supported two parallel conventions for "how many columns is this call processing": the older
+  `horizontal_loop_extent` (a scheme-declared scalar synthesized into `col_start`/`col_end` via
+  `suite_cap.py`'s `_classify_args`) and capgen-v1's current, sole convention,
+  `horizontal_dimension` (the array-dimension name itself, resolved via `run_dispatch.py`'s
+  host-declaration-driven fallback). All nine examples still using the old name
+  (`advection`, `advection_flat_host`, `capgen`, `chararg`, `constadv`, `constprop`, `ddthost`,
+  `helloworld`, `kessler`) have been renamed onto `horizontal_dimension`, verified against a full
+  FileCheck + unit suite run after each stage (only pre-existing, unrelated failures remain: the
+  `test_ccpp_xdsl_generates_caps` build-integration test, which fails identically on unmodified
+  `main`). `helloworld`'s Python-frontend example (`helloworld_py.py`) was extended with real
+  host-descriptor loading (`ccpp_host_from_meta`, matching the pattern already used by
+  `kessler_py.py`/`advection_py.py`/`ddthost_meta_py.py`) so its goldens stay in sync with the
+  XML-frontend ones rather than silently diverging in test coverage.
+  - **Two real generator bugs found and fixed along the way, both in
+    `suite_cap.py`'s `_build_promoted_call_ops`** (the per-vertical-level scheme-call promotion
+    loop, exercised by capgen's `temp_adjust` call in `temp_suite_physics2`): (1) a `KeyError`
+    on `data_ops["ccpp_lbound_one"]` — that key was only ever populated by the legacy
+    `_classify_args` → `_build_ncol_compute_ops` path (triggered by a scheme declaring
+    `horizontal_loop_extent` directly), so any scheme reaching this promotion code under the new
+    convention crashed outright; fixed by lazily creating the constant-1 alloca on first use
+    instead of assuming it was pre-populated. (2) A silent wrong-value bug one layer deeper: the
+    slice's column-range upper bound fell back to `data_ops.get("ncol", loop_var_memref)`, and
+    since `"ncol"` is never in `data_ops` under the new convention, it silently substituted the
+    *promotion loop's own vertical-layer index* as the column count — producing a slice range
+    that grows with the loop (`qv(1:vertical_layer_index, vertical_layer_index)`) instead of the
+    real column range (`qv(1:ncol, vertical_layer_index)`). This one produced syntactically valid
+    but numerically wrong Fortran with no crash, so it would have shipped silently without direct
+    inspection of the generated output. Fixed by resolving the real column count via the
+    existing `_find_loop_upper_bound` helper (already used to resolve the promoted dimension's
+    own upper bound) against `CCPP_HORIZ_DIM_STD_NAME`, threaded into `_build_promoted_call_ops`
+    as a new `ncol_ref` parameter. Regression coverage:
+    `tests/unit/test_optional_args.py`'s new `TestPromotedArgsOnHorizontalDimension` class
+    (sabotage-verified against both bugs). Also fixed one now-stale assertion in the same file
+    (`test_optional_args.py`'s old `test_suite_call_includes_col_start_and_col_end`, renamed
+    `test_physics_run_declares_col_start_and_col_end`) that assumed `col_start`/`col_end` are
+    always forwarded from the top-level dispatch into the suite-level call — no longer true now
+    that capgen's schemes resolve their own per-call column count internally.
+  - **Not part of this migration, tracked separately:** retiring the actual legacy
+    `CCPP_LOOP_EXTENT_STD_NAME` code paths in `xdsl_ccpp` itself (`ccpp_conventions.py`,
+    `cpp_interop.py` — including its C++-side fallback naming preference, `run_dispatch.py`,
+    `ccpp_cap.py`, `suite_cap.py`'s own now-provably-dead-for-every-example
+    `_classify_args`/`_build_ncol_compute_ops` synthesis path) now that no example anywhere in
+    the repo references the old name — needs its own investigation to confirm what's safely
+    deletable. A full re-sync of `advection`/`capgen`/`ddthost` to capgen-v1's exact current
+    upstream state (rank changes, missing entry points, `kind_spec`/`dependencies_path`/
+    `source_path` metadata-parser support) is also explicitly out of scope here — a separate,
+    larger effort.
 
 ---
 
