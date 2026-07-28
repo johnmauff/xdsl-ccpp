@@ -157,16 +157,24 @@ class ccppMain:
             if not options_db.get("scheme_files") and not options_db.get("meta_file"):
                 raise ValueError("--scheme-files is required (or provide --meta-file)")
 
+        # .strip() each entry: a space after a comma (e.g. "a.meta, b.meta")
+        # would otherwise silently become a path with a leading space,
+        # failing to open with a confusing error rather than being
+        # tolerated the way most CLI tools handle incidental whitespace.
         if options_db.get("suites"):
-            options_db["suites"] = options_db["suites"].split(",")
+            options_db["suites"] = [p.strip() for p in options_db["suites"].split(",")]
         else:
             options_db["suites"] = []
         if options_db["scheme_files"]:
-            options_db["scheme_files"] = options_db["scheme_files"].split(",")
+            options_db["scheme_files"] = [
+                p.strip() for p in options_db["scheme_files"].split(",")
+            ]
         else:
             options_db["scheme_files"] = []
         if options_db["host_files"]:
-            options_db["host_files"] = options_db["host_files"].split(",")
+            options_db["host_files"] = [
+                p.strip() for p in options_db["host_files"].split(",")
+            ]
         else:
             options_db["host_files"] = []
 

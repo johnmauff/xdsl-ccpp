@@ -3185,6 +3185,32 @@ dependency is noted.
   `examples/var_compat/README.md`'s "Adaptations made during porting"
   section) — it only means a *future* port can skip that normalization step.
 
+- **Fixed — three more of the same class of bug, found by auditing the frontend parser for
+  other whitespace-has-a-particular-meaning spots after the bracket-spacing fix above
+  (2026-07-27).** Same shape each time: user-authored text taken at face value without
+  stripping, relying entirely on everyone happening to format things the same tight way. None
+  were live failures — every suite XML/CLI invocation in this repo already avoids the incidental
+  whitespace — but all three would previously have failed silently or confusingly:
+  1. `XMLScheme.scheme_name` (a `<scheme>` element's text content) was used unstripped. Every
+     suite XML in this repo writes the name tight against the tags on one line, but XML preserves
+     indentation whitespace verbatim in element text — an indented `<scheme>\n  x\n</scheme>`
+     would have produced a `scheme_name` that never matches anything in scheme metadata, with no
+     clear error pointing at whitespace as the cause.
+  2. `XMLSubcycle`'s own `loop` attribute was read unstripped — same bug, lower likelihood
+     (attribute values rarely pick up incidental whitespace, since nobody indents inside a quoted
+     attribute).
+  3. Both `ccpp_xml.py`'s `ccppXML.build_options_db_from_args` and `ccpp_dsl.py`'s
+     `ccppMain.build_options_db_from_args` split `--scheme-files`/`--host-files`/`--suites` on
+     comma with no per-entry stripping — `"a.meta, b.meta"` would silently produce a path with a
+     leading space, failing to open with a confusing error (confirmed directly via sabotage
+     testing: `FileNotFoundError: Input file not found: ' examples/helloworld/temp_adjust.meta'`)
+     instead of being tolerated the way most CLI tools handle incidental whitespace.
+
+  **Fixed** by adding a `.strip()` at the point each raw value is taken, in all four spots (two
+  files for the CLI comma-split). Direct regression coverage (sabotage-verified, all three) in
+  `tests/unit/test_frontend_whitespace_tolerance.py`. Full unit + FileCheck suites re-run clean
+  (512 passed, same 1 pre-existing xfail and 1 pre-existing unrelated failure as before).
+
 - **`[ccpp-table-properties]`'s `module_name` override isn't supported — S,
   found while porting var_compat (2026-07-23).** capgen-v1 lets a table's
   logical/suite-visible name (e.g. `effr_pre`, the name used in

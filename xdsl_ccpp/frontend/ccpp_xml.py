@@ -181,8 +181,14 @@ class XMLScheme(XMLSuiteBase):
 
     def __init__(self, xml_node):
         assert xml_node.tag == "scheme"
-        # Text content of the <scheme> element is the scheme base name
-        self.scheme_name = xml_node.text
+        # Text content of the <scheme> element is the scheme base name.
+        # .strip(): every suite XML in this repo writes the name tight
+        # against the tags on one line, but XML preserves indentation
+        # whitespace/newlines verbatim in element text -- an indented
+        # "<scheme>\n  x\n</scheme>" would otherwise silently produce a
+        # scheme_name that never matches anything in scheme metadata, with
+        # no clear error pointing at whitespace as the cause.
+        self.scheme_name = xml_node.text.strip() if xml_node.text else xml_node.text
         super().__init__(xml_node)
         assert len(xml_node) == 0  # scheme elements must be leaf nodes
 
@@ -201,7 +207,11 @@ class XMLSubcycle(XMLSuiteBase):
     def __init__(self, xml_node):
         assert xml_node.tag == "subcycle"
         super().__init__(xml_node)
-        raw = xml_node.attrib.get("loop", "1")
+        # .strip(): attribute values rarely pick up incidental whitespace
+        # (nobody indents inside a quoted attribute), but the same class of
+        # bug applies if one ever did -- e.g. loop=" num_subcycles " would
+        # otherwise silently fail every downstream standard_name lookup.
+        raw = xml_node.attrib.get("loop", "1").strip()
         try:
             int(raw)
             self.is_literal = True
@@ -432,21 +442,29 @@ class ccppXML:
         """
         options_db = args.__dict__
 
-        # Split comma-separated scheme file paths into a list
+        # Split comma-separated scheme file paths into a list. .strip() each
+        # entry: a space after a comma (e.g. "a.meta, b.meta") would
+        # otherwise silently become a path with a leading space, failing to
+        # open with a confusing error rather than being tolerated the way
+        # most CLI tools handle incidental whitespace.
         if "scheme_files" in options_db and options_db["scheme_files"] is not None:
-            options_db["scheme_files"] = options_db["scheme_files"].split(",")
+            options_db["scheme_files"] = [
+                p.strip() for p in options_db["scheme_files"].split(",")
+            ]
         else:
             options_db["scheme_files"] = []
 
         # Split comma-separated host file paths into a list
         if "host_files" in options_db and options_db["host_files"] is not None:
-            options_db["host_files"] = options_db["host_files"].split(",")
+            options_db["host_files"] = [
+                p.strip() for p in options_db["host_files"].split(",")
+            ]
         else:
             options_db["host_files"] = []
 
         # Split comma-separated suite XML paths into a list
         if "suites" in options_db and options_db["suites"] is not None:
-            options_db["suites"] = options_db["suites"].split(",")
+            options_db["suites"] = [p.strip() for p in options_db["suites"].split(",")]
         else:
             options_db["suites"] = []
 
