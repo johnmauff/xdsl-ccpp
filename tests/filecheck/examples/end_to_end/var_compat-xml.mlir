@@ -425,11 +425,12 @@
 // CHECK-NEXT:      integer, intent(in) :: col_end
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:      integer, intent(inout) :: errflg
+// CHECK-NEXT:      integer :: ncol
 // CHECK:           errflg = 0
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:        ncol = col_end - col_start + 1
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
-// CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=phys_state%effrr(col_start:col_end, 1:pver), scalar_varA=phys_state%scalar_varA, ncol=ncol, nlev=pver, effrg_in=phys_state%effrg(col_start:col_end, 1:pver), ncg_in=phys_state%ncg(col_start:col_end, 1:pver), nci_out=phys_state%nci(col_start:col_end, 1:pver), effrl_inout=phys_state%effrl(col_start:col_end, 1:pver), effri_out=phys_state%effri(col_start:col_end, 1:pver), effrs_inout=effrs(col_start:col_end, 1:pver), ncl_out=lc_ncl_out, has_graupel=has_graupel, scalar_var=phys_state%scalar_var, tke_inout=phys_state%tke, tke2_inout=phys_state%tke2, scalar_varB=phys_state%scalar_varB, scalar_varC=phys_state%scalar_varC, fluxLW=phys_state%fluxLW(col_start:col_end), sfc_up_sw=phys_state%fluxSW%sfc_up_sw(col_start:col_end), sfc_down_sw=phys_state%fluxSW%sfc_down_sw(col_start:col_end), num_subcycles=phys_state%num_subcycles, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:          call var_compatibility_suite_suite_radiation(effrr_inout=phys_state%effrr(col_start:col_end, 1:pver), scalar_varA=phys_state%scalar_varA, ncol=ncol, nlev=pver, effrg_in=phys_state%effrg(col_start:col_end, 1:pver), ncg_in=phys_state%ncg(col_start:col_end, 1:pver), nci_out=phys_state%nci(col_start:col_end, 1:pver), effrl_inout=phys_state%effrl(col_start:col_end, 1:pver), effri_out=phys_state%effri(col_start:col_end, 1:pver), effrs_inout=effrs(col_start:col_end, 1:pver), ncl_out=lc_ncl_out(col_start:col_end, 1:pver), has_graupel=has_graupel, scalar_var=phys_state%scalar_var, tke_inout=phys_state%tke, tke2_inout=phys_state%tke2, scalar_varB=phys_state%scalar_varB, scalar_varC=phys_state%scalar_varC, fluxLW=phys_state%fluxLW(col_start:col_end), sfc_up_sw=phys_state%fluxSW%sfc_up_sw(col_start:col_end), sfc_down_sw=phys_state%fluxSW%sfc_down_sw(col_start:col_end), num_subcycles=phys_state%num_subcycles, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:            " found in suite var_compatibility_suite"

@@ -402,3 +402,66 @@ class TestActiveExpressionReferenceIncluded:
         assert "some_conditional_flag" in body, (
             f"active= expression's referenced std_name missing from suite_variables:\n{body}"
         )
+
+
+class TestActiveExpressionRelationalOperatorNotMistakenForStdName:
+    """Found by Copilot's review of PR #44: the active= token scan pulls
+    out anything matching a bare-word regex, and Fortran's dotted relational
+    operators (.eq./.ne./.lt./.le./.gt./.ge.) tokenize down to bare words
+    ("gt", "eq", ...) once the surrounding dots are stripped -- without
+    excluding them, `active = (some_conditional_flag .gt. 0)` would
+    incorrectly add "gt" to the suite's variable list as if it were a real
+    referenced standard_name. No example in this repo currently writes an
+    active= expression this way (they use plain identifiers or a bare ">"),
+    so this was a latent gap, not a live failure."""
+
+    _SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = scheme_a
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_a_run
+  type = scheme
+[ x ]
+  standard_name = matched_scalar
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = ()
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+    _HOST_META = """\
+[ccpp-table-properties]
+  name = test_host_mod
+  type = module
+[ccpp-arg-table]
+  name = test_host_mod
+  type = module
+[ x_host ]
+  standard_name = matched_scalar
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = ()
+[ y_host ]
+  standard_name = conditionally_present_value
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = ()
+  active = (some_conditional_flag .gt. 0)
+"""
+
+    def test_relational_operator_word_excluded(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context, [self._SCHEME_META], [self._HOST_META]
+        )
+        body = _suite_variables_body(fortran)
+        assert "some_conditional_flag" in body, (
+            f"active= expression's real referenced std_name missing from suite_variables:\n{body}"
+        )
+        assert "'gt" not in body, (
+            f"relational operator 'gt' incorrectly treated as a std_name:\n{body}"
+        )

@@ -97,6 +97,20 @@ _HOST_META_NO_MATCH = """\
   dimensions = ()
 """
 
+_HOST_META_DIFFERENT_CASE = """\
+[ccpp-table-properties]
+  name = test_host_mod
+  type = module
+[ccpp-arg-table]
+  name = test_host_mod
+  type = module
+[ host_count ]
+  standard_name = My_Dynamic_Count
+  units = count
+  type = integer
+  dimensions = ()
+"""
+
 
 def _scheme_metas() -> list:
     return [
@@ -153,3 +167,25 @@ class TestDynamicLoopCountWithoutHostMatch:
     def test_raises_clear_error(self, run_host_match, ccpp_context):
         with pytest.raises(ValueError, match="Subcycle loop count"):
             _fortran_output(run_host_match, ccpp_context, [_HOST_META_NO_MATCH])
+
+
+class TestDynamicLoopCountCaseInsensitiveMatch:
+    """Found by Copilot's review of PR #44: _resolve_host_only_std_name
+    compared standard_name case-sensitively, while every other standard_name
+    lookup in this codebase treats it as case-insensitive (lowercased). The
+    suite XML writes the loop count as "my_dynamic_count" (via
+    minimal_suite_xml-style lowercase convention); this host declares the
+    matching standard_name with different capitalization
+    ("My_Dynamic_Count") -- a case-sensitive comparison would fail to find
+    it and incorrectly raise "Subcycle loop count ... has no scheme
+    argument and no host match" even though a host match genuinely exists,
+    just spelled with different case. No example in this repo currently
+    exercises mismatched case (host and suite XML always happen to already
+    agree), so this was a latent gap, not a live failure."""
+
+    def test_do_loop_resolves_despite_different_case(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(run_host_match, ccpp_context, [_HOST_META_DIFFERENT_CASE])
+        fn = _fn_body(fortran, "test_suite_suite_physics")
+        assert any(
+            "= 1, host_count" in line for line in fn.splitlines()
+        ), f"expected a do-loop bound of host_count, got body:\n{fn}"

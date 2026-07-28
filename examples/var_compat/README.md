@@ -529,20 +529,41 @@ more known issues:
   `tests/unit/test_run_dispatch_col_bounds_fallback.py` (sabotage-verified)
   for direct regression coverage.
 
-  **Still open:** both fixes above are now confirmed correct by an actual
-  `gfortran` compile succeeding (previously failed at this exact line), but
-  the full `make check` run (build, execute, and compare `effrs` against
-  its expected value) has not yet been confirmed. Separately, `effr_calc`'s
-  optional, unmatched, cap-scratch-only
-  `ncl_out` output (`cloud_liquid_number_concentration`) is a `CapVar`-sourced,
-  rank-2 array that hits a different, narrower gap in the same
-  `ArraySectionOp` block (its own gate is still keyed to the legacy
-  `horizontal_loop_extent` name, and even fixing that would need a genuinely
-  multi-dimensional `CapVar` section, which the current one-shot
-  single-dimension construction doesn't support) — left unfixed since
-  `ncl_out`/`cloud_liquid_number_concentration` isn't referenced anywhere in
-  this test's checks or required-variable lists, so it isn't a regression,
-  just a known, pre-existing, untested edge case.
+  **Confirmed** by an actual `gfortran` build-and-run: `make check` now
+  reports PASS, including a correct `effrs` value — CI is green for
+  `var_compat`, closing out the original numeric-mismatch report end to end.
+
+- **Fixed — a known, pre-existing, previously-undetected gap in the same
+  `ArraySectionOp` slicing machinery, found while auditing what the
+  `col_start`/`col_end` fix above did and didn't cover:** `effr_calc`'s
+  optional, unmatched output `ncl_out` (`cloud_liquid_number_concentration`)
+  has no host-side match anywhere in this port's metadata, so it falls back
+  to a cap-owned scratch buffer (`lc_ncl_out`), sized to the full host
+  column count and dimensioned by `horizontal_dimension`/
+  `vertical_layer_dimension` like any other array arg — a `CapVar`-sourced
+  argument, a different `ArgSourceKind` than the `Host`/`DdtMember` case the
+  earlier fix covered. Its own slicing gate was still keyed entirely to the
+  legacy `horizontal_loop_extent` name, and even where that legacy gate did
+  fire (`examples/advection`'s own `tendency_of_cloud_liquid_dry_mixing_ratio`),
+  it only ever built a single-dimension section — so `lc_ncl_out` was never
+  sliced by `col_start`/`col_end` at all under the newer convention: every
+  chunked call would write only the first chunk's columns, leaving every
+  later chunk's columns stale/uninitialized for any host that actually read
+  it (this test's own doesn't, which is why it stayed invisible).
+
+  **Fixed** by splitting the `CapVar` branch in two: the existing
+  `horizontal_loop_extent` case is left completely untouched (still exactly
+  one dimension, matching `advection`'s already-correct, already-verified
+  output byte-for-byte), and a new `horizontal_dimension` case reuses the
+  same multi-dimension resolution loop the `Host`/`DdtMember` branch already
+  has, extended to cap-owned buffers. Confirmed via the real generator path:
+  the call now reads `ncl_out=lc_ncl_out(col_start:col_end, 1:pver)`.
+  Confirmed unaffected: `advection` and `capgen`'s goldens (which do exercise
+  the legacy-convention `CapVar` path) are byte-identical; only `var_compat`'s
+  two goldens changed. See `TestCapVarSlicedWhenRankTwo` in
+  `tests/unit/test_run_dispatch_col_bounds_fallback.py` (sabotage-verified,
+  plus a guard confirming the already-covered `Host`/`DdtMember` slicing in
+  the same call is undisturbed) for direct regression coverage.
 
 - **Fixed — the generated `test_host_ccpp_cap.F90` failed to compile with
   "Error in opening the compiled module file" for `ccpp_constituent_prop_mod`

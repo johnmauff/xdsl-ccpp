@@ -2969,18 +2969,56 @@ dependency is noted.
       generated output changed. Direct regression coverage (sabotage-verified) added as
       `test_ncol_local_is_declared` in `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
 
-      **Still open:** both fixes above are now confirmed correct by an actual gfortran compile
-      succeeding (previously failed at this exact line), but the full `make check` run (build,
-      execute, and compare `effrs` against its expected value) has not yet been confirmed.
-      Separately, `effr_calc`'s
-      optional, unmatched, cap-scratch-only `ncl_out` output
-      (`cloud_liquid_number_concentration`) is `CapVar`-sourced and rank-2, hitting a different,
-      narrower gap in the same `ArraySectionOp` block (its own gate is still keyed to the legacy
-      `horizontal_loop_extent` name, and even fixing that would need a genuinely multi-dimensional
-      `CapVar` section, which the current one-shot single-dimension construction doesn't support)
-      — left unfixed since `ncl_out`/`cloud_liquid_number_concentration` isn't referenced anywhere
-      in this test's checks or required-variable lists, so it isn't a regression, just a known,
-      pre-existing, untested edge case.
+      Confirmed: `make check` now reports PASS (correct `effrs`), and CI is green for
+      `var_compat` — the original numeric-mismatch report is closed out end to end.
+
+    - **Fixed — a known, pre-existing gap in the same `ArraySectionOp` machinery, found while
+      auditing what the col_start/col_end fix above did and didn't cover.** `effr_calc`'s
+      optional, unmatched output `ncl_out` (`cloud_liquid_number_concentration`) has no host-side
+      match, so it falls back to a cap-owned scratch buffer (`lc_ncl_out`), sized to the full host
+      column count and dimensioned by `horizontal_dimension`/`vertical_layer_dimension` — a
+      `CapVar`-sourced argument, a different `ArgSourceKind` than the `Host`/`DdtMember` case the
+      earlier fix covered. Its slicing gate was still keyed entirely to the legacy
+      `horizontal_loop_extent` name, and even where that legacy gate did fire (`advection`'s own
+      `tendency_of_cloud_liquid_dry_mixing_ratio`), it only ever built a single-dimension section —
+      so `lc_ncl_out` was never sliced under the newer convention at all: every chunked call wrote
+      only the first chunk's columns, leaving later chunks stale for any host that read it
+      (invisible here since this test's own checks never reference it).
+
+      **Fixed** by splitting the `CapVar` branch in two: the existing `horizontal_loop_extent` case
+      is left completely untouched (still exactly one dimension, matching `advection`'s
+      already-correct output byte-for-byte), and a new `horizontal_dimension` case reuses the same
+      multi-dimension resolution loop the `Host`/`DdtMember` branch already has. Confirmed via the
+      real generator path: the call now reads `ncl_out=lc_ncl_out(col_start:col_end, 1:pver)`;
+      `advection`/`capgen`'s goldens (which exercise the legacy path) are byte-identical, only
+      `var_compat`'s two goldens changed. Full unit + FileCheck suites re-run clean (502 passed,
+      same 1 pre-existing xfail and 1 pre-existing unrelated failure). Direct regression coverage
+      (sabotage-verified, plus a guard confirming the already-covered `Host`/`DdtMember` slicing in
+      the same call is undisturbed) in `TestCapVarSlicedWhenRankTwo`,
+      `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+
+    - **Fixed — two robustness gaps in PR #44's own code, found by Copilot's automated review
+      after the PR had already merged.** Both are latent (no example in this repo currently
+      triggers either), not live failures:
+      1. `ccpp_cap.py`'s Pass 2c `active =` expression token scan (added in this same PR) excluded
+         boolean-expression keywords (`and`/`or`/`not`/`eqv`/`neqv`/`true`/`false`) but not
+         Fortran's dotted relational operators (`.eq.`/`.ne.`/`.lt.`/`.le.`/`.gt.`/`.ge.`), which
+         tokenize down to bare words (`eq`, `gt`, ...) once the regex strips the surrounding dots
+         — `active = (x .gt. 0)` would have incorrectly added `gt` to the suite's variable list as
+         if it were a real referenced standard_name. **Fixed** by adding all six to
+         `_ACTIVE_EXPR_KEYWORDS`. Regression: `TestActiveExpressionRelationalOperatorNotMistakenForStdName`
+         in `tests/unit/test_suite_variables_gaps.py` (sabotage-verified).
+      2. `suite_cap.py`'s `_resolve_host_only_std_name` (also added in this PR, for dynamic
+         subcycle loop-count resolution) compared `standard_name` case-sensitively, unlike every
+         other standard_name lookup in this codebase (all lowercased). A host `.meta` spelling a
+         standard_name with different capitalization than the suite XML would have silently failed
+         to resolve, raising "Subcycle loop count ... has no scheme argument and no host match"
+         even with a genuine match present. **Fixed** by lowercasing both sides of the comparison.
+         Regression: `TestDynamicLoopCountCaseInsensitiveMatch` in
+         `tests/unit/test_suite_dynamic_loop_count.py` (sabotage-verified).
+
+      Full unit + FileCheck suites re-run clean (504 passed, same 1 pre-existing xfail and 1
+      pre-existing unrelated failure as before).
 - **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
   cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
   *named group* from a *different* suite XML file, nestable 2 levels deep, under schema

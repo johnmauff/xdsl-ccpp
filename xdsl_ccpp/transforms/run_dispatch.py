@@ -973,18 +973,102 @@ def _build_run_dispatch_chain(
                 elif op.source_kind.data == ArgSourceKind.CapVar:
                     std_name_cv = op.std_name.data
                     _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
-                    if not _cv_dims or _cv_dims[0].lower() != CCPP_LOOP_EXTENT_STD_NAME:
+                    if not _cv_dims:
                         continue
+                    _cv_first_dim = _cv_dims[0].lower()
+                    if _cv_first_dim == CCPP_LOOP_EXTENT_STD_NAME:
+                        # Original, already-working convention (advection):
+                        # single-dimension slice only, behavior unchanged --
+                        # do not extend to additional dimensions here, since
+                        # that would change already-correct, already-verified
+                        # output for every existing horizontal_loop_extent
+                        # example.
+                        col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                        col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                        if not col_begin_key or not col_end_key:
+                            continue
+                        if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
+                            continue
+                        section = ArraySectionOp(
+                            host_var_ref_results[arg_name],
+                            [block_arg_map[col_begin_key]],
+                            [block_arg_map[col_end_key]],
+                        )
+                        array_section_main_ops.append(section)
+                        host_var_ref_results[arg_name] = section.res
+                        continue
+                    if _cv_first_dim != CCPP_HORIZ_DIM_STD_NAME:
+                        continue
+                    # Newer horizontal_dimension-always-means-this-call's-
+                    # columns convention (var_compat's own effr_calc, whose
+                    # unmatched optional ncl_out output falls back to a
+                    # cap-owned scratch buffer, sized to the full host column
+                    # count, dimensioned by horizontal_dimension like any
+                    # other array arg) -- same reasoning as the Host/DdtMember
+                    # branch above, including proper multi-dimension support.
                     col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
                     col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
                     if not col_begin_key or not col_end_key:
                         continue
                     if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
                         continue
+
+                    lowers = [block_arg_map[col_begin_key]]
+                    uppers = [block_arg_map[col_end_key]]
+
+                    # A cap-owned scratch buffer can be rank >= 2 too (e.g.
+                    # ncl_out's horizontal_dimension, vertical_layer_dimension)
+                    # -- resolve every additional dimension's upper bound the
+                    # same way the Host/DdtMember branch above does, since
+                    # those dimensions (e.g. "pver") are always real host
+                    # variables regardless of the array itself being cap-owned.
+                    _cv_valid = True
+                    for dim_std_name in _cv_dims[1:]:
+                        dim_std_name = dim_std_name.lower()
+                        if dim_std_name not in host_var_map:
+                            _cv_valid = False
+                            break
+                        dim_var_name, dim_module_name = host_var_map[dim_std_name]
+
+                        if dim_var_name in host_name_to_ref_result:
+                            dim_upper_ref = host_name_to_ref_result[dim_var_name]
+                        else:
+                            dim_ref_op = HostVarRefOp(
+                                dim_var_name,
+                                dim_module_name,
+                                TypeConversions.getBaseType("integer"),
+                            )
+                            array_section_extra_ops.append(dim_ref_op)
+                            host_name_to_ref_result[dim_var_name] = dim_ref_op.res
+                            dim_upper_ref = dim_ref_op.res
+
+                            key = (dim_var_name, dim_module_name)
+                            if key not in seen_host_globals:
+                                seen_host_globals.add(key)
+                                dim_glob = llvm.GlobalOp(
+                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                    dim_var_name,
+                                    "external",
+                                )
+                                dim_glob.attributes["module"] = StringAttr(dim_module_name)
+                                chain_global_ops.append(dim_glob)
+
+                        if one_const_for_sections is None:
+                            one_const_for_sections = arith.ConstantOp.from_int_and_width(
+                                1, 32
+                            )
+                            array_section_pre_ops.append(one_const_for_sections)
+
+                        lowers.append(one_const_for_sections.result)
+                        uppers.append(dim_upper_ref)
+
+                    if not _cv_valid:
+                        continue
+
                     section = ArraySectionOp(
                         host_var_ref_results[arg_name],
-                        [block_arg_map[col_begin_key]],
-                        [block_arg_map[col_end_key]],
+                        lowers,
+                        uppers,
                     )
                     array_section_main_ops.append(section)
                     host_var_ref_results[arg_name] = section.res
