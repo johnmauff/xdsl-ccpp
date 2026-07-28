@@ -10,14 +10,14 @@
   long_name = ccpp constituent tendencies
   units = none
   type = real | kind = kind_phys
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension, number_of_ccpp_constituents)
+  dimensions = (horizontal_dimension, vertical_layer_dimension, number_of_ccpp_constituents)
   intent = inout
 [ const ]
   standard_name = ccpp_constituents
   long_name = ccpp constituents
   units = none
   type = real | kind = kind_phys
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension, number_of_ccpp_constituents)
+  dimensions = (horizontal_dimension, vertical_layer_dimension, number_of_ccpp_constituents)
   intent = inout
 [ errcode ]
   standard_name = ccpp_error_code

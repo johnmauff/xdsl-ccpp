@@ -30,7 +30,7 @@
   name = cld_liq_run
   type = scheme
 [ ncol ]
-  standard_name = horizontal_loop_extent
+  standard_name = horizontal_dimension
   type = integer
   units = count
   dimensions = ()
@@ -52,7 +52,7 @@
 [ temp ]
   standard_name = temperature
   units = K
-  dimensions = (horizontal_loop_extent, vertical_LAYER_dimension)
+  dimensions = (horizontal_dimension, vertical_LAYER_dimension)
   type = real
   kind = kind_phys
   intent = inout
@@ -60,7 +60,7 @@
 [ qv ]
   standard_name = water_vapor_specific_humidity
   units = kg kg-1
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real
   kind = kind_phys
   intent = inout
@@ -71,12 +71,12 @@
   type = real
   kind = kind_phys
   units = hPa
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   intent = in
 [ cld_liq_tend ]
   standard_name = tendency_of_cloud_liquid_dry_mixing_ratio
   units = kg kg-1 s-1
-  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real |  kind = kind_phys
   intent = inout
   constituent = True

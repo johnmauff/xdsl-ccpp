@@ -59,7 +59,7 @@ int main() {
     check("timestep_initial", Kessler_chost::timestep_initial(state));
 
     auto t_start = std::chrono::high_resolution_clock::now();
-    check("run", Kessler_chost::run(state, 1, NCOL));
+    check("run", Kessler_chost::run(state));
     auto t_end = std::chrono::high_resolution_clock::now();
 
     check("timestep_final", Kessler_chost::timestep_final(state));

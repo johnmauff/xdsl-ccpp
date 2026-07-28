@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from enum import StrEnum, auto
 from typing import ClassVar
@@ -31,6 +32,8 @@ from xdsl.irdl import (
 )
 from xdsl.traits import NoTerminator
 from xdsl.utils.hints import isa
+
+from xdsl_ccpp.util.ccpp_conventions import deprecated_std_name_warning
 
 
 class TableTypeKind(StrEnum):
@@ -443,6 +446,21 @@ class ArgumentOp(IRDLOperation):
                 if _flag_is_true(attributes[flag]):
                     properties[flag] = UnitAttr()
                 prop_keys.remove(flag)
+
+        # Warn (don't reject) on deprecated standard names, whether declared
+        # as the arg's own standard_name or as one of its dimension names.
+        _checked_std_names = []
+        if "standard_name" in properties:
+            _checked_std_names.append(properties["standard_name"].data)
+        if "dim_names" in properties:
+            _checked_std_names.extend(properties["dim_names"].data.split(","))
+        for _std_name in _checked_std_names:
+            _warning = deprecated_std_name_warning(_std_name)
+            if _warning is not None:
+                print(
+                    f"Warning: arg '{arg_name.data}': {_warning}",
+                    file=sys.stderr,
+                )
 
         # Silently ignore unrecognised keys
 

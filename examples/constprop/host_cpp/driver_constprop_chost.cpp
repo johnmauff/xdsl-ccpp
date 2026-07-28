@@ -85,7 +85,7 @@ int main() {
         state.temp[i] = 1.0;
 
     // constprop_run multiplies temp by 2x in the active chunk.
-    check("run", CP::run(state, 1, NCOL));
+    check("run", CP::run(state));
 
     for (int i = 0; i < NCOL * NZ; ++i) {
         if (state.temp[i] != 2.0) {

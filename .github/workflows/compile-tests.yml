@@ -29,8 +29,10 @@ jobs:
         # constadv/constprop are known-failing (newest examples, still under
         # active development) — tracked in
         # https://github.com/johnmauff/xdsl-ccpp/issues/4
-        # Not the FC=f77 build-config bug (fixed separately); a real, separate
-        # issue in these two examples. Remove this override once fixed.
+        # A prior C++ chost driver compile break (run() signature mismatch)
+        # was found and fixed, but these two still fail -- a separate,
+        # not-yet-diagnosed issue further down the build/run chain. Remove
+        # this override once fixed.
         include:
           - example: constadv
             expected_failure: true

@@ -60,7 +60,7 @@ int main() {
         if (!s.ok()) { std::fprintf(stderr, "timestep_initial failed\n"); return 1; }
     }
     {
-        auto s = CA::run(st, 1, NCOL);
+        auto s = CA::run(st);
         if (!s.ok()) {
             std::fprintf(stderr, "run failed: %s\n", s.message.c_str());
             return 1;

@@ -31,7 +31,7 @@
   name = temp_adjust_run
   type = scheme
 [ foo ]
-  standard_name = horizontal_loop_extent
+  standard_name = horizontal_dimension
   type = integer
   units = count
   dimensions = ()
@@ -47,14 +47,14 @@
 [ temp_prev ]
   standard_name = potential_temperature_at_previous_timestep
   units = K
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   type = real
   kind = kind_phys
   intent = in
 [ temp_layer ]
   standard_name = potential_temperature
   units = K
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   type = real
   kind = kind_phys
   intent = inout
@@ -62,7 +62,7 @@
 [ qv ]
   standard_name = water_vapor_specific_humidity
   units = kg kg-1
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   type = real
   kind = kind_phys
   intent = inout
@@ -74,12 +74,12 @@
   type = real
   kind = kind_phys
   units = Pa
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   intent = inout
 [ to_promote ]
   standard_name = promote_this_variable_to_suite
   units = K
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   type = real
   kind = kind_phys
   intent = in

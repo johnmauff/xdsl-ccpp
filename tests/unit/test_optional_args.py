@@ -171,10 +171,16 @@ class TestCCPPCapSuiteCall:
         # The ccpp cap calls it with keyword syntax
         assert "qv=qv" in capgen_fortran
 
-    def test_suite_call_includes_col_start_and_col_end(self, capgen_fortran):
-        """The ccpp cap passes col_start and col_end to the suite cap."""
-        # These are always required; their presence confirms the call is present
-        assert "col_start=cols" in capgen_fortran or "col_start=" in capgen_fortran
+    def test_physics_run_declares_col_start_and_col_end(self, capgen_fortran):
+        """Temp_ccpp_physics_run always declares col_start/col_end as its own
+        dispatch-level parameters, regardless of whether any scheme below it
+        happens to need them forwarded (capgen's schemes now resolve their own
+        per-call column count via the host-matched horizontal_dimension
+        convention rather than a col_start/col_end argument threaded down
+        from this level, so the two are no longer necessarily passed further
+        in, but the standard framework-level signature always has them)."""
+        assert "subroutine Temp_ccpp_physics_run(suite_name, suite_part, col_start, col_end" \
+            in capgen_fortran
 
     def test_ccpp_cap_passes_qv_from_host_state(self, capgen_fortran):
         """The ccpp cap passes qv from host state via keyword argument.
@@ -403,3 +409,125 @@ class TestPromotedOptionalArgs:
     def test_end_if_closes_present_check(self, promoted_opt_fortran):
         """end if closes the present check block."""
         assert "end if" in promoted_opt_fortran
+
+
+# ── Phase 3: same promoted-optional-arg scenario, but on the current
+# horizontal_dimension convention instead of the legacy horizontal_loop_extent
+# one. Regression coverage for two bugs found while migrating capgen/ddthost
+# off horizontal_loop_extent: _build_promoted_call_ops's block-arg branch
+# unconditionally read data_ops["ccpp_lbound_one"], which was only ever
+# populated by the legacy _classify_args -> _build_ncol_compute_ops path
+# (KeyError under horizontal_dimension); and even once that's fixed, its
+# range upper bound fell back to data_ops.get("ncol", loop_var_memref) --
+# under horizontal_dimension "ncol" is never in data_ops, so it silently used
+# the promotion loop's own index variable as the column upper bound, giving
+# a growing 1:vertical_layer_index slice range instead of the real 1:ncol. ──
+
+_PROMOTED_HORIZ_DIM_SCHEME = """\
+[ccpp-table-properties]
+  name = opt_promote_scheme_hd
+  type = scheme
+[ccpp-arg-table]
+  name = opt_promote_scheme_hd_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_dimension
+  units = count
+  type = integer
+  intent = in
+  dimensions = ()
+[ qv ]
+  standard_name = water_vapor_specific_humidity
+  units = kg kg-1
+  type = real
+  kind = kind_phys
+  intent = inout
+  dimensions = (horizontal_dimension)
+  optional = True
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = Error message for error handling in CCPP
+  type = character
+  kind = len=512
+  intent = out
+  dimensions = ()
+  units = none
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = Error flag for error handling in CCPP
+  type = integer
+  intent = out
+  dimensions = ()
+  units = 1
+"""
+
+_PROMOTED_HORIZ_DIM_SUITE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="opt_promote_suite_hd" version="1.0">
+  <group name="physics">
+    <scheme>opt_promote_scheme_hd</scheme>
+  </group>
+</suite>
+"""
+
+# Same as _PROMOTED_OPT_HOST_MOD plus a plain module-scope horizontal_dimension
+# scalar -- every real example using this convention (hello_world_mod.meta,
+# kessler_host_mod.meta, test_host_mod.meta) declares one; HostVariableMatchPass
+# requires a real host match for any host_matched scalar, it does not defer
+# horizontal_dimension scalars to a later col_start/col_end-derived pass.
+_PROMOTED_HORIZ_DIM_HOST_MOD = """\
+[ccpp-table-properties]
+  name = opt_promote_host_mod_hd
+  type = module
+[ccpp-arg-table]
+  name = opt_promote_host_mod_hd
+  type = module
+[ ncols ]
+  standard_name = horizontal_dimension
+  type = integer
+  units = count
+  dimensions = ()
+[ pver ]
+  standard_name = vertical_layer_dimension
+  type = integer
+  units = count
+  dimensions = ()
+"""
+
+
+@pytest.fixture(scope="module")
+def promoted_horiz_dim_fortran(tmp_path_factory) -> str:
+    """Full Fortran output for the horizontal_dimension-convention promoted-arg case."""
+    tmp_path = tmp_path_factory.mktemp("promoted_horiz_dim")
+    return _run_pipeline_from_content(
+        tmp_path,
+        suite_xml=_PROMOTED_HORIZ_DIM_SUITE_XML,
+        scheme_metas=[_PROMOTED_HORIZ_DIM_SCHEME],
+        host_metas=[_PROMOTED_HORIZ_DIM_HOST_MOD, _PROMOTED_OPT_HOST],
+        with_host_match=True,
+    )
+
+
+class TestPromotedArgsOnHorizontalDimension:
+    """Same promoted-optional-arg behavior must hold under horizontal_dimension,
+    with the column range correctly resolved (not the promotion loop index)."""
+
+    def test_pipeline_does_not_crash(self, promoted_horiz_dim_fortran):
+        """Regression test for the ccpp_lbound_one KeyError: merely building
+        the fixture (see above) must not raise -- if it does, pytest reports
+        the fixture error rather than reaching this test body at all."""
+        assert "opt_promote_scheme_hd" in promoted_horiz_dim_fortran
+
+    def test_lbound_one_declared_and_initialised(self, promoted_horiz_dim_fortran):
+        """ccpp_lbound_one is declared and set to 1 before the promotion loop."""
+        assert "integer :: ccpp_lbound_one" in promoted_horiz_dim_fortran
+        assert "ccpp_lbound_one = 1" in promoted_horiz_dim_fortran
+
+    def test_qv_slice_uses_real_ncol_not_loop_index(self, promoted_horiz_dim_fortran):
+        """qv's column-range slice upper bound must be the real resolved ncol,
+        not the promotion loop's own vertical-layer index variable -- the
+        bug produced qv(ccpp_lbound_one:vertical_layer_index) (a range that
+        grows with the loop) instead of qv(ccpp_lbound_one:ncol)."""
+        text = promoted_horiz_dim_fortran
+        assert "qv=qv(ccpp_lbound_one:ncol, vertical_layer_index)" in text
+        assert "qv=qv(ccpp_lbound_one:vertical_layer_index, vertical_layer_index)" not in text

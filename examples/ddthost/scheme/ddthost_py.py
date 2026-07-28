@@ -92,7 +92,7 @@ class make_ddt:
             kind="kind_phys",
             intent="in",
             units="ppmv",
-            dimensions=("horizontal_loop_extent",),
+            dimensions=("horizontal_dimension",),
         ),
         Arg(
             "HNO3",
@@ -101,7 +101,7 @@ class make_ddt:
             kind="kind_phys",
             intent="in",
             units="ppmv",
-            dimensions=("horizontal_loop_extent",),
+            dimensions=("horizontal_dimension",),
         ),
         Arg(
             "vmr",
@@ -173,7 +173,7 @@ class environ_conditions:
             kind="kind_phys",
             intent="in",
             units="Pa",
-            dimensions=("horizontal_loop_extent",),
+            dimensions=("horizontal_dimension",),
         ),
         errmsg,
         errflg,

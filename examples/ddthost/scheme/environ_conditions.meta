@@ -10,7 +10,7 @@
   type = real
   kind = kind_phys
   units = Pa
-  dimensions = (horizontal_loop_extent)
+  dimensions = (horizontal_dimension)
   intent = in
 [ errmsg ]
   standard_name = ccpp_error_message

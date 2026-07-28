@@ -5,7 +5,7 @@
 // as char*, and errflg as int*.  Also verifies the chost file marker is emitted
 // and canonical arg ordering (ncol, nz, scalars, arrays, scheme_name, errmsg, errflg).
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_cpp/kessler_host_mod.meta,examples/kessler/host_cpp/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/kessler/scheme/kessler_suite.xml --scheme-files examples/kessler/scheme/kessler.meta,examples/kessler/scheme/kessler_update.meta --host-files examples/kessler/host_cpp/kessler_host_mod.meta,examples/kessler/host_cpp/kessler_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t cpp_header | python3 -m filecheck %s
 
 // Chost header file marker and preamble.
 // CHECK:      // FILE: Kessler_ccpp_chost_cap.h
@@ -47,13 +47,14 @@
 // CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg
 
-// Run: ncol and nz first; col_start and col_end passed through; scalars by value;
-// intent(in) arrays as const double*; inout arrays as double*; scheme_name before errmsg before errflg.
+// Run: ncol and nz first (col_start/col_end are no longer threaded through --
+// they were unused placeholders in the chost API and are dropped now that
+// the horizontal_dimension convention resolves the call window internally);
+// scalars by value; intent(in) arrays as const double*; inout arrays as
+// double*; scheme_name before errmsg before errflg.
 // CHECK-LABEL: void Kessler_chost_physics_run(
 // CHECK:           int              ncol,
 // CHECK-NEXT:      int              nz,
-// CHECK-NEXT:      int              col_start,
-// CHECK-NEXT:      int              col_end,
 // CHECK-NEXT:      double           dt,
 // CHECK-NEXT:      int              lyr_surf,
 // CHECK-NEXT:      int              lyr_toa,
