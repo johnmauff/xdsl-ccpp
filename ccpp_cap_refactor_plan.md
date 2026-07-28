@@ -2941,9 +2941,38 @@ dependency is noted.
       three fixes independently, including the pre-existing `advection`-style no-double-insert
       guard) in `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
 
-      **Still open:** confirmed correct by inspecting the generated Fortran text (matching
-      capgen-v1's own shape exactly) and by the full unit + FileCheck suites, but not yet
-      verified by an actual gfortran/ifx build-and-run on real hardware. Separately, `effr_calc`'s
+      Confirmed via the real `Makefile` path that the generated Fortran text now matches
+      capgen-v1's own shape exactly, and the full unit + FileCheck suites re-ran clean.
+
+    - **Follow-up — a real gfortran compile error, found immediately on the first real build
+      attempt of the fix above:**
+      ```
+      Error: Symbol 'ncol' at (1) has no IMPLICIT type
+      ```
+      Root cause, in `print_ftn.py`: the recomputed `ncol` local (a genuinely new
+      `memref.AllocaOp`) is necessarily constructed nested inside the suite_name/suite_part
+      dispatch chain's `scf.IfOp`s, but `print_ftn.py`'s local-alloca declaration collector only
+      ever scanned the function body's own top-level ops (`bdy.block.ops`), not recursively into
+      nested regions — so the assignment and its use in the call were both printed correctly, but
+      the `integer :: ncol` declaration was silently dropped. The very next code block in the same
+      file (declaring `CCPPKindCastOp`/`CCPPUnitConvertOp` temporaries) already solves this
+      identical problem via `bdy.block.walk()` — this collector was simply never updated to match,
+      since no prior code path needed a genuinely new local alloca'd from inside this specific
+      nested dispatch chain.
+
+      **Fixed** by changing that one collector from `bdy.block.ops` to `bdy.block.walk()`,
+      matching the existing pattern two blocks below in the same function. Purely additive (a walk
+      includes the top level, so every previously-found declaration is unaffected) — confirmed via
+      the real `Makefile` path: `test_host_ccpp_physics_run` now declares `integer :: ncol`
+      immediately after `errflg`. Full unit + FileCheck suites re-run clean (500 passed, same 1
+      pre-existing xfail and 1 pre-existing unrelated failure as before); no other example's
+      generated output changed. Direct regression coverage (sabotage-verified) added as
+      `test_ncol_local_is_declared` in `tests/unit/test_run_dispatch_col_bounds_fallback.py`.
+
+      **Still open:** both fixes above are now confirmed correct by an actual gfortran compile
+      succeeding (previously failed at this exact line), but the full `make check` run (build,
+      execute, and compare `effrs` against its expected value) has not yet been confirmed.
+      Separately, `effr_calc`'s
       optional, unmatched, cap-scratch-only `ncl_out` output
       (`cloud_liquid_number_concentration`) is `CapVar`-sourced and rank-2, hitting a different,
       narrower gap in the same `ArraySectionOp` block (its own gate is still keyed to the legacy

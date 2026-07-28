@@ -307,6 +307,22 @@ class TestHorizontalDimensionScalarRecomputedFromColBounds:
         )
         assert "ncols" not in call_line, call_line
 
+    def test_ncol_local_is_declared(self, run_host_match, ccpp_context):
+        # A real gfortran build caught this: the recomputed value needs an
+        # actual Fortran local-variable declaration (the alloca backing it is
+        # necessarily nested inside the suite_name/suite_part dispatch chain's
+        # scf.IfOps, not top-level in the wrapper's own block -- print_ftn.py's
+        # local-alloca declaration collector used to only scan the top-level
+        # block, so this declaration was silently dropped even though the
+        # assignment/use were both printed correctly).
+        # error: Symbol 'ncol' at (1) has no IMPLICIT type
+        fortran = _fortran_output_ncol_scheme(run_host_match, ccpp_context)
+        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
+            "end subroutine Test_ccpp_physics_run"
+        )[0]
+        decl_lines = [line.strip() for line in fn_body.splitlines() if "integer :: ncol" in line]
+        assert decl_lines, f"no 'integer :: ncol' declaration found:\n{fn_body}"
+
     def test_2d_horizontal_dimension_array_sliced_on_first_axis_only(
         self, run_host_match, ccpp_context
     ):

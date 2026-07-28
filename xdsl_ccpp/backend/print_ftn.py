@@ -1382,10 +1382,15 @@ class ftnPrintContext:
                         inout_block_args.add(ret_val)
                 break
 
-        # Collect local allocas — AllocaOps whose result is not in the return list
+        # Collect local allocas — AllocaOps whose result is not in the return list.
+        # walk() (not just bdy.block.ops): most allocas are top-level, but e.g.
+        # run_dispatch.py's per-suite-part horizontal_dimension scalar recompute
+        # (col_end - col_start + 1) allocates its own local nested inside the
+        # suite_name/suite_part dispatch chain's scf.IfOps -- same reasoning as
+        # the CCPPKindCastOp/CCPPUnitConvertOp walk() below.
         local_allocas = [
             op
-            for op in bdy.block.ops
+            for op in bdy.block.walk()
             if isa(op, memref.AllocaOp) and op.memref not in output_ret_vals
         ]
 

@@ -490,12 +490,50 @@ more known issues:
   no-double-insert guard) and `ccpp_cap_refactor_plan.md`'s backlog for the
   full writeup.
 
-  **Still open:** this fix is confirmed correct by inspecting the generated
-  Fortran text (matching capgen-v1's own shape exactly) and by the full unit
-  + FileCheck test suites, but has not yet been verified by an actual
-  `gfortran`/`ifx` build-and-run of `examples/var_compat` on real hardware —
-  that's the next step to fully close out the original numeric-mismatch
-  report. Separately, `effr_calc`'s optional, unmatched, cap-scratch-only
+  **Follow-up — a real `gfortran` compile error, found immediately on the
+  first real build attempt of this fix:**
+  ```
+  Error: Symbol 'ncol' at (1) has no IMPLICIT type
+  ```
+  Root cause, in `print_ftn.py` (a different layer from the fix above):
+  the recomputed `ncol` local (a genuinely new `memref.AllocaOp`) is
+  necessarily constructed nested inside the suite_name/suite_part dispatch
+  chain's `scf.IfOp`s — it can only be computed once `col_start`/`col_end`
+  are known to belong to the matching suite/part, same as every other
+  per-suite value in this function. But `print_ftn.py`'s local-alloca
+  declaration collector only ever scanned the function body's own top-level
+  ops (`bdy.block.ops`), not recursively into nested regions — so the
+  assignment (`ncol = col_end - col_start + 1`) and its use in the call were
+  both printed correctly, but the corresponding `integer :: ncol`
+  declaration was silently dropped. The very next code block in the same
+  file (declaring `CCPPKindCastOp`/`CCPPUnitConvertOp` temporaries) already
+  had to solve this identical problem for a different op type, and already
+  does it correctly via `bdy.block.walk()` — this alloca-declaration
+  collector was simply never updated to match, since no prior code path
+  needed a genuinely new local alloca'd from inside this specific nested
+  dispatch chain.
+
+  **Fixed** by changing that one collector from `bdy.block.ops` to
+  `bdy.block.walk()`, matching the existing, already-proven pattern used
+  two blocks below in the same function. Purely additive — every
+  previously-found top-level alloca is still found (a walk includes the
+  top level), so no existing declaration is gained or lost; only
+  previously-invisible nested ones (this `ncol` case) are now also declared.
+  Confirmed via the real `Makefile` path: `test_host_ccpp_physics_run` now
+  declares `integer :: ncol` immediately after `errflg`. Full unit +
+  FileCheck suites re-run clean afterward (500 passed, same 1 pre-existing
+  xfail and 1 pre-existing unrelated failure as before this whole fix) —
+  no other example's generated output changed, confirming no other example
+  currently constructs a nested alloca of this kind. See the new
+  `test_ncol_local_is_declared` test in
+  `tests/unit/test_run_dispatch_col_bounds_fallback.py` (sabotage-verified)
+  for direct regression coverage.
+
+  **Still open:** both fixes above are now confirmed correct by an actual
+  `gfortran` compile succeeding (previously failed at this exact line), but
+  the full `make check` run (build, execute, and compare `effrs` against
+  its expected value) has not yet been confirmed. Separately, `effr_calc`'s
+  optional, unmatched, cap-scratch-only
   `ncl_out` output (`cloud_liquid_number_concentration`) is a `CapVar`-sourced,
   rank-2 array that hits a different, narrower gap in the same
   `ArraySectionOp` block (its own gate is still keyed to the legacy
