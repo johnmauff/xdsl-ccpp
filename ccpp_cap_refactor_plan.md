@@ -3153,9 +3153,10 @@ dependency is noted.
     revisit this item once that lands, so a build-system migration doesn't
     get tangled up with an in-flight example port.
 
-- **`.meta` argument-bracket parser requires exact spacing (`[ name ]`, not
-  `[name]`) to tell an argument name apart from an unrecognized token — S,
-  low-risk, found while porting var_compat (2026-07-23).** `ccpp_xml.py`'s
+- **Fixed — `.meta` argument-bracket parser required exact spacing
+  (`[ name ]`, not `[name]`) to tell an argument name apart from an
+  unrecognized token — found while porting var_compat (2026-07-23), fixed
+  2026-07-27.** `ccpp_xml.py`'s
   `parse_meta_file` (~line 313 onward) strips only the `[`/`]` characters
   from a bracketed line, then disambiguates purely on whether the
   *remaining* string has a leading or trailing space:
@@ -3165,27 +3166,24 @@ dependency is noted.
   across the ported files) use the tight `[effrr_in]` form with no reader
   that requires spacing either way — this project's own convention is simply
   a stricter subset of what's actually valid CCPP metadata.
-  - **Should be easy to support both, not a real complication.** The
-    header check immediately above the `elif` (`if token in
-    ("ccpp-table-properties", "ccpp-arg-table"): ...`) already does an exact
-    literal match against the two known keywords, regardless of spacing —
-    it isn't what relies on the space heuristic. By the time execution
-    reaches the `elif`, the token is already known *not* to be one of those
-    two keywords, so within a `.meta` file's grammar (the only bracketed
-    constructs that ever appear are those two headers and an argument name)
-    there's no real ambiguity left for the space check to resolve. The fix
-    is to drop the `token[0] == " " or token[-1] == " "` condition entirely
-    and treat *any* non-header bracketed token as an argument name (still
-    calling `.strip()` to get the bare name either way, so both spaced and
-    tight forms produce the identical result) — this removes a fragile
-    heuristic rather than adding one, and needs no change to the writer
-    side (`meta_from_module` et al. already only ever emit the spaced form,
-    so existing generated `.meta` output is unaffected regardless).
-  - Confirmed via the var_compat port: all 14+ occurrences ported so far
-    were mechanically normalized to the spaced form as a workaround: see
-    `examples/var_compat/README.md`'s "Adaptations made during porting"
-    section. Fixing this would let a future port skip that normalization
-    step entirely.
+  **Fixed** exactly as scoped above: dropped the `token[0] == " " or
+  token[-1] == " "` condition entirely, replacing the `elif`/`else`
+  (space-heuristic / `AssertionError`) pair with a single unconditional
+  `else` branch that treats any non-header bracketed token as an argument
+  name — the header check above it already does an exact literal match
+  against the two known keywords regardless of spacing, so nothing else
+  relied on the space heuristic, and a `.meta` file's grammar has no other
+  bracketed construct left to disambiguate. `.strip()` still normalizes both
+  spaced and tight forms to the identical bare name. No change needed on the
+  writer side (`meta_from_module` et al. already only ever emit the spaced
+  form). Direct regression coverage (sabotage-verified, confirming both
+  forms parse identically and that the tight form no longer raises) in
+  `tests/unit/test_meta_parser_bracket_spacing.py`. Full unit + FileCheck
+  suites re-run clean (506 passed, same 1 pre-existing xfail and 1
+  pre-existing unrelated failure as before). This does *not* retroactively
+  un-normalize var_compat's own already-ported `.meta` files (see
+  `examples/var_compat/README.md`'s "Adaptations made during porting"
+  section) — it only means a *future* port can skip that normalization step.
 
 - **`[ccpp-table-properties]`'s `module_name` override isn't supported — S,
   found while porting var_compat (2026-07-23).** capgen-v1 lets a table's

@@ -322,15 +322,19 @@ def parse_meta_file(filename, is_scheme):
                 elif token == "ccpp-arg-table":
                     parse_state = MetaParseState.ARG_TABLE
                     current_arg_table = CCPPArgumentTable()
-                elif token[0] == " " or token[-1] == " ":
+                else:
+                    # Anything reaching here is already known not to be one
+                    # of the two table/arg-table headers (checked above), and
+                    # a .meta file's grammar has no other bracketed construct
+                    # -- so it's always an argument name, spaced ("[ name ]",
+                    # this project's own writer convention) or tight
+                    # ("[name]", capgen-v1's own upstream convention, e.g.
+                    # var_compat's effr_calc.meta). .strip() normalizes both
+                    # to the same bare name either way.
                     if current_arg is not None:
                         current_arg_table.setFunctionArgument(current_arg)
                     parse_state = MetaParseState.ARG
                     current_arg = CCPPArgument(token.strip())
-                else:
-                    raise AssertionError(
-                        f"Unexpected token in arg table: {token!r}"
-                    )
             else:
                 assert parse_state != MetaParseState.NONE
                 for part in sline.split("|"):
