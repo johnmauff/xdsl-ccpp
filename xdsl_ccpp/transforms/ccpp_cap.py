@@ -1012,13 +1012,30 @@ class CCPPCAP(ModulePass):
         )
 
         # Emit USE-association stubs for DDT types used in any scheme across all suites.
+        # Deduped against shared_seen_host_globals (same key shape as the
+        # constituent-API stubs above) rather than a plain .extend(): the
+        # constituent API's own stubs (emitted unconditionally above,
+        # independent of whether any parsed arg is literally typed with the
+        # DDT -- the generated constituent-registration code references it
+        # regardless of that) and this generic per-arg-type scan can both
+        # independently discover the same DDT (e.g.
+        # ccpp_constituent_prop_ptr_t), and previously both added it without
+        # checking the other's output, producing two GlobalOps with the same
+        # symbol name -- a real "Redefinition of symbol" verification
+        # failure whenever a suite both generates a host cap and uses
+        # constituents.
         if ddt_source_module:
             arg_tables_iterable = (
                 arg_table
                 for props in meta_data.values()
                 for arg_table in props.arg_tables.values()
             )
-            all_globals.extend(_collect_ddt_use_stubs(arg_tables_iterable, ddt_source_module))
+            for stub in _collect_ddt_use_stubs(arg_tables_iterable, ddt_source_module):
+                _key = (stub.sym_name.data,
+                        stub.attributes.get("module", StringAttr("")).data)
+                if _key not in shared_seen_host_globals:
+                    shared_seen_host_globals.add(_key)
+                    all_globals.append(stub)
 
         module_ops = all_globals + all_definitions + all_declarations
 
