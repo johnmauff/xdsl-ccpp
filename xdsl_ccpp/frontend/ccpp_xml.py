@@ -152,6 +152,104 @@ class CCPPArgument(CCPPItem):
 # Suite XML parsing
 # ---------------------------------------------------------------------------
 
+#: Max re-scan passes for <nested_suite> expansion before assuming a cycle
+#: between mutually-referential suite files -- mirrors capgen-v1's own
+#: expand_nested_suites (xml_tools.py), same constant value.
+_MAX_NESTED_SUITE_ITERATIONS = 10
+
+
+def _load_nested_suite_reference(suite_name, group_name, file_attr, default_dir):
+    """Load and return the ``<suite>`` or ``<group>`` element a ``<nested_suite>``
+    references, mirroring capgen-v1's ``load_suite_by_name`` (xml_tools.py) exactly.
+
+    A relative ``file_attr`` resolves against *default_dir* -- the ORIGINAL
+    top-level suite file's own directory, not whichever file this particular
+    reference happens to live in (confirmed against upstream source: capgen-v1
+    threads one ``default_path`` unchanged through every recursive expansion
+    pass, even for a reference that only became reachable because an earlier
+    pass spliced its containing file in from somewhere else).
+    """
+    if not suite_name or not file_attr:
+        raise ValueError(
+            f"<nested_suite> requires both name= and file= attributes, got "
+            f"name={suite_name!r} file={file_attr!r}"
+        )
+    resolved_path = Path(file_attr)
+    if not resolved_path.is_absolute():
+        resolved_path = Path(default_dir) / resolved_path
+    ref_root = ET.parse(str(resolved_path)).getroot()
+    if ref_root.attrib.get("name") == suite_name:
+        if group_name:
+            for group in ref_root.findall("group"):
+                if group.attrib.get("name") == group_name:
+                    return group
+        else:
+            return ref_root
+    msg = f"Nested suite '{suite_name}'"
+    if group_name:
+        msg += f", group '{group_name}',"
+    msg += f" not found in file '{resolved_path}'"
+    raise ValueError(msg)
+
+
+def _replace_nested_suite(parent, nested, default_dir):
+    """Replace one ``<nested_suite>`` element with the suite/group content it
+    references, mirroring capgen-v1's ``replace_nested_suite`` exactly.
+
+    One non-obvious rule preserved from upstream: a ``<nested_suite>``
+    declared directly under ``<suite>`` (not inside a ``<group>``) that also
+    names a ``group=`` gets its spliced-in children re-wrapped in a *fresh*
+    ``<group name=group_attr>`` -- every other case (nested inside a
+    ``<group>``, or suite-level with ``group=`` omitted) splices the
+    referenced content's own children in as-is, unwrapped.
+    """
+    suite_name = nested.attrib.get("name")
+    group_name = nested.attrib.get("group")
+    file_attr = nested.attrib.get("file")
+    referenced = _load_nested_suite_reference(suite_name, group_name, file_attr, default_dir)
+
+    idx = list(parent).index(nested)
+    for child in referenced:
+        item = ET.fromstring(ET.tostring(child))
+        if parent.tag == "suite" and group_name:
+            wrapper = ET.Element("group", attrib={"name": group_name})
+            wrapper.append(item)
+            item = wrapper
+        parent.insert(idx, item)
+        idx += 1
+    parent.remove(nested)
+    return suite_name
+
+
+def _expand_nested_suites(root, default_dir):
+    """Recursively expand every ``<nested_suite>`` element inside *root* (a
+    ``<suite>`` element), mirroring capgen-v1's ``expand_nested_suites``
+    (xml_tools.py) exactly -- a pure XML-tree preprocessing pass, run once,
+    entirely before any group/scheme/subcycle object is built. By the time
+    this returns, the tree is an ordinary (possibly larger) v1-style suite
+    XML with no ``<nested_suite>`` elements left -- nothing downstream
+    (`XMLGroup`/`XMLScheme`/`XMLSubcycle`, the IR, suite_cap.py, cap_shared.py,
+    suite_variable_model.py) needs to know cross-file composition was ever
+    involved.
+    """
+    expanded_names = []
+    for _ in range(_MAX_NESTED_SUITE_ITERATIONS):
+        keep_expanding = False
+        for group in root.findall("group"):
+            for nested in group.findall("nested_suite"):
+                expanded_names.append(_replace_nested_suite(group, nested, default_dir))
+                keep_expanding = True
+        for nested in root.findall("nested_suite"):
+            expanded_names.append(_replace_nested_suite(root, nested, default_dir))
+            keep_expanding = True
+        if not keep_expanding:
+            return
+    raise ValueError(
+        "Exceeded max iterations while expanding <nested_suite> elements -- "
+        "check for a cycle between mutually-referential suite files, or "
+        f"raise _MAX_NESTED_SUITE_ITERATIONS. Suites expanded so far: {expanded_names}"
+    )
+
 
 class XMLSuiteBase:
     """Base node for the in-memory representation of a parsed suite XML file.
@@ -247,6 +345,18 @@ class XMLSuite(XMLSuiteBase):
 
     Reads the XML file, asserts the root element is ``<suite>``, and parses all
     ``<group>`` children into `XMLGroup` nodes.
+
+    v2.0 SDF schema: before any of that, expands every ``<nested_suite>``
+    cross-file reference in place (see `_expand_nested_suites`) -- a suite
+    file may splice in groups/schemes from a *different* suite XML file,
+    recursively.  This is a pure XML-tree preprocessing pass; the rest of
+    this class (and everything built on top of it) never needs to know
+    cross-file composition was involved.
+
+    Also v2.0: a suite may declare a single ``<init>``/``<final>`` scheme
+    name as a direct child, called once per suite lifecycle (not per-group)
+    -- stored as ``self.init_scheme``/``self.final_scheme`` (``None`` if
+    absent).
     """
 
     def __init__(self, xml_name):
@@ -254,7 +364,28 @@ class XMLSuite(XMLSuiteBase):
         root = tree.getroot()
 
         assert root.tag == "suite"
+
+        # Relative file= paths on any <nested_suite> reached from here
+        # resolve against THIS top-level suite file's own directory, not
+        # whichever file a given reference happens to live in -- confirmed
+        # against capgen-v1's own source, not assumed (see
+        # _load_nested_suite_reference's docstring).
+        _expand_nested_suites(root, str(Path(xml_name).resolve().parent))
+
         super().__init__(root)
+
+        # Suite-level lifecycle hooks (v2.0): a single scheme's own init/
+        # final phase, called once per suite rather than once per group.
+        # .strip(): same reasoning as XMLScheme.scheme_name above -- the
+        # text content of these elements is a scheme name used for lookups,
+        # not free text.
+        self.init_scheme = None
+        self.final_scheme = None
+        for child in root:
+            if child.tag == "init":
+                self.init_scheme = child.text.strip() if child.text else child.text
+            elif child.tag == "final":
+                self.final_scheme = child.text.strip() if child.text else child.text
 
         # Parse each top-level group element into an XMLGroup node
         for child in root:
@@ -525,6 +656,8 @@ class ccppXML:
             suite.attributes["name"],
             groups,
             suite.attributes["version"] if "version" in suite.attributes else None,
+            init_scheme=suite.init_scheme,
+            final_scheme=suite.final_scheme,
         )
 
     def build_meta_ir(self, meta, source_module: str = ""):

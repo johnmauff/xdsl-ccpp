@@ -2287,30 +2287,6 @@ stage (Stage 3/4-sized); **L** ≈ bigger than any single Phase 7 stage, a multi
 its own right. None of this is scheduled — pick items independently, in any order, except where a
 dependency is noted.
 
-- **Nested `<subcycle>` support — M/L.** The single highest-value item: `var_compat`'s real suite
-  XML nests `<subcycle>` two levels deep, but xdsl-ccpp actively rejects this today
-  (`ccpp_xml.py`'s `XMLSubcycle.__init__` raises `ValueError` on a nested `<subcycle>` child, with
-  a defense-in-depth second raise in `ccpp_descriptors.py`'s `traverse_group_op`). Read both
-  rejection sites: this was a deliberate, considered decision (the `XMLSubcycle` docstring
-  literally says "If a real need for nesting turns up later, this is the place to lift the
-  restriction" — that need has now turned up). Fix requires, in order:
-  1. `ccpp_xml.py`: `XMLSubcycle.__init__` recursively parses a nested `<subcycle>` child as
-     another `XMLSubcycle` instead of raising.
-  2. `ccpp_descriptors.py`'s mirrored IR-side rebuild: same recursive change.
-  3. `cap_shared.py`'s `_iter_schemes` (its own docstring already flags this: "only exercising the
-     one-level-deep subcycle case") needs to recursively descend, not just one level.
-  4. `suite_variable_model.py`'s independently-duplicated subcycle-flattening copy (duck-typed via
-     `"loop_count" in child.attributes`, per its own comment on why it isn't unified with
-     `_iter_schemes`) needs the same recursive treatment, separately.
-  5. `suite_cap.py`'s call-sequence builder (the `("subcycle", loop_count, is_literal, [...])`
-     flat-tuple structure feeding its Fortran loop-emission code around line ~1107) needs to
-     become recursive, and the actual generated-Fortran loop emission needs nested `do` loops with
-     distinct, non-shadowing loop-index variable names per nesting level — the real design work
-     here, not the parsing changes above.
-  6. New unit + FileCheck coverage for nested-loop generation, replacing/extending
-     `test_subcycle.py::test_nested_subcycle_is_rejected`.
-  - Not verified: whether `run_dispatch.py` has its own independent subcycle-flattening
-    assumption beyond what `_iter_schemes` covers — check this first before scoping further.
 - **`var_compat`'s other pieces, separate from nested-subcycle:**
   - **Vertical array flipping (`top_at_one=true`) — fixed.** Reverses vertical-index array
     sections when a scheme's own declared top-at-one convention differs from other schemes
@@ -3019,17 +2995,60 @@ dependency is noted.
 
       Full unit + FileCheck suites re-run clean (504 passed, same 1 pre-existing xfail and 1
       pre-existing unrelated failure as before).
-- **`nested_suite` — L, likely blocked on nested-subcycle above.** A real, unimplemented
-  cross-file suite-composition mechanism: `<nested_suite name=... group=... file=.../>` inlines a
-  *named group* from a *different* suite XML file, nestable 2 levels deep, under schema
-  `version="2.0"`, plus suite-level `<init>`/`<final>` scheme hooks (today `XMLSuite` only ever
-  reads one file and only parses `<group>` children — `<nested_suite>`, `<init>`, `<final>` are
-  currently silently skipped, not rejected, since the parser just ignores unrecognized child
-  tags). Needs: recursive cross-file loading with cycle detection, named-group extraction, and new
-  suite-level (not group-level) lifecycle codegen for `<init>`/`<final>` hooks. Its scheme `.meta`
-  files are byte-identical to `var_compat`'s, meaning its actual expanded suite structure likely
-  *also* needs nested-subcycle support — do that item first. Open unknown: `version="2.0"` may
-  imply other undiscovered schema changes beyond what's described here.
+- **`nested_suite` — L. Rescoped 2026-07-27 after cloning capgen-v1's real
+  `end-to-end-tests/nested_suite/` and reading the actual upstream Python source
+  (`capgen/metadata/parse_tools/xml_tools.py`'s `expand_nested_suites`/`replace_nested_suite`/
+  `load_suite_by_name`, `capgen/generator/suite_resolver.py`/`suite_cap.py`'s suite-level
+  `<init>`/`<final>` handling) instead of guessing from the XML alone — corrects and replaces the
+  prior (stale, unverified) scope note below.** Two loosely-coupled features under one SDF schema
+  bump (`version="2.0"`); `XMLSuite` today only ever reads one file and only parses `<group>`
+  children — `<nested_suite>`/`<init>`/`<final>` are currently silently skipped, not rejected.
+
+  **Feature 1 — `<nested_suite name=... group=... file=.../>`:** splices groups/schemes from a
+  *different* suite XML file into this one, at suite level or group level, recursively (2 levels
+  deep in the real example: `radiation3_suite` → `radiation3_subsuite`). Confirmed this is a
+  **pure XML-tree preprocessing pass** in capgen-v1 — run once, entirely before any suite/group/
+  scheme object is built (`suite_xml.py:590-591`, right after `ET.parse`). Mechanics
+  (`xml_tools.py:145-278`): iteratively re-scans for `<nested_suite>` under `<suite>` or `<group>`
+  until none remain (capped at `max_iterations = 10`, clear error on a suspected cycle);
+  `load_suite_by_name` validates the referenced file's own `<suite name=...>` actually matches
+  before returning either the whole suite (`group=` omitted) or one named `<group>`;
+  `replace_nested_suite` splices in deep copies of the *referenced element's own children*
+  (unwrapping the group/suite tag) — with one non-obvious rule: a suite-level `<nested_suite>`
+  that also names a `group=` gets its spliced children re-wrapped in a **fresh**
+  `<group name=group_attr>`, everything else splices in as-is. Relative `file=` paths always
+  resolve against the **original top-level** suite file's directory, not the referencing file's
+  own directory. Because expansion happens before any object exists, **nothing downstream needs to
+  change** — `XMLGroup`/`XMLScheme`/`XMLSubcycle`, the IR, `suite_cap.py`, `cap_shared.py`,
+  `suite_variable_model.py` all just see an ordinary, larger suite XML once expansion is done. This
+  is entirely a frontend, single-file (`ccpp_xml.py`) change.
+
+  **Feature 2 — suite-level `<init>`/`<final>` scheme hooks:** a scheme's `init`/`final` phase
+  called once per suite lifecycle, not per-group, declared as direct children of `<suite>`.
+  Confirmed via `suite_resolver.py:2507-2540`: resolved exactly like an ordinary scheme call
+  (same machinery, its own fresh local-name set since it lives outside every group), clear
+  `CCPPError` if the named scheme has no matching phase. `suite_cap.py:766-775`/`:848-851`: emits
+  exactly one extra call inside the suite's own `<suite>_init`/`<suite>_final` bodies (init after
+  group state allocation, before flipping suite state to INITIALIZED; final mirrored), reusing the
+  same single-call-emission helper every other lifecycle call already uses. Needs: `XMLSuite`
+  parses `<init>`/`<final>` alongside `<group>`; two new optional `StringAttr` properties on
+  `SuiteOp` (`ccpp.py`, alongside the existing optional `version` property); `suite_cap.py`'s
+  per-suite `GenerateSuiteSubroutine` emits the extra call when set (exact insertion line not yet
+  pinned down — identify during implementation). Open question: whether `ccpp_descriptors.py`'s
+  IR-reconstruction path needs a mirrored field for any consumer besides `suite_cap.py` itself.
+  Upstream's own test proves this cleanly: a minimal scheme with only `init`/`final` entry points
+  increments a shared counter; the test's pass condition is exactly counter `== 2`.
+
+  **Correction to the prior scope note (kept for history):** nested-subcycle support was NOT
+  actually a blocker — that item was itself stale and has been deleted from this backlog (see
+  history above); nested subcycles have been fully supported since var_compat's own port. Its
+  scheme `.meta` files are **not** byte-identical to `var_compat`'s (checked directly — real
+  diffs), but the differences are the same category already documented in
+  `examples/var_compat/README.md`'s "Adaptations made during porting" section (reuse that recipe;
+  one adaptation, the tight-bracket normalization, is no longer even needed post the `.meta`
+  parser bracket-spacing fix). `version="2.0"` itself needs no special handling beyond being
+  accepted — xdsl-ccpp does no XML schema validation today, so it's purely a marker upstream uses
+  to select schema variants.
 - **`constituents_dim` — two independent sub-items:**
   - **General suite-workspace vars sized by the live constituent count — M.** Both
     framework-allocated and scheme-allocated variants. Today `ccpp_cap.py`'s `_build_cap_var_map`

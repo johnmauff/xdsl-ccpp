@@ -226,10 +226,18 @@ class XMLGroup(XMLSuiteBase):
 
 
 class XMLSuite(XMLSuiteBase):
-    """Root node representing a complete CCPP suite (name + version + groups)."""
+    """Root node representing a complete CCPP suite (name + version + groups).
 
-    def __init__(self, suite_name, version):
+    ``init_scheme``/``final_scheme`` mirror ``ccpp_xml.py``'s own ``XMLSuite``
+    of the same name (v2.0 SDF schema: a scheme's own init/final phase,
+    called once per suite lifecycle) -- ``None`` when the suite declares
+    neither.
+    """
+
+    def __init__(self, suite_name, version, init_scheme=None, final_scheme=None):
         super().__init__({"name": suite_name, "version": version})
+        self.init_scheme = init_scheme
+        self.final_scheme = final_scheme
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +422,12 @@ class BuildSchemeDescription(Visitor):
         Iterates over all child `GroupOp` nodes, collecting the reconstructed
         `XMLGroup` objects, then registers the completed suite in `self.schemes`.
         """
-        current_suite = XMLSuite(suite_op.suite_name.data, suite_op.version.data)
+        current_suite = XMLSuite(
+            suite_op.suite_name.data,
+            suite_op.version.data,
+            init_scheme=suite_op.init_scheme.data if suite_op.init_scheme is not None else None,
+            final_scheme=suite_op.final_scheme.data if suite_op.final_scheme is not None else None,
+        )
 
         # Visit each child GroupOp; after each visit self.current_group holds the
         # XMLGroup for that group
