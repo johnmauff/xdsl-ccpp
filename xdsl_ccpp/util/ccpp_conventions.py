@@ -128,6 +128,30 @@ CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
 CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
 
+# ── Deprecated standard names ────────────────────────────────────────────────
+# Still parsed and handled exactly as before (via suite_cap.py's legacy
+# _classify_args synthesis) -- this is a warning, not a rejection -- but every
+# example in this repo has migrated off them in favor of the replacement, and
+# new metadata should use the replacement instead.
+CCPP_DEPRECATED_STD_NAMES: dict = {
+    CCPP_LOOP_EXTENT_STD_NAME: CCPP_HORIZ_DIM_STD_NAME,
+}
+
+
+def deprecated_std_name_warning(std_name: str) -> str | None:
+    """Return a warning message if std_name is deprecated, else None.
+
+    Case-insensitive; matches capgen.py's ArgumentOp handling of standard
+    names and dimension names alike.
+    """
+    replacement = CCPP_DEPRECATED_STD_NAMES.get(std_name.lower())
+    if replacement is None:
+        return None
+    return (
+        f"standard_name '{std_name}' is deprecated -- use '{replacement}' instead "
+        f"(every example in this repo has already migrated)"
+    )
+
 # ── Unit conversion table ────────────────────────────────────────────────────
 # Maps (scheme_units, host_units) → (to_scheme_expr, to_host_expr).
 #
