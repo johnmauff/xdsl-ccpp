@@ -158,6 +158,31 @@ _NCOL_SCHEME_META = f"""\
 {CCPP_MANDATORY_ARGS}
 """
 
+_CAPVAR_SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = capvar_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = capvar_scheme_run
+  type = scheme
+[ y ]
+  standard_name = some_2d_array_var
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension,vertical_layer_dimension)
+  intent = inout
+[ z_out ]
+  standard_name = some_unmatched_2d_output_var
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension,vertical_layer_dimension)
+  intent = out
+  optional = True
+{CCPP_MANDATORY_ARGS}
+"""
+
 _WHOLE_ARRAY_SCHEME_META = f"""\
 [ccpp-table-properties]
   name = whole_array_scheme
@@ -218,6 +243,20 @@ def _fortran_output_ncol_scheme(run_host_match, ccpp_context) -> str:
         scheme_metas=[_NCOL_SCHEME_META],
         host_metas=[_HOST_META, _HOST_MOD_META_2D],
         suite_xml=minimal_suite_xml("ncol_scheme"),
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
+def _fortran_output_capvar_scheme(run_host_match, ccpp_context) -> str:
+    module = run_host_match(
+        scheme_metas=[_CAPVAR_SCHEME_META],
+        host_metas=[_HOST_META, _HOST_MOD_META_2D],
+        suite_xml=minimal_suite_xml("capvar_scheme"),
     )
     ArgOwnershipPass().apply(ccpp_context, module)
     SuiteCAP().apply(ccpp_context, module)
@@ -368,3 +407,46 @@ class TestNoDuplicateWhenSchemeAlreadyProvidesThem:
         )
         assert "col_start" in call_line
         assert "col_end" in call_line
+
+
+class TestCapVarSlicedWhenRankTwo:
+    """z_out is optional, intent=out, and no host meta anywhere declares a
+    match for its standard_name -- it falls back to a cap-owned scratch
+    buffer (lc_z_out), sized to the full host column count, dimensioned by
+    horizontal_dimension/vertical_layer_dimension like any other array arg.
+    Matches var_compat's own effr_calc/ncl_out exactly.
+
+    Before this fix, ArgSourceKind.CapVar array slicing was gated entirely
+    on the legacy horizontal_loop_extent convention, and even then only ever
+    built a single-dimension section -- so a rank-2 CapVar dimensioned by
+    horizontal_dimension (the newer convention) was never sliced at all: on
+    every chunked call, lc_z_out would only ever be written for the first
+    chunk's columns, and any host that actually read it would see stale/
+    uninitialized values in every later chunk's columns."""
+
+    def test_2d_capvar_sliced_on_both_axes(self, run_host_match, ccpp_context):
+        # The call wraps across multiple physical (continuation) lines, so
+        # search the whole call statement rather than a single splitlines()
+        # entry -- z_out's own keyword arg lands on a later continuation
+        # line than "call test_suite_suite_physics" itself.
+        fortran = _fortran_output_capvar_scheme(run_host_match, ccpp_context)
+        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
+            "end subroutine Test_ccpp_physics_run"
+        )[0]
+        call_stmt = fn_body.split("call test_suite_suite_physics", 1)[1].split(")\n")[0]
+        assert "z_out=lc_z_out(col_start:col_end, 1:pver)" in call_stmt, call_stmt
+
+    def test_matched_2d_host_array_still_sliced_alongside_it(
+        self, run_host_match, ccpp_context
+    ):
+        # y (matched to y_host) shares the call with the unmatched CapVar
+        # z_out -- confirm fixing the CapVar branch didn't disturb the
+        # already-covered Host/DdtMember branch it sits alongside.
+        fortran = _fortran_output_capvar_scheme(run_host_match, ccpp_context)
+        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
+            "end subroutine Test_ccpp_physics_run"
+        )[0]
+        call_line = next(
+            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+        )
+        assert "y_host(col_start:col_end, 1:pver)" in call_line, call_line

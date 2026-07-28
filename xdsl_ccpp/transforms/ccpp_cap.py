@@ -619,6 +619,12 @@ class CCPPCAP(ModulePass):
             # entirely is the safe, conservative choice instead.
             _ACTIVE_EXPR_KEYWORDS = frozenset({
                 "and", "or", "not", "eqv", "neqv", "true", "false",
+                # Fortran's dotted relational operators (.eq., .ne., .lt.,
+                # .le., .gt., .ge.) tokenize as bare words once the
+                # surrounding dots are stripped by the regex below -- without
+                # these, e.g. "active = (x .gt. 0)" would misidentify "gt" as
+                # a referenced standard_name.
+                "eq", "ne", "lt", "le", "gt", "ge",
             })
             for tbl_op in (ccpp_mod.body.ops if len(suite_descriptions) == 1 else ()):
                 if not isa(tbl_op, ccpp.TablePropertiesOp):

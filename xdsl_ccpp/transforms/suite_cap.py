@@ -313,7 +313,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             if tbl_name not in props.arg_tables:
                 continue
             for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if var.hasAttr("standard_name") and var.getAttr("standard_name") == std_name:
+                if (var.hasAttr("standard_name")
+                        and var.getAttr("standard_name").lower() == std_name.lower()):
                     return var
         return None
 
