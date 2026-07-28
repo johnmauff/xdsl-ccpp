@@ -613,8 +613,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             else:
                 raise ValueError(
                     f"Suite-level <{entry_postfix.strip('_')}> scheme "
-                    f"'{scheme_name}''s own arg '{fn_arg.name}' (standard_name "
-                    f"'{std_name}') has no host match -- suite-level init/final "
+                    f"'{scheme_name}' has arg '{fn_arg.name}' (standard_name "
+                    f"'{std_name}') with no host match -- suite-level init/final "
                     "hooks currently only support plain host-module-matched "
                     "scalar args, not DDT members or cap-owned scratch values."
                 )

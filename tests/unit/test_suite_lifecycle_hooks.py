@@ -242,3 +242,62 @@ class TestMissingPhaseRaisesClearError:
                 [_INIT_ONLY_SCHEME_META, _SCHEME_A_META],
                 _SUITE_XML_INIT_ONLY_MISSING_FINAL_PHASE,
             )
+
+
+_UNMATCHED_ARG_SCHEME_META = """\
+[ccpp-table-properties]
+  name = unmatched_arg_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = unmatched_arg_scheme_init
+  type = scheme
+[ nothing_host_declares ]
+  standard_name = totally_unmatched_standard_name
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = inout
+[ errmsg ]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+"""
+
+_SUITE_XML_UNMATCHED_ARG = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_suite" version="2.0">
+  <init>unmatched_arg_scheme</init>
+  <group name="g1">
+    <scheme>scheme_a</scheme>
+  </group>
+</suite>
+"""
+
+
+class TestUnmatchedHookArgRaisesClearErrorWithNoTypo:
+    """Found by Copilot's review of PR #47: the "no host match" error
+    message had a stray extra quote right after scheme_name (an awkward
+    doubled quote in the rendered message), left over from an earlier
+    possessive-with-quotes phrasing. Also confirms the error path itself
+    (a suite-level hook scheme arg no host anywhere matches) is reachable
+    and reports clearly rather than crashing deeper in call construction."""
+
+    def test_error_message_has_no_doubled_quote(self, run_host_match, ccpp_context):
+        with pytest.raises(ValueError) as excinfo:
+            _fortran_output(
+                run_host_match, ccpp_context,
+                [_UNMATCHED_ARG_SCHEME_META, _SCHEME_A_META],
+                _SUITE_XML_UNMATCHED_ARG,
+            )
+        message = str(excinfo.value)
+        assert "''s" not in message, message
+        assert "unmatched_arg_scheme' has arg 'nothing_host_declares'" in message

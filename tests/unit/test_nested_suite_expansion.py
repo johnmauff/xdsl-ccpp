@@ -57,6 +57,33 @@ class TestSuiteLevelSpliceWithGroupWrapsFresh:
         assert [g.attributes.get("name") for g in suite.children] == ["g2"]
         assert _scheme_names(suite.children[0]) == ["scheme_b"]
 
+    def test_multi_child_referenced_group_becomes_one_group_not_several(self, tmp_path):
+        # Found by Copilot's review of PR #47: wrapping was previously done
+        # per-child inside the splice loop, so a referenced group with more
+        # than one child produced several same-named groups (one per child)
+        # instead of a single group holding all of them. Neither this
+        # example's own real files nor the test above happens to exercise a
+        # multi-child referenced group, which is exactly why it slipped
+        # through.
+        (tmp_path / "other.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<suite name="other_suite" version="2.0">\n'
+            '  <group name="g2">\n'
+            '    <scheme>scheme_b</scheme>\n'
+            '    <scheme>scheme_c</scheme>\n'
+            '  </group>\n'
+            '</suite>\n'
+        )
+        (tmp_path / "main.xml").write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<suite name="main" version="2.0">\n'
+            '  <nested_suite name="other_suite" group="g2" file="other.xml"/>\n'
+            '</suite>\n'
+        )
+        suite = XMLSuite(str(tmp_path / "main.xml"))
+        assert [g.attributes.get("name") for g in suite.children] == ["g2"]
+        assert _scheme_names(suite.children[0]) == ["scheme_b", "scheme_c"]
+
 
 class TestGroupLevelSpliceDoesNotWrap:
     """A <nested_suite> declared inside a <group> splices the referenced

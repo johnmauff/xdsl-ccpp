@@ -198,23 +198,29 @@ def _replace_nested_suite(parent, nested, default_dir):
 
     One non-obvious rule preserved from upstream: a ``<nested_suite>``
     declared directly under ``<suite>`` (not inside a ``<group>``) that also
-    names a ``group=`` gets its spliced-in children re-wrapped in a *fresh*
-    ``<group name=group_attr>`` -- every other case (nested inside a
-    ``<group>``, or suite-level with ``group=`` omitted) splices the
-    referenced content's own children in as-is, unwrapped.
+    names a ``group=`` gets its spliced-in children re-wrapped in a single
+    *fresh* ``<group name=group_attr>`` containing ALL of them -- every
+    other case (nested inside a ``<group>``, or suite-level with ``group=``
+    omitted) splices the referenced content's own children in as-is,
+    unwrapped, one per item.
     """
     suite_name = nested.attrib.get("name")
     group_name = nested.attrib.get("group")
     file_attr = nested.attrib.get("file")
     referenced = _load_nested_suite_reference(suite_name, group_name, file_attr, default_dir)
 
-    idx = list(parent).index(nested)
-    for child in referenced:
-        item = ET.fromstring(ET.tostring(child))
-        if parent.tag == "suite" and group_name:
-            wrapper = ET.Element("group", attrib={"name": group_name})
+    items = [ET.fromstring(ET.tostring(child)) for child in referenced]
+    if parent.tag == "suite" and group_name:
+        # One shared wrapper for every referenced child -- not one wrapper
+        # per child, which would produce several same-named groups instead
+        # of a single group holding everything the reference pulled in.
+        wrapper = ET.Element("group", attrib={"name": group_name})
+        for item in items:
             wrapper.append(item)
-            item = wrapper
+        items = [wrapper]
+
+    idx = list(parent).index(nested)
+    for item in items:
         parent.insert(idx, item)
         idx += 1
     parent.remove(nested)
