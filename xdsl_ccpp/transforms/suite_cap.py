@@ -78,19 +78,72 @@ from xdsl_ccpp.util.ccpp_conventions import (
 )
 from xdsl_ccpp.util.visitor import Visitor
 
-# Stage 1 (capgen_v1_parity_backlog.md) proof-of-concept: stash the
-# per-phase resolved variable lists generateSubroutineCall already
-# computes (and previously discarded) so they can be inspected after a
-# pipeline run, without yet committing to a real public API/exposure
-# mechanism (that's Stage 3). Keyed by (tgt_subroutine_postfix,
-# generated_subroutine_posfix, physics_mode) -- deliberately not yet
-# shaped as ResolvedVar; just raw descriptor objects for now.
-#
-# Opt-in, None by default: normal runs never touch this (no mutable
-# global state, no unbounded memory growth) -- a caller that wants the
-# data sets `suite_cap.DEBUG_RESOLVED_VARS = {}` before running the
-# pipeline. Not thread-safe; single-threaded diagnostic use only.
-DEBUG_RESOLVED_VARS: "dict | None" = None
+# CCPP lifecycle phase names (matching CCPP_STATE_MACH.transitions()'s
+# capgen-v1 naming), keyed by (tgt_subroutine_postfix, physics_mode) as
+# generateSubroutineCall is actually invoked with. physics_mode=True
+# (the run/group-dispatch calls) always maps to "run" regardless of
+# tgt_subroutine_postfix.
+_PHASE_NAMES: dict = {
+    ("_register", False): "register",
+    ("_init", False): "initialize",
+    ("_finalize", False): "finalize",
+    ("_timestep_initialize", False): "timestep_initial",
+    ("_timestep_finalize", False): "timestep_final",
+}
+
+
+def _resolved_var_record(arg) -> "dict | None":
+    """Extract a JSON-safe resolved-variable record from a descriptor/IR arg.
+
+    Returns None for args with no standard_name (e.g. the synthetic
+    col_start/col_end loop-bound scalars _classify_args introduces for
+    physics_mode calls) -- capgen_v1_parity_backlog.md Stage 2 found these
+    have no CCPP metadata identity, so a ResolvedVar-style consumer
+    (write_init_files.py keys everything off standard_name) has nothing
+    to do with them.
+    """
+    if not arg.hasAttr("standard_name"):
+        return None
+    return {
+        "standard_name": arg.getAttr("standard_name"),
+        "intent": arg.getAttr("intent") if arg.hasAttr("intent") else None,
+        "is_advected": arg.hasAttr("advected"),
+        "is_constituent": arg.hasAttr("constituent"),
+        "is_protected": arg.hasAttr("protected"),
+        "is_optional": arg.hasAttr("optional"),
+        "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
+        "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
+        "dim_names": list(arg.getAttr("dim_names")) if arg.hasAttr("dim_names") else [],
+        "ownership_kind": str(arg.getAttr("ownership_kind")) if arg.hasAttr("ownership_kind") else None,
+    }
+
+
+def _write_resolved_vars(resolved_vars: dict, path: str) -> None:
+    """Serialize per-phase resolved-variable records to JSON at *path*.
+
+    Deduped by standard_name within each phase (keeping the first record
+    seen) -- capgen-v1's own call_list(phase) is likewise one combined list
+    per phase, not per-suite/per-group, and a suite with multiple groups
+    active in the same phase (e.g. several physics groups all needing the
+    same host variable in their own "run" dispatch) would otherwise produce
+    duplicate entries for the same standard_name.
+    """
+    import json
+
+    deduped: dict = {}
+    for phase_name, records in resolved_vars.items():
+        seen: set = set()
+        phase_list = []
+        for record in records:
+            sn = record["standard_name"]
+            if sn in seen:
+                continue
+            seen.add(sn)
+            phase_list.append(record)
+        deduped[phase_name] = phase_list
+
+    with open(path, "w") as f:
+        json.dump({"phases": deduped}, f, indent=2)
 
 
 class GatherMetaFunctionSignatures(Visitor):
@@ -168,6 +221,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         self.ccpp_handle: "tuple[str, str] | None" = ccpp_handle
         # Maximum number of simultaneous CCPP instances for the per-instance state array.
         self.num_instances: int = num_instances
+        # Per-phase resolved-variable records (capgen_v1_parity_backlog.md
+        # Stage 3), populated by generateSubroutineCall. Scoped to this
+        # instance (one per SuiteCAP.apply() call), not global state --
+        # appended across every ccpp.SuiteOp/group this instance processes,
+        # deduped by standard_name at serialization time in SuiteCAP.apply().
+        self.resolved_vars: dict = {}
 
     def getSchemeNames(self, suite_description):
         """Return a flat list of (scheme_name, overrides) pairs from all groups.
@@ -2027,13 +2086,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
 
-        if DEBUG_RESOLVED_VARS is not None:
-            _phase_key = (tgt_subroutine_postfix, generated_subroutine_posfix, physics_mode)
-            DEBUG_RESOLVED_VARS[_phase_key] = {
-                "framework_vars": list(framework_vars.values()),
-                "input_arg_list": list(input_arg_list),
-                "output_arg_list": list(output_arg_list),
-            }
+        phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
+        if phase_name is not None:
+            records = self.resolved_vars.setdefault(phase_name, [])
+            for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list):
+                record = _resolved_var_record(arg)
+                if record is not None:
+                    records.append(record)
 
         _sig = self._build_block_signature(
             input_arg_list, output_arg_list, divergent_std_keys=divergent_std_keys,
@@ -2437,6 +2496,14 @@ class SuiteCAP(ModulePass):
     That attribute takes precedence over this field when both are present.
     """
 
+    emit_resolved_vars: "str | None" = None
+    """Optional path: write a JSON file of the resolved variables required at
+    each CCPP lifecycle phase (capgen_v1_parity_backlog.md Stage 3's native
+    introspection artifact -- host-model consumers like a
+    write_init_files.py-equivalent read this instead of any capgen-v1 object).
+    Supplied via ``--emit-resolved-vars`` on the ``ccpp_xml``/``ccpp_opt`` CLI.
+    """
+
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         assert ccpp_mod is not None
@@ -2471,16 +2538,16 @@ class SuiteCAP(ModulePass):
                 ccpp_handle = (_op.var_name.data, _op.module_name.data)
                 break
 
+        generator = GenerateSuiteSubroutine(
+            scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,
+            ddt_source_module=ddt_source_module,
+            ccpp_handle=ccpp_handle,
+            num_instances=num_instances,
+        )
         PatternRewriteWalker(
-            GreedyRewritePatternApplier(
-                [
-                    GenerateSuiteSubroutine(
-                        scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,
-                        ddt_source_module=ddt_source_module,
-                        ccpp_handle=ccpp_handle,
-                        num_instances=num_instances,
-                    ),
-                ]
-            ),
+            GreedyRewritePatternApplier([generator]),
             apply_recursively=False,
         ).rewrite_module(op)
+
+        if self.emit_resolved_vars:
+            _write_resolved_vars(generator.resolved_vars, self.emit_resolved_vars)

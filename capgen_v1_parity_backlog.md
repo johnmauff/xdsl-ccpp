@@ -55,7 +55,7 @@ capgen-v1" problem, as opposed to the vendored shim.
 
 ### Plan: staged, one stage at a time, pause for review between each
 
-**Progress: Stage 1 done, awaiting review.** Update the status line per
+**Progress: Stage 2 done, awaiting review.** Update the status line per
 stage as work lands (`not started` / `in progress` / `done, awaiting
 review` / `done`).
 
@@ -175,22 +175,114 @@ where the framework-bookkeeping vars (`suite_name`/`suite_part`) get
 added, and (b) normalizing the horizontal-loop-bound representational
 difference into `ResolvedVar`'s dimension fields.
 
-**Stage 2 -- Extend to full coverage.** [not started]
-All six lifecycle phases (`register`, `initialize`, `finalize`,
-`timestep_initial`, `timestep_final`, `run`); host-variable binding
-(`model_var_name`/`model_module_name`, already computed by
-`HostVariableMatchPass`); dimension classification.
-Exit: covers everything `ResolvedVar` needs, validated against a
-CAM-SIMA fixture that exercises constituents (not just helloworld).
+**Stage 2 -- Extend to full coverage. [done, awaiting review]**
 
-**Stage 3 -- Design the real exposure mechanism.** [not started]
-In-process object vs. serialized artifact. xdsl_ccpp's generation already
-crosses a subprocess boundary (`run_frontend`/`run_opt` each shell out),
-so a serialized format -- likely extending `--emit-datatable` rather than
-inventing a second artifact -- is probably the more natural fit. This is a
-real design decision to make explicit, not a default to fall into.
-Exit: a stable, documented API/format, independent of any host-model
-concern. This is the piece that gets its own PR into xdsl_ccpp's repo.
+No new source changes needed -- Stage 1's raw-object stash already
+exposes everything, since `HostVariableMatchPass` and the descriptor
+layer already populate `model_var_name`/`model_module_name`/`dim_names`
+on the same objects. This stage was pure validation: captured the real
+MLIR for `test_simple_reg_constituent_write_init` (the constituent
+fixture from Stage 0's representative set) and inspected all six phases
+with host-binding and dimension classification extracted (using
+xdsl_ccpp's own existing `is_horizontal_dimension`/`is_vertical_dimension`
+helpers from `ccpp_conventions.py` -- no new classification logic needed
+either).
+
+**Confirmed working:**
+- All six phases populate (three are legitimately empty for this suite --
+  no register/timestep-phase scheme entry points declared, not a bug).
+- Host-variable binding is correct for real host-matched variables, e.g.
+  `potential_temperature` -> `model_var='theta'`,
+  `module='physics_types_simple'`; `vertical_layer_dimension` ->
+  `model_var='pver'`, `module='simple_sub'`.
+- Dimension classification correctly derived: `potential_temperature` ->
+  horizontal+vertical, `air_pressure_at_sea_level` -> horizontal, etc.
+
+**Two design nuances surfaced, both need handling in Stage 4's adapter:**
+1. **Constituent variables have no host-variable binding at all**
+   (`model_var_name`/`model_module_name` both `None` for the one
+   `advected=True` var in this fixture). This isn't a bug -- constituents
+   are handled through CCPP's constituent object/array, never a direct
+   host `use`-association -- and it matches `write_init_files.py`'s own
+   existing logic, which already explicitly skips constituents when
+   building host-module imports. Confirms the `is_advected`/`is_constituent`
+   fields in `ResolvedVar` are load-bearing, not redundant with
+   `host_module`.
+2. **Some resolved args have no `standard_name` at all** -- two
+   synthetic `col_start`/`col_end`-style scalars showed up in the `_run`
+   phase (introduced by `_classify_args`'s physics-mode loop-extent
+   synthesis), purely Fortran-level loop bounds with no CCPP metadata
+   identity. Stage 4's adapter needs to filter these out before producing
+   `ResolvedVar`s -- `write_init_files.py`'s consuming logic keys
+   everything off `standard_name` and has no notion of a nameless var.
+
+Exit criteria met: full phase/binding/dimension coverage confirmed against
+a constituent-using fixture, zero new source risk introduced (validation
+only, `git diff --stat` empty against tracked files throughout).
+
+**Stage 3 -- Design the real exposure mechanism. [done, awaiting review]**
+
+**Decision made, and it's *not* what the stage description guessed:**
+extending `--emit-datatable` turned out to be the wrong fit, not just a
+less-natural one. Traced `_run_datatable`'s actual call site in `run()`:
+it re-parses the *original pre-pass* frontend MLIR (`mlir_file`, from
+`run_frontend`) in a step that runs *after* `run_opt`'s entire pass
+pipeline has already completed and exited its own subprocess. The
+resolved-variable data (host bindings, ownership classification,
+per-phase aggregation) only exists as transient Python state *during*
+`generate-suite-cap`'s execution, inside `run_opt`'s subprocess -- by the
+time `--emit-datatable`'s mechanism runs, that process is long gone and
+the data was never persisted anywhere `_run_datatable` could re-derive it
+from. Piggybacking on it would have meant either reimplementing
+`_build_arg_tables`'s aggregation a second time (exactly the
+"independent, byte-identical implementation" antipattern
+`_collect_ddt_use_stubs`'s own docstring already warns against elsewhere
+in this codebase) or restructuring `--emit-datatable` itself.
+
+**What got built instead**: a new pass parameter, following the exact
+precedent `host_name`/`kind_map` already established (real pass
+parameters threaded through `_build_pipeline()`'s spec string, not a
+separate post-hoc step):
+
+- New CLI flag `--emit-resolved-vars FILE` (`ccpp_dsl.py`).
+- Threaded into the pipeline spec as
+  `generate-suite-cap{emit_resolved_vars="FILE"}` (quoted -- the
+  pass-pipeline spec lexer doesn't accept unquoted `/` in an arg value,
+  which paths always have; discovered by hitting the parse error directly).
+- `SuiteCAP` gains an `emit_resolved_vars: str | None = None` field.
+- `GenerateSuiteSubroutine` gains a real instance-level
+  `self.resolved_vars: dict` accumulator (replacing Stage 1/2's module-level
+  debug global entirely -- superseded, not kept alongside), populated by
+  `generateSubroutineCall` exactly where the Stage 1 stash was, keyed by
+  the friendly CCPP phase name (`register`/`initialize`/`finalize`/
+  `timestep_initial`/`timestep_final`/`run`) rather than the raw postfix
+  tuple.
+- `SuiteCAP.apply()` serializes `generator.resolved_vars` to JSON (deduped
+  by `standard_name` per phase -- capgen-v1's own `call_list(phase)` is
+  likewise one combined list per phase across all groups/suites, not
+  per-group) after the rewrite completes, only if `emit_resolved_vars` was
+  set.
+- Records use the Stage 0 `ResolvedVar` field names directly
+  (`standard_name`, `intent`, `is_advected`, `is_constituent`,
+  `is_protected`, `is_optional`, `model_var_name`, `model_module_name`,
+  `dim_names`, `ownership_kind`), filtering out nameless synthetic args
+  (Stage 2's `col_start`/`col_end` finding) at the source.
+
+**Verified against both fixtures via the real CLI** (`ccpp_opt` with
+`--emit-resolved-vars`, not just in-process tracing):
+- `examples/helloworld`: clean JSON, all 6 phases, correct host bindings
+  (e.g. `potential_temperature` -> `model_var='temp_midpoints'`,
+  `module='hello_world_mod'`).
+- CAM-SIMA's constituent fixture: 7 run-phase vars (correctly excludes
+  the 2 nameless synthetic scalars), constituent var
+  (`super_cool_cat_const`) correctly has `model_var_name`/
+  `model_module_name` both `null`, matching Stage 2's finding.
+- Full CAM-SIMA regression suite: unchanged at 3/16 collections failing
+  (same pre-existing, unrelated missing-CIME-external issue) --
+  `test_write_init_files.py` still fully passing.
+
+Exit criteria met: stable, documented, tested artifact format,
+independent of any host-model concern, ready for its own PR.
 
 **Stage 4 -- Write the xdsl_ccpp-side adapter.** [not started]
 `_resolved_vars_from_xdsl_ccpp(...)`, in CAM-SIMA's repo, translating
