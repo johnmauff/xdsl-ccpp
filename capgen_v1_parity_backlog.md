@@ -300,10 +300,104 @@ correct output through that same real code path. Also fixed a docstring
 inaccuracy Copilot caught in the same review (the flag is defined on the
 `ccpp_xdsl` CLI, not directly on `ccpp_opt`/`ccpp_xml`).
 
-**Stage 4 -- Write the xdsl_ccpp-side adapter.** [not started]
-`_resolved_vars_from_xdsl_ccpp(...)`, in CAM-SIMA's repo, translating
-Stage 3's output into `ResolvedVar`.
-Exit: matches the Stage 0 oracle.
+**Stage 4 -- Write the xdsl_ccpp-side adapter. [done]**
+
+Implemented in CAM-SIMA's own repo (`reference/CAM-SIMA`, branch
+`stage4-resolved-var-adapter`): `src/data/resolved_var.py` (the
+`ResolvedVar` dataclass itself, shared by both backends' adapters) and
+`src/data/resolved_var_xdsl_ccpp.py` (`XdslCcppResolvedVars`, loading
+Stage 3's JSON and exposing `.call_list(phase)` /
+`.resolve_by_standard_name(name)`, reusing xdsl_ccpp's own
+`is_horizontal_dimension`/`is_vertical_dimension` directly rather than
+re-implementing dimension classification).
+
+**Validated against the real capgen-v1 oracle**, not just eyeballed:
+instrumented the vendored shim to dump `cap_database.call_list(phase)`'s
+real standard names for the constituent fixture, and diffed against the
+adapter's output phase-by-phase. Two categories of discrepancy found:
+
+1. **Confirmed harmless** -- `suite_name`, `suite_part`,
+   `ccpp_error_message`, `ccpp_error_code` are missing from the adapter's
+   output in various phases (matching Stage 1's finding that these are
+   capgen-v1-synthesized framework bookkeeping, added on a code path
+   Stage 3 doesn't hook). Checked directly against
+   `write_init_files.py`'s own `_EXCLUDED_STDNAMES` set: all four are
+   members. `write_init_files.py` ignores them regardless of whether
+   they're present, so this costs nothing functionally.
+
+2. **A real gap, found and fixed**: `horizontal_dimension` was missing
+   from the adapter's `run`-phase output for the constituent fixture --
+   and critically, this name is *not* in `_EXCLUDED_STDNAMES`, unlike the
+   framework vars above, so it actually mattered to `write_init_files.py`'s
+   real logic. Root cause: `_classify_args`'s physics-mode handling
+   replaces the loop-extent arg with synthetic, nameless `col_start`/
+   `col_end` scalars for suites using per-column dispatch (Stage 2's
+   finding), and `_resolved_var_record` (Stage 3) filters out anything
+   with no `standard_name`, silently dropping the horizontal-dimension
+   identity along with the genuinely-nameless scalars.
+
+   **Fix** (`xdsl_ccpp/transforms/suite_cap.py`): `_classify_args` already
+   computes `ncol_meta` -- the *original*, unmodified loop-extent
+   `CCPPArgument`, still carrying its real `standard_name`, before the
+   col_start/col_end substitution. `generateSubroutineCall` now includes
+   `ncol_meta` alongside `framework_vars`/`input_arg_list`/`output_arg_list`
+   when building the resolved-vars stash, so the loop-extent variable's
+   identity survives even when it's no longer directly represented in the
+   call's own arg list. Also added `_normalize_std_name`, mapping through
+   the existing `CCPP_DEPRECATED_STD_NAMES` table (applied to both
+   `standard_name` and each entry of `dim_names`), since the scheme
+   metadata for this fixture declares the deprecated
+   `horizontal_loop_extent` name but capgen-v1's own output normalizes to
+   `horizontal_dimension` -- without this the adapter would've reported
+   the right variable under the wrong (stale) name.
+
+   **Verified against the real capgen-v1 oracle**: re-ran
+   `--emit-resolved-vars` against both the constituent fixture and
+   `examples/helloworld`; the constituent fixture's `run` phase now
+   reports `horizontal_dimension`, matching the oracle exactly, and
+   helloworld (which was already correct, no col_start/col_end synthesis
+   triggered there) is unaffected. Full CAM-SIMA regression suite (16
+   test collections, `run_python_unit_tests.sh`) and xdsl_ccpp's own
+   pytest suite (539 passed) both still pass; the one xdsl_ccpp pytest
+   failure (`test_ccpp_xdsl_generates_caps`) was confirmed pre-existing
+   and unrelated (a stale `ccpp_xdsl` console-script install resolving
+   against a different checkout -- the same PYTHONPATH/namespace-package
+   issue noted earlier in this doc -- reproduced identically with the fix
+   stashed out).
+
+   **Two adjacent gaps surfaced by the oracle diff, not yet fixed** (out
+   of scope for this fix -- neither was part of the original loss, both
+   are pre-existing absences):
+   - `horizontal_loop_begin`/`horizontal_loop_end`: capgen-v1's oracle
+     output gives the loop-bound scalars their own standard-name identity
+     in the `run` phase. xdsl_ccpp's synthetic `col_start`/`col_end`
+     replacements are still nameless (by design -- `_resolved_var_record`
+     correctly drops them), so these two never appear. Interestingly, the
+     xdsl_ccpp pytest fixture (`ddt_suite.xml`'s `make_ddt` scheme) shows
+     this *can* work when the host metadata declares `cols`/`cole` args
+     with those standard names directly (`model_var_name=col_start`/
+     `col_end`) rather than relying on synthesis -- suggesting the gap is
+     specifically in the synthesized-scalar path, not a fundamental
+     limitation.
+   - `suite_name`/`suite_part`: framework-injected suite metadata vars,
+     not modeled by Stage 3 at all (distinct from the `_EXCLUDED_STDNAMES`
+     framework vars in point 1 above, which Stage 3 *does* see but
+     `write_init_files.py` ignores regardless).
+
+   Revisit both before Stage 6 if a fixture actually needs them --
+   neither is in `_EXCLUDED_STDNAMES`, so both could matter to real
+   `write_init_files.py` logic depending on which host variables a given
+   suite's schemes reference.
+
+Everything else (the fields validated in Stages 1-2 -- host-variable
+binding, dimension classification for non-loop-extent dimensions,
+constituent/protected/optional flags) matches correctly. `array_ref_dims`/
+`intrinsic_element_names` remain unpopulated (see resolved_var.py's
+docstring) -- tested against the `ddt2` fixture specifically and found it
+doesn't actually exercise host-side DDT sub-element expansion in its
+resolved-variable data at all (the complexity there is in host-side DDT
+representation, which Stage 3's JSON doesn't capture), so this wasn't
+resolved, just confirmed out of scope for the fixtures tested so far.
 
 **Stage 5 -- Write the capgen-v1-side adapter.** [not started]
 `_resolved_vars_from_capgen_v1(...)`, also in CAM-SIMA's repo -- a thin

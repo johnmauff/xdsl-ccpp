@@ -61,6 +61,7 @@ from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_DEPRECATED_STD_NAMES,
     CCPP_ERRMSG_LEN,
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
@@ -92,6 +93,18 @@ _PHASE_NAMES: dict = {
 }
 
 
+def _normalize_std_name(name: str) -> str:
+    """Map a deprecated CCPP standard name to its modern replacement (e.g.
+    horizontal_loop_extent -> horizontal_dimension), else return it
+    unchanged. Keeps --emit-resolved-vars output on the same modern naming
+    convention regardless of which convention a given scheme's metadata
+    still uses -- otherwise a consumer comparing against capgen-v1's own
+    (already-normalized) output would see two different names for the same
+    concept depending on which scheme happened to declare it.
+    """
+    return CCPP_DEPRECATED_STD_NAMES.get(name.lower(), name)
+
+
 def _resolved_var_record(arg) -> "dict | None":
     """Extract a JSON-safe resolved-variable record from a descriptor/IR arg.
 
@@ -104,8 +117,9 @@ def _resolved_var_record(arg) -> "dict | None":
     """
     if not arg.hasAttr("standard_name"):
         return None
+    dim_names = list(arg.getAttr("dim_names")) if arg.hasAttr("dim_names") else []
     return {
-        "standard_name": arg.getAttr("standard_name"),
+        "standard_name": _normalize_std_name(arg.getAttr("standard_name")),
         "intent": arg.getAttr("intent") if arg.hasAttr("intent") else None,
         "is_advected": arg.hasAttr("advected"),
         "is_constituent": arg.hasAttr("constituent"),
@@ -113,7 +127,7 @@ def _resolved_var_record(arg) -> "dict | None":
         "is_optional": arg.hasAttr("optional"),
         "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
         "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
-        "dim_names": list(arg.getAttr("dim_names")) if arg.hasAttr("dim_names") else [],
+        "dim_names": [_normalize_std_name(d) for d in dim_names],
         "ownership_kind": str(arg.getAttr("ownership_kind")) if arg.hasAttr("ownership_kind") else None,
     }
 
@@ -2089,7 +2103,16 @@ class GenerateSuiteSubroutine(RewritePattern):
         phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
         if phase_name is not None:
             records = self.resolved_vars.setdefault(phase_name, [])
-            for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list):
+            # ncol_meta is the *original* loop-extent arg (real
+            # standard_name intact) that _classify_args replaces in
+            # input_arg_list with nameless synthetic col_start/col_end
+            # scalars for physics_mode dispatch -- included here so the
+            # loop-extent variable's identity isn't lost entirely
+            # (capgen_v1_parity_backlog.md Stage 4 found it otherwise
+            # silently disappears, since _resolved_var_record filters out
+            # the nameless col_start/col_end args that replace it).
+            _extra = (ncol_meta,) if ncol_meta is not None else ()
+            for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list, *_extra):
                 record = _resolved_var_record(arg)
                 if record is not None:
                     records.append(record)
