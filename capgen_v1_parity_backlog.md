@@ -284,6 +284,22 @@ separate post-hoc step):
 Exit criteria met: stable, documented, tested artifact format,
 independent of any host-model concern, ready for its own PR.
 
+**Post-PR Copilot review (PR #51) caught a real bug my own testing missed:**
+`_build_pipeline()`'s `emit_resolved_vars="{path}"` embeds literal double
+quotes into the pipeline spec string, which itself later gets embedded
+inside its *own* double-quoted shell argument (`-p "{pipeline}"`) in
+`run_opt()`/`generate_cpp_headers()`, both of which shell out via
+`os.system()`. My Stage 3 testing called `ccpp_opt` directly with a
+properly shell-quoted argv, which never exercised the actual
+`os.system()`-based path real usage goes through -- so the collision went
+undetected. Reproduced it directly via `sh -c` with the exact command
+`run_opt()` constructs (confirmed broken: `PassPipelineParseError`, no
+output file), fixed by escaping the inner quotes (`\"` instead of `"`) so
+they survive the outer shell-argument quoting, and reconfirmed producing
+correct output through that same real code path. Also fixed a docstring
+inaccuracy Copilot caught in the same review (the flag is defined on the
+`ccpp_xdsl` CLI, not directly on `ccpp_opt`/`ccpp_xml`).
+
 **Stage 4 -- Write the xdsl_ccpp-side adapter.** [not started]
 `_resolved_vars_from_xdsl_ccpp(...)`, in CAM-SIMA's repo, translating
 Stage 3's output into `ResolvedVar`.

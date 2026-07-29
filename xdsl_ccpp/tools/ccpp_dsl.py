@@ -462,8 +462,13 @@ class ccppMain:
         resolved_vars_path = self.options_db.get("emit_resolved_vars")
         if resolved_vars_path:
             # Quoted: the pass-pipeline spec lexer doesn't accept unquoted
-            # '/' in an arg value, and paths need it.
-            suite_cap_pass += f'{{emit_resolved_vars="{resolved_vars_path}"}}'
+            # '/' in an arg value, and paths need it. Escaped (\" not "):
+            # this whole pipeline string later gets embedded inside its own
+            # double-quoted shell argument (-p "{pipeline}") in run_opt()/
+            # generate_cpp_headers(), which shell out via os.system() --
+            # unescaped inner quotes would prematurely close that shell
+            # argument and truncate/corrupt the -p value.
+            suite_cap_pass += f'{{emit_resolved_vars=\\"{resolved_vars_path}\\"}}'
 
         has_host = bool(self.options_db.get("host_files"))
         passes = ["generate-meta-cap"]

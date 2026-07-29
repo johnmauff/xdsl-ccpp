@@ -2501,7 +2501,11 @@ class SuiteCAP(ModulePass):
     each CCPP lifecycle phase (capgen_v1_parity_backlog.md Stage 3's native
     introspection artifact -- host-model consumers like a
     write_init_files.py-equivalent read this instead of any capgen-v1 object).
-    Supplied via ``--emit-resolved-vars`` on the ``ccpp_xml``/``ccpp_opt`` CLI.
+
+    Not a flag of this pass directly in normal use: supplied via
+    ``--emit-resolved-vars`` on the ``ccpp_xdsl`` CLI (``ccpp_dsl.py``'s
+    ``ccppMain``), which threads it into this ``generate-suite-cap`` pass
+    parameter when building the ``ccpp_opt -p`` pipeline string.
     """
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
