@@ -284,7 +284,8 @@ class HostVariableMatchPass(ModulePass):
         """Walk HOST/MODULE/DDT tables and return (model_var_index, produced_in_init).
 
         model_var_index: standard_name → (local_var_name, module_name,
-                         memory_space|None, host_arg_op, is_ddt)
+                         memory_space|None, host_arg_op, is_ddt, array_layout,
+                         is_host_table, is_protected)
         produced_in_init: standard_name → (arg_op, scheme_name, entry_point_name)
             for args produced (intent=out/inout) by any scheme _init/_run entry.
 
@@ -302,6 +303,14 @@ class HostVariableMatchPass(ModulePass):
             ):
                 continue
             is_ddt = table_prop_op.table_type.data == TableTypeKind.DDT
+            # True iff this variable is declared in a HOST-type table (as
+            # opposed to MODULE or DDT) -- passed to physics via the host's
+            # own argument list rather than use-associated, and always
+            # considered initialized. capgen_v1_parity_backlog.md Stage 7:
+            # recorded here (not just used internally) so
+            # --emit-resolved-vars can expose it as is_host_table_var,
+            # matching real capgen-v1's Var.host_interface_var.
+            is_host_table = table_prop_op.table_type.data == TableTypeKind.Host
             array_layout_attr = table_prop_op.attributes.get("array_layout")
             array_layout = array_layout_attr.data if array_layout_attr is not None else None
             for arg_table_op in table_prop_op.body.ops:
@@ -330,6 +339,8 @@ class HostVariableMatchPass(ModulePass):
                             arg_op,
                             is_ddt,
                             array_layout,
+                            is_host_table,
+                            arg_op.protected is not None,
                         )
 
         if _ccpp_handle is not None:
@@ -406,9 +417,10 @@ class HostVariableMatchPass(ModulePass):
                         continue
 
                     if std_name in model_var_index:
-                        local_name, module_name, model_memory_space, host_arg_op, is_ddt, array_layout = (
-                            model_var_index[std_name]
-                        )
+                        (
+                            local_name, module_name, model_memory_space, host_arg_op,
+                            is_ddt, array_layout, is_host_table, is_protected,
+                        ) = model_var_index[std_name]
                         arg_op.properties["model_var_name"]    = StringAttr(local_name)
                         arg_op.properties["model_module_name"] = StringAttr(module_name)
                         if model_memory_space is not None:
@@ -419,6 +431,10 @@ class HostVariableMatchPass(ModulePass):
                             arg_op.properties["model_var_is_ddt"] = UnitAttr()
                         if array_layout == "row_major":
                             arg_op.properties["model_var_array_layout"] = StringAttr("row_major")
+                        if is_host_table:
+                            arg_op.properties["model_var_is_host_table"] = UnitAttr()
+                        if is_protected:
+                            arg_op.properties["model_var_is_protected"] = UnitAttr()
 
                         errors, warnings = self._check_compatibility(
                             arg_op, host_arg_op, scheme_name

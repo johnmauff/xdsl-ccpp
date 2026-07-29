@@ -57,7 +57,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     XMLSuite,
     collect_ddt_source_modules,
 )
-from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
+from xdsl_ccpp.transforms.util.ir_utils import build_host_var_index, find_ccpp_module
 from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
@@ -123,8 +123,14 @@ def _resolved_var_record(arg) -> "dict | None":
         "intent": arg.getAttr("intent") if arg.hasAttr("intent") else None,
         "is_advected": arg.hasAttr("advected"),
         "is_constituent": arg.hasAttr("constituent"),
-        "is_protected": arg.hasAttr("protected"),
+        # A scheme arg never carries 'protected' directly -- only the
+        # matched host/module declaration does (model_var_is_protected,
+        # set by HostVariableMatchPass). arg.hasAttr("protected") covers
+        # the (currently unused-in-practice) case of a host/module arg
+        # itself being passed through this same function directly.
+        "is_protected": arg.hasAttr("protected") or arg.hasAttr("model_var_is_protected"),
         "is_optional": arg.hasAttr("optional"),
+        "is_host_table_var": arg.hasAttr("model_var_is_host_table"),
         "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
         "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
         "dim_names": [_normalize_std_name(d) for d in dim_names],
@@ -224,7 +230,8 @@ class GenerateSuiteSubroutine(RewritePattern):
     """
 
     def __init__(self, suite_descriptions, meta_data, meta_fn_sigs, top_level_module,
-                 ddt_source_module=None, ccpp_handle=None, num_instances=CCPP_NUM_INSTANCES):
+                 ddt_source_module=None, ccpp_handle=None, num_instances=CCPP_NUM_INSTANCES,
+                 host_var_index=None):
         self.suite_descriptions = suite_descriptions
         self.meta_data = meta_data
         self.meta_fn_sigs = meta_fn_sigs
@@ -235,6 +242,14 @@ class GenerateSuiteSubroutine(RewritePattern):
         self.ccpp_handle: "tuple[str, str] | None" = ccpp_handle
         # Maximum number of simultaneous CCPP instances for the per-instance state array.
         self.num_instances: int = num_instances
+        # standard_name -> (local_var_name, module_name, is_host_table, is_protected) over HOST/MODULE
+        # tables (util/ir_utils.py's build_host_var_index) -- used only by
+        # the --emit-resolved-vars introspection path (generateSubroutineCall)
+        # to recover a host binding for framework-level identities like
+        # horizontal_dimension that ncol_meta itself was never host-matched
+        # against (capgen_v1_parity_backlog.md Stage 7). Not used by, and
+        # has no effect on, actual Fortran cap generation.
+        self.host_var_index: dict = host_var_index or {}
         # Per-phase resolved-variable records (capgen_v1_parity_backlog.md
         # Stage 3), populated by generateSubroutineCall. Scoped to this
         # instance (one per SuiteCAP.apply() call), not global state --
@@ -2103,6 +2118,10 @@ class GenerateSuiteSubroutine(RewritePattern):
         phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
         if phase_name is not None:
             records = self.resolved_vars.setdefault(phase_name, [])
+            for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list):
+                record = _resolved_var_record(arg)
+                if record is not None:
+                    records.append(record)
             # ncol_meta is the *original* loop-extent arg (real
             # standard_name intact) that _classify_args replaces in
             # input_arg_list with nameless synthetic col_start/col_end
@@ -2110,12 +2129,41 @@ class GenerateSuiteSubroutine(RewritePattern):
             # loop-extent variable's identity isn't lost entirely
             # (capgen_v1_parity_backlog.md Stage 4 found it otherwise
             # silently disappears, since _resolved_var_record filters out
-            # the nameless col_start/col_end args that replace it).
-            _extra = (ncol_meta,) if ncol_meta is not None else ()
-            for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list, *_extra):
-                record = _resolved_var_record(arg)
-                if record is not None:
-                    records.append(record)
+            # the nameless col_start/col_end args that replace it). Unlike
+            # framework_vars/input_arg_list/output_arg_list, ncol_meta was
+            # never itself run through HostVariableMatchPass (that pass
+            # runs before this synthesis exists), so its model_var_name is
+            # always None here even when the host directly declares the
+            # normalized identity (e.g. horizontal_dimension) -- real
+            # capgen-v1 resolves this via its own VarLoopSubst mechanism.
+            # capgen_v1_parity_backlog.md Stage 7 confirmed this blocked
+            # every CAM-SIMA fixture using the (still-valid, still-
+            # supported) horizontal_loop_extent column-chunking convention.
+            # Fixed here, not in HostVariableMatchPass itself: a fallback
+            # lookup against host_var_index (built once per SuiteCAP.apply()
+            # from the same HOST/MODULE tables that pass already indexes),
+            # keyed by the *normalized* standard name _resolved_var_record
+            # just computed -- scoped to ncol_meta specifically, not
+            # framework_vars/input_arg_list/output_arg_list, since those
+            # can be legitimately host-unmatched by design (e.g. CapScratch
+            # vars), where forcing a host match would be wrong.
+            if ncol_meta is not None:
+                ncol_record = _resolved_var_record(ncol_meta)
+                if ncol_record is not None:
+                    if ncol_record["model_var_name"] is None:
+                        host_match = self.host_var_index.get(
+                            ncol_record["standard_name"].lower()
+                        )
+                        if host_match is not None:
+                            ncol_record["model_var_name"] = host_match[0]
+                            ncol_record["model_module_name"] = host_match[1]
+                            ncol_record["is_host_table_var"] = host_match[2]
+                            ncol_record["is_protected"] = ncol_record["is_protected"] or host_match[3]
+                        # end if
+                    # end if
+                    records.append(ncol_record)
+                # end if
+            # end if
 
         _sig = self._build_block_signature(
             input_arg_list, output_arg_list, divergent_std_keys=divergent_std_keys,
@@ -2570,6 +2618,7 @@ class SuiteCAP(ModulePass):
             ddt_source_module=ddt_source_module,
             ccpp_handle=ccpp_handle,
             num_instances=num_instances,
+            host_var_index=build_host_var_index(ccpp_mod),
         )
         PatternRewriteWalker(
             GreedyRewritePatternApplier([generator]),
