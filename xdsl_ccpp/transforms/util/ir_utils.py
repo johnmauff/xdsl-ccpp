@@ -52,12 +52,15 @@ def build_host_var_index(ccpp_mod):
                 if not isa(arg_op, ccpp.ArgumentOp):
                     continue
                 if arg_op.standard_name is not None:
-                    index.setdefault(
-                        arg_op.standard_name.data.lower(),
-                        (
-                            arg_op.arg_name.data, table_prop_op.table_name.data,
-                            is_host_table, arg_op.protected is not None,
-                        ),
+                    # Direct assignment, not setdefault: on a duplicate
+                    # standard_name across tables, the last one encountered
+                    # wins, matching HostVariableMatchPass._build_model_var_index's
+                    # own overwrite semantics exactly -- setdefault (first
+                    # wins) would let this fallback index disagree with
+                    # real host-match behavior if duplicates exist.
+                    index[arg_op.standard_name.data.lower()] = (
+                        arg_op.arg_name.data, table_prop_op.table_name.data,
+                        is_host_table, arg_op.protected is not None,
                     )
                 # end if
             # end for

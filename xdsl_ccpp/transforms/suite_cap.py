@@ -2613,12 +2613,18 @@ class SuiteCAP(ModulePass):
                 ccpp_handle = (_op.var_name.data, _op.module_name.data)
                 break
 
+        # Only needed by generateSubroutineCall's --emit-resolved-vars
+        # fallback lookup (ncol_meta) -- building it unconditionally would
+        # add a full HOST/MODULE table traversal to every normal cap
+        # generation run, even when nobody asked for resolved-vars output.
+        host_var_index = build_host_var_index(ccpp_mod) if self.emit_resolved_vars else {}
+
         generator = GenerateSuiteSubroutine(
             scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,
             ddt_source_module=ddt_source_module,
             ccpp_handle=ccpp_handle,
             num_instances=num_instances,
-            host_var_index=build_host_var_index(ccpp_mod),
+            host_var_index=host_var_index,
         )
         PatternRewriteWalker(
             GreedyRewritePatternApplier([generator]),
