@@ -137,6 +137,16 @@ class ccppMain:
                  "(requires --emit-datatable).",
         )
         parser.add_argument(
+            "--emit-resolved-vars",
+            default=None,
+            metavar="FILE",
+            help="Write a JSON file of the resolved variables required at each "
+                 "CCPP lifecycle phase (register/initialize/finalize/"
+                 "timestep_initial/timestep_final/run), including host-variable "
+                 "binding and dimension info -- capgen_v1_parity_backlog.md "
+                 "Stage 3's native introspection artifact.",
+        )
+        parser.add_argument(
             "--bind-c",
             action="store_true",
             default=False,
@@ -448,6 +458,18 @@ class ccppMain:
                 )
             k, iso = kind_maps[0].split(":", 1)
             meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
+        suite_cap_pass = "generate-suite-cap"
+        resolved_vars_path = self.options_db.get("emit_resolved_vars")
+        if resolved_vars_path:
+            # Quoted: the pass-pipeline spec lexer doesn't accept unquoted
+            # '/' in an arg value, and paths need it. Escaped (\" not "):
+            # this whole pipeline string later gets embedded inside its own
+            # double-quoted shell argument (-p "{pipeline}") in run_opt()/
+            # generate_cpp_headers(), which shell out via os.system() --
+            # unescaped inner quotes would prematurely close that shell
+            # argument and truncate/corrupt the -p value.
+            suite_cap_pass += f'{{emit_resolved_vars=\\"{resolved_vars_path}\\"}}'
+
         has_host = bool(self.options_db.get("host_files"))
         passes = ["generate-meta-cap"]
         if has_host:
@@ -462,7 +484,7 @@ class ccppMain:
         # generate-host-match's own annotations.
         passes.append("generate-arg-ownership")
         passes.append(meta_kinds_pass)
-        passes.append("generate-suite-cap")
+        passes.append(suite_cap_pass)
         if directive:
             passes.append(f"generate-gpu-data{{directive={directive}}}")
         if has_host:
