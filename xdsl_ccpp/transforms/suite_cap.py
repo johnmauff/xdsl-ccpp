@@ -78,6 +78,15 @@ from xdsl_ccpp.util.ccpp_conventions import (
 )
 from xdsl_ccpp.util.visitor import Visitor
 
+# Stage 1 (capgen_v1_parity_backlog.md) proof-of-concept: stash the
+# per-phase resolved variable lists generateSubroutineCall already
+# computes (and previously discarded) so they can be inspected after a
+# pipeline run, without yet committing to a real public API/exposure
+# mechanism (that's Stage 3). Keyed by (tgt_subroutine_postfix,
+# generated_subroutine_posfix, physics_mode) -- deliberately not yet
+# shaped as ResolvedVar; just raw descriptor objects for now.
+DEBUG_RESOLVED_VARS: dict = {}
+
 
 class GatherMetaFunctionSignatures(Visitor):
     """Collects all external func.FuncOp declarations from the ccpp module.
@@ -2012,6 +2021,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         input_arg_list = _cls.input_arg_list
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
+
+        _phase_key = (tgt_subroutine_postfix, generated_subroutine_posfix, physics_mode)
+        DEBUG_RESOLVED_VARS[_phase_key] = {
+            "framework_vars": list(framework_vars.values()),
+            "input_arg_list": list(input_arg_list),
+            "output_arg_list": list(output_arg_list),
+        }
 
         _sig = self._build_block_signature(
             input_arg_list, output_arg_list, divergent_std_keys=divergent_std_keys,
