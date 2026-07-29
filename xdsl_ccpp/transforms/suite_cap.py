@@ -85,7 +85,12 @@ from xdsl_ccpp.util.visitor import Visitor
 # mechanism (that's Stage 3). Keyed by (tgt_subroutine_postfix,
 # generated_subroutine_posfix, physics_mode) -- deliberately not yet
 # shaped as ResolvedVar; just raw descriptor objects for now.
-DEBUG_RESOLVED_VARS: dict = {}
+#
+# Opt-in, None by default: normal runs never touch this (no mutable
+# global state, no unbounded memory growth) -- a caller that wants the
+# data sets `suite_cap.DEBUG_RESOLVED_VARS = {}` before running the
+# pipeline. Not thread-safe; single-threaded diagnostic use only.
+DEBUG_RESOLVED_VARS: "dict | None" = None
 
 
 class GatherMetaFunctionSignatures(Visitor):
@@ -2022,12 +2027,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
 
-        _phase_key = (tgt_subroutine_postfix, generated_subroutine_posfix, physics_mode)
-        DEBUG_RESOLVED_VARS[_phase_key] = {
-            "framework_vars": list(framework_vars.values()),
-            "input_arg_list": list(input_arg_list),
-            "output_arg_list": list(output_arg_list),
-        }
+        if DEBUG_RESOLVED_VARS is not None:
+            _phase_key = (tgt_subroutine_postfix, generated_subroutine_posfix, physics_mode)
+            DEBUG_RESOLVED_VARS[_phase_key] = {
+                "framework_vars": list(framework_vars.values()),
+                "input_arg_list": list(input_arg_list),
+                "output_arg_list": list(output_arg_list),
+            }
 
         _sig = self._build_block_signature(
             input_arg_list, output_arg_list, divergent_std_keys=divergent_std_keys,
