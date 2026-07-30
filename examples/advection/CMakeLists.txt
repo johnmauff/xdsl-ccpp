@@ -16,15 +16,20 @@
 # own `make caps` (which always passes --directive acc too, independent of
 # ARCH=CPU|GPU).
 #
-# ADVECTION_ARCH mirrors the existing Makefile's own ARCH=CPU|GPU variable.
-# GPU currently requires FC=nvfortran for OpenACC, matching that Makefile's
-# own hard requirement -- see this repo's top-level README (or the comment
-# block below) for the full GPU configure/build recipe.
+# ARCH mirrors the existing Makefile's own ARCH=CPU|GPU variable exactly
+# (same name, same two values). It's a CMake CACHE variable, so it's
+# project-wide, not scoped to just this example -- examples/advection_flat_host
+# (also GPU-capable) intentionally reuses this same variable rather than
+# defining its own, so -DARCH=GPU builds both for GPU together as a single
+# switch instead of needing one flag per example.
+# GPU currently requires nvfortran for OpenACC, matching that Makefile's own
+# hard requirement -- see this repo's top-level README for the full GPU
+# configure/build recipe (module load, cache variables, etc).
 #
 #------------------------------------------------------------------------------
-set(ADVECTION_ARCH "CPU" CACHE STRING
-    "examples/advection target architecture: CPU or GPU (OpenACC, requires -DCMAKE_Fortran_COMPILER=nvfortran)")
-set_property(CACHE ADVECTION_ARCH PROPERTY STRINGS CPU GPU)
+set(ARCH "CPU" CACHE STRING
+    "examples/advection target architecture: CPU or GPU (OpenACC, requires nvfortran)")
+set_property(CACHE ARCH PROPERTY STRINGS CPU GPU)
 
 set(SCHEME_FILES "const_indices" "cld_liq" "apply_constituent_tendencies" "cld_ice")
 set(HOST_FILES   "test_host_data" "test_host_mod")
@@ -51,11 +56,12 @@ xdsl_ccpp_capgen(HOSTFILES ${ADVECTION_HOST_METADATA_FILES}
 # test_host_ccpp_cap.F90).
 
 if(XDSL_CCPP_HAVE_FORTRAN)
-  if(ADVECTION_ARCH STREQUAL "GPU" AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+  if(ARCH STREQUAL "GPU" AND NOT CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
     message(FATAL_ERROR
-      "examples/advection: ADVECTION_ARCH=GPU requires "
-      "-DCMAKE_Fortran_COMPILER=nvfortran for OpenACC (matching the "
-      "existing Makefile's own requirement); got "
+      "examples/advection: ARCH=GPU requires nvfortran for OpenACC "
+      "(matching the existing Makefile's own requirement) -- e.g. "
+      "`module load nvhpc` on Derecho, or pass "
+      "-DCMAKE_Fortran_COMPILER=nvfortran explicitly; got "
       "CMAKE_Fortran_COMPILER_ID=${CMAKE_Fortran_COMPILER_ID}.")
   endif()
 
@@ -81,9 +87,9 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # that path again here. ${CMAKE_CURRENT_BINARY_DIR}/mod (ADVECTION_TESTLIB's
   # own .mod output) is the one path this target genuinely still needs to
   # be told about directly.
-  add_executable(advection_host_integration test_advection_host_integration.F90 ${HOST}.F90)
-  target_link_libraries(advection_host_integration PRIVATE ADVECTION_TESTLIB test_utils)
-  target_include_directories(advection_host_integration PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+  add_executable(advection.exe test_advection_host_integration.F90 ${HOST}.F90)
+  target_link_libraries(advection.exe PRIVATE ADVECTION_TESTLIB test_utils)
+  target_include_directories(advection.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
   # GPU compile flags, scoped to just this example's own targets (not the
   # root CMakeLists.txt's directory-wide add_compile_options, which stays
@@ -93,11 +99,11 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # extension the Makefile leaves unreachable too, via its own
   # ARCH=GPU-requires-nvfortran check).
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-    if(ADVECTION_ARCH STREQUAL "GPU")
+    if(ARCH STREQUAL "GPU")
       target_compile_options(ADVECTION_TESTLIB PRIVATE -mp=gpu -Minfo=accel)
-      target_compile_options(advection_host_integration PRIVATE -mp=gpu -Minfo=accel)
+      target_compile_options(advection.exe PRIVATE -mp=gpu -Minfo=accel)
       target_compile_definitions(ADVECTION_TESTLIB PRIVATE USE_GPU)
-      target_compile_definitions(advection_host_integration PRIVATE USE_GPU)
+      target_compile_definitions(advection.exe PRIVATE USE_GPU)
     else()
       # -noacc: nvfortran recognizes "!$acc" directives by default, so a
       # plain CPU build needs this to explicitly ignore them (unlike
@@ -105,10 +111,10 @@ if(XDSL_CCPP_HAVE_FORTRAN)
       # equivalent flag) -- matching the existing Makefile's own nvfortran
       # FC_CPU flags exactly.
       target_compile_options(ADVECTION_TESTLIB PRIVATE -noacc)
-      target_compile_options(advection_host_integration PRIVATE -noacc)
+      target_compile_options(advection.exe PRIVATE -noacc)
     endif()
   endif()
 
   # Add executable to be called with ctest
-  add_test(NAME ctest_advection_host_integration COMMAND advection_host_integration)
+  add_test(NAME ctest_advection_host_integration COMMAND advection.exe)
 endif()

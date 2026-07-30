@@ -23,6 +23,17 @@ jobs:
           - var_compat
           - tinyddt
           - advection
+          - advection_flat_host
+        # ctest -R does a plain substring match, and "advection" is a
+        # literal prefix of "advection_flat_host"'s own test name
+        # (ctest_advection_flat_host_integration) -- so the bare matrix
+        # value "advection" would also match and re-run that other
+        # example's test under this job. advection_flat_host needs no such
+        # override: its own matrix value is already a unique substring of
+        # only its own test name.
+        include:
+          - example: advection
+            ctest_filter: advection_host
 
     steps:
       - uses: actions/checkout@v4
@@ -57,4 +68,4 @@ jobs:
         run: cmake --build build
 
       - name: Run tests
-        run: ctest --test-dir build --output-on-failure -R ${{ matrix.example }}
+        run: ctest --test-dir build --output-on-failure -R ${{ matrix.ctest_filter || matrix.example }}

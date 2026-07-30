@@ -437,26 +437,50 @@ separate module from `xdsl_ccpp.cmake` above) builds several `examples/`
 directories together in one tree — an incremental migration of hand-written
 per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
 `end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
-`var_compat`, `tinyddt`, and `advection`; each example's existing Makefile
-still works unchanged alongside it.
+`var_compat`, `tinyddt`, `advection`, and `advection_flat_host`; each
+example's existing Makefile still works unchanged alongside it.
+
+Run these from the **repository root** (where this `CMakeLists.txt` lives),
+not from inside an `examples/*/` directory — each example's own
+`CMakeLists.txt` is a subdirectory fragment pulled in via `add_subdirectory()`
+and has no `project()`/`cmake_minimum_required()` of its own, so pointing
+`cmake -S` directly at one fails with `Unknown CMake command
+"xdsl_ccpp_capgen"`:
 
 ```bash
+cd /path/to/xdsl-ccpp   # repo root
 cmake -S . -B build
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-**GPU build (`examples/advection`):** `advection` also builds for GPU via
-OpenACC, which requires `nvfortran`. Use a separate build directory —
-`CMAKE_Fortran_COMPILER` can't be changed on an already-configured tree:
+**GPU build (`examples/advection`, `examples/advection_flat_host`, Derecho):**
+Both examples build for GPU via OpenACC and share the same `ARCH` cache
+variable, which requires `nvfortran`. Still run from the repo root, and use a
+separate build directory — the Fortran compiler can't be changed on an
+already-configured tree:
 
 ```bash
-cmake -S . -B build-gpu \
-  -DCMAKE_Fortran_COMPILER=nvfortran \
-  -DADVECTION_ARCH=GPU
-cmake --build build-gpu --target advection_host_integration
+cd /path/to/xdsl-ccpp   # repo root
+module load nvhpc
+cmake -S . -B build-gpu -DARCH=GPU
+cmake --build build-gpu
 ctest --test-dir build-gpu -R advection --output-on-failure
 ```
+
+`module load nvhpc` puts `nvfortran` on `PATH` (and sets `FC`), so CMake picks
+it up automatically — no need to pass `-DCMAKE_Fortran_COMPILER` explicitly.
+Off Derecho, or if `nvfortran` isn't found automatically, add
+`-DCMAKE_Fortran_COMPILER=nvfortran` to the `cmake` command above.
+
+`cmake --build build-gpu` (no `--target`) builds both GPU executables so the
+`ctest` step above has both to run. `-R advection` matches both test names —
+`advection` is a literal prefix of `advection_flat_host`, so a bare
+`-R advection` can never select only one — but `-R advection_host` or
+`-R advection_flat` already select just one or the other, since neither is a
+substring of the other test's name. To build only one side, target its own
+executable directly (`--target advection.exe` or
+`--target advection_flat.exe`).
 
 Cap generation is identical between the CPU and GPU builds — the OpenACC
 `!$acc` directives are inert without the matching compile flags — only the
