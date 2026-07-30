@@ -244,3 +244,27 @@ if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_C AND XDSL_CCPP_HAVE_CXX)
                    "$<TARGET_FILE:kessler_ccpp.exe>" "$<TARGET_FILE:kessler_hand.exe>"
                    "$<TARGET_FILE:kessler_cxx.exe>" "$<TARGET_FILE:kessler_cxx_host.exe>")
 endif()
+
+# ── Optional cross-build CPU-vs-GPU parity check ──────────────────────────
+# A DIFFERENT comparison from ctest_kessler_parity above: this diffs each
+# driver's output between THIS tree and some OTHER, already-configured
+# kessler build tree (typically a CPU build, when this tree itself is
+# configured with -DARCH=GPU, or vice versa) -- e.g. build-cpu vs build-gpu.
+#
+# ctest can only run tests registered in one build tree, so there's no way
+# to discover the other tree's path automatically; set this cache variable
+# explicitly at configure time to opt in. Left empty (the default), this
+# test is not registered at all -- nothing changes for a normal single-tree
+# build/test.
+set(KESSLER_CPU_GPU_REFERENCE_BUILD "" CACHE PATH
+    "Path to another kessler build tree's own top-level build directory \
+(e.g. a CPU build's, when this tree is -DARCH=GPU) to diff this tree's \
+driver executables against. Leave empty to skip this check entirely.")
+
+if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_C AND XDSL_CCPP_HAVE_CXX
+   AND NOT KESSLER_CPU_GPU_REFERENCE_BUILD STREQUAL "")
+  add_test(NAME ctest_kessler_cpu_gpu_parity
+           COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/check_cpu_gpu_parity.py"
+                   "${KESSLER_CPU_GPU_REFERENCE_BUILD}/examples/kessler"
+                   "$<TARGET_FILE_DIR:kessler_ccpp.exe>")
+endif()

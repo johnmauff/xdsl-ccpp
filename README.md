@@ -463,18 +463,21 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-**GPU build (`examples/advection`, `examples/advection_flat_host`, Derecho):**
-Both examples build for GPU via OpenACC and share the same `ARCH` cache
-variable, which requires `nvfortran`. Still run from the repo root, and use a
-separate build directory — the Fortran compiler can't be changed on an
-already-configured tree:
+**GPU build (`examples/advection`, `examples/advection_flat_host`,
+`examples/kessler`, Derecho):** All three examples build for GPU via OpenACC
+and share the same `ARCH` cache variable, which requires `nvfortran`. Still
+run from the repo root, and use a separate build directory — the Fortran
+compiler can't be changed on an already-configured tree:
 
 ```bash
 cd /path/to/xdsl-ccpp   # repo root
 module load nvhpc
 cmake -S . -B build-gpu -DARCH=GPU
-cmake --build build-gpu
+cmake --build build-gpu --target advection.exe --target advection_flat.exe \
+  --target kessler_ccpp.exe --target kessler_hand.exe \
+  --target kessler_cxx.exe --target kessler_cxx_host.exe
 ctest --test-dir build-gpu -R advection --output-on-failure
+ctest --test-dir build-gpu -R kessler --output-on-failure
 ```
 
 `module load nvhpc` puts `nvfortran` on `PATH` (and sets `FC`), so CMake picks
@@ -482,20 +485,59 @@ it up automatically — no need to pass `-DCMAKE_Fortran_COMPILER` explicitly.
 Off Derecho, or if `nvfortran` isn't found automatically, add
 `-DCMAKE_Fortran_COMPILER=nvfortran` to the `cmake` command above.
 
-`cmake --build build-gpu` (no `--target`) builds both GPU executables so the
-`ctest` step above has both to run. `-R advection` matches both test names —
-`advection` is a literal prefix of `advection_flat_host`, so a bare
-`-R advection` can never select only one — but `-R advection_host` or
-`-R advection_flat` already select just one or the other, since neither is a
-substring of the other test's name. To build only one side, target its own
-executable directly (`--target advection.exe` or
-`--target advection_flat.exe`).
+Always pass an explicit `--target` list like the one above — a bare
+`cmake --build build-gpu` (no `--target`) builds *every* example wired into
+the root `CMakeLists.txt`, including the ones with no GPU story at all
+(`nested_suite`, `var_compat`, `tinyddt`); `ARCH` only changes which compile
+flags the GPU-capable examples get, it doesn't change which examples
+participate in the build. `-R advection` matches both
+`advection`/`advection_flat_host` test names — `advection` is a literal
+prefix of `advection_flat_host`, so a bare `-R advection` can never select
+only one — but `-R advection_host` or `-R advection_flat` already select
+just one or the other. `-R kessler` is unambiguous (no other test name
+contains it).
 
 Cap generation is identical between the CPU and GPU builds — the OpenACC
 `!$acc` directives are inert without the matching compile flags — only the
 compile flags for `ADVECTION_TESTLIB` and the test executable differ between
 the two (`-mp=gpu -Minfo=accel -DUSE_GPU` for GPU vs. `-noacc` for CPU on
 `nvfortran`).
+
+**Cross-build CPU-vs-GPU parity check (`examples/kessler`):**
+`ctest_kessler_parity` (above) compares the four *drivers* against each
+other within one build tree (all built for the same `ARCH`); it does not
+compare CPU vs. GPU output, since `ctest` can only run tests registered in
+one build tree and CPU/GPU builds live in separate ones. For that,
+`examples/kessler` has an opt-in cross-build check: configure the tree you
+want to check (typically the GPU one) with
+`-DKESSLER_CPU_GPU_REFERENCE_BUILD=<path to the other tree>`, and it
+registers `ctest_kessler_cpu_gpu_parity` (via `check_cpu_gpu_parity.py`),
+which diffs each driver present in both trees and reports crashes with
+their captured output rather than failing on a bare traceback.
+
+The easiest way to run it end to end (configures both trees, builds all
+four drivers in each, then runs the check) is the wrapper script:
+
+```bash
+examples/kessler/run_cpu_gpu_parity.sh   # requires nvfortran already on PATH
+```
+
+Equivalent by hand (4 `cmake` commands + 1 `ctest` command — this is what
+the script above does):
+
+```bash
+cmake -S . -B build-cpu
+cmake --build build-cpu --target kessler_ccpp.exe --target kessler_hand.exe \
+  --target kessler_cxx.exe --target kessler_cxx_host.exe
+
+module load nvhpc
+cmake -S . -B build-gpu -DARCH=GPU \
+  -DKESSLER_CPU_GPU_REFERENCE_BUILD=$(pwd)/build-cpu
+cmake --build build-gpu --target kessler_ccpp.exe --target kessler_hand.exe \
+  --target kessler_cxx.exe --target kessler_cxx_host.exe
+
+ctest --test-dir build-gpu -R kessler_cpu_gpu_parity --output-on-failure
+```
 
 ### Documentation Generation
 

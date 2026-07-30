@@ -13,8 +13,20 @@ import sys
 
 
 def run_filtered(path):
-    result = subprocess.run([path], capture_output=True, text=True, check=True)
-    return [line for line in result.stdout.splitlines() if "Elapsed" not in line]
+    """Returns (filtered_lines, returncode). filtered_lines is None on a
+    nonzero exit -- callers print the captured stdout/stderr in that case
+    instead of chasing a bare CalledProcessError traceback, which shows the
+    exit code but not what the program itself actually said.
+    """
+    result = subprocess.run([path], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  {path} exited {result.returncode}", file=sys.stderr)
+        if result.stdout:
+            print(f"  --- stdout ---\n{result.stdout}", file=sys.stderr)
+        if result.stderr:
+            print(f"  --- stderr ---\n{result.stderr}", file=sys.stderr)
+        return None, result.returncode
+    return [line for line in result.stdout.splitlines() if "Elapsed" not in line], 0
 
 
 def main():
@@ -24,11 +36,18 @@ def main():
         return 1
     ccpp_exe, hand_exe, cxx_exe, cxx_host_exe = sys.argv[1:5]
 
-    ccpp_out = run_filtered(ccpp_exe)
+    ccpp_out, ccpp_rc = run_filtered(ccpp_exe)
+    if ccpp_rc != 0:
+        print(f"FAIL: ccpp (the reference driver) crashed -- nothing to compare against")
+        return 1
+
     ok = True
     for label, exe in (("hand", hand_exe), ("cxx", cxx_exe), ("cxx_host", cxx_host_exe)):
-        other_out = run_filtered(exe)
-        if other_out == ccpp_out:
+        other_out, rc = run_filtered(exe)
+        if rc != 0:
+            print(f"FAIL: {label} crashed (exit {rc}) -- see captured output above")
+            ok = False
+        elif other_out == ccpp_out:
             print(f"PASS: ccpp == {label} (bit-for-bit)")
         else:
             print(f"FAIL: ccpp != {label}")
