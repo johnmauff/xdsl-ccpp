@@ -46,8 +46,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
+    _build_ddt_resolution_maps,
+    _build_host_var_map,
     _collect_ddt_use_stubs,
     _iter_schemes,
+    _resolve_ddt_access_path,
+    _resolve_member_subscripts,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -133,12 +137,77 @@ def _resolved_var_record(arg) -> "dict | None":
         "is_host_table_var": arg.hasAttr("model_var_is_host_table"),
         "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
         "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
+        # Default to model_var_name/None, matching the plain (non-DDT)
+        # case where there's nothing to distinguish -- _apply_ddt_chain
+        # overwrites these three (import_name, call_expr, and
+        # model_module_name itself) for a DDT member match, since
+        # model_module_name there is the DDT *type* name, not a real
+        # module, and needs resolving to the type's actual instance
+        # variable before it means anything to a Fortran `use` statement.
+        "import_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
+        "call_expr": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
+        "array_ref_dims": [],
         "dim_names": [_normalize_std_name(d) for d in dim_names],
         "ownership_kind": str(arg.getAttr("ownership_kind")) if arg.hasAttr("ownership_kind") else None,
     }
 
 
-def _write_resolved_vars(resolved_vars: dict, path: str) -> None:
+def _ddt_member_subscript_std_names(member_expr: str) -> list:
+    """Extract the raw standard-name subscript tokens from a DDT member's
+    array-section expression (e.g. "t(:,:,index_of_potential_temperature)"
+    -> ["index_of_potential_temperature"]), before any local-name
+    substitution.
+
+    Mirrors cap_shared.py's own _resolve_member_subscripts tokenization,
+    kept separate since that function resolves straight to local names via
+    a host_var_map (right for building call_expr), but array_ref_dims
+    needs the original standard names instead, for write_init_files.py's
+    own resolve_by_standard_name recursion (_get_host_model_import) to
+    pull in each index variable's own `use` import independently.
+    """
+    paren = member_expr.find("(")
+    if paren < 0:
+        return []
+    subscript = member_expr[paren + 1: member_expr.rfind(")")]
+    return [
+        t for t in (tok.strip() for tok in subscript.split(","))
+        if t and t != ":" and not t.isdigit()
+    ]
+
+
+def _apply_ddt_chain(record: dict, arg, ddt_resolution_maps) -> None:
+    """Patch <record> in place for a DDT member match, resolving the DDT
+    *type* name _resolved_var_record left in model_module_name into the
+    real Fortran chain -- e.g. model_var_name="theta",
+    model_module_name="physics_state" (the DDT type/table name, not a
+    real module) becomes model_module_name="physics_types_ddt",
+    import_name="phys_state", call_expr="phys_state%theta".
+
+    No-op when <arg> isn't a DDT member match, or when
+    <ddt_resolution_maps> is None (--emit-resolved-vars not requested --
+    see GenerateSuiteSubroutine.__init__).  Also no-op (leaves the
+    pre-patch defaults, matching run_dispatch.py's own soft-fail
+    behavior for this case) if no reachable module-level instance exists
+    for the DDT type -- should not happen for an arg host_var_match_pass
+    already accepted as DDT-matched.
+    """
+    if ddt_resolution_maps is None or not arg.hasAttr("model_var_is_ddt"):
+        return
+    ddt_instance_map, ddt_parent_map, ddt_host_var_map = ddt_resolution_maps
+    ddt_type_name = record["model_module_name"]
+    result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
+    if result is None:
+        return
+    instance_var, instance_module, path_prefix = result
+    member_expr = path_prefix + record["model_var_name"]
+    resolved_member, _sub_vars = _resolve_member_subscripts(member_expr, ddt_host_var_map)
+    record["model_module_name"] = instance_module
+    record["import_name"] = instance_var
+    record["call_expr"] = f"{instance_var}%{resolved_member}"
+    record["array_ref_dims"] = _ddt_member_subscript_std_names(member_expr)
+
+
+def _write_resolved_vars(resolved_vars: dict, path: str, host_vars: dict = None) -> None:
     """Serialize per-phase resolved-variable records to JSON at *path*.
 
     Deduped by standard_name within each phase (keeping the first record
@@ -147,6 +216,17 @@ def _write_resolved_vars(resolved_vars: dict, path: str) -> None:
     active in the same phase (e.g. several physics groups all needing the
     same host variable in their own "run" dispatch) would otherwise produce
     duplicate entries for the same standard_name.
+
+    <host_vars>, if given, is cap_shared.py's _build_host_var_map result
+    (standard_name -> (local_name, table_name) over every HOST/MODULE
+    table, not just names some suite call actually resolved) -- written out
+    as a top-level "host_vars" key so a consumer's resolve_by_standard_name
+    can look up *any* host-declared variable, not only ones that happen to
+    also appear in some phase's own call list. Needed for e.g. a DDT
+    member's array-section index variable (see _apply_ddt_chain's
+    array_ref_dims), which is a real host variable but is never itself a
+    scheme argument, so it would otherwise never appear anywhere in
+    "phases".
     """
     import json
 
@@ -162,8 +242,14 @@ def _write_resolved_vars(resolved_vars: dict, path: str) -> None:
             phase_list.append(record)
         deduped[phase_name] = phase_list
 
+    out = {"phases": deduped}
+    if host_vars:
+        out["host_vars"] = {
+            std_name: list(entry) for std_name, entry in host_vars.items()
+        }
+
     with open(path, "w") as f:
-        json.dump({"phases": deduped}, f, indent=2)
+        json.dump(out, f, indent=2)
 
 
 class GatherMetaFunctionSignatures(Visitor):
@@ -231,7 +317,7 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def __init__(self, suite_descriptions, meta_data, meta_fn_sigs, top_level_module,
                  ddt_source_module=None, ccpp_handle=None, num_instances=CCPP_NUM_INSTANCES,
-                 host_var_index=None):
+                 host_var_index=None, ddt_resolution_maps=None):
         self.suite_descriptions = suite_descriptions
         self.meta_data = meta_data
         self.meta_fn_sigs = meta_fn_sigs
@@ -250,6 +336,17 @@ class GenerateSuiteSubroutine(RewritePattern):
         # against (capgen_v1_parity_backlog.md Stage 7). Not used by, and
         # has no effect on, actual Fortran cap generation.
         self.host_var_index: dict = host_var_index or {}
+        # (ddt_instance_map, ddt_parent_map, ddt_host_var_map) from
+        # cap_shared.py's _build_ddt_resolution_maps/_build_host_var_map --
+        # the same DDT-chain resolution real cap generation already uses
+        # (run_dispatch.py, gpu_ccpp_cap_pass.py) to turn a DDT member match
+        # (model_var_is_ddt set, model_module_name holding the DDT *type*
+        # name rather than a real Fortran module) into the actual dotted
+        # Fortran reference. Reused here, read-only, only by the
+        # --emit-resolved-vars introspection path (generateSubroutineCall)
+        # -- not used by, and has no effect on, actual Fortran cap
+        # generation, which resolves this independently via run_dispatch.py.
+        self.ddt_resolution_maps = ddt_resolution_maps
         # Per-phase resolved-variable records (capgen_v1_parity_backlog.md
         # Stage 3), populated by generateSubroutineCall. Scoped to this
         # instance (one per SuiteCAP.apply() call), not global state --
@@ -2121,6 +2218,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list):
                 record = _resolved_var_record(arg)
                 if record is not None:
+                    _apply_ddt_chain(record, arg, self.ddt_resolution_maps)
                     records.append(record)
             # ncol_meta is the *original* loop-extent arg (real
             # standard_name intact) that _classify_args replaces in
@@ -2619,12 +2717,24 @@ class SuiteCAP(ModulePass):
         # generation run, even when nobody asked for resolved-vars output.
         host_var_index = build_host_var_index(ccpp_mod) if self.emit_resolved_vars else {}
 
+        # Same reasoning: only needed by the --emit-resolved-vars DDT-member
+        # chain resolution (_apply_ddt_chain). Real cap generation resolves
+        # DDT chains independently via run_dispatch.py, which builds its own
+        # copy of these maps from the same (cheap, pure) cap_shared.py
+        # functions when it actually needs them.
+        ddt_resolution_maps = None
+        if self.emit_resolved_vars:
+            ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data_descriptions)
+            ddt_host_var_map = _build_host_var_map(meta_data_descriptions)
+            ddt_resolution_maps = (ddt_instance_map, ddt_parent_map, ddt_host_var_map)
+
         generator = GenerateSuiteSubroutine(
             scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,
             ddt_source_module=ddt_source_module,
             ccpp_handle=ccpp_handle,
             num_instances=num_instances,
             host_var_index=host_var_index,
+            ddt_resolution_maps=ddt_resolution_maps,
         )
         PatternRewriteWalker(
             GreedyRewritePatternApplier([generator]),
@@ -2632,4 +2742,6 @@ class SuiteCAP(ModulePass):
         ).rewrite_module(op)
 
         if self.emit_resolved_vars:
-            _write_resolved_vars(generator.resolved_vars, self.emit_resolved_vars)
+            _write_resolved_vars(
+                generator.resolved_vars, self.emit_resolved_vars, host_vars=ddt_host_var_map,
+            )
