@@ -24,6 +24,7 @@ jobs:
           - tinyddt
           - advection
           - advection_flat_host
+          - kessler
         # ctest -R does a plain substring match, and "advection" is a
         # literal prefix of "advection_flat_host"'s own test name
         # (ctest_advection_flat_host_integration) -- so the bare matrix
@@ -43,12 +44,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install gfortran and g++
-        # g++ is normally already present on ubuntu-latest via build-essential,
-        # but tinyddt (a C++/chost example) needs one, so install explicitly
-        # rather than relying on that -- matches the existing explicit
-        # gfortran install below instead of leaving either compiler implicit.
-        run: sudo apt-get update && sudo apt-get install -y gfortran g++
+      - name: Install gfortran, gcc, and g++
+        # gcc/g++ are normally already present on ubuntu-latest via
+        # build-essential, but tinyddt (C++/chost) and kessler (C + C++/
+        # chost) both need them, so install explicitly rather than relying
+        # on that -- matches the existing explicit gfortran install below
+        # instead of leaving any of the three compilers implicit.
+        run: sudo apt-get update && sudo apt-get install -y gfortran gcc g++
 
       - name: Install xdsl-ccpp
         run: python -m pip install -e .

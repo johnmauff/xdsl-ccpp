@@ -25,6 +25,14 @@
 #                architecture -- only the compile flags differ between a
 #                plain-CPU and a GPU build (see that example's own
 #                CMakeLists.txt for the ARCH-selection side of this).
+# BIND_C       - boolean option (no value); passes --bind-c straight through,
+#                forcing BIND(C) Fortran cap + C++ header generation even for
+#                a Fortran-language host (as opposed to a C++-language host,
+#                which auto-enables the equivalent behavior on its own --
+#                see ccpp_dsl.py's _host_lang_cpp). Needed by
+#                examples/kessler's plain C++ BIND(C) driver, which calls
+#                into a still-Fortran-owned host state through a BIND(C)
+#                cap rather than a genuine C++-owned chost one.
 # HOSTFILES    - CMake list of host metadata filenames (no extension needed
 #                by the caller; pass full relative/absolute paths as-is)
 # SCHEMEFILES  - CMake list of scheme metadata files
@@ -38,9 +46,10 @@
 # this parses it directly instead of trying to force schema compatibility
 # with the other backend's tool.
 function(xdsl_ccpp_capgen)
+  set(options BIND_C)
   set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY DIRECTIVE)
   set(multiValueArgs HOSTFILES SCHEMEFILES SUITES)
-  cmake_parse_arguments(arg "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+  cmake_parse_arguments(arg "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   if(NOT DEFINED XDSL_CCPP_ROOT)
     message(FATAL_ERROR
@@ -73,6 +82,9 @@ function(xdsl_ccpp_capgen)
   # cap-generation failure instead of "no directive requested".
   if(DEFINED arg_DIRECTIVE AND NOT arg_DIRECTIVE STREQUAL "")
     list(APPEND CCPP_XDSL_CMD "--directive" "${arg_DIRECTIVE}")
+  endif()
+  if(arg_BIND_C)
+    list(APPEND CCPP_XDSL_CMD "--bind-c")
   endif()
 
   set(OUTPUT_ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ccpp")

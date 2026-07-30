@@ -437,8 +437,17 @@ separate module from `xdsl_ccpp.cmake` above) builds several `examples/`
 directories together in one tree — an incremental migration of hand-written
 per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
 `end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
-`var_compat`, `tinyddt`, `advection`, and `advection_flat_host`; each
-example's existing Makefile still works unchanged alongside it.
+`var_compat`, `tinyddt`, `advection`, `advection_flat_host`, and `kessler`;
+each example's existing Makefile still works unchanged alongside it.
+
+`kessler` (see [Examples](#examples) below) is the most involved of these:
+four separate drivers (CCPP Fortran cap, hand-written Fortran, C++ BIND(C),
+C++ host-model/chost), a numerical-parity check across all four
+(`ctest_kessler_parity`, via `examples/kessler/check_parity.py`), OpenACC GPU
+support (shares the `ARCH` cache variable with `advection`/
+`advection_flat_host`), and the first ported example needing a C compiler
+(its `shared/*.c` RNG/init-data helpers) and a non-flat directory layout
+(`scheme/`, `host_ftn/`, `host_cpp/`, `shared/`).
 
 Run these from the **repository root** (where this `CMakeLists.txt` lives),
 not from inside an `examples/*/` directory — each example's own
