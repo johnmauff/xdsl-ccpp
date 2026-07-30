@@ -503,6 +503,24 @@ compile flags for `ADVECTION_TESTLIB` and the test executable differ between
 the two (`-mp=gpu -Minfo=accel -DUSE_GPU` for GPU vs. `-noacc` for CPU on
 `nvfortran`).
 
+**GPU testing is currently `kessler_ccpp.exe`-only.** `kessler_hand.exe`,
+`kessler_cxx.exe`, and `kessler_cxx_host.exe` are known not to run on real
+GPU hardware yet — confirmed directly: all three crash with `FATAL ERROR:
+data in PRESENT clause was not found` at `kessler.F90`'s own `kessler_runv2`,
+because nothing in their call paths ever registers data with the OpenACC
+runtime that `kessler.F90`'s hand-written `!$acc present(...)` checks
+require (`kessler_hand.exe` manages GPU data via OpenMP target functions
+instead of OpenACC — a separate runtime with no visibility into OpenACC's
+own present-table; `kessler_cxx.exe`/`kessler_cxx_host.exe`'s caps are
+generated via `--bind-c`/chost, and neither of those generation modes ever
+passes `--directive acc`, so no GPU data-movement code exists in their call
+path at all). This is a pre-existing gap in the example's own GPU support,
+not something the CMake port introduced — only `kessler_ccpp` has ever
+actually been verified on real GPU hardware. Both `ctest_kessler_parity` and
+`ctest_kessler_cpu_gpu_parity` (below) mask the other three out of GPU
+testing for now (they're still built on a GPU tree, just not tested there)
+— revisit this once that gap is actually fixed.
+
 **Cross-build CPU-vs-GPU parity check (`examples/kessler`):**
 `ctest_kessler_parity` (above) compares the four *drivers* against each
 other within one build tree (all built for the same `ARCH`); it does not

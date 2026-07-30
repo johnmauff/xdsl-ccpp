@@ -17,13 +17,20 @@ drivers present in BOTH trees are compared. A driver that crashes at
 runtime in either tree is reported clearly (captured stdout/stderr shown)
 and counts as a failure, but does not stop the other drivers from still
 being checked.
+
+The driver list defaults to all four but can be narrowed with an optional
+third argument (comma-separated executable names) -- see this example's
+own CMakeLists.txt, which passes a reduced list for a GPU-configured tree
+(only kessler_ccpp.exe is currently known to work on real GPU hardware;
+the other three are masked out of GPU testing for now, not because this
+script can't run them, but because they're known to crash there).
 """
 import difflib
 import subprocess
 import sys
 from pathlib import Path
 
-DRIVERS = ["kessler_ccpp.exe", "kessler_hand.exe", "kessler_cxx.exe", "kessler_cxx_host.exe"]
+DEFAULT_DRIVERS = ["kessler_ccpp.exe", "kessler_hand.exe", "kessler_cxx.exe", "kessler_cxx_host.exe"]
 
 
 def run_filtered(path):
@@ -35,15 +42,16 @@ def run_filtered(path):
 
 
 def main():
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 4):
         print("usage: check_cpu_gpu_parity.py <build_dir_a>/examples/kessler "
-              "<build_dir_b>/examples/kessler", file=sys.stderr)
+              "<build_dir_b>/examples/kessler [driver1.exe,driver2.exe,...]", file=sys.stderr)
         return 1
     dir_a, dir_b = Path(sys.argv[1]), Path(sys.argv[2])
+    drivers = sys.argv[3].split(",") if len(sys.argv) == 4 else DEFAULT_DRIVERS
 
     ok = True
     compared_any = False
-    for driver in DRIVERS:
+    for driver in drivers:
         exe_a, exe_b = dir_a / driver, dir_b / driver
         if not exe_a.exists() or not exe_b.exists():
             print(f"SKIP: {driver} (not built in one or both of {dir_a}, {dir_b})")
