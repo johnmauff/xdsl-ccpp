@@ -7,12 +7,13 @@
 # scratch for this file, unlike nested_suite/var_compat's CMakeLists.txt,
 # which are close ports of a real upstream original.
 #
-# The C++ host owns all arrays -- tinyddt_host_mod.meta/tinyddt_host_sub.meta
-# are metadata-only, describing the host's C++-side interface for
-# cap-generation, with no corresponding Fortran source file to compile (see
-# the existing Makefile's own "tinyddt_host_mod is NOT used here" comment).
+# The C++ host owns all arrays -- host_cpp/tinyddt_host_mod.meta and
+# host_cpp/tinyddt_host_sub.meta are metadata-only, describing the host's
+# C++-side interface for cap-generation, with no corresponding Fortran
+# source file to compile (see the existing Makefile's own "tinyddt_host_mod
+# is NOT used here" comment).
 # Host language (C++, BIND(C) chost cap generation) is auto-detected by
-# xdsl_ccpp itself from tinyddt_host_mod.meta's own "language = c++"
+# xdsl_ccpp itself from host_cpp/tinyddt_host_mod.meta's own "language = c++"
 # declaration (ccpp_dsl.py's _host_lang_cpp) -- no --bind-c flag needed,
 # matching the existing Makefile's own CCPP_XDSL invocation exactly.
 #
@@ -23,11 +24,12 @@ xdsl_ccpp_capgen(HOSTFILES host_cpp/tinyddt_host_mod.meta host_cpp/tinyddt_host_
                  SCHEMEFILES tinyddt.meta
                  SUITES tinyddt_suite.xml
                  OUTPUT_ROOT "${CCPP_CAP_FILES}")
-# host_cpp/tinyddt_host_mod.meta, not the top-level tinyddt_host_mod.meta of
-# the same name (a stale, unused duplicate that's missing "language = c++"
-# and so never triggers BIND(C) generation) -- host_cpp/'s copy is the one
-# the existing Makefile's own $(HOST_CPP)/tinyddt_host_mod.meta correctly
-# points at; confirmed directly (diffed the two files).
+# host_cpp/tinyddt_host_mod.meta and host_cpp/tinyddt_host_sub.meta, not a
+# top-level file of the same name -- a stale, unused duplicate of each used
+# to live directly under examples/tinyddt/, missing "language = c++" and so
+# never triggering BIND(C) generation, and has since been removed.
+# host_cpp/'s copies are the ones the existing Makefile's own
+# $(HOST_CPP)/tinyddt_host_mod.meta correctly points at.
 # CCPP_CAPS_LIST is set but deliberately not used directly below: it also
 # includes Tinyddt_ccpp_cap.F90, the plain (non-chost) cap xdsl_ccpp
 # generates as a matter of course even in chost mode -- not needed here
