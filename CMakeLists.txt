@@ -15,8 +15,9 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # below.
 #
 # Only examples/nested_suite, examples/var_compat, examples/tinyddt,
-# examples/advection, and examples/advection_flat_host are wired in so far --
-# this is an incremental migration, not yet covering every example.
+# examples/advection, examples/advection_flat_host, and examples/kessler are
+# wired in so far -- this is an incremental migration, not yet covering
+# every example.
 
 enable_testing()
 
@@ -99,6 +100,20 @@ else()
     "one will be skipped.")
 endif()
 
+# Needed by examples/kessler, the first example with plain C sources (its
+# shared/*.c RNG/init-data helpers) -- no other example ported so far needs
+# a C compiler at all.
+check_language(C)
+if(CMAKE_C_COMPILER)
+  enable_language(C)
+  set(XDSL_CCPP_HAVE_C TRUE)
+else()
+  set(XDSL_CCPP_HAVE_C FALSE)
+  message(WARNING
+    "No C compiler found -- example compile/test targets that need one "
+    "will be skipped.")
+endif()
+
 include(${CMAKE_SOURCE_DIR}/cmake/xdsl_ccpp_capgen.cmake)
 
 if(XDSL_CCPP_HAVE_FORTRAN)
@@ -115,3 +130,4 @@ add_subdirectory(examples/var_compat)
 add_subdirectory(examples/tinyddt)
 add_subdirectory(examples/advection)
 add_subdirectory(examples/advection_flat_host)
+add_subdirectory(examples/kessler)
