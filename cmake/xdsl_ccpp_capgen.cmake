@@ -65,7 +65,13 @@ function(xdsl_ccpp_capgen)
   if(DEFINED arg_HOST_NAME)
     list(APPEND CCPP_XDSL_CMD "--host-name" "${arg_HOST_NAME}")
   endif()
-  if(DEFINED arg_DIRECTIVE)
+  # NOT arg_DIRECTIVE STREQUAL "", not just DEFINED: an empty string (e.g.
+  # from a caller-set cache variable like -DDIRECTIVE=) still counts as
+  # "defined" in CMake, which would append a bare "--directive" with an
+  # empty value -- ccpp_dsl.py restricts --directive to acc|omp and rejects
+  # that outright, turning a no-op-intended empty value into a hard
+  # cap-generation failure instead of "no directive requested".
+  if(DEFINED arg_DIRECTIVE AND NOT arg_DIRECTIVE STREQUAL "")
     list(APPEND CCPP_XDSL_CMD "--directive" "${arg_DIRECTIVE}")
   endif()
 
