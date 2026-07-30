@@ -25,6 +25,10 @@ jobs:
           - advection
           - advection_flat_host
           - kessler
+          - nestedddt
+          - chararg
+          - constadv
+          - constprop
         # ctest -R does a plain substring match, and "advection" is a
         # literal prefix of "advection_flat_host"'s own test name
         # (ctest_advection_flat_host_integration) -- so the bare matrix
@@ -32,9 +36,20 @@ jobs:
         # example's test under this job. advection_flat_host needs no such
         # override: its own matrix value is already a unique substring of
         # only its own test name.
+        #
+        # constadv/constprop are known-failing here too, same root cause as
+        # compile-tests.yml's own identical override (tracked in
+        # https://github.com/johnmauff/xdsl-ccpp/issues/4) -- this CMake
+        # build runs the exact same generated/compiled code, just through a
+        # different build system, so the same not-yet-diagnosed runtime
+        # issue applies equally. Remove once that issue is fixed.
         include:
           - example: advection
             ctest_filter: advection_host
+          - example: constadv
+            expected_failure: true
+          - example: constprop
+            expected_failure: true
 
     steps:
       - uses: actions/checkout@v4
@@ -66,8 +81,16 @@ jobs:
         # (only examples/nested_suite's targets exist today), so this
         # doesn't need updating as more examples' CMakeLists.txt files are
         # added -- add_subdirectory in the root CMakeLists.txt is the only
-        # place that needs a new line per example.
+        # place that needs a new line per example. continue-on-error here
+        # too, not just on "Run tests" below: constadv/constprop's known
+        # issue (see the matrix comment above) is described as "further
+        # down the build/run chain," which could mean a link failure, not
+        # just a runtime one -- each matrix entry is its own separate
+        # runner, so this can't mask a real build failure in any other
+        # example's own job.
+        continue-on-error: ${{ matrix.expected_failure == true }}
         run: cmake --build build
 
       - name: Run tests
+        continue-on-error: ${{ matrix.expected_failure == true }}
         run: ctest --test-dir build --output-on-failure -R ${{ matrix.ctest_filter || matrix.example }}
