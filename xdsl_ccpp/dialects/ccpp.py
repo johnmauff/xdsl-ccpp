@@ -365,6 +365,8 @@ class ArgumentOp(IRDLOperation):
     model_var_kind_mismatch = opt_prop_def(StringAttr)  # set when scheme/host kinds differ: "scheme_kind:host_kind"
     model_var_unit_mismatch = opt_prop_def(StringAttr)  # set when scheme/host units differ: "scheme_units:host_units"
     model_var_is_ddt   = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
+    model_var_is_host_table = opt_prop_def(UnitAttr)  # set when matched var is declared in a HOST-type (not MODULE-type) table
+    model_var_is_protected  = opt_prop_def(UnitAttr)  # set when the matched host/module declaration is itself 'protected'
     is_interstitial    = opt_prop_def(UnitAttr)   # set when var flows between lifecycle phases
     # Phase 7, Stage 2: durable ownership classification (see ArgOwnershipKind),
     # set by generate-arg-ownership. Reuses this op's own standard_name for the

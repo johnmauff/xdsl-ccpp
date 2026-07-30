@@ -399,25 +399,346 @@ resolved-variable data at all (the complexity there is in host-side DDT
 representation, which Stage 3's JSON doesn't capture), so this wasn't
 resolved, just confirmed out of scope for the fixtures tested so far.
 
-**Stage 5 -- Write the capgen-v1-side adapter.** [not started]
-`_resolved_vars_from_capgen_v1(...)`, also in CAM-SIMA's repo -- a thin
-translation over the `CCPPDatabaseObj`/`Var` objects CAM-SIMA's real
-submodule already provides. Small, low-risk, no xdsl_ccpp involvement.
+**Stage 5 -- Write the capgen-v1-side adapter. [done]**
 
-**Stage 6 -- Refactor `write_init_files.py` to consume only `ResolvedVar`.** [not started]
-Touch `gather_ccpp_req_vars`, `_find_and_add_host_variable`,
-`collect_host_var_imports`, `get_dimension_info` -- the ~970 lines of
-CAM-SIMA-hardcoded Fortran-emission logic stay untouched. Validate by
-running the refactor *through the capgen-v1 adapter* against CAM-SIMA's
-existing `test_write_init_files.py` fixtures and confirming byte-identical
-output -- proves the refactor itself didn't break anything, deliberately
-before xdsl_ccpp enters the picture at all.
+Implemented in CAM-SIMA's own repo (`reference/CAM-SIMA`, still on branch
+`stage4-resolved-var-adapter`): `src/data/resolved_var_capgen_v1.py`
+(`Capgenv1ResolvedVars`, wrapping a real `CCPPDatabaseObj` and exposing the
+same `.call_list(phase)` / `.resolve_by_standard_name(name)` shape as
+`resolved_var_xdsl_ccpp.py`), reusing capgen-v1's own
+`is_horizontal_dimension`/`is_vertical_dimension` (`var_props.py`) directly,
+same pattern as the xdsl_ccpp-side adapter reusing xdsl_ccpp's.
 
-**Stage 7 -- Validate xdsl_ccpp end-to-end through the refactored file.** [not started]
-Same fixtures, same refactored `write_init_files.py`, now through the
-xdsl_ccpp adapter. This is the actual "does xdsl_ccpp work as a real
-replacement" checkpoint, cleanly isolated from "did the refactor regress
-anything" (Stage 6) and "is the adapter translation correct" (Stage 4/5).
+Field mapping, from `Var`'s real API (confirmed by reading
+`write_init_files.py`'s existing calls, not guessed): `get_prop_value(...)`
+for standard_name/intent/protected/advected/constituent/optional/local_name;
+the `host_interface_var` property (`source.ptype == 'host'`) for
+`is_host_table_var`; `source.name` for `host_module` (populated
+unconditionally, matching `_get_host_model_import`'s own behavior --
+`is_host_table_var` is the separate flag that tells a consumer whether a
+`use` statement is actually needed, not `host_module` being `None`);
+`get_dimensions()` for `dimensions`, passed straight through *un-flattened*
+(capgen-v1's own dims can be compound colon-forms like
+`ccpp_constant_one:vertical_layer_dimension`, which
+`is_horizontal_dimension`/`is_vertical_dimension` already parse directly --
+confirmed via their own docstrings); `array_ref()` for `array_ref_dims`;
+`intrinsic_elements()` for `intrinsic_element_names`.
+
+**Validated against a real `CCPPDatabaseObj`** (not just eyeballed):
+constructed one via `ccpp_capgen.capgen(run_env, return_db=True)` against
+the real `reference/ccpp-framework` checkout (not the `ccpp_framework`
+symlink, which points at the xdsl_ccpp sandbox), using the same
+`simple_host.meta`/`suite_simple.xml`/`temp_adjust.meta`/`simple_reg.xml`
+fixture set `test_write_init_files.py::test_simple_reg_write_init` already
+uses. Confirmed: dimension classification correctly handles capgen-v1's
+compound colon-forms; `host_module` populated for both host-table and
+module-type vars; `resolve_by_standard_name` returns a different (correct)
+view of the same standard name than `call_list` does, when host-table vs.
+scheme-call perspectives genuinely differ (e.g. `horizontal_dimension`'s
+`intent`/`is_host_table_var` differ between "as declared on the host" and
+"as seen by the calling scheme" -- both correct, not a bug).
+
+**One real bug found and fixed during validation**: `intrinsic_elements()`
+returns a variable's own standard name as a bare *string* when it's already
+an intrinsic leaf with nothing to expand (only genuine DDT sub-element
+lists are meaningful) -- confirmed directly from `write_init_files.py`'s
+own `_find_and_add_host_variable`, which explicitly gates on
+`isinstance(ielem, list)`. The adapter's first draft passed this bare
+string through unfiltered, which would have made every ordinary scalar
+variable look like a DDT with one bogus "sub-element" (itself). Fixed by
+adding the same `isinstance(..., list)` gate before assigning
+`intrinsic_element_names`.
+
+Like Stage 4, `array_ref_dims`/`intrinsic_element_names`'s list-producing
+paths remain unexercised: the available fixtures (including `ddt2`, tried
+again here) don't route a DDT or array-ref standard name through
+`call_list`/`resolve_by_standard_name` in a way that actually triggers
+either. Unlike Stage 4, the *code path* for both is real and implemented
+(not stubbed to `None`/approximated) since capgen-v1's own `Var` object
+supports them directly -- only real-fixture coverage is missing. Revisit
+if Stage 6/7 needs a fixture that does.
+
+**Stage 6 -- Refactor `write_init_files.py` to consume only `ResolvedVar`. [done]**
+
+Touched `gather_ccpp_req_vars`, `_find_and_add_host_variable`,
+`collect_host_var_imports`/`_get_host_model_import`, `get_dimension_info`,
+and the top-level `write_init_files()` entry point -- all now take/thread a
+backend-neutral `resolved_vars` adapter instead of a raw `CCPPDatabaseObj`/
+`host_dict`. `write_init_files.py` no longer imports anything from
+capgen-v1 (`ccpp_state_machine`, `var_props`) -- `CCPP_PHASES` and
+`is_horizontal_dimension`/`is_vertical_dimension` now live in
+`resolved_var.py` itself (ported verbatim from `var_props.py`; a shared
+CCPP vocabulary convention, not backend logic, mirroring how xdsl_ccpp
+keeps its own independent copy in `ccpp_conventions.py`).
+
+The bulk of the actual Fortran-string-emission code (the `outfile.write(...)`
+calls, control flow, use-statement formatting) is genuinely untouched, as
+planned. But the "~970 lines stay untouched" framing undersold how many
+distinct Var-API surfaces those functions actually call (`get_prop_value`,
+`source.ptype`/`source.name`, `has_horizontal_dimension()`/
+`has_vertical_dimension()`, `call_string()`, `get_dimensions()`,
+`array_ref()`, `intrinsic_elements()`, plus a `VarDDT`-specific `.var`
+property) -- every one of those needed a mechanical attribute-access rename
+or, in a few cases (below), a real design decision. `get_dimension_info`
+also got a genuine simplification: it no longer re-parses a raw vertical-
+dimension string into 'lev'/'ilev' since `ResolvedVar.vertical_dim_name` is
+already normalized by the adapter.
+
+**Three real bugs found and fixed during validation** (all found by running
+the refactor through the real capgen-v1 adapter against
+`test_write_init_files.py`'s fixtures with `filecmp.cmp(..., shallow=False)`,
+not by inspection):
+
+1. **`ResolvedVar` was unhashable.** `write_init_files()` itself dedupes its
+   required-variable lists via `OrderedDict.fromkeys(all_req_vars)`, which
+   needs identity-hashable entries -- exactly what real capgen-v1's `Var`
+   class provides (no `__eq__`/`__hash__` override). A plain `@dataclass`
+   defaults to `eq=True`, which sets `__hash__` to `None` on a mutable
+   class. Fixed with `@dataclass(eq=False)`, restoring identity-based
+   equality/hashing to match `Var`.
+
+2. **Adapter-side caching gap.** Even after fixing hashability,
+   `Capgenv1ResolvedVars` still built a *new* `ResolvedVar` object on every
+   `call_list`/`resolve_by_standard_name` call -- so the same inout
+   variable, resolved once via `in_vars` and once via `out_vars`, produced
+   two distinct objects that identity-based dedup could no longer tell
+   apart, silently duplicating the variable in generated output (`phys_var_num`
+   off by one, extra IC-name/array entries). Real capgen-v1 avoids this
+   because `host_dict`/`call_list` return the *same* `Var` instance on
+   repeat lookups. Fixed by caching `ResolvedVar` construction in
+   `Capgenv1ResolvedVars`, keyed by the underlying `Var` object's identity.
+   `resolved_var_xdsl_ccpp.py` already got this right in Stage 4 (its
+   `_flat`/`_by_phase` dicts are built once and reused).
+
+3. **A single `local_name` field can't represent capgen-v1's DDT
+   sub-element naming.** For a DDT sub-element (e.g. `potential_temperature`,
+   a field of a `phys_state` DDT), real capgen-v1's `VarDDT` genuinely
+   distinguishes three different names, confirmed directly against the
+   `ddt`/`ddt2`/`ddt_array` fixtures (previously believed "out of scope,
+   not exercised" per Stage 4/5 -- turned out to be very much exercised
+   once write_init_files.py's real call sites were touched):
+   - `get_prop_value('local_name')` delegates to the *leaf* field, giving
+     the bare name (`"theta"`) -- used as the IC-file variable-name
+     fallback.
+   - the root DDT variable's own name (`"phys_state"`, reached only via
+     `VarDDT`'s `.var` property, which returns a base-class view of self
+     bypassing the leaf-delegating override) -- used in `use module, only:`
+     import statements.
+   - `call_string(host_dict)` builds the full dotted chain
+     (`"phys_state%theta"`) -- used at the actual Fortran call site, and
+     also resolves array-ref index variables (e.g. `foo(bar)`) the same
+     way.
+
+   `ResolvedVar` gained two new fields, `import_name` and `call_expr`,
+   alongside `local_name` (now specifically the bare/leaf name) to carry
+   these independently. `resolved_var_capgen_v1.py` populates all three
+   correctly; `resolved_var_xdsl_ccpp.py` defaults `import_name`/`call_expr`
+   to `local_name` (Stage 3's JSON has no DDT-chain data, so this is
+   correct for every fixture validated so far, same class of gap as
+   `array_ref_dims`/`intrinsic_element_names` -- revisit together if Stage 7
+   needs a DDT fixture).
+
+**Also found and fixed**: a real, non-test production call site --
+`cime_config/cam_autogen.py`'s `generate_init_routines()` calls
+`write_init_files()` directly as part of CAM-SIMA's actual build (not just
+`test_write_init_files.py`). Updated it to wrap `cap_database` with
+`Capgenv1ResolvedVars` before calling `write_init_files()`. Hardcoded to the
+capgen-v1 adapter for now, with a comment flagging that Stage 7 needs to
+make this backend-selectable once xdsl_ccpp enters the picture here.
+
+**Validation**: all 16 `test_write_init_files.py` fixtures pass with
+byte-identical output (`filecmp.cmp(..., shallow=False)`) against real
+capgen-v1, including the three DDT fixtures that surfaced bug #3 above.
+Full CAM-SIMA regression suite (`run_python_unit_tests.sh`, 16 test
+collections including `test_cam_autogen.py`'s `test_generate_init_routines`,
+which exercises the real `cam_autogen.py` call site) passes. Test files
+themselves needed mechanical updates too: `test_write_init_files.py`'s 15
+call sites now build `resolved_vars = Capgenv1ResolvedVars(cap_database)`
+and pass that instead of the raw `cap_database`. All of this was run with
+the real `reference/ccpp-framework` checkout prepended to `PYTHONPATH`
+(bypassing this sandbox's own `ccpp_framework` symlink override, which
+points at the xdsl_ccpp checkout for the eventual Stage 7 test) --
+confirms Stage 6 is validated against genuine capgen-v1, not the xdsl_ccpp
+shim, matching the stage's own stated goal.
+
+**Stage 7 -- Validate xdsl_ccpp end-to-end through the refactored file. [done
+-- found the central capability gap this whole effort was looking for]**
+
+**Setup**: ran the real `xdsl_ccpp.tools.ccpp_dsl` CLI (not the vendored
+shim) with `--emit-resolved-vars` against CAM-SIMA's actual fixture
+scheme/host `.meta` + suite XML files, loaded the JSON through
+`resolved_var_xdsl_ccpp.py`, and called the Stage 6-refactored
+`write_init_files()` with it -- the same fixtures `test_write_init_files.py`
+already validates against real capgen-v1.
+
+**Result on the real fixtures: all 16 fail**, but all for the *same*,
+single, well-understood reason (not 16 independent problems):
+
+**The confirmed capability gap**: every one of CAM-SIMA's existing scheme
+`.meta` fixtures declares the legacy `horizontal_loop_extent` convention
+(triggers `_classify_args`'s physics-mode `col_start`/`col_end` synthesis,
+per the Stage 4 fix). Real capgen-v1 independently host-matches the
+resulting `horizontal_dimension` identity against the host's own direct
+declaration (`pcols` in `simple_host.meta`) via its `VarLoopSubst`/
+`CCPP_LOOP_DIM_SUBSTS` substitution machinery -- confirmed directly:
+capgen-v1's own `call_list('run')` includes a *separate*, properly
+host-bound `horizontal_dimension` entry (`local_name='pcols'`), distinct
+from the scheme's own loop-extent arg. **xdsl_ccpp's `HostVariableMatchPass`
+has no equivalent** -- the loop-extent arg (`ncol_meta`, recovered by the
+Stage 4 fix so its *identity* survives) never gets matched against any host
+variable, so `model_var_name`/`model_module_name` stay `None` for it. Since
+Stage 3's `--emit-resolved-vars` JSON only records args actually resolved
+by a suite's own calls (not a full host-variable dictionary the way
+capgen-v1's `host_model_dict()` is), there's no way for the CAM-SIMA-side
+adapter to recover `pcols` from data that was never captured in the first
+place -- this needs an actual xdsl_ccpp capability addition, not just an
+adapter-side fix.
+
+Confirmed this is specifically about the *loop-extent-synthesis* path, not
+host-matching in general, by isolating the two mechanisms:
+- Scheme declaring `horizontal_loop_extent` (physics-mode synthesis
+  triggered): `horizontal_dimension` resolves with `model_var_name=null` --
+  the gap.
+- Scheme declaring `horizontal_dimension` directly (no synthesis): resolves
+  correctly to `model_var_name="pcols"`, `model_module_name="simple_sub"`,
+  `ownership_kind="host_matched"`.
+
+**Confirmed the rest of the pipeline is genuinely correct, not just
+"probably fine"**: built a minimal scheme declaring `horizontal_dimension`
+directly (avoiding the gap) plus a registry-generated module variable
+(`potential_temperature`/`theta`), ran it through the full real
+`ccpp_dsl` -> `resolved_var_xdsl_ccpp.py` -> refactored `write_init_files()`
+chain, and got `retmsg=''` with fully correct generated Fortran --
+`use simple_sub, only: pcols` and `use physics_types_simple, only: theta`,
+exactly matching capgen-v1's own use-statement/local-name shape for both a
+host-type var and a registry-generated module-type var. This isolates the
+loop-extent gap as the *specific, singular* blocker, not a sign of broader
+plumbing problems in Stages 3/4/6.
+
+**A real robustness gap found and fixed along the way** (in
+`write_init_files.py`, backend-neutral, benefits both backends):
+`_find_and_add_host_variable` treated any non-`None` `resolve_by_standard_name`
+result as "found," even when `local_name` was itself `None` (no real host
+binding) -- surfaced as a raw `TypeError: object of type 'NoneType' has no
+len()` three functions deep in `write_ic_params`, instead of the normal,
+clear "Error: Missing required host variables: ..." reporting this
+function already has for genuinely-unresolvable names. Fixed by treating
+`hvar.local_name is None` the same as "not found." Never triggers on
+capgen-v1 (its `Var` objects always have a `local_name` when
+`find_variable()` returns non-`None`) -- confirmed via the full
+capgen-v1 regression suite still passing unchanged after the fix.
+
+**Two remediation paths for the core gap** (not attempted -- this is a real
+xdsl_ccpp capability addition, not a Stage 7 "just validate" task, and
+warrants a decision before committing to one):
+1. Extend `HostVariableMatchPass` (or a new pass) to also match the
+   loop-extent-derived dimension identity (`horizontal_dimension`, and
+   ideally `horizontal_loop_begin`/`horizontal_loop_end`) against host
+   declarations, independent of how the *scheme* itself expresses its own
+   loop-bound argument. Would also naturally fix `ncol_meta`'s
+   `model_var_name`/`model_module_name` gap, since Stage 3's existing
+   per-call JSON would then just capture the match correctly -- no new
+   artifact needed.
+2. Add a broader "full host-variable table" introspection artifact
+   (closer to capgen-v1's `host_model_dict()`) that `resolve_by_standard_name`
+   could fall back to. More invasive; (1) seems more consistent with
+   xdsl_ccpp's existing design and narrower in scope.
+
+This is the concrete, load-bearing capability gap the whole Workstream 1
+effort set out to find: xdsl_ccpp cannot currently drop in for any CAM-SIMA
+suite using the (still-valid, still-supported) per-column
+`horizontal_loop_extent` chunking convention, until one of the above is
+implemented.
+
+### Post-Stage-7 follow-up: implemented Option 1, both parts
+
+User's call: rather than migrate CAM-SIMA's fixtures off
+`horizontal_loop_extent` (the lower-effort path), implement Option 1
+natively in xdsl_ccpp, since the effort estimate came back small (the hard
+part -- host-variable-by-standard-name indexing -- already existed and was
+reusable) and closing the actual capability gap has more lasting value than
+routing around it.
+
+**Part 1 -- host-match the loop-extent-derived `horizontal_dimension`
+identity.** Added `build_host_var_index(ccpp_mod)` to
+`xdsl_ccpp/transforms/util/ir_utils.py` -- a small, side-effect-free sibling
+of `HostVariableMatchPass._build_model_var_index` (deliberately *not*
+reused directly: that method also emits a `CcppHandleOp` as a side effect,
+which must only ever happen once, during the real `generate-host-match`
+pass). `SuiteCAP.apply()` builds this index once per module and threads it
+into `GenerateSuiteSubroutine`; `generateSubroutineCall`'s resolved-vars
+stash now falls back to it for `ncol_meta` specifically (not
+`framework_vars`/`input_arg_list`/`output_arg_list`, which can be
+legitimately host-unmatched by design) when `ncol_meta`'s own
+`model_var_name` is `None`. Confirmed via the "simple" fixture: `horizontal_dimension`
+now resolves to `model_var_name="pcols"`, `model_module_name="simple_sub"`,
+matching real capgen-v1 exactly.
+
+**Part 2 -- `is_host_table_var` was hardcoded `False`.** Fixing Part 1
+immediately exposed this second, previously-documented-but-inert gap (Stage
+4's `resolved_var_xdsl_ccpp.py` comment) as now concretely blocking: host-
+table vars (`pcols`/`pver`/`dtime_phys` in `simple_host.meta`) were
+incorrectly included in `write_init_files.py`'s required-variable list
+instead of being excluded (host-table vars are passed via the host's
+argument list, never read from an IC file). Fixed the same way as Part 1 --
+`HostVariableMatchPass._build_model_var_index`/`_match_and_validate` now
+also records and annotates whether a match came from a HOST-type (not
+MODULE-type) table (`model_var_is_host_table`, a new `ccpp.arg` IRDL
+property in `xdsl_ccpp/dialects/ccpp.py` -- the underlying IR op is a
+strict, statically-typed schema, so a new property key needs an actual
+IRDL declaration, not just a dict write, confirmed the hard way via a
+`VerifyException` the first time this was missed). Threaded through
+`ccpp_descriptors.py`'s `BuildMetaDataDescriptions` (mirroring the existing
+`model_var_is_ddt` copy pattern), `_resolved_var_record`'s JSON output, and
+`resolved_var_xdsl_ccpp.py`'s `_to_resolved_var` (no longer hardcoded).
+
+**Validation**: full xdsl_ccpp pytest suite (543 tests) confirmed clean
+after each part -- the IRDL-property miss above was caught here (3 filecheck
+regressions, `VerifyException: property 'model_var_is_host_table' is not
+defined by the operation 'ccpp.arg'`), fixed, then reconfirmed at 542
+passed / 1 pre-existing unrelated failure (the stale `ccpp_xdsl`
+console-script issue, same as always) / 1 xfail -- unchanged from
+pre-Stage-7 baseline.
+
+**Full re-sweep across 13 of the 16 `test_write_init_files.py` fixtures**
+(excluding `meta_file_reg` and `bad_vertical_dimension`, not adapted into
+the sweep harness; DDT fixtures included) through the real xdsl_ccpp CLI ->
+`resolved_var_xdsl_ccpp.py` -> refactored `write_init_files()`, diffed
+against golden capgen-v1 output:
+
+- **8/13 now byte-identical**: `simple`, `simple_reg_constituent`,
+  `no_reqvar`, `host_input_var`, `no_horiz_var`, `scalar_var`, `4d_5d_var`,
+  `simple_constituent_dim`. (Two of these initially showed spurious diffs
+  from a bug in the *sweep harness itself* -- hardcoding empty
+  `ic_names`/`constituents`/`vars_init_value` instead of each fixture's
+  real `gen_registry()` return values; fixed and reconfirmed MATCH.)
+- **2/13 (`protected`, `parameter`) revealed a new, small, same-pattern
+  gap -- found and fixed**: `is_protected` wasn't propagated from a
+  host/module declaration onto a matched scheme arg's resolved-var record
+  either -- e.g. `g` (declared `protected = True` in the registry) showed
+  `is_protected=False` through xdsl_ccpp, so `write_init_files.py`
+  incorrectly tried to read it from an IC file instead of skipping it as
+  already-initialized. Exact same shape as `is_host_table_var`: extended
+  `_build_model_var_index`/`build_host_var_index`'s tuples with
+  `is_protected` (`arg_op.protected is not None` on the HOST/MODULE
+  declaration), annotated the matched scheme arg via a new
+  `model_var_is_protected` IRDL property (`ccpp.py`; learned from the
+  `model_var_is_host_table` miss to add the IRDL declaration up front this
+  time -- confirmed clean on the first pytest run, no regressions), threaded
+  through `ccpp_descriptors.py`, and OR'd into `_resolved_var_record`'s
+  `is_protected` (a scheme arg's own `protected` property is never set
+  directly; only `model_var_is_protected`, from the match, actually fires
+  in practice). `ncol_meta`'s host-var-index fallback OR's in the 4th tuple
+  element the same way. Reconfirmed via the full sweep: `protected` and
+  `parameter` now MATCH too.
+- **3/13 (`ddt`, `ddt2`, `ddt_array`) confirm the already-known DDT-chain
+  gap unchanged**: diffs are exactly the documented Stage 4/6 shape (bare
+  leaf name/module instead of the full dotted chain or array-ref
+  resolution, e.g. `theta`/`physics_state` instead of `phys_state%theta`/
+  `physics_types_ddt`) -- no new surprises, consistent with what Stage 4/6
+  already flagged as unpopulated for this backend. **10/13 fixtures are now
+  byte-identical to real capgen-v1 through xdsl_ccpp end to end** -- up
+  from 0 before Stage 7's fixes.
 
 **Stage 8 -- Real integration / upstream PRs.** [not started]
 Stage 3's work as a PR to xdsl_ccpp (same workflow as the DDT fix);

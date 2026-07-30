@@ -373,6 +373,26 @@ class BuildMetaDataDescriptions(Visitor):
         if "model_var_is_ddt" in arg_op.properties:
             arg.setAttr("model_var_is_ddt", True)
 
+        # 'model_var_is_host_table' marks a matched host variable declared
+        # in a HOST-type (not MODULE-type) table -- passed to physics via
+        # the host's own argument list rather than use-associated, and
+        # always considered initialized. capgen_v1_parity_backlog.md
+        # Stage 7: surfaced via --emit-resolved-vars as is_host_table_var,
+        # matching real capgen-v1's Var.host_interface_var.
+        if "model_var_is_host_table" in arg_op.properties:
+            arg.setAttr("model_var_is_host_table", True)
+
+        # 'model_var_is_protected' marks a matched host/module variable
+        # that is itself declared 'protected' -- distinct from this arg's
+        # own 'protected' property (which a scheme argument never carries
+        # directly; only the host/module declaration does).
+        # capgen_v1_parity_backlog.md Stage 7: surfaced via
+        # --emit-resolved-vars as is_protected, matching real capgen-v1's
+        # own propagation of the host declaration's protected status onto
+        # the resolved call-list entry.
+        if "model_var_is_protected" in arg_op.properties:
+            arg.setAttr("model_var_is_protected", True)
+
         # 'model_var_array_layout' is "row_major" when matched host table declares array_layout = row_major
         if "model_var_array_layout" in arg_op.properties:
             arg.setAttr("model_var_array_layout", arg_op.properties["model_var_array_layout"].data)
