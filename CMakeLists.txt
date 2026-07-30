@@ -14,8 +14,9 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # path unchanged for every example except the one(s) opted into this build
 # below.
 #
-# Only examples/nested_suite and examples/var_compat are wired in so far --
-# this is an incremental migration, not yet covering every example.
+# Only examples/nested_suite, examples/var_compat, and examples/tinyddt are
+# wired in so far -- this is an incremental migration, not yet covering
+# every example.
 
 enable_testing()
 
@@ -58,6 +59,31 @@ else()
     "generation-only environment; a real build needs gfortran/ifx/nvfortran.")
 endif()
 
+# Needed by the chost/C++-host examples (e.g. examples/tinyddt) -- their
+# driver is genuine C++, not Fortran calling into BIND(C) from the C side.
+check_language(CXX)
+if(CMAKE_CXX_COMPILER)
+  enable_language(CXX)
+  set(XDSL_CCPP_HAVE_CXX TRUE)
+  # Pinned explicitly, not left to the compiler's own default dialect:
+  # xdsl_ccpp's generated chost headers and the hand-written C++ drivers
+  # that use them rely on C++11 features (constexpr, default member
+  # initializers, aggregate-style return-statement initialization).
+  # Confirmed this actually matters, not just theoretical -- some default
+  # compiler configurations (e.g. this sandbox's clang++) pick a
+  # pre-C++11 dialect unless told otherwise, which fails to compile
+  # examples/tinyddt's driver with "unknown type name 'constexpr'". Global
+  # CMAKE_CXX_STANDARD, not a per-target property, so every current and
+  # future chost example gets this without needing to remember it again.
+  set(CMAKE_CXX_STANDARD 11)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+else()
+  set(XDSL_CCPP_HAVE_CXX FALSE)
+  message(WARNING
+    "No C++ compiler found -- chost example compile/test targets that need "
+    "one will be skipped.")
+endif()
+
 include(${CMAKE_SOURCE_DIR}/cmake/xdsl_ccpp_capgen.cmake)
 
 if(XDSL_CCPP_HAVE_FORTRAN)
@@ -71,3 +97,4 @@ endif()
 
 add_subdirectory(examples/nested_suite)
 add_subdirectory(examples/var_compat)
+add_subdirectory(examples/tinyddt)
