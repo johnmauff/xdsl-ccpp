@@ -50,12 +50,21 @@ if(CMAKE_Fortran_COMPILER)
   # -ffree-line-length-none/-Wno-unused-dummy-argument mean nothing to a C++
   # compiler and can break compiling the chost examples' C++ sources once
   # CXX is also enabled below).
+  #
+  # Each generator expression is quoted -- without quotes, CMake's own
+  # unquoted-argument list splitting treats every ';' inside as a separate
+  # argument boundary, tearing the genex apart before it's ever evaluated
+  # (confirmed: this broke -cpp into a bare, unclosed "-cpp>" token that got
+  # passed to gfortran literally, which rejected it as an unrecognized
+  # flag). Quoting keeps the whole "$<...:a;b;c>" string intact as one
+  # argument, which add_compile_options()/generator expressions then expand
+  # into separate flags correctly at build time.
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-    add_compile_options($<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wno-unused-dummy-argument;-ffree-line-length-none;-O2;-cpp>)
+    add_compile_options("$<$<COMPILE_LANGUAGE:Fortran>:-Wall;-Wno-unused-dummy-argument;-ffree-line-length-none;-O2;-cpp>")
   elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
-    add_compile_options($<$<COMPILE_LANGUAGE:Fortran>:-O2;-fpp>)
+    add_compile_options("$<$<COMPILE_LANGUAGE:Fortran>:-O2;-fpp>")
   elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-    add_compile_options($<$<COMPILE_LANGUAGE:Fortran>:-Mfree;-Mpreprocess;-O2>)
+    add_compile_options("$<$<COMPILE_LANGUAGE:Fortran>:-Mfree;-Mpreprocess;-O2>")
   endif()
 else()
   set(XDSL_CCPP_HAVE_FORTRAN FALSE)
