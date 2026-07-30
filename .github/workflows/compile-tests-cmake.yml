@@ -1,0 +1,53 @@
+name: Compile Examples (CMake)
+
+# Prototype: exercises the new CMake build path (root CMakeLists.txt +
+# cmake/xdsl_ccpp_capgen.cmake) added alongside the existing hand-written
+# Makefiles that compile-tests.yml continues to drive unchanged. Only
+# examples/nested_suite has a CMakeLists.txt so far -- add matrix entries
+# here as more examples migrate, mirroring compile-tests.yml's own shape.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  compile-examples-cmake:
+    name: cmake compile+run (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        example:
+          - nested_suite
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gfortran
+        run: sudo apt-get update && sudo apt-get install -y gfortran
+
+      - name: Install xdsl-ccpp
+        run: python -m pip install -e .
+
+      - name: Install CMake
+        run: python -m pip install cmake
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build
+        # No specific --target: builds everything currently configured
+        # (only examples/nested_suite's targets exist today), so this
+        # doesn't need updating as more examples' CMakeLists.txt files are
+        # added -- add_subdirectory in the root CMakeLists.txt is the only
+        # place that needs a new line per example.
+        run: cmake --build build
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure -R ${{ matrix.example }}
