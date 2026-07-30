@@ -12,7 +12,10 @@
 #                examples, which generate directly into their own source
 #                directory; this keeps the CMake and Makefile build paths
 #                from writing over each other while both exist side by side)
-# VERBOSITY    - passed through as repeated --verbose flags
+# VERBOSITY    - passed through as a single "--verbose N" flag (xdsl_ccpp's
+#                own CLI takes one integer level, 0/1/2 -- unlike
+#                capgen-v1's ccpp_capgen.cmake, which repeats "--verbose"
+#                N times for its own CLI's different convention)
 # HOSTFILES    - CMake list of host metadata filenames (no extension needed
 #                by the caller; pass full relative/absolute paths as-is)
 # SCHEMEFILES  - CMake list of scheme metadata files
@@ -82,13 +85,17 @@ function(xdsl_ccpp_capgen)
     set(_capgen_env "PYTHONPATH=${XDSL_CCPP_ROOT}")
   endif()
 
+  # Separate stdout/stderr variables, not one shared variable for both:
+  # keeping them distinct makes a failure's actual error output
+  # unambiguous in the log, rather than an interleaved combined stream.
   execute_process(COMMAND ${CMAKE_COMMAND} -E env "${_capgen_env}" ${CCPP_XDSL_CMD}
                    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                   OUTPUT_VARIABLE CAPGEN_OUT
-                   ERROR_VARIABLE CAPGEN_OUT
+                   OUTPUT_VARIABLE CAPGEN_STDOUT
+                   ERROR_VARIABLE CAPGEN_STDERR
                    RESULT_VARIABLE RES
                    COMMAND_ECHO STDOUT)
-  message(STATUS "xdsl_ccpp ccpp_xdsl output:\n${CAPGEN_OUT}")
+  message(STATUS "xdsl_ccpp ccpp_xdsl stdout:\n${CAPGEN_STDOUT}")
+  message(STATUS "xdsl_ccpp ccpp_xdsl stderr:\n${CAPGEN_STDERR}")
 
   if(NOT RES EQUAL 0)
     message(FATAL_ERROR "xdsl_ccpp cap generation FAILED: result = ${RES}")

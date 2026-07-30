@@ -63,12 +63,16 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   target_include_directories(NESTED_SUITE_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_link_libraries(NESTED_SUITE_TESTLIB PRIVATE test_utils)
 
-  # Setup test executable with needed dependencies
+  # Setup test executable with needed dependencies. test_utils' own module
+  # include directory reaches this target automatically via its PUBLIC
+  # target_include_directories (set where test_utils is defined, in the
+  # root CMakeLists.txt) -- linking against it is enough, no need to name
+  # that path again here. ${CMAKE_CURRENT_BINARY_DIR}/mod (NESTED_SUITE_TESTLIB's
+  # own .mod output) is the one path this target genuinely still needs to
+  # be told about directly.
   add_executable(nested_suite_host_integration test_nested_suite_integration.F90 ${HOST}.F90)
   target_link_libraries(nested_suite_host_integration PRIVATE NESTED_SUITE_TESTLIB test_utils)
-  target_include_directories(nested_suite_host_integration PRIVATE
-    "$<TARGET_PROPERTY:test_utils,BINARY_DIR>"
-    ${CMAKE_CURRENT_BINARY_DIR}/mod)
+  target_include_directories(nested_suite_host_integration PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
   # Add executable to be called with ctest
   add_test(NAME ctest_nested_suite_host_integration COMMAND nested_suite_host_integration)
