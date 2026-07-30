@@ -4,6 +4,9 @@ program test_kessler_driver
   use kessler
   use kessler_update
   use kessler_host_mod
+#ifdef USE_GPU
+  use omp_lib
+#endif
 
   implicit none
 
