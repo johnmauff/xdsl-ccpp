@@ -22,6 +22,7 @@ jobs:
           - nested_suite
           - var_compat
           - tinyddt
+          - advection
 
     steps:
       - uses: actions/checkout@v4

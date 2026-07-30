@@ -430,6 +430,40 @@ cmake --build examples/capgen/build
 ctest --test-dir examples/capgen/build
 ```
 
+#### Repo-wide example build
+
+The repo root's own `CMakeLists.txt` (with `cmake/xdsl_ccpp_capgen.cmake`, a
+separate module from `xdsl_ccpp.cmake` above) builds several `examples/`
+directories together in one tree — an incremental migration of hand-written
+per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
+`end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
+`var_compat`, `tinyddt`, and `advection`; each example's existing Makefile
+still works unchanged alongside it.
+
+```bash
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+**GPU build (`examples/advection`):** `advection` also builds for GPU via
+OpenACC, which requires `nvfortran`. Use a separate build directory —
+`CMAKE_Fortran_COMPILER` can't be changed on an already-configured tree:
+
+```bash
+cmake -S . -B build-gpu \
+  -DCMAKE_Fortran_COMPILER=nvfortran \
+  -DADVECTION_ARCH=GPU
+cmake --build build-gpu --target advection_host_integration
+ctest --test-dir build-gpu -R advection --output-on-failure
+```
+
+Cap generation is identical between the CPU and GPU builds — the OpenACC
+`!$acc` directives are inert without the matching compile flags — only the
+compile flags for `ADVECTION_TESTLIB` and the test executable differ between
+the two (`-mp=gpu -Minfo=accel -DUSE_GPU` for GPU vs. `-noacc` for CPU on
+`nvfortran`).
+
 ### Documentation Generation
 
 `ccpp_datatable` produces a machine-readable `datatable.xml` and optionally
