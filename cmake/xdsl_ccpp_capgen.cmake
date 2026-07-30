@@ -16,6 +16,15 @@
 #                own CLI takes one integer level, 0/1/2 -- unlike
 #                capgen-v1's ccpp_capgen.cmake, which repeats "--verbose"
 #                N times for its own CLI's different convention)
+# DIRECTIVE    - optional GPU directive style passed straight through as
+#                "--directive <value>" (xdsl_ccpp's own CLI accepts "acc" or
+#                "omp" -- see ccpp_dsl.py). Has no capgen-v1 ccpp_capgen.cmake
+#                analog; needed by GPU-capable examples like
+#                examples/advection, which always generate the same
+#                directive-annotated source regardless of target
+#                architecture -- only the compile flags differ between a
+#                plain-CPU and a GPU build (see that example's own
+#                CMakeLists.txt for the ARCH-selection side of this).
 # HOSTFILES    - CMake list of host metadata filenames (no extension needed
 #                by the caller; pass full relative/absolute paths as-is)
 # SCHEMEFILES  - CMake list of scheme metadata files
@@ -29,7 +38,7 @@
 # this parses it directly instead of trying to force schema compatibility
 # with the other backend's tool.
 function(xdsl_ccpp_capgen)
-  set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY)
+  set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY DIRECTIVE)
   set(multiValueArgs HOSTFILES SCHEMEFILES SUITES)
   cmake_parse_arguments(arg "" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
@@ -55,6 +64,15 @@ function(xdsl_ccpp_capgen)
   endif()
   if(DEFINED arg_HOST_NAME)
     list(APPEND CCPP_XDSL_CMD "--host-name" "${arg_HOST_NAME}")
+  endif()
+  # NOT arg_DIRECTIVE STREQUAL "", not just DEFINED: an empty string (e.g.
+  # from a caller-set cache variable like -DDIRECTIVE=) still counts as
+  # "defined" in CMake, which would append a bare "--directive" with an
+  # empty value -- ccpp_dsl.py restricts --directive to acc|omp and rejects
+  # that outright, turning a no-op-intended empty value into a hard
+  # cap-generation failure instead of "no directive requested".
+  if(DEFINED arg_DIRECTIVE AND NOT arg_DIRECTIVE STREQUAL "")
+    list(APPEND CCPP_XDSL_CMD "--directive" "${arg_DIRECTIVE}")
   endif()
 
   set(OUTPUT_ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ccpp")
