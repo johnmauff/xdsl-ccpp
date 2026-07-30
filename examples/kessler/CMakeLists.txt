@@ -89,15 +89,47 @@ set(CHOST_CHOST_CAP  "${CHOST_CAP_DIR}/Kessler_ccpp_chost_cap.F90")
 
 # ── GPU/CPU compile-flag helper ────────────────────────────────────────────
 # Applies the same per-target flags as the existing Makefile's own FC_GPU/
-# FC_CPU (Fortran) and ACC_OFF_C (C/C++, NVHPC family only) logic. See that
-# Makefile's own comment on why ACC_OFF_C exists: nvfortran/nvc/nvc++
-# compile *every* translation unit with an accelerator-runtime registration
-# hook regardless of whether OpenACC directives are used or -acc was
-# passed, so a CPU-only (-noacc) Fortran build needs its C/C++ objects
-# built with -noacc too, or the link fails with an undefined reference to
-# __acc_compiled. gfortran/ifx don't have this quirk, so this function is a
-# no-op for those families (matching the Makefile's own empty ACC_OFF_C).
+# FC_CPU (Fortran), ACC_OFF_C (C/C++, NVHPC family only), and FMA (all three
+# families, every language, regardless of ARCH) logic.
+#
+# FMA (fused-multiply-add contraction) MUST be disabled for the four
+# drivers' outputs to stay bit-for-bit comparable: contracting a*b+c into a
+# single fused rounding step is a real precision change, not just a
+# performance one, and a compiler is free to apply it differently for
+# CPU-vectorized vs. GPU-parallelized code even from identical source --
+# which is exactly the class of divergence a CPU-only text/generation diff
+# can never catch (confirmed missing here entirely until a real GPU build
+# actually exposed a CPU-vs-GPU numerical mismatch that the equivalent
+# Makefile build does not have -- this was a real gap in this file, now
+# fixed, not a hypothetical concern). Matches the existing Makefile's own
+# $(FMA), applied unconditionally to FFLAGS/CXXFLAGS/CFLAGS in both its
+# ARCH=CPU and ARCH=GPU branches.
+#
+# See that Makefile's own comment on why ACC_OFF_C exists: nvfortran/nvc/
+# nvc++ compile *every* translation unit with an accelerator-runtime
+# registration hook regardless of whether OpenACC directives are used or
+# -acc was passed, so a CPU-only (-noacc) Fortran build needs its C/C++
+# objects built with -noacc too, or the link fails with an undefined
+# reference to __acc_compiled. gfortran/ifx don't have this quirk, so that
+# part of this function is a no-op for those families (matching the
+# Makefile's own empty ACC_OFF_C).
 function(kessler_apply_arch_flags target)
+  if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
+    set(_fma_flag "-Mnofma")
+  elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
+    set(_fma_flag "-fp-model=precise")
+  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+    set(_fma_flag "-ffp-contract=off")
+  else()
+    set(_fma_flag "")
+  endif()
+  if(NOT _fma_flag STREQUAL "")
+    target_compile_options(${target} PRIVATE
+      "$<$<COMPILE_LANGUAGE:Fortran>:${_fma_flag}>"
+      "$<$<COMPILE_LANGUAGE:C>:${_fma_flag}>"
+      "$<$<COMPILE_LANGUAGE:CXX>:${_fma_flag}>")
+  endif()
+
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
     if(ARCH STREQUAL "GPU")
       target_compile_options(${target} PRIVATE "$<$<COMPILE_LANGUAGE:Fortran>:-mp=gpu;-Minfo=accel>")
