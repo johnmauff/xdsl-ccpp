@@ -1,10 +1,10 @@
 name: Compile Examples (CMake)
 
-# Prototype: exercises the new CMake build path (root CMakeLists.txt +
+# Exercises the new CMake build path (root CMakeLists.txt +
 # cmake/xdsl_ccpp_capgen.cmake) added alongside the existing hand-written
-# Makefiles that compile-tests.yml continues to drive unchanged. Only
-# examples/nested_suite has a CMakeLists.txt so far -- add matrix entries
-# here as more examples migrate, mirroring compile-tests.yml's own shape.
+# Makefiles that compile-tests.yml continues to drive unchanged. Add matrix
+# entries here as more examples migrate, mirroring compile-tests.yml's own
+# shape.
 
 on:
   pull_request:
@@ -20,6 +20,7 @@ jobs:
       matrix:
         example:
           - nested_suite
+          - var_compat
 
     steps:
       - uses: actions/checkout@v4
