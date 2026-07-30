@@ -14,8 +14,8 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # path unchanged for every example except the one(s) opted into this build
 # below.
 #
-# Only examples/nested_suite is wired in so far -- this is a prototype, not
-# yet a full migration of every example.
+# Only examples/nested_suite and examples/var_compat are wired in so far --
+# this is an incremental migration, not yet covering every example.
 
 enable_testing()
 
@@ -70,3 +70,4 @@ if(XDSL_CCPP_HAVE_FORTRAN)
 endif()
 
 add_subdirectory(examples/nested_suite)
+add_subdirectory(examples/var_compat)
