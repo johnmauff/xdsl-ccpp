@@ -113,22 +113,29 @@ set(CHOST_CHOST_CAP  "${CHOST_CAP_DIR}/Kessler_ccpp_chost_cap.F90")
 # reference to __acc_compiled. gfortran/ifx don't have this quirk, so that
 # part of this function is a no-op for those families (matching the
 # Makefile's own empty ACC_OFF_C).
+#
+# Every flag below is chosen with $<COMPILE_LANG_AND_ID:lang,ids>, not by
+# reading CMAKE_Fortran_COMPILER_ID once and broadcasting the result to
+# every language -- confirmed by Copilot review as a real gap: the existing
+# Makefile can get away with deriving CC/CXX from FC (it explicitly sets
+# CXX=nvc++/CC=nvc when FC=nvfortran, in its own "Compilers & flags"
+# block), but this CMake port never enforces that same pairing. Someone
+# configuring -DCMAKE_Fortran_COMPILER=nvfortran while leaving the default
+# system gcc/g++ for C/C++ would otherwise get nvfortran-only flags
+# (-Mnofma, -noacc) passed straight to gcc/g++, which reject them outright.
+# COMPILE_LANG_AND_ID checks each language's own compiler ID independently,
+# so a language only ever gets a flag its own compiler actually understands.
 function(kessler_apply_arch_flags target)
-  if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
-    set(_fma_flag "-Mnofma")
-  elseif(CMAKE_Fortran_COMPILER_ID MATCHES "Intel")
-    set(_fma_flag "-fp-model=precise")
-  elseif(CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-    set(_fma_flag "-ffp-contract=off")
-  else()
-    set(_fma_flag "")
-  endif()
-  if(NOT _fma_flag STREQUAL "")
-    target_compile_options(${target} PRIVATE
-      "$<$<COMPILE_LANGUAGE:Fortran>:${_fma_flag}>"
-      "$<$<COMPILE_LANGUAGE:C>:${_fma_flag}>"
-      "$<$<COMPILE_LANGUAGE:CXX>:${_fma_flag}>")
-  endif()
+  target_compile_options(${target} PRIVATE
+    "$<$<COMPILE_LANG_AND_ID:Fortran,NVHPC>:-Mnofma>"
+    "$<$<COMPILE_LANG_AND_ID:Fortran,Intel,IntelLLVM>:-fp-model=precise>"
+    "$<$<COMPILE_LANG_AND_ID:Fortran,GNU>:-ffp-contract=off>"
+    "$<$<COMPILE_LANG_AND_ID:C,NVHPC>:-Mnofma>"
+    "$<$<COMPILE_LANG_AND_ID:C,Intel,IntelLLVM>:-fp-model=precise>"
+    "$<$<COMPILE_LANG_AND_ID:C,GNU>:-ffp-contract=off>"
+    "$<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-Mnofma>"
+    "$<$<COMPILE_LANG_AND_ID:CXX,Intel,IntelLLVM>:-fp-model=precise>"
+    "$<$<COMPILE_LANG_AND_ID:CXX,GNU>:-ffp-contract=off>")
 
   if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC")
     if(ARCH STREQUAL "GPU")
@@ -136,9 +143,9 @@ function(kessler_apply_arch_flags target)
       target_compile_definitions(${target} PRIVATE USE_GPU)
     else()
       target_compile_options(${target} PRIVATE
-        "$<$<COMPILE_LANGUAGE:Fortran>:-noacc>"
-        "$<$<COMPILE_LANGUAGE:C>:-noacc>"
-        "$<$<COMPILE_LANGUAGE:CXX>:-noacc>")
+        "$<$<COMPILE_LANG_AND_ID:Fortran,NVHPC>:-noacc>"
+        "$<$<COMPILE_LANG_AND_ID:C,NVHPC>:-noacc>"
+        "$<$<COMPILE_LANG_AND_ID:CXX,NVHPC>:-noacc>")
     endif()
   endif()
 endfunction()
