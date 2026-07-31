@@ -67,7 +67,18 @@ endif
 CXXFLAGS = $(CXX_BASE) $(FMA)
 
 # ── Tools ─────────────────────────────────────────────────────────────────────
-CCPP_XDSL ?= ccpp_xdsl
+# Default to invoking this checkout directly (via PYTHONPATH), not the bare
+# PATH `ccpp_xdsl` console script -- an unrelated xdsl-ccpp editable install
+# elsewhere on the machine can silently shadow this checkout's own code
+# otherwise (confirmed: `pip show xdsl-ccpp` can point at a completely
+# different clone than the one `make caps` is meant to exercise, and that
+# stale clone can simply fail outright against a newer example like this
+# one rather than just producing stale-but-working output). Override
+# CCPP_XDSL on the command line (e.g. `make caps CCPP_XDSL=ccpp_xdsl`) to
+# use a real installed console script instead.
+XDSL_CCPP_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST)))../..)
+export PYTHONPATH := $(XDSL_CCPP_ROOT):$(PYTHONPATH)
+CCPP_XDSL ?= python3 -m xdsl_ccpp.tools.ccpp_dsl
 
 # ── Directories ───────────────────────────────────────────────────────────────
 DIR          = examples/capgen
