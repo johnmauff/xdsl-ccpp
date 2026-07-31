@@ -731,14 +731,80 @@ against golden capgen-v1 output:
   in practice). `ncol_meta`'s host-var-index fallback OR's in the 4th tuple
   element the same way. Reconfirmed via the full sweep: `protected` and
   `parameter` now MATCH too.
-- **3/13 (`ddt`, `ddt2`, `ddt_array`) confirm the already-known DDT-chain
-  gap unchanged**: diffs are exactly the documented Stage 4/6 shape (bare
-  leaf name/module instead of the full dotted chain or array-ref
-  resolution, e.g. `theta`/`physics_state` instead of `phys_state%theta`/
-  `physics_types_ddt`) -- no new surprises, consistent with what Stage 4/6
-  already flagged as unpopulated for this backend. **10/13 fixtures are now
-  byte-identical to real capgen-v1 through xdsl_ccpp end to end** -- up
-  from 0 before Stage 7's fixes.
+- **3/13 (`ddt`, `ddt2`, `ddt_array`) confirmed the already-known DDT-chain
+  gap -- found and fixed.**
+
+### Post-Stage-7 follow-up: the DDT-chain gap
+
+**Investigated first, not guessed at.** A research pass found that DDT
+chain resolution *already exists* in xdsl_ccpp -- just not where the
+`--emit-resolved-vars` introspection code was looking. It lives in
+`xdsl_ccpp/transforms/util/cap_shared.py`, already shared between two real
+cap-generation consumers (`run_dispatch.py`, `gpu_ccpp_cap_pass.py`):
+`_build_ddt_resolution_maps(meta_data)` builds a DDT type name -> instance
+variable map (and a nested-DDT parent map) by scanning MODULE/HOST tables
+for a variable whose own `type` matches the DDT's name; `_resolve_ddt_access_path`
+recursively walks nesting to build the `%`-chain; `_resolve_member_subscripts`
+resolves array-section index tokens within a member reference. All three
+are pure functions of the same metadata dict `suite_cap.py` already builds
+-- reusing them for introspection wasn't "build new resolution logic," it
+was "call the existing logic from a third place."
+
+**The fix** (`suite_cap.py`): `SuiteCAP.apply()` now builds these same maps
+(gated on `self.emit_resolved_vars`, same reasoning as the host-var-index
+fix -- zero cost when nobody asked for resolved-vars output) and threads
+them into `GenerateSuiteSubroutine` as `ddt_resolution_maps`. A new
+`_apply_ddt_chain(record, arg, ddt_resolution_maps)` patches every
+resolved-var record for an arg with `model_var_is_ddt` set: what
+`_resolved_var_record` left in `model_module_name` is actually the DDT
+*type* name, not a real module -- `_apply_ddt_chain` resolves it to the
+real instance variable/module and rewrites `model_module_name`
+(now correct for `use` statements), plus two new record fields,
+`import_name` (the instance variable, e.g. `"phys_state"`) and `call_expr`
+(the full chain, e.g. `"phys_state%theta"`).
+
+**A second gap found along the way**: even with the chain resolved, the
+`ddt_array` fixture's array-index variable (`index_of_potential_temperature`)
+still failed with "Missing host indices" -- `resolve_by_standard_name`
+had no way to find it, since (like the original `horizontal_dimension`/
+`pcols` gap) it's a real host variable that's never itself a scheme
+argument, so never appears in any phase's own call list.  Fixed by
+serializing `cap_shared.py`'s `_build_host_var_map` (already computed for
+DDT resolution) into the JSON as a new top-level `"host_vars"` key -- a
+genuine standard_name -> (local_name, module_name) dictionary over *every*
+HOST/MODULE variable, not just ones some suite call happened to resolve.
+`resolved_var_xdsl_ccpp.py`'s `resolve_by_standard_name` now falls back to
+it when the per-phase flat lookup misses.
+
+**Validation**: full xdsl_ccpp pytest suite clean throughout (542/543,
+same pre-existing unrelated failure). Full sweep re-run: `ddt` and `ddt2`
+now byte-identical; `ddt_array` produces fully correct output with one
+remaining single-character cosmetic difference -- the array member's local
+name is declared `"T"` (uppercase) in the registry, and real capgen-v1
+emits it lowercased (`phys_state%t(...)`) somewhere in its own Fortran-
+emission pipeline that a quick search didn't pin down, while xdsl_ccpp
+preserves the declared case (`phys_state%T(...)`). Functionally identical
+Fortran (case-insensitive language); not chased further since it's cosmetic
+only, not a correctness gap. **12/13 fixtures now byte-identical, the 13th
+(`ddt_array`) functionally correct with one cosmetic byte-diff** -- up from
+0 before Stage 7's fixes.
+
+**On the `T`/`t` diff specifically: this is capgen-v1's behavior diverging
+from the registry's own declared name, not an xdsl_ccpp gap.** xdsl_ccpp
+preserves the local name exactly as declared (`"T"` in, `"T"` out) --
+arguably the more predictable, defensible behavior of the two. Real
+capgen-v1 changes the case somewhere between parsing and Fortran emission;
+searching `metavar.py`, `mkcap.py`, `ddt_library.py`, `metadata_table.py`,
+and `suite_objects.py` didn't turn up the exact responsible line, so it's
+unclear whether this is (a) a deliberate style normalization to lowercase
+in capgen-v1's Fortran-emission layer, or (b) an accidental side effect of
+one of the several `.lower()` calls used elsewhere in that codebase for
+case-insensitive dictionary lookups/matching, whose lowercased copy then
+gets reused for printing instead of the original declared case. Either
+way, there is nothing here for xdsl_ccpp to "fix" to achieve parity in any
+meaningful sense -- both outputs are the identical Fortran reference to a
+case-insensitive language; this is recorded for transparency, not as an
+open action item.
 
 **Stage 8 -- Real integration / upstream PRs.** [not started]
 Stage 3's work as a PR to xdsl_ccpp (same workflow as the DDT fix);
