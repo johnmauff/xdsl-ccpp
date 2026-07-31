@@ -437,8 +437,20 @@ separate module from `xdsl_ccpp.cmake` above) builds several `examples/`
 directories together in one tree — an incremental migration of hand-written
 per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
 `end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
-`var_compat`, `tinyddt`, `advection`, `advection_flat_host`, and `kessler`;
-each example's existing Makefile still works unchanged alongside it.
+`var_compat`, `tinyddt`, `advection`, `advection_flat_host`, `kessler`,
+`nestedddt`, `chararg`, `constadv`, and `constprop`; each example's existing
+Makefile still works unchanged alongside it.
+
+`nestedddt`, `chararg`, `constadv`, and `constprop` all follow `tinyddt`'s
+own single-driver chost pattern (one scheme, one chost cap generation call,
+one C++ driver); `chararg`/`constadv`/`constprop` pass an explicit
+`HOST_NAME` to `xdsl_ccpp_capgen()` (matching their own Makefiles'
+`--host-name` flag), and `constadv`/`constprop` also compile an extra
+`ccpp_constituent_prop_mod.F90`. `constadv`/`constprop` are known-failing
+(same pre-existing, tracked issue as `compile-tests.yml`'s own
+`expected_failure` override —
+[#4](https://github.com/johnmauff/xdsl-ccpp/issues/4)); the CMake CI job
+mirrors that with its own `continue-on-error`.
 
 `kessler` (see [Examples](#examples) below) is the most involved of these:
 four separate drivers (CCPP Fortran cap, hand-written Fortran, C++ BIND(C),
