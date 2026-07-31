@@ -438,8 +438,18 @@ directories together in one tree — an incremental migration of hand-written
 per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
 `end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
 `var_compat`, `tinyddt`, `advection`, `advection_flat_host`, `kessler`,
-`nestedddt`, `chararg`, `constadv`, and `constprop`; each example's existing
-Makefile still works unchanged alongside it.
+`nestedddt`, `chararg`, `constadv`, `constprop`, and `ddthost`; each
+example's existing Makefile still works unchanged alongside it.
+
+`ddthost` is structurally similar to `kessler` (two drivers: a Fortran host
+and a C++ host-model/chost driver, `ddthost_ftn_host.exe`/
+`ddthost_cxx_host.exe`), but simpler: no cross-driver numerical comparison
+(each driver's own exit code is checked independently, via
+`ctest_ddthost_ftn_host`/`ctest_ddthost_cxx_host`) and no GPU/OpenACC
+support. Two separate `xdsl_ccpp_capgen()` calls, same rationale as
+`kessler`'s own plain/chost split (the Fortran host uses both `ddt_suite`
+and `temp_suite` across six schemes; the chost driver uses only `make_ddt`,
+to exercise DDT flattening).
 
 `nestedddt`, `chararg`, `constadv`, and `constprop` all follow `tinyddt`'s
 own single-driver chost pattern (one scheme, one chost cap generation call,
