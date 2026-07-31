@@ -104,7 +104,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call tiny_scheme_run(ncol, nz, temp, theta, errmsg, errflg)
+// CHECK-NEXT:        call tiny_scheme_run(ncol=ncol, nz=nz, temp=temp, theta=theta, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine tiny_suite_suite_physics
 // CHECK-NEXT:  end module tiny_suite_cap

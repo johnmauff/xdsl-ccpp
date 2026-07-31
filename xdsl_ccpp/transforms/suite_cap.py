@@ -930,9 +930,15 @@ class GenerateSuiteSubroutine(RewritePattern):
         type annotation so xDSL verification passes.  The Fortran printer looks
         through these casts and emits the underlying variable name.
 
-        When *overrides* is non-empty a KeywordCallOp is emitted instead of a
-        plain func.CallOp; overridden arguments are omitted from the SSA
-        operand/result lists and carried as compile-time literals in the op.
+        Always emits a KeywordCallOp (Fortran keyword/name=value call syntax),
+        never a plain positional func.CallOp -- the callee's own .meta
+        arg-table declaration order is not guaranteed to match its real .F90
+        subroutine's physical dummy-argument order (nothing enforces that
+        invariant, and real CCPP schemes have never been required to honor
+        it), so calling by name is the only generally-correct option. When
+        *overrides* is non-empty, overridden arguments are additionally
+        omitted from the SSA operand/result lists and carried as compile-time
+        literals in the op instead.
 
         divergent_std_keys are standard_names where two or more schemes
         sharing the name declare a genuinely different kind or units from
@@ -1105,20 +1111,28 @@ class GenerateSuiteSubroutine(RewritePattern):
                 in_idx += 1
 
         assert len(out_types) == len(out_tracking)
-        has_optional = any(
-            arg.hasAttr("optional") for arg in arg_table.getFunctionArguments()
+        # Always call by keyword (name=value), never positionally: this
+        # scheme's own .meta arg-table declaration order is just a parallel,
+        # independently-authored description of its real .F90 subroutine's
+        # dummy-argument order -- CCPP has never required the two to match
+        # (real capgen-v1 always calls by keyword for exactly this reason),
+        # and nothing here verifies they do. A positional func.CallOp would
+        # silently misorder the call the moment a scheme's own .meta happens
+        # to declare arguments in a different order than its real Fortran
+        # signature -- confirmed to actually happen (examples/chunked_data's
+        # chunked_data_scheme.meta declares errmsg/errflg before data_array;
+        # its own .F90 declares data_array first), producing a Fortran
+        # argument type mismatch at compile time. Keyword calls make the
+        # .meta declaration order irrelevant to correctness, matching what
+        # real CCPP schemes have always been able to assume.
+        call_op = KeywordCallOp(
+            subroutine_name,
+            ArrayAttr([StringAttr(n) for n in in_names]),
+            ArrayAttr([StringAttr(n) for n in out_names]),
+            DictionaryAttr({k: StringAttr(v) for k, v in overrides.items()}),
+            in_ssa,
+            out_types,
         )
-        if overrides or has_optional:
-            call_op = KeywordCallOp(
-                subroutine_name,
-                ArrayAttr([StringAttr(n) for n in in_names]),
-                ArrayAttr([StringAttr(n) for n in out_names]),
-                DictionaryAttr({k: StringAttr(v) for k, v in overrides.items()}),
-                in_ssa,
-                out_types,
-            )
-        else:
-            call_op = func.CallOp(subroutine_name, in_ssa, out_types)
 
         # Copy each output result back to its storage location.
         # If the result type doesn't match the destination, cast back first.

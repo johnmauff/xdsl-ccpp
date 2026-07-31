@@ -45,7 +45,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_init(errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_init(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine kw_suite_suite_initialize
@@ -60,7 +60,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_finalize(errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine kw_suite_suite_finalize

@@ -56,13 +56,13 @@
 // CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
 // CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %11 {
-// CHECK-NEXT:          func.call @make_ddt_init(%nbox, %ccpp_info, %vmr, %errmsg, %errflg) : (memref<i32>, memref<!ccpp_utils.derived_type<"ccpp_info_t">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%nbox, %ccpp_info, %vmr, %errmsg, %errflg) <{callee = "make_ddt_init", operand_names = ["nbox", "ccpp_info", "vmr", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.derived_type<"ccpp_info_t">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = arith.constant 0 : i32
 // CHECK-NEXT:        %14 = arith.cmpi eq, %15, %13 : i32
 // CHECK-NEXT:        %15 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %14 {
-// CHECK-NEXT:          func.call @environ_conditions_init(%nbox, %o3, %hno3, %ntimes, %model_times, %errmsg, %errflg) : (memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%nbox, %o3, %hno3, %ntimes, %model_times, %errmsg, %errflg) <{callee = "environ_conditions_init", operand_names = ["nbox", "o3", "hno3", "ntimes", "model_times", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %16 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %17 = "llvm.load"(%16) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -93,7 +93,7 @@
 // CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
 // CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %11 {
-// CHECK-NEXT:          func.call @environ_conditions_finalize(%ntimes, %model_times__in, %errmsg, %errflg) : (memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%ntimes, %model_times__in, %errmsg, %errflg) <{callee = "environ_conditions_finalize", operand_names = ["ntimes", "model_times", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = "llvm.mlir.addressof"() <{global_name = @const_uninitialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %14 = "llvm.load"(%13) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -149,7 +149,7 @@
 // CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
 // CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %11 {
-// CHECK-NEXT:          func.call @make_ddt_timestep_final(%ncols, %vmr, %errmsg, %errflg) : (memref<i32>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%ncols, %vmr, %errmsg, %errflg) <{callee = "make_ddt_timestep_final", operand_names = ["ncols", "vmr", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %14 = "llvm.load"(%13) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -180,13 +180,13 @@
 // CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
 // CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %11 {
-// CHECK-NEXT:          func.call @make_ddt_run(%cols, %cole, %O3__in, %HNO3__in, %vmr, %errmsg, %errflg) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%cols, %cole, %O3__in, %HNO3__in, %vmr, %errmsg, %errflg) <{callee = "make_ddt_run", operand_names = ["cols", "cole", "O3", "HNO3", "vmr", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = arith.constant 0 : i32
 // CHECK-NEXT:        %14 = arith.cmpi eq, %15, %13 : i32
 // CHECK-NEXT:        %15 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %14 {
-// CHECK-NEXT:          func.call @environ_conditions_run(%psurf__in, %errmsg, %errflg) : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%psurf__in, %errmsg, %errflg) <{callee = "environ_conditions_run", operand_names = ["psurf", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %vmr, %errmsg, %errflg : memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
