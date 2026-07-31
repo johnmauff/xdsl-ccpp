@@ -281,8 +281,8 @@ more known issues:
      nothing to discover. Fixed by scanning the suite's own subcycle
      structure directly for non-literal loop counts.
   3. **The other missing input.** `flag_indicating_cloud_microphysics_has_ice`
-     is referenced only inside `test_host_data.meta`'s own `active =
-     (flag_indicating_cloud_microphysics_has_ice)` conditional-presence
+     is referenced only inside `test_host_data.meta`'s own
+     `active = (flag_indicating_cloud_microphysics_has_ice)` conditional-presence
      expressions on the `effri`/`nci` DDT members — never itself a scheme
      argument. `active` is a real `ArgumentOp` property but no pass
      currently evaluates it as a conditional (see the "opt_arg's dead
@@ -380,13 +380,13 @@ more known issues:
   write-back at all — nothing ever deallocated its conversion temp. That's
   invisible for a subroutine called only once (Fortran auto-deallocates
   non-`SAVE` locals on return), but `var_compatibility_suite_suite_radiation`
-  calls `effr_calc_run` inside a nested 3-level subcycle loop (`do
-  ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
+  calls `effr_calc_run` inside a nested 3-level subcycle loop
+  (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
   allocated a second time within the same subroutine invocation, before
   Fortran ever gets a chance to deallocate it.
 
-  **Fixed** by printing a guarded deallocate (`if (allocated(x))
-  deallocate(x)` — the same pattern `CCPPSafeDeallocOp` already uses
+  **Fixed** by printing a guarded deallocate
+  (`if (allocated(x)) deallocate(x)` — the same pattern `CCPPSafeDeallocOp` already uses
   elsewhere in this file) immediately before every `allocate(...)`
   statement all four of these op cases print, independent of whether a
   write-back exists — safe for pure `intent(in)` values, and a no-op on
@@ -417,10 +417,11 @@ more known issues:
    Answers are not correct!
   ```
   capgen-v1 slices every host-array reference passed into a suite-part call
-  by `col_start:col_end` (e.g. `phys_state%effrr(col_start:col_end,
-  pver:1:-1)`) and recomputes any `horizontal_dimension`-standard_name
-  scalar as `col_end - col_start + 1` (e.g. `ncol=(col_end - col_start +
-  1)`), so a chunked call only ever touches its own column window.
+  by `col_start:col_end`
+  (e.g. `phys_state%effrr(col_start:col_end, pver:1:-1)`) and recomputes any
+  `horizontal_dimension`-standard_name scalar as `col_end - col_start + 1`
+  (e.g. `ncol=(col_end - col_start + 1)`), so a chunked call only ever
+  touches its own column window.
   xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/
   `col_end` (the fix above) but called `var_compatibility_suite_suite_radiation`
   with the whole, unsliced host array and the host's raw, full column count
@@ -765,26 +766,15 @@ more known issues:
 
 ## Running with ccpp_xdsl
 
+```bash
+cmake -S . -B build   # from the repo root
+cmake --build build --target var_compatibility_host_integration
+ctest --test-dir build -R var_compat --output-on-failure
 ```
-make caps   # generate the suite/ccpp/kinds caps
-make run    # build and run -- actually built successfully with ifx for the
-            # first time after the "real ifx compile failure" fix above (no
-            # remaining known xdsl_ccpp compile blockers as of this
-            # writing). The resulting executable then ran and hit a real
-            # *runtime* variable-count mismatch (see the "milestone" bullet
-            # above), now also fixed and confirmed matching exactly via the
-            # real Makefile path. A full `make check` PASS has not yet been
-            # independently reconfirmed in this environment (no Fortran
-            # compiler available here) -- and one open, unverified question
-            # remains even if it compiles and the variable-count check now
-            # passes: col_start/col_end are accepted but unused (this
-            # example's schemes don't chunk by column), so test_host.F90's
-            # 5-column chunking loop would still redundantly re-run the
-            # suite once per chunk, and effrs_inout's real accumulation
-            # (`effrs_inout = effrs_inout + (10.0 / 6.0)` in effr_calc.F90)
-            # would over-increment as a result -- see the col_start/col_end
-            # bullet above for the full detail. Whether this actually
-            # causes make check to report FAIL rather than PASS has not
-            # been confirmed either way.
-make check  # build, run, and verify pass/fail
-```
+
+(This example originally built and ran via a hand-written Makefile; see the
+"Confirmed by an actual `gfortran` build-and-run" bullet above for how that
+first full PASS was reached, including the runtime variable-count mismatch
+and `col_start`/`col_end` unused-chunking questions raised along the way —
+both resolved by the time CI went green. The Makefile itself has since been
+removed in favor of the CMake build shown above.)

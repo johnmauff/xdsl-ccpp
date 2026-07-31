@@ -58,38 +58,32 @@ This writes `ccpp_kinds.F90`, `hello_world_suite_cap.F90`, and
 
 ---
 
-## Step 2 — Compile and run inside the Docker container
+## Step 2 — Compile and run
 
-A `gcc:latest` Docker container provides gfortran without requiring a
-system-level Fortran compiler on the development machine.
-
-Start the container with the repository mounted:
+Requires a Fortran compiler (`gfortran`, `ifx`, or `nvfortran`) on your
+development machine — unlike Step 1 (pure Python), this step needs one. A
+`gcc:latest` Docker container provides `gfortran` if you don't have one
+locally:
 
 ```bash
-docker run --rm -it \
-  -v /path/to/xdsl-ccpp:/work \
-  -w /work \
-  gcc:latest \
-  bash
+docker run --rm -it -v /path/to/xdsl-ccpp:/work -w /work gcc:latest bash
 ```
 
-Then inside the container, build and run:
+Then run the commands below inside it.
+
+From the repository root:
 
 ```bash
-# Build
-make -f examples/helloworld/Makefile
+cmake -S . -B build
+cmake --build build --target helloworld.exe
 
 # Run the executable directly
-make -f examples/helloworld/Makefile run
+./build/examples/helloworld/helloworld.exe
 
-# Build and verify correctness (prints TEST PASSED or TEST FAILED)
-make -f examples/helloworld/Makefile test
-
-# Clean build artifacts
-make -f examples/helloworld/Makefile clean
+# Or run it through ctest, which checks the printed "Answers are correct!"
+# text rather than just the exit code (see examples/helloworld/CMakeLists.txt)
+ctest --test-dir build -R helloworld --output-on-failure
 ```
-
-Build artifacts are written to `examples/helloworld/build/`.
 
 ---
 
