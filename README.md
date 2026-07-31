@@ -487,8 +487,8 @@ Run these from the **repository root** (where this `CMakeLists.txt` lives),
 not from inside an `examples/*/` directory — each example's own
 `CMakeLists.txt` is a subdirectory fragment pulled in via `add_subdirectory()`
 and has no `project()`/`cmake_minimum_required()` of its own, so pointing
-`cmake -S` directly at one fails with `Unknown CMake command
-"xdsl_ccpp_capgen"`:
+`cmake -S` directly at one fails with
+`Unknown CMake command "xdsl_ccpp_capgen"`:
 
 ```bash
 cd /path/to/xdsl-ccpp   # repo root
@@ -539,8 +539,8 @@ the two (`-mp=gpu -Minfo=accel -DUSE_GPU` for GPU vs. `-noacc` for CPU on
 
 **GPU testing is currently `kessler_ccpp.exe`-only.** `kessler_hand.exe`,
 `kessler_cxx.exe`, and `kessler_cxx_host.exe` are known not to run on real
-GPU hardware yet — confirmed directly: all three crash with `FATAL ERROR:
-data in PRESENT clause was not found` at `kessler.F90`'s own `kessler_runv2`,
+GPU hardware yet — confirmed directly: all three crash with
+`FATAL ERROR: data in PRESENT clause was not found` at `kessler.F90`'s own `kessler_runv2`,
 because nothing in their call paths ever registers data with the OpenACC
 runtime that `kessler.F90`'s hand-written `!$acc present(...)` checks
 require (`kessler_hand.exe` manages GPU data via OpenMP target functions

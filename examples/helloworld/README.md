@@ -63,8 +63,13 @@ This writes `ccpp_kinds.F90`, `hello_world_suite_cap.F90`, and
 Requires a Fortran compiler (`gfortran`, `ifx`, or `nvfortran`) on your
 development machine — unlike Step 1 (pure Python), this step needs one. A
 `gcc:latest` Docker container provides `gfortran` if you don't have one
-locally (`docker run --rm -it -v /path/to/xdsl-ccpp:/work -w /work
-gcc:latest bash`, then run the commands below inside it).
+locally:
+
+```bash
+docker run --rm -it -v /path/to/xdsl-ccpp:/work -w /work gcc:latest bash
+```
+
+Then run the commands below inside it.
 
 From the repository root:
 

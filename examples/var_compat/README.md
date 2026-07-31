@@ -281,8 +281,8 @@ more known issues:
      nothing to discover. Fixed by scanning the suite's own subcycle
      structure directly for non-literal loop counts.
   3. **The other missing input.** `flag_indicating_cloud_microphysics_has_ice`
-     is referenced only inside `test_host_data.meta`'s own `active =
-     (flag_indicating_cloud_microphysics_has_ice)` conditional-presence
+     is referenced only inside `test_host_data.meta`'s own
+     `active = (flag_indicating_cloud_microphysics_has_ice)` conditional-presence
      expressions on the `effri`/`nci` DDT members — never itself a scheme
      argument. `active` is a real `ArgumentOp` property but no pass
      currently evaluates it as a conditional (see the "opt_arg's dead
@@ -380,13 +380,13 @@ more known issues:
   write-back at all — nothing ever deallocated its conversion temp. That's
   invisible for a subroutine called only once (Fortran auto-deallocates
   non-`SAVE` locals on return), but `var_compatibility_suite_suite_radiation`
-  calls `effr_calc_run` inside a nested 3-level subcycle loop (`do
-  ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
+  calls `effr_calc_run` inside a nested 3-level subcycle loop
+  (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
   allocated a second time within the same subroutine invocation, before
   Fortran ever gets a chance to deallocate it.
 
-  **Fixed** by printing a guarded deallocate (`if (allocated(x))
-  deallocate(x)` — the same pattern `CCPPSafeDeallocOp` already uses
+  **Fixed** by printing a guarded deallocate
+  (`if (allocated(x)) deallocate(x)` — the same pattern `CCPPSafeDeallocOp` already uses
   elsewhere in this file) immediately before every `allocate(...)`
   statement all four of these op cases print, independent of whether a
   write-back exists — safe for pure `intent(in)` values, and a no-op on
@@ -417,10 +417,11 @@ more known issues:
    Answers are not correct!
   ```
   capgen-v1 slices every host-array reference passed into a suite-part call
-  by `col_start:col_end` (e.g. `phys_state%effrr(col_start:col_end,
-  pver:1:-1)`) and recomputes any `horizontal_dimension`-standard_name
-  scalar as `col_end - col_start + 1` (e.g. `ncol=(col_end - col_start +
-  1)`), so a chunked call only ever touches its own column window.
+  by `col_start:col_end`
+  (e.g. `phys_state%effrr(col_start:col_end, pver:1:-1)`) and recomputes any
+  `horizontal_dimension`-standard_name scalar as `col_end - col_start + 1`
+  (e.g. `ncol=(col_end - col_start + 1)`), so a chunked call only ever
+  touches its own column window.
   xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/
   `col_end` (the fix above) but called `var_compatibility_suite_suite_radiation`
   with the whole, unsliced host array and the host's raw, full column count
