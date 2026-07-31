@@ -49,6 +49,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _collect_ddt_use_stubs,
+    _host_table_names,
     _iter_schemes,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
@@ -190,10 +191,23 @@ def _apply_ddt_chain(record: dict, arg, ddt_resolution_maps) -> None:
     behavior for this case) if no reachable module-level instance exists
     for the DDT type -- should not happen for an arg host_var_match_pass
     already accepted as DDT-matched.
+
+    When the resolved instance lives in a HOST-type table (e.g. a
+    ccpp_t-style handle passed through the host's own caller-provided
+    argument list, not use-associated), model_module_name/import_name are
+    still populated with the real table/instance identity -- same as a
+    plain, non-DDT host-table match already does elsewhere in this file --
+    but is_host_table_var is also set, so a consumer that (per that same
+    existing convention) already checks is_host_table_var before deciding
+    whether `use <module>, only: <var>` is valid Fortran won't be misled
+    into treating a caller-provided block argument as use-associable.
+    Mirrors the same distinction run_dispatch.py's own real cap-generation
+    path makes for this exact case (see that file's ArgSourceKind.Block
+    branch and its own comment there).
     """
     if ddt_resolution_maps is None or not arg.hasAttr("model_var_is_ddt"):
         return
-    ddt_instance_map, ddt_parent_map, ddt_host_var_map = ddt_resolution_maps
+    ddt_instance_map, ddt_parent_map, ddt_host_var_map, host_table_names = ddt_resolution_maps
     ddt_type_name = record["model_module_name"]
     result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
     if result is None:
@@ -205,6 +219,8 @@ def _apply_ddt_chain(record: dict, arg, ddt_resolution_maps) -> None:
     record["import_name"] = instance_var
     record["call_expr"] = f"{instance_var}%{resolved_member}"
     record["array_ref_dims"] = _ddt_member_subscript_std_names(member_expr)
+    if instance_module in host_table_names:
+        record["is_host_table_var"] = True
 
 
 def _write_resolved_vars(resolved_vars: dict, path: str, host_vars: dict = None) -> None:
@@ -336,10 +352,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         # against (capgen_v1_parity_backlog.md Stage 7). Not used by, and
         # has no effect on, actual Fortran cap generation.
         self.host_var_index: dict = host_var_index or {}
-        # (ddt_instance_map, ddt_parent_map, ddt_host_var_map) from
-        # cap_shared.py's _build_ddt_resolution_maps/_build_host_var_map --
-        # the same DDT-chain resolution real cap generation already uses
-        # (run_dispatch.py, gpu_ccpp_cap_pass.py) to turn a DDT member match
+        # (ddt_instance_map, ddt_parent_map, ddt_host_var_map,
+        # host_table_names) from cap_shared.py's _build_ddt_resolution_maps/
+        # _build_host_var_map/_host_table_names -- the same DDT-chain
+        # resolution real cap generation already uses (run_dispatch.py,
+        # gpu_ccpp_cap_pass.py) to turn a DDT member match
         # (model_var_is_ddt set, model_module_name holding the DDT *type*
         # name rather than a real Fortran module) into the actual dotted
         # Fortran reference. Reused here, read-only, only by the
@@ -2726,7 +2743,8 @@ class SuiteCAP(ModulePass):
         if self.emit_resolved_vars:
             ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data_descriptions)
             ddt_host_var_map = _build_host_var_map(meta_data_descriptions)
-            ddt_resolution_maps = (ddt_instance_map, ddt_parent_map, ddt_host_var_map)
+            host_table_names = _host_table_names(meta_data_descriptions)
+            ddt_resolution_maps = (ddt_instance_map, ddt_parent_map, ddt_host_var_map, host_table_names)
 
         generator = GenerateSuiteSubroutine(
             scheme_descriptions, meta_data_descriptions, meta_fn_sigs, op,

@@ -440,6 +440,29 @@ def _build_ddt_resolution_maps(meta_data) -> "tuple[dict, dict]":
     return ddt_instance_map, ddt_parent_map
 
 
+def _host_table_names(meta_data) -> set:
+    """Return the set of table names whose type is CCPPType.HOST.
+
+    Used alongside _build_ddt_resolution_maps's own ddt_instance_map: that
+    map deliberately includes DDT instances declared in either MODULE or
+    HOST tables (a DDT instance can genuinely live in either), but a HOST-
+    type table's contents are caller-provided block arguments, not `use`-
+    associable -- run_dispatch.py's own real cap generation checks this
+    same distinction after resolving a DDT chain (see its own
+    "instance_module in meta_data and meta_data[instance_module].getAttr(
+    'type') == CCPPType.HOST" check) before deciding whether to emit a
+    DdtMember (use-associated) or Block (caller-provided) arg. Callers that
+    resolve a DDT chain via ddt_instance_map/ddt_parent_map (e.g.
+    suite_cap.py's own --emit-resolved-vars introspection path) need the
+    same check to avoid claiming a HOST-table instance is `use`-associable.
+    """
+    return {
+        tbl_name
+        for tbl_name, props in meta_data.items()
+        if props.getAttr("type") == CCPPType.HOST
+    }
+
+
 def _resolve_ddt_access_path(
     ddt_type_name: str,
     ddt_instance_map: dict,
