@@ -113,30 +113,25 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      real(kind=kind_dyn), allocatable :: temp_level_kind_cast(:, :)
-// CHECK-NEXT:      real(kind=kind_phys), allocatable :: temp_layer_unit_conv(:, :)
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (allocated(temp_level_kind_cast)) deallocate(temp_level_kind_cast)
 // CHECK-NEXT:      allocate(temp_level_kind_cast(size(temp_level, 1), size(temp_level, 2)))
 // CHECK-NEXT:      temp_level_kind_cast = real(temp_level, kind=kind_dyn)
-// CHECK-NEXT:      if (allocated(temp_layer_unit_conv)) deallocate(temp_layer_unit_conv)
-// CHECK-NEXT:      allocate(temp_layer_unit_conv(size(temp_layer, 1), size(temp_layer, 2)))
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state(ccpp_data%ccpp_instance))) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '",                                      &
 // CHECK-NEXT:          trim(ccpp_suite_state(ccpp_data%ccpp_instance)), "' in hello_world_suite_physics"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_run(ncol, lev, ilev, timestep, temp_level_kind_cast,                      &
-// CHECK-NEXT:          temp_layer_unit_conv, errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_run(ncol, lev, ilev, timestep, temp_level_kind_cast, temp_layer, errmsg,  &
+// CHECK-NEXT:          errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_run(ncol, lev, temp_layer_unit_conv, timestep, errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_run(ncol, lev, temp_layer, timestep, errmsg, errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      temp_level = real(temp_level_kind_cast, kind=kind_phys)
 // CHECK-NEXT:      deallocate(temp_level_kind_cast)
-// CHECK-NEXT:      temp_layer = temp_layer_unit_conv - 273.15_kind_phys
-// CHECK-NEXT:      deallocate(temp_layer_unit_conv)
 // CHECK-NEXT:    end subroutine hello_world_suite_suite_physics
 // CHECK-NEXT:  end module hello_world_suite_cap
 // CHECK:       // -----

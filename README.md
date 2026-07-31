@@ -422,13 +422,12 @@ add_executable(my_host ${MY_SRCS} ${MY_CAPS})
 | `HOSTFILES` | no | Host model `.meta` files |
 | `EMIT_DATATABLE` | no | Path to write `datatable.xml`; enables precise file discovery |
 
-A working example is in `examples/capgen/CMakeLists.txt`:
-
-```bash
-cmake -S examples/capgen -B examples/capgen/build
-cmake --build examples/capgen/build
-ctest --test-dir examples/capgen/build
-```
+There is currently no live example exercising `xdsl_ccpp_generate()` directly
+— `examples/capgen/CMakeLists.txt` used to demonstrate it standalone, but
+that file has since been repurposed for the repo-wide build described next
+(a separate CMake module, `xdsl_ccpp_capgen()`, not this one). For working,
+CI-tested CMake usage today, see the "Repo-wide example build" section
+immediately below.
 
 #### Repo-wide example build
 
@@ -438,18 +437,32 @@ directories together in one tree — an incremental migration of hand-written
 per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
 `end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
 `var_compat`, `tinyddt`, `advection`, `advection_flat_host`, `kessler`,
-`nestedddt`, `chararg`, `constadv`, `constprop`, and `ddthost`; each
-example's existing Makefile still works unchanged alongside it.
+`nestedddt`, `chararg`, `constadv`, `constprop`, `ddthost`, `capgen`, and
+`helloworld`; each example's existing Makefile still works unchanged
+alongside it.
 
-`ddthost` is structurally similar to `kessler` (two drivers: a Fortran host
-and a C++ host-model/chost driver, `ddthost_ftn_host.exe`/
-`ddthost_cxx_host.exe`), but simpler: no cross-driver numerical comparison
+`ddthost` and `capgen` are structurally similar to `kessler` (two drivers: a
+Fortran host and a C++ host-model/chost driver, `<name>_ftn_host.exe`/
+`<name>_cxx_host.exe`), but simpler: no cross-driver numerical comparison
 (each driver's own exit code is checked independently, via
-`ctest_ddthost_ftn_host`/`ctest_ddthost_cxx_host`) and no GPU/OpenACC
-support. Two separate `xdsl_ccpp_capgen()` calls, same rationale as
-`kessler`'s own plain/chost split (the Fortran host uses both `ddt_suite`
-and `temp_suite` across six schemes; the chost driver uses only `make_ddt`,
-to exercise DDT flattening).
+`ctest_<name>_ftn_host`/`ctest_<name>_cxx_host`) and no GPU/OpenACC support.
+Both use two separate `xdsl_ccpp_capgen()` calls, same rationale as
+`kessler`'s own plain/chost split: `ddthost`'s Fortran host uses both
+`ddt_suite` and `temp_suite` across six schemes while its chost driver uses
+only `make_ddt` (to exercise DDT flattening); `capgen`'s Fortran host uses
+the same two suites, while its own chost driver uses a third suite with
+three schemes (`make_ddt`, `setup_coeffs`, `temp_calc_adjust`). `capgen`'s
+Fortran driver also reuses the repo-wide shared `test_utils` CMake target
+directly, rather than a separate copy — its own `host_ftn/test_utils.F90`
+*is* the file that shared target is built from.
+
+`helloworld` is the simplest of these: a single Fortran-only driver
+(`helloworld.exe`), no chost/C++ variant at all, and no ARCH/GPU
+distinction. It's also the first example needing `xdsl_ccpp_capgen()`'s new
+`KIND_MAP` argument (`kind_dyn:REAL32`, matching the existing Makefile's
+own `--kind-map` flag), which demonstrates cap-generation's kind-mismatch
+handling between the host's `kind_phys` and a scheme's declared `kind_dyn`
+for the same standard name.
 
 `nestedddt`, `chararg`, `constadv`, and `constprop` all follow `tinyddt`'s
 own single-driver chost pattern (one scheme, one chost cap generation call,
