@@ -115,6 +115,17 @@ class ftnPrintContext:
     # Counter used to generate unique fallback variable names
     _counter: int = field(default=0)
 
+    # Whether the program being printed actually contains a generated
+    # @ccpp_kinds module (generate_kinds.py is a no-op, and emits none, when
+    # no ccpp.kinds op is present anywhere -- e.g. an example with no
+    # kind_phys/kind_dyn declarations at all). Every other module's preamble
+    # must skip `use ccpp_kinds` in that case, or the generated Fortran
+    # references a module that was never written. Defaults to True so
+    # existing single-module callers (unit tests constructing a context
+    # directly) keep today's behavior; print_to_ftn sets this explicitly
+    # after inspecting the whole program.
+    has_kinds_module: bool = field(default=True)
+
     # Buffer accumulating the current line being built via partial print() calls
     _line_buf: str = field(default="")
 
@@ -931,8 +942,11 @@ class ftnPrintContext:
 
         self.print(f"module {module_name.data}")
 
-        # The ccpp_kinds module must not use itself (circular dependency)
-        if not is_kinds_module:
+        # The ccpp_kinds module must not use itself (circular dependency).
+        # Also skipped when no @ccpp_kinds module was generated at all (see
+        # has_kinds_module's own docstring) -- otherwise this `use` statement
+        # would reference a module that doesn't exist.
+        if not is_kinds_module and self.has_kinds_module:
             self.print("\nuse ccpp_kinds", prefix="  ")
 
         # When any subroutine uses BIND(C), or any C++ scheme is called,
@@ -1836,6 +1850,10 @@ def print_to_ftn(
     """
     ctx = Ctx(output)
     ctx.register_binops()
+    ctx.has_kinds_module = any(
+        isinstance(op, builtin.ModuleOp) and op.sym_name.data == "ccpp_kinds"
+        for op in prog.body.ops
+    )
     divider = False
     for op in prog.body.ops:
         if isinstance(op, builtin.ModuleOp):
