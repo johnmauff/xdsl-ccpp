@@ -17,8 +17,9 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # Only examples/nested_suite, examples/var_compat, examples/tinyddt,
 # examples/advection, examples/advection_flat_host, examples/kessler,
 # examples/nestedddt, examples/chararg, examples/constadv,
-# examples/constprop, examples/ddthost, and examples/capgen are wired in so
-# far -- this is an incremental migration, not yet covering every example.
+# examples/constprop, examples/ddthost, examples/capgen, and
+# examples/helloworld are wired in so far -- this is an incremental
+# migration, not yet covering every example.
 
 enable_testing()
 
@@ -138,3 +139,4 @@ add_subdirectory(examples/constadv)
 add_subdirectory(examples/constprop)
 add_subdirectory(examples/ddthost)
 add_subdirectory(examples/capgen)
+add_subdirectory(examples/helloworld)

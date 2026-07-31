@@ -69,6 +69,8 @@ jobs:
             targets: ddthost_ftn_host.exe ddthost_cxx_host.exe
           - example: capgen
             targets: capgen_ftn_host.exe capgen_cxx_host.exe
+          - example: helloworld
+            targets: helloworld.exe
 
     steps:
       - uses: actions/checkout@v4
