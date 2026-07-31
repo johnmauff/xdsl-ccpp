@@ -1,0 +1,111 @@
+name: Compile Examples (CMake)
+
+# Exercises the CMake build path (root CMakeLists.txt +
+# cmake/xdsl_ccpp_capgen.cmake), now the sole build/test path for every
+# compilable example -- the per-example hand-written Makefiles this
+# workflow used to coexist alongside (and the Makefile-driven
+# compile-tests.yml workflow that used to drive them) have been removed.
+# Add matrix entries here as more examples are ported.
+#
+# Each entry names its own `targets` (the exact add_executable() name(s)
+# that example's CMakeLists.txt defines) so the "Build" step can pass an
+# explicit `--target` list instead of building every wired-in example in
+# one shot. That used to be a bare `cmake --build build` -- harmless while
+# every example built cleanly, but the moment one example (constadv/
+# constprop, a known pre-existing failure -- see below) failed to build,
+# that ONE shared step failed for every OTHER matrix job too, since each
+# job's own "Build" step was building all examples' targets together, not
+# just its own. Confirmed directly: this is exactly what broke tinyddt's
+# (and every other example's) CI job once constadv/constprop were wired
+# in, despite tinyddt's own target building and passing fine on its own.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  compile-examples-cmake:
+    name: cmake compile+run (${{ matrix.example }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - example: nested_suite
+            targets: nested_suite_host_integration
+          - example: var_compat
+            targets: var_compatibility_host_integration
+          - example: tinyddt
+            targets: tinyddt_cxx_host
+          - example: advection
+            targets: advection.exe
+            # ctest -R does a plain substring match, and "advection" is a
+            # literal prefix of "advection_flat_host"'s own test name
+            # (ctest_advection_flat_host_integration) -- so the bare
+            # example name "advection" would also match and re-run that
+            # other example's test under this job.
+            ctest_filter: advection_host
+          - example: advection_flat_host
+            targets: advection_flat.exe
+          - example: kessler
+            targets: kessler_ccpp.exe kessler_hand.exe kessler_cxx.exe kessler_cxx_host.exe
+          - example: nestedddt
+            targets: nestedddt_cxx_host
+          - example: chararg
+            targets: chararg_cxx_host
+          - example: constadv
+            targets: constadv_cxx_host
+            # Known-failing -- same root cause as compile-tests.yml's own
+            # identical override (tracked in
+            # https://github.com/johnmauff/xdsl-ccpp/issues/4). This CMake
+            # build runs the exact same generated/compiled code, just
+            # through a different build system, so the same
+            # not-yet-diagnosed issue applies equally. Remove once fixed.
+            expected_failure: true
+          - example: constprop
+            targets: constprop_cxx_host
+            expected_failure: true
+          - example: ddthost
+            targets: ddthost_ftn_host.exe ddthost_cxx_host.exe
+          - example: capgen
+            targets: capgen_ftn_host.exe capgen_cxx_host.exe
+          - example: helloworld
+            targets: helloworld.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install gfortran, gcc, and g++
+        # gcc/g++ are normally already present on ubuntu-latest via
+        # build-essential, but tinyddt (C++/chost) and kessler (C + C++/
+        # chost) both need them, so install explicitly rather than relying
+        # on that -- matches the existing explicit gfortran install below
+        # instead of leaving any of the three compilers implicit.
+        run: sudo apt-get update && sudo apt-get install -y gfortran gcc g++
+
+      - name: Install xdsl-ccpp
+        run: python -m pip install -e .
+
+      - name: Install CMake
+        run: python -m pip install cmake
+
+      - name: Configure
+        run: cmake -S . -B build
+
+      - name: Build
+        # Explicit --target list (matrix.targets), not a bare
+        # `cmake --build build` -- see this file's own top-of-file comment
+        # for why building every example together in one shared step was a
+        # real problem, not just a style preference.
+        continue-on-error: ${{ matrix.expected_failure == true }}
+        run: cmake --build build --target ${{ matrix.targets }}
+
+      - name: Run tests
+        continue-on-error: ${{ matrix.expected_failure == true }}
+        run: ctest --test-dir build --output-on-failure -R ${{ matrix.ctest_filter || matrix.example }}

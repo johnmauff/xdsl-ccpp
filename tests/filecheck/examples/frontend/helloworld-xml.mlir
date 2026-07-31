@@ -63,8 +63,8 @@
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_world_mod", type = #ccpp<table_type_kind module>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ncols", type = "integer", standard_name = "horizontal_dimension", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "pver", type = "integer", standard_name = "vertical_layer_dimension", units = "count"}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "pverp", type = "integer", standard_name = "vertical_interface_dimension", intent = "inout", units = "count"}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_midpoints", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "inout", units = "degC", memory_space = "host"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "pverp", type = "integer", standard_name = "vertical_interface_dimension", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_midpoints", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", units = "degC"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "temp_interfaces", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_interface_dimension", standard_name = "potential_temperature_at_interface", kind = "kind_phys", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "dt", type = "real", standard_name = "time_step_for_physics", long_name = "time step", kind = "kind_phys", units = "s"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "kind_dyn_val", type = "real", standard_name = "kind_dyn_precision", kind = "kind_dyn", units = "1"}> : () -> ()

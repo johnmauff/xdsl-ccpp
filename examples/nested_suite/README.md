@@ -35,8 +35,8 @@ branch):
 ```
 
 `radiation2_suite.xml`'s own `effrs_calc` group (an `effrs_calc` subcycle
-plus an `effr_diag` scheme call) is declared inside `<group
-name="radiation1">`, so it splices in unwrapped, merging directly into
+plus an `effr_diag` scheme call) is declared inside
+`<group name="radiation1">`, so it splices in unwrapped, merging directly into
 `radiation1`'s own sequence. `radiation4_suite.xml`'s `rad_lw_group` is
 referenced at the *suite* level, so it becomes a brand-new top-level group
 of that name. `radiation3_suite.xml` is referenced with no `group=` at all,
@@ -129,8 +129,8 @@ several). The adaptations below are the same small, mechanical category
 
 ## Verification status
 
-Confirmed via the real `Makefile` path (`make -f examples/nested_suite/Makefile
-caps`): generation completes cleanly, `main_suite_cap.F90` produces exactly
+Confirmed via the real `Makefile` path
+(`make -f examples/nested_suite/Makefile caps`): generation completes cleanly, `main_suite_cap.F90` produces exactly
 the three expected group subroutines (`main_suite_suite_radiation1`,
 `main_suite_suite_rad_lw_group`, `main_suite_suite_rad_sw_group`), the
 `col_start`/`col_end` column-chunk slicing already fixed for `var_compat`
@@ -145,9 +145,16 @@ correct `use suite_lifecycle, only: ...` stub and a correctly host-matched
 as before this work).
 
 **Not yet verified:** an actual `gfortran`/`ifx` build-and-run — this
-laptop has no Fortran compiler. `make check` needs to be run on real
-hardware to confirm `lifecycle_counter == 2` and the inherited
-radiation/effr numeric checks all pass.
+laptop has no Fortran compiler. From the repo root:
+
+```bash
+cmake -S . -B build
+cmake --build build --target nested_suite_host_integration
+ctest --test-dir build -R nested_suite --output-on-failure
+```
+
+This needs to be run on real hardware to confirm `lifecycle_counter == 2`
+and the inherited radiation/effr numeric checks all pass.
 
 ## Files
 

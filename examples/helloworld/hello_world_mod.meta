@@ -4,7 +4,7 @@
 [ccpp-arg-table]
   name = hello_world_mod
   type = module
-[ ncols]
+[ ncols ]
   standard_name = horizontal_dimension
   units = count
   type = integer
@@ -18,15 +18,12 @@
   standard_name = vertical_interface_dimension
   type = integer
   units = count
-  intent = inout
   dimensions = ()
 [ temp_midpoints ]
   standard_name = potential_temperature
   units = degC
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
-  memory_space = host
-  intent = inout
 [ temp_interfaces ]
   standard_name = potential_temperature_at_interface
   units = K
