@@ -433,13 +433,15 @@ immediately below.
 
 The repo root's own `CMakeLists.txt` (with `cmake/xdsl_ccpp_capgen.cmake`, a
 separate module from `xdsl_ccpp.cmake` above) builds several `examples/`
-directories together in one tree — an incremental migration of hand-written
-per-example Makefiles onto CMake, patterned after capgen-v1's own upstream
-`end-to-end-tests/*/CMakeLists.txt`. Currently covers `nested_suite`,
+directories together in one tree, patterned after capgen-v1's own upstream
+`end-to-end-tests/*/CMakeLists.txt`. This is now the sole build/test path for
+every compilable example — the per-example hand-written Makefiles this used
+to coexist alongside have been removed. Currently covers `nested_suite`,
 `var_compat`, `tinyddt`, `advection`, `advection_flat_host`, `kessler`,
 `nestedddt`, `chararg`, `constadv`, `constprop`, `ddthost`, `capgen`, and
-`helloworld`; each example's existing Makefile still works unchanged
-alongside it.
+`helloworld` (every example directory except `atmospheric_physics`, which has
+nothing to compile in the first place — scheme-only Python suite
+definitions, exercised by pytest directly).
 
 `ddthost` and `capgen` are structurally similar to `kessler` (two drivers: a
 Fortran host and a C++ host-model/chost driver, `<name>_ftn_host.exe`/
@@ -459,21 +461,18 @@ directly, rather than a separate copy — its own `host_ftn/test_utils.F90`
 `helloworld` is the simplest of these: a single Fortran-only driver
 (`helloworld.exe`), no chost/C++ variant at all, and no ARCH/GPU
 distinction. It's also the first example needing `xdsl_ccpp_capgen()`'s new
-`KIND_MAP` argument (`kind_dyn:REAL32`, matching the existing Makefile's
-own `--kind-map` flag), which demonstrates cap-generation's kind-mismatch
-handling between the host's `kind_phys` and a scheme's declared `kind_dyn`
-for the same standard name.
+`KIND_MAP` argument (`kind_dyn:REAL32`), which demonstrates cap-generation's
+kind-mismatch handling between the host's `kind_phys` and a scheme's
+declared `kind_dyn` for the same standard name.
 
 `nestedddt`, `chararg`, `constadv`, and `constprop` all follow `tinyddt`'s
 own single-driver chost pattern (one scheme, one chost cap generation call,
 one C++ driver); `chararg`/`constadv`/`constprop` pass an explicit
-`HOST_NAME` to `xdsl_ccpp_capgen()` (matching their own Makefiles'
-`--host-name` flag), and `constadv`/`constprop` also compile an extra
-`ccpp_constituent_prop_mod.F90`. `constadv`/`constprop` are known-failing
-(same pre-existing, tracked issue as `compile-tests.yml`'s own
-`expected_failure` override —
+`HOST_NAME` to `xdsl_ccpp_capgen()`, and `constadv`/`constprop` also compile
+an extra `ccpp_constituent_prop_mod.F90`. `constadv`/`constprop` are
+known-failing (a pre-existing, tracked issue —
 [#4](https://github.com/johnmauff/xdsl-ccpp/issues/4)); the CMake CI job
-mirrors that with its own `continue-on-error`.
+marks them with `continue-on-error`.
 
 `kessler` (see [Examples](#examples) below) is the most involved of these:
 four separate drivers (CCPP Fortran cap, hand-written Fortran, C++ BIND(C),
@@ -488,8 +487,8 @@ Run these from the **repository root** (where this `CMakeLists.txt` lives),
 not from inside an `examples/*/` directory — each example's own
 `CMakeLists.txt` is a subdirectory fragment pulled in via `add_subdirectory()`
 and has no `project()`/`cmake_minimum_required()` of its own, so pointing
-`cmake -S` directly at one fails with `Unknown CMake command
-"xdsl_ccpp_capgen"`:
+`cmake -S` directly at one fails with
+`Unknown CMake command "xdsl_ccpp_capgen"`:
 
 ```bash
 cd /path/to/xdsl-ccpp   # repo root
@@ -540,8 +539,8 @@ the two (`-mp=gpu -Minfo=accel -DUSE_GPU` for GPU vs. `-noacc` for CPU on
 
 **GPU testing is currently `kessler_ccpp.exe`-only.** `kessler_hand.exe`,
 `kessler_cxx.exe`, and `kessler_cxx_host.exe` are known not to run on real
-GPU hardware yet — confirmed directly: all three crash with `FATAL ERROR:
-data in PRESENT clause was not found` at `kessler.F90`'s own `kessler_runv2`,
+GPU hardware yet — confirmed directly: all three crash with
+`FATAL ERROR: data in PRESENT clause was not found` at `kessler.F90`'s own `kessler_runv2`,
 because nothing in their call paths ever registers data with the OpenACC
 runtime that `kessler.F90`'s hand-written `!$acc present(...)` checks
 require (`kessler_hand.exe` manages GPU data via OpenMP target functions
@@ -658,9 +657,9 @@ Kessler_ccpp_physics_initialize(...);
 Kessler_ccpp_physics_run(...);
 ```
 
-The kessler example includes a working C++ BIND(C) driver (`driver_kessler_cpp.cpp`)
-that builds with `make cxx` and produces bit-for-bit identical results to the Fortran
-drivers (`make check`).
+The kessler example includes a working C++ BIND(C) driver (`driver_kessler_cpp.cpp`,
+built as the `kessler_cxx.exe` CMake target) that produces bit-for-bit identical
+results to the Fortran drivers (`ctest_kessler_parity`).
 
 > **Known issue, rank ≥ 3 arrays:** for this plain `--bind-c` path (no
 > `language = c++`), the generated `<HostName>_ccpp_cap.F90` currently declares
@@ -715,9 +714,9 @@ Kessler_chost_physics_run(ncol, nz, dt, lyr_surf, lyr_toa,
                            cpair, exner, theta, ..., scheme_name, errmsg, &errflg);
 ```
 
-The kessler example includes a working C++ host driver (`driver_kessler_cxx_host.cpp`)
-that builds with `make cxx_host` and is verified bit-for-bit against all three Fortran
-drivers by `make check`.
+The kessler example includes a working C++ host driver (`driver_kessler_cxx_host.cpp`,
+built as the `kessler_cxx_host.exe` CMake target) and is verified bit-for-bit against
+all three Fortran drivers by `ctest_kessler_parity`.
 
 #### Array layout
 
@@ -830,16 +829,22 @@ files. This validates the pipeline at real-world scale: 146 `.meta` files,
 | `kessler` | 1 | 2 | ~15 | ✅ bit-for-bit across all four drivers†‡ |
 | CCPP-SCM (GFS) | varies | ~60 | ~800+ | ❌ not yet integrated |
 
-† Bit-for-bit agreement across all four drivers verified on CPU. The CCPP Fortran
-driver (`kessler_ccpp`) has additionally been verified bit-for-bit between a CPU
-build and a GPU build (`ARCH=GPU`, OpenACC, nvhpc/nvfortran) — see
-`examples/kessler/Makefile`.
+† Bit-for-bit agreement across all four drivers verified on CPU via
+`ctest_kessler_parity`. The CCPP Fortran driver (`kessler_ccpp`) has additionally
+been verified bit-for-bit between a CPU build and a GPU build (`-DARCH=GPU`,
+OpenACC, nvhpc/nvfortran) via `ctest_kessler_cpu_gpu_parity` — see the "Cross-build
+CPU-vs-GPU parity check" section above. The other three drivers (`kessler_hand`,
+`kessler_cxx`, `kessler_cxx_host`) are currently masked out of GPU testing, since
+none of them actually run correctly on real GPU hardware yet (a pre-existing gap
+in their own GPU data-movement handling, not a testing gap — see that same
+section and `examples/kessler/CMakeLists.txt`'s own comments for the full
+explanation).
 
-‡ All four drivers produce identical numerical output: the CCPP Fortran cap
+‡ All four drivers produce identical numerical output on CPU: the CCPP Fortran cap
 (`kessler_ccpp`), hand-written Fortran cap (`kessler_hand`), C++ BIND(C) driver
 (`kessler_cxx`, built with `--bind-c`), and C++ host model driver
-(`kessler_cxx_host`, built with `language = c++` in `host_cpp/*.meta`). Verified by `make check` in
-`examples/kessler/`.
+(`kessler_cxx_host`, built with `language = c++` in `host_cpp/*.meta`). Verified by
+`ctest_kessler_parity`.
 
 ---
 
@@ -885,7 +890,7 @@ build and a GPU build (`ARCH=GPU`, OpenACC, nvhpc/nvfortran) — see
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 220 pytest + 3 Makefiles |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 544 pytest (542 passing) + CMake/ctest suite (13 examples) |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
 | CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
