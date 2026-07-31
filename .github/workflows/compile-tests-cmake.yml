@@ -65,6 +65,8 @@ jobs:
           - example: constprop
             targets: constprop_cxx_host
             expected_failure: true
+          - example: ddthost
+            targets: ddthost_ftn_host.exe ddthost_cxx_host.exe
 
     steps:
       - uses: actions/checkout@v4
