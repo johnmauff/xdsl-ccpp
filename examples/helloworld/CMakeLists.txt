@@ -41,4 +41,18 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   target_include_directories(helloworld.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
   add_test(NAME ctest_helloworld COMMAND helloworld.exe)
+  # hello_world_host.F90's own compare_temp() check (see that file, around
+  # line 74) never sets a nonzero exit code on a wrong-answer result -- it
+  # only ever `stop`s on an actual CCPP framework error (errflg /= 0), which
+  # is a completely separate failure mode. The ONLY way to detect a wrong-
+  # answer result is the printed text itself ("Answers are correct!" vs.
+  # "Answers are not correct!"), exactly what the existing Makefile's own
+  # `check` target does via `grep -q "Answers are correct"`. Without this
+  # property, ctest's default exit-code-only pass criterion would report
+  # PASS unconditionally, regardless of whether the physics answers were
+  # actually right -- confirmed directly: this genuinely happened here
+  # while temp_midpoints briefly used mismatched units, well after this
+  # test had already started reporting PASS.
+  set_tests_properties(ctest_helloworld PROPERTIES
+    PASS_REGULAR_EXPRESSION "Answers are correct!")
 endif()
