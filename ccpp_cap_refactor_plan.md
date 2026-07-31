@@ -3123,6 +3123,18 @@ dependency is noted.
     recognizes framework-injected scalars in general first (the shared prerequisite for both
     sub-items), rather than jumping straight to `ccpp_cap.py`'s allocation-size dict or
     `constituent_cap.py`'s per-arg flag scan as originally framed below.
+  - **Re-confirmed 2026-07-29/30 while actually porting this example into `examples/constituents_dim/`
+    (reusing the CMake build system, same as the other three items below).** Ported
+    `register_consts`/`const_dim_producer`/`const_dim_consumer` + `host_data.meta` verbatim, folded
+    `main.meta`'s `type=control` table into a `type=host` `test_host.meta` (same conversion as every
+    other port here — see `chunked_data` below), and ran real cap generation against it — hit the
+    exact same `ValueError` on `n_const`/`number_of_ccpp_constituents` quoted above, unchanged. The
+    example's files and a `CMakeLists.txt` (using `xdsl_ccpp_capgen()`) exist in the repo now, but
+    it is deliberately **not** `add_subdirectory`'d from the root `CMakeLists.txt` — doing so would
+    `message(FATAL_ERROR)` at configure time for the whole project, not just this example. `main.F90`
+    is still upstream's unadapted generic-dispatch driver (no point rewriting it against a cap that
+    doesn't generate); re-adapt it to xdsl-ccpp's per-host-prefixed calling convention (pattern in
+    `examples/chunked_data/main.F90`) once the root blocker above is fixed.
 - **`suite_allocate` — L, plus one cheap independent bugfix.**
   - **Cheap fix, do first, unrelated to the rest — S.** `_build_cap_var_map`'s scratch-var
     allocation silently falls back to allocating size `"1"` for any dimension name not in
@@ -3130,33 +3142,107 @@ dependency is noted.
     the larger `suite_allocate` pattern ever gets built. Should raise instead (same "raise, don't
     silently mask" precedent as the Phase 7 Copilot-review fixes), independent of everything else
     here.
+    - **Correction, 2026-07-29/30, after actually porting and running this example (in
+      `examples/suite_allocate/`) — this specific predicted bug does NOT reproduce.** Real cap
+      generation against the ported `make_workspace`/`use_workspace`/`data.meta`/`test_host.meta`
+      files succeeds cleanly, and the generated `suite_allocate_suite_cap.F90` allocates the
+      scratch workspace (`work(:)`) at the *correct*, dynamically-determined size — `nw` is set by
+      `use_workspace_timestep_init` in the timestep-initial phase and `work(nw)` is allocated with
+      that real value in the run phase, not a hardcoded `"1"`. The size-`"1"` fallback described
+      above may still be a real latent bug for some other dimension-name shape not exercised by
+      this particular example, but it is not what blocks `suite_allocate` as ported.
+    - **New bug found instead, 2026-07-29/30 — the actual reason this port can't pass a real
+      ctest.** The generated `test_host_ccpp_physics_run` captures the `use_workspace` scheme's
+      `workspace_checksum` output into a throwaway local temp (`ccpp_tmp_0`) and discards it when
+      the subroutine returns — it is never `use`-associated from the host's own `data` module (the
+      way `examples/helloworld`'s generated cap correctly does for its `type=module` host vars) nor
+      threaded back out through the dispatch call's own argument list. Every `type=host` output var
+      threaded only through the fixed `(col_start, col_end, errmsg, errflg)` `physics_run` dispatch
+      signature looks likely to hit the same fate, not just this specific variable — unconfirmed
+      whether that's scoped correctly as `HostVariableMatchPass`'s territory or `run_dispatch.py`'s
+      own call-assembly code, not diagnosed further. `examples/suite_allocate/CMakeLists.txt` exists
+      and cap-generates successfully but its `add_test(...)` is deliberately commented out, and the
+      directory is not `add_subdirectory`'d from the root `CMakeLists.txt`, until this is fixed.
   - **The actual pattern — L.** Scheme-allocated (not framework-allocated) suite-scoped scratch
     memory, dimensioned by a *different* scheme's `timestep_init`-phase output, allocated at
     run-time rather than init-time, relying on CCPP's phase-then-scheme execution ordering.
     `suite_variable_model.py`'s own docstring assumes init-time allocation with statically-known
     dimensions throughout — this needs a genuine new allocation-timing model plus
     cross-scheme-phase dependency awareness, not a variant of the existing path.
-- **`chunked_data` — size unconfirmed, verify before assuming it needs work.** A host driver
-  dispatching physics over `[lb,ub]` sub-ranges per thread (`thread_num`/`nphys_threads` as plain
-  scheme args). The generated cap subroutines already accept `col_start`/`col_end`
-  (`horizontal_loop_begin`/`horizontal_loop_end`) as bounds throughout this codebase — it's
-  plausible the host driver just calls the same generated subroutine repeatedly with different
-  `[lb,ub]` ranges per thread, with `thread_num`/`nphys_threads` being ordinary host-matched
-  scalar args needing no special code-gen support at all. **Do a quick feasibility test first**
-  (run `chunked_data_scheme.meta` through today's pipeline) before scoping this as new work — if
-  it already works, this is **S** (just add the test); only escalate to **M** if something about
-  sub-range handling genuinely breaks.
+- **`chunked_data` — feasibility test done 2026-07-29/30, and it works: ported into
+  `examples/chunked_data/`, wired into the root build.** Ran the real `chunked_data_scheme.meta` +
+  `data.meta` through today's pipeline (bypassing CMake first, then via a real
+  `xdsl_ccpp_capgen()`-based `CMakeLists.txt`) — cap generation succeeds cleanly with no errors,
+  confirming the suspicion above: `thread_num`/`nphys_threads` are ordinary host-matched scalar
+  args needing no special support, and the host driver just calls the same generated dispatch
+  subroutine once per chunk with a different `[lb,ub]` (here `lb`/`ub`, matching upstream's own
+  naming) range each time. `main.meta`'s upstream `type=control` table (same issue every other
+  example in this backlog section hits) was folded into a `type=host` `test_host.meta`, dropping
+  `suite_name`/`group_name`/`thread_num`/`nthreads`/`nphys_threads` and keeping only
+  `lb`/`ub`/`errmsg`/`errflg` — precedent already set by `examples/var_compat`'s own port. One
+  real nuance surfaced while adapting the driver: the generated `test_host_ccpp_physics_run` takes
+  the chunked array (`chunked_data_instance%array_data`) as an **explicit caller-supplied
+  argument**, unlike every other lifecycle phase (register/initialize/finalize/timestep_initial/
+  timestep_final), which resolve it internally via `use` association with no caller involvement —
+  and the generated suite cap does not slice by `[lb,ub]` internally, so the driver must pass the
+  already-sliced `chunked_data_instance%array_data(lb:ub)` explicitly at each call. This is now
+  `add_subdirectory`'d from the root `CMakeLists.txt` alongside the other 13 examples (not yet
+  compile/ctest-verified — no Fortran compiler is available in this environment, matching the same
+  limitation every other example already has here).
 - **`instances`/`instances_advection` — M, and a real decision point, not just an estimate.**
   xdsl-ccpp already has a working multi-instance mechanism (`--num-instances` CLI flag →
-  `ccpp_t`-handle-based per-instance state, exercised in `examples/helloworld`). Capgen-v1's
-  pattern here is architecturally different: explicit `instance_number`/`number_of_instances`
-  **scalar args** threaded directly into scheme signatures, plus host DDT arrays literally
-  dimensioned by `number_of_instances` — no `ccpp_t` handle involved at all. Building this means
-  recognizing `instance_number`/`number_of_instances` as ordinary host-matchable standard names
-  and confirming array-dimensioning-by-them works generically (likely does, if dimension-name
-  handling elsewhere is already name-agnostic — needs verification, not assumed). **Open
-  question for the project owner:** is a second, structurally different multi-instance model
-  actually wanted, given a working one already exists — or is this intentionally out of scope?
+  `ccpp_t`-handle-based per-instance state; the mechanism itself is real and unit/filecheck-tested
+  (`tests/unit/test_ccpp_t_threading.py`, `tests/filecheck/.../helloworld-ccpp-t.mlir`, driven by
+  `examples/helloworld/hello_world_host_ccpp_t.meta`) — **correction: that file is a side input,
+  not actually wired into the compiled/ctest-run `examples/helloworld` example**, which only uses
+  the plain `hello_world_host.meta`. So today this mechanism is only exercised at the unit/
+  filecheck level, not as a real end-to-end example). Capgen-v1's pattern here is architecturally
+  different: explicit `instance_number`/`number_of_instances` **scalar args** threaded directly
+  into scheme signatures, plus host DDT arrays literally dimensioned by `number_of_instances` — no
+  `ccpp_t` handle involved at all. Building this means recognizing `instance_number`/
+  `number_of_instances` as ordinary host-matchable standard names and confirming array-
+  dimensioning-by-them works generically (likely does, if dimension-name handling elsewhere is
+  already name-agnostic — needs verification, not assumed). **Open question for the project
+  owner:** is a second, structurally different multi-instance model actually wanted, given a
+  working one already exists — or is this intentionally out of scope?
+  - **Ported into `examples/instances/` and `examples/instances_advection/` 2026-07-30 (source
+    brought in on request, decision on the architecture question deliberately deferred — neither
+    is `add_subdirectory`'d from the root `CMakeLists.txt` yet).** Both needed the same
+    `type=control`→`type=host` `main.meta` conversion as every other port in this backlog section,
+    this time keeping `instance`/`ninstances` (standard_name `instance_number`/
+    `number_of_instances`) as ordinary protected host scalars rather than dropping them — they're
+    the mechanism under test, not dispatch plumbing to discard.
+    - **`instances` — cap generation actually SUCCEEDS, but inspecting the generated Fortran shows
+      the real per-instance mechanism isn't implemented.** `instance_data` (the host's own
+      `instance_type` array, dimensioned by `number_of_instances`) never appears anywhere in
+      either generated file. `data_array`/`data_array2`/`data_array_opt` (DDT members of
+      `instance_type`) get resolved as ordinary top-level caller-supplied ("Block") arguments
+      instead of being indexed through `instance_data(instance)%...` — `instance` itself is
+      accepted and correctly forwarded into the scheme calls, but nothing generated ever uses it
+      to select which instance's own storage to touch. Plausible reason, not confirmed: `_build_
+      ddt_resolution_maps`/`_resolve_ddt_access_path` (`cap_shared.py`, `suite_cap.py` — the same
+      DDT-chain machinery fixed for PR #54 earlier this session) resolves a DDT member access to a
+      single, statically-known instance variable; `instance_data` being an *array* of DDT
+      instances, addressable only via a runtime-only scalar, likely falls outside what that
+      resolution can handle at all, so it silently falls back to Block-arg treatment rather than
+      erroring. Not diagnosed further. A driver could still recover real per-instance separation
+      by hand — passing `instance_data(ins)%data_array(:,2)` etc. explicitly at each call, the
+      same shape of workaround `examples/chunked_data`'s driver already needed for its own
+      explicit `[lb,ub]` array slicing — but that's a manual workaround standing in for capgen-v1's
+      automatic per-instance dispatch, not a real port of the mechanism; building the automatic
+      version means taking a position on the open architecture question above first, which is why
+      `main.F90` was deliberately left as upstream's own unadapted driver for now.
+    - **`instances_advection` — hard fails at cap generation**, confirmed by actually running it:
+      ```
+      xdsl.utils.exceptions.VerifyException: Expected source and destination to have the same shape.
+        "memref.copy"(%9, %errmsg) : (memref<i32>, memref<512xi8>) -> ()
+      ```
+      an xDSL IR verifier crash inside the generated constituent-registration cap code (around
+      `test_host_ccpp_register_constituents`/`is_scheme_constituent`). This is the same *class* of
+      failure as the "third, previously-untracked gap" noted under `constituents_dim` above (also
+      a `memref.copy` shape mismatch, also inside a constituent-registration path) — worth
+      comparing the two directly before scoping either, they may share one root cause. Not
+      diagnosed further.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
@@ -3164,6 +3250,26 @@ dependency is noted.
   optional args (Phase 1/2 of `test_optional_args.py`) rather than needing a new mechanism.
   Separately, S: add test coverage for optional args at `_timestep_init`/`_timestep_final` (not
   just `_run`) and optional+unit-conversion combined — likely already work today, just untested.
+  - **Confirmed 2026-07-29/30 by actually porting the real example into `examples/opt_arg/`
+    (`opt_arg_scheme`/`data.meta`/`suite_opt_arg_suite.xml`, `type=control`→`type=host`
+    `test_host.meta` conversion, driver rewritten to xdsl-ccpp's per-host-prefixed calling
+    convention) — the dead-`active` diagnosis above is correct: cap generation succeeds, but
+    `opt_arg`/`opt_arg_2` are generated as unconditionally present regardless of
+    `flag_for_opt_arg`'s value.
+  - **A second, more severe, previously-undocumented bug found in the same generated output:**
+    `test_host_ccpp_physics_timestep_initial`/`_timestep_final` declare **local, never-allocated**
+    dummies (`lc_nx`, `lc_var(:)`, `lc_opt_var(:)`, `lc_opt_var_2(:)`) and pass those straight into
+    the suite's own timestep subroutine, instead of `use`-associating the real host module's
+    `nx`/`std_arg`/`opt_arg`/`opt_arg_2` the way `_register`/`_initialize`/`_run`/`_finalize`
+    correctly do. Passing an unallocated allocatable as an `intent(in)`/`intent(inout)` array dummy
+    is invalid at runtime regardless of the `active`-gating story above — this looks like a
+    separate `HostVariableMatchPass` gap specific to the timestep-phase dispatch, not diagnosed
+    further. Unconfirmed whether this actually crashes at runtime or a real Fortran compiler even
+    accepts it at compile time — no compiler was available to check. `examples/opt_arg/
+    CMakeLists.txt` exists, cap-generates successfully, and its `add_test` is left enabled (unlike
+    `suite_allocate`'s equivalent caveat) since the executable at least links against the generated
+    sources syntactically, but the directory is not `add_subdirectory`'d from the root
+    `CMakeLists.txt` given these two confirmed bugs.
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified

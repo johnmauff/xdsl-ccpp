@@ -53,10 +53,11 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call kessler_init(lv_in, pref_in, rhoqr_in, errmsg, errflg)
+// CHECK-NEXT:        call kessler_init(lv_in=lv_in, pref_in=pref_in, rhoqr_in=rhoqr_in, errmsg=errmsg,           &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call kessler_update_init(gravit_in, errmsg, errflg)
+// CHECK-NEXT:        call kessler_update_init(gravit_in=gravit_in, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine kessler_suite_suite_initialize
@@ -89,7 +90,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call kessler_update_timestep_init(ncol, nz, temp, temp_prev, ttend_t, errmsg, errflg)
+// CHECK-NEXT:        call kessler_update_timestep_init(ncol=ncol, nz=nz, temp=temp, temp_prev=temp_prev,         &
+// CHECK-NEXT:          ttend_t=ttend_t, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:    end subroutine kessler_suite_suite_timestep_initial
@@ -112,8 +114,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call kessler_update_timestep_final(nz, ncol, cpair, temp, zm, phis, st_energy, errmsg,      &
-// CHECK-NEXT:          errflg)
+// CHECK-NEXT:        call kessler_update_timestep_final(nz=nz, ncol=ncol, cpair=cpair, temp=temp, zm=zm,         &
+// CHECK-NEXT:          phis=phis, st_energy=st_energy, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine kessler_suite_suite_timestep_final
@@ -148,11 +150,13 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call kessler_run(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, pk, theta, qv, qc,   &
-// CHECK-NEXT:          qr, precl, relhum, scheme_name, errmsg, errflg)
+// CHECK-NEXT:        call kessler_run(ncol=ncol, nz=nz, dt=dt, lyr_surf=lyr_surf, lyr_toa=lyr_toa, cpair=cpair,  &
+// CHECK-NEXT:          rair=rair, rho=rho, z=z, pk=pk, theta=theta, qv=qv, qc=qc, qr=qr, precl=precl,            &
+// CHECK-NEXT:          relhum=relhum, scheme_name=scheme_name, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call kessler_update_run(nz, ncol, dt, theta, pk, temp_prev, ttend_t, errmsg, errflg)
+// CHECK-NEXT:        call kessler_update_run(nz=nz, ncol=ncol, dt=dt, theta=theta, exner=pk,                     &
+// CHECK-NEXT:          temp_prev=temp_prev, ttend_t=ttend_t, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine kessler_suite_suite_physics
 // CHECK-NEXT:  end module kessler_suite_cap

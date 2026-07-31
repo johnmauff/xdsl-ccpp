@@ -181,7 +181,10 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             [_LIFECYCLE_SCHEME_META, _SCHEME_A_META], _SUITE_XML_WITH_HOOKS,
         )
         init_fn = _fn_body(fortran, "test_suite_suite_initialize")
-        assert "call lifecycle_scheme_init(lifecycle_counter, errmsg, errflg)" in init_fn
+        assert (
+            "call lifecycle_scheme_init(counter=lifecycle_counter, "
+            "errmsg=errmsg, errflg=errflg)"
+        ) in init_fn
 
         # Not spuriously called anywhere else.
         for other_fn_name in (
@@ -197,7 +200,10 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             [_LIFECYCLE_SCHEME_META, _SCHEME_A_META], _SUITE_XML_WITH_HOOKS,
         )
         final_fn = _fn_body(fortran, "test_suite_suite_finalize")
-        assert "call lifecycle_scheme_final(lifecycle_counter, errmsg, errflg)" in final_fn
+        assert (
+            "call lifecycle_scheme_final(counter=lifecycle_counter, "
+            "errmsg=errmsg, errflg=errflg)"
+        ) in final_fn
 
         for other_fn_name in (
             "test_suite_suite_initialize",

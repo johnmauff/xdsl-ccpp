@@ -66,10 +66,11 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call make_ddt_init(nbox, ccpp_info, vmr, errmsg, errflg)
+// CHECK-NEXT:        call make_ddt_init(nbox=nbox, ccpp_info=ccpp_info, vmr=vmr, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call environ_conditions_init(nbox, o3, hno3, ntimes, model_times, errmsg, errflg)
+// CHECK-NEXT:        call environ_conditions_init(nbox=nbox, o3=o3, hno3=hno3, ntimes=ntimes,                    &
+// CHECK-NEXT:          model_times=model_times, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_initialize
@@ -86,7 +87,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call environ_conditions_finalize(ntimes, model_times, errmsg, errflg)
+// CHECK-NEXT:        call environ_conditions_finalize(ntimes=ntimes, model_times=model_times, errmsg=errmsg,     &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_finalize
@@ -115,7 +117,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call make_ddt_timestep_final(ncols, vmr, errmsg, errflg)
+// CHECK-NEXT:        call make_ddt_timestep_final(ncols=ncols, vmr=vmr, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_final
@@ -136,10 +138,11 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call make_ddt_run(cols, cole, O3, HNO3, vmr, errmsg, errflg)
+// CHECK-NEXT:        call make_ddt_run(cols=cols, cole=cole, O3=O3, HNO3=HNO3, vmr=vmr, errmsg=errmsg,           &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call environ_conditions_run(psurf, errmsg, errflg)
+// CHECK-NEXT:        call environ_conditions_run(psurf=psurf, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ddt_suite_suite_data_prep
 // CHECK-NEXT:  end module ddt_suite_cap

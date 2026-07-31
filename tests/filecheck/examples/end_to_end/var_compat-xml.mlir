@@ -132,16 +132,16 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call effr_pre_init(scheme_order, errmsg, errflg)
+// CHECK-NEXT:        call effr_pre_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call effr_calc_init(scheme_order, errmsg, errflg)
+// CHECK-NEXT:        call effr_calc_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call effr_post_init(scheme_order, errmsg, errflg)
+// CHECK-NEXT:        call effr_post_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call effr_diag_init(scheme_order, errmsg, errflg)
+// CHECK-NEXT:        call effr_diag_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_initialize
@@ -243,7 +243,8 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      do ccpp_loop_cnt1 = 1, num_subcycles
 // CHECK-NEXT:        if (errflg .eq. 0) then
-// CHECK-NEXT:          call effr_pre_run(effrr_inout, scalar_varA, errmsg, errflg)
+// CHECK-NEXT:          call effr_pre_run(effrr_inout=effrr_inout, scalar_var=scalar_varA, errmsg=errmsg,         &
+// CHECK-NEXT:            errflg=errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        do ccpp_loop_cnt0 = 1, 2
 // CHECK-NEXT:          do ccpp_loop_cnt = 1, 2
@@ -279,12 +280,13 @@
 // CHECK-NEXT:          end do
 // CHECK-NEXT:        end do
 // CHECK-NEXT:        if (errflg .eq. 0) then
-// CHECK-NEXT:          call effr_post_run(effrr_inout, scalar_varB, errmsg, errflg)
+// CHECK-NEXT:          call effr_post_run(effrr_inout=effrr_inout, scalar_var=scalar_varB, errmsg=errmsg,        &
+// CHECK-NEXT:            errflg=errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      do ccpp_loop_cnt2 = 1, num_subcycles
 // CHECK-NEXT:        if (errflg .eq. 0) then
-// CHECK-NEXT:          call effrs_calc_run(effrs_inout, errmsg, errflg)
+// CHECK-NEXT:          call effrs_calc_run(effrs_inout=effrs_inout, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      if (errflg .eq. 0) then
@@ -294,13 +296,15 @@
 // CHECK-NEXT:        if (allocated(effrr_in_vert_flip4)) deallocate(effrr_in_vert_flip4)
 // CHECK-NEXT:        allocate(effrr_in_vert_flip4(size(effrr_in_unit_conv3, 1), size(effrr_in_unit_conv3, 2)))
 // CHECK-NEXT:        effrr_in_vert_flip4 = effrr_in_unit_conv3(:, size(effrr_in_unit_conv3, 2):1:-1)
-// CHECK-NEXT:        call effr_diag_run(effrr_in_vert_flip4, scalar_varC, errmsg, errflg)
+// CHECK-NEXT:        call effr_diag_run(effrr_in=effrr_in_vert_flip4, scalar_var=scalar_varC, errmsg=errmsg,     &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call rad_lw_run(ncol, fluxLW, errmsg, errflg)
+// CHECK-NEXT:        call rad_lw_run(ncol=ncol, fluxLW=fluxLW, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call rad_sw_run(ncol, sfc_up_sw, sfc_down_sw, errmsg, errflg)
+// CHECK-NEXT:        call rad_sw_run(ncol=ncol, sfc_up_sw=sfc_up_sw, sfc_down_sw=sfc_down_sw, errmsg=errmsg,     &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      effrl_inout = effrl_inout_unit_conv * 1.0E-6_kind_phys
 // CHECK-NEXT:      deallocate(effrl_inout_unit_conv)

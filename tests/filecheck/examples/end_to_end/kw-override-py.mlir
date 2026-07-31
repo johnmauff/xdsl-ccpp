@@ -12,8 +12,7 @@
 
 // CHECK-LABEL: // FILE: kw_suite_cap.F90
 // CHECK-LABEL: module kw_suite_cap
-// CHECK:         use ccpp_kinds
-// CHECK-NEXT:    use hello_scheme, only: hello_scheme_finalize
+// CHECK:         use hello_scheme, only: hello_scheme_finalize
 // CHECK-NEXT:    use hello_scheme, only: hello_scheme_init
 // CHECK-NEXT:    use hello_scheme, only: hello_scheme_run
 // CHECK:         implicit none
@@ -46,7 +45,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_init(errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_init(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine kw_suite_suite_initialize
@@ -61,7 +60,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_finalize(errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine kw_suite_suite_finalize
@@ -114,8 +113,7 @@
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: Kw_ccpp_cap.F90
 // CHECK-LABEL: module Kw_ccpp_cap
-// CHECK:         use ccpp_kinds
-// CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
+// CHECK:         use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
 // CHECK-NEXT:    use kw_suite_cap, only: kw_suite_suite_finalize
 // CHECK-NEXT:    use kw_suite_cap, only: kw_suite_suite_initialize

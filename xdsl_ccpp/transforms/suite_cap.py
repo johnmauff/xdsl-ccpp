@@ -930,9 +930,15 @@ class GenerateSuiteSubroutine(RewritePattern):
         type annotation so xDSL verification passes.  The Fortran printer looks
         through these casts and emits the underlying variable name.
 
-        When *overrides* is non-empty a KeywordCallOp is emitted instead of a
-        plain func.CallOp; overridden arguments are omitted from the SSA
-        operand/result lists and carried as compile-time literals in the op.
+        Always emits a KeywordCallOp (Fortran keyword/name=value call syntax),
+        never a plain positional func.CallOp -- the callee's own .meta
+        arg-table declaration order is not guaranteed to match its real .F90
+        subroutine's physical dummy-argument order (nothing enforces that
+        invariant, and real CCPP schemes have never been required to honor
+        it), so calling by name is the only generally-correct option. When
+        *overrides* is non-empty, overridden arguments are additionally
+        omitted from the SSA operand/result lists and carried as compile-time
+        literals in the op instead.
 
         divergent_std_keys are standard_names where two or more schemes
         sharing the name declare a genuinely different kind or units from
@@ -952,20 +958,20 @@ class GenerateSuiteSubroutine(RewritePattern):
         arg_names_in_table = {arg.name for arg in arg_table.getFunctionArguments()}
         overrides = {k: v for k, v in overrides.items() if k in arg_names_in_table}
 
-        # Retrieve the callee's declared input/output types to detect mismatches.
+        # Retrieve the callee's declared input types to detect mismatches.
+        # Only the inputs side is needed: every argument (in/inout/out alike)
+        # is passed by reference through in_ssa/in_names below (see the
+        # "Fortran passes ALL arguments by reference" comment further down),
+        # so the call always has zero actual SSA results -- there is no
+        # callee-output-types side to track.
         callee = self.meta_fn_sigs.get(subroutine_name)
         callee_in_types = list(callee.function_type.inputs) if callee else []
-        callee_out_types = list(callee.function_type.outputs) if callee else []
 
         in_ssa = []
         in_names = []
-        out_types = []
-        out_names = []
-        out_tracking = []
         cast_ops = []  # casts inserted before the call inside the if-body
         divergent_writeback_ops = []  # write-backs inserted after the call
         in_idx = 0
-        out_idx = 0
 
         def _apply_divergent_marshaling(arg, val):
             """Adapt val (the shared, host-native value) to this specific
@@ -1104,40 +1110,32 @@ class GenerateSuiteSubroutine(RewritePattern):
                     in_names.append(arg.name)
                 in_idx += 1
 
-        assert len(out_types) == len(out_tracking)
-        has_optional = any(
-            arg.hasAttr("optional") for arg in arg_table.getFunctionArguments()
+        # Always call by keyword (name=value), never positionally: this
+        # scheme's own .meta arg-table declaration order is just a parallel,
+        # independently-authored description of its real .F90 subroutine's
+        # dummy-argument order -- CCPP has never required the two to match
+        # (real capgen-v1 always calls by keyword for exactly this reason),
+        # and nothing here verifies they do. A positional func.CallOp would
+        # silently misorder the call the moment a scheme's own .meta happens
+        # to declare arguments in a different order than its real Fortran
+        # signature -- confirmed to actually happen (examples/chunked_data's
+        # chunked_data_scheme.meta declares errmsg/errflg before data_array;
+        # its own .F90 declares data_array first), producing a Fortran
+        # argument type mismatch at compile time. Keyword calls make the
+        # .meta declaration order irrelevant to correctness, matching what
+        # real CCPP schemes have always been able to assume.
+        # No result_names/out_types: every argument (in/inout/out alike) is
+        # already passed by reference above, so this call never has actual
+        # SSA results to track or copy back -- see the comment on
+        # callee_in_types above.
+        call_op = KeywordCallOp(
+            subroutine_name,
+            ArrayAttr([StringAttr(n) for n in in_names]),
+            ArrayAttr([]),
+            DictionaryAttr({k: StringAttr(v) for k, v in overrides.items()}),
+            in_ssa,
+            [],
         )
-        if overrides or has_optional:
-            call_op = KeywordCallOp(
-                subroutine_name,
-                ArrayAttr([StringAttr(n) for n in in_names]),
-                ArrayAttr([StringAttr(n) for n in out_names]),
-                DictionaryAttr({k: StringAttr(v) for k, v in overrides.items()}),
-                in_ssa,
-                out_types,
-            )
-        else:
-            call_op = func.CallOp(subroutine_name, in_ssa, out_types)
-
-        # Copy each output result back to its storage location.
-        # If the result type doesn't match the destination, cast back first.
-        store_ops = []
-        for idx, out_var in enumerate(out_tracking):
-            dest_type = (
-                out_var.type
-                if isinstance(out_var, SSAValue)
-                else out_var.results[0].type
-            )
-            result = call_op.results[idx]
-            if result.type != dest_type:
-                back_cast = builtin.UnrealizedConversionCastOp(
-                    operands=[[result]], result_types=[[dest_type]]
-                )
-                store_ops.append(back_cast)
-                store_ops.append(memref.CopyOp(back_cast.results[0], out_var))
-            else:
-                store_ops.append(memref.CopyOp(result, out_var))
 
         # Guard the call: only execute when errflg == 0
         err_const_comp = arith.ConstantOp.from_int_and_width(0, 32)
@@ -1145,7 +1143,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         cmp = arith.CmpiOp(load_op, err_const_comp, 0)
         conditional_op = scf.IfOp(
             cmp, [],
-            cast_ops + [call_op] + store_ops + divergent_writeback_ops + [scf.YieldOp()],
+            cast_ops + [call_op] + divergent_writeback_ops + [scf.YieldOp()],
         )
 
         return [err_const_comp, cmp, load_op, conditional_op]

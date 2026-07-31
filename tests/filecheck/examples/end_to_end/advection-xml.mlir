@@ -61,10 +61,10 @@
 // CHECK-NEXT:  #endif
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_liq_register(dyn_const, errmsg, errflg)
+// CHECK-NEXT:        call cld_liq_register(dyn_const=dyn_const, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_ice_register(dyn_const_ice, errmsg, errflg)
+// CHECK-NEXT:        call cld_ice_register(dyn_const_ice=dyn_const_ice, errmsg=errmsg, errcode=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine cld_suite_suite_register
 // CHECK-LABEL:   subroutine cld_suite_suite_initialize(const_std_name, num_consts, test_stdname_array,           &
@@ -98,14 +98,16 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call const_indices_init(const_std_name, num_consts, test_stdname_array, const_index,        &
-// CHECK-NEXT:          const_inds, errmsg, errflg)
+// CHECK-NEXT:        call const_indices_init(const_std_name=const_std_name, num_consts=num_consts,               &
+// CHECK-NEXT:          test_stdname_array=test_stdname_array, const_index=const_index, const_inds=const_inds,    &
+// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_liq_init(tfreeze, cld_liq_array, tcld, errmsg, errflg)
+// CHECK-NEXT:        call cld_liq_init(tfreeze=tfreeze, cld_liq_array=cld_liq_array, tcld=tcld, errmsg=errmsg,   &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_ice_init(tfreeze, cld_ice_array, errmsg, errflg)
+// CHECK-NEXT:        call cld_ice_init(tfreeze=tfreeze, cld_ice_array=cld_ice_array, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine cld_suite_suite_initialize
@@ -120,7 +122,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_ice_final(errmsg, errflg)
+// CHECK-NEXT:        call cld_ice_final(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:  #ifdef USE_GPU
@@ -180,23 +182,28 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call const_indices_run(const_std_name, num_consts, test_stdname_array, const_index,         &
-// CHECK-NEXT:          const_inds, errmsg, errflg)
+// CHECK-NEXT:        call const_indices_run(const_std_name=const_std_name, num_consts=num_consts,                &
+// CHECK-NEXT:          test_stdname_array=test_stdname_array, const_index=const_index, const_inds=const_inds,    &
+// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        if (allocated(ps_unit_conv)) deallocate(ps_unit_conv)
 // CHECK-NEXT:        allocate(ps_unit_conv(size(ps, 1)))
 // CHECK-NEXT:        ps_unit_conv = ps * 0.01_kind_phys
-// CHECK-NEXT:        call cld_liq_run(ncol, timestep, tcld, temp, qv, ps_unit_conv, cld_liq_tend, errmsg, errflg)
+// CHECK-NEXT:        call cld_liq_run(ncol=ncol, timestep=timestep, tcld=tcld, temp=temp, qv=qv,                 &
+// CHECK-NEXT:          ps=ps_unit_conv, cld_liq_tend=cld_liq_tend, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend, const, errflg, errmsg)
+// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
+// CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_ice_run(ncol, timestep, temp, qv, ps, cld_ice_array, errmsg, errflg)
+// CHECK-NEXT:        call cld_ice_run(ncol=ncol, timestep=timestep, temp=temp, qv=qv, ps=ps,                     &
+// CHECK-NEXT:          cld_ice_array=cld_ice_array, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend, const, errflg, errmsg)
+// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
+// CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine cld_suite_suite_physics
 // CHECK-NEXT:  end module cld_suite_cap

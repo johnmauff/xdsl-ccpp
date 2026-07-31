@@ -56,7 +56,7 @@
 // CHECK-NEXT:        allocate(temp_calc(ncols))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_register(config_var, errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_register(config_var=config_var, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine temp_suite_suite_register
 // CHECK-LABEL:   subroutine temp_suite_suite_initialize(temp_inc_in, fudge, errmsg, errflg)
@@ -81,13 +81,14 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_set_init(temp_inc_in, fudge, temp_inc_set, errmsg, errflg)
+// CHECK-NEXT:        call temp_set_init(temp_inc_in=temp_inc_in, fudge=fudge, temp_inc_set=temp_inc_set,         &
+// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_calc_adjust_init(errmsg, errflg)
+// CHECK-NEXT:        call temp_calc_adjust_init(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_init(errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_init(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine temp_suite_suite_initialize
@@ -102,13 +103,13 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_set_finalize(errmsg, errflg)
+// CHECK-NEXT:        call temp_set_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_calc_adjust_finalize(errmsg, errflg)
+// CHECK-NEXT:        call temp_calc_adjust_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_finalize(errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine temp_suite_suite_finalize
@@ -126,10 +127,11 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call setup_coeffs_timestep_init(coeffs, errmsg, errflg)
+// CHECK-NEXT:        call setup_coeffs_timestep_init(coeffs=coeffs, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_set_timestep_initialize(ncol, temp_inc_set, temp_level, errmsg, errflg)
+// CHECK-NEXT:        call temp_set_timestep_initialize(ncol=ncol, temp_inc=temp_inc_set, temp_level=temp_level,  &
+// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:    end subroutine temp_suite_suite_timestep_initial
@@ -167,8 +169,10 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_set_run(ncol, lev, timestep, temp_level, temp_diag, temp, ps, to_promote,         &
-// CHECK-NEXT:          promote_pcnst, slev_lbound, soil_levs, var_array, errmsg, errflg)
+// CHECK-NEXT:        call temp_set_run(ncol=ncol, lev=lev, timestep=timestep, temp_level=temp_level,             &
+// CHECK-NEXT:          temp_diag=temp_diag, temp=temp, ps=ps, to_promote=to_promote,                             &
+// CHECK-NEXT:          promote_pcnst=promote_pcnst, slev_lbound=slev_lbound, soil_levs=soil_levs,                &
+// CHECK-NEXT:          var_array=var_array, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine temp_suite_suite_physics1
 // CHECK-LABEL:   subroutine temp_suite_suite_physics2(nbox, timestep, temp_level, temp_layer, qv, ps, errmsg,    &
@@ -191,7 +195,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_calc_adjust_run(nbox, timestep, temp_level, temp_calc, errmsg, errflg)
+// CHECK-NEXT:        call temp_calc_adjust_run(nbox=nbox, timestep=timestep, temp_level=temp_level,              &
+// CHECK-NEXT:          temp_calc=temp_calc, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      do vertical_layer_index = 1, pver
 // CHECK-NEXT:        ccpp_lbound_one = 1
@@ -282,10 +287,11 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call make_ddt_init(nbox, vmr, errmsg, errflg)
+// CHECK-NEXT:        call make_ddt_init(nbox=nbox, vmr=vmr, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call environ_conditions_init(nbox, o3, hno3, ntimes, model_times, errmsg, errflg)
+// CHECK-NEXT:        call environ_conditions_init(nbox=nbox, o3=o3, hno3=hno3, ntimes=ntimes,                    &
+// CHECK-NEXT:          model_times=model_times, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_initialize
@@ -302,7 +308,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call environ_conditions_finalize(ntimes, model_times, errmsg, errflg)
+// CHECK-NEXT:        call environ_conditions_finalize(ntimes=ntimes, model_times=model_times, errmsg=errmsg,     &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_finalize
@@ -330,7 +337,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call make_ddt_timestep_final(ncols, vmr, errmsg, errflg)
+// CHECK-NEXT:        call make_ddt_timestep_final(ncols=ncols, vmr=vmr, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_final
@@ -348,10 +355,11 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call make_ddt_run(cols, cole, o3(cols:cole), hno3(cols:cole), vmr, errmsg, errflg)
+// CHECK-NEXT:        call make_ddt_run(cols=cols, cole=cole, O3=o3(cols:cole), HNO3=hno3(cols:cole), vmr=vmr,    &
+// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call environ_conditions_run(psurf, errmsg, errflg)
+// CHECK-NEXT:        call environ_conditions_run(psurf=psurf, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ddt_suite_suite_data_prep
 // CHECK-NEXT:  end module ddt_suite_cap

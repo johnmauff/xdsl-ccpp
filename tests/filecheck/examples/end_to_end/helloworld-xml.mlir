@@ -44,10 +44,10 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_init(errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_init(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_init(errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_init(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_initialized
 // CHECK-NEXT:    end subroutine hello_world_suite_suite_initialize
@@ -62,10 +62,10 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_finalize(errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_finalize(errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine hello_world_suite_suite_finalize
@@ -118,11 +118,13 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call hello_scheme_run(ncol, lev, ilev, timestep, temp_level_kind_cast,                      &
-// CHECK-NEXT:          temp_layer_unit_conv, errmsg, errflg)
+// CHECK-NEXT:        call hello_scheme_run(ncol=ncol, lev=lev, ilev=ilev, timestep=timestep,                     &
+// CHECK-NEXT:          temp_level=temp_level_kind_cast, temp_layer=temp_layer_unit_conv, errmsg=errmsg,          &
+// CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_run(ncol, lev, temp_layer_unit_conv, timestep, errmsg, errflg)
+// CHECK-NEXT:        call temp_adjust_run(nbox=ncol, lev=lev, temp_layer=temp_layer_unit_conv,                   &
+// CHECK-NEXT:          timestep=timestep, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      temp_level = real(temp_level_kind_cast, kind=kind_phys)
 // CHECK-NEXT:      deallocate(temp_level_kind_cast)
