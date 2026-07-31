@@ -37,6 +37,14 @@
 #                by the caller; pass full relative/absolute paths as-is)
 # SCHEMEFILES  - CMake list of scheme metadata files
 # SUITES       - CMake list of suite xml files
+# KIND_MAP     - CMake list of "KIND:ISO" entries (e.g. "kind_dyn:REAL32"),
+#                each passed as its own repeated "--kind-map KIND:ISO" flag
+#                -- ccpp_dsl.py's own CLI explicitly supports repeating this
+#                flag for multiple mappings, unlike DIRECTIVE/HOST_NAME
+#                above, which each take a single value. Needed by
+#                examples/helloworld, which supplements the built-in
+#                kind_phys/kind_dyn table to demonstrate cap-generation's
+#                kind-mismatch/kind-cast handling.
 #
 # Sets CCPP_CAPS_LIST in the parent scope: the list of generated Fortran
 # file paths, read back from --emit-datatable's own output. xdsl_ccpp's
@@ -48,7 +56,7 @@
 function(xdsl_ccpp_capgen)
   set(options BIND_C)
   set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY DIRECTIVE)
-  set(multiValueArgs HOSTFILES SCHEMEFILES SUITES)
+  set(multiValueArgs HOSTFILES SCHEMEFILES SUITES KIND_MAP)
   cmake_parse_arguments(arg "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   if(NOT DEFINED XDSL_CCPP_ROOT)
@@ -85,6 +93,11 @@ function(xdsl_ccpp_capgen)
   endif()
   if(arg_BIND_C)
     list(APPEND CCPP_XDSL_CMD "--bind-c")
+  endif()
+  if(DEFINED arg_KIND_MAP)
+    foreach(_kind_map_entry IN LISTS arg_KIND_MAP)
+      list(APPEND CCPP_XDSL_CMD "--kind-map" "${_kind_map_entry}")
+    endforeach()
   endif()
 
   set(OUTPUT_ROOT_DIR "${CMAKE_CURRENT_BINARY_DIR}/ccpp")
