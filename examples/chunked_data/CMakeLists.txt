@@ -25,7 +25,14 @@
 #------------------------------------------------------------------------------
 
 set(SCHEME_FILES "chunked_data_scheme")
-set(HOST_FILES   "data" "test_host")
+# "test_host" (the control->host-converted table, see below) is metadata
+# only -- its vars (lb/ub/errmsg/errflg) are plain arguments passed directly
+# at each call site in main.F90, never `use`-associated from a module, so
+# there's no test_host.F90 to compile (unlike examples/var_compat's own
+# test_host.meta, whose vars ARE use-associated and so DOES have a paired
+# test_host.F90). Only "data" (which owns the real chunked_data_instance
+# derived-type object) needs a compiled Fortran counterpart.
+set(HOST_FILES   "data")
 set(SUITE_FILES  "suite_chunked_data_suite.xml")
 set(HOST         "test_host")
 
@@ -35,6 +42,7 @@ list(TRANSFORM SCHEME_FILES APPEND ".F90"  OUTPUT_VARIABLE SCHEME_FORTRAN_FILES)
 list(TRANSFORM SCHEME_FILES APPEND ".meta" OUTPUT_VARIABLE SCHEME_META_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE CHUNKED_DATA_HOST_FORTRAN_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE CHUNKED_DATA_HOST_METADATA_FILES)
+list(APPEND CHUNKED_DATA_HOST_METADATA_FILES "${HOST}.meta")
 
 xdsl_ccpp_capgen(HOSTFILES ${CHUNKED_DATA_HOST_METADATA_FILES}
                  SCHEMEFILES ${SCHEME_META_FILES}

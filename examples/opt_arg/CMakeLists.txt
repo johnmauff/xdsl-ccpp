@@ -20,7 +20,14 @@
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "opt_arg_scheme")
-set(HOST_FILES   "data" "test_host")
+# "test_host" (the control->host-converted table) is metadata only -- its
+# vars (lb/ub/errmsg/errflg) are plain arguments passed directly at each
+# call site, never `use`-associated from a module, so there's no
+# test_host.F90 to compile. Only "data" (which owns the real host state)
+# needs a compiled Fortran counterpart -- same distinction
+# examples/chunked_data/CMakeLists.txt makes for its own identical
+# test_host.meta conversion.
+set(HOST_FILES   "data")
 set(SUITE_FILES  "suite_opt_arg_suite.xml")
 set(HOST         "test_host")
 
@@ -30,6 +37,7 @@ list(TRANSFORM SCHEME_FILES APPEND ".F90"  OUTPUT_VARIABLE SCHEME_FORTRAN_FILES)
 list(TRANSFORM SCHEME_FILES APPEND ".meta" OUTPUT_VARIABLE SCHEME_META_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE OPT_ARG_HOST_FORTRAN_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE OPT_ARG_HOST_METADATA_FILES)
+list(APPEND OPT_ARG_HOST_METADATA_FILES "${HOST}.meta")
 
 xdsl_ccpp_capgen(HOSTFILES ${OPT_ARG_HOST_METADATA_FILES}
                  SCHEMEFILES ${SCHEME_META_FILES}
@@ -40,7 +48,7 @@ xdsl_ccpp_capgen(HOSTFILES ${OPT_ARG_HOST_METADATA_FILES}
 
 if(XDSL_CCPP_HAVE_FORTRAN)
   add_library(OPT_ARG_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
-                                      data.F90
+                                      ${OPT_ARG_HOST_FORTRAN_FILES}
                                       ${CCPP_CAPS_LIST})
   set_target_properties(OPT_ARG_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(OPT_ARG_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)

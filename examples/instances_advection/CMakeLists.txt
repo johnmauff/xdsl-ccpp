@@ -36,7 +36,13 @@
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "cld_liq" "apply_constituent_tendencies")
-set(HOST_FILES   "data" "test_host")
+# "test_host" (the control->host-converted table) is metadata only -- its
+# vars are plain arguments passed directly at each call site, never
+# `use`-associated from a module, so there's no test_host.F90 to compile.
+# Only "data" (which owns the real host state) needs a compiled Fortran
+# counterpart -- same distinction examples/chunked_data/CMakeLists.txt
+# makes for its own identical test_host.meta conversion.
+set(HOST_FILES   "data")
 set(SUITE_FILES  "cld_suite.xml")
 set(HOST         "test_host")
 
@@ -46,6 +52,7 @@ list(TRANSFORM SCHEME_FILES APPEND ".F90"  OUTPUT_VARIABLE SCHEME_FORTRAN_FILES)
 list(TRANSFORM SCHEME_FILES APPEND ".meta" OUTPUT_VARIABLE SCHEME_META_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE INSTANCES_ADVECTION_HOST_FORTRAN_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE INSTANCES_ADVECTION_HOST_METADATA_FILES)
+list(APPEND INSTANCES_ADVECTION_HOST_METADATA_FILES "${HOST}.meta")
 
 # Known-failing (see header comment above) -- calling this will
 # message(FATAL_ERROR) with an xDSL IR verifier crash in the

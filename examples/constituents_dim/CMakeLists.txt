@@ -34,7 +34,14 @@
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "register_consts" "const_dim_producer" "const_dim_consumer")
-set(HOST_FILES   "host_data" "test_host")
+# "test_host" (the control->host-converted table) is metadata only -- its
+# vars (col_start/col_end/errmsg/errcode) are plain arguments passed
+# directly at each call site, never `use`-associated from a module, so
+# there's no test_host.F90 to compile. Only "host_data" (which owns the
+# real host state) needs a compiled Fortran counterpart -- same distinction
+# examples/chunked_data/CMakeLists.txt makes for its own identical
+# test_host.meta conversion.
+set(HOST_FILES   "host_data")
 set(SUITE_FILES  "constituents_dim_suite.xml")
 set(HOST         "test_host")
 
@@ -44,6 +51,7 @@ list(TRANSFORM SCHEME_FILES APPEND ".F90"  OUTPUT_VARIABLE SCHEME_FORTRAN_FILES)
 list(TRANSFORM SCHEME_FILES APPEND ".meta" OUTPUT_VARIABLE SCHEME_META_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE CONSTITUENTS_DIM_HOST_FORTRAN_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE CONSTITUENTS_DIM_HOST_METADATA_FILES)
+list(APPEND CONSTITUENTS_DIM_HOST_METADATA_FILES "${HOST}.meta")
 
 # Known-failing (see header comment above) -- calling this will
 # message(FATAL_ERROR) until HostVariableMatchPass gains support for

@@ -39,7 +39,14 @@
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "unit_conv_scheme_1" "unit_conv_scheme_2")
-set(HOST_FILES   "data" "test_host")
+# "test_host" (the control->host-converted table) is metadata only -- its
+# vars (lb/ub/errmsg/errflg/instance/ninstances) are plain arguments passed
+# directly at each call site, never `use`-associated from a module, so
+# there's no test_host.F90 to compile. Only "data" (which owns the real
+# host state) needs a compiled Fortran counterpart -- same distinction
+# examples/chunked_data/CMakeLists.txt makes for its own identical
+# test_host.meta conversion.
+set(HOST_FILES   "data")
 set(SUITE_FILES  "suite_unit_conv_suite.xml")
 set(HOST         "test_host")
 
@@ -49,6 +56,7 @@ list(TRANSFORM SCHEME_FILES APPEND ".F90"  OUTPUT_VARIABLE SCHEME_FORTRAN_FILES)
 list(TRANSFORM SCHEME_FILES APPEND ".meta" OUTPUT_VARIABLE SCHEME_META_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE INSTANCES_HOST_FORTRAN_FILES)
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE INSTANCES_HOST_METADATA_FILES)
+list(APPEND INSTANCES_HOST_METADATA_FILES "${HOST}.meta")
 
 xdsl_ccpp_capgen(HOSTFILES ${INSTANCES_HOST_METADATA_FILES}
                  SCHEMEFILES ${SCHEME_META_FILES}
