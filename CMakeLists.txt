@@ -26,8 +26,24 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # Wired in: examples/nested_suite, examples/var_compat, examples/tinyddt,
 # examples/advection, examples/advection_flat_host, examples/kessler,
 # examples/nestedddt, examples/chararg, examples/constadv,
-# examples/constprop, examples/ddthost, examples/capgen, and
-# examples/helloworld.
+# examples/constprop, examples/ddthost, examples/capgen,
+# examples/helloworld, and examples/chunked_data.
+#
+# NOT wired in yet: examples/opt_arg, examples/constituents_dim,
+# examples/suite_allocate, examples/instances, and examples/instances_advection
+# exist (ported from capgen-v1's feature/capgen-v1 branch end-to-end-tests/,
+# same as chunked_data) but each hit a confirmed xdsl_ccpp generation or
+# cap-correctness bug during porting -- see the "capgen-v1 end-to-end-tests
+# capability gaps" backlog in ccpp_cap_refactor_plan.md for the specific
+# errors. constituents_dim's and instances_advection's own cap generation
+# hard-fail outright (would abort this file's own configure step with a
+# FATAL_ERROR if add_subdirectory'd), so they're deliberately left out of the
+# list below; opt_arg/suite_allocate/instances's cap generation succeeds but
+# either produces silently-wrong generated code or omits the actual feature
+# under test, so their own CMakeLists.txt exist and work standalone but
+# aren't add_subdirectory'd here either, to avoid presenting a known-broken
+# or known-incomplete ctest as passing. examples/instances is additionally a
+# real, open architecture decision (see the backlog entry) -- not just a bug.
 
 enable_testing()
 
@@ -148,3 +164,4 @@ add_subdirectory(examples/constprop)
 add_subdirectory(examples/ddthost)
 add_subdirectory(examples/capgen)
 add_subdirectory(examples/helloworld)
+add_subdirectory(examples/chunked_data)

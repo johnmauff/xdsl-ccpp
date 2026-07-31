@@ -72,6 +72,8 @@ jobs:
             targets: capgen_ftn_host.exe capgen_cxx_host.exe
           - example: helloworld
             targets: helloworld.exe
+          - example: chunked_data
+            targets: chunked_data.exe
 
     steps:
       - uses: actions/checkout@v4
