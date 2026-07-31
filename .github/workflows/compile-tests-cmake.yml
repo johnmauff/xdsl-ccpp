@@ -1,10 +1,11 @@
 name: Compile Examples (CMake)
 
-# Exercises the new CMake build path (root CMakeLists.txt +
-# cmake/xdsl_ccpp_capgen.cmake) added alongside the existing hand-written
-# Makefiles that compile-tests.yml continues to drive unchanged. Add matrix
-# entries here as more examples migrate, mirroring compile-tests.yml's own
-# shape.
+# Exercises the CMake build path (root CMakeLists.txt +
+# cmake/xdsl_ccpp_capgen.cmake), now the sole build/test path for every
+# compilable example -- the per-example hand-written Makefiles this
+# workflow used to coexist alongside (and the Makefile-driven
+# compile-tests.yml workflow that used to drive them) have been removed.
+# Add matrix entries here as more examples are ported.
 #
 # Each entry names its own `targets` (the exact add_executable() name(s)
 # that example's CMakeLists.txt defines) so the "Build" step can pass an

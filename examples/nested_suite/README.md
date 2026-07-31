@@ -145,7 +145,9 @@ correct `use suite_lifecycle, only: ...` stub and a correctly host-matched
 as before this work).
 
 **Not yet verified:** an actual `gfortran`/`ifx` build-and-run — this
-laptop has no Fortran compiler. `make check` needs to be run on real
+laptop has no Fortran compiler. `ctest --test-dir build -R nested_suite`
+(after `cmake -S . -B build && cmake --build build --target
+nested_suite_host_integration` from the repo root) needs to be run on real
 hardware to confirm `lifecycle_counter == 2` and the inherited
 radiation/effr numeric checks all pass.
 

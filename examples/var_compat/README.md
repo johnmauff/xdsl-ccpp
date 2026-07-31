@@ -765,26 +765,15 @@ more known issues:
 
 ## Running with ccpp_xdsl
 
+```bash
+cmake -S . -B build   # from the repo root
+cmake --build build --target var_compatibility_host_integration
+ctest --test-dir build -R var_compat --output-on-failure
 ```
-make caps   # generate the suite/ccpp/kinds caps
-make run    # build and run -- actually built successfully with ifx for the
-            # first time after the "real ifx compile failure" fix above (no
-            # remaining known xdsl_ccpp compile blockers as of this
-            # writing). The resulting executable then ran and hit a real
-            # *runtime* variable-count mismatch (see the "milestone" bullet
-            # above), now also fixed and confirmed matching exactly via the
-            # real Makefile path. A full `make check` PASS has not yet been
-            # independently reconfirmed in this environment (no Fortran
-            # compiler available here) -- and one open, unverified question
-            # remains even if it compiles and the variable-count check now
-            # passes: col_start/col_end are accepted but unused (this
-            # example's schemes don't chunk by column), so test_host.F90's
-            # 5-column chunking loop would still redundantly re-run the
-            # suite once per chunk, and effrs_inout's real accumulation
-            # (`effrs_inout = effrs_inout + (10.0 / 6.0)` in effr_calc.F90)
-            # would over-increment as a result -- see the col_start/col_end
-            # bullet above for the full detail. Whether this actually
-            # causes make check to report FAIL rather than PASS has not
-            # been confirmed either way.
-make check  # build, run, and verify pass/fail
-```
+
+(This example originally built and ran via a hand-written Makefile; see the
+"Confirmed by an actual `gfortran` build-and-run" bullet above for how that
+first full PASS was reached, including the runtime variable-count mismatch
+and `col_start`/`col_end` unused-chunking questions raised along the way —
+both resolved by the time CI went green. The Makefile itself has since been
+removed in favor of the CMake build shown above.)

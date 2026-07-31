@@ -35,8 +35,8 @@ the clause it declared, with `qv` excluded entirely from the whole-suite/cross-p
 path (`GPUCcppCapPass`) and routed instead per individual scheme call, at the suite_cap level
 (`GPUDataPass`). `temp` (both schemes agree, host side left undeclared) is unaffected — still
 handled exactly as before, on the unchanged whole-suite hoisted `copy(...)` path.
-`make caps`/`make check` (no `--directive`) are unaffected either way, since `memory_space`
-is inert without a `--directive acc`/`omp` pass invocation.
+A plain-CPU generate/build/test (no `--directive`) is unaffected either way, since
+`memory_space` is inert without a `--directive acc`/`omp` pass invocation.
 
 This was the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work — both are now
 done: (c) (turning a silent conflict into a hard error) and (b) (true per-scheme-call clause
@@ -47,9 +47,12 @@ routing, so `qv` actually compiles correctly instead of raising) — see
 
 ## Building and verifying (CPU only)
 
-```
-make caps    # regenerate the CCPP caps (requires xdsl-ccpp / ccpp_xdsl on PATH)
-make check   # build and run the verification driver
+From the repository root:
+
+```bash
+cmake -S . -B build
+cmake --build build --target advection_flat.exe
+ctest --test-dir build -R advection_flat --output-on-failure
 ```
 
 `test_flat_host_integration.F90` runs the full lifecycle once (register → initialize →
@@ -64,9 +67,10 @@ arrays are private to it and not observable from the driver):
    other level is untouched. This confirms data actually flows from the host arrays into
    the schemes and back, not just that nothing crashed.
 
-**Scope note:** this Makefile is CPU-only — it does not build the OpenACC (`ARCH=GPU`)
-path `advection`'s/`kessler`'s Makefiles support. `temp`/`qv`'s `memory_space=device`
-annotations are inert without a `--directive acc`/`omp` pass invocation; this target
+**Scope note:** this example's own CMake target is CPU-only by default — it shares the
+`ARCH` cache variable with `advection`/`kessler` (see the top-level README's "GPU build"
+section for `-DARCH=GPU` usage), but `temp`/`qv`'s `memory_space=device` annotations are
+inert without a `--directive acc`/`omp` pass invocation regardless of `ARCH`; this target
 exists to confirm the example is otherwise a correct, complete, buildable CCPP host,
-independent of the (b)/(c) GPU work it was built to test. This `check` target is wired
-into CI's compile-tests workflow matrix.
+independent of the (b)/(c) GPU work it was built to test. `ctest_advection_flat_host_integration`
+is wired into the CMake CI workflow's matrix.

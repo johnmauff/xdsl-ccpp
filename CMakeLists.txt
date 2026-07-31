@@ -5,21 +5,29 @@ cmake_minimum_required(VERSION 3.20)
 # enabled conditionally further down, only if a compiler is actually found.
 project(xdsl_ccpp_examples LANGUAGES NONE)
 
-# Prototype CMake build for xdsl-ccpp's examples/ directory, patterned
-# directly on capgen-v1's own upstream end-to-end-tests/*/CMakeLists.txt
-# (see reference/ccpp-framework's test/*_test/CMakeLists.txt for the
-# originals these were ported from). Coexists with each example's existing
-# hand-written Makefile -- nothing here writes into any example's own
-# source directory, and CI's compile-tests.yml still drives the Makefile
-# path unchanged for every example except the one(s) opted into this build
-# below.
+# CMake build for xdsl-ccpp's examples/ directory, patterned directly on
+# capgen-v1's own upstream end-to-end-tests/*/CMakeLists.txt (see
+# https://github.com/NCAR/ccpp-framework's own test/*_test/CMakeLists.txt
+# for the originals nested_suite/var_compat were ported from) where a real
+# upstream original exists; the chost-only examples (tinyddt, kessler's
+# chost/bind-c drivers, nestedddt, chararg, constadv, constprop, ddthost/
+# capgen's chost drivers, helloworld) have no upstream analog and were
+# written from scratch, each example's own CMakeLists.txt says so directly.
 #
-# Only examples/nested_suite, examples/var_compat, examples/tinyddt,
+# This is now the SOLE build system for every compilable example --
+# per-example hand-written Makefiles (and the Makefile-driven
+# compile-tests.yml CI workflow) have been removed; this repo-wide CMake
+# build superseded them once every example that has anything to compile was
+# ported over. examples/atmospheric_physics is the only example directory
+# with no CMakeLists.txt, because it has nothing to compile at all (scheme-
+# only Python suite definitions, exercised by pytest directly, not a
+# Makefile/executable in the first place).
+#
+# Wired in: examples/nested_suite, examples/var_compat, examples/tinyddt,
 # examples/advection, examples/advection_flat_host, examples/kessler,
 # examples/nestedddt, examples/chararg, examples/constadv,
 # examples/constprop, examples/ddthost, examples/capgen, and
-# examples/helloworld are wired in so far -- this is an incremental
-# migration, not yet covering every example.
+# examples/helloworld.
 
 enable_testing()
 
