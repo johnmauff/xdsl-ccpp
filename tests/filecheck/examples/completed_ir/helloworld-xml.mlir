@@ -155,6 +155,7 @@
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %temp_level_kind_cast = "ccpp_utils.kind_cast"(%temp_level) <{target_kind = "kind_dyn"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>
+// CHECK-NEXT:        %temp_layer_unit_conv = "ccpp_utils.unit_convert"(%temp_layer) <{to_scheme_expr = ""}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -172,15 +173,16 @@
 // CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
 // CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %11 {
-// CHECK-NEXT:          func.call @hello_scheme_run(%ncol, %lev, %ilev, %timestep, %temp_level_kind_cast, %temp_layer, %errmsg, %errflg) : (memref<i32>, memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          func.call @hello_scheme_run(%ncol, %lev, %ilev, %timestep, %temp_level_kind_cast, %temp_layer_unit_conv, %errmsg, %errflg) : (memref<i32>, memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = arith.constant 0 : i32
 // CHECK-NEXT:        %14 = arith.cmpi eq, %15, %13 : i32
 // CHECK-NEXT:        %15 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        scf.if %14 {
-// CHECK-NEXT:          func.call @temp_adjust_run(%ncol, %lev, %temp_layer, %timestep, %errmsg, %errflg) : (memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          func.call @temp_adjust_run(%ncol, %lev, %temp_layer_unit_conv, %timestep, %errmsg, %errflg) : (memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        "ccpp_utils.kind_write_back"(%temp_level_kind_cast, %temp_level) <{original_kind = "kind_phys"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
+// CHECK-NEXT:        "ccpp_utils.unit_write_back"(%temp_layer_unit_conv, %temp_layer) <{to_host_expr = "- 273.15"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func private @hello_scheme_init(memref<512xi8>, memref<i32>) -> () attributes {module = "hello_scheme"}

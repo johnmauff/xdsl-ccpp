@@ -21,7 +21,7 @@
   dimensions = ()
 [ temp_midpoints ]
   standard_name = potential_temperature
-  units = K
+  units = degC
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
 [ temp_interfaces ]
