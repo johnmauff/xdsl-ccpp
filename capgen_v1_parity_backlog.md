@@ -55,7 +55,7 @@ capgen-v1" problem, as opposed to the vendored shim.
 
 ### Plan: staged, one stage at a time, pause for review between each
 
-**Progress (updated 2026-08-13): Stages 0-7 done.** Stage 8 not started and
+**Progress (updated 2026-08-13): Stages 0-3 done, awaiting review; Stages 4-7 done.** Stage 8 not started and
 now explicitly **paused pending a direction decision** -- see the
 "Re-validation (2026-08-13)" entry under Stage 8 below for why: CAM-SIMA's
 real migration off legacy capgen turned out to go through capgen-v1's own
