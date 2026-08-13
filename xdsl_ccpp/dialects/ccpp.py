@@ -367,6 +367,7 @@ class ArgumentOp(IRDLOperation):
     model_var_is_ddt   = opt_prop_def(UnitAttr)  # set when matched var is a DDT member
     model_var_is_host_table = opt_prop_def(UnitAttr)  # set when matched var is declared in a HOST-type (not MODULE-type) table
     model_var_is_protected  = opt_prop_def(UnitAttr)  # set when the matched host/module declaration is itself 'protected'
+    model_var_active_expr   = opt_prop_def(StringAttr)  # copied from the matched host/module var's own 'active' Fortran logical expression, if set
     is_interstitial    = opt_prop_def(UnitAttr)   # set when var flows between lifecycle phases
     # Phase 7, Stage 2: durable ownership classification (see ArgOwnershipKind),
     # set by generate-arg-ownership. Reuses this op's own standard_name for the

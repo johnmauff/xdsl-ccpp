@@ -871,6 +871,47 @@ class PresentCheckOp(IRDLOperation):
 
 
 @irdl_op_definition
+class ActiveCheckOp(IRDLOperation):
+    """Fortran if (<condition>) / else / end if for an 'active'-gated optional arg.
+
+    Generates::
+
+        if ({condition_expr}) then
+          ... with_body ...
+        else
+          ... without_body ...
+        end if
+
+    Distinct from PresentCheckOp: this tests an arbitrary host-declared
+    Fortran logical expression (from an ArgumentOp's own 'active' property,
+    e.g. 'flag_for_opt_arg', copied onto a matched scheme arg as
+    model_var_active_expr by HostVariableMatchPass), not whether the current
+    subroutine's own optional dummy argument was passed by its caller --
+    conceptually related but a different runtime condition, so kept as a
+    separate op rather than generalizing PresentCheckOp.
+
+    ``condition_expr`` is printed verbatim as the if-condition. ``with_body``
+    contains the slice op(s) + scheme call that include the active-gated
+    arg(s). ``without_body`` contains the scheme call that omits them.
+    """
+
+    name = "ccpp_utils.active_check"
+
+    condition_expr = prop_def(StringAttr)
+
+    with_body    = region_def("single_block")
+    without_body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, condition_expr: str, with_body_ops: list, without_body_ops: list):
+        super().__init__(
+            properties={"condition_expr": StringAttr(condition_expr)},
+            regions=[with_body_ops, without_body_ops],
+        )
+
+
+@irdl_op_definition
 class SuiteVariablesOp(IRDLOperation):
     """Carries the generated ccpp_physics_suite_variables Fortran text.
 
@@ -1296,6 +1337,7 @@ CCPPUtils = Dialect(
         PromotionLoopOp,
         SubcycleLoopOp,
         PresentCheckOp,
+        ActiveCheckOp,
         SuiteVariablesOp,
         ConstituentApiOp,
         CHostCapOp,

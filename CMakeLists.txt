@@ -27,22 +27,25 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # examples/advection, examples/advection_flat_host, examples/kessler,
 # examples/nestedddt, examples/chararg, examples/constadv,
 # examples/constprop, examples/ddthost, examples/capgen,
-# examples/helloworld, examples/chunked_data, and examples/constituents_dim
-# (the last one only as of 2026-08-13, after fixing four real xdsl_ccpp
-# capability gaps its cap generation hit -- see
-# examples/constituents_dim/CMakeLists.txt's own header comment for the
-# specific gaps and fixes).
+# examples/helloworld, examples/chunked_data, examples/constituents_dim
+# (as of 2026-08-13, after fixing four real xdsl_ccpp capability gaps its cap
+# generation hit -- see examples/constituents_dim/CMakeLists.txt's own header
+# comment for the specific gaps and fixes), and examples/opt_arg (as of
+# 2026-08-13, after fixing the two confirmed bugs described in its own
+# CMakeLists.txt -- the dead `active` property and the timestep-phase
+# lifecycle-signature gap, both in ccpp_cap_refactor_plan.md's own "opt_arg's
+# dead active property" backlog entry).
 #
-# NOT wired in yet: examples/opt_arg, examples/suite_allocate,
-# examples/instances, and examples/instances_advection exist (ported from
-# capgen-v1's feature/capgen-v1 branch end-to-end-tests/, same as
-# chunked_data/constituents_dim) but each hit a confirmed xdsl_ccpp
+# NOT wired in yet: examples/suite_allocate, examples/instances, and
+# examples/instances_advection exist (ported from capgen-v1's
+# feature/capgen-v1 branch end-to-end-tests/, same as
+# chunked_data/constituents_dim/opt_arg) but each hit a confirmed xdsl_ccpp
 # generation or cap-correctness bug during porting -- see the
 # "capgen-v1 end-to-end-tests capability gaps" backlog in
 # ccpp_cap_refactor_plan.md for the specific errors. instances_advection's
 # own cap generation hard-fails outright (would abort this file's own
 # configure step with a FATAL_ERROR if add_subdirectory'd), so it's
-# deliberately left out of the list below; opt_arg/suite_allocate/instances's
+# deliberately left out of the list below; suite_allocate/instances's
 # cap generation succeeds but
 # either produces silently-wrong generated code or omits the actual feature
 # under test, so their own CMakeLists.txt exist and work standalone but
@@ -189,3 +192,4 @@ add_subdirectory(examples/capgen)
 add_subdirectory(examples/helloworld)
 add_subdirectory(examples/chunked_data)
 add_subdirectory(examples/constituents_dim)
+add_subdirectory(examples/opt_arg)

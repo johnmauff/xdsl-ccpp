@@ -57,7 +57,8 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `suite_allocate` | 📋 Backlog (L); one predicted sub-bug ruled out, doesn't reproduce | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
 | `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
-| `opt_arg`'s dead `active` property | 📋 Backlog (S/M) | L3350 |
+| `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
+| Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 
@@ -67,6 +68,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 |---|---|---|
 | `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | 📋 Backlog (S, cosmetic) | L3436 |
 | Move examples' build system from per-example Makefiles to CMake | 📋 Backlog (size TBD) | L3467 |
+| CMake cap generation runs at configure time -- every example regenerates on every CI job | 📋 Backlog (size TBD) | L3652 |
 | `.meta` bracket-spacing parser bug (`[ name ]` vs `[name]`) | ✅ Fixed | L3493 |
 | Three more whitespace-parsing bugs (same class, found by audit) | ✅ Fixed | L3540 |
 | `[ccpp-table-properties]`'s `module_name` override unsupported | 📋 Backlog (S) | L3566 |
@@ -3424,6 +3426,166 @@ dependency is noted.
     `suite_allocate`'s equivalent caveat) since the executable at least links against the generated
     sources syntactically, but the directory is not `add_subdirectory`'d from the root
     `CMakeLists.txt` given these two confirmed bugs.
+  - **RESOLVED (2026-08-13) — both bugs fixed, `add_subdirectory`'d into the root build.**
+    - **Bug 1 (dead `active` property).** Root cause: no pass read `ArgumentOp.active` at all.
+      Fixed by (a) `HostVariableMatchPass` now propagates a matched host/module var's own
+      `active` expression onto the scheme arg as a new `model_var_active_expr` IRDL property
+      (`ccpp.py`, mirroring the `model_var_is_host_table`/`model_var_is_protected` pattern from
+      the `constituents_dim` Stage 7 work); (b) a new `ActiveCheckOp` IR op
+      (`ccpp_utils.py`/`print_ftn.py`) prints `if (<condition_expr>) then ... else ... end if` —
+      deliberately a *sibling* of the existing `PresentCheckOp`, not a generalization of it:
+      `PresentCheckOp` tests Fortran's `present()` intrinsic for optional args inside a
+      rank-reduction promotion loop, while `ActiveCheckOp` tests an arbitrary named host
+      logical for the flat (non-promoted) case examples/opt_arg actually needs — different
+      runtime questions, so kept as separate ops rather than risking the working promoted-arg
+      path; (c) a new `suite_cap.py` method, `_build_active_gated_call_ops`, mirroring
+      `_build_promoted_call_ops`'s own with/without-branch construction, wired into
+      `_build_call_ops`'s flat (non-promoted) call site in place of the old direct
+      `generateSchemeSubroutineCallOps` call.
+      **Adjacent finding, not fixed (logged separately, see Index):** `_build_block_signature`'s
+      kind/unit-conversion scratch-buffer allocation for an optional arg still runs
+      unconditionally, calling `size()` on the source array before any presence check —
+      invalid if the arg is genuinely absent (not just logically inactive). Pre-existing, would
+      affect any optional+unit/kind-mismatched arg, not something this fix's active-gating
+      introduced; not exercised by examples/opt_arg's own test since its driver always sets
+      `flag_for_opt_arg = .true.` and always allocates `opt_arg`/`opt_arg_2`.
+    - **Bug 2 (timestep-phase local placeholders).** More precise root cause than originally
+      diagnosed: not a `HostVariableMatchPass` gap -- `lifecycle_cap.py`'s `_generate_lifecycle_fn`
+      (used for register/initialize/finalize/timestep_initial/timestep_final; `_run` goes through
+      the separate `run_dispatch.py`) hardcoded the assumption that these phases have no host
+      inputs at all, baked into its own docstring and control flow, true for every example ported
+      so far but not derived from the actual scheme metadata. `opt_arg_scheme`'s own
+      `timestep_init`/`timestep_final` entry points genuinely need `nx`/`var`/`opt_var`/
+      `opt_var_2` from `data.meta` -- a HOST-type table, which (per this codebase's own standing
+      rule) is never `use`-associated, always a caller-supplied block argument. Fixed with a
+      pre-scan (before `new_block` is constructed, since the extra args must be part of its
+      `arg_types` from the start) that discovers which HOST-type-table args a phase's own scheme
+      entry point needs, exposes them as real dummy arguments on the outer
+      `ccpp_physics_timestep_initial`/`_timestep_final` wrapper (mirroring how `_run`'s own
+      wrapper already does this), threads inout ones back out through `func.ReturnOp` (the
+      existing "inout-echo" convention `print_ftn.py` already uses for `ccpp_t`), and updates
+      `examples/opt_arg`'s own driver to actually pass them in.
+    - **A genuine xDSL framework gotcha, found and worked around while fixing Bug 2:**
+      `xdsl.ir.core.IRWithName.extract_valid_name` silently strips any trailing `_<digits>` from
+      a `name_hint` (its own SSA-value auto-disambiguation convention -- it assumes such a
+      suffix is framework-generated, not semantic). `opt_arg_scheme`'s own `opt_var_2` collided
+      with `opt_var` this way (`name_hint = "opt_var_2"` silently became `"opt_var"`),
+      duplicating a dummy-argument name in the generated signature. Worked around with a new
+      `"__hostarg"` marker suffix (doesn't end in digits, so xDSL leaves it alone), stripped back
+      to the real name in `print_ftn.py`'s existing `__alloc`/`__opt`/`__in` suffix-stripping
+      logic -- deliberately NOT added to that logic's intent-detection flags, since (unlike the
+      other three) it carries no intent implication of its own; intent falls through to the
+      ordinary array/inout-echo detection.
+    - **Regression found and fixed while verifying:** the fix's own pre-scan initially also
+      matched `ccpp_info`/`ccpp_t` (both legitimately declared in a HOST-type table themselves)
+      and tried to expose them a second time alongside their existing dedicated handling,
+      duplicating a block argument (`examples/ddthost`'s own `ccpp_info_t` pattern caught this).
+      Fixed by excluding `std_name == "host_standard_ccpp_type"` and the `ccpp_t` derived type
+      from the pre-scan explicitly.
+    - **Verification:** full suite green throughout (`tests/unit` + `tests/filecheck`, 562
+      passed, 1 xfailed pre-existing/unrelated, 1 failed pre-existing/unrelated -- the
+      `test_build_integration.py` PATH-resolution issue, same as always); new dedicated coverage
+      in `test_optional_args.py` (`TestActiveGatedOptionalArgs`, `TestTimestepPhaseHostTableArgs`
+      -- the latter's own fixture deliberately uses a second arg named `nx2` to catch the
+      name-collision regression directly). `var_compat`'s own real fixture (`effr_calc`'s
+      `flag_indicating_cloud_microphysics_has_graupel`-gated args) exercises the same Bug-1 fix
+      end-to-end and needed its two golden FileCheck files regenerated to match the now-correct
+      output. `examples/opt_arg` is now `add_subdirectory`'d into the root build and added to
+      `.github/workflows/compile-tests-cmake.yml`'s matrix -- not yet compile/run-verified on
+      this laptop (no Fortran compiler available), so CI is the first real check.
+    - **CI-CONFIRMED FOLLOW-ON BUG, found and fixed 2026-08-13 after the above landed:** CI
+      (no local Fortran compiler exists to catch this) reported a real gfortran compile error on
+      `examples/nested_suite` and `examples/var_compat` --
+      `Error: Symbol 'flag_indicating_cloud_microphysics_has_graupel' at (1) has no IMPLICIT type`.
+      Root cause: `ActiveCheckOp`'s `condition_expr` was being printed verbatim from the host's
+      raw `active = <expr>` metadata text, which -- like `default_value`/dimension expressions --
+      is written in *standard-name* space, not local-Fortran-variable space. It happened to
+      compile in every case actually tested locally only because those cases' standard name and
+      local name coincided; `effr_calc.meta`'s guard (`flag_indicating_cloud_microphysics_
+      has_graupel`, whose real local name in `test_host_mod.meta` is `has_graupel`) was the first
+      case where they differed, and no compiler was available locally to catch the mismatch before
+      it reached CI. `opt_arg`'s own `flag_for_opt_arg` guard hit the same bug class (caught by my
+      own `TestActiveGatedOptionalArgs` unit test raising a real error once resolution was added,
+      before any CI run), for a second, independent reason described below.
+      - **Fix, MODULE-type refs:** new `suite_cap.py` methods `_active_expr_var_indexes` (indexes
+        `self.meta_data`'s MODULE- and HOST-type tables by standard name) and a rewritten
+        `_resolve_active_condition` that tokenizes the raw expression
+        (`_ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")`), resolves each
+        identifier-like token against that index, and for MODULE-type refs emits a deduped
+        `llvm.GlobalOp` USE stub (`use test_host_mod, only: has_graupel`) alongside the resolved
+        local name -- the same resolution capgen-v1 does implicitly by generating real Fortran
+        rather than an intermediate IR. Confirmed correct end-to-end for `var_compat` and
+        `nested_suite`'s real generated Fortran (`has_graupel` now a real dummy/use-associated
+        name at every call site, guard reads `if ((has_graupel)) then`).
+      - **Fix, HOST-type refs (the harder case, and why `opt_arg` hit this independently):** a
+        HOST-type-table var referenced only inside an `active=` expression -- never a scheme's own
+        declared arg -- needs threading as a real dummy argument, never `use`-associated, at *two*
+        separate layers: (a) `suite_cap.py`'s own suite-cap-level function, via a new
+        `_collect_active_gate_extra_args` pre-scan that appends a synthetic `CCPPArgument` to
+        `input_arg_list` before `_build_block_signature` runs (wired into
+        `generateSubroutineCall`); and (b) the *outer* wrapper `lifecycle_cap.py` builds around
+        that call, which has no visibility into the synthetic arg since its own pre-scan only
+        reads scheme metadata -- fixed by a fallback that treats a callee's bare arg name as a
+        candidate standard name when no scheme's own metadata explains it (the exact shape
+        `_collect_active_gate_extra_args` produces). Without fix (b), the outer wrapper compiled
+        but silently declared an uninitialized local instead of threading the real host var through
+        -- a correct-looking compile that would have been wrong at runtime, worse than the original
+        compile error. `run_dispatch.py`'s own `_run`-path wrapper needed no change -- its
+        arg-resolution was already generic enough to handle this shape.
+      - **Golden-file fallout:** both `var_compat` FileCheck goldens (`end_to_end/
+        var_compat-xml.mlir`, `completed_ir/var_compat-xml.mlir`) needed more than a text-only
+        fix -- MODULE-type resolution now emits a genuinely new `llvm.mlir.global`/USE-stub pair
+        for `has_graupel` that didn't exist in the old (bugged) output at all, so the goldens
+        needed that new line inserted (in both the raw-MLIR and use-statement sections), not just
+        the guard condition's text corrected.
+      - **Verification:** full suite green (562 passed, 1 xfailed, 1 failed -- same pre-existing
+        `test_build_integration.py` PATH issue as always, unrelated). `var_compat` and
+        `nested_suite` real generated Fortran directly inspected and confirmed correct
+        end-to-end. `opt_arg`'s own generated Fortran also directly inspected and confirmed
+        correct. Not yet re-verified: an actual gfortran compile (still no local compiler --
+        CI is the next real check on this fix, same limitation as before).
+    - **CI/build follow-on, found and fixed 2026-08-13:** CI caught a real gfortran type
+      mismatch on `examples/opt_arg`'s own driver (`test_opt_arg_host_integration.F90`):
+      `flag_for_opt_arg` is threaded as a genuine dummy argument on
+      `test_host_ccpp_physics_timestep_initial`/`_timestep_final`/`_run` (part of the HOST-type
+      fix above), and the driver's positional calls hadn't been updated to pass it, shifting
+      every argument after that slot. Fixed by adding it at the correct position in all three
+      call sites, confirmed against the actual generated cap signatures (via
+      `xdsl_ccpp.tools.ccpp_dsl`, the same tool CI's CMake step uses) rather than guessed.
+    - **PR #70 Copilot review, addressed 2026-08-13** (two of three comments; third deliberately
+      deferred, see below):
+      - **Multi-condition active-gating was a real, live bug, not hypothetical.**
+        `_build_active_gated_call_ops` originally grouped *all* of a scheme's active-gated
+        optional args under whichever distinct `model_var_active_expr` it encountered first,
+        silently mis-gating every other condition. Adding a defensive raise for this (the
+        initially-planned "cheap guard") immediately tripped on `examples/var_compat`'s own
+        `effr_calc_run`, which genuinely has two independent conditions --
+        `effrg_in`/`ncg_in` gated by `has_graupel`, `nci_out`/`effri_out` independently gated by
+        `has_ice` (from `test_host_data.meta`'s own `active=` properties). The merged, previously
+        "passing" golden Fortran had been silently wrong the whole time: with `has_graupel`
+        picked as the sole condition, `nci_out`/`effri_out` were computed even when `has_ice` was
+        false, and dropped even when `has_ice` was true and `has_graupel` false. Fixed properly
+        (not just guarded) with nested `ActiveCheckOp`s, one level per distinct condition, so
+        every combination of N conditions' truth values reaches the one call variant with exactly
+        the right args included (2**N leaf calls; N is the number of distinct conditions on one
+        scheme, not the number of gated args -- 2 today). Both `var_compat` goldens regenerated
+        (a substantially bigger diff than the earlier text-only fixes -- the nested structure
+        roughly quadruples that function's line count) and re-verified against fresh tool output
+        rather than hand-edited guesswork.
+      - **`suite_use_stubs` default of `None` silently dropped USE stubs** if
+        `_build_active_gated_call_ops` were ever called without it (not currently live -- the one
+        caller always passes it -- but exactly the function Stage 2a of the vocabulary-resolution
+        redesign (see Index) plans to route more traffic through). Fixed by making it a required
+        keyword-only parameter instead of a risky default.
+      - **Deliberately deferred:** synthetic HOST-table args from `_collect_active_gate_extra_args`
+        missing `model_var_name`/`model_module_name`/`model_var_is_host_table` (can spuriously
+        trip the suite dummy-arg name-collision fallback, and degrades `--emit-resolved-vars`
+        accuracy for these args). Real bug, but lives entirely inside
+        `_collect_active_gate_extra_args`, which the redesign's Stage 2a/3 deletes outright once
+        HOST-type vars move to use-association like MODULE-type already does -- fixing it now
+        would be thrown-away work.
+      - **Verification:** full suite green again (562 passed, 1 xfailed, 1 failed -- same
+        pre-existing `test_build_integration.py` PATH issue, unrelated).
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified
@@ -3780,6 +3942,46 @@ dependency is noted.
     (collision resolved via host name, both the printed signature and each
     scheme's actual call-site value; and a negative test confirming a clear
     `ValueError` when no host match exists to disambiguate with).
+
+- **CMake cap generation runs at configure time, not build time, so every
+  wired-in example's caps regenerate on every CI job regardless of which
+  target that job actually builds — flagged 2026-08-13, size TBD.**
+  `cmake/xdsl_ccpp_capgen.cmake` calls `ccpp_xdsl` via `execute_process()`,
+  which runs synchronously while CMake is still processing
+  `CMakeLists.txt` files (configure time), not later when `cmake --build`
+  actually compiles targets. Since the root `CMakeLists.txt` does
+  `add_subdirectory(examples/X)` for every wired-in example, and each of
+  those directories' own `CMakeLists.txt` calls `xdsl_ccpp_capgen()`
+  unconditionally as soon as CMake reaches it, a single `cmake -S . -B
+  build` regenerates every wired-in example's caps up front — before the
+  separate, later `--target <one-example>` build step even runs. Each of
+  `.github/workflows/compile-tests-cmake.yml`'s ~16 matrix jobs runs its
+  own fresh configure, so this means all ~16 examples' caps get generated
+  in every one of the 16 jobs, not just the one each job actually tests.
+  - **Why it's built this way:** modeled directly on capgen-v1's own
+    `cmake/ccpp_capgen.cmake` precedent (see this file's own header
+    comment) — running synchronously at configure time lets the
+    `CMakeLists.txt` immediately parse the generated file list
+    (`CCPP_CAPS_LIST`, read back from `--emit-datatable`'s output) and feed
+    it straight into `add_library(...)` in the same pass, rather than
+    needing `add_custom_command(OUTPUT ...)`'s more awkward
+    statically-declared-output-filenames machinery.
+  - **The real cost isn't just wasted CI time:** `xdsl_ccpp_capgen()` calls
+    `message(FATAL_ERROR)` on a cap-generation failure, which aborts
+    configure *entirely* — for every job, not just whichever example
+    failed. This is exactly why `instances_advection` (a confirmed
+    cap-generation hard-failure) is deliberately kept out of
+    `add_subdirectory` rather than fixed later — see this repo's root
+    `CMakeLists.txt`'s own header comment.
+  - **Not attempted:** deferring cap generation to build time (e.g. via
+    `add_custom_command(OUTPUT ...)`, gated per-target so each CI job only
+    generates the one example it's actually building) would be a real CMake
+    restructuring, not a small patch — every example's `CMakeLists.txt`
+    would need its own output-file list known statically at configure time
+    (today it's discovered dynamically, after the tool already ran and
+    wrote `datatable.xml`), which likely means `xdsl_ccpp_capgen()`'s own
+    interface changes too. Sizing this needs a closer look before deciding
+    whether it's worth doing.
 
 ---
 
