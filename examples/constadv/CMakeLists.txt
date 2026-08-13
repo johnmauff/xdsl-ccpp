@@ -5,9 +5,9 @@
 # HOST_NAME "constadv_host_sub", matching the existing Makefile's own
 # CCPP_XDSL invocation), plus one extra compiled source this example's own
 # scheme needs: ccpp_constituent_prop_mod.F90 (a stub for the CCPP
-# framework's constituent-properties module, defined at the top level of
-# this directory, not host_cpp/ -- see the existing Makefile's own
-# CXX_HOST_OBJS list, which compiles it before constadv.F90).
+# framework's constituent-properties module), pulled from the single-source
+# copy in examples/shared/ rather than a local duplicate -- see that
+# directory's own file for why.
 #
 #------------------------------------------------------------------------------
 set(CCPP_CAP_FILES "${CMAKE_CURRENT_BINARY_DIR}/bindc")
@@ -30,7 +30,7 @@ endif()
 if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
   add_executable(constadv_cxx_host
     ${CCPP_CAP_FILES}/ccpp_kinds.F90
-    ${CMAKE_CURRENT_SOURCE_DIR}/ccpp_constituent_prop_mod.F90
+    ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
     ${CMAKE_CURRENT_SOURCE_DIR}/constadv.F90
     ${CCPP_CAP_FILES}/constadv_suite_cap.F90
     ${CCPP_CAP_FILES}/constadv_host_sub_ccpp_chost_cap.F90
