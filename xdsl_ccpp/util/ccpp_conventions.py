@@ -49,10 +49,11 @@ CCPP_NUM_INSTANCES = 200
 # Variables managed entirely by the CCPP framework — schemes reference them
 # but they are never matched to host model variables.
 CCPP_FRAMEWORK_STD_NAMES: frozenset = frozenset({
-    "horizontal_loop_extent",       # computed as col_end - col_start + 1
-    "ccpp_constituents",            # constituent transport array
-    "ccpp_constituent_tendencies",  # constituent tendency array
-    CCPP_T_INSTANCE_STD_NAME,       # ccpp_t handle threaded by the cap generator
+    "horizontal_loop_extent",         # computed as col_end - col_start + 1
+    "ccpp_constituents",              # constituent transport array
+    "ccpp_constituent_tendencies",    # constituent tendency array
+    "number_of_ccpp_constituents",    # count of registered constituents
+    CCPP_T_INSTANCE_STD_NAME,         # ccpp_t handle threaded by the cap generator
 })
 
 # The full set of names the host variable match pass skips without error.
