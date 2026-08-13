@@ -27,6 +27,7 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, CcppHandleOp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    ActiveCheckOp,
     ArraySectionOp,
     ClearStringOp,
     KeywordCallOp,
@@ -824,6 +825,62 @@ class GenerateSuiteSubroutine(RewritePattern):
         guard_name = optional_promoted_names[0]
         present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
         return shared_slice_ops + [present_op]
+
+    def _build_active_gated_call_ops(
+        self, subroutine_name, arg_table, data_ops, overrides=None,
+        divergent_std_keys: frozenset = frozenset(),
+    ):
+        """Build scheme call ops for a non-promoted (flat) scheme call,
+        gating any optional arg whose matched host var carries an 'active'
+        Fortran logical expression (model_var_active_expr, set by
+        HostVariableMatchPass from the host/module declaration's own
+        'active' property) behind an ActiveCheckOp -- so its allocation/
+        unit-conversion/marshaling and the call itself only execute when
+        that host-side expression is true.
+
+        This is the flat-call counterpart to _build_promoted_call_ops's own
+        PresentCheckOp guard: that one tests Fortran's present() intrinsic
+        for optional args inside a rank-reduction promotion loop; this one
+        tests an arbitrary named host condition for optional args with no
+        promotion involved -- the two mechanisms answer different questions
+        ("did the caller pass this?" vs "is this host variable currently
+        active?") and are not interchangeable, even though both gate an
+        'optional' arg.
+        """
+        active_gated_names: dict = {}  # condition_expr -> [arg_name, ...]
+        for arg in arg_table.getFunctionArguments():
+            if arg.hasAttr("optional") and arg.hasAttr("model_var_active_expr"):
+                active_gated_names.setdefault(
+                    arg.getAttr("model_var_active_expr"), []
+                ).append(arg.name)
+
+        if not active_gated_names:
+            return self.generateSchemeSubroutineCallOps(
+                subroutine_name, arg_table, data_ops, overrides or {},
+                divergent_std_keys=divergent_std_keys,
+            )
+
+        # All active-gated optional args in a single scheme call are treated
+        # as one group under the first distinct condition_expr encountered --
+        # same simplification _build_promoted_call_ops's own guard uses for
+        # optional promoted args (see its "TODO: handle each independently"
+        # above). Real coverage so far (examples/opt_arg) only ever has one
+        # shared condition across a scheme's own active-gated args.
+        condition_expr = next(iter(active_gated_names))
+        gated_names: set = set()
+        for names in active_gated_names.values():
+            gated_names.update(names)
+
+        with_call_ops = self.generateSchemeSubroutineCallOps(
+            subroutine_name, arg_table, data_ops, overrides or {},
+            divergent_std_keys=divergent_std_keys,
+        )
+        without_call_ops = self.generateSchemeSubroutineCallOps(
+            subroutine_name, arg_table, data_ops, overrides or {},
+            exclude_args=gated_names, divergent_std_keys=divergent_std_keys,
+        )
+        active_op = ActiveCheckOp(condition_expr, with_call_ops, without_call_ops)
+        return [active_op]
 
     def getArgumentTable(self, scheme_name, subroutine_name):
         """Look up the argument table for a specific scheme subroutine.
@@ -1907,7 +1964,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     result += _flush_promoted(cur_pdim, cur_pgroup)
                     cur_pgroup = []
                     cur_pdim = None
-                    result += self.generateSchemeSubroutineCallOps(
+                    result += self._build_active_gated_call_ops(
                         full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
                         divergent_std_keys=divergent_std_keys,
                     )

@@ -57,16 +57,15 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   target_link_libraries(opt_arg_host_integration PRIVATE OPT_ARG_TESTLIB)
   target_include_directories(opt_arg_host_integration PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
-  # Known-failing as of this port (confirmed by reading the generated cap,
-  # not yet by an actual compile/run -- no Fortran compiler was available):
-  # the `active = flag_for_opt_arg` optional-arg gating is a no-op (opt_var/
-  # opt_var_2 are always generated as present, regardless of the flag), and
-  # test_host_ccpp_physics_timestep_initial/_timestep_final pass never-
-  # allocated local dummies instead of use-associating the real host data
-  # module's nx/std_arg/opt_arg/opt_arg_2 -- see this port's report in
-  # ccpp_cap_refactor_plan.md. add_test still left in (unlike
-  # examples/suite_allocate's own equivalent caveat, which comments it out)
-  # since this example's own executable at least links; whether it crashes
-  # or just silently misbehaves at runtime is unconfirmed.
+  # Both bugs originally found in this port are now fixed (see
+  # ccpp_cap_refactor_plan.md's "opt_arg's dead active property" entry):
+  # `active = flag_for_opt_arg` now correctly gates opt_var/opt_var_2's
+  # allocation/marshaling/call behind an ActiveCheckOp, and
+  # test_host_ccpp_physics_timestep_initial/_timestep_final now receive
+  # nx/std_arg/opt_arg/opt_arg_2 as real dummy arguments (passed through
+  # from this driver) instead of disconnected local placeholders. Confirmed
+  # by direct inspection of the generated Fortran; not yet compile/run-
+  # verified on this laptop (no Fortran compiler available) -- CI is the
+  # first real compile+run check.
   add_test(NAME ctest_opt_arg_host_integration COMMAND opt_arg_host_integration)
 endif()

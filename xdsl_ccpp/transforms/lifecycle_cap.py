@@ -62,13 +62,17 @@ def _generate_lifecycle_fn(
     ``(suite_name, suite_callee, call_ret_types, scheme_names, entry_postfix)``
     tuples.
 
-    For lifecycle functions that have no host inputs (timestep_initial/final),
-    ``entry_postfix`` is None and the call passes no input arguments.
-
-    For initialize/finalize, ``entry_postfix`` is ``"_init"`` / ``"_finalize"``.
-    The callee's input args are looked up in the scheme entry-point metadata and
-    resolved against host module variables, mirroring what ``_generate_run_fn``
-    does for the physics call.
+    For initialize/finalize/timestep_initial/timestep_final, ``entry_postfix``
+    is the scheme entry-point suffix (e.g. ``"_init"``, ``"_timestep_init"``).
+    The callee's input args are looked up in the scheme entry-point metadata
+    and resolved against host module variables, mirroring what
+    ``_generate_run_fn`` does for the physics call -- most of these phases
+    happen to need nothing beyond suite_name/errmsg/errflg, but that's a
+    property of the schemes actually ported so far, not something this
+    function assumes; when a phase's own scheme entry point genuinely needs
+    a HOST-type-table variable (examples/opt_arg's timestep_init/
+    timestep_final need nx/var/opt_var/opt_var_2), the pre-scan below
+    exposes it as a real dummy argument on this wrapper's own signature.
 
     Returns ``(FuncOp, [external_decl_FuncOp, ...], [host_GlobalOp, ...])``.
     """
@@ -84,6 +88,84 @@ def _generate_lifecycle_fn(
     host_var_map = _build_host_var_map(meta_data, include_host=False)
     ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data)
 
+    # Pre-scan: discover HOST-type-table args this dispatch's own scheme
+    # phases genuinely need, so they can be exposed as real dummy arguments
+    # on this wrapper's own signature (mirroring _generate_run_fn's own
+    # pattern for the physics/_run phase) instead of falling back to an
+    # uninitialized local placeholder (the confirmed examples/opt_arg bug:
+    # timestep_initial/timestep_final declared local, never-allocated
+    # lc_nx/lc_var/lc_opt_var/lc_opt_var_2 and passed those into the suite
+    # callee, instead of nx/var/opt_var/opt_var_2 from data.meta's HOST-type
+    # table). HOST-type table variables are deliberately never use-
+    # associated anywhere in this codebase (see host_var_map's own comment
+    # above) -- always passed as caller-supplied block arguments -- so a
+    # lifecycle phase whose own scheme entry point needs one must receive it
+    # the same way, not synthesize a disconnected local scratch value. Must
+    # run before new_block is constructed below, since the extra args have
+    # to be part of its arg_types from the start.
+    # ccpp_info_t / ccpp_t are themselves declared in a HOST-type table
+    # (that's how the caller detected them in the first place), so they'd
+    # otherwise also satisfy the "HOST-exclusive" test just below and get
+    # duplicated as a second, redundant block argument alongside the
+    # dedicated handling each already gets a few lines down.
+    _ccpp_info_type_for_scan = kwargs.get("ccpp_info_type")
+
+    def _is_ccpp_t_type(_t) -> bool:
+        return (
+            hasattr(_t, "element_type")
+            and hasattr(_t.element_type, "type_name")
+            and _t.element_type.type_name.data == "ccpp_t"
+        )
+
+    host_var_map_all = _build_host_var_map(meta_data, include_host=True)
+    extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
+    for _sn, _suite_callee, _ret, _scheme_names, _entry_postfix, _ri in suite_entries:
+        if _entry_postfix is None:
+            continue
+        _, _, _callee_in_types, _callee_in_names = public_fns[_suite_callee]
+        _lc_candidates = [_entry_postfix]
+        if _entry_postfix in LIFECYCLE_POSTFIX_ALIASES:
+            _lc_candidates.append(LIFECYCLE_POSTFIX_ALIASES[_entry_postfix])
+        _std_name_of: dict = {}
+        _intent_of: dict = {}
+        for _scheme_name in _scheme_names:
+            if _scheme_name not in meta_data:
+                continue
+            for _lc_cand in _lc_candidates:
+                _entry_name = _scheme_name + _lc_cand
+                if _entry_name not in meta_data[_scheme_name].arg_tables:
+                    continue
+                for _fn_arg in (
+                    meta_data[_scheme_name].getArgTable(_entry_name).getFunctionArguments()
+                ):
+                    _bare_name = _bare(_fn_arg.name)
+                    if _bare_name not in _std_name_of and _fn_arg.hasAttr("standard_name"):
+                        _std_name_of[_bare_name] = _fn_arg.getAttr("standard_name").lower()
+                        _intent_of[_bare_name] = (
+                            _fn_arg.getAttr("intent") if _fn_arg.hasAttr("intent") else "in"
+                        )
+                break
+        for _arg_name, _arg_type in zip(_callee_in_names, _callee_in_types):
+            _bare_name = _bare(_arg_name)
+            _std_name = _std_name_of.get(_bare_name)
+            if (
+                _std_name
+                and _std_name in host_var_map_all
+                and _std_name not in host_var_map
+                and _bare_name not in extra_host_args
+                and not (_ccpp_info_type_for_scan is not None and _std_name == "host_standard_ccpp_type")
+                and not _is_ccpp_t_type(_arg_type)
+            ):
+                extra_host_args[_bare_name] = (_arg_type, _intent_of.get(_bare_name, "in"))
+    extra_host_arg_names = list(extra_host_args.keys())
+    extra_host_arg_types = [extra_host_args[n][0] for n in extra_host_arg_names]
+    # Only inout/out extra args need to be threaded back out through
+    # func.ReturnOp -- an intent(in) one is a pure passthrough, same as any
+    # other input-only dummy argument.
+    extra_host_arg_inout_names = [
+        n for n in extra_host_arg_names if extra_host_args[n][1] != "in"
+    ]
+
     ccpp_info_type = kwargs.get("ccpp_info_type")
     ccpp_info_module = kwargs.get("ccpp_info_module")
     ccpp_t_type = kwargs.get("ccpp_t_type")
@@ -93,9 +175,11 @@ def _generate_lifecycle_fn(
         # ccpp_info_t pattern: single inout arg bundles errmsg/errflg.
         # Use HostVarRefOps (member access) in place of AllocaOps so the
         # printer emits ccpp_info%errmsg / ccpp_info%errflg everywhere.
-        new_block = Block(arg_types=[suite_name_type, ccpp_info_type])
+        new_block = Block(arg_types=[suite_name_type, ccpp_info_type] + extra_host_arg_types)
         new_block.args[0].name_hint = "suite_name"
         new_block.args[1].name_hint = "ccpp_info"
+        for _i, _n in enumerate(extra_host_arg_names):
+            new_block.args[2 + _i].name_hint = _n + "__hostarg"
         errmsg_alloc = HostVarRefOp(
             "ccpp_info", ccpp_info_module, errmsg_type, member_name="errmsg"
         )
@@ -105,9 +189,11 @@ def _generate_lifecycle_fn(
     elif ccpp_t_type is not None:
         # ccpp_t pattern: ccpp_data is threaded as intent(inout); errmsg/errflg
         # are still local allocas returned as intent(out) to the host.
-        new_block = Block(arg_types=[suite_name_type, ccpp_t_type])
+        new_block = Block(arg_types=[suite_name_type, ccpp_t_type] + extra_host_arg_types)
         new_block.args[0].name_hint = "suite_name"
         new_block.args[1].name_hint = ccpp_t_var_name
+        for _i, _n in enumerate(extra_host_arg_names):
+            new_block.args[2 + _i].name_hint = _n + "__hostarg"
         errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
         errmsg_alloc.memref.name_hint = "errmsg"
         errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
@@ -118,8 +204,18 @@ def _generate_lifecycle_fn(
         errmsg_alloc.memref.name_hint = "errmsg"
         errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
         errflg_alloc.memref.name_hint = "errflg"
-        new_block = Block(arg_types=[suite_name_type])
+        new_block = Block(arg_types=[suite_name_type] + extra_host_arg_types)
         new_block.args[0].name_hint = "suite_name"
+        for _i, _n in enumerate(extra_host_arg_names):
+            new_block.args[1 + _i].name_hint = _n + "__hostarg"
+
+    # Extra HOST-table args are always appended last, regardless of which
+    # branch above ran -- their block-arg index is just the tail of
+    # new_block.args.
+    extra_host_arg_index: dict = {
+        n: len(new_block.args) - len(extra_host_arg_names) + i
+        for i, n in enumerate(extra_host_arg_names)
+    }
 
     err_const = arith.ConstantOp.from_int_and_width(0, 32)
     store_errflg = memref.StoreOp.get(err_const, errflg_alloc, [])
@@ -279,6 +375,13 @@ def _generate_lifecycle_fn(
             ):
                 # The ccpp_t block arg is passed directly to suite callees.
                 call_inputs.append(new_block.args[1])
+            elif bare in extra_host_arg_index:
+                # Resolved by the pre-scan above to a HOST-type-table var this
+                # phase's own scheme entry point genuinely needs -- passed
+                # straight through as this wrapper's own dummy argument
+                # (never use-associated, matching every other HOST-type
+                # table reference in this codebase).
+                call_inputs.append(new_block.args[extra_host_arg_index[bare]])
             else:
                 # Not host-matched (e.g. optional arg or allocatable DDT arg).
                 # Hoist the alloca to function scope so Fortran can declare it
@@ -421,23 +524,33 @@ def _generate_lifecycle_fn(
 
     main_chain_ops = current_false_ops[:-1]
 
+    # inout/out extra HOST-table args must be echoed back through
+    # func.ReturnOp -- same reasoning as the ccpp_t block arg just above
+    # (print_ftn.py's inout-echo detection: a memref that is both a block
+    # arg and a returned value prints as intent(inout), not duplicated in
+    # the call argument list). They're memrefs already mutated in place by
+    # the suite callee, so the returned value is the block arg itself, not
+    # a separately computed one.
+    extra_inout_vals = [new_block.args[extra_host_arg_index[n]] for n in extra_host_arg_inout_names]
+    extra_inout_types = [extra_host_args[n][0] for n in extra_host_arg_inout_names]
+
     if ccpp_info_type is not None:
-        ret_op = func.ReturnOp(new_block.args[1])  # return ccpp_info as inout
+        ret_op = func.ReturnOp(new_block.args[1], *extra_inout_vals)  # return ccpp_info as inout
         fn_type = builtin.FunctionType.from_lists(
-            [suite_name_type, ccpp_info_type],
-            [ccpp_info_type],
+            [suite_name_type, ccpp_info_type] + extra_host_arg_types,
+            [ccpp_info_type] + extra_inout_types,
         )
     elif ccpp_t_type is not None:
-        ret_op = func.ReturnOp(new_block.args[1], errmsg_alloc, errflg_alloc)
+        ret_op = func.ReturnOp(new_block.args[1], errmsg_alloc, errflg_alloc, *extra_inout_vals)
         fn_type = builtin.FunctionType.from_lists(
-            [suite_name_type, ccpp_t_type],
-            [ccpp_t_type, errmsg_type, errflg_type],
+            [suite_name_type, ccpp_t_type] + extra_host_arg_types,
+            [ccpp_t_type, errmsg_type, errflg_type] + extra_inout_types,
         )
     else:
-        ret_op = func.ReturnOp(errmsg_alloc, errflg_alloc)
+        ret_op = func.ReturnOp(errmsg_alloc, errflg_alloc, *extra_inout_vals)
         fn_type = builtin.FunctionType.from_lists(
-            [suite_name_type],
-            [errmsg_type, errflg_type],
+            [suite_name_type] + extra_host_arg_types,
+            [errmsg_type, errflg_type] + extra_inout_types,
         )
 
     new_block.add_ops(

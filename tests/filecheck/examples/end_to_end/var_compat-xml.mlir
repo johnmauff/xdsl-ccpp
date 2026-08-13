@@ -224,6 +224,11 @@
 // CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_vert_flip(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv3(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_vert_flip4(:, :)
+// CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_kind_cast5(:, :)
+// CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_unit_conv6(:, :)
+// CHECK-NEXT:      real(kind=8), allocatable :: effrs_inout_vert_flip7(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_unit_conv8(:, :)
+// CHECK-NEXT:      real(kind=kind_phys), allocatable :: effrr_in_vert_flip9(:, :)
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (allocated(effrg_in_unit_conv)) deallocate(effrg_in_unit_conv)
@@ -248,34 +253,66 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        do ccpp_loop_cnt0 = 1, 2
 // CHECK-NEXT:          do ccpp_loop_cnt = 1, 2
-// CHECK-NEXT:            if (errflg .eq. 0) then
-// CHECK-NEXT:              if (allocated(effrr_in_unit_conv)) deallocate(effrr_in_unit_conv)
-// CHECK-NEXT:              allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))
-// CHECK-NEXT:              effrr_in_unit_conv = effrr_inout * 1.0E6_kind_phys
-// CHECK-NEXT:              if (allocated(effrr_in_vert_flip)) deallocate(effrr_in_vert_flip)
-// CHECK-NEXT:              allocate(effrr_in_vert_flip(size(effrr_in_unit_conv, 1), size(effrr_in_unit_conv, 2)))
-// CHECK-NEXT:              effrr_in_vert_flip = effrr_in_unit_conv(:, size(effrr_in_unit_conv, 2):1:-1)
-// CHECK-NEXT:              if (allocated(effrs_inout_kind_cast)) deallocate(effrs_inout_kind_cast)
-// CHECK-NEXT:              allocate(effrs_inout_kind_cast(size(effrs_inout, 1), size(effrs_inout, 2)))
-// CHECK-NEXT:              effrs_inout_kind_cast = real(effrs_inout, kind=8)
-// CHECK-NEXT:              if (allocated(effrs_inout_unit_conv)) deallocate(effrs_inout_unit_conv)
-// CHECK-NEXT:              allocate(effrs_inout_unit_conv(size(effrs_inout_kind_cast, 1), size(effrs_inout_kind_cast, 2)))
-// CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_kind_cast * 1.0E6_8
-// CHECK-NEXT:              if (allocated(effrs_inout_vert_flip)) deallocate(effrs_inout_vert_flip)
-// CHECK-NEXT:              allocate(effrs_inout_vert_flip(size(effrs_inout_unit_conv, 1), size(effrs_inout_unit_conv, 2)))
-// CHECK-NEXT:              effrs_inout_vert_flip = effrs_inout_unit_conv(:, size(effrs_inout_unit_conv, 2):1:-1)
-// CHECK-NEXT:              call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_vert_flip,                 &
-// CHECK-NEXT:                effrg_in=effrg_in_unit_conv, ncg_in=ncg_in, nci_out=nci_out,                        &
-// CHECK-NEXT:                effrl_inout=effrl_inout_unit_conv, effri_out=effri_out_unit_conv,                   &
-// CHECK-NEXT:                effrs_inout=effrs_inout_vert_flip, ncl_out=ncl_out, has_graupel=has_graupel,        &
-// CHECK-NEXT:                scalar_var=scalar_var_unit_conv, tke_inout=tke_inout_unit_conv,                     &
-// CHECK-NEXT:                tke2_inout=tke2_inout, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:              effrs_inout_unit_conv = effrs_inout_vert_flip(:, size(effrs_inout_vert_flip, 2):1:-1)
-// CHECK-NEXT:              deallocate(effrs_inout_vert_flip)
-// CHECK-NEXT:              effrs_inout_kind_cast = effrs_inout_unit_conv * 1.0E-6_8
-// CHECK-NEXT:              deallocate(effrs_inout_unit_conv)
-// CHECK-NEXT:              effrs_inout = real(effrs_inout_kind_cast, kind=kind_phys)
-// CHECK-NEXT:              deallocate(effrs_inout_kind_cast)
+// CHECK-NEXT:            if ((flag_indicating_cloud_microphysics_has_graupel)) then
+// CHECK-NEXT:              if (errflg .eq. 0) then
+// CHECK-NEXT:                if (allocated(effrr_in_unit_conv)) deallocate(effrr_in_unit_conv)
+// CHECK-NEXT:                allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))
+// CHECK-NEXT:                effrr_in_unit_conv = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:                if (allocated(effrr_in_vert_flip)) deallocate(effrr_in_vert_flip)
+// CHECK-NEXT:                allocate(effrr_in_vert_flip(size(effrr_in_unit_conv, 1), size(effrr_in_unit_conv, 2)))
+// CHECK-NEXT:                effrr_in_vert_flip = effrr_in_unit_conv(:, size(effrr_in_unit_conv, 2):1:-1)
+// CHECK-NEXT:                if (allocated(effrs_inout_kind_cast)) deallocate(effrs_inout_kind_cast)
+// CHECK-NEXT:                allocate(effrs_inout_kind_cast(size(effrs_inout, 1), size(effrs_inout, 2)))
+// CHECK-NEXT:                effrs_inout_kind_cast = real(effrs_inout, kind=8)
+// CHECK-NEXT:                if (allocated(effrs_inout_unit_conv)) deallocate(effrs_inout_unit_conv)
+// CHECK-NEXT:                allocate(effrs_inout_unit_conv(size(effrs_inout_kind_cast, 1), size(effrs_inout_kind_cast, 2)))
+// CHECK-NEXT:                effrs_inout_unit_conv = effrs_inout_kind_cast * 1.0E6_8
+// CHECK-NEXT:                if (allocated(effrs_inout_vert_flip)) deallocate(effrs_inout_vert_flip)
+// CHECK-NEXT:                allocate(effrs_inout_vert_flip(size(effrs_inout_unit_conv, 1), size(effrs_inout_unit_conv, 2)))
+// CHECK-NEXT:                effrs_inout_vert_flip = effrs_inout_unit_conv(:, size(effrs_inout_unit_conv, 2):1:-1)
+// CHECK-NEXT:                call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_vert_flip,               &
+// CHECK-NEXT:                  effrg_in=effrg_in_unit_conv, ncg_in=ncg_in, nci_out=nci_out,                      &
+// CHECK-NEXT:                  effrl_inout=effrl_inout_unit_conv, effri_out=effri_out_unit_conv,                 &
+// CHECK-NEXT:                  effrs_inout=effrs_inout_vert_flip, ncl_out=ncl_out, has_graupel=has_graupel,      &
+// CHECK-NEXT:                  scalar_var=scalar_var_unit_conv, tke_inout=tke_inout_unit_conv,                   &
+// CHECK-NEXT:                  tke2_inout=tke2_inout, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:                effrs_inout_unit_conv = effrs_inout_vert_flip(:, size(effrs_inout_vert_flip, 2):1:-1)
+// CHECK-NEXT:                deallocate(effrs_inout_vert_flip)
+// CHECK-NEXT:                effrs_inout_kind_cast = effrs_inout_unit_conv * 1.0E-6_8
+// CHECK-NEXT:                deallocate(effrs_inout_unit_conv)
+// CHECK-NEXT:                effrs_inout = real(effrs_inout_kind_cast, kind=kind_phys)
+// CHECK-NEXT:                deallocate(effrs_inout_kind_cast)
+// CHECK-NEXT:              end if
+// CHECK-NEXT:            else
+// CHECK-NEXT:              if (errflg .eq. 0) then
+// CHECK-NEXT:                if (allocated(effrr_in_unit_conv3)) deallocate(effrr_in_unit_conv3)
+// CHECK-NEXT:                allocate(effrr_in_unit_conv3(size(effrr_inout, 1), size(effrr_inout, 2)))
+// CHECK-NEXT:                effrr_in_unit_conv3 = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:                if (allocated(effrr_in_vert_flip4)) deallocate(effrr_in_vert_flip4)
+// CHECK-NEXT:                allocate(effrr_in_vert_flip4(size(effrr_in_unit_conv3, 1), size(effrr_in_unit_conv3, 2)))
+// CHECK-NEXT:                effrr_in_vert_flip4 = effrr_in_unit_conv3(:, size(effrr_in_unit_conv3, 2):1:-1)
+// CHECK-NEXT:                if (allocated(effrs_inout_kind_cast5)) deallocate(effrs_inout_kind_cast5)
+// CHECK-NEXT:                allocate(effrs_inout_kind_cast5(size(effrs_inout, 1), size(effrs_inout, 2)))
+// CHECK-NEXT:                effrs_inout_kind_cast5 = real(effrs_inout, kind=8)
+// CHECK-NEXT:                if (allocated(effrs_inout_unit_conv6)) deallocate(effrs_inout_unit_conv6)
+// CHECK-NEXT:                allocate(effrs_inout_unit_conv6(size(effrs_inout_kind_cast5, 1), size(effrs_inout_kind_cast5, 2)))
+// CHECK-NEXT:                effrs_inout_unit_conv6 = effrs_inout_kind_cast5 * 1.0E6_8
+// CHECK-NEXT:                if (allocated(effrs_inout_vert_flip7)) deallocate(effrs_inout_vert_flip7)
+// CHECK-NEXT:                allocate(effrs_inout_vert_flip7(size(effrs_inout_unit_conv6, 1), size(effrs_inout_unit_conv6, 2)))
+// CHECK-NEXT:                effrs_inout_vert_flip7 = effrs_inout_unit_conv6(:,                                  &
+// CHECK-NEXT:                  size(effrs_inout_unit_conv6, 2):1:-1)
+// CHECK-NEXT:                call effr_calc_run(ncol=ncol, nlev=nlev, effrr_in=effrr_in_vert_flip4,              &
+// CHECK-NEXT:                  effrl_inout=effrl_inout_unit_conv, effrs_inout=effrs_inout_vert_flip7,            &
+// CHECK-NEXT:                  ncl_out=ncl_out, has_graupel=has_graupel, scalar_var=scalar_var_unit_conv,        &
+// CHECK-NEXT:                  tke_inout=tke_inout_unit_conv, tke2_inout=tke2_inout, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:                effrs_inout_unit_conv6 = effrs_inout_vert_flip7(:,                                  &
+// CHECK-NEXT:                  size(effrs_inout_vert_flip7, 2):1:-1)
+// CHECK-NEXT:                deallocate(effrs_inout_vert_flip7)
+// CHECK-NEXT:                effrs_inout_kind_cast5 = effrs_inout_unit_conv6 * 1.0E-6_8
+// CHECK-NEXT:                deallocate(effrs_inout_unit_conv6)
+// CHECK-NEXT:                effrs_inout = real(effrs_inout_kind_cast5, kind=kind_phys)
+// CHECK-NEXT:                deallocate(effrs_inout_kind_cast5)
+// CHECK-NEXT:              end if
 // CHECK-NEXT:            end if
 // CHECK-NEXT:          end do
 // CHECK-NEXT:        end do
@@ -290,13 +327,13 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        if (allocated(effrr_in_unit_conv3)) deallocate(effrr_in_unit_conv3)
-// CHECK-NEXT:        allocate(effrr_in_unit_conv3(size(effrr_inout, 1), size(effrr_inout, 2)))
-// CHECK-NEXT:        effrr_in_unit_conv3 = effrr_inout * 1.0E6_kind_phys
-// CHECK-NEXT:        if (allocated(effrr_in_vert_flip4)) deallocate(effrr_in_vert_flip4)
-// CHECK-NEXT:        allocate(effrr_in_vert_flip4(size(effrr_in_unit_conv3, 1), size(effrr_in_unit_conv3, 2)))
-// CHECK-NEXT:        effrr_in_vert_flip4 = effrr_in_unit_conv3(:, size(effrr_in_unit_conv3, 2):1:-1)
-// CHECK-NEXT:        call effr_diag_run(effrr_in=effrr_in_vert_flip4, scalar_var=scalar_varC, errmsg=errmsg,     &
+// CHECK-NEXT:        if (allocated(effrr_in_unit_conv8)) deallocate(effrr_in_unit_conv8)
+// CHECK-NEXT:        allocate(effrr_in_unit_conv8(size(effrr_inout, 1), size(effrr_inout, 2)))
+// CHECK-NEXT:        effrr_in_unit_conv8 = effrr_inout * 1.0E6_kind_phys
+// CHECK-NEXT:        if (allocated(effrr_in_vert_flip9)) deallocate(effrr_in_vert_flip9)
+// CHECK-NEXT:        allocate(effrr_in_vert_flip9(size(effrr_in_unit_conv8, 1), size(effrr_in_unit_conv8, 2)))
+// CHECK-NEXT:        effrr_in_vert_flip9 = effrr_in_unit_conv8(:, size(effrr_in_unit_conv8, 2):1:-1)
+// CHECK-NEXT:        call effr_diag_run(effrr_in=effrr_in_vert_flip9, scalar_var=scalar_varC, errmsg=errmsg,     &
 // CHECK-NEXT:          errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then

@@ -540,3 +540,274 @@ class TestPromotedArgsOnHorizontalDimension:
         text = promoted_horiz_dim_fortran
         assert "qv=qv(ccpp_lbound_one:ncol, vertical_layer_index)" in text
         assert "qv=qv(ccpp_lbound_one:vertical_layer_index, vertical_layer_index)" not in text
+
+
+# Minimal non-promoted scheme with one optional arg matched against a host
+# var carrying 'active = flag_for_opt_var' -- the flat-call counterpart to
+# _PROMOTED_OPT_SCHEME above (examples/opt_arg's own real shape: no
+# promotion involved, just a plain optional arg gated by a named host
+# logical). 'nx' is mandatory so both the with- and without-branches share
+# at least one real call argument, matching the real bug's own shape.
+_ACTIVE_GATED_SCHEME = """\
+[ccpp-table-properties]
+  name = active_gated_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = active_gated_scheme_run
+  type = scheme
+[ nx ]
+  standard_name = size_of_std_arg
+  units = count
+  type = integer
+  intent = in
+  dimensions = ()
+[ opt_var ]
+  standard_name = opt_arg
+  units = 1
+  type = integer
+  intent = inout
+  dimensions = (size_of_std_arg)
+  optional = True
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = Error message for error handling in CCPP
+  type = character
+  kind = len=512
+  intent = out
+  dimensions = ()
+  units = none
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = Error flag for error handling in CCPP
+  type = integer
+  intent = out
+  dimensions = ()
+  units = 1
+"""
+
+_ACTIVE_GATED_HOST = """\
+[ccpp-table-properties]
+  name = active_gated_host
+  type = host
+[ccpp-arg-table]
+  name = active_gated_host
+  type = host
+[ nx ]
+  standard_name = size_of_std_arg
+  type = integer
+  units = count
+  dimensions = ()
+[ opt_arg ]
+  standard_name = opt_arg
+  type = integer
+  units = 1
+  dimensions = (size_of_std_arg)
+  active = flag_for_opt_var
+[ flag_for_opt_var ]
+  standard_name = flag_for_opt_var
+  type = logical
+  units = 1
+  dimensions = ()
+[ errmsg ]
+  standard_name = ccpp_error_message
+  type = character
+  kind = len=512
+  units = none
+  dimensions = ()
+[ errflg ]
+  standard_name = ccpp_error_code
+  type = integer
+  units = 1
+  dimensions = ()
+"""
+
+_ACTIVE_GATED_SUITE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="active_gated_suite" version="1.0">
+  <group name="physics">
+    <scheme>active_gated_scheme</scheme>
+  </group>
+</suite>
+"""
+
+
+@pytest.fixture(scope="module")
+def active_gated_fortran(tmp_path_factory) -> str:
+    """Full Fortran output for a flat (non-promoted) scheme with one
+    optional arg matched against an 'active'-gated host variable."""
+    tmp_path = tmp_path_factory.mktemp("active_gated")
+    return _run_pipeline_from_content(
+        tmp_path,
+        suite_xml=_ACTIVE_GATED_SUITE_XML,
+        scheme_metas=[_ACTIVE_GATED_SCHEME],
+        host_metas=[_ACTIVE_GATED_HOST],
+        with_host_match=True,
+    )
+
+
+class TestActiveGatedOptionalArgs:
+    """The 'active' property (dead until this fix -- parsed into IR, never
+    read by any pass) must now gate a matched optional arg's call/marshaling
+    behind the host's own named logical expression, not treat it as always
+    present. Distinct from TestPromotedOptionalArgs' present()-based guard:
+    this is the flat (non-promotion-loop) call path, and the condition
+    tested is an arbitrary host expression, not Fortran's present()
+    intrinsic."""
+
+    def test_pipeline_does_not_crash(self, active_gated_fortran):
+        assert "active_gated_scheme_run" in active_gated_fortran
+
+    def test_guard_tests_the_host_active_expression(self, active_gated_fortran):
+        assert "if (flag_for_opt_var) then" in active_gated_fortran
+
+    def test_with_branch_passes_opt_var(self, active_gated_fortran):
+        text = active_gated_fortran
+        with_idx = text.index("if (flag_for_opt_var) then")
+        else_idx = text.index("else", with_idx)
+        with_branch = text[with_idx:else_idx]
+        assert "opt_var=opt_var" in with_branch
+
+    def test_without_branch_omits_opt_var(self, active_gated_fortran):
+        text = active_gated_fortran
+        else_idx = text.index("else", text.index("if (flag_for_opt_var) then"))
+        end_if_idx = text.index("end if", else_idx)
+        without_branch = text[else_idx:end_if_idx]
+        assert "call active_gated_scheme_run(" in without_branch
+        assert "opt_var=opt_var" not in without_branch
+        # The mandatory arg must still be passed in both branches.
+        assert "nx=nx" in without_branch
+
+
+# Minimal scheme whose _timestep_init entry needs a real HOST-type-table
+# variable ('nx') -- examples/opt_arg's own confirmed bug shape:
+# lifecycle_cap.py's _generate_lifecycle_fn hardcoded "timestep_initial has
+# no host inputs", so it fell back to an uninitialized local placeholder
+# (lc_nx) instead of threading the real value through. 'nx2' with a name
+# ending in a digit specifically exercises the xDSL name_hint auto-strip
+# gotcha (extract_valid_name silently drops a trailing "_<digits>", which
+# would otherwise collide two differently-suffixed extra args down to the
+# same printed name -- see lifecycle_cap.py's own "__hostarg" marker).
+_TIMESTEP_HOST_ARG_SCHEME = """\
+[ccpp-table-properties]
+  name = timestep_host_arg_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = timestep_host_arg_scheme_timestep_init
+  type = scheme
+[ nx ]
+  standard_name = size_of_std_arg
+  units = count
+  type = integer
+  intent = in
+  dimensions = ()
+[ nx2 ]
+  standard_name = size_of_std_arg_2
+  units = count
+  type = integer
+  intent = in
+  dimensions = ()
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = Error message for error handling in CCPP
+  type = character
+  kind = len=512
+  intent = out
+  dimensions = ()
+  units = none
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = Error flag for error handling in CCPP
+  type = integer
+  intent = out
+  dimensions = ()
+  units = 1
+"""
+
+_TIMESTEP_HOST_ARG_HOST = """\
+[ccpp-table-properties]
+  name = timestep_host_arg_host
+  type = host
+[ccpp-arg-table]
+  name = timestep_host_arg_host
+  type = host
+[ nx ]
+  standard_name = size_of_std_arg
+  type = integer
+  units = count
+  dimensions = ()
+[ nx2 ]
+  standard_name = size_of_std_arg_2
+  type = integer
+  units = count
+  dimensions = ()
+[ errmsg ]
+  standard_name = ccpp_error_message
+  type = character
+  kind = len=512
+  units = none
+  dimensions = ()
+[ errflg ]
+  standard_name = ccpp_error_code
+  type = integer
+  units = 1
+  dimensions = ()
+"""
+
+_TIMESTEP_HOST_ARG_SUITE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="timestep_host_arg_suite" version="1.0">
+  <group name="physics">
+    <scheme>timestep_host_arg_scheme</scheme>
+  </group>
+</suite>
+"""
+
+
+@pytest.fixture(scope="module")
+def timestep_host_arg_fortran(tmp_path_factory) -> str:
+    """Full Fortran output for a suite whose timestep_init phase needs real
+    HOST-type-table data on the outer ccpp_physics_timestep_initial wrapper."""
+    tmp_path = tmp_path_factory.mktemp("timestep_host_arg")
+    return _run_pipeline_from_content(
+        tmp_path,
+        suite_xml=_TIMESTEP_HOST_ARG_SUITE_XML,
+        scheme_metas=[_TIMESTEP_HOST_ARG_SCHEME],
+        host_metas=[_TIMESTEP_HOST_ARG_HOST],
+        with_host_match=True,
+    )
+
+
+class TestTimestepPhaseHostTableArgs:
+    """A lifecycle phase (timestep_initial/timestep_final/init/finalize)
+    whose own scheme entry point needs a real HOST-type-table variable must
+    expose it as a real dummy argument on the outer ccpp_physics_* wrapper,
+    not fall back to an uninitialized local placeholder (lc_nx) -- the
+    confirmed examples/opt_arg bug."""
+
+    def test_pipeline_does_not_crash(self, timestep_host_arg_fortran):
+        assert "timestep_host_arg_scheme" in timestep_host_arg_fortran
+
+    def test_wrapper_signature_includes_real_args_not_placeholders(
+        self, timestep_host_arg_fortran
+    ):
+        text = timestep_host_arg_fortran
+        # Find the specific wrapper's own signature line(s).
+        wrapper_idx = text.index("ccpp_physics_timestep_initial(")
+        sig_end = text.index(")", wrapper_idx)
+        sig = text[wrapper_idx:sig_end]
+        assert "nx" in sig
+        assert "nx2" in sig
+        assert "lc_nx" not in sig
+
+    def test_no_disconnected_local_placeholders_declared(self, timestep_host_arg_fortran):
+        """The old bug declared lc_nx/lc_nx2 as local, never-allocated
+        dummies and passed those into the suite callee instead."""
+        assert "lc_nx" not in timestep_host_arg_fortran
+
+    def test_call_forwards_the_real_wrapper_args(self, timestep_host_arg_fortran):
+        text = timestep_host_arg_fortran
+        call_idx = text.index("call timestep_host_arg_suite_suite_timestep_initial(")
+        call_end = text.index(")", call_idx)
+        call = text[call_idx:call_end]
+        assert "nx" in call
+        assert "nx2" in call

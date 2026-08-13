@@ -57,7 +57,8 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `suite_allocate` | 📋 Backlog (L); one predicted sub-bug ruled out, doesn't reproduce | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
 | `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
-| `opt_arg`'s dead `active` property | 📋 Backlog (S/M) | L3350 |
+| `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
+| Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 
@@ -3424,6 +3425,73 @@ dependency is noted.
     `suite_allocate`'s equivalent caveat) since the executable at least links against the generated
     sources syntactically, but the directory is not `add_subdirectory`'d from the root
     `CMakeLists.txt` given these two confirmed bugs.
+  - **RESOLVED (2026-08-13) — both bugs fixed, `add_subdirectory`'d into the root build.**
+    - **Bug 1 (dead `active` property).** Root cause: no pass read `ArgumentOp.active` at all.
+      Fixed by (a) `HostVariableMatchPass` now propagates a matched host/module var's own
+      `active` expression onto the scheme arg as a new `model_var_active_expr` IRDL property
+      (`ccpp.py`, mirroring the `model_var_is_host_table`/`model_var_is_protected` pattern from
+      the `constituents_dim` Stage 7 work); (b) a new `ActiveCheckOp` IR op
+      (`ccpp_utils.py`/`print_ftn.py`) prints `if (<condition_expr>) then ... else ... end if` —
+      deliberately a *sibling* of the existing `PresentCheckOp`, not a generalization of it:
+      `PresentCheckOp` tests Fortran's `present()` intrinsic for optional args inside a
+      rank-reduction promotion loop, while `ActiveCheckOp` tests an arbitrary named host
+      logical for the flat (non-promoted) case examples/opt_arg actually needs — different
+      runtime questions, so kept as separate ops rather than risking the working promoted-arg
+      path; (c) a new `suite_cap.py` method, `_build_active_gated_call_ops`, mirroring
+      `_build_promoted_call_ops`'s own with/without-branch construction, wired into
+      `_build_call_ops`'s flat (non-promoted) call site in place of the old direct
+      `generateSchemeSubroutineCallOps` call.
+      **Adjacent finding, not fixed (logged separately, see Index):** `_build_block_signature`'s
+      kind/unit-conversion scratch-buffer allocation for an optional arg still runs
+      unconditionally, calling `size()` on the source array before any presence check —
+      invalid if the arg is genuinely absent (not just logically inactive). Pre-existing, would
+      affect any optional+unit/kind-mismatched arg, not something this fix's active-gating
+      introduced; not exercised by examples/opt_arg's own test since its driver always sets
+      `flag_for_opt_arg = .true.` and always allocates `opt_arg`/`opt_arg_2`.
+    - **Bug 2 (timestep-phase local placeholders).** More precise root cause than originally
+      diagnosed: not a `HostVariableMatchPass` gap -- `lifecycle_cap.py`'s `_generate_lifecycle_fn`
+      (used for register/initialize/finalize/timestep_initial/timestep_final; `_run` goes through
+      the separate `run_dispatch.py`) hardcoded the assumption that these phases have no host
+      inputs at all, baked into its own docstring and control flow, true for every example ported
+      so far but not derived from the actual scheme metadata. `opt_arg_scheme`'s own
+      `timestep_init`/`timestep_final` entry points genuinely need `nx`/`var`/`opt_var`/
+      `opt_var_2` from `data.meta` -- a HOST-type table, which (per this codebase's own standing
+      rule) is never `use`-associated, always a caller-supplied block argument. Fixed with a
+      pre-scan (before `new_block` is constructed, since the extra args must be part of its
+      `arg_types` from the start) that discovers which HOST-type-table args a phase's own scheme
+      entry point needs, exposes them as real dummy arguments on the outer
+      `ccpp_physics_timestep_initial`/`_timestep_final` wrapper (mirroring how `_run`'s own
+      wrapper already does this), threads inout ones back out through `func.ReturnOp` (the
+      existing "inout-echo" convention `print_ftn.py` already uses for `ccpp_t`), and updates
+      `examples/opt_arg`'s own driver to actually pass them in.
+    - **A genuine xDSL framework gotcha, found and worked around while fixing Bug 2:**
+      `xdsl.ir.core.IRWithName.extract_valid_name` silently strips any trailing `_<digits>` from
+      a `name_hint` (its own SSA-value auto-disambiguation convention -- it assumes such a
+      suffix is framework-generated, not semantic). `opt_arg_scheme`'s own `opt_var_2` collided
+      with `opt_var` this way (`name_hint = "opt_var_2"` silently became `"opt_var"`),
+      duplicating a dummy-argument name in the generated signature. Worked around with a new
+      `"__hostarg"` marker suffix (doesn't end in digits, so xDSL leaves it alone), stripped back
+      to the real name in `print_ftn.py`'s existing `__alloc`/`__opt`/`__in` suffix-stripping
+      logic -- deliberately NOT added to that logic's intent-detection flags, since (unlike the
+      other three) it carries no intent implication of its own; intent falls through to the
+      ordinary array/inout-echo detection.
+    - **Regression found and fixed while verifying:** the fix's own pre-scan initially also
+      matched `ccpp_info`/`ccpp_t` (both legitimately declared in a HOST-type table themselves)
+      and tried to expose them a second time alongside their existing dedicated handling,
+      duplicating a block argument (`examples/ddthost`'s own `ccpp_info_t` pattern caught this).
+      Fixed by excluding `std_name == "host_standard_ccpp_type"` and the `ccpp_t` derived type
+      from the pre-scan explicitly.
+    - **Verification:** full suite green throughout (`tests/unit` + `tests/filecheck`, 562
+      passed, 1 xfailed pre-existing/unrelated, 1 failed pre-existing/unrelated -- the
+      `test_build_integration.py` PATH-resolution issue, same as always); new dedicated coverage
+      in `test_optional_args.py` (`TestActiveGatedOptionalArgs`, `TestTimestepPhaseHostTableArgs`
+      -- the latter's own fixture deliberately uses a second arg named `nx2` to catch the
+      name-collision regression directly). `var_compat`'s own real fixture (`effr_calc`'s
+      `flag_indicating_cloud_microphysics_has_graupel`-gated args) exercises the same Bug-1 fix
+      end-to-end and needed its two golden FileCheck files regenerated to match the now-correct
+      output. `examples/opt_arg` is now `add_subdirectory`'d into the root build and added to
+      `.github/workflows/compile-tests-cmake.yml`'s matrix -- not yet compile/run-verified on
+      this laptop (no Fortran compiler available), so CI is the first real check.
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified
