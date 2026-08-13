@@ -81,6 +81,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
+    is_dispatch_scalar_std_name,
     is_vertical_dimension,
     normalize_units,
 )
@@ -826,6 +827,40 @@ class GenerateSuiteSubroutine(RewritePattern):
         guard_name = optional_promoted_names[0]
         present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
         return shared_slice_ops + [present_op]
+
+    def _classify_host_table_vars(self) -> dict:
+        """Return std_name.lower() -> 'state'|'dispatch_scalar' for every
+        variable declared in a HOST-type table in self.meta_data.
+
+        Stage 1 of the vocabulary-resolution redesign (see
+        ccpp_cap_refactor_plan.md): classification only, nothing in this
+        codebase reads this yet. 'dispatch_scalar' means the standard_name
+        is one of the fixed CCPP-protocol dispatch parameters
+        (is_dispatch_scalar_std_name -- loop bounds, error handling) that
+        both this codebase and real capgen-v1 legitimately thread as a
+        plain argument; every other HOST-type var is 'state' -- real
+        host-owned data that real capgen-v1 resolves via use-association
+        (like this codebase's own MODULE-type vars already are) rather
+        than threading as a block argument the way this codebase currently
+        does for every HOST-type var without distinction.
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+        classification: dict = {}
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") != CCPPType.HOST:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if not var.hasAttr("standard_name"):
+                    continue
+                std_name = var.getAttr("standard_name").lower()
+                classification[std_name] = (
+                    "dispatch_scalar" if is_dispatch_scalar_std_name(std_name)
+                    else "state"
+                )
+        return classification
 
     _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 

@@ -61,6 +61,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
+| Vocabulary-resolution redesign (match capgen-v1's use-association model) | 🔶 Stage 1 done (2026-08-13); Stages 2a-5 not started | L3589 |
 
 **Backlog — other flagged issues:**
 
@@ -3586,6 +3587,58 @@ dependency is noted.
         would be thrown-away work.
       - **Verification:** full suite green again (562 passed, 1 xfailed, 1 failed -- same
         pre-existing `test_build_integration.py` PATH issue, unrelated).
+- **Vocabulary-resolution redesign — matching real capgen-v1's use-association model — L, staged.**
+  Prompted directly by the `active=` fix above: real capgen-v1's own generated caps (confirmed by
+  running its actual `capgen/ccpp_capgen.py` against `opt_arg`, `var_compat`, and `chunked_data`
+  from the reference `feature/capgen-v1` checkout) never thread host-owned state as call
+  arguments at all -- every host-declared variable, regardless of table type, is resolved via
+  `use <module>, only: <var>` wherever referenced, with only a small fixed set of generic
+  dispatch scalars (loop bounds, error handling) threaded as plain arguments. xdsl_ccpp's own
+  HOST-type table conflates the two, forcing every genuine host-state HOST-type reference to be
+  threaded as a block argument -- the direct cause of this session's `_collect_active_gate_extra_args`/
+  two-layer `lifecycle_cap.py` propagation/`__hostarg` xDSL-workaround machinery. Unifying
+  HOST-type resolution with the MODULE-type use-association path that already exists (and already
+  correctly resolves `has_graupel`) is expected to let a meaningful fraction of that machinery be
+  deleted outright rather than maintained. Staged so each piece lands and is tested independently:
+  - **Stage 1 — Classify, don't act. ✅ Done (2026-08-13).** New `DISPATCH_SCALAR_STD_NAMES`/
+    `is_dispatch_scalar_std_name` in `ccpp_conventions.py` and
+    `GenerateSuiteSubroutine._classify_host_table_vars` in `suite_cap.py` (returns
+    `std_name.lower() -> 'state'|'dispatch_scalar'` for every var in a HOST-type table). No
+    behavior change -- nothing reads this yet. **Correction to the original Stage 1 sketch:**
+    the plan assumed the classifier could check "is this var backed by a real compiled Fortran
+    module" -- turns out that fact isn't visible to the Python tool at all (which HOST_FILES
+    entries get a `.F90` compiled is a CMake-level decision the tool never sees; it only gets a
+    flat `--host-files` list). The real, actually-implementable signal, confirmed by direct
+    inspection of every example's own generic control-derived host table (`opt_arg`/`var_compat`/
+    `chunked_data`/`suite_allocate`/.../`test_host.meta`): every one of them declares exactly the
+    same 4 standard names (`horizontal_loop_begin`, `horizontal_loop_end`, `ccpp_error_message`,
+    `ccpp_error_code`) and nothing else -- no example's `.meta` anywhere declares a standard_name
+    for `thread_num`/`nthreads`/`nphys_threads`/`suite_name`/`group_name`; those are synthesized
+    directly by the code generator, never host-matched. So the classifier is a small fixed
+    allowlist, not a module-existence check. Covered by
+    `tests/unit/test_host_var_classification.py` (3 tests, fixture shape mirrors `opt_arg`'s own
+    `data.meta`/`test_host.meta` verbatim).
+  - **Stage 2a — use-associate `state`-classified HOST vars at the innermost call layer
+    (`suite_cap.py`).** 📋 Next. Extend `_resolve_active_condition`'s existing MODULE-type
+    USE-stub path to also cover `state`-classified HOST-type vars at the scheme-call site,
+    removing the need for `_collect_active_gate_extra_args`'s synthetic-arg injection for
+    HOST-type `active=` refs.
+  - **Stage 2b — same for the outer lifecycle wrapper (`lifecycle_cap.py`).** 📋 Not started.
+    Removes this session's pre-scan/`extra_host_arg_index`/inout-echo machinery once 2a makes it
+    unnecessary -- expected to shrink `lifecycle_cap.py` back below its pre-this-session size.
+  - **Stage 2c — confirm `run_dispatch.py` needs no change (or a small one).** 📋 Not started.
+  - **Stage 3 — delete now-dead code**
+    (`_collect_active_gate_extra_args`, `extra_host_arg_*`, `__hostarg` if unneeded elsewhere).
+    📋 Not started.
+  - **Stage 4 — roll out to the rest of the examples**, smallest first, `instances`/
+    `instances_advection` last (also resolves the open architecture question for those, see
+    `instances`/`instances_advection` backlog entry above, as a side effect rather than
+    separately). 📋 Not started.
+  - **Stage 5 — optional, separable naming cleanup** (host-prefixed subroutine names ->
+    capgen-v1-style generic names). 📋 Not started, low priority, independent of the rest.
+  - Hold `suite_allocate`/`instances`+`instances_advection`/kind_spec/interstitial-variable
+    backlog items (all cap-generation-adjacent) until Stage 3 lands -- building on the model
+    being replaced would be redone.
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified
