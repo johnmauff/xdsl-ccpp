@@ -3135,6 +3135,110 @@ dependency is noted.
     is still upstream's unadapted generic-dispatch driver (no point rewriting it against a cap that
     doesn't generate); re-adapt it to xdsl-ccpp's per-host-prefixed calling convention (pattern in
     `examples/chunked_data/main.F90`) once the root blocker above is fixed.
+  - **RESOLVED — merged as PR #67 (2026-08-13), CI green.** Closed via four real xdsl_ccpp
+    capability gaps, not vocabulary issues in this example's own `.meta` files (confirmed clean
+    v1 vocabulary against real capgen-v1 upstream):
+    1. The root blocker above — fixed by adding `number_of_ccpp_constituents` to
+       `CCPP_FRAMEWORK_STD_NAMES`/`FRAMEWORK_STD_NAME_TO_CAP_VAR` (`ccpp_conventions.py`/
+       `cap_shared.py`), resolving it to `size(lc_all_constituents)` when no host declares it.
+       **False start, corrected via Copilot review:** the first attempt instead added
+       host-match-priority logic to `HostVariableMatchPass`, specifically to avoid breaking
+       `examples/constadv`'s own host-declared `number_of_ccpp_constituents` — traced back to
+       `constadv` itself using a capgen-v0 pattern with no real capgen-v1 counterpart (audited
+       every real capgen-v1 end-to-end test using this standard_name: `advection`,
+       `advection_auto_clone`, `constituents_dim`, `instances_advection` — none ever
+       host-declares it). Fixed `constadv_host_mod.meta` instead (removed the stale host
+       declaration — `constadv` already registers its own `dyn_const` via the real v1
+       mechanism, so the framework count is correct there too), keeping the simpler,
+       unconditional fix and avoiding new xdsl_ccpp-side complexity for a pattern real capgen-v1
+       never uses.
+    2. Sub-item 2's predicted "cross-scheme constituent-flag inference" gap **did not
+       materialize** — `const_dim_consumer`'s unflagged `qbase`/`qtend` sail through
+       `HostVariableMatchPass` cleanly once (1) above is fixed; no cross-scheme std_name set was
+       needed after all.
+    3. A **new bug**, not predicted by either sub-item: `suite_cap.py`'s per-phase output-arg
+       allocation tracked "already have errflg/errmsg" coverage by literal local name
+       ("errflg") instead of standard_name (`ccpp_error_code`) — since this example's schemes
+       name their own arg `errcode`, this produced a second, spurious return value in every
+       `_run`-phase suite subroutine, corrupting the caller-side copy-back. This is almost
+       certainly the real identity of the "third, previously-untracked gap" noted above (the
+       `memref.copy` shape-mismatch crash) — once fixed, that crash didn't recur, and no
+       separate constituent-registration bug was ever found.
+    4. Once (1)-(3) landed, cap generation succeeded but produced Fortran that would crash at
+       runtime: `cwork`/`awork` (Case 2a/2b) were declared but never allocated anywhere. Root
+       cause: they're SuiteOwned scratch vars declared only in a scheme's own `_run` table
+       (never `_init`/`_register`), and `_build_framework_refs`'s per-phase allocation attempt
+       was gated to `_init`/`_register` postfixes only. Fixed by also attempting allocation
+       during `_run`, gated on a `already_scheduled_allocs` set shared across all of one
+       suite's phase calls, so a var *with* a real `_init`/`_register` occurrence doesn't also
+       get a redundant second allocation. **False start, corrected:** the first version of this
+       fix only tracked scheduling for the per-phase `framework_vars` loop, not the separate
+       `SuiteVariableModel.suite_owned_vars()` sweep that's what actually covers `capgen`'s own
+       `to_promote`/`promote_pcnst`/`temp_calc` — broke two already-passing filecheck goldens
+       until both allocation mechanisms were tracked in the same shared set.
+    5. `qbase` (advected, dims `horizontal_dimension`/`vertical_layer_dimension`) was *still*
+       never allocated after (4) — its dims are declared only in `host_data.meta`, a
+       `type=host` table, and `_find_loop_upper_bound`'s host-table fallback only ever scanned
+       `type=module` tables (HOST-type vars are deliberately never `use`-associated anywhere in
+       this codebase — confirmed this is consistent, not an oversight, by checking
+       `run_dispatch.py`'s `host_block_std_names` handling). Fixed by adding a third fallback:
+       derive the dimension from an already-in-scope, non-SuiteOwned array's own shape
+       (`size(coupler_flux, 1)`, `size(qtend, 2)`) instead of requiring a host/module lookup at
+       all. One bug found in the first version of this fix too: the new fallback initially
+       matched `qbase` against its own dim entry (self-referential `size(qbase, 2)` on an array
+       not yet allocated) — fixed by excluding SuiteOwned candidates from the scan.
+    6. **Post-merge, Copilot-flagged on PR #67:** `ccpp_cap.py`'s constituent-API emission gate
+       (`if dyn_names or fixed_adv or scratch_var_list`) never accounted for a scheme merely
+       *referencing* `number_of_ccpp_constituents` with no dynamic registration or
+       fixed-advected constituent of its own elsewhere in the suite — since (1)'s fallback
+       resolves that standard_name to `size(lc_all_constituents)` unconditionally, such a
+       (hypothetical, not exercised by this example) suite would reference an undeclared
+       Fortran symbol and fail to compile. Fixed by extending `_collect_constituent_info` to
+       also detect a bare reference and OR it into the gate.
+    7. **Separate, unrelated finding surfaced along the way:** this example's own vendored
+       `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` (duplicated, byte-identical, in
+       `examples/advection` too) turned out to be missing `diag_name`, a real field/
+       `instantiate()` argument `register_consts.F90` (ported faithfully from real capgen-v1
+       upstream) genuinely needs — confirmed **not** a capgen-v1 bug: real capgen-v1 has
+       exactly one, canonical, ~2700-line implementation of this module
+       (`capgen/src/ccpp_constituent_prop_mod.F90`, with its own further dependencies on
+       `ccpp_hashable.F90`/`ccpp_hash_table.F90`), built against by every real end-to-end test
+       with no per-test duplication at all. xdsl-ccpp's own choice to hand-duplicate a
+       simplified stub per example is what let this drift silently — the stub only ever grew to
+       cover whatever the *already-wired* examples happened to call, and `register_consts.F90`
+       was the first scheme in the repo to actually need `diag_name`. Consolidated the
+       simplified stub (not the full real library — xdsl_ccpp's own generator,
+       `constituent_cap.py`, only ever targets the simplified API, never the real
+       `ccpp_model_constituents_t` wrapper type real capgen-v1 actually uses) into a single
+       source, `examples/shared/ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90`, compiled
+       directly into each consuming example's own TESTLIB target — not a separate pre-built
+       shared library at the root `CMakeLists.txt` level, which was tried first and failed
+       (`Cannot open module file 'ccpp_kinds.mod'`): `ccpp_kinds.F90` is itself per-example
+       *generated*, not a static file any root-scope target could depend on before that
+       example's own cap generation has run. `examples/advection` still compiles its own
+       separate, currently-identical copy for now — see the follow-up item below.
+    8. `main.F90` rewritten to call xdsl_ccpp's own per-host-prefixed generated subroutine names
+       instead of capgen-v1's generic dispatch convention (same rationale as `chunked_data`'s
+       own `main.F90`). Surfaced a separate, cross-cutting finding while doing this — see the
+       follow-up item below, not fixed as part of this.
+- **Follow-up backlog items spawned by the `constituents_dim` fix above:**
+  - Migrate `examples/advection` (and audit every other example for similarly duplicated
+    per-example support files, not just these two) to link `examples/shared/`'s single-source
+    `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` instead of its own local copy — see
+    item 7 above for why this matters: a duplicated stub only ever grows to cover whatever's
+    already been exercised, which is exactly what caused the `diag_name` compile bug in the
+    first place, and it will keep happening again for any other file duplicated the same way.
+  - Decide whether to change xdsl_ccpp's cap generator to match real capgen-v1's own bare
+    (non-host-prefixed) subroutine naming convention (confirmed via
+    `capgen/generator/host_cap.py`'s own docstring: real capgen-v1 host-prefixes only the
+    *module*, `<host>_ccpp_cap.F90` — the public subroutines inside stay bare,
+    `ccpp_physics_run` not `<host>_ccpp_physics_run`), or keep xdsl_ccpp's current
+    host-prefixed-subroutine convention as a deliberate, documented extension every already-
+    wired example's own driver already depends on. Also noted while investigating: xdsl_ccpp
+    collapses capgen-v1's split suite-state lifecycle (`ccpp_init`/`ccpp_final`) vs. group-level
+    scheme dispatch (`ccpp_physics_init`/`ccpp_physics_final`) into one combined entry point per
+    phase — a related, possibly architectural difference, not just naming; not investigated
+    further.
 - **`suite_allocate` — L, plus one cheap independent bugfix.**
   - **Cheap fix, do first, unrelated to the rest — S.** `_build_cap_var_map`'s scratch-var
     allocation silently falls back to allocating size `"1"` for any dimension name not in
