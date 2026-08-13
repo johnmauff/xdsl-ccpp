@@ -154,6 +154,19 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   add_library(test_utils OBJECT ${CMAKE_SOURCE_DIR}/examples/capgen/host_ftn/test_utils.F90)
   set_target_properties(test_utils PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test_utils_mod)
   target_include_directories(test_utils PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/test_utils_mod)
+
+  # Single-source constituent-registration support stub (see
+  # examples/shared/ccpp_constituent_prop_mod.F90's own header comment) --
+  # examples/constituents_dim links this instead of compiling its own copy.
+  # examples/advection still compiles its own separate, currently-identical
+  # copy for now -- migrating it (and any other example duplicating this
+  # same stub) to this single source is tracked as its own backlog item,
+  # not done as a side effect of fixing constituents_dim's diag_name gap.
+  add_library(ccpp_constituent_support OBJECT
+    ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+    ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90)
+  set_target_properties(ccpp_constituent_support PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/ccpp_constituent_support_mod)
+  target_include_directories(ccpp_constituent_support PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/ccpp_constituent_support_mod)
 endif()
 
 add_subdirectory(examples/nested_suite)
