@@ -20,14 +20,24 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_FRAMEWORK_STD_NAMES,
 )
 
-# Known framework arrays promoted to a fixed cap-owned module variable name,
-# rather than a freshly-allocated scratch var. Used directly by both
+# Known framework standard names promoted to a fixed cap-owned module-scope
+# reference (an array's module variable name, or a scalar expression over
+# one), rather than a freshly-allocated scratch var. Used directly by both
 # ccpp_cap.py's _build_cap_var_map and classify_arg_ownership below -- a
 # single definition, not two independently-maintained copies, so the two
 # heuristics can't silently diverge on this list.
+#
+# number_of_ccpp_constituents resolves to an expression, not a bare
+# identifier -- safe here because CapVarRefOp's printer (print_ftn.py)
+# registers this string verbatim as the SSA result's text with no
+# accompanying Fortran declaration emitted (same mechanism ArraySectionOp
+# uses for its own inline expressions), and every real .meta declaration of
+# this standard name is intent(in) (a count being read, never written back),
+# so it never needs to appear as an assignable lvalue.
 FRAMEWORK_STD_NAME_TO_CAP_VAR: dict = {
     "ccpp_constituents": "lc_constituent_array",
     "ccpp_constituent_tendencies": "lc_const_tend",
+    "number_of_ccpp_constituents": "size(lc_all_constituents)",
 }
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"

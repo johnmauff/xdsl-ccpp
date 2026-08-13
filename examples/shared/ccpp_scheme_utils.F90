@@ -1,3 +1,7 @@
+! Single source, shared by every example that needs it -- see
+! examples/shared/ccpp_constituent_prop_mod.F90's own header comment for why
+! this directory exists. Content unchanged from the copy previously
+! duplicated in examples/advection and examples/constituents_dim.
 module ccpp_scheme_utils
   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, int_unassigned
   implicit none

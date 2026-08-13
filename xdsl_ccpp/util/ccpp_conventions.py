@@ -48,11 +48,27 @@ CCPP_NUM_INSTANCES = 200
 # ── Framework-internal standard names ──────────────────────────────────────
 # Variables managed entirely by the CCPP framework — schemes reference them
 # but they are never matched to host model variables.
+#
+# number_of_ccpp_constituents is legitimately included here: audited every
+# real capgen-v1 end-to-end test that uses this standard name (advection,
+# advection_auto_clone, constituents_dim, instances_advection) and confirmed
+# no host/module table anywhere ever declares it directly -- it is always
+# either a dimension name or a scheme's own scalar arg, resolved through the
+# framework's dynamic constituent-registration count
+# (FRAMEWORK_STD_NAME_TO_CAP_VAR, cap_shared.py). A prior draft of this entry
+# special-cased a host-declared occurrence to preserve examples/constadv's
+# own such declaration, but that declaration was itself a leftover
+# capgen-v0 pattern with no v1 counterpart -- fixed by removing it from
+# constadv_host_mod.meta instead (constadv already registers its own
+# dyn_const via the real v1 mechanism, so the framework count is correct
+# there too), keeping this set simple rather than growing new xdsl_ccpp-side
+# accommodation for vocabulary no real capgen-v1 example actually uses.
 CCPP_FRAMEWORK_STD_NAMES: frozenset = frozenset({
-    "horizontal_loop_extent",       # computed as col_end - col_start + 1
-    "ccpp_constituents",            # constituent transport array
-    "ccpp_constituent_tendencies",  # constituent tendency array
-    CCPP_T_INSTANCE_STD_NAME,       # ccpp_t handle threaded by the cap generator
+    "horizontal_loop_extent",         # computed as col_end - col_start + 1
+    "ccpp_constituents",              # constituent transport array
+    "ccpp_constituent_tendencies",    # constituent tendency array
+    "number_of_ccpp_constituents",    # count of registered constituents
+    CCPP_T_INSTANCE_STD_NAME,         # ccpp_t handle threaded by the cap generator
 })
 
 # The full set of names the host variable match pass skips without error.

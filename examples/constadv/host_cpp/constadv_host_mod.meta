@@ -17,12 +17,6 @@
   units = count
   dimensions = ()
   type = integer
-[ ncnst ]
-  standard_name = number_of_ccpp_constituents
-  long_name = number of CCPP constituents
-  units = count
-  dimensions = ()
-  type = integer
 [ q ]
   standard_name = ccpp_constituents
   long_name = CCPP constituent array

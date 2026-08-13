@@ -23,12 +23,26 @@ def _collect_constituent_info(meta_data):
         allocatable=True, type=ccpp_constituent_properties_t
       - fixed_advected: list of (std_name, units, default_val) for args
         with advected=.true. in non-register scheme tables
+      - references_count: True if any scheme arg anywhere declares
+        standard_name=number_of_ccpp_constituents. Needed as its own signal
+        (not folded into dynamic_array_names/fixed_advected, which this
+        value doesn't overlap with in general) because
+        FRAMEWORK_STD_NAME_TO_CAP_VAR (cap_shared.py) resolves that
+        standard_name to size(lc_all_constituents) unconditionally --
+        ccpp_cap.py's own constituent-API emission gate needs to know to
+        emit lc_all_constituents whenever that resolution could actually be
+        used, even for a hypothetical suite referencing the count with no
+        dynamic registration or fixed-advected constituent of its own
+        (Copilot review comment on PR #67, 2026-08-14: confirmed this gate
+        previously had no such check, so that suite would silently reference
+        an undeclared Fortran symbol and fail to compile).
 
-    Returns (dynamic_array_names, fixed_advected).
+    Returns (dynamic_array_names, fixed_advected, references_count).
     """
     dynamic_array_names: list = []
     fixed_advected: list = []
     seen_fixed: set = set()
+    references_count = False
 
     for _scheme_name, props in meta_data.items():
         if props.getAttr("type") != CCPPType.SCHEME:
@@ -36,6 +50,12 @@ def _collect_constituent_info(meta_data):
         for table_name, arg_table in props.arg_tables.items():
             is_register = table_name.endswith("_register")
             for fn_arg in arg_table.getFunctionArguments():
+                if (
+                    fn_arg.hasAttr("standard_name")
+                    and fn_arg.getAttr("standard_name").lower()
+                        == "number_of_ccpp_constituents"
+                ):
+                    references_count = True
                 if (
                     is_register
                     and fn_arg.hasAttr("allocatable")
@@ -65,7 +85,7 @@ def _collect_constituent_info(meta_data):
                         seen_fixed.add(std_name)
                         fixed_advected.append((std_name, units, default_val))
 
-    return dynamic_array_names, fixed_advected
+    return dynamic_array_names, fixed_advected, references_count
 
 
 
