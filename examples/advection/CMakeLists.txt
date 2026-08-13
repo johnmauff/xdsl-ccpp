@@ -72,8 +72,8 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # same library unconditionally, so this does too, for parity.
   add_library(ADVECTION_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                         ${ADVECTION_HOST_FORTRAN_FILES}
-                                        ccpp_constituent_prop_mod.F90
-                                        ccpp_scheme_utils.F90
+                                        ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+                                        ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
                                         dlc_liq.F90
                                         ${CCPP_CAPS_LIST})
   set_target_properties(ADVECTION_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
