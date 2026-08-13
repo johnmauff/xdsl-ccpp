@@ -17,6 +17,7 @@ from xdsl_ccpp.dialects.ccpp import (
 )
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
+from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
 
 
 def _make_ctx() -> Context:
@@ -153,6 +154,16 @@ class ccppMain:
             help="Generate BIND(C) Fortran cap subroutines and matching C++ headers "
                  "(<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.",
         )
+        parser.add_argument(
+            "--legacy-mode",
+            action="store_true",
+            default=False,
+            help="Accept deprecated standard names (currently: horizontal_loop_extent) "
+                 "with a warning instead of rejecting them. Off by default, matching "
+                 "capgen-v1's own --legacy-mode flag. Every example in this repo has "
+                 "already migrated off these names; only pass this for host models "
+                 "still using the deprecated convention.",
+        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -231,6 +242,8 @@ class ccppMain:
         if self.options_db["host_files"]:
             host_files_arg = ",".join(self.options_db["host_files"])
             cmd += f' --host-files "{host_files_arg}"'
+        if self.options_db.get("legacy_mode"):
+            cmd += " --legacy-mode"
         cmd += f' > "{mlir_out}"'
 
         self.print_verbose_message(
@@ -245,7 +258,13 @@ class ccppMain:
         py_file = self.options_db["py"]
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = f'python3 "{py_file}" > "{mlir_out}"'
+        cmd = f'python3 "{py_file}"'
+        if self.options_db.get("legacy_mode"):
+            # py_api.py has no argparse of its own (it's the user's own
+            # script); it scans sys.argv for this token directly, mirroring
+            # ccpp_param()'s existing sys.argv-scanning convention.
+            cmd += " --legacy-mode"
+        cmd += f' > "{mlir_out}"'
 
         self.print_verbose_message(
             "Running Python frontend",
@@ -610,6 +629,11 @@ class ccppMain:
         except (ValueError, FileNotFoundError) as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
+
+        # Set once, before any ArgumentOp is constructed (merge_meta_files/
+        # merge_meta build ops in-process; run_frontend/run_py_frontend
+        # forward the flag to their own subprocess below).
+        set_legacy_mode(self.options_db.get("legacy_mode", False))
 
         tmp_dir = self.options_db["tempdir"]
         out_dir = self.options_db["out"]

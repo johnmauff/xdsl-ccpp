@@ -19,6 +19,10 @@ from xdsl_ccpp.backend.print_ftn import print_to_ftn
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 # ── fixtures ────────────────────────────────────────────────────────────────
 #
 # A host module declaring ncols/pver (horizontal_dimension/

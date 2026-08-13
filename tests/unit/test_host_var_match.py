@@ -17,6 +17,8 @@ from xdsl.dialects.builtin import ModuleOp
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
 
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 # ── Meta content helpers ──────────────────────────────────────────────────────
 

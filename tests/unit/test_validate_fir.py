@@ -17,6 +17,8 @@ from xdsl_ccpp.transforms.validate_fir import (
     compare_modules,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

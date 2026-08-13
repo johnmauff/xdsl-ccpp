@@ -25,6 +25,56 @@ description.
 
 ---
 
+## Index (added 2026-08-13)
+
+Lightweight status lookup so updating this doc doesn't require re-reading 3,600+ lines of
+narrative first. Each row's `L<n>` is the line number of that item's own bullet/heading in this
+file (as of 2026-08-13 — will drift as the doc grows; if a line number looks wrong, search for
+the bolded lead-in text quoted in "Item" instead). The narrative sections themselves remain the
+source of truth for *why* and *how* — this table only tracks *what* and *whether it's done*.
+
+**The six-phase `ccpp_cap.py` decomposition + Phase 7:**
+
+| Item | Status | Location |
+|---|---|---|
+| Phase 0 — Stabilize the safety net | ✅ Done | L1307 |
+| Phase 1 — Extract the C++/BIND(C) backend (`chost`) | ✅ Done | L1374 |
+| Phase 2 — Extract lifecycle and constituent-API generation | ✅ Done | L1439 |
+| Phase 3 — The run-dispatch cluster | ✅ Done (3a + 3b, all stages) | L1522 |
+| Phase 4 — Consolidate with `suite_cap.py`'s argument classification | ✅ Done (narrow extraction) | L1762 |
+| Phase 5 — Slim `ccpp_cap.py` down to its real remaining job | ✅ Done | L1905 |
+| Phase 6 — Decide pass-status for the new pieces | ✅ Decided (no code change) | L1965 |
+| Phase 7 — Full IR unification | ✅ Done (Stages 1-4) | L2004 |
+
+**Backlog — capgen-v1 end-to-end-tests capability gaps:**
+
+| Item | Status | Location |
+|---|---|---|
+| `var_compat` (vertical flip, kind/unit conversion, cross-scheme divergence, wrapper copy-back) | ✅ Done | L2290 |
+| `nested_suite` | ✅ Done (PR #47, merged) | L2998 |
+| `constituents_dim` | ✅ Done (PR #67, merged, CI green, 2026-08-13) | L3068 |
+| Follow-ups spawned by `constituents_dim`: single-source migration for `advection`; naming-convention audit | 📋 Backlog | L3224 |
+| `suite_allocate` | 📋 Backlog (L); one predicted sub-bug ruled out, doesn't reproduce | L3242 |
+| `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
+| `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
+| `opt_arg`'s dead `active` property | 📋 Backlog (S/M) | L3350 |
+| `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
+| Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
+
+**Backlog — other flagged issues:**
+
+| Item | Status | Location |
+|---|---|---|
+| `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | 📋 Backlog (S, cosmetic) | L3436 |
+| Move examples' build system from per-example Makefiles to CMake | 📋 Backlog (size TBD) | L3467 |
+| `.meta` bracket-spacing parser bug (`[ name ]` vs `[name]`) | ✅ Fixed | L3493 |
+| Three more whitespace-parsing bugs (same class, found by audit) | ✅ Fixed | L3540 |
+| `[ccpp-table-properties]`'s `module_name` override unsupported | 📋 Backlog (S) | L3566 |
+| `type = control` (capgen-v1) has no xdsl-ccpp equivalent | 📋 Backlog (modeling gap, currently inconsequential) | L3585 |
+| Suite signature generation ignored host's own unique local name (collision) | ✅ Fixed (2026-07-23) | L3620 |
+
+---
+
 ## Current state (2026-07-19)
 
 Numbers below are freshly measured from the actual repo, not carried forward from any earlier
@@ -3428,6 +3478,70 @@ dependency is noted.
     upstream state (rank changes, missing entry points, `kind_spec`/`dependencies_path`/
     `source_path` metadata-parser support) is also explicitly out of scope here — a separate,
     larger effort.
+  - **Update (2026-08-13): the "needs its own investigation" note above is now partly
+    addressed — not by deleting the legacy code paths, but by gating them behind an opt-in
+    `--legacy-mode` flag, matching real capgen-v1's own precedent (`capgen/ccpp_capgen.py`'s
+    three legacy shims — `--legacy-mode`, `--gfs-dim-aliases`, `--legacy-auto-clone-constituents`
+    — all off by default, all self-contained/deletable).** Prompted by a broader vocabulary
+    sweep (task-tracking backlog item #13) confirming zero current examples use
+    `horizontal_loop_extent`, plus a live concern that xdsl-ccpp's simultaneous support for both
+    the deprecated and current standard-name conventions was itself a source of bugs (several
+    found and fixed this session trace back to exactly this dual-support surface — see the
+    `constituents_dim` entry above).
+    - **What changed:** `ArgumentOp.__init__` (`xdsl_ccpp/dialects/ccpp.py`) now raises `ValueError`
+      by default when a deprecated standard_name (currently just `horizontal_loop_extent`) is
+      declared, instead of only warning. A new `set_legacy_mode`/`is_legacy_mode` pair
+      (`ccpp_conventions.py`, a process-global rather than a threaded parameter — `ArgumentOp` is
+      constructed from dozens of call sites across three independent frontends) downgrades this
+      back to the original warn-and-accept behavior. `--legacy-mode` was added to all three
+      frontends' own CLI surfaces: `ccpp_dsl.py` (the main entry point — sets the flag before any
+      op is built, and forwards it into whichever subprocess it spawns), `frontend/ccpp_xml.py`
+      (its own argparse, since it always runs as a subprocess), and `frontend/py_api.py` (no
+      argparse of its own — scans `sys.argv` directly for the bare token, mirroring the existing
+      `ccpp_param()` convention in that same file).
+    - **Investigation finding, not yet acted on:** the downstream machinery this flag actually
+      gates — `suite_cap.py`'s `_build_ncol_compute_ops`/`ncol_meta` host-fallback/`physics_mode`
+      col_start/col_end synthesis, `run_dispatch.py`'s CAM-SIMA-specific fallback,
+      `cpp_interop.py`'s `is_ncol` checks, `host_var_match_pass.py`'s `dims_compatible` equivalence
+      class — turned out to be real, distinct column-chunking functionality
+      (`col_end - col_start + 1`), not simply duplicate vocabulary for the same thing. Confirmed via
+      `suite_cap.py`'s own comments citing CAM-SIMA fixtures that depend on it. That means this
+      flag does **not** shrink or consolidate that code — it only fences it off behind an explicit,
+      testable, opt-in boundary. Real consolidation (rewriting at the `ArgumentOp` boundary the
+      way capgen-v1's own shim rewrites the name away entirely) is only safe if the chunking
+      semantics really are equivalent to the `horizontal_dimension` path — unverified, and blocked
+      on re-validating the CAM-SIMA/loop-chunking parity work against the current capgen-v1 tip
+      (tracked separately; see Index).
+    - **Regression scope, once the default flipped:** far larger than the 9-file grep for the
+      standard-name string suggested. 103 unit tests across 18 files failed immediately — not
+      incidental naming, but *deliberate* regression coverage for the legacy path itself, written
+      specifically to catch bugs found while migrating `capgen`/`ddthost` off it (one file's own
+      comment: "Phase 3: same scenario, but on the current `horizontal_dimension` convention
+      instead of the legacy `horizontal_loop_extent` one"). Fixed by adding `legacy_mode`/
+      `legacy_mode_module` pytest fixtures (`tests/unit/conftest.py`) and applying them via
+      `pytestmark` to each affected file — deleting or renaming these tests' fixtures would have
+      thrown away real coverage for exactly the mechanism this flag exists to protect.
+      Separately, 7 FileCheck fixtures needed the same triage: `language_suite.py` and the
+      `language_cxx` scheme `.meta` pair used the deprecated name purely incidentally (no host
+      file, no chunking involved) and were migrated to `horizontal_dimension`; `array_layout_suite.py`,
+      the `chost_r3` fixtures, and (initially assumed incidental, then proven otherwise —
+      renaming it changed the expected generated signature from
+      `col_start, col_end, lev, errmsg, errflg` back to a bare `ncol`) `kw_override_suite.py` were
+      all deliberately exercising the legacy no-host-match/chunking mechanism and got
+      `--legacy-mode` added to their `RUN:` lines instead, left otherwise untouched.
+    - **CAM-SIMA caveat, explicitly flagged rather than resolved:** CAM-SIMA is reportedly
+      mid-conversion to capgen-v1 itself, so its own use of `horizontal_loop_extent` may already
+      be stale relative to its own upstream defaults — the decision to default `--legacy-mode`
+      off (matching capgen-v1's current strict posture) was made on that basis, not on a confirmed
+      re-check of CAM-SIMA's actual current requirements. If a CAM-SIMA-driven build breaks on
+      this default, `--legacy-mode` is the immediate workaround; whether that's a permanent
+      accommodation or a sign the chunking mechanism should be revisited is exactly the still-open
+      investigation above.
+    - **Verification:** full suite green after both the flag work and the two test-fixture
+      fixes — `tests/unit` + `tests/filecheck` together, 554 passed, 1 xfailed (pre-existing,
+      unrelated — the rank-3 chost issue), 1 failed (pre-existing, unrelated —
+      `test_build_integration.py` invokes the `ccpp_xdsl` console script, which on this laptop
+      resolves via PATH to a separate persistent checkout, not this session's scratchpad clone).
 
 ---
 

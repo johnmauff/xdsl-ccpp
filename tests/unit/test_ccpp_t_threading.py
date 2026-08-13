@@ -34,6 +34,8 @@ from xdsl_ccpp.util.ccpp_conventions import CCPP_NUM_INSTANCES
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
 
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 # ── metadata fixtures ─────────────────────────────────────────────────────────
 

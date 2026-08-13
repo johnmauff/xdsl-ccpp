@@ -12,7 +12,12 @@
 // Tracked as ongoing rank-3/C++ interop work — do not "fix" this test without
 // resolving the underlying Fortran interop question first.
 //
-// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/examples/chost_r3/tiny_r3_suite.xml --scheme-files tests/filecheck/examples/chost_r3/tiny_r3_scheme.meta --host-files tests/filecheck/examples/chost_r3/tiny_r3_host_mod.meta,tests/filecheck/examples/chost_r3/tiny_r3_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
+// --legacy-mode: the scheme's ncol arg and tiny_r3_host_sub's col_start/
+// col_end deliberately exercise the legacy horizontal_loop_extent
+// column-chunking convention (paired with a host module using
+// horizontal_dimension), not incidental naming.
+//
+// RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --legacy-mode --suites tests/filecheck/examples/chost_r3/tiny_r3_suite.xml --scheme-files tests/filecheck/examples/chost_r3/tiny_r3_scheme.meta --host-files tests/filecheck/examples/chost_r3/tiny_r3_host_mod.meta,tests/filecheck/examples/chost_r3/tiny_r3_host_sub.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
 
 // CHECK-LABEL: module TinyR3_ccpp_chost_cap
 

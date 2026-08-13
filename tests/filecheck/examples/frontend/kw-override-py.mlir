@@ -3,7 +3,11 @@
 // arg_overrides attribute with the literal value — visible in the IR before
 // the optimizer runs.
 //
-// RUN: python3 tests/filecheck/examples/end_to_end/kw_override_suite.py | python3 -m filecheck %s
+// --legacy-mode: ncol deliberately uses the deprecated horizontal_loop_extent
+// standard_name -- this drives the col_start/col_end column-chunking
+// synthesis exercised by the completed_ir/end_to_end variants of this test.
+//
+// RUN: python3 tests/filecheck/examples/end_to_end/kw_override_suite.py --legacy-mode | python3 -m filecheck %s
 
 // Suite and group: single scheme with arg_overrides on the SchemeOp.
 
