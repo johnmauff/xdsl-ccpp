@@ -61,7 +61,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
-| Vocabulary-resolution redesign (match capgen-v1's use-association model) | 🔶 Stage 1 done (2026-08-13); Stages 2a-5 not started | L3589 |
+| Vocabulary-resolution redesign (match capgen-v1's use-association model) | 🔶 Stages 1-2a done (2026-08-13); 2b-5 not started | L3589 |
 
 **Backlog — other flagged issues:**
 
@@ -3619,13 +3619,44 @@ dependency is noted.
     `tests/unit/test_host_var_classification.py` (3 tests, fixture shape mirrors `opt_arg`'s own
     `data.meta`/`test_host.meta` verbatim).
   - **Stage 2a — use-associate `state`-classified HOST vars at the innermost call layer
-    (`suite_cap.py`).** 📋 Next. Extend `_resolve_active_condition`'s existing MODULE-type
-    USE-stub path to also cover `state`-classified HOST-type vars at the scheme-call site,
-    removing the need for `_collect_active_gate_extra_args`'s synthetic-arg injection for
-    HOST-type `active=` refs.
-  - **Stage 2b — same for the outer lifecycle wrapper (`lifecycle_cap.py`).** 📋 Not started.
-    Removes this session's pre-scan/`extra_host_arg_index`/inout-echo machinery once 2a makes it
-    unnecessary -- expected to shrink `lifecycle_cap.py` back below its pre-this-session size.
+    (`suite_cap.py`). ✅ Done (2026-08-13).** `_active_expr_var_indexes` now returns
+    `(use_associated_index, dummy_arg_index)` instead of `(module_var_index, host_var_index)`:
+    `use_associated_index` merges every MODULE-type var (unchanged) with every
+    `state`-classified HOST-type var (new); `dummy_arg_index` keeps only
+    `dispatch_scalar`-classified HOST-type vars (in practice always empty today -- no example
+    gates on a loop bound or error code, kept for correctness rather than assumed impossible).
+    `_resolve_active_condition` and `_collect_active_gate_extra_args` both switched to the new
+    names/semantics; a `state`-classified HOST-type ref now gets the exact same USE-stub
+    treatment a MODULE-type ref already did, so `_collect_active_gate_extra_args` no longer
+    synthesizes a dummy arg for it at all.
+    - **Bigger-than-expected win, confirmed by direct inspection:** the outer
+      `lifecycle_cap.py`/`ccpp_cap.py` wrapper layer needed *no change at all* -- it derives its
+      own "extra host arg" list by inspecting the inner suite-cap function's own actual
+      signature (built by this session's earlier two-layer propagation fix) rather than
+      recomputing membership independently, so once Stage 2a's change made the inner function
+      stop declaring `flag_for_opt_arg`/`flag_for_opt_var` as a dummy arg, the outer wrapper
+      automatically stopped requesting it too -- confirmed against both `opt_arg`'s real
+      generated Fortran (`OptArg_ccpp_physics_timestep_initial` no longer takes
+      `flag_for_opt_arg`, calls the inner function with the exact matching smaller arg list)
+      and the simpler `active_gated_scheme`/`active_gated_host` unit fixture
+      (`ActiveGated_ccpp_physics_run` likewise). Stages 2b/2c are very likely no-ops as a
+      result -- kept as separate backlog items to explicitly re-confirm and go looking for any
+      now-dead code, not because a fix is expected to be needed.
+    - **New regression coverage:** `TestActiveGatedOptionalArgs::
+      test_flag_is_use_associated_not_threaded_as_arg` (`tests/unit/test_optional_args.py`) --
+      the 4 pre-existing tests in that class only ever asserted the *condition* text and which
+      args appear in the with/without call branches, never *how* the flag itself was threaded,
+      so they passed unchanged through this fix without actually exercising the new behavior;
+      this new test locks in the USE-associated form directly.
+    - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
+      `test_build_integration.py` PATH issue, unrelated). Both `var_compat` FileCheck goldens
+      unchanged and still passing, confirming MODULE-type resolution (`has_graupel`/`has_ice`)
+      is untouched by the `_active_expr_var_indexes` restructuring. `opt_arg`'s own real
+      generated Fortran directly inspected end-to-end.
+  - **Stage 2b — confirm the outer lifecycle wrapper (`lifecycle_cap.py`) needs no change.**
+    📋 Next -- likely already true (see above), but not yet exhaustively confirmed across every
+    example, and this is also where any now-provably-dead code in `lifecycle_cap.py`'s own
+    extra-host-arg machinery would get identified (deletion itself is Stage 3).
   - **Stage 2c — confirm `run_dispatch.py` needs no change (or a small one).** 📋 Not started.
   - **Stage 3 — delete now-dead code**
     (`_collect_active_gate_extra_args`, `extra_host_arg_*`, `__hostarg` if unneeded elsewhere).
