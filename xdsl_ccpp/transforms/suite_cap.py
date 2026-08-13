@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 from xdsl.context import Context
@@ -27,6 +28,7 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, CcppHandleOp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    ActiveCheckOp,
     ArraySectionOp,
     ClearStringOp,
     KeywordCallOp,
@@ -824,6 +826,210 @@ class GenerateSuiteSubroutine(RewritePattern):
         guard_name = optional_promoted_names[0]
         present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
         return shared_slice_ops + [present_op]
+
+    _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+    def _active_expr_var_indexes(self) -> "tuple[dict, dict]":
+        """Return (module_var_index, host_var_index) for resolving 'active =
+        <expr>' property text: standard_name.lower() -> (local_name,
+        table_name, ftn_type). Shared by the pre-scan (generateSubroutineCall,
+        which needs to know about HOST-type refs to expose them as extra
+        dummy args) and _resolve_active_condition (which needs both, now
+        that the pre-scan means a HOST-type ref is a real in-scope arg by
+        the time it runs).
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+        module_var_index: dict = {}
+        host_var_index: dict = {}
+        for tbl_name, props in self.meta_data.items():
+            tbl_type = props.getAttr("type")
+            if tbl_type not in (CCPPType.MODULE, CCPPType.HOST):
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            target = module_var_index if tbl_type == CCPPType.MODULE else host_var_index
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if var.hasAttr("standard_name"):
+                    target[var.getAttr("standard_name").lower()] = (
+                        var.name, tbl_name, var.getAttr("type"),
+                    )
+        return module_var_index, host_var_index
+
+    def _collect_active_gate_extra_args(self, all_args: dict) -> list:
+        """Pre-scan: for every optional arg in all_args with an 'active'
+        expression referencing a HOST-type table var not already among
+        all_args's own entries, return a synthetic CCPPArgument for it so
+        the caller (generateSubroutineCall) can append it to input_arg_list
+        *before* _build_block_signature runs -- the same "must exist before
+        the block is constructed" constraint lifecycle_cap.py's own Bug 2
+        fix hit, just one level up: this function's own suite-cap-level
+        wrapper (not the outer ccpp_physics_* one) is what needs the flag
+        in scope here, since the guard this enables lives at this level.
+
+        MODULE-type refs need no such treatment -- they're use-associated,
+        resolved directly by _resolve_active_condition without ever needing
+        to be a dummy argument.
+        """
+        _, host_var_index = self._active_expr_var_indexes()
+        extra_args: list = []
+        seen_std_names: set = set()
+        for arg in all_args.values():
+            if not (arg.hasAttr("optional") and arg.hasAttr("model_var_active_expr")):
+                continue
+            for match in self._ACTIVE_EXPR_TOKEN_RE.finditer(
+                arg.getAttr("model_var_active_expr")
+            ):
+                std_name = match.group(0).lower()
+                if std_name in all_args or std_name in seen_std_names:
+                    continue
+                entry = host_var_index.get(std_name)
+                if entry is None:
+                    continue
+                local_name, table_name, ftn_type = entry
+                seen_std_names.add(std_name)
+                synth = CCPPArgument(local_name)
+                synth.setAttr("standard_name", std_name)
+                synth.setAttr("type", ftn_type)
+                synth.setAttr("intent", "in")
+                synth.setAttr("dimensions", 0)
+                extra_args.append(synth)
+        return extra_args
+
+    def _resolve_active_condition(self, raw_expr: str, suite_use_stubs: list) -> str:
+        """Resolve a host/module var's 'active = <expr>' property text into
+        an expression that's actually valid Fortran at the suite-cap call
+        site, emitting whatever USE stub(s) a MODULE-type reference needs.
+
+        The raw property text (e.g. "(flag_indicating_cloud_microphysics_
+        has_graupel)") is written in *standard-name* space -- CCPP's own
+        convention for this property, matching how default_value/dimension
+        expressions work: identifier-like tokens are standard-name
+        references to be resolved at the point of use, not pre-baked local
+        Fortran names. Printing it verbatim (the first cut of this fix)
+        compiles as a reference to an undeclared symbol the moment the real
+        local name differs from the standard name -- confirmed by gfortran
+        in CI on examples/var_compat and examples/nested_suite's own
+        flag_indicating_cloud_microphysics_has_graupel -> has_graupel case.
+
+        A HOST-type reference is resolved to its own local name too, but
+        emits no USE stub -- by the time this runs, generateSubroutineCall's
+        own _collect_active_gate_extra_args pre-scan has already exposed it
+        as a real dummy argument on this same function's signature (HOST-
+        type vars are never use-associated in this codebase). A token that
+        doesn't resolve to any known standard_name is left as-is (assumed to
+        be a Fortran keyword/operator, e.g. '.and.'/'.not.').
+        """
+        module_var_index, host_var_index = self._active_expr_var_indexes()
+
+        def _substitute(match: "re.Match") -> str:
+            token = match.group(0)
+            std_name = token.lower()
+            entry = module_var_index.get(std_name)
+            if entry is not None:
+                local_name, module_name, _ftn_type = entry
+                already_stubbed = any(
+                    isinstance(existing, llvm.GlobalOp)
+                    and existing.sym_name.data == local_name
+                    and existing.attributes.get("module") == StringAttr(module_name)
+                    for existing in suite_use_stubs
+                )
+                if not already_stubbed:
+                    stub = llvm.GlobalOp(
+                        llvm.LLVMArrayType.from_size_and_type(1, i8),
+                        local_name, "external",
+                    )
+                    stub.attributes["module"] = StringAttr(module_name)
+                    suite_use_stubs.append(stub)
+                return local_name
+            entry = host_var_index.get(std_name)
+            if entry is not None:
+                return entry[0]
+            return token
+
+        return self._ACTIVE_EXPR_TOKEN_RE.sub(_substitute, raw_expr)
+
+    def _build_active_gated_call_ops(
+        self, subroutine_name, arg_table, data_ops, overrides=None,
+        divergent_std_keys: frozenset = frozenset(), *, suite_use_stubs: list,
+    ):
+        """Build scheme call ops for a non-promoted (flat) scheme call,
+        gating any optional arg whose matched host var carries an 'active'
+        Fortran logical expression (model_var_active_expr, set by
+        HostVariableMatchPass from the host/module declaration's own
+        'active' property) behind an ActiveCheckOp -- so its allocation/
+        unit-conversion/marshaling and the call itself only execute when
+        that host-side expression is true.
+
+        This is the flat-call counterpart to _build_promoted_call_ops's own
+        PresentCheckOp guard: that one tests Fortran's present() intrinsic
+        for optional args inside a rank-reduction promotion loop; this one
+        tests an arbitrary named host condition for optional args with no
+        promotion involved -- the two mechanisms answer different questions
+        ("did the caller pass this?" vs "is this host variable currently
+        active?") and are not interchangeable, even though both gate an
+        'optional' arg.
+
+        A scheme's own optional args can be gated by more than one distinct
+        condition -- confirmed real, not hypothetical: examples/var_compat's
+        effr_calc_run has effrg_in/ncg_in gated by 'has_graupel' and
+        nci_out/effri_out independently gated by 'has_ice'. Treating every
+        active-gated arg as one group under a single shared condition (this
+        function's first cut) silently mis-gated whichever condition wasn't
+        picked -- e.g. with has_graupel picked, nci_out/effri_out would be
+        computed even when has_ice is false, and dropped even when has_ice
+        is true and has_graupel is false. Each distinct condition gets its
+        own ActiveCheckOp instead, nested so every combination of the N
+        conditions' truth values reaches the one call variant with exactly
+        the right args included (2**N leaf calls) -- N is the number of
+        *distinct* conditions on one scheme, not the number of gated args,
+        and stays small in practice (2 today).
+        """
+        active_gated_names: dict = {}  # raw condition_expr -> [arg_name, ...]
+        for arg in arg_table.getFunctionArguments():
+            if arg.hasAttr("optional") and arg.hasAttr("model_var_active_expr"):
+                active_gated_names.setdefault(
+                    arg.getAttr("model_var_active_expr"), []
+                ).append(arg.name)
+
+        if not active_gated_names:
+            return self.generateSchemeSubroutineCallOps(
+                subroutine_name, arg_table, data_ops, overrides or {},
+                divergent_std_keys=divergent_std_keys,
+            )
+
+        raw_conditions = list(active_gated_names)
+        resolved_conditions: dict[int, str] = {}
+
+        def _build_leaf(excluded_names: frozenset) -> list:
+            if excluded_names:
+                return self.generateSchemeSubroutineCallOps(
+                    subroutine_name, arg_table, data_ops, overrides or {},
+                    exclude_args=excluded_names,
+                    divergent_std_keys=divergent_std_keys,
+                )
+            return self.generateSchemeSubroutineCallOps(
+                subroutine_name, arg_table, data_ops, overrides or {},
+                divergent_std_keys=divergent_std_keys,
+            )
+
+        def _build_level(level: int, excluded_names: frozenset) -> list:
+            if level == len(raw_conditions):
+                return _build_leaf(excluded_names)
+            raw_condition_expr = raw_conditions[level]
+            if level not in resolved_conditions:
+                resolved_conditions[level] = self._resolve_active_condition(
+                    raw_condition_expr, suite_use_stubs
+                )
+            condition_expr = resolved_conditions[level]
+            with_ops = _build_level(level + 1, excluded_names)
+            without_ops = _build_level(
+                level + 1,
+                excluded_names | frozenset(active_gated_names[raw_condition_expr]),
+            )
+            return [ActiveCheckOp(condition_expr, with_ops, without_ops)]
+
+        return _build_level(0, frozenset())
 
     def getArgumentTable(self, scheme_name, subroutine_name):
         """Look up the argument table for a specific scheme subroutine.
@@ -1907,9 +2113,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                     result += _flush_promoted(cur_pdim, cur_pgroup)
                     cur_pgroup = []
                     cur_pdim = None
-                    result += self.generateSchemeSubroutineCallOps(
+                    result += self._build_active_gated_call_ops(
                         full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
                         divergent_std_keys=divergent_std_keys,
+                        suite_use_stubs=suite_use_stubs,
                     )
             result += _flush_promoted(cur_pdim, cur_pgroup)
             return result
@@ -2335,6 +2542,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         input_arg_list = _cls.input_arg_list
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
+
+        # Any optional arg gated by an 'active = <expr>' referencing a
+        # HOST-type table var needs that var exposed as a real dummy
+        # argument on *this* function's own signature before
+        # _build_block_signature runs below -- see
+        # _collect_active_gate_extra_args's own docstring.
+        input_arg_list = input_arg_list + self._collect_active_gate_extra_args(all_args)
 
         phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
         if phase_name is not None:

@@ -59,6 +59,7 @@ from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocO
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
 from xdsl_ccpp.dialects.ccpp_utils import PresentCheckOp         as CCPPPresentCheckOp
+from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp          as CCPPActiveCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp        as CCPPPromotionLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp         as CCPPSubcycleLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
@@ -679,6 +680,15 @@ class ftnPrintContext:
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data
                 self.print(f"if (present({var_name})) then")
+                with self.descend() as inner:
+                    inner.print_block(op.with_body.blocks[0])
+                self.print("else")
+                with self.descend() as inner:
+                    inner.print_block(op.without_body.blocks[0])
+                self.print("end if")
+            case CCPPActiveCheckOp():
+                condition_expr = op.condition_expr.data
+                self.print(f"if ({condition_expr}) then")
                 with self.descend() as inner:
                     inner.print_block(op.with_body.blocks[0])
                 self.print("else")
@@ -1366,11 +1376,26 @@ class ftnPrintContext:
         results also present in the return list.
         """
         # Collect input arg names from block arg name hints.
-        # Strip __alloc (allocatable), __opt (optional), or __in (intent-in array) suffix.
+        # Strip __alloc (allocatable), __opt (optional), __in (intent-in array),
+        # or __hostarg (see below) suffix.
+        #
+        # __hostarg: xdsl.ir.core.IRWithName.extract_valid_name silently strips
+        # any trailing "_<digits>" from a name_hint (its own SSA-value auto-
+        # disambiguation convention -- it assumes such a suffix is framework-
+        # generated, not semantic). A scheme arg whose own real name happens to
+        # end that way (e.g. opt_arg's own opt_var_2) would collide with a
+        # same-prefixed sibling (opt_var) once both are stripped down to
+        # "opt_var". lifecycle_cap.py's extra_host_args wrapper-arg exposure
+        # appends "__hostarg" specifically to dodge that strip (it doesn't end
+        # in digits, so xDSL leaves it alone) -- unlike __alloc/__opt/__in,
+        # it carries no intent implication of its own, so it's deliberately
+        # NOT checked by the is_alloc/is_opt/is_in flags below; intent falls
+        # through to the ordinary array/inout-echo detection.
         input_names = [
             (arg.name_hint[:-7] if arg.name_hint and arg.name_hint.endswith("__alloc")
              else arg.name_hint[:-5] if arg.name_hint and arg.name_hint.endswith("__opt")
              else arg.name_hint[:-4] if arg.name_hint and arg.name_hint.endswith("__in")
+             else arg.name_hint[:-9] if arg.name_hint and arg.name_hint.endswith("__hostarg")
              else (arg.name_hint if arg.name_hint is not None else f"arg_{idx}"))
             for idx, arg in enumerate(bdy.block.args)
         ]

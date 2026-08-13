@@ -42,7 +42,8 @@ program test_opt_arg
     stop 1
   end if
 
-  call test_host_ccpp_physics_timestep_initial(ccpp_suite, errmsg, errflg)
+  call test_host_ccpp_physics_timestep_initial(ccpp_suite, nx, std_arg, opt_arg, opt_arg_2,       &
+    flag_for_opt_arg, errmsg, errflg)
   if (errflg /= 0) then
     write(error_unit, '(a)') "An error occurred in timestep_initial: "//trim(errmsg)
     stop 1
@@ -52,7 +53,8 @@ program test_opt_arg
   if (.not. all(std_arg == 1)) write(error_unit, '(a,3i3)') "Error: std_arg=", std_arg
   if (.not. all(opt_arg == 2)) write(error_unit, '(a,3i3)') "Error: opt_arg=", opt_arg
 
-  call test_host_ccpp_physics_run(ccpp_suite, ccpp_group, 1, nx, nx, std_arg, opt_arg, opt_arg_2, errmsg, errflg)
+  call test_host_ccpp_physics_run(ccpp_suite, ccpp_group, 1, nx, nx, std_arg, opt_arg, opt_arg_2, &
+    flag_for_opt_arg, errmsg, errflg)
   if (errflg /= 0) then
     write(error_unit, '(a)') "An error occurred in run: "//trim(errmsg)
     stop 1
@@ -62,7 +64,8 @@ program test_opt_arg
   if (.not. all(std_arg == 1)) write(error_unit, '(a,3i3)') "Error: std_arg=", std_arg
   if (.not. all(opt_arg == 3)) write(error_unit, '(a,3i3)') "Error: opt_arg=", opt_arg
 
-  call test_host_ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
+  call test_host_ccpp_physics_timestep_final(ccpp_suite, nx, std_arg, opt_arg, opt_arg_2,         &
+    flag_for_opt_arg, errmsg, errflg)
   if (errflg /= 0) then
     write(error_unit, '(a)') "An error occurred in timestep_final: "//trim(errmsg)
     stop 1

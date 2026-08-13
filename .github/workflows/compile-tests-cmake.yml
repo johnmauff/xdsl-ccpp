@@ -76,6 +76,8 @@ jobs:
             targets: chunked_data.exe
           - example: constituents_dim
             targets: constituents_dim.exe
+          - example: opt_arg
+            targets: opt_arg_host_integration
 
     steps:
       - uses: actions/checkout@v4
