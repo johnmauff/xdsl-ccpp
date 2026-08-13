@@ -526,6 +526,69 @@ class TestMissingVariables:
         assert "missing_variable_two" in msg
 
 
+# ── Framework std-names with a cap-owned fallback resolution ──────────────────
+#
+# number_of_ccpp_constituents (see cap_shared.FRAMEWORK_STD_NAME_TO_CAP_VAR) is
+# in CCPP_FRAMEWORK_STD_NAMES like the other framework-internal names --
+# always skipped by host matching, never host-matched, regardless of whether
+# a host happens to declare it too. Confirmed by auditing every real
+# capgen-v1 end-to-end test that uses this standard name (advection,
+# advection_auto_clone, constituents_dim, instances_advection): none ever
+# declares it as a host/module variable directly, only as a dimension name
+# or a scheme's own scalar arg resolved through the framework's dynamic
+# constituent-registration count. examples/constadv used to declare it
+# directly as a host scalar (ncnst) -- a leftover capgen-v0 pattern with no
+# v1 counterpart, fixed by removing it from constadv_host_mod.meta instead
+# of accommodating it here (constadv already registers its own dyn_const via
+# the real v1 mechanism, so the framework count is correct there too).
+
+NUMBER_OF_CCPP_CONSTITUENTS_ARG = """\
+[ n_const ]
+  standard_name = number_of_ccpp_constituents
+  type = integer
+  intent = in
+  dimensions = ()
+  units = count
+"""
+
+
+class TestFrameworkFallbackStdNames:
+
+    def test_no_host_match_does_not_raise(self, run_host_match):
+        """With no host declaration, number_of_ccpp_constituents is left
+        unmatched (model_var_name stays None) rather than raising --
+        classify_arg_ownership resolves it via CapScratch
+        (size(lc_all_constituents)) once ArgOwnershipPass runs downstream."""
+        module = run_host_match(
+            scheme_metas=[scheme_meta("test_scheme", NUMBER_OF_CCPP_CONSTITUENTS_ARG)],
+            host_metas=[host_meta("test_mod", HOST_REAL_VAR)],
+        )
+        arg = _get_scheme_arg(module, "test_scheme", "number_of_ccpp_constituents")
+        assert arg is not None
+        assert arg.model_var_name is None
+
+    def test_host_declaration_is_still_ignored(self, run_host_match):
+        """Even if a host declares number_of_ccpp_constituents directly (the
+        old capgen-v0 pattern, no longer used by any real capgen-v1 example),
+        HostVariableMatchPass skips it just like every other name in
+        CCPP_FRAMEWORK_STD_NAMES -- the framework's own count always wins,
+        not whichever host variable happens to share the standard_name."""
+        host = host_meta("test_mod", """\
+[ ncnst ]
+  standard_name = number_of_ccpp_constituents
+  type = integer
+  dimensions = ()
+  units = count
+""")
+        module = run_host_match(
+            scheme_metas=[scheme_meta("test_scheme", NUMBER_OF_CCPP_CONSTITUENTS_ARG)],
+            host_metas=[host],
+        )
+        arg = _get_scheme_arg(module, "test_scheme", "number_of_ccpp_constituents")
+        assert arg is not None
+        assert arg.model_var_name is None
+
+
 # ── ccpp_t handle recognition ──────────────────────────────────────────────────
 
 HOST_CCPP_T_VAR = """\
