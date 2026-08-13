@@ -9,7 +9,11 @@
 // gfortran-verified numerical bug in examples/var_compat, where the same
 // slicing was previously missing entirely under a chunked driver.
 //
-// RUN: python3 tests/filecheck/examples/array_layout_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
+// --legacy-mode: the scheme's ncol arg deliberately uses the deprecated
+// horizontal_loop_extent standard_name -- see array-layout-py.mlir for what
+// that's actually verifying.
+//
+// RUN: python3 tests/filecheck/examples/array_layout_suite.py --legacy-mode | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp -t ftn | python3 -m filecheck %s
 
 // The host cap uses host module variables for theta and temperature.
 
