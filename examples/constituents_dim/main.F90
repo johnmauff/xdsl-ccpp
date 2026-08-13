@@ -10,52 +10,67 @@ program test_constituents_dim
       pver, &
       coupler_flux
 
-  use test_host_ccpp_cap, only: ccpp_register, &
-      ccpp_register_constituents, &
-      ccpp_number_constituents, &
-      ccpp_initialize_constituents, &
-      ccpp_init, &
-      ccpp_physics_init, &
-      ccpp_physics_timestep_init, &
-      ccpp_physics_run, &
-      ccpp_physics_timestep_final, &
-      ccpp_physics_final, &
-      ccpp_final, &
-      ccpp_deallocate_dynamic_constituents
+  use test_host_ccpp_cap, only: test_host_ccpp_physics_register, &
+      test_host_ccpp_physics_initialize, &
+      test_host_ccpp_physics_timestep_initial, &
+      test_host_ccpp_physics_run, &
+      test_host_ccpp_physics_timestep_final, &
+      test_host_ccpp_physics_finalize, &
+      test_host_ccpp_register_constituents, &
+      test_host_ccpp_number_constituents, &
+      test_host_ccpp_initialize_constituents, &
+      test_host_ccpp_deallocate_dynamic_constituents
 
   implicit none
 
   character(len=*), parameter :: ccpp_suite = 'constituents_dim_suite'
+  character(len=*), parameter :: ccpp_group = 'const_group'
   character(len=512) :: errmsg
-  integer :: errcode
+  integer :: errflg
   integer :: num_const
   integer :: m, i
   type(ccpp_constituent_properties_t), allocatable, target :: host_constituents(:)
 
-  errcode = 0
-  errmsg = ''
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP register step                             !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  ! Register phase: register_consts_register registers 3 dynamic constituents,
-  ! which is what gives the suite a non-trivial number_of_ccpp_constituents.
-  call ccpp_register(suite_name=trim(ccpp_suite), errmsg=errmsg, errcode=errcode)
-  call check('ccpp_register')
+  ! register_consts_register registers 3 dynamic constituents, which is what
+  ! gives the suite a non-trivial number_of_ccpp_constituents.
+  call test_host_ccpp_physics_register(ccpp_suite, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_register:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   ! This test registers all constituents on the scheme side; the host adds none.
   allocate(host_constituents(0))
-  call ccpp_register_constituents(host_constituents, errmsg=errmsg, errcode=errcode)
-  call check('ccpp_register_constituents')
+  call test_host_ccpp_register_constituents(host_constituents, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_register_constituents:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
-  call ccpp_number_constituents(num_const, errmsg=errmsg, errcode=errcode)
-  call check('ccpp_number_constituents')
+  call test_host_ccpp_number_constituents(num_const, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_number_constituents:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
   if (num_const < 1) then
     write(error_unit, '(a,i0)') &
         'Error: expected at least one constituent, got ', num_const
     stop 1
   end if
 
-  call ccpp_initialize_constituents(ncols=ncols, num_layers=pver, &
-      errcode=errcode, errmsg=errmsg)
-  call check('ccpp_initialize_constituents')
+  call test_host_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_initialize_constituents:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   ! Case 1: the host owns coupler_flux and sizes it to the constituent count.
   ! capgen passes the whole constituent axis (':') to const_dim_producer_run.
@@ -66,58 +81,69 @@ program test_constituents_dim
     end do
   end do
 
-  ! ccpp_init -> suite_data_init_fields allocates the non-allocatable suite
-  ! workspace (Case 2a) using ccpp_model_constituents_obj(i)%num_layer_vars.
-  call ccpp_init(suite_name=trim(ccpp_suite), errmsg=errmsg, errcode=errcode)
-  call check('ccpp_init')
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics init step                         !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call ccpp_physics_init(suite_name=trim(ccpp_suite), group_name='all', &
-      col_start=1, col_end=ncols, thread_num=1, nthreads=1, nphys_threads=1, &
-      errmsg=errmsg, errcode=errcode)
-  call check('ccpp_physics_init')
+  call test_host_ccpp_physics_initialize(ccpp_suite, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_init:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
-  call ccpp_physics_timestep_init(suite_name=trim(ccpp_suite), group_name='all', &
-      col_start=1, col_end=ncols, thread_num=1, nthreads=1, nphys_threads=1, &
-      errmsg=errmsg, errcode=errcode)
-  call check('ccpp_physics_timestep_init')
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics timestep init step                !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  call test_host_ccpp_physics_timestep_initial(ccpp_suite, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_init:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics run step                          !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   ! Producer fills/allocates the workspaces and checks Case 1; consumer verifies
-  ! Cases 2a/2b.  Any mismatch sets errcode inside the schemes.
-  call ccpp_physics_run(suite_name=trim(ccpp_suite), group_name='all', &
-      col_start=1, col_end=ncols, thread_num=1, nthreads=1, nphys_threads=1, &
-      errmsg=errmsg, errcode=errcode)
-  call check('ccpp_physics_run')
+  ! Cases 2a/2b.  Any mismatch sets errflg inside the schemes.
+  call test_host_ccpp_physics_run(ccpp_suite, ccpp_group, 1, ncols, coupler_flux, &
+      errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_run:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
-  call ccpp_physics_timestep_final(suite_name=trim(ccpp_suite), group_name='all', &
-      col_start=1, col_end=ncols, thread_num=1, nthreads=1, nphys_threads=1, &
-      errmsg=errmsg, errcode=errcode)
-  call check('ccpp_physics_timestep_final')
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics timestep finalize step            !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call ccpp_physics_final(suite_name=trim(ccpp_suite), group_name='all', &
-      col_start=1, col_end=ncols, thread_num=1, nthreads=1, nphys_threads=1, &
-      errmsg=errmsg, errcode=errcode)
-  call check('ccpp_physics_final')
+  call test_host_ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_finalize:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
-  ! ccpp_final -> suite_data_final_fields frees both suite workspaces (guarded).
-  call ccpp_final(suite_name=trim(ccpp_suite), errmsg=errmsg, errcode=errcode)
-  call check('ccpp_final')
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics finalize step                     !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call ccpp_deallocate_dynamic_constituents()
+  call test_host_ccpp_physics_finalize(ccpp_suite, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_finalize:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
+
+  call test_host_ccpp_deallocate_dynamic_constituents()
   deallocate(host_constituents)
   if (allocated(coupler_flux)) deallocate(coupler_flux)
 
   write(output_unit, '(a,i0,a)') &
       'PASS: constituents_dim (number_of_ccpp_constituents = ', num_const, ')'
-
-contains
-
-  subroutine check(phase)
-    character(len=*), intent(in) :: phase
-    if (errcode /= 0) then
-      write(error_unit, '(a)') 'An error occurred in ' // trim(phase) // ':'
-      write(error_unit, '(a)') trim(errmsg)
-      stop 1
-    end if
-  end subroutine check
 
 end program test_constituents_dim

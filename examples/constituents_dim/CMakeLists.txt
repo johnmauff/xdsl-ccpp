@@ -3,34 +3,43 @@
 # constituents_dim: ported from capgen-v1's own upstream
 # end-to-end-tests/constituents_dim (feature/capgen-v1 branch) -- exercises a
 # host-owned array dimensioned by the framework-injected constituent count
-# (number_of_ccpp_constituents) and a scheme (const_dim_producer) that takes
-# that count directly as a scalar arg. See this directory's own README.md for
-# capgen-v1's full description of what the test validates.
+# (number_of_ccpp_constituents), a scheme (const_dim_producer) that takes
+# that count directly as a scalar arg, and two SuiteOwned scratch vars
+# (Case 2a/2b workspaces) plus a DDT-member tendency alias, all resolved
+# without a host or module table ever declaring number_of_ccpp_constituents
+# directly. See this directory's own README.md for capgen-v1's full
+# description of what the test validates.
 #
-# NOT add_subdirectory'd from the root CMakeLists.txt -- xdsl_ccpp's own cap
-# generation hard-fails on this example as ported, confirmed by actually
-# running it (not just predicted by reading the source):
+# Previously NOT add_subdirectory'd from the root CMakeLists.txt -- cap
+# generation hard-failed on this example as ported. Fixed (2026-08-13),
+# across four real xdsl_ccpp capability gaps found while porting this
+# example, not vocabulary issues in this example's own .meta files (already
+# clean v1 vocabulary, confirmed against real capgen-v1 upstream):
 #
-#   ValueError: Host model variable matching/compatibility failed:
-#     Scheme 'const_dim_producer': argument 'n_const'
-#     (standard_name='number_of_ccpp_constituents') has no matching host
-#     model variable
+#   1. HostVariableMatchPass had no notion of a framework-injected scalar
+#      standard_name with no host declaration at all
+#      (number_of_ccpp_constituents) -- fixed via CCPP_FRAMEWORK_STD_NAMES /
+#      FRAMEWORK_STD_NAME_TO_CAP_VAR (ccpp_conventions.py/cap_shared.py).
+#   2. suite_cap.py's per-phase output-arg allocation tracked coverage by
+#      literal local name ("errflg") instead of standard_name
+#      (ccpp_error_code) -- a scheme naming its own arg "errcode" (as this
+#      example's schemes do) got a second, spurious return value.
+#   3. SuiteOwned scratch vars declared only in a scheme's own _run table
+#      (never _init/_register) never got a LazyAllocOp at all.
+#   4. A SuiteOwned var's allocation dimension declared only in a HOST-type
+#      table (never a scheme's own arg or a MODULE-type table) had no
+#      resolution path -- fixed by deriving it from an already in-scope
+#      array's own shape (size()) instead, since HOST-type vars are
+#      deliberately never use-associated anywhere in this codebase.
 #
-# raised from HostVariableMatchPass._match_and_validate()
-# (xdsl_ccpp/transforms/host_var_match_pass.py). xdsl_ccpp_capgen() below
-# calls message(FATAL_ERROR) on any nonzero cap-generation exit code, so
-# add_subdirectory'ing this directory from the root CMakeLists.txt would
-# abort the ENTIRE project's cmake configure step, not just this example --
-# left out of the root CMakeLists.txt's add_subdirectory list for that
-# reason. See the "capgen-v1 end-to-end-tests capability gaps" backlog in
-# ccpp_cap_refactor_plan.md for the full write-up.
-#
-# main.F90 is still upstream's own generic-dispatch driver, UNADAPTED to
-# xdsl_ccpp's per-host-prefixed calling convention (unlike every other ported
-# example) -- there was no point rewriting a driver for a cap that doesn't
-# generate. Re-adapt it (see examples/chunked_data/main.F90 or
-# examples/var_compat/test_host.F90 for the pattern) once the
-# HostVariableMatchPass gap above is fixed.
+# main.F90 was rewritten to call xdsl_ccpp's own per-host-prefixed generated
+# subroutine names (test_host_ccpp_physics_register/_initialize/
+# _timestep_initial/_run/_timestep_final/_finalize,
+# test_host_ccpp_register_constituents/_number_constituents/
+# _initialize_constituents/_deallocate_dynamic_constituents) instead of
+# capgen-v1's generic ccpp_register/ccpp_init/ccpp_physics_init/etc.
+# dispatch convention -- same rationale as examples/var_compat/chunked_data's
+# own test_host.F90/main.F90.
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "register_consts" "const_dim_producer" "const_dim_consumer")
@@ -53,11 +62,31 @@ list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE CONSTITUENTS_DIM_HOST
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE CONSTITUENTS_DIM_HOST_METADATA_FILES)
 list(APPEND CONSTITUENTS_DIM_HOST_METADATA_FILES "${HOST}.meta")
 
-# Known-failing (see header comment above) -- calling this will
-# message(FATAL_ERROR) until HostVariableMatchPass gains support for
-# framework-injected scalar dimensions like number_of_ccpp_constituents.
 xdsl_ccpp_capgen(HOSTFILES ${CONSTITUENTS_DIM_HOST_METADATA_FILES}
                  SCHEMEFILES ${SCHEME_META_FILES}
                  SUITES ${SUITE_FILES}
                  HOST_NAME ${HOST}
                  OUTPUT_ROOT "${CCPP_CAP_FILES}")
+# CCPP_CAPS_LIST is now set (by xdsl_ccpp_capgen, in this scope) to the
+# generated Fortran files (ccpp_kinds.F90, constituents_dim_suite_cap.F90,
+# test_host_ccpp_cap.F90).
+
+if(XDSL_CCPP_HAVE_FORTRAN)
+  # ccpp_constituent_prop_mod.F90/ccpp_scheme_utils.F90: shared constituent-
+  # registration support modules, same two files examples/advection's own
+  # CMakeLists.txt compiles alongside its own constituent-using schemes.
+  add_library(CONSTITUENTS_DIM_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
+                                               ${CONSTITUENTS_DIM_HOST_FORTRAN_FILES}
+                                               ccpp_constituent_prop_mod.F90
+                                               ccpp_scheme_utils.F90
+                                               ${CCPP_CAPS_LIST})
+  set_target_properties(CONSTITUENTS_DIM_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
+  target_include_directories(CONSTITUENTS_DIM_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+
+  add_executable(constituents_dim.exe main.F90)
+  target_link_libraries(constituents_dim.exe PRIVATE CONSTITUENTS_DIM_TESTLIB)
+  target_include_directories(constituents_dim.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+
+  add_test(NAME ctest_constituents_dim COMMAND constituents_dim.exe)
+  set_tests_properties(ctest_constituents_dim PROPERTIES PASS_REGULAR_EXPRESSION "PASS: constituents_dim")
+endif()

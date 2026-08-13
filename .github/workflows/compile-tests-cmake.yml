@@ -74,6 +74,8 @@ jobs:
             targets: helloworld.exe
           - example: chunked_data
             targets: chunked_data.exe
+          - example: constituents_dim
+            targets: constituents_dim.exe
 
     steps:
       - uses: actions/checkout@v4
