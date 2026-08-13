@@ -28,6 +28,10 @@ from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 def _fortran_output(run_host_match, ccpp_context, scheme_metas, host_metas, suite_xml) -> str:
     module = run_host_match(

@@ -24,6 +24,7 @@ from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import XMLSuite, ccppXML, parse_meta_file
 from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
+from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
 
 
 # ── Context factory ───────────────────────────────────────────────────────────
@@ -79,6 +80,39 @@ def _build_module(
 def ccpp_context():
     """A fresh xDSL context with all CCPP dialects loaded."""
     return _make_context()
+
+
+@pytest.fixture
+def legacy_mode():
+    """Enable --legacy-mode for one test (deprecated standard names like
+    horizontal_loop_extent are accepted with a warning instead of rejected).
+
+    Resets on teardown -- set_legacy_mode is a process global, and several
+    test files deliberately exercise both the legacy and current-convention
+    paths in the same module, so leaking True across tests would silently
+    mask the reject-by-default behavior in unrelated tests.
+    """
+    set_legacy_mode(True)
+    yield
+    set_legacy_mode(False)
+
+
+@pytest.fixture(scope="module")
+def legacy_mode_module():
+    """Module-scoped variant of legacy_mode.
+
+    Needed by test modules whose own module-scoped fixtures build IR (and
+    so construct ArgumentOps) eagerly, before any function-scoped fixture
+    would run -- pytest sets up broader-scoped fixtures first regardless of
+    declaration order, so the function-scoped legacy_mode fixture above
+    would activate too late for them. Pair with a local `autouse=True`
+    fixture in the test module (see test_optional_args.py) so this is set
+    up before that module's own module-scoped fixtures, matching pytest's
+    autouse-before-explicit ordering guarantee within the same scope.
+    """
+    set_legacy_mode(True)
+    yield
+    set_legacy_mode(False)
 
 
 @pytest.fixture

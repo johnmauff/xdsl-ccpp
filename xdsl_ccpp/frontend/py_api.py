@@ -12,7 +12,7 @@ There are two ways to define scheme argument metadata:
 
     @ccpp_scheme
     class my_scheme:
-        run = [Arg("ncol", standard_name="horizontal_loop_extent",
+        run = [Arg("ncol", standard_name="horizontal_dimension",
                    type="integer", units="count", intent="in"), ...]
 
     @ccpp_suite("my_suite", version="1.0")
@@ -52,7 +52,12 @@ from dataclasses import dataclass, field
 
 from xdsl.dialects.builtin import ModuleOp, StringAttr
 
-from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_MESSAGE, CCPP_ERROR_CODE, CCPP_ERRMSG_LEN
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERROR_MESSAGE,
+    CCPP_ERROR_CODE,
+    CCPP_ERRMSG_LEN,
+    set_legacy_mode,
+)
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,
@@ -870,4 +875,9 @@ def emit_ir(
     Pass a list of :class:`SuiteDescriptor` objects to include multiple suites
     in one IR output, matching ``ccpp_xdsl --suites a.xml,b.xml ...``.
     """
+    # This script has no argparse of its own; ccpp_dsl.py's --py mode
+    # forwards --legacy-mode as a bare token on this process's own argv
+    # (mirroring ccpp_param()'s existing sys.argv-scanning convention).
+    # Must run before build_ir() constructs any ArgumentOp below.
+    set_legacy_mode("--legacy-mode" in sys.argv)
     print(build_ir(suites, additional))

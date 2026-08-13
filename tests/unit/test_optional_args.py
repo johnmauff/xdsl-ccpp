@@ -36,6 +36,15 @@ from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
 from xdsl_ccpp.backend.print_ftn import print_to_ftn
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _legacy_mode(legacy_mode_module):
+    """Module-scoped, autouse: this file's own module-scoped fixtures build
+    IR (and construct ArgumentOps) eagerly, so a plain function-scoped
+    usefixtures("legacy_mode") would activate too late for them -- autouse
+    fixtures are set up before explicitly-requested ones of the same scope.
+    """
+
+
 # ── Project root ──────────────────────────────────────────────────────────────
 
 _ROOT = pathlib.Path(__file__).parent.parent.parent  # repo root
