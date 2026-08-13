@@ -181,14 +181,14 @@ class TestCCPPCapSuiteCall:
         assert "qv=qv" in capgen_fortran
 
     def test_physics_run_declares_col_start_and_col_end(self, capgen_fortran):
-        """Temp_ccpp_physics_run always declares col_start/col_end as its own
+        """ccpp_physics_run always declares col_start/col_end as its own
         dispatch-level parameters, regardless of whether any scheme below it
         happens to need them forwarded (capgen's schemes now resolve their own
         per-call column count via the host-matched horizontal_dimension
         convention rather than a col_start/col_end argument threaded down
         from this level, so the two are no longer necessarily passed further
         in, but the standard framework-level signature always has them)."""
-        assert "subroutine Temp_ccpp_physics_run(suite_name, suite_part, col_start, col_end" \
+        assert "subroutine ccpp_physics_run(suite_name, suite_part, col_start, col_end" \
             in capgen_fortran
 
     def test_ccpp_cap_passes_qv_from_host_state(self, capgen_fortran):
@@ -688,7 +688,7 @@ class TestActiveGatedOptionalArgs:
         assert "use active_gated_host, only: flag_for_opt_var" in text
         assert "subroutine active_gated_suite_suite_physics(nx, opt_var, errmsg, errflg)" in text
         assert (
-            "subroutine ActiveGated_ccpp_physics_run(suite_name, suite_part, nx, opt_var, "
+            "subroutine ccpp_physics_run(suite_name, suite_part, nx, opt_var, "
             "errmsg, errflg)" in text
         )
 
@@ -781,7 +781,7 @@ _TIMESTEP_HOST_ARG_SUITE_XML = """\
 @pytest.fixture(scope="module")
 def timestep_host_arg_fortran(tmp_path_factory) -> str:
     """Full Fortran output for a suite whose timestep_init phase needs real
-    HOST-type-table data on the outer ccpp_physics_timestep_initial wrapper."""
+    HOST-type-table data on the outer ccpp_physics_timestep_init wrapper."""
     tmp_path = tmp_path_factory.mktemp("timestep_host_arg")
     return _run_pipeline_from_content(
         tmp_path,
@@ -807,7 +807,7 @@ class TestTimestepPhaseHostTableArgs:
     ):
         text = timestep_host_arg_fortran
         # Find the specific wrapper's own signature line(s).
-        wrapper_idx = text.index("ccpp_physics_timestep_initial(")
+        wrapper_idx = text.index("ccpp_physics_timestep_init(")
         sig_end = text.index(")", wrapper_idx)
         sig = text[wrapper_idx:sig_end]
         assert "nx" in sig

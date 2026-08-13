@@ -171,7 +171,7 @@ class TestDDTMemberInoutScalarGetsRealKeywordName:
         strict-standards compiler catches it; assert the general property
         instead of just the one placeholder spelling."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_physics" in line
         )
@@ -188,7 +188,7 @@ class TestDDTMemberInoutScalarGetsRealKeywordName:
         under the bogus "_out_N=ccpp_tmp_N" keyword the callee's own
         signature never declares."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_physics" in line
         )
@@ -205,7 +205,7 @@ class TestDDTMemberInoutScalarGetsRealKeywordName:
         fortran = _fortran_output(run_host_match, ccpp_context)
         callee_sig = fortran.split("subroutine test_suite_suite_physics(")[1].split(")")[0]
         n_dummy_args = len([a for a in callee_sig.split(",") if a.strip()])
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_physics" in line
         )
@@ -233,7 +233,7 @@ class TestPositionalCallGetsNoExtraArgument:
         fortran = _fortran_output(run_host_match, ccpp_context, _SCHEME_META_NO_OPTIONAL)
         callee_sig = fortran.split("subroutine test_suite_suite_physics(")[1].split(")")[0]
         n_dummy_args = len([a for a in callee_sig.split(",") if a.strip()])
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_physics" in line
         )
@@ -248,7 +248,7 @@ class TestPositionalCallGetsNoExtraArgument:
 
     def test_call_args_are_exactly_y_errmsg_errflg_in_order(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _SCHEME_META_NO_OPTIONAL)
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_physics" in line
         )
@@ -266,5 +266,5 @@ class TestPositionalCallGetsNoExtraArgument:
         triggered at all -- not just suppressed at print time. No throwaway
         local should be declared in the wrapper any more."""
         fortran = _fortran_output(run_host_match, ccpp_context, _SCHEME_META_NO_OPTIONAL)
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         assert "ccpp_tmp" not in fn, f"dead throwaway local still declared:\n{fn}"

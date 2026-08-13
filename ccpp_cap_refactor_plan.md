@@ -61,7 +61,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
-| Vocabulary-resolution redesign (match capgen-v1's use-association model) | 🔶 Stages 1-3 done (2026-08-13); 4-5 not started | L3589 |
+| Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
 
 **Backlog — other flagged issues:**
 
@@ -3758,12 +3758,103 @@ dependency is noted.
     - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
       `test_build_integration.py` PATH issue, unrelated). `opt_arg`'s real generated Fortran
       re-inspected directly and confirmed byte-identical to before this cleanup.
-  - **Stage 4 — roll out to the rest of the examples**, smallest first, `instances`/
-    `instances_advection` last (also resolves the open architecture question for those, see
-    `instances`/`instances_advection` backlog entry above, as a side effect rather than
-    separately). 📋 Not started.
-  - **Stage 5 — optional, separable naming cleanup** (host-prefixed subroutine names ->
-    capgen-v1-style generic names). 📋 Not started, low priority, independent of the rest.
+  - **Stage 4 — roll out to the rest of the examples. ✅ Done (2026-08-13), turned out to be
+    pure verification, not new work.** Stages 2a-2c's code change is a general mechanism inside
+    `suite_cap.py` (`_classify_host_table_vars`/`_active_expr_var_indexes`), not per-example
+    wiring -- it already applies to every example the moment its cap is regenerated. There was
+    no per-example "port" step left to do; "rolling out" meant confirming the whole repo still
+    generates cleanly. Ran the real `xdsl_ccpp.tools.ccpp_dsl` tool (the same one CI's CMake step
+    calls) against every one of the repo's 19 real `xdsl_ccpp_capgen()` invocations (found via
+    `grep -rl 'xdsl_ccpp_capgen(' examples --include=CMakeLists.txt`; `atmospheric_physics` and
+    `shared` aren't real cap-generation targets, confirmed by inspection), resolving each
+    example's own HOSTFILES/SCHEMEFILES/SUITES/HOST_NAME from its CMakeLists.txt. All 19
+    succeeded (exit 0): `advection`, `advection_flat_host`, `capgen` (both plain and chost
+    invocations), `chararg`, `chunked_data`, `constadv`, `constituents_dim`, `constprop`,
+    `ddthost` (both invocations), `helloworld`, `instances`, `instances_advection`, `kessler`
+    (all three: plain/bindc/chost), `nestedddt`, `suite_allocate`, `tinyddt` -- plus `opt_arg`,
+    `var_compat`, `nested_suite`, already verified in detail across Stages 2a-2c.
+    - **Bonus finding, not caused by this redesign:** `instances_advection` was documented above
+      (under the `instances`/`instances_advection` backlog entry) as hard-failing at cap
+      generation with `xdsl.utils.exceptions.VerifyException: Expected source and destination
+      to have the same shape` inside the constituent-registration path. That failure **no
+      longer reproduces** -- cap generation now succeeds and produces a complete-looking
+      `test_host_ccpp_register_constituents`/`test_host_ccpp_is_scheme_constituent` etc. Likely
+      fixed as a side effect of task #1's `constituents_dim` host-matching fix earlier this
+      session (the backlog entry itself already suspected the two examples "may share one root
+      cause"), not by anything in Stages 1-3. Not independently re-verified beyond "it no longer
+      crashes" -- the array-of-DDT-instances access-pattern gap `instances`'s own backlog entry
+      describes (`data_array`/`data_array2` resolved as flat Block args instead of
+      `instance_data(instance)%...`) was **not** re-checked and should not be assumed fixed.
+      Worth a fresh look at task #4's premise before relying on this, but out of scope to chase
+      further under "Stage 4."
+    - **Verification:** full suite still green throughout (566 passed, 1 xfailed, 1 failed --
+      same pre-existing `test_build_integration.py` PATH issue, unrelated) -- this stage made no
+      source changes at all, confirmation only.
+  - **Stage 5 — optional, separable naming cleanup. ✅ Done (2026-08-13), best-fit rename.**
+    Host-prefixed subroutine names -> capgen-v1-style generic names, keeping xdsl_ccpp's own
+    existing 6-phase lifecycle structure exactly as-is (see the follow-on backlog item just
+    below for the *8*-phase question, deliberately out of scope here):
+    | Old (host-prefixed) | New (bare) |
+    |---|---|
+    | `<host>_ccpp_physics_register` | `ccpp_register` |
+    | `<host>_ccpp_physics_initialize` | `ccpp_init` |
+    | `<host>_ccpp_physics_finalize` | `ccpp_final` |
+    | `<host>_ccpp_physics_timestep_initial` | `ccpp_physics_timestep_init` |
+    | `<host>_ccpp_physics_timestep_final` | `ccpp_physics_timestep_final` |
+    | `<host>_ccpp_physics_run` | `ccpp_physics_run` |
+
+    The **module** itself stays host-prefixed (`module <host>_ccpp_cap`), unchanged --
+    matching real capgen-v1's own convention exactly (its own `--host-name` help text: drives
+    the module name "so multiple host integrations can co-exist in one executable"; the bare
+    subroutines inside don't need to disambiguate, Fortran module namespacing already does that).
+    - **`ccpp_cap.py`:** `lifecycle_specs`' first tuple element changed from a suffix
+      (`"_ccpp_physics_register"`, appended to `camel_name`) to the bare final name directly;
+      both `fn_name=camel_name + fn_suffix` call sites became `fn_name=fn_suffix`.
+      `_inject_capscratch_gpu_exit`'s hardcoded `camel_name + "_ccpp_physics_finalize"` lookup
+      updated to the literal `"ccpp_final"`.
+    - **`gpu_ccpp_cap_pass.py`:** `_LIFECYCLE_FN_SUFFIX_TO_PHASE`'s keys updated to the bare
+      names. **A real bug, caught by the test suite, not by inspection:** the separate
+      `"_ccpp_physics_run" in fn_name` check (run's dispatch shape differs from the other five,
+      so it isn't in that dict) still had its leading underscore, silently no longer matching
+      `"ccpp_physics_run"` at all -- GPU data-hoisting directives stopped being inserted into
+      the run function's body entirely, with no error, just an empty/wrong result. Found via
+      `test_gpu_data_hoisting.py`'s own assertions failing with a suspiciously *empty* function
+      body rather than a naming-string mismatch -- worth remembering as a class of bug this kind
+      of rename can hide: a substring check silently returning nothing, not a loud break.
+    - **`cpp_interop.py`, the deepest ripple:** the "chost" (C++ interop) naming convention
+      (`_chost_fn_name`) derived its own name by string-replacing `"_ccpp_physics_"` with
+      `"_chost_physics_"` inside the plain cap's own bind-C function name -- broke completely
+      once that name lost its host prefix and, for register/init/final, lost the substring
+      `"physics_"` entirely. chost naming is xdsl_ccpp-specific (no capgen-v1 equivalent to
+      align with) and deliberately kept host-prefixed as before (e.g. still
+      `Kessler_chost_physics_run`) -- not part of this rename's scope. Fixed by reconstructing
+      the chost name from `camel_name`/the lifecycle-phase key directly
+      (`f"{camel_name}_chost_physics_{lc}"`) instead of parsing it out of the plain name, since
+      the plain name no longer carries the information needed to derive it. Required threading
+      `camel_name` into `_chost_fn_contexts` (a new parameter, 3 call sites) and fixing the
+      matching `_LIFECYCLE` dict in the same file (same bug class as `gpu_ccpp_cap_pass.py`'s).
+    - **Fallout, mechanical but large:** 24 filecheck goldens and 14 unit test files asserted
+      exact old subroutine-name text. Batch-fixed via a scoped regex substitution
+      (`\b\w+_ccpp_physics_(register|initialize|finalize|timestep_initial|timestep_final|run)\b`
+      -> the corresponding new bare name) across `tests/unit/*.py` and
+      `tests/filecheck/**/*.mlir`, which handled most of it; a further manual pass fixed (a)
+      wrapped/continuation lines in filecheck goldens whose line length changed enough to
+      shift or eliminate the wrap point (the blind regex correctly renamed the text but
+      couldn't re-flow line wrapping) and (b) a handful of bare string-literal
+      `.endswith("_ccpp_physics_...")` checks in `test_ccpp_t_threading.py` that the regex's
+      "must be part of a longer identifier" pattern didn't match.
+    - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
+      `test_build_integration.py` PATH issue, unrelated).
+  - **Follow-on, logged per project owner request (2026-08-13), not started: full 6-phase ->
+    8-phase lifecycle match.** Real capgen-v1 doesn't have 6 lifecycle entry points, it has
+    8 -- it splits what this codebase calls "initialize" into two distinct phases
+    (`ccpp_init` at the suite level, `ccpp_physics_init` at the per-group level) and
+    "finalize" likewise (`ccpp_physics_final` + `ccpp_final`). Stage 5 deliberately did *not*
+    attempt this: it's genuine new architecture, not a rename -- would mean adding two new
+    lifecycle phases throughout the generation pipeline (`lifecycle_cap.py`, the outer
+    `ccpp_cap.py` wrapper, `suite_cap.py`'s own register/initialize/finalize functions) and
+    updating every example's driver to call the new two-phase sequence. 📋 Backlog (size TBD,
+    likely M-L) -- a separate, bigger effort from anything Stages 1-5 delivered.
   - Hold `suite_allocate`/`instances`+`instances_advection`/kind_spec/interstitial-variable
     backlog items (all cap-generation-adjacent) until Stage 3 lands -- building on the model
     being replaced would be redone.

@@ -3,7 +3,7 @@ col_end fallback -- the host-facing ccpp_physics_run wrapper's own signature,
 a separate layer from the suite subroutine's signature (suite_cap.py).
 
 Found while investigating why examples/var_compat's generated
-VarCompatibility_ccpp_physics_run only ever declared (suite_name, suite_part,
+ccpp_physics_run only ever declared (suite_name, suite_part,
 errmsg, errflg), while the hand-written test_host.F90 driver (which must not
 be modified -- see feedback_dont_fix_handwritten_before_checking_upstream)
 calls it with (suite_name, suite_part, col_start, col_end, errmsg, errflg).
@@ -293,7 +293,7 @@ class TestColBoundsSlicedWhenNoSchemeChunks:
 
     def test_wrapper_signature_includes_col_start_col_end(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _WHOLE_ARRAY_SCHEME_META)
-        sig = _fn_signature_line(fortran, "Test_ccpp_physics_run")
+        sig = _fn_signature_line(fortran, "ccpp_physics_run")
         assert "col_start" in sig, f"col_start missing from wrapper signature: {sig!r}"
         assert "col_end" in sig, f"col_end missing from wrapper signature: {sig!r}"
         # Position: right after suite_name/suite_part, before errmsg/errflg --
@@ -306,8 +306,8 @@ class TestColBoundsSlicedWhenNoSchemeChunks:
 
     def test_col_start_col_end_declared_integer_and_sliced_into_call(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _WHOLE_ARRAY_SCHEME_META)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         col_start_decl = next(
             line for line in fn_body.splitlines() if "intent(in) :: col_start" in line
@@ -341,8 +341,8 @@ class TestHorizontalDimensionScalarRecomputedFromColBounds:
         self, run_host_match, ccpp_context
     ):
         fortran = _fortran_output_ncol_scheme(run_host_match, ccpp_context)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         assert "col_end - col_start + 1" in fn_body, fn_body
         call_line = next(
@@ -360,8 +360,8 @@ class TestHorizontalDimensionScalarRecomputedFromColBounds:
         # assignment/use were both printed correctly).
         # error: Symbol 'ncol' at (1) has no IMPLICIT type
         fortran = _fortran_output_ncol_scheme(run_host_match, ccpp_context)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         decl_lines = [line.strip() for line in fn_body.splitlines() if "integer :: ncol" in line]
         assert decl_lines, f"no 'integer :: ncol' declaration found:\n{fn_body}"
@@ -374,8 +374,8 @@ class TestHorizontalDimensionScalarRecomputedFromColBounds:
         # column-chunk bound; the second (pver) must stay the full 1:pver
         # range regardless of col_start/col_end.
         fortran = _fortran_output_ncol_scheme(run_host_match, ccpp_context)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         call_line = next(
             line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
@@ -393,7 +393,7 @@ class TestNoDuplicateWhenSchemeAlreadyProvidesThem:
 
     def test_col_start_col_end_appear_exactly_once(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _CHUNKED_SCHEME_META)
-        sig = _fn_signature_line(fortran, "Test_ccpp_physics_run")
+        sig = _fn_signature_line(fortran, "ccpp_physics_run")
         names = [n.strip() for n in sig.split("(", 1)[1].rsplit(")", 1)[0].split(",")]
         assert names.count("col_start") == 1, f"col_start duplicated: {names!r}"
         assert names.count("col_end") == 1, f"col_end duplicated: {names!r}"
@@ -403,8 +403,8 @@ class TestNoDuplicateWhenSchemeAlreadyProvidesThem:
         the pre-existing, scheme-driven kind (threaded into the callee),
         distinguishing this case from the pure pass-through case above."""
         fortran = _fortran_output(run_host_match, ccpp_context, _CHUNKED_SCHEME_META)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         call_line = next(
             line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
@@ -434,8 +434,8 @@ class TestCapVarSlicedWhenRankTwo:
         # entry -- z_out's own keyword arg lands on a later continuation
         # line than "call test_suite_suite_physics" itself.
         fortran = _fortran_output_capvar_scheme(run_host_match, ccpp_context)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         call_stmt = fn_body.split("call test_suite_suite_physics", 1)[1].split(")\n")[0]
         assert "z_out=lc_z_out(col_start:col_end, 1:pver)" in call_stmt, call_stmt
@@ -447,8 +447,8 @@ class TestCapVarSlicedWhenRankTwo:
         # z_out -- confirm fixing the CapVar branch didn't disturb the
         # already-covered Host/DdtMember branch it sits alongside.
         fortran = _fortran_output_capvar_scheme(run_host_match, ccpp_context)
-        fn_body = fortran.split("subroutine Test_ccpp_physics_run")[1].split(
-            "end subroutine Test_ccpp_physics_run"
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
         )[0]
         call_line = next(
             line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
