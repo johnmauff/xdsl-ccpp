@@ -1,10 +1,31 @@
 ! Stub implementation of ccpp_constituent_prop_mod for standalone compilation.
-! The real module is part of the CCPP framework library.
+! The real module is part of the CCPP framework library (see
+! capgen/src/ccpp_constituent_prop_mod.F90 in NCAR/ccpp-framework's own repo
+! for the genuine ~2700-line implementation, which this deliberately does
+! not attempt to replicate -- it depends on two more real framework modules
+! of its own (ccpp_hashable.F90/ccpp_hash_table.F90) and layers a further
+! wrapper type, ccpp_model_constituents_t, on top of the base properties
+! type this stub models directly. This stub instead matches exactly the
+! subset of that API xdsl_ccpp's own generator
+! (xdsl_ccpp/transforms/constituent_cap.py) actually targets.
 !
-! Field order of ccpp_constituent_properties_t is kept identical to the original
-! stub (std_name, long_name, units, ...) so that .mod files from earlier partial
-! builds stay compatible.  New fields (default_val_set, molar_mass_val,
-! thermo_active) are appended at the end.
+! Single source, shared by every example that needs it -- see this
+! directory's own README (examples/shared/) -- rather than each example
+! keeping its own duplicated copy. Previously duplicated verbatim in
+! examples/advection and examples/constituents_dim; consolidated here
+! 2026-08-13 after examples/constituents_dim's own copy turned out to be
+! missing diag_name (a real field/instantiate() argument in real capgen-v1's
+! own module) -- register_consts.F90, ported faithfully from real capgen-v1
+! upstream, was the first scheme in this repo to actually need it; every
+! other example's own %instantiate(...) call sites simply never passed it,
+! which is why the gap went unnoticed until then. See
+! ccpp_cap_refactor_plan.md's backlog for the follow-up item tracking
+! migration of every other still-duplicating example to this single source.
+!
+! Field order of ccpp_constituent_properties_t is kept identical to the
+! original stub (std_name, long_name, units, ...) so that .mod files from
+! earlier partial builds stay compatible.  New fields (default_val_set,
+! molar_mass_val, thermo_active, diag_name) are appended at the end.
 !
 ! ccpp_constituent_properties_t does NOT bind a procedure named 'long_name'
 ! (that would conflict with the 'long_name' data component); ptr methods access
@@ -32,6 +53,11 @@ module ccpp_constituent_prop_mod
     logical            :: default_val_set   = .false.
     real(kind_phys)    :: molar_mass_val    = 0.0_kind_phys
     logical            :: thermo_active     = .false.
+    ! Real capgen-v1's own module makes this a required instantiate()
+    ! argument (see capgen/src/ccpp_constituent_prop_mod.F90); kept optional
+    ! here instead, consistent with every other field in this stub, so
+    ! existing callers that never pass it keep compiling unchanged.
+    character(len=128) :: diag_name         = ''
   contains
     procedure :: instantiate
     procedure :: standard_name => cp_standard_name
@@ -66,7 +92,8 @@ contains
 
   subroutine instantiate(this, std_name, long_name, units, errcode, errmsg, &
                          default_value, min_value, molar_mass, advected,    &
-                         vertical_dim, water_species, mixing_ratio_type)
+                         vertical_dim, water_species, mixing_ratio_type,    &
+                         diag_name)
     class(ccpp_constituent_properties_t), intent(inout) :: this
     character(len=*), intent(in)           :: std_name
     character(len=*), intent(in)           :: long_name
@@ -80,6 +107,7 @@ contains
     character(len=*), intent(in), optional :: vertical_dim
     logical,          intent(in), optional :: water_species
     character(len=*), intent(in), optional :: mixing_ratio_type
+    character(len=*), intent(in), optional :: diag_name
     this%std_name      = std_name
     this%long_name     = long_name
     this%units         = units
@@ -93,6 +121,7 @@ contains
     if (present(vertical_dim))     this%vert_dim         = vertical_dim
     if (present(water_species))    this%is_water         = water_species
     if (present(mixing_ratio_type)) this%mix_ratio_type  = mixing_ratio_type
+    if (present(diag_name))        this%diag_name        = diag_name
     errcode = 0
     errmsg  = ''
   end subroutine instantiate

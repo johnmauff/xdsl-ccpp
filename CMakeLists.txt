@@ -27,18 +27,23 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # examples/advection, examples/advection_flat_host, examples/kessler,
 # examples/nestedddt, examples/chararg, examples/constadv,
 # examples/constprop, examples/ddthost, examples/capgen,
-# examples/helloworld, and examples/chunked_data.
+# examples/helloworld, examples/chunked_data, and examples/constituents_dim
+# (the last one only as of 2026-08-13, after fixing four real xdsl_ccpp
+# capability gaps its cap generation hit -- see
+# examples/constituents_dim/CMakeLists.txt's own header comment for the
+# specific gaps and fixes).
 #
-# NOT wired in yet: examples/opt_arg, examples/constituents_dim,
-# examples/suite_allocate, examples/instances, and examples/instances_advection
-# exist (ported from capgen-v1's feature/capgen-v1 branch end-to-end-tests/,
-# same as chunked_data) but each hit a confirmed xdsl_ccpp generation or
-# cap-correctness bug during porting -- see the "capgen-v1 end-to-end-tests
-# capability gaps" backlog in ccpp_cap_refactor_plan.md for the specific
-# errors. constituents_dim's and instances_advection's own cap generation
-# hard-fail outright (would abort this file's own configure step with a
-# FATAL_ERROR if add_subdirectory'd), so they're deliberately left out of the
-# list below; opt_arg/suite_allocate/instances's cap generation succeeds but
+# NOT wired in yet: examples/opt_arg, examples/suite_allocate,
+# examples/instances, and examples/instances_advection exist (ported from
+# capgen-v1's feature/capgen-v1 branch end-to-end-tests/, same as
+# chunked_data/constituents_dim) but each hit a confirmed xdsl_ccpp
+# generation or cap-correctness bug during porting -- see the
+# "capgen-v1 end-to-end-tests capability gaps" backlog in
+# ccpp_cap_refactor_plan.md for the specific errors. instances_advection's
+# own cap generation hard-fails outright (would abort this file's own
+# configure step with a FATAL_ERROR if add_subdirectory'd), so it's
+# deliberately left out of the list below; opt_arg/suite_allocate/instances's
+# cap generation succeeds but
 # either produces silently-wrong generated code or omits the actual feature
 # under test, so their own CMakeLists.txt exist and work standalone but
 # aren't add_subdirectory'd here either, to avoid presenting a known-broken
@@ -151,6 +156,24 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   target_include_directories(test_utils PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/test_utils_mod)
 endif()
 
+# examples/shared/ccpp_constituent_prop_mod.F90 / ccpp_scheme_utils.F90 (see
+# that file's own header comment) are the single source for this
+# constituent-registration support stub, but are NOT built as a shared
+# library here the way test_utils is -- unlike test_utils, they `use
+# ccpp_kinds`, which is itself a per-example *generated* file (part of each
+# example's own xdsl_ccpp_capgen() output, in that example's own build
+# directory, not a single static file this root scope could depend on
+# before any example subdirectory has even run its own cap generation).
+# Confirmed the hard way: building them as their own root-level target
+# fails with "Cannot open module file 'ccpp_kinds.mod'" since no example's
+# ccpp_kinds.F90 exists yet at that point. Each example that needs them
+# instead compiles these same two source files directly into its own
+# TESTLIB, alongside that example's own ${CCPP_CAPS_LIST} (which includes
+# its own ccpp_kinds.F90) -- CMake's own Fortran dependency scanner already
+# orders compilation correctly within one target, exactly as it already
+# does today for ${SCHEME_FORTRAN_FILES} against the same target's own
+# ccpp_kinds.F90.
+
 add_subdirectory(examples/nested_suite)
 add_subdirectory(examples/var_compat)
 add_subdirectory(examples/tinyddt)
@@ -165,3 +188,4 @@ add_subdirectory(examples/ddthost)
 add_subdirectory(examples/capgen)
 add_subdirectory(examples/helloworld)
 add_subdirectory(examples/chunked_data)
+add_subdirectory(examples/constituents_dim)

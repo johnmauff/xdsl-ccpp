@@ -985,10 +985,15 @@ class CCPPCAP(ModulePass):
         )
         all_definitions.append(suite_vars_op)
 
-        # Generate constituent registration API if any scheme has constituent arrays
-        # or if there are cap-owned scratch arrays (framework-managed or scheme-scratch).
-        dyn_names, fixed_adv = _collect_constituent_info(meta_data)
-        if dyn_names or fixed_adv or scratch_var_list:
+        # Generate constituent registration API if any scheme has constituent arrays,
+        # if there are cap-owned scratch arrays (framework-managed or scheme-scratch),
+        # or if any scheme references number_of_ccpp_constituents at all -- that
+        # standard_name resolves unconditionally to size(lc_all_constituents)
+        # (FRAMEWORK_STD_NAME_TO_CAP_VAR, cap_shared.py), so lc_all_constituents
+        # must exist whenever it could be referenced, even for a suite with no
+        # dynamic registration or fixed-advected constituent of its own.
+        dyn_names, fixed_adv, references_count = _collect_constituent_info(meta_data)
+        if dyn_names or fixed_adv or scratch_var_list or references_count:
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
                 camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,
                 framework_var_residency=framework_var_residency,

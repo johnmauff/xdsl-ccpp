@@ -468,6 +468,26 @@ class GenerateSuiteSubroutine(RewritePattern):
         in self.meta_data.  On a hit it creates a HostVarRefOp, registers it in
         data_ops, and appends it to framework_ref_ops so the Fortran printer sees
         the variable before any scheme calls.
+
+        A third fallback derives the size from an already in-scope array's own
+        declared dim_names, when promoted_dim is never any scheme's own arg
+        AND never declared in a MODULE-type table -- e.g.
+        examples/constituents_dim's qbase (dims=horizontal_dimension,
+        vertical_layer_dimension): neither dimension is ever a scheme's own
+        arg, and host_data.meta declares them but is type=host, which is
+        deliberately excluded from the second fallback above (HOST-type vars
+        are never use-associated anywhere in this codebase -- see
+        host_block_std_names/is_host_table -- so extending that scan to
+        HOST-type tables would be inconsistent with every other treatment of
+        them, and outright wrong for a HOST-type table with no real backing
+        Fortran module at all, e.g. examples/constituents_dim's own
+        test_host.meta). coupler_flux/qtend are both already in-scope
+        arguments dimensioned by (horizontal_dimension,
+        number_of_ccpp_constituents)/(horizontal_dimension,
+        vertical_layer_dimension) respectively; size() on either gives
+        exactly the value the host itself allocated it with, using values
+        already threaded into this call, not a new argument or a cross-
+        module reference.
         """
         for arg in all_args.values():
             if (
@@ -510,6 +530,32 @@ class GenerateSuiteSubroutine(RewritePattern):
                         stub.attributes["module"] = StringAttr(tbl_name)
                         suite_use_stubs.append(stub)
                     return data_ops[var.name]
+
+        # Still not found — derive it from an already in-scope array's own
+        # shape instead of requiring a dedicated scalar dimension arg.
+        # Excludes SuiteOwned candidates: those are guaranteed-allocated by
+        # the *end* of this same _build_framework_refs pass, not necessarily
+        # by the time THIS specific var's own dim lookup runs within it (a
+        # SuiteOwned var can even match itself here, since data_ops[fw_arg.name]
+        # is set to its own HostVarRefOp before its allocation dims are
+        # resolved -- confirmed the hard way: qbase's own vertical_layer_
+        # dimension entry matched qbase itself, producing a self-referential
+        # size(qbase, 2) on an array not yet allocated).
+        for arg in all_args.values():
+            if not arg.hasAttr("dim_names") or arg.name not in data_ops:
+                continue
+            if arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned:
+                continue
+            for idx, dim_name in enumerate(arg.getAttr("dim_names"), start=1):
+                if dims_compatible(dim_name, promoted_dim):
+                    int_type = TypeConversions.getBaseType("integer")
+                    size_ref = ccpp_utils.CapVarRefOp(
+                        f"size({arg.name}, {idx})",
+                        memref.MemRefType(int_type, []),
+                    )
+                    if framework_ref_ops is not None:
+                        framework_ref_ops.append(size_ref)
+                    return size_ref.res
         return None
 
     def _resolve_host_only_std_name(self, std_name: str):
@@ -1422,6 +1468,18 @@ class GenerateSuiteSubroutine(RewritePattern):
                 unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
 
         alloc_ops = {}
+        # Track by standard_name, not by fn_arg.name -- a scheme is free to
+        # name its error-handling args anything (e.g. "errcode" instead of
+        # "errflg", as examples/constituents_dim's schemes do); only the
+        # standard_name (ccpp_error_code/ccpp_error_message) is authoritative
+        # for "is this already covered." Checking the literal string
+        # "errflg"/"errmsg" against data_ops below would otherwise miss a
+        # same-meaning-different-name entry already in output_arg_list and
+        # add a second, spurious allocation for the same error value --
+        # producing an extra, unintended return value in this function's
+        # signature (return_types is built from alloc_ops right below).
+        has_errflg_std = False
+        has_errmsg_std = False
         for fn_arg in output_arg_list:
             arg_type = fn_arg.getAttr("type")
             kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
@@ -1432,15 +1490,25 @@ class GenerateSuiteSubroutine(RewritePattern):
             alloc_op.memref.name_hint = fn_arg.name
             alloc_ops[fn_arg.name] = alloc_op
             data_ops[fn_arg.name] = alloc_op
+            std_name = (
+                fn_arg.getAttr("standard_name").lower()
+                if fn_arg.hasAttr("standard_name") else None
+            )
+            if std_name == CCPP_ERROR_CODE:
+                has_errflg_std = True
+                data_ops["errflg"] = alloc_op  # canonical internal alias
+            elif std_name == CCPP_ERROR_MESSAGE:
+                has_errmsg_std = True
+                data_ops["errmsg"] = alloc_op  # canonical internal alias
 
-        if "errflg" not in data_ops:
+        if not has_errflg_std:
             alloc_op = memref.AllocaOp.get(
                 TypeConversions.getBaseType("integer"), shape=[]
             )
             alloc_op.memref.name_hint = "errflg"
             alloc_ops["errflg"] = alloc_op
             data_ops["errflg"] = alloc_op
-        if "errmsg" not in data_ops:
+        if not has_errmsg_std:
             alloc_op = memref.AllocaOp.get(
                 TypeConversions.getBaseType("character"), shape=[CCPP_ERRMSG_LEN]
             )
@@ -1953,11 +2021,33 @@ class GenerateSuiteSubroutine(RewritePattern):
         tgt_subroutine_postfix,
         physics_mode,
         arg_tables,
+        already_scheduled_allocs=None,
     ):
         """Build HostVarRefOps and LazyAllocOps for framework-managed vars.
 
-        Mutates data_ops and suite_use_stubs as side effects.
-        Returns (framework_ref_ops, lazy_alloc_ops).
+        already_scheduled_allocs -- optional set, shared across every phase
+        call for one suite (see _generate_lifecycle_fns), of std_keys that
+        have already been given a *successful* LazyAllocOp (dim_var_refs
+        resolved) by an earlier _init/_register phase call -- covers both
+        the framework_vars loop below and the suite_model.suite_owned_vars()
+        sweep further down, since either can be the one that actually
+        allocates a given var (e.g. examples/capgen's to_promote/
+        promote_pcnst/temp_calc are only ever reached via the suite_model
+        sweep, never via framework_vars, since no _init/_register table of
+        their own producing scheme declares them).
+
+        Lets a var whose allocation dimension can ONLY be resolved once
+        physics_mode's own _run-phase args are in scope -- e.g.
+        examples/constituents_dim's cwork/awork, dimensioned by
+        number_of_ccpp_constituents, which is never host/module-declared
+        (that's the whole point of that example) and so can never resolve
+        via _find_loop_upper_bound during _init/_register at all, only
+        during _run where n_const is one of the phase's own scheme args --
+        still get allocated, without _run also emitting a second, redundant
+        LazyAllocOp for a var _init/_register already successfully covered.
+
+        Mutates data_ops, suite_use_stubs, and already_scheduled_allocs as
+        side effects. Returns (framework_ref_ops, lazy_alloc_ops).
         """
         framework_ref_ops = []
         lazy_alloc_ops = []
@@ -2026,7 +2116,14 @@ class GenerateSuiteSubroutine(RewritePattern):
                         framework_ref_ops.append(section)
                         data_ops[fw_arg.name] = section
 
-                _is_alloc_phase = tgt_subroutine_postfix in ("_init", "_register")
+                _already_scheduled = (
+                    already_scheduled_allocs is not None
+                    and _fw_std_key in already_scheduled_allocs
+                )
+                _is_alloc_phase = (
+                    tgt_subroutine_postfix in ("_init", "_register")
+                    or (physics_mode and not _already_scheduled)
+                )
                 if _is_alloc_phase:
                     _alloc_dim_names = (
                         suite_model.alloc_dims(_fw_std_key)
@@ -2078,6 +2175,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                                 ),
                             )
                         )
+                        if already_scheduled_allocs is not None:
+                            already_scheduled_allocs.add(_fw_std_key)
 
                 # Tagged (never a plain string, so it can't collide with any
                 # bare-name key already in data_ops) entry keyed by this arg's
@@ -2135,6 +2234,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                             needs_device_residency=entry.needs_device_residency,
                         )
                     )
+                    if already_scheduled_allocs is not None:
+                        already_scheduled_allocs.add(entry.standard_name)
 
         if tgt_subroutine_postfix is not None:
             for _scheme_name in arg_tables:
@@ -2194,6 +2295,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         physics_mode: bool = False,
         group_name: str = "",
         suite_model=None,
+        already_scheduled_allocs=None,
     ):
         """Build a single cap subroutine as a func.FuncOp.
 
@@ -2207,6 +2309,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                                    at the end of the subroutine.
         check_string            -- if set, verify ccpp_suite_state equals this
                                    value at the start of the subroutine.
+        already_scheduled_allocs -- optional set shared by every phase call
+                                   for one suite (see _generate_lifecycle_fns);
+                                   forwarded to _build_framework_refs so a
+                                   _run-only-resolvable framework var still
+                                   gets a LazyAllocOp without duplicating one
+                                   an earlier _init/_register call already
+                                   made.
         """
         if generated_subroutine_posfix is None:
             assert tgt_subroutine_postfix is not None
@@ -2303,6 +2412,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             tgt_subroutine_postfix=tgt_subroutine_postfix,
             physics_mode=physics_mode,
             arg_tables=arg_tables,
+            already_scheduled_allocs=already_scheduled_allocs,
         )
 
         call_ops, fn_sigs = self._build_call_ops(
@@ -2388,12 +2498,24 @@ class GenerateSuiteSubroutine(RewritePattern):
         suite_host_use_stubs: list = []
         check_strings_used: set = set()
         state_strings_used: set = set()
+        # Shared across every phase call below (register/init/finalize/
+        # timestep_*, then one per physics group) so a framework var already
+        # successfully allocated during _init/_register -- the common case,
+        # covering both the framework_vars loop and the suite_model sweep in
+        # _build_framework_refs -- doesn't also get a second, redundant
+        # LazyAllocOp in every physics group's _run body too. Scoped to this
+        # one suite (fresh set per _generate_lifecycle_fns call, i.e. per
+        # ccpp.SuiteOp), not shared across suites, since the same
+        # standard_name in a different suite is a different module-scoped
+        # variable.
+        scheduled_allocs: set = set()
 
         for tgt_postfix, gen_postfix, state_string, check_string in subroutine_specs:
             fn, sigs, stubs = self.generateSubroutineCall(
                 suite_description, tgt_postfix, gen_postfix,
                 state_string=state_string, check_string=check_string,
                 physics_mode=(tgt_postfix == "_run"), suite_model=suite_model,
+                already_scheduled_allocs=scheduled_allocs,
             )
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
@@ -2415,6 +2537,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 group_suite, "_run", f"_{group_name}",
                 state_string=None, check_string="in_time_step",
                 physics_mode=True, group_name=group_name, suite_model=suite_model,
+                already_scheduled_allocs=scheduled_allocs,
             )
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
