@@ -35,6 +35,10 @@ from xdsl_ccpp.transforms.host_var_match_pass import HostVariableMatchPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 def _fortran_output(run_host_match, ccpp_context, scheme_metas, host_metas, suite_xml) -> str:
     """Run the full pipeline, including both GPU passes, through the Fortran

@@ -5,7 +5,7 @@
 // Block args (e.g. ncol / horizontal_loop_extent) that have no host match do
 // not carry any layout annotation.
 //
-// RUN: python3 tests/filecheck/examples/array_layout_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match | python3 -m filecheck %s
+// RUN: python3 tests/filecheck/examples/array_layout_suite.py --legacy-mode | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match | python3 -m filecheck %s
 
 // ncol (horizontal_loop_extent) is a block arg with no host match — no annotation.
 // CHECK: "ccpp.arg"() <{name = "ncol"

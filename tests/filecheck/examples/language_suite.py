@@ -11,11 +11,11 @@ fortran_scheme = SchemeDescriptor(
     "tiny_fortran_scheme",
     {
         "run": [
-            Arg("ncol",   standard_name="horizontal_loop_extent",
+            Arg("ncol",   standard_name="horizontal_dimension",
                 type="integer", units="count",     intent="in"),
             Arg("temp",   standard_name="air_temperature",
                 type="real",    kind="kind_phys",  units="K",
-                dimensions=("horizontal_loop_extent",), intent="inout"),
+                dimensions=("horizontal_dimension",), intent="inout"),
             Arg("errmsg", standard_name="ccpp_error_message",
                 type="character", kind="len=512",  units="none", intent="out"),
             Arg("errflg", standard_name="ccpp_error_code",
@@ -28,11 +28,11 @@ cxx_scheme = SchemeDescriptor(
     "tiny_cxx_scheme",
     {
         "run": [
-            Arg("ncol",   standard_name="horizontal_loop_extent",
+            Arg("ncol",   standard_name="horizontal_dimension",
                 type="integer", units="count",     intent="in"),
             Arg("temp",   standard_name="air_temperature",
                 type="real",    kind="kind_phys",  units="K",
-                dimensions=("horizontal_loop_extent",), intent="inout"),
+                dimensions=("horizontal_dimension",), intent="inout"),
             Arg("errmsg", standard_name="ccpp_error_message",
                 type="character", kind="len=512",  units="none", intent="out"),
             Arg("errflg", standard_name="ccpp_error_code",

@@ -20,6 +20,10 @@ from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 _CHUNKED_SCHEME_META = f"""\
 [ccpp-table-properties]
   name = chunked_scheme

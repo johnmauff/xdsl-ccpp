@@ -51,6 +51,10 @@ from xdsl_ccpp.tools.ccpp_track_variables import track
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, two_scheme_subcycle_xml
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

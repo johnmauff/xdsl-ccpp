@@ -21,6 +21,8 @@ from xdsl_ccpp.tools.ccpp_track_variables import (
     track,
 )
 
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 # ── Paths to the example directories ─────────────────────────────────────────
 
 _HERE = pathlib.Path(__file__).parent

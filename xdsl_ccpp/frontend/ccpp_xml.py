@@ -15,6 +15,7 @@ from xdsl_ccpp.dialects.ccpp import (
     SuiteOp,
     TablePropertiesOp,
 )
+from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
 
 
 class CCPPType(StrEnum):
@@ -582,6 +583,14 @@ class ccppXML:
                 "array of length N instead of the compiled-in default."
             ),
         )
+        parser.add_argument(
+            "--legacy-mode",
+            action="store_true",
+            default=False,
+            help="Accept deprecated standard names (currently: horizontal_loop_extent) "
+                 "with a warning instead of rejecting them. Forwarded from ccpp_dsl.py's "
+                 "own --legacy-mode flag when this frontend is spawned as a subprocess.",
+        )
 
     def build_options_db_from_args(self, args):
         """Normalise parsed CLI args into a plain dict with list values.
@@ -721,6 +730,9 @@ class ccppXML:
         parser = self.initialise_argument_parser()
         args = parser.parse_args()
         self.options_db = self.build_options_db_from_args(args)
+
+        # Set before any ArgumentOp is constructed below.
+        set_legacy_mode(self.options_db.get("legacy_mode", False))
 
         for suite_file in self.options_db["suites"]:
             ir_ops.append(self.build_suite_ir(XMLSuite(suite_file)))

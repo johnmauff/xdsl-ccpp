@@ -38,6 +38,10 @@ from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 
 def _omp_fortran_output(run_host_match, ccpp_context) -> str:
     """Same pipeline as test_gpu_directives.py's _fortran_output, but with

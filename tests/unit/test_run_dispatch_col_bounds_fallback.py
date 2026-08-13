@@ -71,6 +71,10 @@ from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 _HOST_META = """\
 [ccpp-table-properties]
   name = test_host

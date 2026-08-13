@@ -33,7 +33,7 @@ from xdsl.irdl import (
 from xdsl.traits import NoTerminator
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.util.ccpp_conventions import deprecated_std_name_warning
+from xdsl_ccpp.util.ccpp_conventions import deprecated_std_name_warning, is_legacy_mode
 
 
 class TableTypeKind(StrEnum):
@@ -449,8 +449,11 @@ class ArgumentOp(IRDLOperation):
                     properties[flag] = UnitAttr()
                 prop_keys.remove(flag)
 
-        # Warn (don't reject) on deprecated standard names, whether declared
-        # as the arg's own standard_name or as one of its dimension names.
+        # Reject deprecated standard names by default, matching capgen-v1's
+        # own strict posture -- whether declared as the arg's own
+        # standard_name or as one of its dimension names. --legacy-mode
+        # downgrades this to a warning and preserves full support (matches
+        # capgen-v1's own --legacy-mode flag).
         _checked_std_names = []
         if "standard_name" in properties:
             _checked_std_names.append(properties["standard_name"].data)
@@ -459,10 +462,18 @@ class ArgumentOp(IRDLOperation):
         for _std_name in _checked_std_names:
             _warning = deprecated_std_name_warning(_std_name)
             if _warning is not None:
-                print(
-                    f"Warning: arg '{arg_name.data}': {_warning}",
-                    file=sys.stderr,
-                )
+                if is_legacy_mode():
+                    print(
+                        f"Warning: arg '{arg_name.data}': {_warning} "
+                        f"(allowed via --legacy-mode)",
+                        file=sys.stderr,
+                    )
+                else:
+                    raise ValueError(
+                        f"arg '{arg_name.data}': {_warning}. Pass --legacy-mode "
+                        f"to accept this deprecated standard_name (matches "
+                        f"capgen-v1's --legacy-mode flag)."
+                    )
 
         # Silently ignore unrecognised keys
 

@@ -27,6 +27,8 @@ from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
 from xdsl_ccpp.transforms.gpu_data_pass import GPUDataPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+pytestmark = pytest.mark.usefixtures("legacy_mode")
+
 # ── metadata fixtures ─────────────────────────────────────────────────────────
 #
 # test_gpu_scheme declares:

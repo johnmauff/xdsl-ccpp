@@ -145,20 +145,43 @@ CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dime
 CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
 
 # ── Deprecated standard names ────────────────────────────────────────────────
-# Still parsed and handled exactly as before (via suite_cap.py's legacy
-# _classify_args synthesis) -- this is a warning, not a rejection -- but every
-# example in this repo has migrated off them in favor of the replacement, and
-# new metadata should use the replacement instead.
+# Rejected by default, matching real capgen-v1's own strict posture; still
+# fully supported (parsed and handled exactly as before, via suite_cap.py's
+# column-chunking synthesis) when --legacy-mode is passed, matching
+# capgen-v1's own --legacy-mode flag. Every example in this repo has already
+# migrated off these names in favor of the replacement; new metadata should
+# use the replacement instead.
 CCPP_DEPRECATED_STD_NAMES: dict = {
     CCPP_LOOP_EXTENT_STD_NAME: CCPP_HORIZ_DIM_STD_NAME,
 }
+
+# Set once per process (by each frontend's CLI entry point) from --legacy-mode.
+# A plain module global rather than a threaded parameter: ArgumentOp is
+# constructed from dozens of call sites across three independent frontends
+# (ccpp_xml.py, py_api.py, and ccpp_dsl.py's merge_meta_files/merge_meta),
+# and only one of those (ccpp_xml.py) even runs in-process with the CLI that
+# parses the flag -- the others would need it threaded through unrelated
+# constructor signatures for no benefit.
+_LEGACY_MODE_ENABLED = False
+
+
+def set_legacy_mode(enabled: bool) -> None:
+    """Enable or disable acceptance of deprecated standard names for this process."""
+    global _LEGACY_MODE_ENABLED
+    _LEGACY_MODE_ENABLED = bool(enabled)
+
+
+def is_legacy_mode() -> bool:
+    """Return True if --legacy-mode was set for this process."""
+    return _LEGACY_MODE_ENABLED
 
 
 def deprecated_std_name_warning(std_name: str) -> str | None:
     """Return a warning message if std_name is deprecated, else None.
 
     Case-insensitive; matches capgen.py's ArgumentOp handling of standard
-    names and dimension names alike.
+    names and dimension names alike. Used for both the --legacy-mode warning
+    text and the default-mode rejection text (see ArgumentOp.__init__).
     """
     replacement = CCPP_DEPRECATED_STD_NAMES.get(std_name.lower())
     if replacement is None:
