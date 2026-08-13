@@ -3544,6 +3544,48 @@ dependency is noted.
         end-to-end. `opt_arg`'s own generated Fortran also directly inspected and confirmed
         correct. Not yet re-verified: an actual gfortran compile (still no local compiler --
         CI is the next real check on this fix, same limitation as before).
+    - **CI/build follow-on, found and fixed 2026-08-13:** CI caught a real gfortran type
+      mismatch on `examples/opt_arg`'s own driver (`test_opt_arg_host_integration.F90`):
+      `flag_for_opt_arg` is threaded as a genuine dummy argument on
+      `test_host_ccpp_physics_timestep_initial`/`_timestep_final`/`_run` (part of the HOST-type
+      fix above), and the driver's positional calls hadn't been updated to pass it, shifting
+      every argument after that slot. Fixed by adding it at the correct position in all three
+      call sites, confirmed against the actual generated cap signatures (via
+      `xdsl_ccpp.tools.ccpp_dsl`, the same tool CI's CMake step uses) rather than guessed.
+    - **PR #70 Copilot review, addressed 2026-08-13** (two of three comments; third deliberately
+      deferred, see below):
+      - **Multi-condition active-gating was a real, live bug, not hypothetical.**
+        `_build_active_gated_call_ops` originally grouped *all* of a scheme's active-gated
+        optional args under whichever distinct `model_var_active_expr` it encountered first,
+        silently mis-gating every other condition. Adding a defensive raise for this (the
+        initially-planned "cheap guard") immediately tripped on `examples/var_compat`'s own
+        `effr_calc_run`, which genuinely has two independent conditions --
+        `effrg_in`/`ncg_in` gated by `has_graupel`, `nci_out`/`effri_out` independently gated by
+        `has_ice` (from `test_host_data.meta`'s own `active=` properties). The merged, previously
+        "passing" golden Fortran had been silently wrong the whole time: with `has_graupel`
+        picked as the sole condition, `nci_out`/`effri_out` were computed even when `has_ice` was
+        false, and dropped even when `has_ice` was true and `has_graupel` false. Fixed properly
+        (not just guarded) with nested `ActiveCheckOp`s, one level per distinct condition, so
+        every combination of N conditions' truth values reaches the one call variant with exactly
+        the right args included (2**N leaf calls; N is the number of distinct conditions on one
+        scheme, not the number of gated args -- 2 today). Both `var_compat` goldens regenerated
+        (a substantially bigger diff than the earlier text-only fixes -- the nested structure
+        roughly quadruples that function's line count) and re-verified against fresh tool output
+        rather than hand-edited guesswork.
+      - **`suite_use_stubs` default of `None` silently dropped USE stubs** if
+        `_build_active_gated_call_ops` were ever called without it (not currently live -- the one
+        caller always passes it -- but exactly the function Stage 2a of the vocabulary-resolution
+        redesign (see Index) plans to route more traffic through). Fixed by making it a required
+        keyword-only parameter instead of a risky default.
+      - **Deliberately deferred:** synthetic HOST-table args from `_collect_active_gate_extra_args`
+        missing `model_var_name`/`model_module_name`/`model_var_is_host_table` (can spuriously
+        trip the suite dummy-arg name-collision fallback, and degrades `--emit-resolved-vars`
+        accuracy for these args). Real bug, but lives entirely inside
+        `_collect_active_gate_extra_args`, which the redesign's Stage 2a/3 deletes outright once
+        HOST-type vars move to use-association like MODULE-type already does -- fixing it now
+        would be thrown-away work.
+      - **Verification:** full suite green again (562 passed, 1 xfailed, 1 failed -- same
+        pre-existing `test_build_integration.py` PATH issue, unrelated).
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified

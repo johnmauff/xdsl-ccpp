@@ -951,7 +951,7 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def _build_active_gated_call_ops(
         self, subroutine_name, arg_table, data_ops, overrides=None,
-        divergent_std_keys: frozenset = frozenset(), suite_use_stubs: list = None,
+        divergent_std_keys: frozenset = frozenset(), *, suite_use_stubs: list,
     ):
         """Build scheme call ops for a non-promoted (flat) scheme call,
         gating any optional arg whose matched host var carries an 'active'
@@ -969,6 +969,21 @@ class GenerateSuiteSubroutine(RewritePattern):
         ("did the caller pass this?" vs "is this host variable currently
         active?") and are not interchangeable, even though both gate an
         'optional' arg.
+
+        A scheme's own optional args can be gated by more than one distinct
+        condition -- confirmed real, not hypothetical: examples/var_compat's
+        effr_calc_run has effrg_in/ncg_in gated by 'has_graupel' and
+        nci_out/effri_out independently gated by 'has_ice'. Treating every
+        active-gated arg as one group under a single shared condition (this
+        function's first cut) silently mis-gated whichever condition wasn't
+        picked -- e.g. with has_graupel picked, nci_out/effri_out would be
+        computed even when has_ice is false, and dropped even when has_ice
+        is true and has_graupel is false. Each distinct condition gets its
+        own ActiveCheckOp instead, nested so every combination of the N
+        conditions' truth values reaches the one call variant with exactly
+        the right args included (2**N leaf calls) -- N is the number of
+        *distinct* conditions on one scheme, not the number of gated args,
+        and stays small in practice (2 today).
         """
         active_gated_names: dict = {}  # raw condition_expr -> [arg_name, ...]
         for arg in arg_table.getFunctionArguments():
@@ -983,31 +998,38 @@ class GenerateSuiteSubroutine(RewritePattern):
                 divergent_std_keys=divergent_std_keys,
             )
 
-        # All active-gated optional args in a single scheme call are treated
-        # as one group under the first distinct condition_expr encountered --
-        # same simplification _build_promoted_call_ops's own guard uses for
-        # optional promoted args (see its "TODO: handle each independently"
-        # above). Real coverage so far (examples/opt_arg, examples/var_compat)
-        # only ever has one shared condition across a scheme's own
-        # active-gated args.
-        raw_condition_expr = next(iter(active_gated_names))
-        condition_expr = self._resolve_active_condition(
-            raw_condition_expr, suite_use_stubs if suite_use_stubs is not None else []
-        )
-        gated_names: set = set()
-        for names in active_gated_names.values():
-            gated_names.update(names)
+        raw_conditions = list(active_gated_names)
+        resolved_conditions: dict[int, str] = {}
 
-        with_call_ops = self.generateSchemeSubroutineCallOps(
-            subroutine_name, arg_table, data_ops, overrides or {},
-            divergent_std_keys=divergent_std_keys,
-        )
-        without_call_ops = self.generateSchemeSubroutineCallOps(
-            subroutine_name, arg_table, data_ops, overrides or {},
-            exclude_args=gated_names, divergent_std_keys=divergent_std_keys,
-        )
-        active_op = ActiveCheckOp(condition_expr, with_call_ops, without_call_ops)
-        return [active_op]
+        def _build_leaf(excluded_names: frozenset) -> list:
+            if excluded_names:
+                return self.generateSchemeSubroutineCallOps(
+                    subroutine_name, arg_table, data_ops, overrides or {},
+                    exclude_args=excluded_names,
+                    divergent_std_keys=divergent_std_keys,
+                )
+            return self.generateSchemeSubroutineCallOps(
+                subroutine_name, arg_table, data_ops, overrides or {},
+                divergent_std_keys=divergent_std_keys,
+            )
+
+        def _build_level(level: int, excluded_names: frozenset) -> list:
+            if level == len(raw_conditions):
+                return _build_leaf(excluded_names)
+            raw_condition_expr = raw_conditions[level]
+            if level not in resolved_conditions:
+                resolved_conditions[level] = self._resolve_active_condition(
+                    raw_condition_expr, suite_use_stubs
+                )
+            condition_expr = resolved_conditions[level]
+            with_ops = _build_level(level + 1, excluded_names)
+            without_ops = _build_level(
+                level + 1,
+                excluded_names | frozenset(active_gated_names[raw_condition_expr]),
+            )
+            return [ActiveCheckOp(condition_expr, with_ops, without_ops)]
+
+        return _build_level(0, frozenset())
 
     def getArgumentTable(self, scheme_name, subroutine_name):
         """Look up the argument table for a specific scheme subroutine.
