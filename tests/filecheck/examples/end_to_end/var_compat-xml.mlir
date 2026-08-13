@@ -92,6 +92,7 @@
 // CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
 // CHECK-NEXT:    use rad_lw, only: rad_lw_run
 // CHECK-NEXT:    use rad_sw, only: rad_sw_run
+// CHECK-NEXT:    use test_host_mod, only: has_graupel
 // CHECK-NEXT:    use test_host_mod, only: ncols
 // CHECK-NEXT:    use test_host_mod, only: pver
 // CHECK:         implicit none
@@ -253,7 +254,7 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        do ccpp_loop_cnt0 = 1, 2
 // CHECK-NEXT:          do ccpp_loop_cnt = 1, 2
-// CHECK-NEXT:            if ((flag_indicating_cloud_microphysics_has_graupel)) then
+// CHECK-NEXT:            if ((has_graupel)) then
 // CHECK-NEXT:              if (errflg .eq. 0) then
 // CHECK-NEXT:                if (allocated(effrr_in_unit_conv)) deallocate(effrr_in_unit_conv)
 // CHECK-NEXT:                allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))

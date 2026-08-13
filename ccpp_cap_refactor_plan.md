@@ -68,6 +68,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 |---|---|---|
 | `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | 📋 Backlog (S, cosmetic) | L3436 |
 | Move examples' build system from per-example Makefiles to CMake | 📋 Backlog (size TBD) | L3467 |
+| CMake cap generation runs at configure time -- every example regenerates on every CI job | 📋 Backlog (size TBD) | L3652 |
 | `.meta` bracket-spacing parser bug (`[ name ]` vs `[name]`) | ✅ Fixed | L3493 |
 | Three more whitespace-parsing bugs (same class, found by audit) | ✅ Fixed | L3540 |
 | `[ccpp-table-properties]`'s `module_name` override unsupported | 📋 Backlog (S) | L3566 |
@@ -3492,6 +3493,57 @@ dependency is noted.
       output. `examples/opt_arg` is now `add_subdirectory`'d into the root build and added to
       `.github/workflows/compile-tests-cmake.yml`'s matrix -- not yet compile/run-verified on
       this laptop (no Fortran compiler available), so CI is the first real check.
+    - **CI-CONFIRMED FOLLOW-ON BUG, found and fixed 2026-08-13 after the above landed:** CI
+      (no local Fortran compiler exists to catch this) reported a real gfortran compile error on
+      `examples/nested_suite` and `examples/var_compat` --
+      `Error: Symbol 'flag_indicating_cloud_microphysics_has_graupel' at (1) has no IMPLICIT type`.
+      Root cause: `ActiveCheckOp`'s `condition_expr` was being printed verbatim from the host's
+      raw `active = <expr>` metadata text, which -- like `default_value`/dimension expressions --
+      is written in *standard-name* space, not local-Fortran-variable space. It happened to
+      compile in every case actually tested locally only because those cases' standard name and
+      local name coincided; `effr_calc.meta`'s guard (`flag_indicating_cloud_microphysics_
+      has_graupel`, whose real local name in `test_host_mod.meta` is `has_graupel`) was the first
+      case where they differed, and no compiler was available locally to catch the mismatch before
+      it reached CI. `opt_arg`'s own `flag_for_opt_arg` guard hit the same bug class (caught by my
+      own `TestActiveGatedOptionalArgs` unit test raising a real error once resolution was added,
+      before any CI run), for a second, independent reason described below.
+      - **Fix, MODULE-type refs:** new `suite_cap.py` methods `_active_expr_var_indexes` (indexes
+        `self.meta_data`'s MODULE- and HOST-type tables by standard name) and a rewritten
+        `_resolve_active_condition` that tokenizes the raw expression
+        (`_ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")`), resolves each
+        identifier-like token against that index, and for MODULE-type refs emits a deduped
+        `llvm.GlobalOp` USE stub (`use test_host_mod, only: has_graupel`) alongside the resolved
+        local name -- the same resolution capgen-v1 does implicitly by generating real Fortran
+        rather than an intermediate IR. Confirmed correct end-to-end for `var_compat` and
+        `nested_suite`'s real generated Fortran (`has_graupel` now a real dummy/use-associated
+        name at every call site, guard reads `if ((has_graupel)) then`).
+      - **Fix, HOST-type refs (the harder case, and why `opt_arg` hit this independently):** a
+        HOST-type-table var referenced only inside an `active=` expression -- never a scheme's own
+        declared arg -- needs threading as a real dummy argument, never `use`-associated, at *two*
+        separate layers: (a) `suite_cap.py`'s own suite-cap-level function, via a new
+        `_collect_active_gate_extra_args` pre-scan that appends a synthetic `CCPPArgument` to
+        `input_arg_list` before `_build_block_signature` runs (wired into
+        `generateSubroutineCall`); and (b) the *outer* wrapper `lifecycle_cap.py` builds around
+        that call, which has no visibility into the synthetic arg since its own pre-scan only
+        reads scheme metadata -- fixed by a fallback that treats a callee's bare arg name as a
+        candidate standard name when no scheme's own metadata explains it (the exact shape
+        `_collect_active_gate_extra_args` produces). Without fix (b), the outer wrapper compiled
+        but silently declared an uninitialized local instead of threading the real host var through
+        -- a correct-looking compile that would have been wrong at runtime, worse than the original
+        compile error. `run_dispatch.py`'s own `_run`-path wrapper needed no change -- its
+        arg-resolution was already generic enough to handle this shape.
+      - **Golden-file fallout:** both `var_compat` FileCheck goldens (`end_to_end/
+        var_compat-xml.mlir`, `completed_ir/var_compat-xml.mlir`) needed more than a text-only
+        fix -- MODULE-type resolution now emits a genuinely new `llvm.mlir.global`/USE-stub pair
+        for `has_graupel` that didn't exist in the old (bugged) output at all, so the goldens
+        needed that new line inserted (in both the raw-MLIR and use-statement sections), not just
+        the guard condition's text corrected.
+      - **Verification:** full suite green (562 passed, 1 xfailed, 1 failed -- same pre-existing
+        `test_build_integration.py` PATH issue as always, unrelated). `var_compat` and
+        `nested_suite` real generated Fortran directly inspected and confirmed correct
+        end-to-end. `opt_arg`'s own generated Fortran also directly inspected and confirmed
+        correct. Not yet re-verified: an actual gfortran compile (still no local compiler --
+        CI is the next real check on this fix, same limitation as before).
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified
@@ -3848,6 +3900,46 @@ dependency is noted.
     (collision resolved via host name, both the printed signature and each
     scheme's actual call-site value; and a negative test confirming a clear
     `ValueError` when no host match exists to disambiguate with).
+
+- **CMake cap generation runs at configure time, not build time, so every
+  wired-in example's caps regenerate on every CI job regardless of which
+  target that job actually builds — flagged 2026-08-13, size TBD.**
+  `cmake/xdsl_ccpp_capgen.cmake` calls `ccpp_xdsl` via `execute_process()`,
+  which runs synchronously while CMake is still processing
+  `CMakeLists.txt` files (configure time), not later when `cmake --build`
+  actually compiles targets. Since the root `CMakeLists.txt` does
+  `add_subdirectory(examples/X)` for every wired-in example, and each of
+  those directories' own `CMakeLists.txt` calls `xdsl_ccpp_capgen()`
+  unconditionally as soon as CMake reaches it, a single `cmake -S . -B
+  build` regenerates every wired-in example's caps up front — before the
+  separate, later `--target <one-example>` build step even runs. Each of
+  `.github/workflows/compile-tests-cmake.yml`'s ~16 matrix jobs runs its
+  own fresh configure, so this means all ~16 examples' caps get generated
+  in every one of the 16 jobs, not just the one each job actually tests.
+  - **Why it's built this way:** modeled directly on capgen-v1's own
+    `cmake/ccpp_capgen.cmake` precedent (see this file's own header
+    comment) — running synchronously at configure time lets the
+    `CMakeLists.txt` immediately parse the generated file list
+    (`CCPP_CAPS_LIST`, read back from `--emit-datatable`'s output) and feed
+    it straight into `add_library(...)` in the same pass, rather than
+    needing `add_custom_command(OUTPUT ...)`'s more awkward
+    statically-declared-output-filenames machinery.
+  - **The real cost isn't just wasted CI time:** `xdsl_ccpp_capgen()` calls
+    `message(FATAL_ERROR)` on a cap-generation failure, which aborts
+    configure *entirely* — for every job, not just whichever example
+    failed. This is exactly why `instances_advection` (a confirmed
+    cap-generation hard-failure) is deliberately kept out of
+    `add_subdirectory` rather than fixed later — see this repo's root
+    `CMakeLists.txt`'s own header comment.
+  - **Not attempted:** deferring cap generation to build time (e.g. via
+    `add_custom_command(OUTPUT ...)`, gated per-target so each CI job only
+    generates the one example it's actually building) would be a real CMake
+    restructuring, not a small patch — every example's `CMakeLists.txt`
+    would need its own output-file list known statically at configure time
+    (today it's discovered dynamically, after the tool already ran and
+    wrote `datatable.xml`), which likely means `xdsl_ccpp_capgen()`'s own
+    interface changes too. Sizing this needs a closer look before deciding
+    whether it's worth doing.
 
 ---
 

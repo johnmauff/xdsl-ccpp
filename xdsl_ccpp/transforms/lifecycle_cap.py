@@ -148,6 +148,18 @@ def _generate_lifecycle_fn(
         for _arg_name, _arg_type in zip(_callee_in_names, _callee_in_types):
             _bare_name = _bare(_arg_name)
             _std_name = _std_name_of.get(_bare_name)
+            if _std_name is None and _bare_name.lower() in host_var_map_all:
+                # Not any scheme's own declared arg -- suite_cap.py's own
+                # active-gate pre-scan (_collect_active_gate_extra_args) can
+                # synthesize an extra HOST-type-table arg on its callee's
+                # signature that no scheme metadata ever declares (an
+                # 'active = <flag>' reference, not a real scheme argument).
+                # Falls back to treating the callee's own bare arg name as
+                # the standard name directly -- true for both real cases so
+                # far (data.meta's own flag_for_opt_arg/flag_indicating_
+                # cloud_microphysics_has_graupel each declare bare name ==
+                # standard_name), not a general guarantee.
+                _std_name = _bare_name.lower()
             if (
                 _std_name
                 and _std_name in host_var_map_all

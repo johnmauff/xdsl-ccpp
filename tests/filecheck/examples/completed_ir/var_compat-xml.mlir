@@ -67,6 +67,8 @@
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "pver", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
+// CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "has_graupel", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
+// CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "ncl_out", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-LABEL:     func.func public @var_compatibility_suite_suite_register() -> (memref<i32>, memref<512xi8>) {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
@@ -243,7 +245,7 @@
 // CHECK-NEXT:          }
 // CHECK-NEXT:          "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_1) <{loop_count = "2", is_literal = true}> ({
 // CHECK-NEXT:            "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt) <{loop_count = "2", is_literal = true}> ({
-// CHECK-NEXT:              "ccpp_utils.active_check"() <{condition_expr = "(flag_indicating_cloud_microphysics_has_graupel)"}> ({
+// CHECK-NEXT:              "ccpp_utils.active_check"() <{condition_expr = "(has_graupel)"}> ({
 // CHECK-NEXT:                %13 = arith.constant 0 : i32
 // CHECK-NEXT:                %14 = arith.cmpi eq, %15, %13 : i32
 // CHECK-NEXT:                %15 = memref.load %errflg[] : memref<i32>
