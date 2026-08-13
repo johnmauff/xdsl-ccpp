@@ -53,8 +53,8 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # Create test host library
   add_library(VAR_COMPATIBILITY_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                                 ${VAR_COMPATIBILITY_HOST_FORTRAN_FILES}
-                                                ccpp_constituent_prop_mod.F90
-                                                ccpp_scheme_utils.F90
+                                                ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+                                                ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
                                                 ${CCPP_CAPS_LIST})
   set_target_properties(VAR_COMPATIBILITY_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(VAR_COMPATIBILITY_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)

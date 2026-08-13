@@ -56,8 +56,8 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # Create test host library
   add_library(NESTED_SUITE_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                            ${NESTED_SUITE_HOST_FORTRAN_FILES}
-                                           ccpp_constituent_prop_mod.F90
-                                           ccpp_scheme_utils.F90
+                                           ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+                                           ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
                                            ${CCPP_CAPS_LIST})
   set_target_properties(NESTED_SUITE_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(NESTED_SUITE_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)

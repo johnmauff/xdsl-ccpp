@@ -55,9 +55,13 @@ capgen-v1" problem, as opposed to the vendored shim.
 
 ### Plan: staged, one stage at a time, pause for review between each
 
-**Progress: Stage 2 done, awaiting review.** Update the status line per
-stage as work lands (`not started` / `in progress` / `done, awaiting
-review` / `done`).
+**Progress (updated 2026-08-13): Stages 0-7 done.** Stage 8 not started and
+now explicitly **paused pending a direction decision** -- see the
+"Re-validation (2026-08-13)" entry under Stage 8 below for why: CAM-SIMA's
+real migration off legacy capgen turned out to go through capgen-v1's own
+separate integration path, not this one. Update the status line per stage
+as work lands (`not started` / `in progress` / `done, awaiting review` /
+`done`).
 
 **Stage 0 -- Lock the contract. [done, awaiting review]**
 
@@ -813,6 +817,81 @@ Stages 4-7 as a PR to CAM-SIMA (`johnmauff/CAM-SIMA` fork ->
 
 Stages 1-3 can proceed independently of anything CAM-SIMA-side; 4-7 depend
 on Stage 3 landing (or at least stabilizing) first.
+
+### Re-validation (2026-08-13): --legacy-mode impact, a stale adapter, and a
+### bigger strategic finding -- PAUSED here by request, awaiting direction
+
+**Trigger**: the `--legacy-mode` work (`ccpp_cap_refactor_plan.md`) flipped
+`ArgumentOp`'s default from warn-on-deprecated-name to reject-by-default.
+Every fixture this whole Workstream validates against declares
+`horizontal_loop_extent`, so this needed re-confirming before treating
+Stage 7's findings as still current.
+
+**Confirmed intact.** Pulled `johnmauff/CAM-SIMA@xdsl-ccpp-adapter` fresh
+(this is PR #2 on that repo, open, base `development` -- see below) and ran
+a real fixture (`temp_adjust.meta` + `simple_host.meta`) through the current
+xdsl_ccpp pipeline end-to-end, through the actual committed
+`resolved_var_xdsl_ccpp.py`. Fails without `--legacy-mode` (by design); with
+it, reproduces exactly the Post-Stage-7 resolution: `horizontal_dimension`
+-> `local_name='pcols'`, `host_module='simple_sub'`, `is_host_table_var=True`,
+`is_protected=True`. `--legacy-mode` is a strict superset of the old
+warn-only behavior for this path -- nothing regressed.
+
+**Found: the committed CAM-SIMA-side adapter is stale.** `johnmauff/CAM-SIMA`
+PR #2's own description says "10/13 produce byte-identical output... the
+remaining 3 (DDT-member variables) have a known, documented gap" -- that's
+the pre-Post-Stage-7 state (Stage 4-6 level), not the 12/13-plus-one-cosmetic
+state this doc claims above. Confirmed directly: xdsl_ccpp's
+`--emit-resolved-vars` JSON still emits a correct top-level `"host_vars"` key
+today, but `resolved_var_xdsl_ccpp.py` on that branch never reads it, and
+still aliases `import_name`/`call_expr` to `model_var_name` instead of the
+dedicated fields the DDT-chain fix added. DDT/array-ref fixtures (`ddt`,
+`ddt2`, `ddt_array`) would very likely still show the old 10/13-level gap on
+that branch -- the "Post-Stage-7 follow-up: the DDT-chain gap" section
+above's byte-identical claim was validated against a local/scratch copy of
+the adapter that was never pushed to CAM-SIMA.
+
+**A bigger finding: real capgen-v1 has already built its own, separate,
+apparently production-track integration path for CAM-SIMA**, independent of
+anything in this Workstream. capgen-v1's own repo docs
+(`doc/capgen_compat_layer.md`, `doc/migration.md` §4.5, both current as of
+the 2026-08-10 `feature/capgen-v1` tip) describe `cime_config/capgen_compat/`
+-- a facade living in the CAM-SIMA tree that lets CAM-SIMA's *unmodified*
+`write_init_files.py`/`cam_autogen.py`/`generate_registry_data.py` keep
+calling the old ccpp-capgen Python API (`cap_database.host_model_dict()`,
+`.call_list(phase)`, `Var.get_prop_value(...)`, ...) while capgen-v1
+generates underneath. Per that doc's own "Status" section: three real suites
+(`kessler`, `rrtmgp`, and the full `cam7` suite via `se_cslam`) already
+**build and run to completion on Derecho, bit-comparable, under both gnu and
+intel**. This has nothing to do with xdsl_ccpp's `ResolvedVar` bridge, and is
+a working migration path already in place.
+
+That same doc states capgen-v1's own long-term "Convergence goal" explicitly:
+CAM-SIMA talking to capgen-v1 through **three CLI utilities plus the
+on-disk `datatable.xml` contract**, not a Python object model -- notably
+closer to xdsl_ccpp's already-existing `--emit-datatable`/`ccpp_datatable.py`
+than to this Workstream's `ResolvedVar` approach.
+
+**Also confirmed via GitHub**: `johnmauff/CAM-SIMA`'s `xdsl-ccpp-adapter`
+branch has an open PR (#2, -> `development`), whose own description frames
+it as exploratory -- "Not wired into `cam_autogen.py`... kept on its own
+branch while xdsl_ccpp itself is still under evaluation" -- consistent with
+everything above; it was never intended as the production integration path.
+
+**Implication, not yet acted on.** This doesn't make Workstream 1 wrong or
+wasted -- it proved xdsl_ccpp *can* expose this information natively, a real
+capability it previously lacked, and that capability is confirmed intact
+today. But CAM-SIMA's actual migration off legacy capgen went through
+capgen-v1 directly, not through this bridge, and capgen-v1's own stated
+target interface (CLI + `datatable.xml`) is a different shape than what this
+Workstream built. **Paused here by explicit request (2026-08-13)**, pending
+a decision on whether to: (a) finish Stage 8 as originally scoped (sync the
+stale CAM-SIMA-side adapter, land the xdsl_ccpp-side Stage 3 work as a real
+PR) purely as a capability proof; (b) leave Workstream 1 as-is and instead
+investigate whether `--emit-datatable` already satisfies (or could be
+extended to satisfy) capgen-v1's own stated convergence interface; or (c)
+deprioritize this entirely now that CAM-SIMA's real path is confirmed not to
+depend on it.
 
 ---
 
