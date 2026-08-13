@@ -43,12 +43,11 @@
 #
 # ccpp_constituent_prop_mod.F90/ccpp_scheme_utils.F90 are NOT duplicated
 # locally in this directory (unlike examples/advection's own copies, at
-# least for now) -- this example links the single shared source in
-# examples/shared/ instead (the ccpp_constituent_support target, built once
-# at the root CMakeLists.txt level), added because this directory's own
-# former local copy turned out to be missing diag_name, a real field/
-# instantiate() argument register_consts.F90 (ported faithfully from real
-# capgen-v1 upstream) genuinely needs. See examples/shared/
+# least for now) -- this example's own TESTLIB below compiles the single
+# shared source in examples/shared/ directly (by path), added because this
+# directory's own former local copy turned out to be missing diag_name, a
+# real field/instantiate() argument register_consts.F90 (ported faithfully
+# from real capgen-v1 upstream) genuinely needs. See examples/shared/
 # ccpp_constituent_prop_mod.F90's own header comment for the full story and
 # ccpp_cap_refactor_plan.md's backlog for the follow-up item tracking
 # migration of every other still-duplicating example to this single source.
@@ -85,19 +84,27 @@ xdsl_ccpp_capgen(HOSTFILES ${CONSTITUENTS_DIM_HOST_METADATA_FILES}
 
 if(XDSL_CCPP_HAVE_FORTRAN)
   # Constituent-registration support (ccpp_constituent_prop_mod/
-  # ccpp_scheme_utils) comes from the single shared source in
-  # examples/shared/ (built once, at the root CMakeLists.txt level, as the
-  # ccpp_constituent_support target) rather than a local per-example copy --
-  # see examples/shared/ccpp_constituent_prop_mod.F90's own header comment.
+  # ccpp_scheme_utils) is compiled from the single shared source in
+  # examples/shared/ (by path, not a local copy -- see that file's own
+  # header comment) directly into this example's own TESTLIB, alongside its
+  # own ${CCPP_CAPS_LIST} (which includes this example's own generated
+  # ccpp_kinds.F90, needed by ccpp_constituent_prop_mod.F90's `use
+  # ccpp_kinds`). NOT a separate, pre-built shared library the way
+  # test_utils is -- confirmed the hard way that doesn't work here, since
+  # ccpp_kinds.F90 is itself per-example generated, not a static file any
+  # root-level target could depend on before this example's own cap
+  # generation has run; see the root CMakeLists.txt's own comment at the
+  # ccpp_constituent_prop_mod.F90 reference below for the full story.
   add_library(CONSTITUENTS_DIM_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                                ${CONSTITUENTS_DIM_HOST_FORTRAN_FILES}
+                                               ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+                                               ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
                                                ${CCPP_CAPS_LIST})
   set_target_properties(CONSTITUENTS_DIM_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(CONSTITUENTS_DIM_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
-  target_link_libraries(CONSTITUENTS_DIM_TESTLIB PRIVATE ccpp_constituent_support)
 
   add_executable(constituents_dim.exe main.F90)
-  target_link_libraries(constituents_dim.exe PRIVATE CONSTITUENTS_DIM_TESTLIB ccpp_constituent_support)
+  target_link_libraries(constituents_dim.exe PRIVATE CONSTITUENTS_DIM_TESTLIB)
   target_include_directories(constituents_dim.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
   add_test(NAME ctest_constituents_dim COMMAND constituents_dim.exe)

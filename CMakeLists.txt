@@ -154,20 +154,25 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   add_library(test_utils OBJECT ${CMAKE_SOURCE_DIR}/examples/capgen/host_ftn/test_utils.F90)
   set_target_properties(test_utils PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/test_utils_mod)
   target_include_directories(test_utils PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/test_utils_mod)
-
-  # Single-source constituent-registration support stub (see
-  # examples/shared/ccpp_constituent_prop_mod.F90's own header comment) --
-  # examples/constituents_dim links this instead of compiling its own copy.
-  # examples/advection still compiles its own separate, currently-identical
-  # copy for now -- migrating it (and any other example duplicating this
-  # same stub) to this single source is tracked as its own backlog item,
-  # not done as a side effect of fixing constituents_dim's diag_name gap.
-  add_library(ccpp_constituent_support OBJECT
-    ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
-    ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90)
-  set_target_properties(ccpp_constituent_support PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/ccpp_constituent_support_mod)
-  target_include_directories(ccpp_constituent_support PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/ccpp_constituent_support_mod)
 endif()
+
+# examples/shared/ccpp_constituent_prop_mod.F90 / ccpp_scheme_utils.F90 (see
+# that file's own header comment) are the single source for this
+# constituent-registration support stub, but are NOT built as a shared
+# library here the way test_utils is -- unlike test_utils, they `use
+# ccpp_kinds`, which is itself a per-example *generated* file (part of each
+# example's own xdsl_ccpp_capgen() output, in that example's own build
+# directory, not a single static file this root scope could depend on
+# before any example subdirectory has even run its own cap generation).
+# Confirmed the hard way: building them as their own root-level target
+# fails with "Cannot open module file 'ccpp_kinds.mod'" since no example's
+# ccpp_kinds.F90 exists yet at that point. Each example that needs them
+# instead compiles these same two source files directly into its own
+# TESTLIB, alongside that example's own ${CCPP_CAPS_LIST} (which includes
+# its own ccpp_kinds.F90) -- CMake's own Fortran dependency scanner already
+# orders compilation correctly within one target, exactly as it already
+# does today for ${SCHEME_FORTRAN_FILES} against the same target's own
+# ccpp_kinds.F90.
 
 add_subdirectory(examples/nested_suite)
 add_subdirectory(examples/var_compat)
