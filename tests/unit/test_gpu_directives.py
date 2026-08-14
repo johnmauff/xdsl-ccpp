@@ -1,7 +1,7 @@
 """Unit tests for GPU data-directive insertion across all lifecycle phases.
 
 generate-gpu-ccpp-cap (GPUCcppCapPass) and generate-gpu-data (GPUDataPass)
-originally only ever processed the *_ccpp_physics_run / *_suite_physics
+originally only ever processed the ccpp_physics_run / *_suite_physics
 dispatch -- register/initialize/finalize/timestep_initial/timestep_final
 never got !$acc data wrapping around their suite callee calls, even when a
 scheme declared memory_space=device args on those entry points. These tests
@@ -161,13 +161,13 @@ class TestGPUCcppCapLifecycleCoverage:
     declares memory_space=device args for that entry point."""
 
     def test_run_still_wraps_present_var(self, run_host_match, ccpp_context):
-        """Regression guard: the pre-existing _ccpp_physics_run behavior is
+        """Regression guard: the pre-existing ccpp_physics_run behavior is
         unaffected by refactoring _process_run_fn to share _wrap_scheme_call
         with the new lifecycle path."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        assert "TestGpu_ccpp_physics_run" in fortran
-        run_fn = fortran.split("subroutine TestGpu_ccpp_physics_run")[1]
-        run_fn = run_fn.split("end subroutine TestGpu_ccpp_physics_run")[0]
+        assert "ccpp_physics_run" in fortran
+        run_fn = fortran.split("subroutine ccpp_physics_run")[1]
+        run_fn = run_fn.split("end subroutine ccpp_physics_run")[0]
         assert "present(hosted" in run_fn
 
     def test_initialize_wraps_present_var(self, run_host_match, ccpp_context):
@@ -175,8 +175,8 @@ class TestGPUCcppCapLifecycleCoverage:
         Previously initialize was never scanned at all, so no directive of
         any kind would have appeared here."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        init_fn = fortran.split("subroutine TestGpu_ccpp_physics_initialize")[1]
-        init_fn = init_fn.split("end subroutine TestGpu_ccpp_physics_initialize")[0]
+        init_fn = fortran.split("subroutine ccpp_init")[1]
+        init_fn = init_fn.split("end subroutine ccpp_init")[0]
         assert "present(hosted" in init_fn
 
     def test_timestep_final_wraps_copyin_var(self, run_host_match, ccpp_context):
@@ -185,8 +185,8 @@ class TestGPUCcppCapLifecycleCoverage:
         shape of the original bug report: a device var declared only on a
         timestep_final entry point, with no directive ever generated."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        final_fn = fortran.split("subroutine TestGpu_ccpp_physics_timestep_final")[1]
-        final_fn = final_fn.split("end subroutine TestGpu_ccpp_physics_timestep_final")[0]
+        final_fn = fortran.split("subroutine ccpp_physics_timestep_final")[1]
+        final_fn = final_fn.split("end subroutine ccpp_physics_timestep_final")[0]
         assert "copyin(hosted2" in final_fn
 
     def test_register_is_untouched_noop(self, run_host_match, ccpp_context):
@@ -195,8 +195,8 @@ class TestGPUCcppCapLifecycleCoverage:
         gain a spurious !$acc data region -- not even from residency
         establishment, whose entry anchor for 'hosted' is 'initialize'."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        body = fortran.split("subroutine TestGpu_ccpp_physics_register")[1]
-        body = body.split("end subroutine TestGpu_ccpp_physics_register")[0]
+        body = fortran.split("subroutine ccpp_register")[1]
+        body = body.split("end subroutine ccpp_register")[0]
         assert "!$acc" not in body
 
     def test_finalize_gets_synthesized_residency_exit_for_wholesim_var(
@@ -213,8 +213,8 @@ class TestGPUCcppCapLifecycleCoverage:
         previously had no clause-routing reason to be touched, but it was
         never claimed to have no *residency* reason either."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        body = fortran.split("subroutine TestGpu_ccpp_physics_finalize")[1]
-        body = body.split("end subroutine TestGpu_ccpp_physics_finalize")[0]
+        body = fortran.split("subroutine ccpp_final")[1]
+        body = body.split("end subroutine ccpp_final")[0]
         assert "exit data copyout(hosted" in body
 
     def test_timestep_initial_has_no_ccpp_cap_directive_for_hostless_var(
@@ -227,8 +227,8 @@ class TestGPUCcppCapLifecycleCoverage:
         so assert on the absence of an acc clause mentioning it specifically,
         not on the bare substring."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        initial_fn = fortran.split("subroutine TestGpu_ccpp_physics_timestep_initial")[1]
-        initial_fn = initial_fn.split("end subroutine TestGpu_ccpp_physics_timestep_initial")[0]
+        initial_fn = fortran.split("subroutine ccpp_physics_timestep_init")[1]
+        initial_fn = initial_fn.split("end subroutine ccpp_physics_timestep_init")[0]
         assert "!$acc" not in initial_fn
         for clause in ("present(scratch", "copyin(scratch", "copy(scratch", "copyout(scratch"):
             assert clause not in initial_fn
@@ -474,9 +474,9 @@ class TestGPUDivergedClauseRouting:
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
             run_host_match, ccpp_context,
         )
-        run_fn = fortran.split("subroutine TestConflict_ccpp_physics_run")
+        run_fn = fortran.split("subroutine ccpp_physics_run")
         assert len(run_fn) > 1
-        body = run_fn[1].split("end subroutine TestConflict_ccpp_physics_run")[0]
+        body = run_fn[1].split("end subroutine ccpp_physics_run")[0]
         assert "present(" not in body
         assert "update self(" not in body
         assert "update device(" not in body
@@ -492,8 +492,8 @@ class TestGPUDivergedClauseRouting:
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
             run_host_match, ccpp_context,
         )
-        run_fn = fortran.split("subroutine TestConflict_ccpp_physics_run")[1]
-        run_fn = run_fn.split("end subroutine TestConflict_ccpp_physics_run")[0]
+        run_fn = fortran.split("subroutine ccpp_physics_run")[1]
+        run_fn = run_fn.split("end subroutine ccpp_physics_run")[0]
         assert "!$acc data copy(conflict_var" in run_fn
         assert "!$acc end data" in run_fn
 

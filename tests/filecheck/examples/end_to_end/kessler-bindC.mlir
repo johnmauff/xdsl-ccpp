@@ -14,25 +14,25 @@
 // CHECK:         use iso_c_binding
 
 // Register: BIND(C) clause present, c_char and c_int argument types.
-// CHECK-LABEL:   subroutine Kessler_ccpp_physics_register(suite_name, errmsg, errflg) BIND(C,
+// CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) BIND(C,
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:      integer(c_int), intent(out) :: errflg
 
 // Initialize: same character/integer pattern.
-// CHECK-LABEL:   subroutine Kessler_ccpp_physics_initialize(suite_name, errmsg, errflg) BIND(C,
+// CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) BIND(C,
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 
 // Finalize.
-// CHECK-LABEL:   subroutine Kessler_ccpp_physics_finalize(suite_name, errmsg, errflg) BIND(C,
+// CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) BIND(C,
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 
 // Timestep initial/final.
-// CHECK-LABEL:   subroutine Kessler_ccpp_physics_timestep_initial(suite_name, errmsg, errflg) BIND(C,
-// CHECK-LABEL:   subroutine Kessler_ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg) BIND(C,
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,
 
 // Run: scalar intent(in) values use VALUE; strings use c_char; real arrays use c_double.
-// CHECK-LABEL:   subroutine Kessler_ccpp_physics_run(
+// CHECK-LABEL:   subroutine ccpp_physics_run(
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_part(*)
 // CHECK:           integer(c_int), value, intent(in) :: col_start

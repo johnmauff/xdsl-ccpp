@@ -81,6 +81,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
+    is_dispatch_scalar_std_name,
     is_vertical_dimension,
     normalize_units,
 )
@@ -827,79 +828,89 @@ class GenerateSuiteSubroutine(RewritePattern):
         present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
         return shared_slice_ops + [present_op]
 
-    _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+    def _classify_host_table_vars(self) -> dict:
+        """Return std_name.lower() -> 'state'|'dispatch_scalar' for every
+        variable declared in a HOST-type table in self.meta_data.
 
-    def _active_expr_var_indexes(self) -> "tuple[dict, dict]":
-        """Return (module_var_index, host_var_index) for resolving 'active =
-        <expr>' property text: standard_name.lower() -> (local_name,
-        table_name, ftn_type). Shared by the pre-scan (generateSubroutineCall,
-        which needs to know about HOST-type refs to expose them as extra
-        dummy args) and _resolve_active_condition (which needs both, now
-        that the pre-scan means a HOST-type ref is a real in-scope arg by
-        the time it runs).
+        Stage 1 of the vocabulary-resolution redesign (see
+        ccpp_cap_refactor_plan.md): classification only, nothing in this
+        codebase reads this yet. 'dispatch_scalar' means the standard_name
+        is one of the fixed CCPP-protocol dispatch parameters
+        (is_dispatch_scalar_std_name -- loop bounds, error handling) that
+        both this codebase and real capgen-v1 legitimately thread as a
+        plain argument; every other HOST-type var is 'state' -- real
+        host-owned data that real capgen-v1 resolves via use-association
+        (like this codebase's own MODULE-type vars already are) rather
+        than threading as a block argument the way this codebase currently
+        does for every HOST-type var without distinction.
         """
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 
-        module_var_index: dict = {}
-        host_var_index: dict = {}
+        classification: dict = {}
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") != CCPPType.HOST:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if not var.hasAttr("standard_name"):
+                    continue
+                std_name = var.getAttr("standard_name").lower()
+                classification[std_name] = (
+                    "dispatch_scalar" if is_dispatch_scalar_std_name(std_name)
+                    else "state"
+                )
+        return classification
+
+    _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+    def _active_expr_var_indexes(self) -> dict:
+        """Return use_associated_index for resolving 'active = <expr>'
+        property text: standard_name.lower() -> (local_name, table_name,
+        ftn_type).
+
+        Covers every MODULE-type var (always use-associated in this
+        codebase) *and* every 'state'-classified HOST-type var -- real
+        host-owned data with its own backing Fortran module (Stage 2a of
+        the vocabulary-resolution redesign, ccpp_cap_refactor_plan.md:
+        resolved the same way MODULE-type vars already are, via a USE stub,
+        rather than threaded as a dummy argument the way every HOST-type
+        var used to be regardless of classification).
+
+        'dispatch_scalar'-classified HOST-type vars (the fixed
+        CCPP-protocol set -- loop bounds, error handling) are deliberately
+        excluded: they have no backing Fortran module to use-associate
+        from, and no example anywhere gates an optional arg on one (nor
+        does it make semantic sense to -- a loop bound or error code isn't
+        the kind of thing a scheme's optionality would depend on).
+        _resolve_active_condition raises a clear error if one is ever
+        referenced in an 'active =' expression rather than silently
+        threading an untested dummy-argument workaround for a case that
+        has never actually occurred (Stage 3 of the redesign -- see
+        ccpp_cap_refactor_plan.md).
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+        host_classification = self._classify_host_table_vars()
+        use_associated_index: dict = {}
         for tbl_name, props in self.meta_data.items():
             tbl_type = props.getAttr("type")
             if tbl_type not in (CCPPType.MODULE, CCPPType.HOST):
                 continue
             if tbl_name not in props.arg_tables:
                 continue
-            target = module_var_index if tbl_type == CCPPType.MODULE else host_var_index
             for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if var.hasAttr("standard_name"):
-                    target[var.getAttr("standard_name").lower()] = (
-                        var.name, tbl_name, var.getAttr("type"),
-                    )
-        return module_var_index, host_var_index
-
-    def _collect_active_gate_extra_args(self, all_args: dict) -> list:
-        """Pre-scan: for every optional arg in all_args with an 'active'
-        expression referencing a HOST-type table var not already among
-        all_args's own entries, return a synthetic CCPPArgument for it so
-        the caller (generateSubroutineCall) can append it to input_arg_list
-        *before* _build_block_signature runs -- the same "must exist before
-        the block is constructed" constraint lifecycle_cap.py's own Bug 2
-        fix hit, just one level up: this function's own suite-cap-level
-        wrapper (not the outer ccpp_physics_* one) is what needs the flag
-        in scope here, since the guard this enables lives at this level.
-
-        MODULE-type refs need no such treatment -- they're use-associated,
-        resolved directly by _resolve_active_condition without ever needing
-        to be a dummy argument.
-        """
-        _, host_var_index = self._active_expr_var_indexes()
-        extra_args: list = []
-        seen_std_names: set = set()
-        for arg in all_args.values():
-            if not (arg.hasAttr("optional") and arg.hasAttr("model_var_active_expr")):
-                continue
-            for match in self._ACTIVE_EXPR_TOKEN_RE.finditer(
-                arg.getAttr("model_var_active_expr")
-            ):
-                std_name = match.group(0).lower()
-                if std_name in all_args or std_name in seen_std_names:
+                if not var.hasAttr("standard_name"):
                     continue
-                entry = host_var_index.get(std_name)
-                if entry is None:
-                    continue
-                local_name, table_name, ftn_type = entry
-                seen_std_names.add(std_name)
-                synth = CCPPArgument(local_name)
-                synth.setAttr("standard_name", std_name)
-                synth.setAttr("type", ftn_type)
-                synth.setAttr("intent", "in")
-                synth.setAttr("dimensions", 0)
-                extra_args.append(synth)
-        return extra_args
+                std_name = var.getAttr("standard_name").lower()
+                if tbl_type == CCPPType.MODULE or host_classification.get(std_name) == "state":
+                    use_associated_index[std_name] = (var.name, tbl_name, var.getAttr("type"))
+        return use_associated_index
 
     def _resolve_active_condition(self, raw_expr: str, suite_use_stubs: list) -> str:
         """Resolve a host/module var's 'active = <expr>' property text into
         an expression that's actually valid Fortran at the suite-cap call
-        site, emitting whatever USE stub(s) a MODULE-type reference needs.
+        site, emitting whatever USE stub(s) a use-associated reference needs.
 
         The raw property text (e.g. "(flag_indicating_cloud_microphysics_
         has_graupel)") is written in *standard-name* space -- CCPP's own
@@ -912,20 +923,22 @@ class GenerateSuiteSubroutine(RewritePattern):
         in CI on examples/var_compat and examples/nested_suite's own
         flag_indicating_cloud_microphysics_has_graupel -> has_graupel case.
 
-        A HOST-type reference is resolved to its own local name too, but
-        emits no USE stub -- by the time this runs, generateSubroutineCall's
-        own _collect_active_gate_extra_args pre-scan has already exposed it
-        as a real dummy argument on this same function's signature (HOST-
-        type vars are never use-associated in this codebase). A token that
-        doesn't resolve to any known standard_name is left as-is (assumed to
-        be a Fortran keyword/operator, e.g. '.and.'/'.not.').
+        A MODULE-type reference, or a 'state'-classified HOST-type reference
+        (Stage 2a of the vocabulary-resolution redesign -- e.g. opt_arg's
+        own flag_for_opt_arg, data.meta's type=host but genuinely
+        host-owned state), resolves to its own local name and emits a USE
+        stub for it. A 'dispatch_scalar'-classified HOST-type reference
+        (loop bounds, error handling) raises rather than being silently
+        supported -- see _active_expr_var_indexes. A token that doesn't
+        resolve to any known standard_name is left as-is (assumed to be a
+        Fortran keyword/operator, e.g. '.and.'/'.not.').
         """
-        module_var_index, host_var_index = self._active_expr_var_indexes()
+        use_associated_index = self._active_expr_var_indexes()
 
         def _substitute(match: "re.Match") -> str:
             token = match.group(0)
             std_name = token.lower()
-            entry = module_var_index.get(std_name)
+            entry = use_associated_index.get(std_name)
             if entry is not None:
                 local_name, module_name, _ftn_type = entry
                 already_stubbed = any(
@@ -942,9 +955,16 @@ class GenerateSuiteSubroutine(RewritePattern):
                     stub.attributes["module"] = StringAttr(module_name)
                     suite_use_stubs.append(stub)
                 return local_name
-            entry = host_var_index.get(std_name)
-            if entry is not None:
-                return entry[0]
+            if is_dispatch_scalar_std_name(std_name):
+                raise ValueError(
+                    f"'active = {raw_expr}' references {std_name!r}, a CCPP "
+                    f"dispatch-scalar standard name (loop bounds/error "
+                    f"handling) with no backing Fortran module to "
+                    f"use-associate from. Gating an optional arg's presence "
+                    f"on one isn't supported -- no example does this, and it "
+                    f"has no clear Fortran realization. Give the host a "
+                    f"real state variable to gate on instead."
+                )
             return token
 
         return self._ACTIVE_EXPR_TOKEN_RE.sub(_substitute, raw_expr)
@@ -2542,13 +2562,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         input_arg_list = _cls.input_arg_list
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
-
-        # Any optional arg gated by an 'active = <expr>' referencing a
-        # HOST-type table var needs that var exposed as a real dummy
-        # argument on *this* function's own signature before
-        # _build_block_signature runs below -- see
-        # _collect_active_gate_extra_args's own docstring.
-        input_arg_list = input_arg_list + self._collect_active_gate_extra_args(all_args)
 
         phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
         if phase_name is not None:

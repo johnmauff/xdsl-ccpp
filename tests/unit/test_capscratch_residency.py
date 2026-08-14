@@ -97,7 +97,7 @@ class TestConstituentTendencyScratchResidency:
             [_TEND_SCHEME], [_UNRELATED_HOST], _TEND_SUITE_XML,
         )
         init_fn = _fn_body(fortran, "TestCapscratchTend_ccpp_initialize_constituents")
-        finalize_fn = _fn_body(fortran, "TestCapscratchTend_ccpp_physics_finalize")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "enter data copyin(lc_const_tend)" in init_fn
         assert "exit data delete(lc_const_tend)" in finalize_fn
@@ -176,7 +176,7 @@ class TestFrameworkMappedResidency:
             [scheme], [_UNRELATED_HOST], _FRAMEWORK_SUITE_XML,
         )
         init_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_initialize_constituents")
-        finalize_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_physics_finalize")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "enter data copyin(lc_constituent_array)" in init_fn
         assert "enter data copyin(lc_const_tend)" not in init_fn
@@ -193,7 +193,7 @@ class TestFrameworkMappedResidency:
             [scheme], [_UNRELATED_HOST], _FRAMEWORK_SUITE_XML,
         )
         init_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_initialize_constituents")
-        finalize_fn = _fn_body(fortran, "TestCapscratchFramework_ccpp_physics_finalize")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "USE_GPU" not in init_fn
         assert "enter data" not in init_fn
@@ -266,7 +266,7 @@ class TestOrAcrossOccurrencesResidency:
             [_OR_SCHEME_A, _OR_SCHEME_B], [_UNRELATED_HOST], _OR_SUITE_XML,
         )
         init_fn = _fn_body(fortran, "TestCapscratchOr_ccpp_initialize_constituents")
-        finalize_fn = _fn_body(fortran, "TestCapscratchOr_ccpp_physics_finalize")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "enter data copyin(lc_const_tend)" in init_fn
         assert "exit data delete(lc_const_tend)" in finalize_fn

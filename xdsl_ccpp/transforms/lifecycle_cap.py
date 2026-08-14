@@ -89,20 +89,25 @@ def _generate_lifecycle_fn(
     ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data)
 
     # Pre-scan: discover HOST-type-table args this dispatch's own scheme
-    # phases genuinely need, so they can be exposed as real dummy arguments
-    # on this wrapper's own signature (mirroring _generate_run_fn's own
-    # pattern for the physics/_run phase) instead of falling back to an
-    # uninitialized local placeholder (the confirmed examples/opt_arg bug:
-    # timestep_initial/timestep_final declared local, never-allocated
+    # phases genuinely need (i.e. a real, scheme-declared dummy argument of
+    # that phase's own entry point -- e.g. examples/opt_arg's
+    # timestep_init/timestep_final genuinely need nx/var/opt_var/opt_var_2
+    # from data.meta's HOST-type table), so they can be exposed as real
+    # dummy arguments on this wrapper's own signature (mirroring
+    # _generate_run_fn's own pattern for the physics/_run phase) instead of
+    # falling back to an uninitialized local placeholder (the confirmed
+    # examples/opt_arg bug this pre-scan fixed: timestep_initial/
+    # timestep_final declared local, never-allocated
     # lc_nx/lc_var/lc_opt_var/lc_opt_var_2 and passed those into the suite
-    # callee, instead of nx/var/opt_var/opt_var_2 from data.meta's HOST-type
-    # table). HOST-type table variables are deliberately never use-
-    # associated anywhere in this codebase (see host_var_map's own comment
-    # above) -- always passed as caller-supplied block arguments -- so a
-    # lifecycle phase whose own scheme entry point needs one must receive it
-    # the same way, not synthesize a disconnected local scratch value. Must
-    # run before new_block is constructed below, since the extra args have
-    # to be part of its arg_types from the start.
+    # callee). This pre-scan is unaffected by the vocabulary-resolution
+    # redesign's Stage 2a (ccpp_cap_refactor_plan.md): that stage moved
+    # HOST-type vars referenced *only* inside an 'active = <expr>' property
+    # (never a real scheme argument) to use-association inside suite_cap.py's
+    # own generated function -- this pre-scan only ever concerns itself with
+    # vars that ARE one of these phases' own genuinely scheme-declared
+    # arguments, a case the redesign hasn't touched. Must run before
+    # new_block is constructed below, since the extra args have to be part
+    # of its arg_types from the start.
     # ccpp_info_t / ccpp_t are themselves declared in a HOST-type table
     # (that's how the caller detected them in the first place), so they'd
     # otherwise also satisfy the "HOST-exclusive" test just below and get
@@ -148,18 +153,6 @@ def _generate_lifecycle_fn(
         for _arg_name, _arg_type in zip(_callee_in_names, _callee_in_types):
             _bare_name = _bare(_arg_name)
             _std_name = _std_name_of.get(_bare_name)
-            if _std_name is None and _bare_name.lower() in host_var_map_all:
-                # Not any scheme's own declared arg -- suite_cap.py's own
-                # active-gate pre-scan (_collect_active_gate_extra_args) can
-                # synthesize an extra HOST-type-table arg on its callee's
-                # signature that no scheme metadata ever declares (an
-                # 'active = <flag>' reference, not a real scheme argument).
-                # Falls back to treating the callee's own bare arg name as
-                # the standard name directly -- true for both real cases so
-                # far (data.meta's own flag_for_opt_arg/flag_indicating_
-                # cloud_microphysics_has_graupel each declare bare name ==
-                # standard_name), not a general guarantee.
-                _std_name = _bare_name.lower()
             if (
                 _std_name
                 and _std_name in host_var_map_all

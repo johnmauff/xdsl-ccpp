@@ -84,7 +84,7 @@ class TestOmpTargetDataMapClauses:
     ):
         """'hosted' is device+device (present-equivalent) -> map(alloc:...)."""
         fortran = _omp_fortran_output(run_host_match, ccpp_context)
-        run_fn = _fn_body(fortran, "TestGpu_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "!$omp target data" in run_fn
         _assert_balanced_map_clause(run_fn, "map(alloc:hosted)")
         assert "map(alloc:(hosted" not in run_fn
@@ -96,7 +96,7 @@ class TestOmpTargetDataMapClauses:
         equivalent) -> map(tofrom:...) (OMP's structured region only
         distinguishes tofrom/alloc, not copyin/copyout separately)."""
         fortran = _omp_fortran_output(run_host_match, ccpp_context)
-        final_fn = _fn_body(fortran, "TestGpu_ccpp_physics_timestep_final")
+        final_fn = _fn_body(fortran, "ccpp_physics_timestep_final")
         assert "!$omp target data" in final_fn
         _assert_balanced_map_clause(final_fn, "map(tofrom:hosted2)")
         assert "map(tofrom:(hosted2" not in final_fn
@@ -115,7 +115,7 @@ class TestOmpTargetDataMapClauses:
 
     def test_end_target_data_present_and_paired(self, run_host_match, ccpp_context):
         fortran = _omp_fortran_output(run_host_match, ccpp_context)
-        run_fn = _fn_body(fortran, "TestGpu_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "!$omp end target data" in run_fn
 
 
@@ -181,7 +181,7 @@ class TestOmpTargetUpdateClause:
         print_to_ftn(module, out)
         fortran = out.getvalue()
 
-        run_fn = _fn_body(fortran, "TestOmpUpd_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "target update from(cpu_var" in run_fn
         assert "target update to(cpu_var" in run_fn
 

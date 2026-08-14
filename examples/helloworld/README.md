@@ -33,7 +33,7 @@ caps, and the build system — live in this directory.
 |------|-------------|
 | `ccpp_kinds.F90` | Kind parameter definitions (`kind_phys` via ISO_FORTRAN_ENV) |
 | `hello_world_suite_cap.F90` | Suite cap: lifecycle subroutines for `hello_world_suite` |
-| `HelloWorld_ccpp_cap.F90` | Host-facing cap: `HelloWorld_ccpp_physics_run` etc. |
+| `HelloWorld_ccpp_cap.F90` | Host-facing cap (module still host-prefixed; bare subroutine names inside: `ccpp_physics_run` etc.) |
 
 ---
 

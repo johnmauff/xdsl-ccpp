@@ -15,11 +15,11 @@ CONTAINS
   subroutine hello_world_sub()
 
     use hello_world_mod,     only: ncols
-    use HelloWorld_ccpp_cap, only: HelloWorld_ccpp_physics_initialize
-    use HelloWorld_ccpp_cap, only: HelloWorld_ccpp_physics_timestep_initial
-    use HelloWorld_ccpp_cap, only: HelloWorld_ccpp_physics_run
-    use HelloWorld_ccpp_cap, only: HelloWorld_ccpp_physics_timestep_final
-    use HelloWorld_ccpp_cap, only: HelloWorld_ccpp_physics_finalize
+    use HelloWorld_ccpp_cap, only: ccpp_init
+    use HelloWorld_ccpp_cap, only: ccpp_physics_timestep_init
+    use HelloWorld_ccpp_cap, only: ccpp_physics_run
+    use HelloWorld_ccpp_cap, only: ccpp_physics_timestep_final
+    use HelloWorld_ccpp_cap, only: ccpp_final
     use HelloWorld_ccpp_cap, only: ccpp_physics_suite_list
     use HelloWorld_ccpp_cap, only: ccpp_physics_suite_part_list
     use hello_world_mod,     only: init_temp, compare_temp
@@ -34,14 +34,14 @@ CONTAINS
     call init_temp()
 
     ! Use the suite information to setup the run
-    call HelloWorld_ccpp_physics_initialize('hello_world_suite', errmsg, errflg)
+    call ccpp_init('hello_world_suite', errmsg, errflg)
     if (errflg /= 0) then
       write(6, *) trim(errmsg)
       stop
     end if
 
     ! Initialize the timestep
-    call HelloWorld_ccpp_physics_timestep_initial('hello_world_suite', errmsg, errflg)
+    call ccpp_physics_timestep_init('hello_world_suite', errmsg, errflg)
     if (errflg /= 0) then
       write(6, *) trim(errmsg)
       stop
@@ -50,7 +50,7 @@ CONTAINS
     do col_start = 1, ncols, 5
       col_end = MIN(col_start + 4, ncols)
 
-      call HelloWorld_ccpp_physics_run('hello_world_suite', 'physics', col_start, col_end, errmsg, errflg)
+      call ccpp_physics_run('hello_world_suite', 'physics', col_start, col_end, errmsg, errflg)
       if (errflg /= 0) then
         write(6, *) trim(errmsg)
         call ccpp_physics_suite_part_list('hello_world_suite', part_names, errmsg, errflg)
@@ -62,9 +62,9 @@ CONTAINS
       end if
     end do
 
-    call HelloWorld_ccpp_physics_timestep_final('hello_world_suite', errmsg, errflg)
+    call ccpp_physics_timestep_final('hello_world_suite', errmsg, errflg)
 
-    call HelloWorld_ccpp_physics_finalize('hello_world_suite', errmsg, errflg)
+    call ccpp_final('hello_world_suite', errmsg, errflg)
     if (errflg /= 0) then
       write(6, *) trim(errmsg)
       write(6,'(a)') 'An error occurred in ccpp_timestep_final, Exiting...'

@@ -162,17 +162,17 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=17), parameter :: str_hello_world_suite = 'hello_world_suite'
 // CHECK-NEXT:    character(len=7), parameter :: str_physics = 'physics'
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_register
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_initialize
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_finalize
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_timestep_initial
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_timestep_final
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_run
+// CHECK-NEXT:    public :: ccpp_register
+// CHECK-NEXT:    public :: ccpp_init
+// CHECK-NEXT:    public :: ccpp_final
+// CHECK-NEXT:    public :: ccpp_physics_timestep_init
+// CHECK-NEXT:    public :: ccpp_physics_timestep_final
+// CHECK-NEXT:    public :: ccpp_physics_run
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
 // CHECK:       CONTAINS
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_register(suite_name, ccpp_data, errmsg, errflg)
+// CHECK-LABEL:   subroutine ccpp_register(suite_name, ccpp_data, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -184,8 +184,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_register
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_initialize(suite_name, ccpp_data, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_register
+// CHECK-LABEL:   subroutine ccpp_init(suite_name, ccpp_data, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -197,8 +197,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_initialize
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_finalize(suite_name, ccpp_data, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_init
+// CHECK-LABEL:   subroutine ccpp_final(suite_name, ccpp_data, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -210,8 +210,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_finalize
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_timestep_initial(suite_name, ccpp_data, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_final
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, ccpp_data, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -223,8 +223,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_timestep_initial
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_timestep_final(suite_name, ccpp_data, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, ccpp_data, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -236,9 +236,9 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_run(suite_name, suite_part, ccpp_data, col_start, col_end,   &
-// CHECK:           errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_final
+// CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, ccpp_data, col_start, col_end, errmsg,      &
+// CHECK:           errflg)
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      type(ccpp_t), intent(inout) :: ccpp_data
@@ -263,7 +263,7 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_run
+// CHECK-NEXT:    end subroutine ccpp_physics_run
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)
 // CHECK:           character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:           allocate(suites(1))

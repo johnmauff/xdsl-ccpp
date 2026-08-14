@@ -132,7 +132,7 @@ class TestSinglePhaseResidency:
             run_host_match, ccpp_context,
             [_SINGLE_PHASE_SCHEME], [_SINGLE_PHASE_HOST], _SINGLE_PHASE_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "TestResidency_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "present(present_var" in run_fn
         assert _var_in_clause(run_fn, "copy", "present_var")
         assert "!$acc end data" in run_fn
@@ -149,7 +149,7 @@ class TestSinglePhaseResidency:
             run_host_match, ccpp_context,
             [_SINGLE_PHASE_SCHEME], [_SINGLE_PHASE_HOST], _SINGLE_PHASE_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "TestResidency_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "update self(update_var" in run_fn
         assert "update device(update_var" in run_fn
         assert _var_in_clause(run_fn, "copy", "update_var")
@@ -214,9 +214,9 @@ class TestMultiPhaseResidency:
             run_host_match, ccpp_context,
             [_MULTI_PHASE_SCHEME], [_MULTI_PHASE_HOST], _MULTI_PHASE_SUITE_XML,
         )
-        init_fn = _fn_body(fortran, "TestResidencyMulti_ccpp_physics_initialize")
-        run_fn = _fn_body(fortran, "TestResidencyMulti_ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "TestResidencyMulti_ccpp_physics_finalize")
+        init_fn = _fn_body(fortran, "ccpp_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "enter data copyin(multi_var" in init_fn
         assert "exit data copyout(multi_var" in finalize_fn
@@ -279,7 +279,7 @@ class TestCopyFamilyResidencyRegression:
             run_host_match, ccpp_context,
             [_COPY_FAMILY_SCHEME], [_COPY_FAMILY_HOST], _COPY_FAMILY_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "TestResidencyCopyfamily_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert run_fn.count("!$acc data copy(copy_var") == 1
         assert "enter data" not in run_fn
         assert "exit data" not in run_fn

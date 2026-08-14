@@ -7,7 +7,7 @@ suite subroutine's own signature).
 
 Found while porting examples/var_compat and diagnosing why
 scalar_varA/scalar_varB/scalar_varC/num_subcycles still showed up as
-caller-block arguments on VarCompatibility_ccpp_physics_run even after
+caller-block arguments on ccpp_physics_run even after
 suite_cap.py correctly disambiguated and threaded them through the suite
 subroutine's own signature.
 

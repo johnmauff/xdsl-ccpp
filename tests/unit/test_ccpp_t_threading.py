@@ -221,10 +221,10 @@ class TestCcppTThreading:
         )
         fns = _find_public_fns(module)
         run_fn = next(
-            (fn for name, fn in fns.items() if name.endswith("_ccpp_physics_run")),
+            (fn for name, fn in fns.items() if name.endswith("ccpp_physics_run")),
             None,
         )
-        assert run_fn is not None, f"No _ccpp_physics_run fn found; fns: {list(fns)}"
+        assert run_fn is not None, f"No ccpp_physics_run fn found; fns: {list(fns)}"
         assert _has_ccpp_t_arg(run_fn), "CCPP cap run fn should have ccpp_t block arg"
 
     def test_ccpp_cap_lifecycle_has_ccpp_t_arg(self, run_host_match, ccpp_context):
@@ -237,10 +237,10 @@ class TestCcppTThreading:
         )
         fns = _find_public_fns(module)
         init_fn = next(
-            (fn for name, fn in fns.items() if name.endswith("_ccpp_physics_initialize")),
+            (fn for name, fn in fns.items() if name.endswith("ccpp_init")),
             None,
         )
-        assert init_fn is not None, f"No _ccpp_physics_initialize fn found; fns: {list(fns)}"
+        assert init_fn is not None, f"No ccpp_init fn found; fns: {list(fns)}"
         assert _has_ccpp_t_arg(init_fn), "CCPP cap init fn should have ccpp_t block arg"
 
     def test_no_ccpp_t_without_handle(self, run_host_match, ccpp_context):
@@ -357,10 +357,10 @@ class TestCcppTWithConstituents:
         module = self._module_with_constituents(run_host_match, ccpp_context)
         fns = _find_public_fns(module)
         run_fn = next(
-            (fn for name, fn in fns.items() if name.endswith("_ccpp_physics_run")),
+            (fn for name, fn in fns.items() if name.endswith("ccpp_physics_run")),
             None,
         )
-        assert run_fn is not None, f"No _ccpp_physics_run fn found; fns: {list(fns)}"
+        assert run_fn is not None, f"No ccpp_physics_run fn found; fns: {list(fns)}"
         arg_names = {arg.name_hint for arg in run_fn.body.block.args}
         assert "const" not in arg_names
         assert "const_tend" not in arg_names

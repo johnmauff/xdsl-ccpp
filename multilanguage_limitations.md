@@ -164,7 +164,7 @@ dimension's size (e.g. `nbands`) passed by value as
 
 **Plain `--bind-c` path (no `language = c++`, i.e. `generate-ccpp-cap{bind_c=true}`
 without the chost layer on top): likely still broken — do not mark Resolved.**
-`TinyR3_ccpp_cap.F90`'s `TinyR3_ccpp_physics_run` declares `flux` as flat
+`TinyR3_ccpp_cap.F90`'s `ccpp_physics_run` declares `flux` as flat
 assumed-size —
 
 ```fortran

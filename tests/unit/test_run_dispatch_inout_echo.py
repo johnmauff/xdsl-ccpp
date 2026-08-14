@@ -5,7 +5,7 @@ ccpp_error_message/ccpp_error_code, not a ccpp_t handle) -- e.g.
 examples/var_compat's scalar_var/tke_inout/tke2_inout.
 
 Found via a real gfortran compile failure on examples/var_compat:
-VarCompatibility_ccpp_physics_run declared scalar_var/tke_inout intent(in)
+ccpp_physics_run declared scalar_var/tke_inout intent(in)
 while the suite subroutine it calls (var_compatibility_suite_suite_radiation)
 correctly declares them intent(inout) -- passing an intent(in) actual
 argument into an intent(inout) dummy argument is invalid Fortran.
@@ -117,7 +117,7 @@ def _fn_body(fortran: str, fn_name: str) -> str:
 class TestWrapperDeclaresInoutScalarInout:
     def test_wrapper_declares_intent_inout(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         decl = next(line for line in fn.splitlines() if ":: y" in line)
         assert "intent(inout)" in decl, f"expected intent(inout), got: {decl!r}"
 
@@ -139,7 +139,7 @@ class TestNoDuplicateKeywordArg:
         under two different keyword names bound to the same dummy argument
         is invalid Fortran."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "Test_ccpp_physics_run")
+        fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_physics" in line
         )

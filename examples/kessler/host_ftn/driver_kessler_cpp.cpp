@@ -38,23 +38,23 @@ int main() {
 
     // Register the suite.
     std::memset(errmsg, 0, sizeof(errmsg));
-    Kessler_ccpp_physics_register("kessler_suite", errmsg, &errflg);
+    ccpp_register("kessler_suite", errmsg, &errflg);
     check("register", errmsg, errflg);
 
     // Initialise physics constants (kessler_init, kessler_update_init).
     std::memset(errmsg, 0, sizeof(errmsg));
-    Kessler_ccpp_physics_initialize("kessler_suite", errmsg, &errflg);
+    ccpp_init("kessler_suite", errmsg, &errflg);
     check("initialize", errmsg, errflg);
 
     // Timestep initial: copies temp → temp_prev, zeroes ttend_t.
     std::memset(errmsg, 0, sizeof(errmsg));
-    Kessler_ccpp_physics_timestep_initial("kessler_suite", errmsg, &errflg);
+    ccpp_physics_timestep_init("kessler_suite", errmsg, &errflg);
     check("timestep_initial", errmsg, errflg);
 
     // Run physics (timed).
     std::memset(errmsg, 0, sizeof(errmsg));
     auto t_start = std::chrono::high_resolution_clock::now();
-    Kessler_ccpp_physics_run("kessler_suite", "physics", 1, 1000, errmsg, &errflg);
+    ccpp_physics_run("kessler_suite", "physics", 1, 1000, errmsg, &errflg);
     auto t_end   = std::chrono::high_resolution_clock::now();
     check("run", errmsg, errflg);
 
@@ -63,12 +63,12 @@ int main() {
 
     // Timestep final: computes dry static energy.
     std::memset(errmsg, 0, sizeof(errmsg));
-    Kessler_ccpp_physics_timestep_final("kessler_suite", errmsg, &errflg);
+    ccpp_physics_timestep_final("kessler_suite", errmsg, &errflg);
     check("timestep_final", errmsg, errflg);
 
     // Finalise.
     std::memset(errmsg, 0, sizeof(errmsg));
-    Kessler_ccpp_physics_finalize("kessler_suite", errmsg, &errflg);
+    ccpp_final("kessler_suite", errmsg, &errflg);
     check("finalize", errmsg, errflg);
 
     // Print sums and elapsed time (delegates to kessler_host_mod::print_results).

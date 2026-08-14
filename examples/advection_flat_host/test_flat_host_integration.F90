@@ -18,12 +18,12 @@ program test_flat_host_integration
    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
    use flat_host_mod,     only: init_data, temp, qv, ncols, pver
    use flat_host_ccpp_cap, only:                                             &
-        flat_host_ccpp_physics_register,                                    &
-        flat_host_ccpp_physics_initialize,                                  &
-        flat_host_ccpp_physics_timestep_initial,                            &
-        flat_host_ccpp_physics_run,                                         &
-        flat_host_ccpp_physics_timestep_final,                              &
-        flat_host_ccpp_physics_finalize,                                    &
+        ccpp_register,                                    &
+        ccpp_init,                                  &
+        ccpp_physics_timestep_init,                            &
+        ccpp_physics_run,                                         &
+        ccpp_physics_timestep_final,                              &
+        ccpp_final,                                    &
         flat_host_ccpp_register_constituents,                               &
         flat_host_ccpp_initialize_constituents,                             &
         ccpp_physics_suite_part_list
@@ -52,7 +52,7 @@ program test_flat_host_integration
    qv2_before   = qv(1, 2)
    temp2_before = temp(1, 2)
 
-   call check('register', flat_host_ccpp_physics_register_wrap())
+   call check('register', flat_host_ccpp_register_wrap())
 
    ! Constituent registration/allocation is a separate subsystem the host
    ! must drive explicitly between register and initialize -- it's not part
@@ -71,8 +71,8 @@ program test_flat_host_integration
    call check('initialize_constituents', errflg == 0)
    if (errflg /= 0) write(6, '(a)') trim(errmsg)
 
-   call check('initialize', flat_host_ccpp_physics_initialize_wrap())
-   call check('timestep_initial', flat_host_ccpp_physics_timestep_initial_wrap())
+   call check('initialize', flat_host_ccpp_init_wrap())
+   call check('timestep_initial', flat_host_ccpp_physics_timestep_init_wrap())
 
    call ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg)
    call check('suite_part_list', errflg == 0)
@@ -82,7 +82,7 @@ program test_flat_host_integration
 
    if (allocated(part_list)) then
       do ipart = 1, size(part_list)
-         call flat_host_ccpp_physics_run(suite_name, trim(part_list(ipart)), &
+         call ccpp_physics_run(suite_name, trim(part_list(ipart)), &
               col_start, col_end, errmsg, errflg)
          call check('run(' // trim(part_list(ipart)) // ')', errflg == 0)
          if (errflg /= 0) then
@@ -92,7 +92,7 @@ program test_flat_host_integration
    end if
 
    call check('timestep_final', flat_host_ccpp_physics_timestep_final_wrap())
-   call check('finalize', flat_host_ccpp_physics_finalize_wrap())
+   call check('finalize', flat_host_ccpp_final_wrap())
 
    ! Level 1 (below tcld): expect condensation/freezing to have fired.
    if (.not. (qv(1, 1) < qv1_before)) then
@@ -143,34 +143,34 @@ contains
    ! Small wrappers so each lifecycle call site can be passed to check() as
    ! a single boolean expression instead of repeating the errmsg/errflg
    ! boilerplate at every call site.
-   logical function flat_host_ccpp_physics_register_wrap()
-      call flat_host_ccpp_physics_register(suite_name, errmsg, errflg)
-      flat_host_ccpp_physics_register_wrap = (errflg == 0)
+   logical function flat_host_ccpp_register_wrap()
+      call ccpp_register(suite_name, errmsg, errflg)
+      flat_host_ccpp_register_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
-   end function flat_host_ccpp_physics_register_wrap
+   end function flat_host_ccpp_register_wrap
 
-   logical function flat_host_ccpp_physics_initialize_wrap()
-      call flat_host_ccpp_physics_initialize(suite_name, errmsg, errflg)
-      flat_host_ccpp_physics_initialize_wrap = (errflg == 0)
+   logical function flat_host_ccpp_init_wrap()
+      call ccpp_init(suite_name, errmsg, errflg)
+      flat_host_ccpp_init_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
-   end function flat_host_ccpp_physics_initialize_wrap
+   end function flat_host_ccpp_init_wrap
 
-   logical function flat_host_ccpp_physics_timestep_initial_wrap()
-      call flat_host_ccpp_physics_timestep_initial(suite_name, errmsg, errflg)
-      flat_host_ccpp_physics_timestep_initial_wrap = (errflg == 0)
+   logical function flat_host_ccpp_physics_timestep_init_wrap()
+      call ccpp_physics_timestep_init(suite_name, errmsg, errflg)
+      flat_host_ccpp_physics_timestep_init_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
-   end function flat_host_ccpp_physics_timestep_initial_wrap
+   end function flat_host_ccpp_physics_timestep_init_wrap
 
    logical function flat_host_ccpp_physics_timestep_final_wrap()
-      call flat_host_ccpp_physics_timestep_final(suite_name, errmsg, errflg)
+      call ccpp_physics_timestep_final(suite_name, errmsg, errflg)
       flat_host_ccpp_physics_timestep_final_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
    end function flat_host_ccpp_physics_timestep_final_wrap
 
-   logical function flat_host_ccpp_physics_finalize_wrap()
-      call flat_host_ccpp_physics_finalize(suite_name, errmsg, errflg)
-      flat_host_ccpp_physics_finalize_wrap = (errflg == 0)
+   logical function flat_host_ccpp_final_wrap()
+      call ccpp_final(suite_name, errmsg, errflg)
+      flat_host_ccpp_final_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
-   end function flat_host_ccpp_physics_finalize_wrap
+   end function flat_host_ccpp_final_wrap
 
 end program test_flat_host_integration

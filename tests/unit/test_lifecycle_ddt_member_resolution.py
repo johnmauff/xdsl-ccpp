@@ -134,7 +134,7 @@ class TestLifecycleInitResolvesDDTMember:
 
     def test_init_call_uses_real_ddt_member_not_fresh_local(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "Test_ccpp_physics_initialize")
+        fn = _fn_body(fortran, "ccpp_init")
         call_line = next(
             line for line in fn.splitlines() if "call test_suite_suite_initialize" in line
         )
@@ -147,7 +147,7 @@ class TestLifecycleInitResolvesDDTMember:
         local was declared and passed instead of phys_state%counter,
         silently discarding whatever initial value the host had set."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "Test_ccpp_physics_initialize")
+        fn = _fn_body(fortran, "ccpp_init")
         assert "lc_counter" not in fn, (
             f"dead/wrong scratch local still declared and used:\n{fn}"
         )

@@ -156,18 +156,17 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=17), parameter :: str_hello_world_suite = 'hello_world_suite'
 // CHECK-NEXT:    character(len=7), parameter :: str_physics = 'physics'
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_register
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_initialize
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_finalize
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_timestep_initial
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_timestep_final
-// CHECK-NEXT:    public :: HelloWorld_ccpp_physics_run
+// CHECK-NEXT:    public :: ccpp_register
+// CHECK-NEXT:    public :: ccpp_init
+// CHECK-NEXT:    public :: ccpp_final
+// CHECK-NEXT:    public :: ccpp_physics_timestep_init
+// CHECK-NEXT:    public :: ccpp_physics_timestep_final
+// CHECK-NEXT:    public :: ccpp_physics_run
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
 // CHECK:       CONTAINS
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_register(suite_name, errmsg, errflg) BIND(C,                 &
-// CHECK:           name='HelloWorld_ccpp_physics_register')
+// CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) BIND(C, name='ccpp_register')
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:      integer(c_int), intent(out) :: errflg
@@ -191,9 +190,8 @@
 // CHECK-NEXT:        errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_register
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_initialize(suite_name, errmsg, errflg) BIND(C,               &
-// CHECK:           name='HelloWorld_ccpp_physics_initialize')
+// CHECK-NEXT:    end subroutine ccpp_register
+// CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) BIND(C, name='ccpp_init')
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:      integer(c_int), intent(out) :: errflg
@@ -217,9 +215,8 @@
 // CHECK-NEXT:        errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_initialize
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_finalize(suite_name, errmsg, errflg) BIND(C,                 &
-// CHECK:           name='HelloWorld_ccpp_physics_finalize')
+// CHECK-NEXT:    end subroutine ccpp_init
+// CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) BIND(C, name='ccpp_final')
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:      integer(c_int), intent(out) :: errflg
@@ -243,9 +240,9 @@
 // CHECK-NEXT:        errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_finalize
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_timestep_initial(suite_name, errmsg, errflg) BIND(C,         &
-// CHECK:           name='HelloWorld_ccpp_physics_timestep_initial')
+// CHECK-NEXT:    end subroutine ccpp_final
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg) BIND(C,                       &
+// CHECK:           name='ccpp_physics_timestep_init')
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:      integer(c_int), intent(out) :: errflg
@@ -269,9 +266,9 @@
 // CHECK-NEXT:        errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_timestep_initial
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,           &
-// CHECK:           name='HelloWorld_ccpp_physics_timestep_final')
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,                      &
+// CHECK:           name='ccpp_physics_timestep_final')
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:      integer(c_int), intent(out) :: errflg
@@ -295,9 +292,9 @@
 // CHECK-NEXT:        errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine HelloWorld_ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg,      &
-// CHECK:           errflg) BIND(C, name='HelloWorld_ccpp_physics_run')
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_final
+// CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg, errflg) BIND(C, &
+// CHECK:           name='ccpp_physics_run')
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:      character(kind=c_char, len=1), intent(in) :: suite_part(*)
 // CHECK-NEXT:      integer(c_int), value, intent(in) :: col_start
@@ -344,7 +341,7 @@
 // CHECK-NEXT:        errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine HelloWorld_ccpp_physics_run
+// CHECK-NEXT:    end subroutine ccpp_physics_run
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)
 // CHECK:           character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:           allocate(suites(1))

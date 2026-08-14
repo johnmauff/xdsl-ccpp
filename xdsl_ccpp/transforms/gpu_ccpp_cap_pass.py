@@ -48,16 +48,20 @@ _PHASE_RANK = {p: i for i, p in enumerate(_PHASE_ORDER)}
 _ONE_TIME_PHASES = frozenset({"register", "initialize", "finalize"})
 _PER_TIMESTEP_PHASES = frozenset({"timestep_initial", "run", "timestep_final"})
 
-# *_ccpp_physics_run is handled separately in apply() (substring match, not
+# ccpp_physics_run is handled separately in apply() (substring match, not
 # suffix) since its dispatch shape -- an outer per-suite IfOp wrapping a
 # second, nested per-suite-part IfOp -- differs from these single-level
-# dispatchers, so it isn't in this map.
+# dispatchers, so it isn't in this map. Names are bare (Stage 5 of the
+# vocabulary-resolution redesign, ccpp_cap_refactor_plan.md: capgen-v1-style
+# generic subroutine names, no host prefix) -- matched with endswith rather
+# than == purely for defensive robustness against a future prefix, not
+# because one exists today.
 _LIFECYCLE_FN_SUFFIX_TO_PHASE = {
-    "_ccpp_physics_register": "register",
-    "_ccpp_physics_initialize": "initialize",
-    "_ccpp_physics_finalize": "finalize",
-    "_ccpp_physics_timestep_initial": "timestep_initial",
-    "_ccpp_physics_timestep_final": "timestep_final",
+    "ccpp_register": "register",
+    "ccpp_init": "initialize",
+    "ccpp_final": "finalize",
+    "ccpp_physics_timestep_init": "timestep_initial",
+    "ccpp_physics_timestep_final": "timestep_final",
 }
 
 
@@ -103,11 +107,13 @@ class GPUCcppCapPass(ModulePass):
 
     Runs after generate-ccpp-cap, generate-cpp-cap, and generate-host-match
     (see ccpp_dsl.py's _build_pipeline for the exact ordering). For
-    *_ccpp_physics_run, wraps the suite-part dispatch (inner scf.IfOp) with
+    ccpp_physics_run, wraps the suite-part dispatch (inner scf.IfOp) with
     an !$acc data region using host model variable names. For each of the
-    lifecycle dispatchers (*_ccpp_physics_register/_initialize/_finalize/
-    _timestep_initial/_timestep_final), wraps the suite callee call inside
-    each suite-name scf.IfOp the same way.
+    lifecycle dispatchers (ccpp_register/ccpp_init/ccpp_final/
+    ccpp_physics_timestep_init/ccpp_physics_timestep_final -- bare,
+    capgen-v1-style names since Stage 5 of the vocabulary-resolution
+    redesign, ccpp_cap_refactor_plan.md), wraps the suite callee call
+    inside each suite-name scf.IfOp the same way.
 
     The OpenACC clause is chosen by comparing the scheme's declared memory
     space against the host model variable's declared memory space
@@ -533,7 +539,7 @@ class GPUCcppCapPass(ModulePass):
 
     def _collect_run_call_sites(self, fn_op):
         """Yield (suite_name, "run", true_block, suite_call) for every
-        per-suite branch of a *_ccpp_physics_run dispatcher."""
+        per-suite branch of a ccpp_physics_run dispatcher."""
         if not fn_op.body.blocks:
             return
         for op in fn_op.body.blocks[0].ops:
@@ -1014,7 +1020,7 @@ class GPUCcppCapPass(ModulePass):
                 if not (isa(child, func.FuncOp) and not child.is_declaration):
                     continue
                 fn_name = child.sym_name.data
-                if "_ccpp_physics_run" in fn_name:
+                if "ccpp_physics_run" in fn_name:
                     call_sites.extend(self._collect_run_call_sites(child))
                 else:
                     phase = next(

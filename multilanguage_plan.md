@@ -180,14 +180,14 @@ Emits two files when `--interface bindC` is set:
 extern "C" {
 #endif
 
-void HelloWorld_ccpp_physics_initialize(
+void ccpp_init(
     const char* suite_name,
     int         ncol,
     int         nlev,
     char*       errmsg,
     int*        errflg);
 
-void HelloWorld_ccpp_physics_run(
+void ccpp_physics_run(
     const char* suite_name,
     const char* suite_part,
     int         ncol,
@@ -244,7 +244,7 @@ the `.F90` files.
 
 - Uses `Kokkos::View<double**, Kokkos::LayoutLeft>` (column-major — satisfies
   the cap contract without RESHAPE overhead)
-- Calls `Kessler_ccpp_physics_initialize` / `_run` via the generated header
+- Calls `ccpp_init` / `ccpp_physics_run` via the generated header
 - Prints the same output columns as `driver_kessler.F90`
 - CMake target in `examples/kessler/CMakeLists.txt` (Kokkos optional;
   guarded by `find_package(Kokkos)`)

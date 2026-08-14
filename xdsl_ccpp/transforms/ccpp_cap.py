@@ -257,7 +257,7 @@ def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var
     """Emit AccExitDataOp for CapScratch cap-module arrays whose enter-data copyin
 
     actually fired (CapScratch GPU residency backlog item), in the generated
-    ``_ccpp_physics_finalize`` function.
+    ``ccpp_final`` function.
 
     Unlike suite_cap.py's ``_inject_suite_owned_gpu_exit`` (per-suite
     ``_suite_finalize``), these arrays (``lc_constituent_array``,
@@ -754,14 +754,26 @@ class CCPPCAP(ModulePass):
             public_fns=public_fns,
         )
 
+        # Stage 5 of the vocabulary-resolution redesign (ccpp_cap_refactor_plan.md):
+        # bare, capgen-v1-style generic subroutine names (fn_name below is used
+        # as-is, not appended to camel_name/host_name) -- the module itself
+        # (mod_name above) is still host-prefixed, exactly matching real
+        # capgen-v1's own convention (module <host>_ccpp_cap disambiguates
+        # multiple host integrations; the subroutines inside don't need to).
+        # capgen-v1 itself has eight lifecycle entry points (splitting what
+        # this codebase calls "initialize" into ccpp_init/ccpp_physics_init,
+        # and "finalize" into ccpp_physics_final/ccpp_final) -- deliberately
+        # out of scope here: renaming these six to their closest capgen-v1
+        # name is a naming cleanup, not a rewrite of the lifecycle model
+        # itself.
         lifecycle_specs = [
-            ("_ccpp_physics_register", "_register", "_suite_register", None),
-            ("_ccpp_physics_initialize", "_init", "_suite_initialize", None),
-            ("_ccpp_physics_finalize", "_finalize", "_suite_finalize", None),
-            ("_ccpp_physics_timestep_initial", "_timestep_initialize", "_suite_timestep_initial", None),
-            ("_ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final", None),
+            ("ccpp_register", "_register", "_suite_register", None),
+            ("ccpp_init", "_init", "_suite_initialize", None),
+            ("ccpp_final", "_finalize", "_suite_finalize", None),
+            ("ccpp_physics_timestep_init", "_timestep_initialize", "_suite_timestep_initial", None),
+            ("ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final", None),
             # Run: per-group dispatch — each group calls its own suite cap function.
-            ("_ccpp_physics_run", None, "_suite_", "__per_group__"),
+            ("ccpp_physics_run", None, "_suite_", "__per_group__"),
         ]
 
         all_globals: list = []
@@ -842,7 +854,7 @@ class CCPPCAP(ModulePass):
                     continue
 
                 cap_fn, decls, host_global_ops = _generate_run_fn(
-                    fn_name=camel_name + fn_suffix,
+                    fn_name=fn_suffix,
                     suite_run_entries=suite_run_entries,
                     meta_data=meta_data,
                     cap_var_map=cap_var_map,
@@ -894,7 +906,7 @@ class CCPPCAP(ModulePass):
                     continue
 
                 cap_fn, decls, lc_host_ops = _generate_lifecycle_fn(
-                    fn_name=camel_name + fn_suffix,
+                    fn_name=fn_suffix,
                     suite_entries=suite_entries,
                     meta_data=meta_data,
                     seen_host_globals=shared_seen_host_globals,
@@ -1012,7 +1024,7 @@ class CCPPCAP(ModulePass):
             all_definitions.append(const_api_op)
 
         _inject_capscratch_gpu_exit(
-            all_definitions, camel_name + "_ccpp_physics_finalize",
+            all_definitions, "ccpp_final",
             framework_var_residency, scratch_var_list,
         )
 

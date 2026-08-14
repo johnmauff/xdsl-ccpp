@@ -107,8 +107,8 @@ class TestOmpPerTimestepHoisting:
         self, run_host_match, ccpp_context
     ):
         fortran = _group_a_omp_fortran(run_host_match, ccpp_context)
-        run_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_run")
-        final_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_timestep_final")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        final_fn = _fn_body(fortran, "ccpp_physics_timestep_final")
 
         assert "target enter data" in run_fn
         assert "map(to:cross_var" in run_fn
@@ -122,9 +122,9 @@ class TestOmpPerTimestepHoisting:
         self, run_host_match, ccpp_context
     ):
         fortran = _group_a_omp_fortran(run_host_match, ccpp_context)
-        initial_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_timestep_initial")
-        run_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_run")
-        final_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_timestep_final")
+        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        final_fn = _fn_body(fortran, "ccpp_physics_timestep_final")
 
         assert "target enter data" in initial_fn
         assert "map(to:three_phase" in initial_fn
@@ -140,12 +140,12 @@ class TestOmpPerTimestepHoisting:
         """Used only in _run -- degenerate, stays on the structured
         !$omp target data path, no target enter/exit data anywhere."""
         fortran = _group_a_omp_fortran(run_host_match, ccpp_context)
-        run_fn = _fn_body(fortran, "HoistSuiteA_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "map(tofrom:single_phase" in run_fn or "single_phase" in run_fn.split("map(tofrom:")[1].split(")")[0]
         for fn_name in (
-            "HoistSuiteA_ccpp_physics_run",
-            "HoistSuiteA_ccpp_physics_initialize",
-            "HoistSuiteA_ccpp_physics_finalize",
+            "ccpp_physics_run",
+            "ccpp_init",
+            "ccpp_final",
         ):
             body = _fn_body(fortran, fn_name)
             assert _no_omp_data_directive_line_mentions(body, "single_phase")
@@ -167,9 +167,9 @@ class TestOmpWholeSimulationScope:
         self, run_host_match, ccpp_context
     ):
         fortran = _group_b_omp_fortran(run_host_match, ccpp_context)
-        init_fn = _fn_body(fortran, "HoistSuiteWholesim_ccpp_physics_initialize")
-        run_fn = _fn_body(fortran, "HoistSuiteWholesim_ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "HoistSuiteWholesim_ccpp_physics_finalize")
+        init_fn = _fn_body(fortran, "ccpp_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "target enter data" in init_fn
         assert "wholesim_init_run" in init_fn
@@ -182,8 +182,8 @@ class TestOmpWholeSimulationScope:
         self, run_host_match, ccpp_context
     ):
         fortran = _group_b_omp_fortran(run_host_match, ccpp_context)
-        register_fn = _fn_body(fortran, "HoistSuiteWholesim_ccpp_physics_register")
-        init_fn = _fn_body(fortran, "HoistSuiteWholesim_ccpp_physics_initialize")
+        register_fn = _fn_body(fortran, "ccpp_register")
+        init_fn = _fn_body(fortran, "ccpp_init")
 
         assert "target enter data" in register_fn
         assert "register_only" in register_fn
@@ -202,9 +202,9 @@ class TestOmpUpdateClauseHoisting:
             host_metas=[_GROUP_E_HOST],
             suite_xml=_GROUP_E_SUITE_XML,
         )
-        initial_fn = _fn_body(fortran, "HoistSuiteUpd_ccpp_physics_timestep_initial")
-        run_fn = _fn_body(fortran, "HoistSuiteUpd_ccpp_physics_run")
-        final_fn = _fn_body(fortran, "HoistSuiteUpd_ccpp_physics_timestep_final")
+        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        final_fn = _fn_body(fortran, "ccpp_physics_timestep_final")
 
         assert "target update from(three_phase_upd" in initial_fn
         assert "target update to(three_phase_upd" not in initial_fn
@@ -239,7 +239,7 @@ class TestOmpMultiSuiteScoping:
         print_to_ftn(module, out)
         fortran = out.getvalue()
 
-        run_fn = _fn_body(fortran, "HoistSuiteMultiA_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         # Suite A's own usage (run-only) must stay degenerate/legacy: plain
         # !$omp target data map(tofrom:...), no target enter/exit data
         # forced by suite B's unrelated _init-phase usage of the same
@@ -260,7 +260,7 @@ class TestOmpUpdateClauseRegression:
             host_metas=[_GROUP_D_HOST],
             suite_xml=_GROUP_D_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "HoistSuiteUpdate_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "target update from(cpu_var" in run_fn
         assert "target update to(cpu_var" in run_fn
         assert "target enter data" not in run_fn
@@ -283,9 +283,9 @@ class TestOmpFinalizeAlongsidePerTimestepHoisting:
             host_metas=[_GROUP_F_HOST],
             suite_xml=_GROUP_F_SUITE_XML,
         )
-        initial_fn = _fn_body(fortran, "HoistSuiteFz_ccpp_physics_timestep_initial")
-        run_fn = _fn_body(fortran, "HoistSuiteFz_ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "HoistSuiteFz_ccpp_physics_finalize")
+        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "target enter data" in initial_fn
         assert "fz_var" in initial_fn
@@ -305,9 +305,9 @@ class TestOmpFinalizeAlongsidePerTimestepHoisting:
             host_metas=[_GROUP_F_UPD_HOST],
             suite_xml=_GROUP_F_UPD_SUITE_XML,
         )
-        initial_fn = _fn_body(fortran, "HoistSuiteFzUpd_ccpp_physics_timestep_initial")
-        run_fn = _fn_body(fortran, "HoistSuiteFzUpd_ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "HoistSuiteFzUpd_ccpp_physics_finalize")
+        initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         assert "target update from(fz_upd_var" in initial_fn
         assert "target update to(fz_upd_var" not in initial_fn

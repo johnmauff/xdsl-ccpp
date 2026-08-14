@@ -7,12 +7,12 @@ program test_suite_allocate
 
   use data, only: checksum
 
-  use test_host_ccpp_cap, only: test_host_ccpp_physics_register, &
-      test_host_ccpp_physics_initialize, &
-      test_host_ccpp_physics_timestep_initial, &
-      test_host_ccpp_physics_run, &
-      test_host_ccpp_physics_timestep_final, &
-      test_host_ccpp_physics_finalize
+  use test_host_ccpp_cap, only: ccpp_register, &
+      ccpp_init, &
+      ccpp_physics_timestep_init, &
+      ccpp_physics_run, &
+      ccpp_physics_timestep_final, &
+      ccpp_final
 
   implicit none
 
@@ -27,16 +27,16 @@ program test_suite_allocate
   expected = real(expected_size * (expected_size + 1) / 2, kind_phys)
   checksum = -1.0_kind_phys
 
-  call test_host_ccpp_physics_register(ccpp_suite, errmsg, errflg)
+  call ccpp_register(ccpp_suite, errmsg, errflg)
   call check_err('register', errflg, errmsg)
 
-  call test_host_ccpp_physics_initialize(ccpp_suite, errmsg, errflg)
+  call ccpp_init(ccpp_suite, errmsg, errflg)
   call check_err('initialize', errflg, errmsg)
 
-  call test_host_ccpp_physics_timestep_initial(ccpp_suite, errmsg, errflg)
+  call ccpp_physics_timestep_init(ccpp_suite, errmsg, errflg)
   call check_err('timestep_initial', errflg, errmsg)
 
-  call test_host_ccpp_physics_run(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
+  call ccpp_physics_run(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
   call check_err('run', errflg, errmsg)
 
   if (abs(checksum - expected) > tol) then
@@ -48,10 +48,10 @@ program test_suite_allocate
   write(output_unit, '(a,f0.6)') &
       "PASS: After physics_run: suite-owned allocatable workspace summed to ", checksum
 
-  call test_host_ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
+  call ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
   call check_err('timestep_final', errflg, errmsg)
 
-  call test_host_ccpp_physics_finalize(ccpp_suite, errmsg, errflg)
+  call ccpp_final(ccpp_suite, errmsg, errflg)
   call check_err('finalize', errflg, errmsg)
 
   write(output_unit, '(a)') "PASS: suite_allocate test completed"

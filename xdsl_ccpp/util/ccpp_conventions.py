@@ -144,6 +144,37 @@ CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
 CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
 
+# ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
+# A small, fixed set of CCPP-protocol standard names that behave as generic,
+# call-scoped dispatch parameters rather than real host-owned state --
+# confirmed by direct inspection of every example's own generic,
+# control-derived host table (opt_arg/var_compat/chunked_data/suite_allocate/
+# .../test_host.meta): every one of them declares exactly this same 4-name
+# set and nothing else; no example's .meta anywhere declares a standard_name
+# for thread_num/nthreads/nphys_threads/suite_name/group_name -- those are
+# synthesized directly by the code generator, never host-matched. Real
+# capgen-v1 threads this same small set as plain scalar arguments (its own
+# lb/ub/errmsg/errflg) while resolving every other host-declared variable via
+# use-association, regardless of whether xdsl_ccpp would call its owning
+# table "host" or "module" type. xdsl_ccpp's own HOST-type table currently
+# conflates this set with genuine host state (data.meta's std_arg,
+# test_host_mod.meta's phys_state/has_graupel, ...), which is what forces
+# every HOST-type reference to be threaded as a block argument today --
+# see ccpp_cap_refactor_plan.md's vocabulary-resolution redesign, Stage 1.
+# This is the classifier later stages use to tell the two apart; nothing
+# reads it yet (Stage 1 is classification only, no behavior change).
+DISPATCH_SCALAR_STD_NAMES: frozenset = frozenset(
+    {CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME} | CCPP_ERROR_STD_NAMES
+)
+
+
+def is_dispatch_scalar_std_name(standard_name: str) -> bool:
+    """True if standard_name is one of the fixed CCPP-protocol dispatch
+    scalars (loop bounds, error handling) rather than real host state.
+    """
+    return standard_name.lower() in DISPATCH_SCALAR_STD_NAMES
+
+
 # ── Deprecated standard names ────────────────────────────────────────────────
 # Rejected by default, matching real capgen-v1's own strict posture; still
 # fully supported (parsed and handled exactly as before, via suite_cap.py's

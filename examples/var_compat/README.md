@@ -40,6 +40,18 @@ for the regression coverage, and `ccpp_cap_refactor_plan.md`'s backlog for
 the full history, including two real bugs (a duplicate and a missing
 Fortran variable declaration) this work found and fixed along the way.
 
+**Naming note:** the investigation notes below (and elsewhere in this file)
+reference generated subroutine names like `test_host_ccpp_physics_run` /
+`VarCompatibility_ccpp_physics_run` -- this reflects the naming convention
+at the time each note was written. Since the vocabulary-resolution
+redesign's Stage 5 (`ccpp_cap_refactor_plan.md`), the six lifecycle
+dispatchers use bare, capgen-v1-style names instead (`ccpp_register`/
+`ccpp_init`/`ccpp_physics_timestep_init`/`ccpp_physics_run`/
+`ccpp_physics_timestep_final`/`ccpp_final`) -- the module itself
+(`test_host_ccpp_cap`/`VarCompatibility_ccpp_cap`) is still host-prefixed,
+unchanged. Left as-is below rather than rewritten throughout, to preserve
+each note as an accurate record of what was actually observed at the time.
+
 ## Other features this example carries, not addressed by this port
 
 Nested-subcycle support has landed (see above), and the dummy-argument-name
