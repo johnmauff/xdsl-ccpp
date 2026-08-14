@@ -105,12 +105,12 @@ CONTAINS
     subroutine test_host(retval, test_suites)
 
        use test_host_mod,      only: ncols, num_time_steps
-       use test_host_ccpp_cap, only: test_host_ccpp_physics_register
-       use test_host_ccpp_cap, only: test_host_ccpp_physics_initialize
-       use test_host_ccpp_cap, only: test_host_ccpp_physics_timestep_initial
-       use test_host_ccpp_cap, only: test_host_ccpp_physics_run
-       use test_host_ccpp_cap, only: test_host_ccpp_physics_timestep_final
-       use test_host_ccpp_cap, only: test_host_ccpp_physics_finalize
+       use test_host_ccpp_cap, only: ccpp_register
+       use test_host_ccpp_cap, only: ccpp_init
+       use test_host_ccpp_cap, only: ccpp_physics_timestep_init
+       use test_host_ccpp_cap, only: ccpp_physics_run
+       use test_host_ccpp_cap, only: ccpp_physics_timestep_final
+       use test_host_ccpp_cap, only: ccpp_final
        use test_host_ccpp_cap, only: ccpp_physics_suite_list
        use test_host_mod,      only: init_data, compare_data, check_model_times
        use test_utils,         only: check_list
@@ -159,7 +159,7 @@ CONTAINS
 
        ! Use the suite information to call the register phase
        do sind = 1, num_suites
-          call test_host_ccpp_physics_register(test_suites(sind)%suite_name, &
+          call ccpp_register(test_suites(sind)%suite_name, &
                errmsg, errflg)
           if (errflg /= 0) then
              write(6, '(4a)') 'ERROR in register of ',                       &
@@ -168,7 +168,7 @@ CONTAINS
        end do
        ! Use the suite information to setup the run
        do sind = 1, num_suites
-          call test_host_ccpp_physics_initialize(test_suites(sind)%suite_name, &
+          call ccpp_init(test_suites(sind)%suite_name, &
                errmsg, errflg)
           if (errflg /= 0) then
              write(6, '(4a)') 'ERROR in initialize of ',                      &
@@ -183,7 +183,7 @@ CONTAINS
                 exit
              end if
              if (errflg == 0) then
-                call test_host_ccpp_physics_timestep_initial(                 &
+                call ccpp_physics_timestep_init(                 &
                      test_suites(sind)%suite_name, errmsg, errflg)
              end if
              if (errflg /= 0) then
@@ -211,7 +211,7 @@ CONTAINS
                       exit
                    end if
                    if (errflg == 0) then
-                      call test_host_ccpp_physics_run(                        &
+                      call ccpp_physics_run(                        &
                            test_suites(sind)%suite_name,                      &
                            test_suites(sind)%suite_parts(index),              &
                            col_start, col_end, errmsg, errflg)
@@ -231,7 +231,7 @@ CONTAINS
                 exit
              end if
              if (errflg == 0) then
-                call test_host_ccpp_physics_timestep_final(                   &
+                call ccpp_physics_timestep_final(                   &
                      test_suites(sind)%suite_name, errmsg, errflg)
              end if
              if (errflg /= 0) then
@@ -247,7 +247,7 @@ CONTAINS
              exit
           end if
           if (errflg == 0) then
-             call test_host_ccpp_physics_finalize(                            &
+             call ccpp_final(                            &
                   test_suites(sind)%suite_name, errmsg, errflg)
           end if
           if (errflg /= 0) then
