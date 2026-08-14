@@ -16,11 +16,15 @@
 # support) -- same conversion examples/var_compat's test_host.meta already
 # needed for the identical upstream pattern.
 #
-# main.F90's driver was rewritten to call xdsl-ccpp's own per-host-prefixed
-# generated subroutine names (test_host_ccpp_physics_register/_initialize/
-# _timestep_initial/_run/_timestep_final/_finalize) instead of capgen-v1's
-# generic ccpp_register/ccpp_init/ccpp_physics_init/etc dispatch convention --
-# same rationale as examples/var_compat's test_host.F90.
+# main.F90's driver was rewritten to call xdsl-ccpp's own generated
+# subroutine names (ccpp_register/ccpp_init/ccpp_physics_timestep_init/
+# ccpp_physics_run/ccpp_physics_timestep_final/ccpp_final -- bare,
+# capgen-v1-style names since the vocabulary-resolution redesign's Stage 5,
+# ccpp_cap_refactor_plan.md) rather than capgen-v1's own generic
+# ccpp_register/ccpp_init/ccpp_physics_init/etc dispatch convention, since
+# xdsl-ccpp's lifecycle still has 6 phases where capgen-v1 has 8 (splitting
+# "initialize"/"finalize" further) -- same rationale as
+# examples/var_compat's test_host.F90.
 #
 #------------------------------------------------------------------------------
 

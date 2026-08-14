@@ -32,14 +32,19 @@
 #      array's own shape (size()) instead, since HOST-type vars are
 #      deliberately never use-associated anywhere in this codebase.
 #
-# main.F90 was rewritten to call xdsl_ccpp's own per-host-prefixed generated
-# subroutine names (test_host_ccpp_physics_register/_initialize/
-# _timestep_initial/_run/_timestep_final/_finalize,
-# test_host_ccpp_register_constituents/_number_constituents/
-# _initialize_constituents/_deallocate_dynamic_constituents) instead of
-# capgen-v1's generic ccpp_register/ccpp_init/ccpp_physics_init/etc.
-# dispatch convention -- same rationale as examples/var_compat/chunked_data's
-# own test_host.F90/main.F90.
+# main.F90 was rewritten to call xdsl_ccpp's own generated subroutine names
+# directly: the six lifecycle dispatchers (ccpp_register/ccpp_init/
+# ccpp_physics_timestep_init/ccpp_physics_run/ccpp_physics_timestep_final/
+# ccpp_final -- bare, capgen-v1-style names since the vocabulary-resolution
+# redesign's Stage 5, ccpp_cap_refactor_plan.md) instead of capgen-v1's own
+# generic ccpp_register/ccpp_init/ccpp_physics_init/etc. dispatch convention
+# (xdsl-ccpp's lifecycle still has 6 phases where capgen-v1 has 8), plus the
+# constituent-registration API (test_host_ccpp_register_constituents/
+# _number_constituents/_initialize_constituents/
+# _deallocate_dynamic_constituents), which remains host-prefixed -- that
+# naming is untouched by Stage 5, which only renamed the six lifecycle
+# dispatchers. Same rationale as examples/var_compat/chunked_data's own
+# test_host.F90/main.F90.
 #
 # ccpp_constituent_prop_mod.F90/ccpp_scheme_utils.F90 are NOT duplicated
 # locally in this directory (unlike examples/advection's own copies, at

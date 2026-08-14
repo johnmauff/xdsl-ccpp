@@ -11,12 +11,14 @@
 # nphys_threads (unsupported generic-dispatch args), matching
 # examples/var_compat's own test_host.meta port exactly.
 #
-# The driver was rewritten from upstream's own generic ccpp_register/
-# ccpp_init/ccpp_physics_init/... calling convention (module test_host_ccpp_cap
-# in capgen-v1's own framework) to xdsl-ccpp's per-host-prefixed generated
-# subroutine names (test_host_ccpp_physics_register/_initialize/
-# _timestep_initial/_run/_timestep_final/_finalize), matching
-# examples/var_compat/test_host.F90's own calling convention.
+# The driver calls the generated subroutines directly (module test_host_ccpp_cap,
+# matching examples/var_compat/test_host.F90's own calling convention). Since the
+# vocabulary-resolution redesign's Stage 5 (ccpp_cap_refactor_plan.md), these are
+# bare, capgen-v1-style names (ccpp_register/ccpp_init/ccpp_physics_timestep_init/
+# ccpp_physics_run/ccpp_physics_timestep_final/ccpp_final) rather than
+# host-prefixed ones -- xdsl-ccpp's own 6-phase lifecycle structure is unchanged,
+# only the naming; see the redesign's own backlog entry for the still-open
+# 6-phase vs. capgen-v1's 8-phase question.
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "opt_arg_scheme")
@@ -61,18 +63,14 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # ccpp_cap_refactor_plan.md's "opt_arg's dead active property" entry):
   # `active = flag_for_opt_arg` now correctly gates opt_var/opt_var_2's
   # allocation/marshaling/call behind an ActiveCheckOp, and
-  # test_host_ccpp_physics_timestep_initial/_timestep_final now receive
+  # ccpp_physics_timestep_init/_timestep_final now receive
   # nx/std_arg/opt_arg/opt_arg_2 as real dummy arguments (passed through
-  # from this driver) instead of disconnected local placeholders. A CI
-  # compile then caught a real gfortran type mismatch this laptop's lack
-  # of a Fortran compiler couldn't: `flag_for_opt_arg` is itself threaded
-  # as a genuine dummy argument on test_host_ccpp_physics_timestep_initial/
-  # _timestep_final/_run (the active-expression HOST-type-propagation fix,
-  # see ccpp_cap_refactor_plan.md's CI-confirmed follow-on entry), and this
-  # driver's own positional calls hadn't been updated to pass it -- fixed
-  # in test_opt_arg_host_integration.F90. Confirmed by direct inspection of
-  # the generated Fortran signatures; not yet compile/run-verified on this
-  # laptop (no Fortran compiler available) -- CI is the first real
-  # compile+run check.
+  # from this driver) instead of disconnected local placeholders.
+  # `flag_for_opt_arg` itself is no longer threaded as a dummy argument at
+  # all -- the vocabulary-resolution redesign's Stage 2a (same doc)
+  # resolves it via use-association instead, matching real capgen-v1's own
+  # approach, so this driver only needs to `use`-associate and set it, not
+  # pass it through any call. CI-verified green (compile+run) -- this
+  # laptop has no Fortran compiler to check locally.
   add_test(NAME ctest_opt_arg_host_integration COMMAND opt_arg_host_integration)
 endif()

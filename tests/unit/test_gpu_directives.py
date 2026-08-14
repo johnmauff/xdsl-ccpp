@@ -1,7 +1,7 @@
 """Unit tests for GPU data-directive insertion across all lifecycle phases.
 
 generate-gpu-ccpp-cap (GPUCcppCapPass) and generate-gpu-data (GPUDataPass)
-originally only ever processed the *_ccpp_physics_run / *_suite_physics
+originally only ever processed the ccpp_physics_run / *_suite_physics
 dispatch -- register/initialize/finalize/timestep_initial/timestep_final
 never got !$acc data wrapping around their suite callee calls, even when a
 scheme declared memory_space=device args on those entry points. These tests
@@ -161,7 +161,7 @@ class TestGPUCcppCapLifecycleCoverage:
     declares memory_space=device args for that entry point."""
 
     def test_run_still_wraps_present_var(self, run_host_match, ccpp_context):
-        """Regression guard: the pre-existing _ccpp_physics_run behavior is
+        """Regression guard: the pre-existing ccpp_physics_run behavior is
         unaffected by refactoring _process_run_fn to share _wrap_scheme_call
         with the new lifecycle path."""
         fortran = _fortran_output(run_host_match, ccpp_context)
