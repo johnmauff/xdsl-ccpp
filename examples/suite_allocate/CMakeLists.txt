@@ -15,12 +15,15 @@
 # for this exact conversion.
 #
 # The driver (test_suite_allocate.F90) was rewritten from upstream's main.F90
-# to call xdsl_ccpp's own per-host-name-prefixed generated cap subroutines
-# (test_host_ccpp_physics_register/_initialize/_timestep_initial/_run/
-# _timestep_final/_finalize) directly, instead of capgen-v1's own generic
-# ccpp_register/ccpp_init/ccpp_physics_init/etc dispatch convention -- there
-# is only one suite/one group here, so no suite_info-style loop is needed
-# (unlike var_compat's own multi-suite test_host.F90).
+# to call xdsl_ccpp's own generated cap subroutines directly
+# (ccpp_register/ccpp_init/ccpp_physics_timestep_init/ccpp_physics_run/
+# ccpp_physics_timestep_final/ccpp_final -- bare, capgen-v1-style names
+# since the vocabulary-resolution redesign's Stage 5, ccpp_cap_refactor_plan.md)
+# instead of capgen-v1's own generic ccpp_register/ccpp_init/ccpp_physics_init/etc
+# dispatch convention -- xdsl-ccpp's lifecycle still has 6 phases where
+# capgen-v1 has 8. There is only one suite/one group here, so no
+# suite_info-style loop is needed (unlike var_compat's own multi-suite
+# test_host.F90).
 #
 #------------------------------------------------------------------------------
 
@@ -46,7 +49,7 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   target_include_directories(suite_allocate.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
   # Known-failing as of this port: xdsl_ccpp's generated
-  # test_host_ccpp_physics_run captures the workspace_checksum scheme output
+  # ccpp_physics_run captures the workspace_checksum scheme output
   # into a throwaway local temp (ccpp_tmp_0) instead of writing back to the
   # `data` module's host-owned `checksum` variable -- see this port's report
   # in ccpp_cap_refactor_plan.md. The test is still wired up so it can be

@@ -10,12 +10,12 @@ program test_constituents_dim
       pver, &
       coupler_flux
 
-  use test_host_ccpp_cap, only: test_host_ccpp_physics_register, &
-      test_host_ccpp_physics_initialize, &
-      test_host_ccpp_physics_timestep_initial, &
-      test_host_ccpp_physics_run, &
-      test_host_ccpp_physics_timestep_final, &
-      test_host_ccpp_physics_finalize, &
+  use test_host_ccpp_cap, only: ccpp_register, &
+      ccpp_init, &
+      ccpp_physics_timestep_init, &
+      ccpp_physics_run, &
+      ccpp_physics_timestep_final, &
+      ccpp_final, &
       test_host_ccpp_register_constituents, &
       test_host_ccpp_number_constituents, &
       test_host_ccpp_initialize_constituents, &
@@ -37,7 +37,7 @@ program test_constituents_dim
 
   ! register_consts_register registers 3 dynamic constituents, which is what
   ! gives the suite a non-trivial number_of_ccpp_constituents.
-  call test_host_ccpp_physics_register(ccpp_suite, errmsg, errflg)
+  call ccpp_register(ccpp_suite, errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_register:"
     write(error_unit, '(a)') trim(errmsg)
@@ -85,7 +85,7 @@ program test_constituents_dim
   ! CCPP physics init step                         !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call test_host_ccpp_physics_initialize(ccpp_suite, errmsg, errflg)
+  call ccpp_init(ccpp_suite, errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_init:"
     write(error_unit, '(a)') trim(errmsg)
@@ -96,7 +96,7 @@ program test_constituents_dim
   ! CCPP physics timestep init step                !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call test_host_ccpp_physics_timestep_initial(ccpp_suite, errmsg, errflg)
+  call ccpp_physics_timestep_init(ccpp_suite, errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_init:"
     write(error_unit, '(a)') trim(errmsg)
@@ -109,7 +109,7 @@ program test_constituents_dim
 
   ! Producer fills/allocates the workspaces and checks Case 1; consumer verifies
   ! Cases 2a/2b.  Any mismatch sets errflg inside the schemes.
-  call test_host_ccpp_physics_run(ccpp_suite, ccpp_group, 1, ncols, coupler_flux, &
+  call ccpp_physics_run(ccpp_suite, ccpp_group, 1, ncols, coupler_flux, &
       errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_run:"
@@ -121,7 +121,7 @@ program test_constituents_dim
   ! CCPP physics timestep finalize step            !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call test_host_ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
+  call ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_finalize:"
     write(error_unit, '(a)') trim(errmsg)
@@ -132,7 +132,7 @@ program test_constituents_dim
   ! CCPP physics finalize step                     !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call test_host_ccpp_physics_finalize(ccpp_suite, errmsg, errflg)
+  call ccpp_final(ccpp_suite, errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_finalize:"
     write(error_unit, '(a)') trim(errmsg)

@@ -173,12 +173,12 @@
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: lc_HNO3(:)
 // CHECK-NEXT:    real(kind=kind_phys) :: lc_vmr
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: lc_psurf(:)
-// CHECK-NEXT:    public :: Ddt_ccpp_physics_register
-// CHECK-NEXT:    public :: Ddt_ccpp_physics_initialize
-// CHECK-NEXT:    public :: Ddt_ccpp_physics_finalize
-// CHECK-NEXT:    public :: Ddt_ccpp_physics_timestep_initial
-// CHECK-NEXT:    public :: Ddt_ccpp_physics_timestep_final
-// CHECK-NEXT:    public :: Ddt_ccpp_physics_run
+// CHECK-NEXT:    public :: ccpp_register
+// CHECK-NEXT:    public :: ccpp_init
+// CHECK-NEXT:    public :: ccpp_final
+// CHECK-NEXT:    public :: ccpp_physics_timestep_init
+// CHECK-NEXT:    public :: ccpp_physics_timestep_final
+// CHECK-NEXT:    public :: ccpp_physics_run
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
@@ -191,7 +191,7 @@
 // CHECK-NEXT:    public :: Ddt_const_get_index
 // CHECK-NEXT:    public :: Ddt_model_const_properties
 // CHECK:       CONTAINS
-// CHECK-LABEL:   subroutine Ddt_ccpp_physics_register(suite_name, errmsg, errflg)
+// CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -202,8 +202,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine Ddt_ccpp_physics_register
-// CHECK-LABEL:   subroutine Ddt_ccpp_physics_initialize(suite_name, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_register
+// CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -221,8 +221,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine Ddt_ccpp_physics_initialize
-// CHECK-LABEL:   subroutine Ddt_ccpp_physics_finalize(suite_name, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_init
+// CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -235,8 +235,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine Ddt_ccpp_physics_finalize
-// CHECK-LABEL:   subroutine Ddt_ccpp_physics_timestep_initial(suite_name, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_final
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -247,8 +247,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine Ddt_ccpp_physics_timestep_initial
-// CHECK-LABEL:   subroutine Ddt_ccpp_physics_timestep_final(suite_name, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
@@ -261,8 +261,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine Ddt_ccpp_physics_timestep_final
-// CHECK-LABEL:   subroutine Ddt_ccpp_physics_run(suite_name, suite_part, errmsg, errflg)
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_final
+// CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
@@ -280,7 +280,7 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine Ddt_ccpp_physics_run
+// CHECK-NEXT:    end subroutine ccpp_physics_run
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)
 // CHECK:           character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:           allocate(suites(1))

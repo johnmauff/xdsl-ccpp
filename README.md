@@ -648,13 +648,15 @@ Generated files:
 | `<HostName>_ccpp_cap.h` | C++ `extern "C"` lifecycle declarations |
 | `ccpp_kinds.h` | C++ `typedef` aliases for `kind_phys`, `kind_dyn`, etc. |
 
-The C++ lifecycle functions follow the naming convention
-`<HostName>_ccpp_physics_run`, `_ccpp_physics_initialize`, etc.:
+The C++ lifecycle functions are bare, capgen-v1-style names
+(`ccpp_register`, `ccpp_init`, `ccpp_physics_timestep_init`,
+`ccpp_physics_run`, `ccpp_physics_timestep_final`, `ccpp_final`) --
+the header/module they live in is still `<HostName>`-prefixed:
 
 ```cpp
 #include "Kessler_ccpp_cap.h"
-Kessler_ccpp_physics_initialize(...);
-Kessler_ccpp_physics_run(...);
+ccpp_init(...);
+ccpp_physics_run(...);
 ```
 
 The kessler example includes a working C++ BIND(C) driver (`driver_kessler_cpp.cpp`,

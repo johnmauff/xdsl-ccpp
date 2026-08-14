@@ -61,6 +61,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
+| Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
 
 **Backlog — other flagged issues:**
 
@@ -3586,6 +3587,277 @@ dependency is noted.
         would be thrown-away work.
       - **Verification:** full suite green again (562 passed, 1 xfailed, 1 failed -- same
         pre-existing `test_build_integration.py` PATH issue, unrelated).
+- **Vocabulary-resolution redesign — matching real capgen-v1's use-association model — L, staged.**
+  Prompted directly by the `active=` fix above: real capgen-v1's own generated caps (confirmed by
+  running its actual `capgen/ccpp_capgen.py` against `opt_arg`, `var_compat`, and `chunked_data`
+  from the reference `feature/capgen-v1` checkout) never thread host-owned state as call
+  arguments at all -- every host-declared variable, regardless of table type, is resolved via
+  `use <module>, only: <var>` wherever referenced, with only a small fixed set of generic
+  dispatch scalars (loop bounds, error handling) threaded as plain arguments. xdsl_ccpp's own
+  HOST-type table conflates the two, forcing every genuine host-state HOST-type reference to be
+  threaded as a block argument -- the direct cause of this session's `_collect_active_gate_extra_args`/
+  two-layer `lifecycle_cap.py` propagation/`__hostarg` xDSL-workaround machinery. Unifying
+  HOST-type resolution with the MODULE-type use-association path that already exists (and already
+  correctly resolves `has_graupel`) is expected to let a meaningful fraction of that machinery be
+  deleted outright rather than maintained. Staged so each piece lands and is tested independently:
+  - **Stage 1 — Classify, don't act. ✅ Done (2026-08-13).** New `DISPATCH_SCALAR_STD_NAMES`/
+    `is_dispatch_scalar_std_name` in `ccpp_conventions.py` and
+    `GenerateSuiteSubroutine._classify_host_table_vars` in `suite_cap.py` (returns
+    `std_name.lower() -> 'state'|'dispatch_scalar'` for every var in a HOST-type table). No
+    behavior change -- nothing reads this yet. **Correction to the original Stage 1 sketch:**
+    the plan assumed the classifier could check "is this var backed by a real compiled Fortran
+    module" -- turns out that fact isn't visible to the Python tool at all (which HOST_FILES
+    entries get a `.F90` compiled is a CMake-level decision the tool never sees; it only gets a
+    flat `--host-files` list). The real, actually-implementable signal, confirmed by direct
+    inspection of every example's own generic control-derived host table (`opt_arg`/`var_compat`/
+    `chunked_data`/`suite_allocate`/.../`test_host.meta`): every one of them declares exactly the
+    same 4 standard names (`horizontal_loop_begin`, `horizontal_loop_end`, `ccpp_error_message`,
+    `ccpp_error_code`) and nothing else -- no example's `.meta` anywhere declares a standard_name
+    for `thread_num`/`nthreads`/`nphys_threads`/`suite_name`/`group_name`; those are synthesized
+    directly by the code generator, never host-matched. So the classifier is a small fixed
+    allowlist, not a module-existence check. Covered by
+    `tests/unit/test_host_var_classification.py` (3 tests, fixture shape mirrors `opt_arg`'s own
+    `data.meta`/`test_host.meta` verbatim).
+  - **Stage 2a — use-associate `state`-classified HOST vars at the innermost call layer
+    (`suite_cap.py`). ✅ Done (2026-08-13).** `_active_expr_var_indexes` now returns
+    `(use_associated_index, dummy_arg_index)` instead of `(module_var_index, host_var_index)`:
+    `use_associated_index` merges every MODULE-type var (unchanged) with every
+    `state`-classified HOST-type var (new); `dummy_arg_index` keeps only
+    `dispatch_scalar`-classified HOST-type vars (in practice always empty today -- no example
+    gates on a loop bound or error code, kept for correctness rather than assumed impossible).
+    `_resolve_active_condition` and `_collect_active_gate_extra_args` both switched to the new
+    names/semantics; a `state`-classified HOST-type ref now gets the exact same USE-stub
+    treatment a MODULE-type ref already did, so `_collect_active_gate_extra_args` no longer
+    synthesizes a dummy arg for it at all.
+    - **Bigger-than-expected win, confirmed by direct inspection:** the outer
+      `lifecycle_cap.py`/`ccpp_cap.py` wrapper layer needed *no change at all* -- it derives its
+      own "extra host arg" list by inspecting the inner suite-cap function's own actual
+      signature (built by this session's earlier two-layer propagation fix) rather than
+      recomputing membership independently, so once Stage 2a's change made the inner function
+      stop declaring `flag_for_opt_arg`/`flag_for_opt_var` as a dummy arg, the outer wrapper
+      automatically stopped requesting it too -- confirmed against both `opt_arg`'s real
+      generated Fortran (`OptArg_ccpp_physics_timestep_initial` no longer takes
+      `flag_for_opt_arg`, calls the inner function with the exact matching smaller arg list)
+      and the simpler `active_gated_scheme`/`active_gated_host` unit fixture
+      (`ActiveGated_ccpp_physics_run` likewise). Stages 2b/2c are very likely no-ops as a
+      result -- kept as separate backlog items to explicitly re-confirm and go looking for any
+      now-dead code, not because a fix is expected to be needed.
+    - **New regression coverage:** `TestActiveGatedOptionalArgs::
+      test_flag_is_use_associated_not_threaded_as_arg` (`tests/unit/test_optional_args.py`) --
+      the 4 pre-existing tests in that class only ever asserted the *condition* text and which
+      args appear in the with/without call branches, never *how* the flag itself was threaded,
+      so they passed unchanged through this fix without actually exercising the new behavior;
+      this new test locks in the USE-associated form directly.
+    - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
+      `test_build_integration.py` PATH issue, unrelated). Both `var_compat` FileCheck goldens
+      unchanged and still passing, confirming MODULE-type resolution (`has_graupel`/`has_ice`)
+      is untouched by the `_active_expr_var_indexes` restructuring. `opt_arg`'s own real
+      generated Fortran directly inspected end-to-end.
+    - **CI follow-on, found and fixed 2026-08-13:** `examples/opt_arg`'s own driver
+      (`test_opt_arg_host_integration.F90`) still passed `flag_for_opt_arg` positionally to
+      `test_host_ccpp_physics_timestep_initial`/`_run`/`_timestep_final` -- exactly the
+      argument Stage 2a just stopped exposing on those signatures, so every actual argument
+      after that slot shifted by one (gfortran caught real type mismatches: LOGICAL passed
+      where CHARACTER(512) was expected, etc.). This is the literal mirror image of the fix
+      needed right before Stage 2a landed (that one *added* the positional arg; this one
+      *removes* it) -- exactly the "this proves the point" moment anticipated when Stage 2a's
+      note above was written. Fixed by removing it from all three call sites; the driver still
+      `use`s and sets `flag_for_opt_arg` from `data` (unchanged), it just no longer threads it
+      through the call. Confirmed against the actual regenerated signatures before editing,
+      same as before. CI green after this fix.
+  - **Stage 2b — confirm the outer lifecycle wrapper (`lifecycle_cap.py`) needs no change.
+    ✅ Confirmed, no code change (2026-08-13).** Exhaustively checked every example in the repo
+    that declares an `active =` property (found via `grep -rl '^\s*active\s*=' examples
+    --include='*.meta'`): `capgen`, `ddthost`, `instances`, `nested_suite`, `opt_arg`,
+    `var_compat`. Regenerated each via `xdsl_ccpp.tools.ccpp_dsl` (the same tool CI's CMake
+    step calls) and inspected the actual output:
+    - `opt_arg`, `var_compat`, `nested_suite` -- HOST/MODULE-type `active=` refs, exactly
+      Stage 2a's target case. All three confirmed correct end-to-end (`var_compat`/
+      `nested_suite`'s MODULE-type `has_graupel`/`has_ice` were never affected by Stage 2a to
+      begin with; `opt_arg`'s HOST-type `flag_for_opt_arg` now resolves via use-association at
+      every layer, outer wrapper included, with no manual change needed there).
+    - `capgen`/`ddthost`/`instances` -- **found a separate, pre-existing, out-of-scope gap**:
+      each of these declares its `active=` property on a member of a `type = ddt` table (e.g.
+      `instances`/`data.meta`'s `instance_type` DDT gates `data_array_opt` on
+      `flag_for_opt_array`, itself another member of the same DDT), not a `type = host` or
+      `type = module` table. `_active_expr_var_indexes` only ever scanned MODULE/HOST tables,
+      even before this redesign -- DDT-type `active=` support was never built at all, in either
+      the old or new resolution model. Not a Stage 2a/2b regression: `capgen`/`ddthost`'s own
+      DDT member (`index_of_water_vapor_specific_humidity`) turns out unexercised by any actual
+      optional arg in those examples' own suites (doesn't appear in either's generated Fortran
+      at all), so it's silently inert rather than silently wrong. `instances`' own case is real
+      but already known-broken for an unrelated, already-tracked reason (see
+      `instances`/`instances_advection` backlog entry above: the whole array-of-DDT-instances
+      access pattern isn't implemented yet, pending an architecture decision). Logging this as
+      its own thing to fold into Stage 4's `instances` rollout (or the architecture decision
+      itself) rather than fixing now -- out of Stage 2b's scope, which is the HOST/MODULE-type
+      redesign specifically.
+    - No `lifecycle_cap.py` code change needed or made. `_generate_lifecycle_fn`'s own
+      HOST-exclusive-arg fallback (the "`_std_name is None and _bare_name.lower() in
+      host_var_map_all`" branch, added for this session's original Bug 2 fix) is now
+      unreachable for every current example -- it only ever existed to handle
+      `_collect_active_gate_extra_args`'s synthesized args showing up in a callee's own
+      signature, and Stage 2a means that no longer happens for `state`-classified vars. Left in
+      place rather than deleted (that's Stage 3): it's still the correct fallback for a
+      hypothetical future `dispatch_scalar`-classified active-gated ref, and confirming
+      "unreachable today" isn't the same as "provably dead for all time."
+  - **Stage 2c — confirm `run_dispatch.py` needs no change. ✅ Confirmed, no code change
+    (2026-08-13).** Same underlying reason as Stage 2b, traced through a different mechanism:
+    `_build_run_block_signature`'s own `non_host_args` (the source of the outer `_run`
+    wrapper's own extra block args) is built by classifying each of the *actual* callee's real
+    `callee_input_names`/`callee_input_types` as `ArgSourceKind.Host` (resolvable via
+    use-association) or `ArgSourceKind.Block` (must be threaded) -- it iterates the callee's
+    own already-generated signature, not an independently-recomputed metadata scan. Since Stage
+    2a means a `state`-classified HOST-type var no longer appears in that signature at all
+    (replaced by an internal `use` statement), this classification loop never encounters it as
+    a candidate in the first place, for the identical structural reason `lifecycle_cap.py`'s
+    own mechanism self-adjusted in Stage 2b. Confirmed directly: `opt_arg`'s
+    `test_host_ccpp_physics_run(suite_name, suite_part, col_start, col_end, nx, var, opt_var,
+    opt_var_2, errmsg, errflg)` has no `flag_for_opt_arg`, and `var_compat`'s
+    `test_host_ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg, errflg)`
+    correctly `use`-associates `has_graupel` (MODULE-type, unaffected either way) and threads it
+    correctly into the inner call (`has_graupel=has_graupel`) with no manual change needed.
+  - **Stage 3 — delete now-dead code. ✅ Done (2026-08-13).**
+    - **`suite_cap.py`:** `_collect_active_gate_extra_args` deleted outright, along with its
+      call site in `generateSubroutineCall`. `_active_expr_var_indexes` simplified to return a
+      single `use_associated_index` dict (was a `(use_associated_index, dummy_arg_index)`
+      tuple) -- `dummy_arg_index` had no remaining consumer once the synthesis function that
+      built entries for it was gone. `_resolve_active_condition`'s fallback for an unresolved
+      `dispatch_scalar`-classified reference changed from *silently* threading a
+      never-exercised dummy-argument workaround to **raising a clear error** instead: gating an
+      optional arg's presence on a loop bound or error code has no example, no clear Fortran
+      realization, and simply deleting the fallback with no replacement would have silently
+      regressed to printing the raw standard name verbatim -- the exact "no IMPLICIT type" bug
+      class this whole `active=` fix started from. An explicit, documented boundary beats
+      either silently-untested support or a silent reintroduction of the original bug.
+    - **`lifecycle_cap.py`:** removed the now-fully-dead `_std_name is None and
+      _bare_name.lower() in host_var_map_all: _std_name = _bare_name.lower()` fallback --
+      its only purpose was recognizing `_collect_active_gate_extra_args`'s synthetic args
+      (never any scheme's own declared arg) reaching this scan; nothing produces such an arg
+      any more. The surrounding `extra_host_args`/`extra_host_arg_index`/`__hostarg` machinery
+      is **kept, not dead** -- confirmed still load-bearing for genuinely scheme-declared
+      HOST-type args (`opt_arg`'s own `nx`/`var`/`opt_var`/`opt_var_2` for
+      `timestep_init`/`timestep_final`), a case Stages 2a-2c never touched (they were scoped to
+      HOST-type vars referenced *only* inside an `active=` property, never a real scheme
+      argument). Updated the pre-scan's own comment, which had drifted into a now-inaccurate
+      blanket claim ("HOST-type table variables are deliberately never use-associated anywhere
+      in this codebase") now that Stage 2a use-associates `state`-classified ones -- just at a
+      different layer (inside `suite_cap.py`'s own generated function, not here).
+    - **Net code-volume effect, measured, not assumed:** modest, and deliberately scoped --
+      +6/-7 lines net across `suite_cap.py`/`lifecycle_cap.py` since Stage 1 started. This
+      stage only unwound the complexity this session's *own* `active=`-verbatim-text fix
+      introduced (a real, contained win: the synthesis function, its call site, and the dead
+      fallback are gone). It does **not** touch the much larger, pre-existing "every
+      scheme-declared HOST-type arg is threaded as a block argument" pattern used throughout
+      `suite_cap.py`/`lifecycle_cap.py`/`run_dispatch.py` for genuine scheme args (`opt_arg`'s
+      own `nx`/`var`/`opt_var_2`, `var_compat`'s `phys_state%effrr` slicing, etc.) -- Stages
+      2a-2c were deliberately scoped to the `active=`-only synthetic case, not a general
+      HOST-type-resolution rewrite. Extending use-association to genuine scheme args too (the
+      larger prize the original capgen-v1 comparison pointed at) would be a separate, much
+      bigger future redesign, not something Stages 1-4 as planned actually deliver.
+    - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
+      `test_build_integration.py` PATH issue, unrelated). `opt_arg`'s real generated Fortran
+      re-inspected directly and confirmed byte-identical to before this cleanup.
+  - **Stage 4 — roll out to the rest of the examples. ✅ Done (2026-08-13), turned out to be
+    pure verification, not new work.** Stages 2a-2c's code change is a general mechanism inside
+    `suite_cap.py` (`_classify_host_table_vars`/`_active_expr_var_indexes`), not per-example
+    wiring -- it already applies to every example the moment its cap is regenerated. There was
+    no per-example "port" step left to do; "rolling out" meant confirming the whole repo still
+    generates cleanly. Ran the real `xdsl_ccpp.tools.ccpp_dsl` tool (the same one CI's CMake step
+    calls) against every one of the repo's 19 real `xdsl_ccpp_capgen()` invocations (found via
+    `grep -rl 'xdsl_ccpp_capgen(' examples --include=CMakeLists.txt`; `atmospheric_physics` and
+    `shared` aren't real cap-generation targets, confirmed by inspection), resolving each
+    example's own HOSTFILES/SCHEMEFILES/SUITES/HOST_NAME from its CMakeLists.txt. All 19
+    succeeded (exit 0): `advection`, `advection_flat_host`, `capgen` (both plain and chost
+    invocations), `chararg`, `chunked_data`, `constadv`, `constituents_dim`, `constprop`,
+    `ddthost` (both invocations), `helloworld`, `instances`, `instances_advection`, `kessler`
+    (all three: plain/bindc/chost), `nestedddt`, `suite_allocate`, `tinyddt` -- plus `opt_arg`,
+    `var_compat`, `nested_suite`, already verified in detail across Stages 2a-2c.
+    - **Bonus finding, not caused by this redesign:** `instances_advection` was documented above
+      (under the `instances`/`instances_advection` backlog entry) as hard-failing at cap
+      generation with `xdsl.utils.exceptions.VerifyException: Expected source and destination
+      to have the same shape` inside the constituent-registration path. That failure **no
+      longer reproduces** -- cap generation now succeeds and produces a complete-looking
+      `test_host_ccpp_register_constituents`/`test_host_ccpp_is_scheme_constituent` etc. Likely
+      fixed as a side effect of task #1's `constituents_dim` host-matching fix earlier this
+      session (the backlog entry itself already suspected the two examples "may share one root
+      cause"), not by anything in Stages 1-3. Not independently re-verified beyond "it no longer
+      crashes" -- the array-of-DDT-instances access-pattern gap `instances`'s own backlog entry
+      describes (`data_array`/`data_array2` resolved as flat Block args instead of
+      `instance_data(instance)%...`) was **not** re-checked and should not be assumed fixed.
+      Worth a fresh look at task #4's premise before relying on this, but out of scope to chase
+      further under "Stage 4."
+    - **Verification:** full suite still green throughout (566 passed, 1 xfailed, 1 failed --
+      same pre-existing `test_build_integration.py` PATH issue, unrelated) -- this stage made no
+      source changes at all, confirmation only.
+  - **Stage 5 — optional, separable naming cleanup. ✅ Done (2026-08-13), best-fit rename.**
+    Host-prefixed subroutine names -> capgen-v1-style generic names, keeping xdsl_ccpp's own
+    existing 6-phase lifecycle structure exactly as-is (see the follow-on backlog item just
+    below for the *8*-phase question, deliberately out of scope here):
+    | Old (host-prefixed) | New (bare) |
+    |---|---|
+    | `<host>_ccpp_physics_register` | `ccpp_register` |
+    | `<host>_ccpp_physics_initialize` | `ccpp_init` |
+    | `<host>_ccpp_physics_finalize` | `ccpp_final` |
+    | `<host>_ccpp_physics_timestep_initial` | `ccpp_physics_timestep_init` |
+    | `<host>_ccpp_physics_timestep_final` | `ccpp_physics_timestep_final` |
+    | `<host>_ccpp_physics_run` | `ccpp_physics_run` |
+
+    The **module** itself stays host-prefixed (`module <host>_ccpp_cap`), unchanged --
+    matching real capgen-v1's own convention exactly (its own `--host-name` help text: drives
+    the module name "so multiple host integrations can co-exist in one executable"; the bare
+    subroutines inside don't need to disambiguate, Fortran module namespacing already does that).
+    - **`ccpp_cap.py`:** `lifecycle_specs`' first tuple element changed from a suffix
+      (`"_ccpp_physics_register"`, appended to `camel_name`) to the bare final name directly;
+      both `fn_name=camel_name + fn_suffix` call sites became `fn_name=fn_suffix`.
+      `_inject_capscratch_gpu_exit`'s hardcoded `camel_name + "_ccpp_physics_finalize"` lookup
+      updated to the literal `"ccpp_final"`.
+    - **`gpu_ccpp_cap_pass.py`:** `_LIFECYCLE_FN_SUFFIX_TO_PHASE`'s keys updated to the bare
+      names. **A real bug, caught by the test suite, not by inspection:** the separate
+      `"_ccpp_physics_run" in fn_name` check (run's dispatch shape differs from the other five,
+      so it isn't in that dict) still had its leading underscore, silently no longer matching
+      `"ccpp_physics_run"` at all -- GPU data-hoisting directives stopped being inserted into
+      the run function's body entirely, with no error, just an empty/wrong result. Found via
+      `test_gpu_data_hoisting.py`'s own assertions failing with a suspiciously *empty* function
+      body rather than a naming-string mismatch -- worth remembering as a class of bug this kind
+      of rename can hide: a substring check silently returning nothing, not a loud break.
+    - **`cpp_interop.py`, the deepest ripple:** the "chost" (C++ interop) naming convention
+      (`_chost_fn_name`) derived its own name by string-replacing `"_ccpp_physics_"` with
+      `"_chost_physics_"` inside the plain cap's own bind-C function name -- broke completely
+      once that name lost its host prefix and, for register/init/final, lost the substring
+      `"physics_"` entirely. chost naming is xdsl_ccpp-specific (no capgen-v1 equivalent to
+      align with) and deliberately kept host-prefixed as before (e.g. still
+      `Kessler_chost_physics_run`) -- not part of this rename's scope. Fixed by reconstructing
+      the chost name from `camel_name`/the lifecycle-phase key directly
+      (`f"{camel_name}_chost_physics_{lc}"`) instead of parsing it out of the plain name, since
+      the plain name no longer carries the information needed to derive it. Required threading
+      `camel_name` into `_chost_fn_contexts` (a new parameter, 3 call sites) and fixing the
+      matching `_LIFECYCLE` dict in the same file (same bug class as `gpu_ccpp_cap_pass.py`'s).
+    - **Fallout, mechanical but large:** 24 filecheck goldens and 14 unit test files asserted
+      exact old subroutine-name text. Batch-fixed via a scoped regex substitution
+      (`\b\w+_ccpp_physics_(register|initialize|finalize|timestep_initial|timestep_final|run)\b`
+      -> the corresponding new bare name) across `tests/unit/*.py` and
+      `tests/filecheck/**/*.mlir`, which handled most of it; a further manual pass fixed (a)
+      wrapped/continuation lines in filecheck goldens whose line length changed enough to
+      shift or eliminate the wrap point (the blind regex correctly renamed the text but
+      couldn't re-flow line wrapping) and (b) a handful of bare string-literal
+      `.endswith("_ccpp_physics_...")` checks in `test_ccpp_t_threading.py` that the regex's
+      "must be part of a longer identifier" pattern didn't match.
+    - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
+      `test_build_integration.py` PATH issue, unrelated).
+  - **Follow-on, logged per project owner request (2026-08-13), not started: full 6-phase ->
+    8-phase lifecycle match.** Real capgen-v1 doesn't have 6 lifecycle entry points, it has
+    8 -- it splits what this codebase calls "initialize" into two distinct phases
+    (`ccpp_init` at the suite level, `ccpp_physics_init` at the per-group level) and
+    "finalize" likewise (`ccpp_physics_final` + `ccpp_final`). Stage 5 deliberately did *not*
+    attempt this: it's genuine new architecture, not a rename -- would mean adding two new
+    lifecycle phases throughout the generation pipeline (`lifecycle_cap.py`, the outer
+    `ccpp_cap.py` wrapper, `suite_cap.py`'s own register/initialize/finalize functions) and
+    updating every example's driver to call the new two-phase sequence. 📋 Backlog (size TBD,
+    likely M-L) -- a separate, bigger effort from anything Stages 1-5 delivered.
+  - Hold `suite_allocate`/`instances`+`instances_advection`/kind_spec/interstitial-variable
+    backlog items (all cap-generation-adjacent) until Stage 3 lands -- building on the model
+    being replaced would be redone.
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified

@@ -112,7 +112,7 @@ of the combined cap module:
 | Module | Called for |
 |--------|------------|
 | `run_dispatch.py` | The run-dispatch cluster: per-suite argument resolution (host var / DDT member / cap var / block arg) and the nested if/else dispatch chain for `ccpp_physics_run` |
-| `lifecycle_cap.py` | The `_ccpp_physics_initialize`/`_finalize`/`_timestep_initial`/`_timestep_final` lifecycle dispatcher subroutines |
+| `lifecycle_cap.py` | The `ccpp_init`/`ccpp_final`/`ccpp_physics_timestep_init`/`ccpp_physics_timestep_final` lifecycle dispatcher subroutines |
 | `constituent_cap.py` | The constituent API (`ccpp_physics_get_constituent_...`) and its supporting metadata collection |
 
 All three were extracted from `ccpp_cap.py` itself (originally one ~4,700-line

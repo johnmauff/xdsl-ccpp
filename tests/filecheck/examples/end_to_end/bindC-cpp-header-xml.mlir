@@ -12,17 +12,17 @@
 // CHECK:      extern "C" {
 
 // Register: suite_name is const char* (intent in), outputs are char*/int*.
-// CHECK-LABEL: void HelloWorld_ccpp_physics_register(
+// CHECK-LABEL: void ccpp_register(
 // CHECK:          const char*      suite_name,
 // CHECK-NEXT:     char*            errmsg,
 // CHECK-NEXT:     int*             errflg
 
 // Initialize: same character/integer pattern.
-// CHECK-LABEL: void HelloWorld_ccpp_physics_initialize(
+// CHECK-LABEL: void ccpp_init(
 // CHECK:          const char*      suite_name,
 
 // Run: intent(in) scalar integers are by-value (no pointer), strings use const/non-const char*.
-// CHECK-LABEL: void HelloWorld_ccpp_physics_run(
+// CHECK-LABEL: void ccpp_physics_run(
 // CHECK:          const char*      suite_name,
 // CHECK-NEXT:     const char*      suite_part,
 // CHECK-NEXT:     int              col_start,

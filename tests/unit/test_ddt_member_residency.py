@@ -133,7 +133,7 @@ class TestDDTMemberPresent:
             run_host_match, ccpp_context,
             [_PRESENT_SCHEME], [_DDT_TYPE, _DDT_HOST_MOD], _PRESENT_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "TestDdtPresent_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "present(phys_state%temp_member" in run_fn
 
 
@@ -171,7 +171,7 @@ class TestDDTMemberCopyFamily:
             run_host_match, ccpp_context,
             [_COPY_SCHEME], [_DDT_TYPE, _DDT_HOST_MOD], _COPY_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "TestDdtCopy_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "!$acc data copy(phys_state%qv_member" in run_fn
 
 
@@ -218,9 +218,9 @@ class TestDDTMemberMultiPhaseHoisting:
             run_host_match, ccpp_context,
             [_MULTI_PHASE_SCHEME], [_DDT_TYPE, _DDT_HOST_MOD], _MULTI_PHASE_SUITE_XML,
         )
-        init_fn = _fn_body(fortran, "TestDdtMulti_ccpp_physics_initialize")
-        run_fn = _fn_body(fortran, "TestDdtMulti_ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "TestDdtMulti_ccpp_physics_finalize")
+        init_fn = _fn_body(fortran, "ccpp_init")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
+        finalize_fn = _fn_body(fortran, "ccpp_final")
 
         # The residency-hoisting mechanism (this test's actual subject) is
         # enter data copyin at initialize / exit data copyout at finalize --
@@ -273,5 +273,5 @@ class TestDDTMemberResidencyEstablishment:
             run_host_match, ccpp_context,
             [_RESIDENCY_SCHEME], [_DDT_TYPE, _DDT_HOST_MOD], _RESIDENCY_SUITE_XML,
         )
-        run_fn = _fn_body(fortran, "TestDdtResEstab_ccpp_physics_run")
+        run_fn = _fn_body(fortran, "ccpp_physics_run")
         assert "!$acc data copy(phys_state%temp_member" in run_fn

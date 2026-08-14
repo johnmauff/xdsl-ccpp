@@ -14,28 +14,28 @@
 // CHECK:      extern "C" {
 
 // Register: suite_name is const char* (intent in), outputs are char*/int*.
-// CHECK-LABEL: void Kessler_ccpp_physics_register(
+// CHECK-LABEL: void ccpp_register(
 // CHECK:          const char*      suite_name,
 // CHECK-NEXT:     char*            errmsg,
 // CHECK-NEXT:     int*             errflg
 
 // Initialize: same character/integer pattern.
-// CHECK-LABEL: void Kessler_ccpp_physics_initialize(
+// CHECK-LABEL: void ccpp_init(
 // CHECK:          const char*      suite_name,
 
 // Finalize.
-// CHECK-LABEL: void Kessler_ccpp_physics_finalize(
+// CHECK-LABEL: void ccpp_final(
 // CHECK:          const char*      suite_name,
 
 // Timestep initial/final.
-// CHECK-LABEL: void Kessler_ccpp_physics_timestep_initial(
-// CHECK-LABEL: void Kessler_ccpp_physics_timestep_final(
+// CHECK-LABEL: void ccpp_physics_timestep_init(
+// CHECK-LABEL: void ccpp_physics_timestep_final(
 
 // Run: with the horizontal_dimension convention, all per-call physics args
 // (nz, dt, cpair, theta, precl, ...) are host-resolved internally via the
 // host module rather than threaded through the framework-level dispatch
 // entry point, so the signature collapses to just the standard 6 args.
-// CHECK-LABEL: void Kessler_ccpp_physics_run(
+// CHECK-LABEL: void ccpp_physics_run(
 // CHECK:          const char*      suite_name,
 // CHECK-NEXT:     const char*      suite_part,
 // CHECK-NEXT:     int              col_start,

@@ -42,7 +42,7 @@ This was the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work â€
 done: (c) (turning a silent conflict into a hard error) and (b) (true per-scheme-call clause
 routing, so `qv` actually compiles correctly instead of raising) â€” see
 `ccpp_cap_refactor_plan.md`'s GPU/OpenACC backlog for the full design history. The multi-group
-`_ccpp_physics_run` discovery gap (a separate, orthogonal bug affecting every var kind
+`ccpp_physics_run` discovery gap (a separate, orthogonal bug affecting every var kind
 `GPUCcppCapPass` still handles) remains deferred, unexercised by this single-group example.
 
 ## Building and verifying (CPU only)

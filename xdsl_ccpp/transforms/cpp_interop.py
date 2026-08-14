@@ -546,12 +546,12 @@ def _chost_maybe_inject_nz(visible: list, infos: list, std_to_host: dict) -> lis
 
 
 _LIFECYCLE = {
-    "_ccpp_physics_register":         "register",
-    "_ccpp_physics_initialize":       "initialize",
-    "_ccpp_physics_finalize":         "finalize",
-    "_ccpp_physics_timestep_initial": "timestep_initial",
-    "_ccpp_physics_timestep_final":   "timestep_final",
-    "_ccpp_physics_run":              "run",
+    "ccpp_register":              "register",
+    "ccpp_init":                  "initialize",
+    "ccpp_final":                 "finalize",
+    "ccpp_physics_timestep_init": "timestep_initial",
+    "ccpp_physics_timestep_final": "timestep_final",
+    "ccpp_physics_run":           "run",
 }
 
 
@@ -563,9 +563,19 @@ def _lc_of(fn_name: str):
     return None
 
 
-def _chost_fn_name(fn_name: str) -> str:
-    """Map a suite-cap bind-C function name to its chost counterpart."""
-    return fn_name.replace("_ccpp_physics_", "_chost_physics_")
+def _chost_fn_name(camel_name: str, lc: str) -> str:
+    """Return the chost counterpart name for a lifecycle phase.
+
+    Built from camel_name/lc directly rather than string-munging the plain
+    cap's own bind-C function name: since Stage 5 of the vocabulary-
+    resolution redesign (ccpp_cap_refactor_plan.md) made the plain cap's
+    own subroutine names bare (capgen-v1-style, no host prefix), the plain
+    name alone no longer carries camel_name to derive this from. chost's
+    own naming is xdsl_ccpp-specific (there's no capgen-v1 equivalent to
+    align it with) and is deliberately left unchanged by that redesign --
+    still host-prefixed, e.g. "Kessler_chost_physics_run".
+    """
+    return f"{camel_name}_chost_physics_{lc}"
 
 
 def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
@@ -666,7 +676,7 @@ def _ddt_out_name(ddt_type_name: str, lc: str, meta_data: dict) -> "str | None":
 
 
 def _chost_fn_contexts(
-    bind_c_fns, suite_name, suite_descriptions, public_fns,
+    camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
     ncol_var, local_to_std, std_to_host, kind_iso_map,
     meta_data=None, ddt_source_module=None, nz_var="nz",
 ):
@@ -805,7 +815,7 @@ def _chost_fn_contexts(
         visible = _chost_canonical_order(visible)
         contexts.append({
             "fn": fn,
-            "cfn": _chost_fn_name(fn_name),
+            "cfn": _chost_fn_name(camel_name, lc),
             "lc": lc,
             "sfns": sfns,
             "suite_fn": suite_fn,
@@ -966,7 +976,7 @@ class CPPInteropCap(ModulePass):
             return f"    ! unclassified arg: {host}"
 
         fn_ctxs = _chost_fn_contexts(
-            bind_c_fns, suite_name, suite_descriptions, public_fns,
+            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
             meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         )
@@ -1016,7 +1026,7 @@ class CPPInteropCap(ModulePass):
         A("  private")
         A("")
         for fn_op in bind_c_fns:
-            A(f"  public :: {_chost_fn_name(fn_op.sym_name.data)}")
+            A(f"  public :: {_chost_fn_name(camel_name, _lc_of(fn_op.sym_name.data))}")
         if all_constituent_vars:
             A(f"  public :: {mod_name}_nconstituents")
             A(f"  public :: {mod_name}_get_constituent_info")
@@ -1261,7 +1271,7 @@ class CPPInteropCap(ModulePass):
         all_constituent_vars_cpp: list = []
         _seen_cv_cpp: set = set()
         fn_ctxs_cpp = list(_chost_fn_contexts(
-            bind_c_fns, suite_name, suite_descriptions, public_fns,
+            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
             meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         ))
@@ -1357,7 +1367,7 @@ class CPPInteropCap(ModulePass):
         all_constituent_vars_hpp: list = []
         _seen_cv_hpp: set = set()
         fn_ctxs_hpp = list(_chost_fn_contexts(
-            bind_c_fns, suite_name, suite_descriptions, public_fns,
+            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
             ncol_var, local_to_std, std_to_host, kind_iso_map,
             meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         ))
