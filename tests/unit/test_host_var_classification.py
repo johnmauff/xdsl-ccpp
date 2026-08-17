@@ -1,8 +1,8 @@
-"""Unit tests for GenerateSuiteSubroutine._classify_host_table_vars (Stage 1
-of the vocabulary-resolution redesign -- see ccpp_cap_refactor_plan.md).
+"""Unit tests for cap_shared.classify_host_table_vars (Stage 1 of the
+vocabulary-resolution redesign -- see ccpp_cap_refactor_plan.md).
 
-Classification only, no behavior change: nothing in the codebase reads this
-classification yet. It exists to tell apart, within xdsl_ccpp's own HOST-type
+Classification used by run_dispatch.py to distinguish host-owned "state" variables from fixed
+CCPP-protocol dispatch scalars. It exists to tell apart, within xdsl_ccpp's own HOST-type
 table, the small fixed set of CCPP-protocol dispatch scalars (loop bounds,
 error handling -- legitimately threaded as plain arguments, matching real
 capgen-v1's own lb/ub/errmsg/errflg convention) from genuine host-owned
@@ -14,10 +14,8 @@ Fixture shape mirrors examples/opt_arg's own two host tables verbatim:
 data.meta (all genuine state) and test_host.meta (all dispatch scalars).
 """
 
-from types import SimpleNamespace
-
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
-from xdsl_ccpp.transforms.suite_cap import GenerateSuiteSubroutine
+from xdsl_ccpp.transforms.util.cap_shared import classify_host_table_vars
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
@@ -106,8 +104,7 @@ def _classify(run_host_match, ccpp_context) -> dict:
     ccpp_mod = find_ccpp_module(module.body.block.ops)
     bmdd = BuildMetaDataDescriptions()
     bmdd.traverse(ccpp_mod)
-    stand_in = SimpleNamespace(meta_data=bmdd.meta_data)
-    return GenerateSuiteSubroutine._classify_host_table_vars(stand_in)
+    return classify_host_table_vars(bmdd.meta_data)
 
 
 def test_genuine_state_vars_classified_as_state(run_host_match, ccpp_context):

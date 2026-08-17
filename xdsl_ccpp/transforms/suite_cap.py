@@ -55,6 +55,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _iter_schemes,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
+    classify_host_table_vars,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -828,40 +829,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
         return shared_slice_ops + [present_op]
 
-    def _classify_host_table_vars(self) -> dict:
-        """Return std_name.lower() -> 'state'|'dispatch_scalar' for every
-        variable declared in a HOST-type table in self.meta_data.
-
-        Stage 1 of the vocabulary-resolution redesign (see
-        ccpp_cap_refactor_plan.md): classification only, nothing in this
-        codebase reads this yet. 'dispatch_scalar' means the standard_name
-        is one of the fixed CCPP-protocol dispatch parameters
-        (is_dispatch_scalar_std_name -- loop bounds, error handling) that
-        both this codebase and real capgen-v1 legitimately thread as a
-        plain argument; every other HOST-type var is 'state' -- real
-        host-owned data that real capgen-v1 resolves via use-association
-        (like this codebase's own MODULE-type vars already are) rather
-        than threading as a block argument the way this codebase currently
-        does for every HOST-type var without distinction.
-        """
-        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
-
-        classification: dict = {}
-        for tbl_name, props in self.meta_data.items():
-            if props.getAttr("type") != CCPPType.HOST:
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if not var.hasAttr("standard_name"):
-                    continue
-                std_name = var.getAttr("standard_name").lower()
-                classification[std_name] = (
-                    "dispatch_scalar" if is_dispatch_scalar_std_name(std_name)
-                    else "state"
-                )
-        return classification
-
     _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
     def _active_expr_var_indexes(self) -> dict:
@@ -891,7 +858,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         """
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 
-        host_classification = self._classify_host_table_vars()
+        host_classification = classify_host_table_vars(self.meta_data)
         use_associated_index: dict = {}
         for tbl_name, props in self.meta_data.items():
             tbl_type = props.getAttr("type")

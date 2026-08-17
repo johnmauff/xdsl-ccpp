@@ -18,6 +18,7 @@ from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_STD_NAMES,
     CCPP_FRAMEWORK_STD_NAMES,
+    is_dispatch_scalar_std_name,
 )
 
 # Known framework standard names promoted to a fixed cap-owned module-scope
@@ -397,6 +398,41 @@ def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
         for var in props.getArgTable(tbl_name).getFunctionArguments():
             if var.hasAttr("standard_name"):
                 result[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+    return result
+
+
+def classify_host_table_vars(meta_data) -> dict:
+    """Return std_name.lower() -> 'state'|'dispatch_scalar' for every
+    variable declared in a HOST-type table in meta_data.
+
+    Stage 1 of the vocabulary-resolution redesign (see
+    ccpp_cap_refactor_plan.md): 'dispatch_scalar' means the standard_name is
+    one of the fixed CCPP-protocol dispatch parameters
+    (is_dispatch_scalar_std_name -- loop bounds, error handling) that both
+    this codebase and real capgen-v1 legitimately thread as a plain
+    argument; every other HOST-type var is 'state' -- real host-owned data
+    that real capgen-v1 resolves via use-association (like this codebase's
+    own MODULE-type vars already are).
+
+    Originally a method on suite_cap.py's GenerateSuiteSubroutine (Stage 1);
+    promoted to a free function here so run_dispatch.py's own write-back
+    resolution can reuse the same classification (see that module's own
+    host_var_map/state_host_var_map split) rather than duplicating it.
+    """
+    result: dict = {}
+    for tbl_name, props in meta_data.items():
+        if props.getAttr("type") != CCPPType.HOST:
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if not var.hasAttr("standard_name"):
+                continue
+            std_name = var.getAttr("standard_name").lower()
+            result[std_name] = (
+                "dispatch_scalar" if is_dispatch_scalar_std_name(std_name)
+                else "state"
+            )
     return result
 
 

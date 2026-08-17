@@ -34,24 +34,27 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # 2026-08-13, after fixing the two confirmed bugs described in its own
 # CMakeLists.txt -- the dead `active` property and the timestep-phase
 # lifecycle-signature gap, both in ccpp_cap_refactor_plan.md's own "opt_arg's
-# dead active property" backlog entry).
+# dead active property" backlog entry), and examples/suite_allocate (as of
+# 2026-08-17, after fixing the host-output-var discard bug described in
+# ccpp_cap_refactor_plan.md's own "suite_allocate" backlog entry -- checksum
+# was being discarded into a throwaway local instead of written back to the
+# host).
 #
-# NOT wired in yet: examples/suite_allocate, examples/instances, and
-# examples/instances_advection exist (ported from capgen-v1's
-# feature/capgen-v1 branch end-to-end-tests/, same as
-# chunked_data/constituents_dim/opt_arg) but each hit a confirmed xdsl_ccpp
-# generation or cap-correctness bug during porting -- see the
-# "capgen-v1 end-to-end-tests capability gaps" backlog in
-# ccpp_cap_refactor_plan.md for the specific errors. instances_advection's
-# own cap generation hard-fails outright (would abort this file's own
-# configure step with a FATAL_ERROR if add_subdirectory'd), so it's
-# deliberately left out of the list below; suite_allocate/instances's
-# cap generation succeeds but
-# either produces silently-wrong generated code or omits the actual feature
-# under test, so their own CMakeLists.txt exist and work standalone but
-# aren't add_subdirectory'd here either, to avoid presenting a known-broken
-# or known-incomplete ctest as passing. examples/instances is additionally a
-# real, open architecture decision (see the backlog entry) -- not just a bug.
+# NOT wired in yet: examples/instances and examples/instances_advection
+# exist (ported from capgen-v1's feature/capgen-v1 branch
+# end-to-end-tests/, same as chunked_data/constituents_dim/opt_arg/
+# suite_allocate) but each hit a confirmed xdsl_ccpp generation or
+# cap-correctness bug during porting -- see the "capgen-v1 end-to-end-tests
+# capability gaps" backlog in ccpp_cap_refactor_plan.md for the specific
+# errors. instances_advection's own cap generation hard-fails outright
+# (would abort this file's own configure step with a FATAL_ERROR if
+# add_subdirectory'd), so it's deliberately left out of the list below;
+# instances's cap generation succeeds but either produces silently-wrong
+# generated code or omits the actual feature under test, so its own
+# CMakeLists.txt exists and works standalone but isn't add_subdirectory'd
+# here either, to avoid presenting a known-incomplete ctest as passing.
+# examples/instances is additionally a real, open architecture decision
+# (see the backlog entry) -- not just a bug.
 
 enable_testing()
 
@@ -193,3 +196,4 @@ add_subdirectory(examples/helloworld)
 add_subdirectory(examples/chunked_data)
 add_subdirectory(examples/constituents_dim)
 add_subdirectory(examples/opt_arg)
+add_subdirectory(examples/suite_allocate)

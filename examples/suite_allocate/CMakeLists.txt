@@ -48,11 +48,9 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   set_target_properties(suite_allocate.exe PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(suite_allocate.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
 
-  # Known-failing as of this port: xdsl_ccpp's generated
-  # ccpp_physics_run captures the workspace_checksum scheme output
-  # into a throwaway local temp (ccpp_tmp_0) instead of writing back to the
-  # `data` module's host-owned `checksum` variable -- see this port's report
-  # in ccpp_cap_refactor_plan.md. The test is still wired up so it can be
-  # re-enabled/ctest-registered once that's fixed.
-  # add_test(NAME ctest_suite_allocate COMMAND suite_allocate.exe)
+  # Fixed 2026-08-17 (see ccpp_cap_refactor_plan.md's suite_allocate entry):
+  # ccpp_physics_run now correctly use-associates the `data` module's
+  # host-owned `checksum` variable and writes the workspace_checksum scheme
+  # output back to it, instead of discarding it into a throwaway local temp.
+  add_test(NAME ctest_suite_allocate COMMAND suite_allocate.exe)
 endif()

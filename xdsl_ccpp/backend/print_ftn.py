@@ -808,26 +808,64 @@ class ftnPrintContext:
                     # mold= requires matching kind; use explicit size() dims instead
                     rank = dim_suffix.count(":")
                     sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
-                    # Guard against re-entry into this same code with no
-                    # intervening deallocate -- e.g. a subcycle loop calling
-                    # the consuming scheme (and this conversion) more than
-                    # once per suite invocation. The paired *WriteBackOp
-                    # case below only ever deallocates when a write-back is
-                    # actually needed (intent=inout/out); a pure intent=in
-                    # value has no write-back at all, so without this guard
-                    # its temp is never deallocated between iterations,
-                    # crashing on the second allocate ("Attempting to
-                    # allocate already allocated variable").
-                    self.print(f"if (allocated({result_name})) deallocate({result_name})")
-                    self.print(f"allocate({result_name}({sizes}))")
-                self.print(f"{result_name} = real({src_name}, kind={target_kind})")
+                    # An optional array dummy that the caller genuinely did
+                    # not pass has no bounds to call size() on at all --
+                    # gate the whole allocate+convert on present() so this
+                    # only runs when the source is actually there. Detected
+                    # via the block arg's own "__opt" name_hint suffix (see
+                    # suite_cap.py's _build_block_signature/_hint_for),
+                    # which survives independently of the printed/stripped
+                    # name used for src_name above.
+                    is_optional_array = (
+                        op.source.name_hint is not None
+                        and op.source.name_hint.endswith("__opt")
+                    )
+                    if is_optional_array:
+                        self.print(f"if (present({src_name})) then")
+                        with self.descend() as inner:
+                            # Guard against re-entry into this same code with no
+                            # intervening deallocate -- e.g. a subcycle loop calling
+                            # the consuming scheme (and this conversion) more than
+                            # once per suite invocation. The paired *WriteBackOp
+                            # case below only ever deallocates when a write-back is
+                            # actually needed (intent=inout/out); a pure intent=in
+                            # value has no write-back at all, so without this guard
+                            # its temp is never deallocated between iterations,
+                            # crashing on the second allocate ("Attempting to
+                            # allocate already allocated variable").
+                            inner.print(f"if (allocated({result_name})) deallocate({result_name})")
+                            inner.print(f"allocate({result_name}({sizes}))")
+                            inner.print(f"{result_name} = real({src_name}, kind={target_kind})")
+                        self.print("end if")
+                    else:
+                        self.print(f"if (allocated({result_name})) deallocate({result_name})")
+                        self.print(f"allocate({result_name}({sizes}))")
+                        self.print(f"{result_name} = real({src_name}, kind={target_kind})")
+                else:
+                    self.print(f"{result_name} = real({src_name}, kind={target_kind})")
             case CCPPKindWriteBackOp():
                 conv_name = self._get_variable_name_for(op.conv_result)
                 dest_name = self._get_variable_name_for(op.original_dest)
                 orig_kind = op.original_kind.data
-                self.print(f"{dest_name} = real({conv_name}, kind={orig_kind})")
-                if self._ftn_dim_suffix(op.conv_result.type):
-                    self.print(f"deallocate({conv_name})")
+                dim_suffix = self._ftn_dim_suffix(op.conv_result.type)
+                # Mirror the presence-gating above: an absent optional array
+                # was never allocated/converted in the first place, so there
+                # is nothing to write back or deallocate either.
+                is_optional_array = (
+                    dim_suffix
+                    and op.original_dest.name_hint is not None
+                    and op.original_dest.name_hint.endswith("__opt")
+                )
+                if is_optional_array:
+                    self.print(f"if (present({dest_name})) then")
+                    with self.descend() as inner:
+                        inner.print(f"{dest_name} = real({conv_name}, kind={orig_kind})")
+                        inner.print(f"deallocate({conv_name})")
+                    self.print("end if")
+                else:
+                    self.print(f"{dest_name} = real({conv_name}, kind={orig_kind})")
+                    if dim_suffix:
+                        self.print(f"deallocate({conv_name})")
             case CCPPUnitConvertOp():
                 # Local-copy pre-conversion (host units → scheme units).
                 # Allocates a local temp and copies the converted value into it;
@@ -840,14 +878,32 @@ class ftnPrintContext:
                 if dim_suffix:
                     rank = dim_suffix.count(":")
                     sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
-                    # See CCPPKindCastOp's own comment above: guards against
-                    # re-entry (e.g. a subcycle loop) with no intervening
-                    # deallocate when this value is pure intent=in (no
-                    # write-back, so the *WriteBackOp case's own deallocate
-                    # never runs at all).
-                    self.print(f"if (allocated({result_name})) deallocate({result_name})")
-                    self.print(f"allocate({result_name}({sizes}))")
-                if to_expr:
+                    # See CCPPKindCastOp's own comment above: an absent
+                    # optional array has no bounds to call size() on, so
+                    # gate the whole allocate(+copy) on present().
+                    is_optional_array = (
+                        op.source.name_hint is not None
+                        and op.source.name_hint.endswith("__opt")
+                    )
+                    if is_optional_array:
+                        self.print(f"if (present({src_name})) then")
+                        with self.descend() as inner:
+                            # See CCPPKindCastOp's own comment above: guards against
+                            # re-entry (e.g. a subcycle loop) with no intervening
+                            # deallocate when this value is pure intent=in (no
+                            # write-back, so the *WriteBackOp case's own deallocate
+                            # never runs at all).
+                            inner.print(f"if (allocated({result_name})) deallocate({result_name})")
+                            inner.print(f"allocate({result_name}({sizes}))")
+                            if to_expr:
+                                inner.print(f"{result_name} = {src_name} {to_expr}")
+                        self.print("end if")
+                    else:
+                        self.print(f"if (allocated({result_name})) deallocate({result_name})")
+                        self.print(f"allocate({result_name}({sizes}))")
+                        if to_expr:
+                            self.print(f"{result_name} = {src_name} {to_expr}")
+                elif to_expr:
                     self.print(f"{result_name} = {src_name} {to_expr}")
                 # intent(out): no pre-copy — scheme fills the local from scratch
             case CCPPUnitWriteBackOp():
@@ -856,9 +912,25 @@ class ftnPrintContext:
                 dest_name = self._get_variable_name_for(op.original_dest)
                 host_kind = self._elem_kind_name(op.original_dest.type)
                 to_expr = self._suffix_kind_in_expr(op.to_host_expr.data, host_kind)
-                self.print(f"{dest_name} = {conv_name} {to_expr}")
-                if self._ftn_dim_suffix(op.conv_result.type):
-                    self.print(f"deallocate({conv_name})")
+                dim_suffix = self._ftn_dim_suffix(op.conv_result.type)
+                # Mirror CCPPUnitConvertOp's own presence gating: an absent
+                # optional array was never allocated/converted, so there is
+                # nothing to write back or deallocate either.
+                is_optional_array = (
+                    dim_suffix
+                    and op.original_dest.name_hint is not None
+                    and op.original_dest.name_hint.endswith("__opt")
+                )
+                if is_optional_array:
+                    self.print(f"if (present({dest_name})) then")
+                    with self.descend() as inner:
+                        inner.print(f"{dest_name} = {conv_name} {to_expr}")
+                        inner.print(f"deallocate({conv_name})")
+                    self.print("end if")
+                else:
+                    self.print(f"{dest_name} = {conv_name} {to_expr}")
+                    if dim_suffix:
+                        self.print(f"deallocate({conv_name})")
             case CCPPVerticalFlipOp():
                 # Local-copy vertical flip: reverse an array section along the
                 # vertical dimension into a local temp; the host's array is

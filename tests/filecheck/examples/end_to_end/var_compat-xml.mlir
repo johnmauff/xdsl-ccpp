@@ -244,14 +244,18 @@
 // CHECK-NEXT:      
 // CHECK-NEXT:      errflg = 0    
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (allocated(effrg_in_unit_conv)) deallocate(effrg_in_unit_conv)
-// CHECK-NEXT:      allocate(effrg_in_unit_conv(size(effrg_in, 1), size(effrg_in, 2)))
-// CHECK-NEXT:      effrg_in_unit_conv = effrg_in * 1.0E6_kind_phys
+// CHECK-NEXT:      if (present(effrg_in)) then
+// CHECK-NEXT:        if (allocated(effrg_in_unit_conv)) deallocate(effrg_in_unit_conv)
+// CHECK-NEXT:        allocate(effrg_in_unit_conv(size(effrg_in, 1), size(effrg_in, 2)))
+// CHECK-NEXT:        effrg_in_unit_conv = effrg_in * 1.0E6_kind_phys
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (allocated(effrl_inout_unit_conv)) deallocate(effrl_inout_unit_conv)
 // CHECK-NEXT:      allocate(effrl_inout_unit_conv(size(effrl_inout, 1), size(effrl_inout, 2)))
 // CHECK-NEXT:      effrl_inout_unit_conv = effrl_inout * 1.0E6_kind_phys
-// CHECK-NEXT:      if (allocated(effri_out_unit_conv)) deallocate(effri_out_unit_conv)
-// CHECK-NEXT:      allocate(effri_out_unit_conv(size(effri_out, 1), size(effri_out, 2)))
+// CHECK-NEXT:      if (present(effri_out)) then
+// CHECK-NEXT:        if (allocated(effri_out_unit_conv)) deallocate(effri_out_unit_conv)
+// CHECK-NEXT:        allocate(effri_out_unit_conv(size(effri_out, 1), size(effri_out, 2)))
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      scalar_var_unit_conv = scalar_var * 0.001_kind_phys
 // CHECK-NEXT:      tke_inout_unit_conv = tke_inout * 1.0_kind_phys
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
@@ -428,8 +432,10 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      effrl_inout = effrl_inout_unit_conv * 1.0E-6_kind_phys
 // CHECK-NEXT:      deallocate(effrl_inout_unit_conv)
-// CHECK-NEXT:      effri_out = effri_out_unit_conv * 1.0E-6_kind_phys
-// CHECK-NEXT:      deallocate(effri_out_unit_conv)
+// CHECK-NEXT:      if (present(effri_out)) then
+// CHECK-NEXT:        effri_out = effri_out_unit_conv * 1.0E-6_kind_phys
+// CHECK-NEXT:        deallocate(effri_out_unit_conv)
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      scalar_var = scalar_var_unit_conv * 1000.0_kind_phys
 // CHECK-NEXT:      tke_inout = tke_inout_unit_conv * 1.0_kind_phys
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_radiation 

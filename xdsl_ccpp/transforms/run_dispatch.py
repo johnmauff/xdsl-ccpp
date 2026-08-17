@@ -53,6 +53,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _rank_of,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
+    classify_host_table_vars,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
@@ -800,6 +801,25 @@ def _build_run_dispatch_chain(
     wrapper_inout_echo_args: list = []
     _wrapper_inout_echo_seen: set = set()
 
+    # state_host_var_map: host_var_map (MODULE-type only, see
+    # _build_run_metadata_maps) enriched with 'state'-classified HOST-type
+    # vars -- real host-owned data (e.g. suite_allocate's own
+    # workspace_checksum) that real capgen-v1 resolves via use-association,
+    # same as MODULE-type vars, rather than discarding it into a throwaway
+    # local. Used only at the result write-back sites below (never for
+    # dimension-name/DDT-member resolution elsewhere in this function),
+    # since those other host_var_map lookups aren't yet confirmed safe to
+    # widen the same way -- see ccpp_cap_refactor_plan.md's suite_allocate
+    # scoping note for why this is deliberately narrow, not a blanket
+    # include_host=True flip. 'dispatch_scalar'-classified HOST-type vars
+    # (loop bounds, error handling) are excluded -- they have no backing
+    # Fortran module to use-associate from.
+    host_classification = classify_host_table_vars(meta_data)
+    state_host_var_map = dict(host_var_map)
+    for std_name, (var_name, tbl_name) in _build_host_var_map(meta_data).items():
+        if host_classification.get(std_name) == "state":
+            state_host_var_map[std_name] = (var_name, tbl_name)
+
     for suite_name, suite_infos in reversed(list(per_suite_grouped.items())):
         # trim_suite_part is created once and shared across all parts of this suite.
         trim_suite_part = TrimOp(suite_part_arg)
@@ -1389,8 +1409,8 @@ def _build_run_dispatch_chain(
                             if target not in _wrapper_inout_echo_seen:
                                 _wrapper_inout_echo_seen.add(target)
                                 wrapper_inout_echo_args.append(target)
-                        elif _leading_std_name and _leading_std_name in host_var_map:
-                            hv_name, hv_module = host_var_map[_leading_std_name]
+                        elif _leading_std_name and _leading_std_name in state_host_var_map:
+                            hv_name, hv_module = state_host_var_map[_leading_std_name]
                             hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
                             cap_var_inout_refs.append(hv_ref)
                             copy_ops.append(memref.CopyOp(result, hv_ref.res))
@@ -1463,11 +1483,12 @@ def _build_run_dispatch_chain(
                             copy_ops.append(
                                 memref.CopyOp(result, block_arg_map[canonical])
                             )
-                        elif ret_std_name and ret_std_name in host_var_map:
-                            # 2) host module var: write result back to the host.
-                            # (intent=out scalars are not in callee_input_names so
-                            # no HostVarRefOp exists yet — create one here.)
-                            hv_name, hv_module = host_var_map[ret_std_name]
+                        elif ret_std_name and ret_std_name in state_host_var_map:
+                            # 2) host module/state var: write result back to the
+                            # host. (intent=out scalars are not in
+                            # callee_input_names so no HostVarRefOp exists yet —
+                            # create one here.)
+                            hv_name, hv_module = state_host_var_map[ret_std_name]
                             hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
                             cap_var_inout_refs.append(hv_ref)
                             copy_ops.append(memref.CopyOp(result, hv_ref.res))
