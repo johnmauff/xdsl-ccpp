@@ -78,6 +78,8 @@ jobs:
             targets: constituents_dim.exe
           - example: opt_arg
             targets: opt_arg_host_integration
+          - example: suite_allocate
+            targets: suite_allocate.exe
 
     steps:
       - uses: actions/checkout@v4
