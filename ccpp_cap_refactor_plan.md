@@ -58,7 +58,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
 | `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
-| Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
+| Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
@@ -3502,13 +3502,56 @@ dependency is noted.
       `_build_promoted_call_ops`'s own with/without-branch construction, wired into
       `_build_call_ops`'s flat (non-promoted) call site in place of the old direct
       `generateSchemeSubroutineCallOps` call.
-      **Adjacent finding, not fixed (logged separately, see Index):** `_build_block_signature`'s
-      kind/unit-conversion scratch-buffer allocation for an optional arg still runs
+      **Adjacent finding — fixed 2026-08-17 (see Index).** `_build_block_signature`'s
+      kind/unit-conversion scratch-buffer allocation for an optional arg used to run
       unconditionally, calling `size()` on the source array before any presence check —
       invalid if the arg is genuinely absent (not just logically inactive). Pre-existing, would
-      affect any optional+unit/kind-mismatched arg, not something this fix's active-gating
+      affect any optional+unit/kind-mismatched arg, not something the `active`-gating fix above
       introduced; not exercised by examples/opt_arg's own test since its driver always sets
       `flag_for_opt_arg = .true.` and always allocates `opt_arg`/`opt_arg_2`.
+      - **Root cause, precisely:** the bug lives entirely in the *printer*
+        (`print_ftn.py`), not in IR construction. `suite_cap.py`'s `_build_block_signature`
+        builds one `KindCastOp`/`UnitConvertOp` (pre-call) and, for `intent(inout)`/`intent(out)`
+        args, one paired `KindWriteBackOp`/`UnitWriteBackOp` (post-call) per kind/unit-mismatched
+        arg — these IR ops carry no presence information themselves. `print_ftn.py`'s emission
+        for all four op kinds printed their `allocate(...(size(...)))`/assignment/`deallocate`
+        statements unconditionally, regardless of whether the underlying dummy argument was
+        `optional`.
+      - **Fix:** at print time, each of the four op cases (`CCPPKindCastOp`, `CCPPUnitConvertOp`,
+        `CCPPKindWriteBackOp`, `CCPPUnitWriteBackOp`) now checks whether its array-typed
+        source/`original_dest` operand is a block argument with a `"__opt"`-suffixed
+        `name_hint` (the same marker `_build_block_signature`/`_hint_for` already stamps onto
+        every optional dummy's own block arg, and which survives independently of the
+        printer's own name-stripping/registration bookkeeping). When it is, the existing
+        `allocated()`-guard/`allocate`/convert (or, for write-back, the assign+`deallocate`)
+        lines are wrapped in `if (present(<name>)) then ... end if`, using the same
+        `with self.descend() as inner:` indentation idiom already used elsewhere in this file
+        (e.g. `CCPPLazyAllocOp`, `CCPPPresentCheckOp`). Non-optional args and scalar
+        (non-array) optional args are untouched — printed exactly as before; the fix is scoped
+        precisely to the confirmed defect (array `size()` calls on a possibly-absent optional),
+        not generalized to the scalar case, which was never confirmed broken and wasn't asked
+        for.
+      - **Verified directly on regenerated Fortran** (`examples/var_compat`'s own
+        `effr_calc`/`rad_lw` schemes, which already have a real optional+unit-mismatched array,
+        `effrg_in`/`effri_out` — not something added for this fix): the pre-call buffer
+        allocate/convert and (for `effri_out`, `intent(out)`) the post-call write-back are now
+        both correctly wrapped in `if (present(effrg_in)) then` / `if (present(effri_out)) then`
+        guards; the mandatory (non-optional) `effrl_inout` right alongside them is correctly
+        left unconditional. Also directly confirmed on `examples/opt_arg`'s own `opt_var_2`
+        (the exact arg this bug was originally found next to) across all three lifecycle
+        functions it appears in (`_run`/`_timestep_initial`/`_timestep_final`) — all now
+        correctly `present()`-gated.
+      - Updated the one golden filecheck fixture this changed,
+        `tests/filecheck/examples/end_to_end/var_compat-xml.mlir` (the only fixture with a
+        real optional+unit-mismatched array case), to match the new, correct output. Full
+        `tests/unit`+`tests/filecheck` suite: 566 passed (1 pre-existing, unrelated
+        environment-only failure deselected — `ccpp_xdsl` console-script entry point isn't on
+        PATH in this scratchpad, unaffected by this change).
+      - Not yet compile/run-verified on this laptop (no Fortran compiler available) or via CI
+        (GitHub outage as of this writing) — same standing limitation as every other fix this
+        session; verified here by direct generated-Fortran inspection plus the full local test
+        suite, per this repo's own established practice for this class of pass-internal,
+        non-driver-facing bug.
     - **Bug 2 (timestep-phase local placeholders).** More precise root cause than originally
       diagnosed: not a `HostVariableMatchPass` gap -- `lifecycle_cap.py`'s `_generate_lifecycle_fn`
       (used for register/initialize/finalize/timestep_initial/timestep_final; `_run` goes through
