@@ -1,8 +1,8 @@
 """Unit tests for cap_shared.classify_host_table_vars (Stage 1 of the
 vocabulary-resolution redesign -- see ccpp_cap_refactor_plan.md).
 
-Classification only, no behavior change: nothing in the codebase reads this
-classification yet. It exists to tell apart, within xdsl_ccpp's own HOST-type
+Classification used by run_dispatch.py to distinguish host-owned "state" variables from fixed
+CCPP-protocol dispatch scalars. It exists to tell apart, within xdsl_ccpp's own HOST-type
 table, the small fixed set of CCPP-protocol dispatch scalars (loop bounds,
 error handling -- legitimately threaded as plain arguments, matching real
 capgen-v1's own lb/ub/errmsg/errflg convention) from genuine host-owned
