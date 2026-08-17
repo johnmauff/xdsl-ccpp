@@ -54,11 +54,11 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `nested_suite` | ✅ Done (PR #47, merged) | L2998 |
 | `constituents_dim` | ✅ Done (PR #67, merged, CI green, 2026-08-13) | L3068 |
 | Follow-ups spawned by `constituents_dim`: single-source migration for `advection`; naming-convention audit | 📋 Backlog | L3224 |
-| `suite_allocate` | 📋 Backlog (L); one predicted sub-bug ruled out, doesn't reproduce | L3242 |
+| `suite_allocate` | ✅ Done (2026-08-17) | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
 | `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
-| Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | 📋 Backlog | L3400 |
+| Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
@@ -3309,17 +3309,76 @@ dependency is noted.
       above may still be a real latent bug for some other dimension-name shape not exercised by
       this particular example, but it is not what blocks `suite_allocate` as ported.
     - **New bug found instead, 2026-07-29/30 — the actual reason this port can't pass a real
-      ctest.** The generated `test_host_ccpp_physics_run` captures the `use_workspace` scheme's
+      ctest.** The generated `ccpp_physics_run` (bare name since Stage 5 of the
+      vocabulary-resolution redesign, below) captures the `use_workspace` scheme's
       `workspace_checksum` output into a throwaway local temp (`ccpp_tmp_0`) and discards it when
       the subroutine returns — it is never `use`-associated from the host's own `data` module (the
       way `examples/helloworld`'s generated cap correctly does for its `type=module` host vars) nor
-      threaded back out through the dispatch call's own argument list. Every `type=host` output var
-      threaded only through the fixed `(col_start, col_end, errmsg, errflg)` `physics_run` dispatch
-      signature looks likely to hit the same fate, not just this specific variable — unconfirmed
-      whether that's scoped correctly as `HostVariableMatchPass`'s territory or `run_dispatch.py`'s
-      own call-assembly code, not diagnosed further. `examples/suite_allocate/CMakeLists.txt` exists
-      and cap-generates successfully but its `add_test(...)` is deliberately commented out, and the
-      directory is not `add_subdirectory`'d from the root `CMakeLists.txt`, until this is fixed.
+      threaded back out through the dispatch call's own argument list. `examples/suite_allocate/
+      CMakeLists.txt` exists and cap-generates successfully but its `add_test(...)` is deliberately
+      commented out, and the directory is not `add_subdirectory`'d from the root `CMakeLists.txt`,
+      until this is fixed.
+      - **Scoped precisely, 2026-08-13, after the vocabulary-resolution redesign landed (see that
+        entry below) -- smaller than originally estimated, root cause fully located, not yet
+        implemented.** `run_dispatch.py` builds its own `host_var_map` at line 121 via
+        `_build_host_var_map(meta_data, include_host=False)` -- MODULE-type only, the exact same
+        "HOST-type is never use-associated" assumption the redesign already disproved for
+        `active=`-referenced vars. The write-back mechanism that would handle `checksum` already
+        exists and works correctly for MODULE-type vars (line 1466: `elif ret_std_name and
+        ret_std_name in host_var_map:` builds a `HostVarRefOp` + `memref.CopyOp` write-back) --
+        `checksum` just never reaches it because it's filtered out of the map before that check
+        runs. An identically-shaped check for `intent(inout)` results exists at line 1392, same
+        bug class, not yet known to be exercised by any current example but worth fixing at the
+        same time.
+        - **The fix is reusing existing infrastructure, not building new machinery:** promote
+          `_classify_host_table_vars` (currently a method on `suite_cap.py`'s
+          `GenerateSuiteSubroutine`, Stage 1) into a shared free function in `cap_shared.py`
+          (it only touches `self.meta_data`, trivial to extract, no behavior change to
+          `suite_cap.py`) and use it in `run_dispatch.py` to build a second, enriched host-var map
+          (MODULE-type + `state`-classified HOST-type, excluding `dispatch_scalar`-classified) --
+          swapped in at just the two write-back sites (1392, 1466), **not** a blanket flip of
+          `include_host` at line 121, since that map is also used for DDT-member resolution and
+          array-section dimension-name resolution (lines 915, 1028/1128, 1224/1226) not yet
+          verified safe to widen.
+        - **Downgraded from L to M.** Remaining unknowns before calling it done: (a) whether
+          `lifecycle_cap.py`'s own `use_workspace_timestep_init`-phase handling has the same gap
+          for `nw` (the workspace-size output) -- untested, possibly a second instance of the same
+          bug; (b) whether any *other* HOST-type-table var in some other passing example currently
+          relies on falling through this same gap to a *different*, currently-correct path --
+          widening the map could regress it.
+      - **✅ Fixed (2026-08-17), exactly as scoped -- one stage, not multi-stage** (the M-vs-L
+        downgrade held): `classify_host_table_vars` promoted from a method on `suite_cap.py`'s
+        `GenerateSuiteSubroutine` (Stage 1) into a free function in `cap_shared.py` (only touched
+        `self.meta_data`, mechanical extraction, no behavior change -- verified with the full
+        suite green before touching `run_dispatch.py` at all). `run_dispatch.py` then builds a
+        second map, `state_host_var_map` (`host_var_map`, MODULE-type only, enriched with
+        `state`-classified HOST-type entries), computed once inside `_build_run_dispatch_chain`
+        from the already-available `meta_data` parameter -- no new parameter threading needed
+        anywhere else. Swapped in at exactly the two write-back sites identified during scoping
+        (the `intent(inout)` case and the `intent(out)` case `checksum` actually hits); every
+        other `host_var_map` usage (DDT-member resolution, array-section dimension-name
+        resolution) deliberately left untouched, matching the scoping's own caution about not
+        blanket-flipping `include_host`.
+        - **Both open unknowns from the scoping resolved, not just assumed fine:** (a) `nw`
+          (workspace_dimension) turns out to be a suite-cap-owned scratch variable -- a
+          module-level local declared directly inside `suite_allocate_suite_cap`, never
+          appearing in any host `.meta` table at all -- so it was never subject to this bug
+          class in the first place, no fix needed. (b) the full pre-existing test suite (566
+          tests, including `var_compat`'s and `opt_arg`'s own HOST-type-heavy goldens) passed
+          unchanged after the `run_dispatch.py` change, confirming no other example silently
+          relied on the old gap.
+        - **Verified directly on the real generated output**, not just via the test suite:
+          regenerated `examples/suite_allocate` via `xdsl_ccpp.tools.ccpp_dsl` (the tool CI's
+          CMake step calls) and confirmed `use data, only: checksum` now appears, and
+          `ccpp_physics_run` passes the use-associated `checksum` directly into
+          `suite_allocate_suite_suite_workspace_group`'s own `intent(out)` dummy argument --
+          the `ccpp_tmp_0` throwaway local is gone entirely.
+        - **Re-enabled and wired in:** `examples/suite_allocate/CMakeLists.txt`'s
+          `add_test(...)` uncommented; `add_subdirectory(examples/suite_allocate)` added to the
+          root `CMakeLists.txt`; matrix entry added to
+          `.github/workflows/compile-tests-cmake.yml`. Not yet compile/run-verified on this
+          laptop (no Fortran compiler available) -- CI is the first real check, same limitation
+          as every other example ported this way.
   - **The actual pattern — L.** Scheme-allocated (not framework-allocated) suite-scoped scratch
     memory, dimensioned by a *different* scheme's `timestep_init`-phase output, allocated at
     run-time rather than init-time, relying on CCPP's phase-then-scheme execution ordering.
@@ -3443,13 +3502,56 @@ dependency is noted.
       `_build_promoted_call_ops`'s own with/without-branch construction, wired into
       `_build_call_ops`'s flat (non-promoted) call site in place of the old direct
       `generateSchemeSubroutineCallOps` call.
-      **Adjacent finding, not fixed (logged separately, see Index):** `_build_block_signature`'s
-      kind/unit-conversion scratch-buffer allocation for an optional arg still runs
+      **Adjacent finding — fixed 2026-08-17 (see Index).** `_build_block_signature`'s
+      kind/unit-conversion scratch-buffer allocation for an optional arg used to run
       unconditionally, calling `size()` on the source array before any presence check —
       invalid if the arg is genuinely absent (not just logically inactive). Pre-existing, would
-      affect any optional+unit/kind-mismatched arg, not something this fix's active-gating
+      affect any optional+unit/kind-mismatched arg, not something the `active`-gating fix above
       introduced; not exercised by examples/opt_arg's own test since its driver always sets
       `flag_for_opt_arg = .true.` and always allocates `opt_arg`/`opt_arg_2`.
+      - **Root cause, precisely:** the bug lives entirely in the *printer*
+        (`print_ftn.py`), not in IR construction. `suite_cap.py`'s `_build_block_signature`
+        builds one `KindCastOp`/`UnitConvertOp` (pre-call) and, for `intent(inout)`/`intent(out)`
+        args, one paired `KindWriteBackOp`/`UnitWriteBackOp` (post-call) per kind/unit-mismatched
+        arg — these IR ops carry no presence information themselves. `print_ftn.py`'s emission
+        for all four op kinds printed their `allocate(...(size(...)))`/assignment/`deallocate`
+        statements unconditionally, regardless of whether the underlying dummy argument was
+        `optional`.
+      - **Fix:** at print time, each of the four op cases (`CCPPKindCastOp`, `CCPPUnitConvertOp`,
+        `CCPPKindWriteBackOp`, `CCPPUnitWriteBackOp`) now checks whether its array-typed
+        source/`original_dest` operand is a block argument with a `"__opt"`-suffixed
+        `name_hint` (the same marker `_build_block_signature`/`_hint_for` already stamps onto
+        every optional dummy's own block arg, and which survives independently of the
+        printer's own name-stripping/registration bookkeeping). When it is, the existing
+        `allocated()`-guard/`allocate`/convert (or, for write-back, the assign+`deallocate`)
+        lines are wrapped in `if (present(<name>)) then ... end if`, using the same
+        `with self.descend() as inner:` indentation idiom already used elsewhere in this file
+        (e.g. `CCPPLazyAllocOp`, `CCPPPresentCheckOp`). Non-optional args and scalar
+        (non-array) optional args are untouched — printed exactly as before; the fix is scoped
+        precisely to the confirmed defect (array `size()` calls on a possibly-absent optional),
+        not generalized to the scalar case, which was never confirmed broken and wasn't asked
+        for.
+      - **Verified directly on regenerated Fortran** (`examples/var_compat`'s own
+        `effr_calc`/`rad_lw` schemes, which already have a real optional+unit-mismatched array,
+        `effrg_in`/`effri_out` — not something added for this fix): the pre-call buffer
+        allocate/convert and (for `effri_out`, `intent(out)`) the post-call write-back are now
+        both correctly wrapped in `if (present(effrg_in)) then` / `if (present(effri_out)) then`
+        guards; the mandatory (non-optional) `effrl_inout` right alongside them is correctly
+        left unconditional. Also directly confirmed on `examples/opt_arg`'s own `opt_var_2`
+        (the exact arg this bug was originally found next to) across all three lifecycle
+        functions it appears in (`_run`/`_timestep_initial`/`_timestep_final`) — all now
+        correctly `present()`-gated.
+      - Updated the one golden filecheck fixture this changed,
+        `tests/filecheck/examples/end_to_end/var_compat-xml.mlir` (the only fixture with a
+        real optional+unit-mismatched array case), to match the new, correct output. Full
+        `tests/unit`+`tests/filecheck` suite: 566 passed (1 pre-existing, unrelated
+        environment-only failure deselected — `ccpp_xdsl` console-script entry point isn't on
+        PATH in this scratchpad, unaffected by this change).
+      - Not yet compile/run-verified on this laptop (no Fortran compiler available) or via CI
+        (GitHub outage as of this writing) — same standing limitation as every other fix this
+        session; verified here by direct generated-Fortran inspection plus the full local test
+        suite, per this repo's own established practice for this class of pass-internal,
+        non-driver-facing bug.
     - **Bug 2 (timestep-phase local placeholders).** More precise root cause than originally
       diagnosed: not a `HostVariableMatchPass` gap -- `lifecycle_cap.py`'s `_generate_lifecycle_fn`
       (used for register/initialize/finalize/timestep_initial/timestep_final; `_run` goes through
