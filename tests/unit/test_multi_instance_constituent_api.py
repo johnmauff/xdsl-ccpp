@@ -280,3 +280,20 @@ class TestSchemeLevelDynamicRegistrationOutputIsInstanceAware:
         body = _unwrapped(_fn_body(fortran, "ccpp_register"))
         assert "test_suite_suite_register(lc_instances(instance)%lc_dyn_const" in body
         assert "test_suite_suite_register(lc_dyn_const" not in body
+
+    def test_ccpp_register_allocates_lc_instances_before_referencing_it(
+        self, run_host_match, ccpp_context
+    ):
+        """Regression test for a real gfortran CI SEGFAULT found after the
+        fix above first landed: lc_instances(instance)%lc_dyn_const is
+        indexed straight into an OUTER array (lc_instances) that nothing
+        has allocated yet -- ccpp_register is the driver's own first
+        lifecycle call, running BEFORE register_constituents (where
+        lc_instances is normally lazily allocated) ever gets a chance to.
+        Must allocate lc_instances itself, guarded, before the call that
+        references it."""
+        fortran = _fortran_output(run_host_match, ccpp_context)
+        body = _unwrapped(_fn_body(fortran, "ccpp_register"))
+        alloc_pos = body.index("if (.not. allocated(lc_instances)) then allocate(lc_instances(ninstances))")
+        call_pos = body.index("test_suite_suite_register(lc_instances(instance)%lc_dyn_const")
+        assert alloc_pos < call_pos

@@ -20,6 +20,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CapVarRefOp,
     DerivedType,
     HostVarRefOp,
+    LazyAllocOp,
     StrCmpOp,
     TrimOp,
 )
@@ -124,8 +125,18 @@ def _generate_lifecycle_fn(
     # instance moves constituent_cap.py's own module var for each of these
     # into a per-instance bundle-type component
     # (lc_instances(instance)%lc_<bare>), so that branch needs to know
-    # instance_local_name too, to build the matching reference text.
+    # instance_local_name too, to build the matching reference text -- and
+    # ninstances_local_name, to size a guarded lazy-allocate of
+    # lc_instances itself: this branch fires inside ccpp_register, which
+    # the driver always calls BEFORE test_host_ccpp_register_constituents
+    # (the entry point constituent_cap.py's own lazy-alloc lives in) --
+    # confirmed the hard way in real CI, a SIGSEGV: indexing
+    # lc_instances(instance) here, before anything has ever allocated
+    # lc_instances at all, is undefined behavior, not merely an
+    # unallocated-component read.
     instance_local_name = kwargs.get("instance_local_name")
+    ninstances_local_name = kwargs.get("ninstances_local_name")
+    _lc_instances_alloc_emitted = False
 
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)
     # Inverted (local var name -> standard_name) fallback for callee args no
@@ -414,6 +425,37 @@ def _generate_lifecycle_fn(
                         if instance_local_name is not None
                         else _lc_name
                     )
+                    if (
+                        instance_local_name is not None
+                        and not _lc_instances_alloc_emitted
+                        and ninstances_local_name in extra_host_arg_index
+                    ):
+                        # lc_instances must be allocated before this
+                        # reference is even formed (indexing an
+                        # unallocated array is undefined behavior, not
+                        # merely an unallocated-component read) -- and
+                        # ccpp_register (this branch only ever fires for a
+                        # _register-phase call) is the first lifecycle
+                        # call the driver makes, running BEFORE
+                        # constituent_cap.py's own register_constituents
+                        # (where lc_instances is normally lazily
+                        # allocated) ever gets a chance to. Confirmed the
+                        # hard way in real CI: a SIGSEGV inside
+                        # cld_suite_suite_register. Guarded exactly like
+                        # every other LazyAllocOp use, and only emitted
+                        # once per function even if multiple schemes each
+                        # have their own dynamic-array output (e.g.
+                        # examples/advection's dyn_const/dyn_const_ice).
+                        hoisted_alloc_ops.append(
+                            LazyAllocOp(
+                                var_name="lc_instances",
+                                kind_name="type",
+                                dim_var_refs=[
+                                    new_block.args[extra_host_arg_index[ninstances_local_name]]
+                                ],
+                            )
+                        )
+                        _lc_instances_alloc_emitted = True
                     cap_ref = CapVarRefOp(cap_ref_name, arg_type)
                     hoisted_alloc_ops.append(cap_ref)
                     call_inputs.append(cap_ref.res)

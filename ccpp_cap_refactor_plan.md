@@ -4183,6 +4183,30 @@ dependency is noted.
             updated to match the new, shorter call signatures. Not a
             generator change at all; `xdsl_ccpp` behaved correctly once
             the metadata correctly described what `data.F90` actually is.
+          - **Real ctest then found a fourth bug -- a genuine SEGFAULT,
+            confirming the earlier assumption behind the dyn_const fix
+            above ("only register_constituents ever needs ninstances, so
+            only it needs to allocate lc_instances") was wrong for this
+            specific case.** `ccpp_register`'s own call
+            (`cld_suite_suite_register(lc_instances(instance)%lc_dyn_const,
+            ...)`) indexes straight into `lc_instances`, an OUTER array
+            nothing has allocated yet -- the driver's own call order runs
+            `ccpp_register` (the *lifecycle* register) before
+            `test_host_ccpp_register_constituents` (the *constituent-API*
+            register, where `lc_instances` is normally lazily allocated)
+            ever gets a chance to run. Backtrace: `SIGSEGV` inside
+            `cld_suite_suite_register`, called from `MAIN__`. **Fixed**:
+            `lifecycle_cap.py`'s own `CapVarRefOp` branch now also emits a
+            guarded `LazyAllocOp` for `lc_instances` (sized by
+            `ninstances`, which `ccpp_register`'s signature already
+            carries from the earlier `_synthesize_number_of_instances_arg`
+            work) immediately before the reference, emitted once per
+            function even when multiple schemes each have their own
+            dynamic-array output. New regression test
+            (`test_ccpp_register_allocates_lc_instances_before_
+            referencing_it`), confirmed via git-stash. Full suite 603
+            passed (602 + 1 new), `examples/advection`'s own output
+            confirmed unaffected.
           - **A separate, pre-existing, unrelated bug found while verifying
             this fix, explicitly out of scope for task #35, logged as its
             own new backlog item below ("Scheme-level dynamic constituent

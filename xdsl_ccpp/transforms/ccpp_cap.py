@@ -943,6 +943,7 @@ class CCPPCAP(ModulePass):
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
                     instance_local_name=instance_local_name,
+                    ninstances_local_name=ninstances_local_name,
                     **common,
                 )
                 all_globals.extend(lc_host_ops)
