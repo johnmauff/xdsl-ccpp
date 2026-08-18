@@ -1,6 +1,7 @@
 [ccpp-table-properties]
   name = temp_set
   type = scheme
+  dependencies = temp_kinds.F90
   kind_spec = temp_kinds:kind_temp=>temp_r8
 [ccpp-arg-table]
   name = temp_set_run
