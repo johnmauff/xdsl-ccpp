@@ -44,6 +44,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_PRIMITIVE_TYPES,
     CCPP_SCHEME_NAME_LEN,
     CCPP_VERT_DIM_STD_NAME,
     CCPP_VERTICAL_DIMENSIONS,
@@ -362,8 +363,7 @@ def _chost_expand_ddt_arg(
         is_real    = (vtype == "real")
         is_logical = (vtype == "logical")
 
-        _PRIMITIVE_TYPES = {"real", "integer", "logical", "character", "complex"}
-        if vtype not in _PRIMITIVE_TYPES:
+        if vtype not in CCPP_PRIMITIVE_TYPES:
             # Nested DDT member: expand recursively, re-root paths under this local.
             # Option B (direct path): nested members are accessed as
             # outer_local%member_name%leaf so no separate inner local is declared.

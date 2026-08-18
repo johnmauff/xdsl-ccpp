@@ -1539,45 +1539,16 @@ class GenerateSuiteSubroutine(RewritePattern):
                         )
             return cur
 
-        # Classify each argument as an input, output, or both (inout)
+        # Classify each argument as an input, output, or both (inout).
+        # Fortran passes ALL arguments by reference, including intent(out) --
+        # treating out args as return values would break positional order
+        # when scalars and arrays are interspersed -- so "in"/"inout"/"out"
+        # are all marshaled identically here, by reference.
         for arg in arg_table.getFunctionArguments():
             intent = arg.getAttr("intent")
             is_overridden = arg.name in overrides
             is_excluded = arg.name in exclude_args
-            if intent == "in" or intent == "inout":
-                if not is_overridden and not is_excluded:
-                    # Prefer the standard_name-tagged entry over the bare
-                    # arg-name one: two different schemes in this group can
-                    # independently pick the same local arg name for two
-                    # logically different SuiteOwned variables (see
-                    # _build_framework_refs), making the bare-name entry
-                    # genuinely ambiguous in that case. Every arg still has a
-                    # bare-name entry regardless (block args and non-tagged
-                    # framework refs alike), so the fallback always resolves.
-                    val = data_ops.get(("std_name", self._std_key(arg)), data_ops[arg.name])
-                    val = _apply_divergent_marshaling(arg, val)
-                    actual_type = (
-                        val.type if isinstance(val, SSAValue) else val.results[0].type
-                    )
-                    expected_type = (
-                        callee_in_types[in_idx]
-                        if in_idx < len(callee_in_types)
-                        else actual_type
-                    )
-                    if actual_type != expected_type:
-                        cast = builtin.UnrealizedConversionCastOp(
-                            operands=[[val]], result_types=[[expected_type]]
-                        )
-                        cast_ops.append(cast)
-                        in_ssa.append(cast.results[0])
-                    else:
-                        in_ssa.append(val)
-                    in_names.append(arg.name)
-                in_idx += 1
-            if intent == "out":
-                # Fortran passes ALL arguments by reference, including intent(out).
-                # Treating out args as return values breaks positional order when
-                # scalars and arrays are interspersed. Pass everything by reference.
+            if intent in ("in", "inout", "out"):
                 if not is_overridden and not is_excluded:
                     # Prefer the standard_name-tagged entry over the bare
                     # arg-name one: two different schemes in this group can
