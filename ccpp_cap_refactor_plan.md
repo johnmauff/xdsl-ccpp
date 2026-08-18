@@ -3468,14 +3468,14 @@ dependency is noted.
       diagnosed further.
   - **Architecture decision made (2026-08-18): build capgen-v1's real model (option B),
     not the existing `ccpp_handle`/`num_instances` mechanism (option A).** Re-examined
-    option A before deciding and found it's gone further stale than this entry assumed:
-    `tests/unit/test_ccpp_t_threading.py` and the `helloworld-ccpp-t.mlir` golden it
-    exercised no longer exist (only a stale `.pyc` remains); no example anywhere declares
-    a ccpp-handle host var; `ccpp_handle` resolves to `None` on every real build today.
-    Option A (`CcppHandleOp`, `suite_cap.py`'s `ccpp_handle`/`num_instances` plumbing,
-    the `--num-instances` CLI flag) is dead code with zero exercised paths, not a working
-    alternative worth preserving alongside a new mechanism -- removing it is now part of
-    this task's scope, not a separate cleanup to schedule later.
+    option A before deciding: no example anywhere declares a ccpp-handle host var, and
+    `ccpp_handle` resolves to `None` on every real build today -- it was never wired into
+    a compiled/ctest-run example, only exercised at the unit/filecheck level (see the
+    "Stage 1 done" note below for the corrected record of exactly what coverage it had).
+    Removing option A is part of this task's scope, not a separate cleanup to schedule
+    later: the rationale is "two structurally different multi-instance mechanisms is more
+    than we want to maintain, and capgen-v1's model is the one that matches upstream,"
+    not that option A was unused.
     - **What building option B actually requires**, narrowed down from the general
       architecture question to concrete engineering: `instance`/`ninstances`
       (`instance_number`/`number_of_instances`) as ordinary host-matched scalar args
@@ -3527,13 +3527,18 @@ dependency is noted.
         file); `TestCcppHandleRecognition` + its `_get_ccpp_handle` helper from
         `tests/unit/test_host_var_match.py`; `examples/helloworld/
         hello_world_host_ccpp_t.meta` and its `helloworld-ccpp-t.mlir` golden.
-      - **Verified:** full suite 549 passed, 7 skipped (fparser not installed,
-        unrelated), 1 xfailed, 0 failures -- delta from the pre-removal 567 is
-        exactly the 18 deleted tests (12 + 5 + 1). Regenerated `examples/helloworld`
-        (both schemes, `hello_scheme` + `temp_adjust`, matching its real
-        `CMakeLists.txt` invocation) and `examples/capgen` directly through the full
-        pipeline: both succeed, and `grep` for `ccpp_t`/`ccpp_data`/`ccpp_handle` in
-        the generated Fortran returns nothing.
+      - **Verified:** full suite green, 0 failures both before and after -- the only
+        change in the total is exactly the 18 deleted tests (12 from
+        `test_ccpp_t_threading.py` + 5 from `TestCcppHandleRecognition` + 1 filecheck
+        golden), confirmed by diffing the pass count across the removal. (Absolute
+        pass/skip counts aren't recorded here on purpose -- they shift for unrelated
+        environment reasons, e.g. whether `fparser` is installed in the venv used for
+        the run, and would go stale; see `git log`/CI for the actual current totals.)
+        Regenerated `examples/helloworld` (both schemes, `hello_scheme` +
+        `temp_adjust`, matching its real `CMakeLists.txt` invocation) and
+        `examples/capgen` directly through the full pipeline: both succeed, and
+        `grep` for `ccpp_t`/`ccpp_data`/`ccpp_handle` in the generated Fortran
+        returns nothing.
       - **Not yet done:** stages 2-5 (extending `_build_ddt_resolution_maps` with
         array-dimension info, teaching `run_dispatch.py`'s DDT branch the new
         runtime-index case, extending the IR op/`print_ftn.py` to print
