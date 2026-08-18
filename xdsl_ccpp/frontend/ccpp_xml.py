@@ -84,12 +84,12 @@ class CCPPTableProperties(CCPPItem):
     """Descriptor for a ``[ccpp-table-properties]`` block parsed from a ``.meta`` file.
 
     Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``dependencies_path``,
-    ``source_path``, ``kind_spec``. The ``type`` value is automatically coerced to a
-    `CCPPType` enum member. ``kind_spec`` and ``dependencies`` may each be declared
-    more than once (one table can supply more than one kind, or split its
-    dependency list across several lines); each declaration is parsed and
-    accumulated into ``kind_specs``/``dependencies`` rather than overwriting a
-    single attribute slot.
+    ``source_path``, ``array_layout``, ``language``, ``kind_spec``. The ``type`` value
+    is automatically coerced to a `CCPPType` enum member. ``kind_spec`` and
+    ``dependencies`` may each be declared more than once (one table can supply
+    more than one kind, or split its dependency list across several lines);
+    each declaration is parsed and accumulated into ``kind_specs``/``dependencies``
+    rather than overwriting a single attribute slot.
 
     ``dependencies``/``dependencies_path``/``source_path`` mirror real capgen-v1's
     own three-key convention (``metadata/metadata_table.py``'s
