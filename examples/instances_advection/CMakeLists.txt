@@ -3,36 +3,35 @@
 # instances_advection: ported from capgen-v1's own upstream
 # end-to-end-tests/instances_advection (feature/capgen-v1 branch) -- combines
 # the instance_number/number_of_instances multi-instance pattern (see
-# examples/instances) with host + scheme-registered constituents (boiled down
-# from advection). Brought in on request to have the real source available
-# for a later decision -- NOT confirmed working; see the hard failure below.
+# examples/instances) with host + scheme-registered constituents (boiled
+# down from advection).
 #
 # main.meta's upstream `type = control` table converted to test_host.meta
 # (type = host), same as every other port in this backlog section, keeping
 # `instance`/`ninstances`/`lb`/`ub`/`errmsg`/`errcode` as protected host
-# scalars (note this example uses `errcode`, not `errflg`, matching upstream
-# exactly).
+# scalars (note the .meta files use `errcode`, not `errflg`, matching
+# upstream exactly -- the generated Fortran signatures still use `errflg`,
+# the CCPP standard local name; main.F90's own header comment covers this).
 #
-# Cap generation HARD FAILS -- confirmed by actually running it, not
-# predicted:
-#
-#   xdsl.utils.exceptions.VerifyException: Expected source and destination
-#   to have the same shape.
-#     "memref.copy"(%9, %errmsg) : (memref<i32>, memref<512xi8>) -> ()
-#
-# an xDSL IR verifier crash inside the constituent-registration cap code path
-# (visible in the dumped IR around test_host_ccpp_register_constituents /
-# is_scheme_constituent). This is the same *class* of failure as the "third,
-# previously-untracked gap" already noted under the `constituents_dim`
-# backlog entry in ccpp_cap_refactor_plan.md (also a memref.copy shape
-# mismatch, also inside a constituent-registration path) -- worth comparing
-# the two once someone investigates, they may share one root cause. Not
-# diagnosed further here. xdsl_ccpp_capgen() below calls message(FATAL_ERROR)
-# on this failure, so this directory is deliberately NOT add_subdirectory'd
-# from the root CMakeLists.txt -- doing so would abort the whole project's
-# configure step. main.F90 is left as upstream's own unadapted
-# generic-dispatch + per-instance-constituent-API driver (there was no point
-# rewriting it against a cap that doesn't generate).
+# Cap generation used to hard fail here with an xDSL IR verifier crash
+# (`memref.copy`, shape mismatch) inside the constituent-registration cap
+# code -- confirmed fixed as an incidental side effect of the 5-stage
+# multi-instance migration (ccpp_cap_refactor_plan.md's "instances/
+# instances_advection" entry) once re-tested, not by anything targeted at
+# it. What was still missing after that: the constituent-registration API
+# itself (constituent_cap.py) had zero instance-awareness -- every
+# constituent-API subroutine shared one flat set of module-level arrays,
+# with no way to know which model instance a given call was for. Fixed
+# (task #35, same backlog entry): a new per-instance bundle derived type
+# (test_host_lc_instance_t) collects every constituent-API-owned array into
+# one allocatable lc_instances(:) array, lazily allocated + sized by
+# number_of_instances inside register_constituents (the one entry point the
+# driver always calls first, with ninstances); every constituent-API
+# subroutine gained an `instance` dummy argument indexing into it. Gated on
+# the host declaring instance_number at all, so every OTHER
+# constituent-using example (advection, constituents_dim, capgen, ddthost)
+# is completely unaffected -- confirmed via the full existing test suite,
+# 0 regressions.
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "cld_liq" "apply_constituent_tendencies")
@@ -40,8 +39,9 @@ set(SCHEME_FILES "cld_liq" "apply_constituent_tendencies")
 # vars are plain arguments passed directly at each call site, never
 # `use`-associated from a module, so there's no test_host.F90 to compile.
 # Only "data" (which owns the real host state) needs a compiled Fortran
-# counterpart -- same distinction examples/chunked_data/CMakeLists.txt
-# makes for its own identical test_host.meta conversion.
+# counterpart -- same distinction examples/chunked_data/CMakeLists.txt and
+# examples/instances/CMakeLists.txt make for their own identical
+# test_host.meta conversion.
 set(HOST_FILES   "data")
 set(SUITE_FILES  "cld_suite.xml")
 set(HOST         "test_host")
@@ -54,11 +54,27 @@ list(TRANSFORM HOST_FILES   APPEND ".F90"  OUTPUT_VARIABLE INSTANCES_ADVECTION_H
 list(TRANSFORM HOST_FILES   APPEND ".meta" OUTPUT_VARIABLE INSTANCES_ADVECTION_HOST_METADATA_FILES)
 list(APPEND INSTANCES_ADVECTION_HOST_METADATA_FILES "${HOST}.meta")
 
-# Known-failing (see header comment above) -- calling this will
-# message(FATAL_ERROR) with an xDSL IR verifier crash in the
-# constituent-registration cap code path.
 xdsl_ccpp_capgen(HOSTFILES ${INSTANCES_ADVECTION_HOST_METADATA_FILES}
                  SCHEMEFILES ${SCHEME_META_FILES}
                  SUITES ${SUITE_FILES}
                  HOST_NAME ${HOST}
                  OUTPUT_ROOT "${CCPP_CAP_FILES}")
+
+if(XDSL_CCPP_HAVE_FORTRAN)
+  # Needs the shared constituent-registration support stub (same reason
+  # examples/advection's own TESTLIB does) -- cld_liq/apply_constituent_
+  # tendencies both use ccpp_constituent_properties_t/ccpp_scheme_utils.
+  add_library(INSTANCES_ADVECTION_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
+                                        ${INSTANCES_ADVECTION_HOST_FORTRAN_FILES}
+                                        ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+                                        ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
+                                        ${CCPP_CAPS_LIST})
+  set_target_properties(INSTANCES_ADVECTION_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
+  target_include_directories(INSTANCES_ADVECTION_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+
+  add_executable(instances_advection.exe main.F90)
+  target_link_libraries(instances_advection.exe PRIVATE INSTANCES_ADVECTION_TESTLIB)
+  target_include_directories(instances_advection.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+
+  add_test(NAME ctest_instances_advection COMMAND instances_advection.exe)
+endif()

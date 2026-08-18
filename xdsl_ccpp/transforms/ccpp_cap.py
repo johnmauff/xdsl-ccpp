@@ -57,7 +57,9 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
     CCPP_ERROR_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_INSTANCE_NUMBER_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
 )
 
@@ -94,7 +96,9 @@ def _collect_public_suite_functions(ops):
 
 
 
-def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict, dict, list, dict]":
+def _build_cap_var_map(
+    meta_data, suite_descriptions, public_fns, instance_local_name: "str | None" = None,
+) -> "tuple[dict, dict, list, dict]":
     """Build cap_var_map: interstitial DDT values returned from lifecycle.
 
     These need module-level storage in the cap so they persist between calls.
@@ -103,6 +107,17 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     metadata match (e.g. tendency_of_cloud_liquid_dry_mixing_ratio) -- both
     are allocated at cap module scope so they never appear as physics_run
     block arguments.
+
+    instance_local_name -- real capgen-v1's multi-instance model
+    (ccpp_cap_refactor_plan.md's "instances/instances_advection" entry,
+    task #35): when set, every cap var name this function resolves for a
+    framework-mapped or scratch constituent array (lc_all_constituents,
+    lc_constituent_array, lc_const_tend, or a scheme's own
+    tendency_of_-scratch var) is wrapped as
+    lc_instances(<instance_local_name>)%<name> -- matching
+    constituent_cap.py's own per-instance bundle type -- instead of the
+    bare module-var name. Both must agree on the exact same reference text,
+    since run_dispatch.py prints whatever cap_var_map hands it verbatim.
 
     Phase 7, Stage 3: the HostMatched/CapScratch/Block membership decision
     below now reads the durable ownership classification
@@ -147,6 +162,16 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
     # no longer consulted for the CapScratch/Block decision below, which
     # ownership_kind already accounts for.
     host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
+
+    def _cv_ref(name: str) -> str:
+        """Wrap a bare cap var name for cap_var_map's own value (what
+        run_dispatch.py actually prints) when multi-instance -- NOT used for
+        framework_var_residency/scratch_var_list, which stay keyed/valued by
+        the bare name; constituent_cap.py applies its own identical
+        wrapping when it consumes those."""
+        if instance_local_name is not None:
+            return f"lc_instances({instance_local_name})%{name}"
+        return name
 
     _DIM_TO_ALLOC = {
         CCPP_LOOP_EXTENT_STD_NAME: "ncols",
@@ -208,7 +233,7 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                         _std_cv, _cno_cv.get(_bn_cv, False)
                     )
                     if _std_cv not in cap_var_map:
-                        cap_var_map[_std_cv] = (_cap_name_cv, None, None)
+                        cap_var_map[_std_cv] = (_cv_ref(_cap_name_cv), None, None)
                     if _needs_gpu_cv:
                         framework_var_residency[_cap_name_cv] = True
                     continue
@@ -229,7 +254,7 @@ def _build_cap_var_map(meta_data, suite_descriptions, public_fns) -> "tuple[dict
                         if _resolved_cap_var_cv == "lc_const_tend"
                         else None
                     )
-                    cap_var_map[_std_cv] = (_lc_cv, None, None)
+                    cap_var_map[_std_cv] = (_cv_ref(_lc_cv), None, None)
                     scratch_var_index[_std_cv] = len(scratch_var_list)
                     scratch_var_list.append(
                         [_lc_cv, _rank_cv, _alloc_cv, _const_std_name, _needs_gpu_cv]
@@ -784,8 +809,23 @@ class CCPPCAP(ModulePass):
         # a DDT instance used in the run function may also appear in lifecycle functions).
         shared_seen_host_globals: set = set()
 
+        # Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
+        # "instances/instances_advection" entry, task #35): resolved once
+        # for the whole host (instance_number/number_of_instances are
+        # HOST-declared scalars, not suite-scoped), same lookup shape as
+        # suite_cap.py's own _resolve_host_only_std_name -- scans every
+        # non-scheme table (module/host/ddt) for the standard name. None for
+        # a non-multi-instance host, in which case every downstream
+        # constituent-API/cap-var-map consumer below takes its original,
+        # unchanged codepath.
+        _host_var_map_all_for_instance = _build_host_var_map(meta_data, include_host=True)
+        _instance_match = _host_var_map_all_for_instance.get(CCPP_INSTANCE_NUMBER_STD_NAME)
+        _ninstances_match = _host_var_map_all_for_instance.get(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+        instance_local_name = _instance_match[0] if _instance_match is not None else None
+        ninstances_local_name = _ninstances_match[0] if _ninstances_match is not None else None
+
         cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency = _build_cap_var_map(
-            meta_data, suite_descriptions, public_fns
+            meta_data, suite_descriptions, public_fns, instance_local_name=instance_local_name,
         )
 
         # Detect the ccpp_info_t pattern: HOST table contains a variable with
@@ -995,6 +1035,8 @@ class CCPPCAP(ModulePass):
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
                 camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,
                 framework_var_residency=framework_var_residency,
+                instance_local_name=instance_local_name,
+                ninstances_local_name=ninstances_local_name,
             )
             for var_op in const_var_ops:
                 _key = (var_op.var_name.data, "_cap_module_var")

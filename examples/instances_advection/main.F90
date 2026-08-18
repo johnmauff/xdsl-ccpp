@@ -1,9 +1,39 @@
+! Adapted from real capgen-v1's own upstream driver (end-to-end-tests/
+! instances_advection/main.F90, feature/capgen-v1 branch) to xdsl-ccpp's
+! actual generated calling convention -- see examples/instances_advection/
+! CMakeLists.txt's own header comment for the full port history, and
+! ccpp_cap_refactor_plan.md's "instances/instances_advection" backlog entry
+! (task #35) for the constituent-API instance-awareness fix this adaptation
+! depends on. Adaptations from the literal upstream driver, matching
+! examples/instances' own precedent for the identical reasons:
+!   1) ccpp_physics_init/ccpp_physics_final calls removed -- xdsl-ccpp's
+!      lifecycle is still 6-phase, not real capgen-v1's 8-phase split
+!      (ccpp_cap_refactor_plan.md's "Full 6-phase to 8-phase lifecycle
+!      match" backlog entry, still open); ccpp_init/ccpp_final already
+!      cover what those two calls would have done.
+!   2) group_name/thread_num/nthreads/nphys_threads dropped from every
+!      call -- xdsl-ccpp's generated signatures don't carry them.
+!      suite_part='physics' (the physics group's real name, from
+!      cld_suite.xml) replaces group_name='physics' on the calls that
+!      still need a group/part.
+!   3) errcode -> errflg: xdsl-ccpp's own generated signatures always use
+!      errflg, never errcode (the local variable here is renamed to match,
+!      not just the keyword-argument text, for consistency with every
+!      other example's driver).
+!   4) Constituent-API subroutines referenced by their real generated
+!      names (test_host_ccpp_register_constituents, etc.) -- xdsl-ccpp
+!      does not alias these to bare ccpp_-prefixed names the way the
+!      lifecycle subroutines are (matches examples/constituents_dim's own
+!      driver, which needed the identical adaptation).
+! The loop-over-instances structure itself, and the per-instance
+! constituent-registration calls (instance=/ninstances= on every one of
+! them) -- the actual mechanism this example exists to exercise -- are
+! otherwise unchanged from upstream; they only work now because
+! constituent_cap.py's own instance-awareness fix (task #35) gives each
+! model instance its own constituent storage.
 program test_instances_advection
 
   use, intrinsic :: iso_fortran_env, only: error_unit
-#ifdef _OPENMP
-  use omp_lib
-#endif
 
   use ccpp_kinds, only: kind_phys
   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
@@ -14,33 +44,27 @@ program test_instances_advection
       verify_results
 
   use test_host_ccpp_cap, only: ccpp_register, ccpp_init, ccpp_final
-  use test_host_ccpp_cap, only: ccpp_physics_init, ccpp_physics_run, &
-      ccpp_physics_timestep_init, ccpp_physics_timestep_final, &
-      ccpp_physics_final
-  use test_host_ccpp_cap, only: ccpp_register_constituents, &
-      ccpp_initialize_constituents, ccpp_deallocate_dynamic_constituents
-  use test_host_ccpp_cap, only: ccpp_const_get_index, ccpp_constituents_array
-  use test_host_ccpp_cap, only: ccpp_number_constituents
+  use test_host_ccpp_cap, only: ccpp_physics_run, &
+      ccpp_physics_timestep_init, ccpp_physics_timestep_final
+  use test_host_ccpp_cap, only: test_host_ccpp_register_constituents, &
+      test_host_ccpp_initialize_constituents, &
+      test_host_ccpp_deallocate_dynamic_constituents
+  use test_host_ccpp_cap, only: test_host_const_get_index, &
+      test_host_constituents_array
+  use test_host_ccpp_cap, only: test_host_ccpp_number_constituents
 
   implicit none
 
   character(len=*), parameter :: ccpp_suite = 'cld_suite'
+  character(len=*), parameter :: ccpp_group = 'physics'
   character(len=512) :: errmsg
-  integer :: errcode
-  integer :: nphys_threads
+  integer :: errflg
   integer :: ins
   integer :: tstep
   integer :: num_consts
   integer :: idx
   type(ccpp_constituent_properties_t), target, allocatable :: host_consts(:)
   real(kind=kind_phys), pointer :: constituents_ptr(:, :, :)
-
-  ! Use OpenMP threading in physics (internally) where available.
-#ifdef _OPENMP
-  nphys_threads = omp_get_max_threads()
-#else
-  nphys_threads = 1
-#endif
 
   !-----------------------------------------------------------------
   ! 1. CCPP register: per-instance, populates per-suite dynamic
@@ -49,8 +73,8 @@ program test_instances_advection
   do ins = 1, ninstances
     call ccpp_register(suite_name=ccpp_suite, &
         instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
+        errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
       write(error_unit, '(2a)') 'ccpp_register failed: ', trim(errmsg)
       stop 1
     end if
@@ -58,9 +82,10 @@ program test_instances_advection
 
   !-----------------------------------------------------------------
   ! 2. Build the host-registered constituent list (specific_humidity)
-  !    and call ccpp_register_constituents per instance.  Each call
-  !    consumes the host_consts array (new_field sets const_index on
-  !    the input objects), so we re-instantiate per instance.
+  !    and call test_host_ccpp_register_constituents per instance.
+  !    Each call consumes the host_consts array (new_field sets
+  !    const_index on the input objects), so we re-instantiate per
+  !    instance.
   !-----------------------------------------------------------------
   do ins = 1, ninstances
     if (allocated(host_consts)) deallocate(host_consts)
@@ -71,15 +96,15 @@ program test_instances_advection
         diag_name='QV', units='kg kg-1', &
         vertical_dim='vertical_layer_dimension', advected=.true., &
         default_value=0.0_kind_phys, mixing_ratio_type='wet', &
-        errcode=errcode, errmsg=errmsg)
-    if (errcode /= 0) then
+        errcode=errflg, errmsg=errmsg)
+    if (errflg /= 0) then
       write(error_unit, '(2a)') 'instantiate failed: ', trim(errmsg)
       stop 1
     end if
-    call ccpp_register_constituents(host_constituents=host_consts, &
+    call test_host_ccpp_register_constituents(host_constituents=host_consts, &
         instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
+        errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
       write(error_unit, '(a,i0,2a)') &
           'ccpp_register_constituents failed for instance ', ins, &
           ': ', trim(errmsg)
@@ -92,9 +117,9 @@ program test_instances_advection
   !    per-instance constituent storage.
   !-----------------------------------------------------------------
   do ins = 1, ninstances
-    call ccpp_initialize_constituents(ncols=ncols, num_layers=pver, &
-        instance=ins, errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
+    call test_host_ccpp_initialize_constituents(ncols=ncols, pver=pver, &
+        instance=ins, errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
       write(error_unit, '(a,i0,2a)') &
           'ccpp_initialize_constituents failed for instance ', ins, &
           ': ', trim(errmsg)
@@ -107,18 +132,18 @@ program test_instances_advection
   !    (identical across instances).
   !-----------------------------------------------------------------
 
-  call ccpp_const_get_index(stdname='water_vapor_specific_humidity', &
-      const_index=idx, instance=1, errcode=errcode, errmsg=errmsg)
-  if (errcode /= 0) then
+  call test_host_const_get_index(std_name='water_vapor_specific_humidity', &
+      index=idx, instance=1, errflg=errflg, errmsg=errmsg)
+  if (errflg /= 0) then
     write(error_unit, '(2a)') 'ccpp_const_get_index(qv) failed: ', &
         trim(errmsg)
     stop 1
   end if
   call set_index_qv(idx)
 
-  call ccpp_number_constituents(num_flds=num_consts, instance=1, &
-      errcode=errcode, errmsg=errmsg)
-  if (errcode /= 0) then
+  call test_host_ccpp_number_constituents(num_advected=num_consts, &
+      instance=1, errmsg=errmsg, errflg=errflg)
+  if (errflg /= 0) then
     write(error_unit, '(2a)') 'ccpp_number_constituents failed: ', &
         trim(errmsg)
     stop 1
@@ -130,33 +155,21 @@ program test_instances_advection
   !-----------------------------------------------------------------
 
   do ins = 1, ninstances
-    constituents_ptr => ccpp_constituents_array(ins)
+    constituents_ptr => test_host_constituents_array(ins)
     call allocate_physics_state(ins, constituents_ptr)
     call init_qv(ins)
   end do
 
   !-----------------------------------------------------------------
-  ! 6. ccpp_init and ccpp_physics_init per instance.
+  ! 6. ccpp_init per instance.
   !-----------------------------------------------------------------
   do ins = 1, ninstances
-    call ccpp_init(suite_name=ccpp_suite, &
+    call ccpp_init(suite_name=ccpp_suite, tfreeze=tfreeze, &
         instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
+        errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
       write(error_unit, '(a,i0,2a)') 'ccpp_init failed for instance ', &
           ins, ': ', trim(errmsg)
-      stop 1
-    end if
-  end do
-  do ins = 1, ninstances
-    call ccpp_physics_init(suite_name=ccpp_suite, group_name='physics', &
-        lb=1, ub=ncols, thread_num=1, nthreads=1, &
-        nphys_threads=nphys_threads, &
-        instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
-      write(error_unit, '(a,i0,2a)') &
-          'ccpp_physics_init failed for instance ', ins, ': ', trim(errmsg)
       stop 1
     end if
   end do
@@ -167,11 +180,9 @@ program test_instances_advection
   do tstep = 1, num_time_steps
     do ins = 1, ninstances
       call ccpp_physics_timestep_init(suite_name=ccpp_suite, &
-          group_name='physics', lb=1, ub=ncols, &
-          thread_num=1, nthreads=1, nphys_threads=nphys_threads, &
           instance=ins, ninstances=ninstances, &
-          errmsg=errmsg, errcode=errcode)
-      if (errcode /= 0) then
+          errmsg=errmsg, errflg=errflg)
+      if (errflg /= 0) then
         write(error_unit, '(a,i0,2a)') &
             'ccpp_physics_timestep_init failed for instance ', ins, &
             ': ', trim(errmsg)
@@ -179,12 +190,11 @@ program test_instances_advection
       end if
     end do
     do ins = 1, ninstances
-      call ccpp_physics_run(suite_name=ccpp_suite, group_name='physics', &
-          lb=1, ub=ncols, thread_num=1, nthreads=1, &
-          nphys_threads=nphys_threads, &
+      call ccpp_physics_run(suite_name=ccpp_suite, suite_part=ccpp_group, &
+          lb=1, ub=ncols, ncol=ncols, timestep=dt, &
           instance=ins, ninstances=ninstances, &
-          errmsg=errmsg, errcode=errcode)
-      if (errcode /= 0) then
+          errmsg=errmsg, errflg=errflg)
+      if (errflg /= 0) then
         write(error_unit, '(a,i0,2a)') &
             'ccpp_physics_run failed for instance ', ins, ': ', trim(errmsg)
         stop 1
@@ -192,11 +202,9 @@ program test_instances_advection
     end do
     do ins = 1, ninstances
       call ccpp_physics_timestep_final(suite_name=ccpp_suite, &
-          group_name='physics', lb=1, ub=ncols, &
-          thread_num=1, nthreads=1, nphys_threads=nphys_threads, &
           instance=ins, ninstances=ninstances, &
-          errmsg=errmsg, errcode=errcode)
-      if (errcode /= 0) then
+          errmsg=errmsg, errflg=errflg)
+      if (errflg /= 0) then
         write(error_unit, '(a,i0,2a)') &
             'ccpp_physics_timestep_final failed for instance ', ins, &
             ': ', trim(errmsg)
@@ -206,23 +214,7 @@ program test_instances_advection
   end do
 
   !-----------------------------------------------------------------
-  ! 8. ccpp_physics_final per instance.
-  !-----------------------------------------------------------------
-  do ins = 1, ninstances
-    call ccpp_physics_final(suite_name=ccpp_suite, group_name='physics', &
-        lb=1, ub=ncols, thread_num=1, nthreads=1, &
-        nphys_threads=nphys_threads, &
-        instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
-      write(error_unit, '(a,i0,2a)') &
-          'ccpp_physics_final failed for instance ', ins, ': ', trim(errmsg)
-      stop 1
-    end if
-  end do
-
-  !-----------------------------------------------------------------
-  ! 9. Verify per-instance results BEFORE constituent teardown.
+  ! 8. Verify per-instance results BEFORE constituent teardown.
   !    phys_state(:)%q points into the framework's per-instance
   !    constituent storage; ccpp_deallocate_dynamic_constituents
   !    frees that storage, so any verification must run first.
@@ -233,20 +225,20 @@ program test_instances_advection
   end if
 
   !-----------------------------------------------------------------
-  ! 10. Teardown.
+  ! 9. Teardown.
   !-----------------------------------------------------------------
   do ins = 1, ninstances
     call ccpp_final(suite_name=ccpp_suite, &
         instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errcode=errcode)
-    if (errcode /= 0) then
+        errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
       write(error_unit, '(a,i0,2a)') 'ccpp_final failed for instance ', &
           ins, ': ', trim(errmsg)
       stop 1
     end if
   end do
   do ins = 1, ninstances
-    call ccpp_deallocate_dynamic_constituents(instance=ins)
+    call test_host_ccpp_deallocate_dynamic_constituents(instance=ins)
   end do
   deallocate(host_consts)
 
