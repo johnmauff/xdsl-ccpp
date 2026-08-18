@@ -4247,6 +4247,36 @@ dependency is noted.
     `examples/capgen`'s copy has. Not touched here -- syncing them is a
     distinct, separable task, not part of restoring dependencies/source_path
     parsing.
+  - **Regression hotfix (2026-08-17), found via a real CI build failure:**
+    `examples/ddthost/scheme/temp_adjust.meta` still declared the old, just-
+    removed `relative_path = adjust` key, and `examples/ddthost`'s own
+    CMakeLists.txt (`examples/ddthost/CMakeLists.txt:27`, the "plain"
+    generation target) passes `temp_set.meta`/`temp_calc_adjust.meta`/
+    `temp_adjust.meta` straight into real cap generation -- a live build
+    path that, unlike `examples/capgen`'s copies, has **no filecheck or unit
+    test coverage at all** (confirmed: `ddthost-xml.mlir`'s own frontend
+    filecheck only exercises `make_ddt.meta`/`environ_conditions.meta`), so
+    the 591-test run done for Tier 1 never touched it and the crash only
+    surfaced in CI. This is exactly the "ddthost's copies have fallen behind"
+    finding above, just discovered the hard way. Fixed the immediate crash by
+    removing the invalid key and, matching the same real-vs-fabricated
+    judgment call made for `examples/capgen`'s copies, cleared
+    `temp_adjust.meta`'s `dependencies = qux.F90` (nonexistent file; unlike
+    `examples/capgen`'s `temp_adjust.meta`, ddthost has no `temp_kinds.F90`
+    counterpart to point to instead, since ddthost doesn't have `kind_spec`
+    support ported yet either) and `temp_calc_adjust.meta`'s
+    `dependencies = foo.F90, bar.F90` (also nonexistent) to `dependencies =`,
+    matching real upstream's own empty declaration. Verified by reproducing
+    the exact `examples/ddthost/CMakeLists.txt:27` frontend invocation
+    directly (all six plain-target scheme files plus both suites) -- exits 0
+    now, was crashing with the reported `AssertionError` before. Full
+    suite re-run: 591 passed, 1 xfailed, 1 environment-only failure
+    (`test_ccpp_xdsl_generates_caps`, pre-existing and unrelated -- fails with
+    `pyenv: ccpp_xdsl: command not found` when the console-script entry point
+    isn't installed on `PATH` in this shell, not a code issue). This hotfix
+    does **not** close out the broader ddthost-sync backlog item above --
+    `kind_spec`/`interstitial_var`/rank-resync/`temp_adjust_register` are
+    still missing from ddthost's copies and remain deferred to that task.
   - **Verified:** regenerated `examples/capgen`'s frontend/completed_ir/end_to_end
     output directly -- `dependencies`/`source_path`/`dependencies_path` are
     only ever visible at the frontend (pre-pass) stage; `strip-ccpp` removes
