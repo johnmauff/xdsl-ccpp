@@ -54,7 +54,7 @@ class GenerateKinds(ModulePass):
 
         # Build one ccpp_utils.kind_def op per ccpp.kind child
         kind_def_ops = [
-            KindDefOp(kind_op.kind_name.data, kind_op.kind_value.data)
+            KindDefOp(kind_op.kind_name.data, kind_op.kind_value.data, kind_op.kind_module.data)
             for kind_op in kinds_op.body.ops
             if isa(kind_op, ccpp.KindOp)
         ]

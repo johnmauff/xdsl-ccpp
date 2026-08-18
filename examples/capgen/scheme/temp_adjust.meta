@@ -3,6 +3,7 @@
   type = scheme
   dependencies = qux.F90
   relative_path = adjust
+  kind_spec = temp_kinds:kind_temp=>temp_r8
 [ccpp-arg-table]
   name = temp_adjust_register
   type = scheme
@@ -81,7 +82,7 @@
   units = K
   dimensions = (horizontal_dimension)
   type = real
-  kind = kind_phys
+  kind = kind_temp
   intent = in
 [ promote_pcnst ]
   standard_name = promote_this_variable_with_no_horizontal_dimension

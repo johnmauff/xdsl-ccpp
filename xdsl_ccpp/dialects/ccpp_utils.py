@@ -243,22 +243,39 @@ class KindDefOp(IRDLOperation):
     """Declare a named Fortran kind parameter in the @ccpp_kinds module.
 
     Represents one ``integer, parameter :: kind_name = kind_value`` line in the
-    generated ``ccpp_kinds`` Fortran module.  Both properties are strings:
-    ``kind_name`` is the Fortran identifier (e.g. ``kind_phys``) and
-    ``kind_value`` is its definition (e.g. ``REAL64`` from iso_fortran_env).
+    generated ``ccpp_kinds`` Fortran module.  ``kind_name`` is the Fortran
+    identifier (e.g. ``kind_phys``) and ``kind_value`` is its definition (e.g.
+    ``REAL64`` from iso_fortran_env, or a spec name imported from a real
+    host/scheme module).  ``kind_module`` names that source module --
+    ``"iso_fortran_env"`` by default, matching this codebase's existing
+    behavior when no metadata ``kind_spec`` resolved the kind instead.
     """
 
     name = "ccpp_utils.kind_def"
 
     kind_name = prop_def(StringAttr)
     kind_value = prop_def(StringAttr)
+    kind_module = prop_def(StringAttr)
 
-    def __init__(self, kind_name: str | StringAttr, kind_value: str | StringAttr):
+    def __init__(
+        self,
+        kind_name: str | StringAttr,
+        kind_value: str | StringAttr,
+        kind_module: str | StringAttr = "iso_fortran_env",
+    ):
         if isinstance(kind_name, str):
             kind_name = StringAttr(kind_name)
         if isinstance(kind_value, str):
             kind_value = StringAttr(kind_value)
-        super().__init__(properties={"kind_name": kind_name, "kind_value": kind_value})
+        if isinstance(kind_module, str):
+            kind_module = StringAttr(kind_module)
+        super().__init__(
+            properties={
+                "kind_name": kind_name,
+                "kind_value": kind_value,
+                "kind_module": kind_module,
+            }
+        )
 
 
 @irdl_op_definition

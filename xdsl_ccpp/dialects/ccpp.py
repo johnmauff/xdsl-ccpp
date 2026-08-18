@@ -266,20 +266,35 @@ class KindOp(IRDLOperation):
     Represents one Fortran kind parameter discovered from the scheme metadata,
     e.g. ``kind_phys``.  The ``name`` property holds the Fortran identifier and
     ``value`` holds its corresponding definition (may be the same string when
-    only the name is known from the metadata).
+    only the name is known from the metadata).  ``module`` is the Fortran
+    module ``value`` is imported from -- ``"iso_fortran_env"`` by default (the
+    hardcoded/CLI-supplied ISO_FORTRAN_ENV resolution this codebase already
+    had), or a real host/scheme-declared module when a metadata ``kind_spec``
+    table property resolved this kind instead (see suite_kinds.py's
+    ``MetaKind`` pass).
     """
 
     name = "ccpp.kind"
 
     kind_name = prop_def(StringAttr, prop_name="name")
     kind_value = prop_def(StringAttr, prop_name="value")
+    kind_module = prop_def(StringAttr, prop_name="module")
 
-    def __init__(self, kind_name: str | StringAttr, kind_value: str | StringAttr):
+    def __init__(
+        self,
+        kind_name: str | StringAttr,
+        kind_value: str | StringAttr,
+        kind_module: str | StringAttr = "iso_fortran_env",
+    ):
         if isa(kind_name, str):
             kind_name = StringAttr(kind_name)
         if isa(kind_value, str):
             kind_value = StringAttr(kind_value)
-        super().__init__(properties={"name": kind_name, "value": kind_value})
+        if isa(kind_module, str):
+            kind_module = StringAttr(kind_module)
+        super().__init__(
+            properties={"name": kind_name, "value": kind_value, "module": kind_module}
+        )
 
 
 @irdl_op_definition

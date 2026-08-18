@@ -87,7 +87,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "temp_diag", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,6", standard_name = "temperature_at_diagnostic_levels", kind = "kind_phys", intent = "inout", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "temp", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "out", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ps", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "surface_air_pressure", kind = "kind_phys", intent = "in", units = "Pa", state_variable}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "to_promote", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "promote_this_variable_to_suite", kind = "kind_phys", intent = "out", units = "K"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "to_promote", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "promote_this_variable_to_suite", kind = "kind_temp", intent = "out", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "promote_pcnst", type = "real", dimensions = #builtin.int<1>, dim_names = "number_of_tracers", standard_name = "promote_this_variable_with_no_horizontal_dimension", kind = "kind_phys", intent = "out", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "slev_lbound", type = "integer", standard_name = "lower_bound_of_vertical_dimension_of_soil", intent = "in", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "soil_levs", type = "real", dimensions = #builtin.int<1>, dim_names = "upper_bound_of_vertical_dimension_of_soil", standard_name = "soil_levels", long_name = "soil levels", kind = "kind_phys", intent = "inout", units = "cm"}> : () -> ()
@@ -113,7 +113,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-NEXT:    }) {source_module = "temp_set"} : () -> ()
+// CHECK-NEXT:    }) {source_module = "temp_set", kind_specs = ["temp_kinds:kind_temp=>temp_r8"]} : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "temp_calc_adjust", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "temp_calc_adjust_run", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "nbox", type = "integer", standard_name = "horizontal_dimension", intent = "in", units = "count"}> : () -> ()
@@ -145,7 +145,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "temp_layer", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "inout", units = "K", diagnostic_name = "temperature"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "qv", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "water_vapor_specific_humidity", kind = "kind_phys", intent = "inout", units = "kg kg-1", diagnostic_name_fixed = "Q", optional}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ps", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "surface_air_pressure", kind = "kind_phys", intent = "inout", units = "Pa", state_variable}> : () -> ()
-// CHECK-NEXT:        "ccpp.arg"() <{name = "to_promote", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "promote_this_variable_to_suite", kind = "kind_phys", intent = "in", units = "K"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "to_promote", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "promote_this_variable_to_suite", kind = "kind_temp", intent = "in", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "promote_pcnst", type = "real", dimensions = #builtin.int<1>, dim_names = "number_of_tracers", standard_name = "promote_this_variable_with_no_horizontal_dimension", kind = "kind_phys", intent = "in", units = "K"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
@@ -158,7 +158,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-NEXT:    }) {source_module = "temp_adjust"} : () -> ()
+// CHECK-NEXT:    }) {source_module = "temp_adjust", kind_specs = ["temp_kinds:kind_temp=>temp_r8"]} : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "physics_state", type = #ccpp<table_type_kind ddt>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "physics_state", type = #ccpp<table_type_kind ddt>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ps", type = "real", dimensions = #builtin.int<1>, dim_names = "horizontal_dimension", standard_name = "surface_air_pressure", kind = "kind_phys", units = "Pa", state_variable}> : () -> ()

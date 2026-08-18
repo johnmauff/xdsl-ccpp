@@ -50,7 +50,7 @@ import sys
 import types as _types
 from dataclasses import dataclass, field
 
-from xdsl.dialects.builtin import ModuleOp, StringAttr
+from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
 
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_MESSAGE,
@@ -191,12 +191,16 @@ class SchemeDescriptor:
     """Descriptor produced by :func:`ccpp_scheme`."""
 
     def __init__(self, name: str, entry_points: dict[str, list[Arg]],
-                 *, language: "str | None" = None):
+                 *, language: "str | None" = None,
+                 kind_specs: "list[tuple[str, str, str]] | None" = None):
         self.name = name
         # Maps entry-point attribute name (e.g. "run") → list of Arg objects.
         self.entry_points = entry_points
         # Implementation language: None / "fortran" (default) or "c++".
         self.language = language
+        # (kind_name, module, spec) tuples from this table's own kind_spec
+        # declaration(s) -- see ccpp_conventions.parse_kind_spec_value.
+        self.kind_specs = kind_specs or []
 
 
 class TableDescriptor:
@@ -209,6 +213,7 @@ class TableDescriptor:
         arg_tables: "dict[str, list[Arg]]",
         *,
         array_layout: "str | None" = None,
+        kind_specs: "list[tuple[str, str, str]] | None" = None,
     ):
         self.name = name
         self.type_str = type_str  # "ddt", "module", or "host"
@@ -216,6 +221,9 @@ class TableDescriptor:
         self.arg_tables = arg_tables
         # Array memory layout: "row_major" | None (= column_major, the default).
         self.array_layout = array_layout
+        # (kind_name, module, spec) tuples from this table's own kind_spec
+        # declaration(s) -- see ccpp_conventions.parse_kind_spec_value.
+        self.kind_specs = kind_specs or []
 
 
 class SuiteDescriptor:
@@ -662,7 +670,8 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> "SchemeDesc
         if meta.table_properties.hasAttr("language")
         else None
     )
-    return SchemeDescriptor(scheme_name, entry_points, language=language)
+    return SchemeDescriptor(scheme_name, entry_points, language=language,
+                             kind_specs=meta.table_properties.kind_specs)
 
 
 def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
@@ -705,7 +714,8 @@ def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
         )
         result.append(
             TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables,
-                            array_layout=array_layout)
+                            array_layout=array_layout,
+                            kind_specs=meta.table_properties.kind_specs)
         )
     return result
 
@@ -747,7 +757,8 @@ def ccpp_ddt_from_meta(filename: str) -> "TableDescriptor":
         table.getAttr("name"): [_ccpp_arg_to_arg(a) for a in table.getFunctionArguments()]
         for table in meta.arg_tables
     }
-    return TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables)
+    return TableDescriptor(meta.table_properties.getAttr("name"), type_str, arg_tables,
+                            kind_specs=meta.table_properties.kind_specs)
 
 
 # ---------------------------------------------------------------------------
@@ -765,24 +776,34 @@ def _table_properties_op(
     arg_tables: "dict[str, list[Arg]]",
     array_layout: "str | None" = None,
     language: "str | None" = None,
+    kind_specs: "list[tuple[str, str, str]] | None" = None,
 ) -> TablePropertiesOp:
     table_ops = []
     for entry_name, args in arg_tables.items():
         arg_ops = [_arg_op(a) for a in args]
         table_ops.append(ArgumentTableOp(entry_name, type_str, arg_ops))
     attrs: "dict | None" = None
-    if array_layout is not None or (language is not None and language != "fortran"):
+    if array_layout is not None or (language is not None and language != "fortran") or kind_specs:
         attrs = {}
         if array_layout is not None:
             attrs["array_layout"] = StringAttr(array_layout)
         if language is not None and language != "fortran":
             attrs["language"] = StringAttr(language)
+        if kind_specs:
+            # Same "<module>:<kind_name>=>spec" canonical encoding as
+            # ccpp_xml.py's build_meta_ir -- one source of truth for the
+            # syntax, decoded by suite_kinds.py's MetaKind pass.
+            attrs["kind_specs"] = ArrayAttr([
+                StringAttr(f"{module}:{kind_name}=>{spec}")
+                for kind_name, module, spec in kind_specs
+            ])
     return TablePropertiesOp(table_name, type_str, table_ops, attributes=attrs)
 
 
 def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
     entry_tables = {f"{sd.name}_{ep}": args for ep, args in sd.entry_points.items()}
-    return _table_properties_op(sd.name, "scheme", entry_tables, language=sd.language)
+    return _table_properties_op(sd.name, "scheme", entry_tables, language=sd.language,
+                                 kind_specs=sd.kind_specs)
 
 
 def _group_item_to_op(
@@ -856,7 +877,8 @@ def build_ir(
         else:
             ir_ops.append(
                 _table_properties_op(desc.name, desc.type_str, desc.arg_tables,
-                                     array_layout=desc.array_layout)
+                                     array_layout=desc.array_layout,
+                                     kind_specs=desc.kind_specs)
             )
 
     return ModuleOp(ir_ops)

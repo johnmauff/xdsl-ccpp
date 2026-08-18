@@ -1055,10 +1055,27 @@ class ftnPrintContext:
                 f"{op.kind_name.data} => {op.kind_value.data}"
                 for op in body.ops
                 if isa(op, CCPPKindDefOp)
+                and op.kind_module.data == "iso_fortran_env"
                 and op.kind_value.data in self._ISO_FORTRAN_ENV_KINDS
             )
             if iso_renames:
                 self.print(f"use ISO_FORTRAN_ENV, only: {iso_renames}", prefix="  ")
+
+            # Kinds resolved via a real metadata kind_spec (module !=
+            # iso_fortran_env) get the same rename-on-import treatment from
+            # their own module, grouped and sorted by module name. This is
+            # additive: every existing example has kind_module ==
+            # "iso_fortran_env" for every kind, so the block above is
+            # unaffected and this loop is a no-op for them.
+            non_iso_by_module: dict[str, list[str]] = {}
+            for op in body.ops:
+                if isa(op, CCPPKindDefOp) and op.kind_module.data != "iso_fortran_env":
+                    non_iso_by_module.setdefault(op.kind_module.data, []).append(
+                        f"{op.kind_name.data} => {op.kind_value.data}"
+                    )
+            for mod in sorted(non_iso_by_module):
+                renames = ", ".join(sorted(non_iso_by_module[mod]))
+                self.print(f"use {mod}, only: {renames}", prefix="  ")
 
         # Emit 'use <module>, only: <name>' lines.  Two sources:
         #   1. External FuncOps with a 'module' attribute (suite cap callees).
