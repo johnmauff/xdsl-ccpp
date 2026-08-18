@@ -112,7 +112,7 @@ class TestChostExpandDDTNonVertical:
             meta_data=meta_data,
             local_to_std={},
             std_to_host={},
-            kind_iso_map={"kind_phys": "REAL64"},
+            kind_iso_map={"kind_phys": ("REAL64", "iso_fortran_env")},
             ncol_var="ncol",
             nz_var="nz",
         )
@@ -179,7 +179,7 @@ class TestChostExpandDDTVertical:
             meta_data=meta_data,
             local_to_std={},
             std_to_host={},
-            kind_iso_map={"kind_phys": "REAL64"},
+            kind_iso_map={"kind_phys": ("REAL64", "iso_fortran_env")},
             ncol_var="ncol",
             nz_var="nz",
         )

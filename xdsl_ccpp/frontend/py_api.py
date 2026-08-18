@@ -199,7 +199,7 @@ class SchemeDescriptor:
         # Implementation language: None / "fortran" (default) or "c++".
         self.language = language
         # (kind_name, module, spec) tuples from this table's own kind_spec
-        # declaration(s) -- see ccpp_xml.py's _parse_kind_spec_value.
+        # declaration(s) -- see ccpp_conventions.parse_kind_spec_value.
         self.kind_specs = kind_specs or []
 
 
@@ -222,7 +222,7 @@ class TableDescriptor:
         # Array memory layout: "row_major" | None (= column_major, the default).
         self.array_layout = array_layout
         # (kind_name, module, spec) tuples from this table's own kind_spec
-        # declaration(s) -- see ccpp_xml.py's _parse_kind_spec_value.
+        # declaration(s) -- see ccpp_conventions.parse_kind_spec_value.
         self.kind_specs = kind_specs or []
 
 

@@ -1,5 +1,4 @@
 import argparse
-import re
 import sys
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -16,7 +15,7 @@ from xdsl_ccpp.dialects.ccpp import (
     SuiteOp,
     TablePropertiesOp,
 )
-from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value, set_legacy_mode
 
 
 class CCPPType(StrEnum):
@@ -81,46 +80,6 @@ class CCPPItem:
         return self.attrs
 
 
-#: ``kind_spec`` value in a ``[ccpp-table-properties]`` block -- matches real
-#: capgen-v1's own syntax (``metadata/metadata_table.py``'s ``_KIND_SPEC_RE``).
-#: Two accepted forms:
-#:
-#:   <module>:<kind_name>=>spec   -- explicit CCPP-visible kind name
-#:   <module>:<spec>              -- shorthand; kind_name defaults to spec
-#:
-#: Captured groups: (module, kind_name_or_None, spec).
-_KIND_SPEC_RE = re.compile(
-    r'^\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*'
-    r'(?:([A-Za-z][A-Za-z0-9_]*)\s*=>\s*)?'
-    r'([A-Za-z][A-Za-z0-9_]*)\s*$'
-)
-
-
-def _parse_kind_spec_value(value: str) -> tuple[str, str, str]:
-    """Parse one ``kind_spec`` value into ``(kind_name, module, spec)``.
-
-    Accepted syntax::
-
-        <module>:<kind_name>=>spec   # explicit CCPP-visible kind name
-        <module>:<spec>              # kind_name defaults to spec
-
-    >>> _parse_kind_spec_value('temp_kinds:kind_temp=>temp_r8')
-    ('kind_temp', 'temp_kinds', 'temp_r8')
-    >>> _parse_kind_spec_value('host_kinds:kind_r8')
-    ('kind_r8', 'host_kinds', 'kind_r8')
-    """
-    match = _KIND_SPEC_RE.match(value)
-    if match is None:
-        raise ValueError(
-            f"Malformed kind_spec '{value}': expected "
-            "<module>:<kind_name>=>spec or <module>:<spec>"
-        )
-    module, kind_name, spec = match.group(1), match.group(2), match.group(3)
-    if kind_name is None:
-        kind_name = spec
-    return kind_name, module, spec
-
-
 class CCPPTableProperties(CCPPItem):
     """Descriptor for a ``[ccpp-table-properties]`` block parsed from a ``.meta`` file.
 
@@ -133,7 +92,8 @@ class CCPPTableProperties(CCPPItem):
 
     def __init__(self):
         super().__init__()
-        # List of parsed (kind_name, module, spec) tuples -- see _parse_kind_spec_value.
+        # List of parsed (kind_name, module, spec) tuples -- see
+        # ccpp_conventions.parse_kind_spec_value.
         self.kind_specs: list[tuple[str, str, str]] = []
 
     _VALID_ARRAY_LAYOUTS = ("column_major", "row_major")
@@ -152,7 +112,7 @@ class CCPPTableProperties(CCPPItem):
                 f"language must be one of {self._VALID_LANGUAGES}, got '{value}'"
             )
         if key == "kind_spec":
-            self.kind_specs.append(_parse_kind_spec_value(value))
+            self.kind_specs.append(parse_kind_spec_value(value))
         super().setAttr(key, value, ["name", "type", "dependencies", "relative_path",
                                      "array_layout", "language", "kind_spec"])
 
@@ -761,9 +721,10 @@ class ccppXML:
                 attrs["language"] = StringAttr(lang)
         if meta.table_properties.kind_specs:
             # Re-encoded in the same "<module>:<kind_name>=>spec" canonical form
-            # _parse_kind_spec_value accepts, so suite_kinds.py's MetaKind pass
-            # can decode each entry with that same helper -- one source of truth
-            # for the syntax, rather than inventing a second IR-only encoding.
+            # ccpp_conventions.parse_kind_spec_value accepts, so suite_kinds.py's
+            # MetaKind pass can decode each entry with that same helper -- one
+            # source of truth for the syntax, rather than inventing a second
+            # IR-only encoding.
             attrs["kind_specs"] = ArrayAttr([
                 StringAttr(f"{module}:{kind_name}=>{spec}")
                 for kind_name, module, spec in meta.table_properties.kind_specs

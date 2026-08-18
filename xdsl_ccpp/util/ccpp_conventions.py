@@ -283,5 +283,51 @@ CCPP_KIND_TO_ISO: dict = {
     "kind_phys": "REAL64",
 }
 
+#: ``kind_spec`` value in a ``[ccpp-table-properties]`` block -- matches real
+#: capgen-v1's own syntax (``metadata/metadata_table.py``'s ``_KIND_SPEC_RE``).
+#: Two accepted forms:
+#:
+#:   <module>:<kind_name>=>spec   -- explicit CCPP-visible kind name
+#:   <module>:<spec>              -- shorthand; kind_name defaults to spec
+#:
+#: Captured groups: (module, kind_name_or_None, spec).
+_KIND_SPEC_RE = re.compile(
+    r'^\s*([A-Za-z][A-Za-z0-9_]*)\s*:\s*'
+    r'(?:([A-Za-z][A-Za-z0-9_]*)\s*=>\s*)?'
+    r'([A-Za-z][A-Za-z0-9_]*)\s*$'
+)
+
+
+def parse_kind_spec_value(value: str) -> tuple[str, str, str]:
+    """Parse one ``kind_spec`` value into ``(kind_name, module, spec)``.
+
+    Accepted syntax::
+
+        <module>:<kind_name>=>spec   # explicit CCPP-visible kind name
+        <module>:<spec>              # kind_name defaults to spec
+
+    Shared by both `frontend/ccpp_xml.py` (parses ``kind_spec`` out of a
+    ``.meta`` file's table properties) and `transforms/suite_kinds.py`
+    (decodes the same canonical string back out of IR attributes) -- lives
+    here, not in either module, so neither the frontend nor a transform pass
+    has to import the other's implementation.
+
+    >>> parse_kind_spec_value('temp_kinds:kind_temp=>temp_r8')
+    ('kind_temp', 'temp_kinds', 'temp_r8')
+    >>> parse_kind_spec_value('host_kinds:kind_r8')
+    ('kind_r8', 'host_kinds', 'kind_r8')
+    """
+    match = _KIND_SPEC_RE.match(value)
+    if match is None:
+        raise ValueError(
+            f"Malformed kind_spec '{value}': expected "
+            "<module>:<kind_name>=>spec or <module>:<spec>"
+        )
+    module, kind_name, spec = match.group(1), match.group(2), match.group(3)
+    if kind_name is None:
+        kind_name = spec
+    return kind_name, module, spec
+
+
 # Convenience constant for the primary physics precision kind.
 CCPP_KIND_PHYS = "kind_phys"

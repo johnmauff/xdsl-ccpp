@@ -15,30 +15,30 @@ from xdsl.utils.hints import isa
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS
 from xdsl_ccpp.dialects import ccpp
-from xdsl_ccpp.frontend.ccpp_xml import _parse_kind_spec_value
 from xdsl_ccpp.transforms.suite_kinds import MetaKind
 from xdsl_ccpp.transforms.suite_meta import MetaCAP
+from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value
 
 
 class TestParseKindSpecValue:
     def test_explicit_kind_name(self):
-        assert _parse_kind_spec_value("temp_kinds:kind_temp=>temp_r8") == (
+        assert parse_kind_spec_value("temp_kinds:kind_temp=>temp_r8") == (
             "kind_temp", "temp_kinds", "temp_r8",
         )
 
     def test_shorthand_kind_name_defaults_to_spec(self):
-        assert _parse_kind_spec_value("host_kinds:kind_r8") == (
+        assert parse_kind_spec_value("host_kinds:kind_r8") == (
             "kind_r8", "host_kinds", "kind_r8",
         )
 
     def test_tolerates_surrounding_whitespace(self):
-        assert _parse_kind_spec_value("  temp_kinds : kind_temp => temp_r8  ") == (
+        assert parse_kind_spec_value("  temp_kinds : kind_temp => temp_r8  ") == (
             "kind_temp", "temp_kinds", "temp_r8",
         )
 
     def test_malformed_value_raises(self):
         with pytest.raises(ValueError, match="Malformed kind_spec"):
-            _parse_kind_spec_value("not_a_kind_spec")
+            parse_kind_spec_value("not_a_kind_spec")
 
 
 def _scheme_with_kind_spec(name: str, kind_spec: str, kind_name: str) -> str:

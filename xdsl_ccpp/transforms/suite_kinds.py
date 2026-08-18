@@ -7,8 +7,7 @@ from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
-from xdsl_ccpp.frontend.ccpp_xml import _parse_kind_spec_value
-from xdsl_ccpp.util.ccpp_conventions import CCPP_KIND_TO_ISO
+from xdsl_ccpp.util.ccpp_conventions import CCPP_KIND_TO_ISO, parse_kind_spec_value
 
 
 def _collect_metadata_kind_specs(ccpp_module: builtin.ModuleOp) -> dict[str, tuple[str, str]]:
@@ -30,7 +29,7 @@ def _collect_metadata_kind_specs(ccpp_module: builtin.ModuleOp) -> dict[str, tup
             continue
         table_name = table_prop_op.table_name.data
         for entry in kind_specs_attr.data:
-            kind_name, module, spec = _parse_kind_spec_value(entry.data)
+            kind_name, module, spec = parse_kind_spec_value(entry.data)
             existing = resolved.get(kind_name)
             if existing is not None and existing != (module, spec):
                 raise ValueError(
