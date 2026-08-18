@@ -2,7 +2,9 @@
 // Exercises three schemes in one group:
 //   make_ddt:       O3/HNO3 → vmr DDT (validated by timestep_final)
 //   setup_coeffs:   coeffs[:] = 1.0  (set during timestep_initial)
-//   temp_calc_adjust: temp_calc[:] = 1.0 (ignores temp_level, sets output)
+//   temp_calc_adjust: temp_calc[:,:] = 1.0 (ignores temp_level, sets output --
+//                     2D (horizontal_dimension, vertical_layer_dimension),
+//                     matching real capgen-v1's own rank for this standard_name)
 //
 // make_ddt physics:
 //   initialize:     allocates vmr%vmr_array(ncols, 2); sets vmr%nvmr = 2
@@ -22,6 +24,7 @@
 static constexpr int NCOL    = 5;
 static constexpr int VMR_NVS = 2;   // hardcoded by make_ddt_init: vmr%nvmr = 2
 static constexpr int PVERP   = 4;   // number of vertical interfaces
+static constexpr int PVER    = PVERP - 1;   // number of vertical layers
 
 static void check(const char* label, const CapgenChost_chost::Status& s) {
     if (!s.ok()) {
@@ -31,7 +34,7 @@ static void check(const char* label, const CapgenChost_chost::Status& s) {
 }
 
 int main() {
-    CapgenChost_chost::State state(NCOL, VMR_NVS, PVERP);
+    CapgenChost_chost::State state(NCOL, VMR_NVS, PVERP, PVER);
     state.allocate();
 
     // Driving data: O3[i] = (i+1)*1e-6, HNO3[i] = (i+1)*1e-9  (0-indexed C++)
@@ -86,18 +89,24 @@ int main() {
         }
     }
 
-    // Verify temp_calc (temp_calc_adjust_run sets all to 1.0)
-    for (int i = 0; i < NCOL; ++i) {
-        if (state.temp_calc[i] != 1.0) {
-            std::fprintf(stderr, "FAIL: temp_calc[%d] = %.3e, expected 1.0\n",
-                i, state.temp_calc[i]);
-            passed = false;
+    // Verify temp_calc (temp_calc_adjust_run sets all to 1.0, all columns and
+    // levels -- 2D (horizontal_dimension, vertical_layer_dimension), flattened
+    // column-major the same way state.temp_interfaces already is: index =
+    // col + NCOL * lev).
+    for (int lev = 0; lev < PVER; ++lev) {
+        for (int col = 0; col < NCOL; ++col) {
+            int idx = col + NCOL * lev;
+            if (state.temp_calc[idx] != 1.0) {
+                std::fprintf(stderr, "FAIL: temp_calc[%d] = %.3e, expected 1.0\n",
+                    idx, state.temp_calc[idx]);
+                passed = false;
+            }
         }
     }
 
     if (passed) {
-        std::printf("PASS: %d columns, vmr_nvmr=%d, pverP=%d\n",
-                    NCOL, VMR_NVS, PVERP);
+        std::printf("PASS: %d columns, vmr_nvmr=%d, pverP=%d, pver=%d\n",
+                    NCOL, VMR_NVS, PVERP, PVER);
         std::printf("  O3   [0..%d]: %.3e .. %.3e\n",
                     NCOL - 1, state.vmr_vmr_array[0], state.vmr_vmr_array[NCOL - 1]);
         std::printf("  HNO3 [0..%d]: %.3e .. %.3e\n",
@@ -105,7 +114,7 @@ int main() {
         std::printf("  coeffs[0..%d]: %.3e .. %.3e\n",
                     NCOL - 1, state.coeffs[0], state.coeffs[NCOL - 1]);
         std::printf("  temp_calc[0..%d]: %.3e .. %.3e\n",
-                    NCOL - 1, state.temp_calc[0], state.temp_calc[NCOL - 1]);
+                    NCOL * PVER - 1, state.temp_calc[0], state.temp_calc[NCOL * PVER - 1]);
         return 0;
     }
     return 1;

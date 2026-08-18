@@ -45,17 +45,23 @@
   type = real
   kind = kind_phys
   intent = in
+[ interstitial_var ]
+  standard_name = output_only_interstitial_variable
+  units = 1
+  dimensions = (horizontal_dimension)
+  type = integer
+  intent = out
 [ temp_prev ]
   standard_name = potential_temperature_at_previous_timestep
   units = K
-  dimensions = (horizontal_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real
   kind = kind_phys
   intent = in
 [ temp_layer ]
   standard_name = potential_temperature
   units = K
-  dimensions = (horizontal_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real
   kind = kind_phys
   intent = inout
@@ -63,7 +69,7 @@
 [ qv ]
   standard_name = water_vapor_specific_humidity
   units = kg kg-1
-  dimensions = (horizontal_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real
   kind = kind_phys
   intent = inout
@@ -71,7 +77,6 @@
   optional = True
 [ ps ]
   standard_name = surface_air_pressure
-  state_variable = true
   type = real
   kind = kind_phys
   units = Pa
@@ -80,7 +85,7 @@
 [ to_promote ]
   standard_name = promote_this_variable_to_suite
   units = K
-  dimensions = (horizontal_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real
   kind = kind_temp
   intent = in
@@ -127,6 +132,12 @@
 [ccpp-arg-table]
   name = temp_adjust_finalize
   type = scheme
+[ interstitial_var ]
+  standard_name = output_only_interstitial_variable
+  units = 1
+  dimensions = (horizontal_dimension)
+  type = integer
+  intent = in
 [ errmsg ]
   standard_name = ccpp_error_message
   long_name = Error message for error handling in CCPP

@@ -125,8 +125,9 @@ class TestSuiteCapDeclaration:
         assert "optional, target, intent(inout) :: qv" in capgen_fortran
 
     def test_qv_is_array(self, capgen_fortran):
-        """qv is declared as an assumed-shape array (1D slice of the column)."""
-        assert "optional, target, intent(inout) :: qv(:)" in capgen_fortran
+        """qv is declared as an assumed-shape array (2D, matching real capgen-v1's
+        own horizontal_dimension x vertical_layer_dimension shape)."""
+        assert "optional, target, intent(inout) :: qv(:, :)" in capgen_fortran
 
     def test_non_optional_args_have_no_optional(self, capgen_fortran):
         """ps (a non-optional arg) does not get the optional keyword."""

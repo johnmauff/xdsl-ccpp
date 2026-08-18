@@ -19,6 +19,7 @@
 // CHECK-NEXT:    use temp_set, only: temp_set_init
 // CHECK-NEXT:    use temp_set, only: temp_set_run
 // CHECK-NEXT:    use temp_set, only: temp_set_timestep_initialize
+// CHECK-NEXT:    use test_host_mod, only: index_qv
 // CHECK-NEXT:    use test_host_mod, only: ncols
 // CHECK-NEXT:    use test_host_mod, only: pcnst
 // CHECK-NEXT:    use test_host_mod, only: pver
@@ -31,7 +32,8 @@
 // CHECK-NEXT:    real(kind=kind_phys) :: temp_inc_set
 // CHECK-NEXT:    real(kind=kind_temp), allocatable :: to_promote(:, :)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: promote_pcnst(:)
-// CHECK-NEXT:    real(kind=kind_phys), allocatable :: temp_calc(:)
+// CHECK-NEXT:    real(kind=kind_phys), allocatable :: temp_calc(:, :)
+// CHECK-NEXT:    integer, allocatable :: interstitial_var(:)
 // CHECK-NEXT:    public :: temp_suite_suite_register
 // CHECK-NEXT:    public :: temp_suite_suite_initialize
 // CHECK-NEXT:    public :: temp_suite_suite_finalize
@@ -53,7 +55,10 @@
 // CHECK-NEXT:        allocate(promote_pcnst(pcnst))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(temp_calc)) then
-// CHECK-NEXT:        allocate(temp_calc(ncols))
+// CHECK-NEXT:        allocate(temp_calc(ncols, pver))
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
+// CHECK-NEXT:        allocate(interstitial_var(ncols))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call temp_adjust_register(config_var=config_var, errmsg=errmsg, errflg=errflg)
@@ -73,7 +78,10 @@
 // CHECK-NEXT:        allocate(promote_pcnst(pcnst))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(temp_calc)) then
-// CHECK-NEXT:        allocate(temp_calc(ncols))
+// CHECK-NEXT:        allocate(temp_calc(ncols, pver))
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
+// CHECK-NEXT:        allocate(interstitial_var(ncols))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
@@ -109,7 +117,7 @@
 // CHECK-NEXT:        call temp_calc_adjust_finalize(errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_adjust_finalize(errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:        call temp_adjust_finalize(interstitial_var=interstitial_var, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine temp_suite_suite_finalize
@@ -185,8 +193,6 @@
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: ps(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK-NEXT:      integer :: vertical_layer_index
-// CHECK-NEXT:      integer :: ccpp_lbound_one
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
@@ -198,25 +204,19 @@
 // CHECK-NEXT:        call temp_calc_adjust_run(nbox=nbox, timestep=timestep, temp_level=temp_level,              &
 // CHECK-NEXT:          temp_calc=temp_calc, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      do vertical_layer_index = 1, pver
-// CHECK-NEXT:        ccpp_lbound_one = 1
-// CHECK-NEXT:        if (present(qv)) then
-// CHECK-NEXT:          if (errflg .eq. 0) then
-// CHECK-NEXT:            call temp_adjust_run(foo=nbox, timestep=timestep, temp_prev=temp_calc,                  &
-// CHECK-NEXT:              temp_layer=temp_layer(ccpp_lbound_one:nbox, vertical_layer_index),                    &
-// CHECK-NEXT:              qv=qv(ccpp_lbound_one:nbox, vertical_layer_index), ps=ps,                             &
-// CHECK-NEXT:              to_promote=to_promote(vertical_layer_index:vertical_layer_index,                      &
-// CHECK-NEXT:              vertical_layer_index), promote_pcnst=promote_pcnst, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:          end if
-// CHECK-NEXT:        else
-// CHECK-NEXT:          if (errflg .eq. 0) then
-// CHECK-NEXT:            call temp_adjust_run(foo=nbox, timestep=timestep, temp_prev=temp_calc,                  &
-// CHECK-NEXT:              temp_layer=temp_layer(ccpp_lbound_one:nbox, vertical_layer_index), ps=ps,             &
-// CHECK-NEXT:              to_promote=to_promote(vertical_layer_index:vertical_layer_index,                      &
-// CHECK-NEXT:              vertical_layer_index), promote_pcnst=promote_pcnst, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:          end if
+// CHECK-NEXT:      if ((index_qv > 0)) then
+// CHECK-NEXT:        if (errflg .eq. 0) then
+// CHECK-NEXT:          call temp_adjust_run(foo=nbox, timestep=timestep, interstitial_var=interstitial_var,      &
+// CHECK-NEXT:            temp_prev=temp_calc, temp_layer=temp_layer, qv=qv, ps=ps, to_promote=to_promote,        &
+// CHECK-NEXT:            promote_pcnst=promote_pcnst, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
+// CHECK-NEXT:      else
+// CHECK-NEXT:        if (errflg .eq. 0) then
+// CHECK-NEXT:          call temp_adjust_run(foo=nbox, timestep=timestep, interstitial_var=interstitial_var,      &
+// CHECK-NEXT:            temp_prev=temp_calc, temp_layer=temp_layer, ps=ps, to_promote=to_promote,               &
+// CHECK-NEXT:            promote_pcnst=promote_pcnst, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine temp_suite_suite_physics2
 // CHECK-NEXT:  end module temp_suite_cap
 // CHECK:       // -----

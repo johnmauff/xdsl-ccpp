@@ -23,7 +23,7 @@ CONTAINS
       integer,            intent(in)    :: nbox
       real(kind_phys),    intent(in)    :: timestep
       real(kind_phys),    intent(in)    :: temp_level(:,:)
-      REAL(kind_phys),    intent(out)   :: temp_calc(:)
+      REAL(kind_phys),    intent(out)   :: temp_calc(:,:)
       character(len=512), intent(out)   :: errmsg
       integer,            intent(out)   :: errflg
       !----------------------------------------------------------------

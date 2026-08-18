@@ -60,6 +60,9 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
+| Interstitial-variable register-phase mechanism | ✅ Done (2026-08-17) — non-chained case restored/tested; chained case tracked separately | L4038 |
+| `temp_adjust`/`temp_calc_adjust`/`temp_set` rank/dimensionality re-sync to real upstream | ✅ Done (2026-08-17) | L4098 |
+| Chained-interstitial allocation-ordering bug (`_build_framework_refs`) | 📋 Backlog (M-L, confirmed real bug, not just untested) | L4085 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
@@ -4033,6 +4036,140 @@ dependency is noted.
     unresolved behavior (would break every example that relies on the implicit `kind_phys`
     default; not adopted), and a `--kind-type` CLI flag (capgen-v1 has one; this codebase's
     existing narrower `--extra-kind`/`--extra-iso` analog was left as-is).
+- **Interstitial-variable register-phase mechanism — scoped 2026-08-17, turns out to be mostly
+  already implemented.** Real capgen-v1's rule (`generator/suite_resolver.py`'s own module
+  docstring, "Section 8.4"): for each standard_name a scheme argument requests, if it's not in
+  the flat host/control dict and its *first* use across the suite is `intent(out)`, it's a
+  suite-owned ("interstitial") variable -- the framework synthesizes storage for it (in real
+  capgen-v1, a generated `ccpp_<suite>_data.F90` module); if its first use is `intent(in)`/
+  `inout`, that's a hard error ("used before it is provided"). `examples/capgen`'s own upstream
+  `temp_adjust.meta` exercises exactly this: `interstitial_var` is produced `intent(out)` by
+  `temp_adjust_run` and consumed `intent(in)` by `temp_adjust_final` -- a genuinely cross-phase
+  case (producer and consumer are different generated Fortran subroutines, called separately by
+  the host, potentially timesteps apart). Our own ported `temp_adjust.meta` drops this argument
+  entirely (see the rank-re-sync entry right below, found together with it).
+  - **What's already there, confirmed by reading the code, not assumed:** `host_var_match_pass.py`
+    already implements the *exact* detection rule above -- `_build_model_var_index`'s
+    `produced_in_init` dict (any scheme's `_register`/`_init`/`_timestep_init`/`_run` intent=out/
+    inout arg with no host match) and `_match_and_validate`'s branch that marks a matching
+    unmatched arg `is_interstitial` (or raises the same "no matching host model variable" error
+    real capgen-v1 raises, if there's truly no producer). `cap_shared.py`'s
+    `classify_arg_ownership` already routes any `is_interstitial` arg to
+    `ArgOwnershipKind.SuiteOwned`. `suite_cap.py`'s `_build_module_vars` already declares real
+    module-level storage for every `SuiteOwned` var (real/integer/logical/character/DDT, correct
+    kind/rank) and `_build_framework_refs` already emits a guarded `LazyAllocOp`
+    (`if (.not. allocated(x)) allocate(x(...))`) sized from whichever of three sources resolves
+    first: a scheme's own dimension arg, a MODULE-type host table, or another in-scope array's
+    own shape (`_find_loop_upper_bound`, already handles `examples/constituents_dim`'s own
+    `cwork`/`awork`, dimensioned by a similarly-discovered `number_of_ccpp_constituents`).
+  - **Verified directly, not just read** (a minimal two-scheme/one-host scratch fixture, not
+    committed anywhere): a same-phase producer→consumer (both in one generated `_run`/physics
+    function) allocates and threads correctly; a **cross-phase** producer→consumer (producer in
+    `_run`, consumer in a separately-called `_finalize`, the exact shape of real capgen-v1's own
+    `interstitial_var` test) also works correctly with zero code changes -- the module-level
+    Fortran variable `_build_module_vars` declares simply persists across the separate subroutine
+    calls, the way any module variable does; no dedicated "suite data module" or explicit
+    persistence mechanism is needed the way real capgen-v1 built one.
+  - **Confirmed gap (narrow):** `_find_loop_upper_bound` has no fourth fallback deriving
+    `horizontal_dimension` as `col_end - col_start + 1` from the protected
+    `horizontal_loop_begin`/`horizontal_loop_end` scalars alone -- if literally no host/module
+    array anywhere shares the interstitial's dimension name (a suite with no state arrays at
+    all), allocation silently never happens (empty `dim_var_refs`, so no `LazyAllocOp` is
+    emitted, and the var stays unallocated when a scheme call needs it). Confirmed via the
+    scratch fixture above with `col_start`/`col_end`-only host metadata and no state array.
+    Narrow: every real example in this repo has genuine state arrays to derive dimensions from.
+  - **Genuinely untested, not just unverified-by-me:** DDT-typed interstitials (the
+    `_build_module_vars` branch for `entry.is_ddt` exists but nothing in `tests/` or `examples/`
+    exercises it); non-`real` interstitial arrays (integer/logical/character -- only the `real`
+    case is proven, via `to_promote`).
+  - **Confirmed real bug (2026-08-17), not just an untested edge case — chained interstitial
+    sizing.** Real capgen-v1's own `interstitial_var` (`temp_adjust.meta`) is dimensioned by
+    `dimension_for_interstitial_variable` -- itself a *separate* interstitial scalar, produced
+    by a different scheme's own `_register` phase (`temp_calc_adjust_register`'s `dim_inter`,
+    intent=out). Reproduced this exact chained shape in a scratch fixture (scheme_c's `_register`
+    produces a scalar `dim_inter`; scheme_a's `_run` produces an array dimensioned by it): the
+    generated register-phase preamble allocates the array **before** the call that sets its own
+    sizing scalar:
+    ```fortran
+    if (.not. allocated(produced)) then
+      allocate(produced(dim_inter))     ! dim_inter still unset here
+    end if
+    if (errflg .eq. 0) then
+      call scheme_c_register(dim_inter=dim_inter, ...)   ! sets it AFTER
+    end if
+    ```
+    Root cause: `_generate_lifecycle_fn`'s fixed two-block shape -- `_build_framework_refs`
+    always builds a preamble (all framework refs + all `LazyAllocOp`s) *before*
+    `_build_call_ops` builds the scheme-call sequence, for every phase function. A SuiteOwned
+    var whose sizing dimension is itself a same-phase SuiteOwned producer needs the opposite:
+    allocate *after* the specific call that produces its dimension, not in the shared preamble.
+    Assessed as real, separate follow-on work (not folded into this fix) -- see its own Index
+    entry ("Chained-interstitial allocation-ordering bug") for the full risk writeup: requires
+    `_build_framework_refs`/`_build_call_ops` to coordinate on interleaved (not flat
+    preamble-then-calls) output, touches code shared by every example with any SuiteOwned var
+    (`constituents_dim`, `capgen`, `opt_arg`, `suite_allocate`, `var_compat`, `advection`), has
+    no existing test or failing example to converge against, and overlaps with the still-open
+    `instances` multi-instance architecture decision (real capgen-v1 sidesteps this ordering
+    problem entirely with a dedicated suite-data-module construction pass, not ad hoc
+    per-phase-function preambles).
+  - **Done (2026-08-17):** restored the real `interstitial_var` argument into `examples/capgen`'s
+    `temp_adjust.meta`/`.F90` (`temp_adjust_run` produces it `intent(out)`,
+    `temp_adjust_finalize` consumes it `intent(in)` -- genuinely cross-phase, separate generated
+    Fortran subroutines), deliberately dimensioned by `horizontal_dimension` rather than
+    upstream's chained `dimension_for_interstitial_variable`, to prove the working mechanism on
+    a real example without depending on the separately-tracked ordering bug above. Verified on
+    the real regenerated output: `interstitial_var` gets correct module-level allocatable
+    storage, a `LazyAllocOp` guard that runs during `_register`/`_initialize` (sized from a real
+    host array's shape via `_find_loop_upper_bound`, same mechanism `to_promote` already used),
+    and `temp_suite_suite_finalize` correctly references the same already-allocated module
+    variable with no re-allocation attempt. `temp_adjust_run`'s Fortran body sets
+    `interstitial_var = 6` (ported from capgen-v1's own test logic); `temp_adjust_finalize`
+    checks `interstitial_var(1) /= 6` and errors if not, proving the value survives the gap
+    between the two separate calls. Added `tests/unit/test_interstitial_variable.py`: an
+    isolated two-scheme/one-host fixture (independent of `examples/capgen`'s own DDT/multi-suite
+    complexity) asserting the module-level declaration, allocate-before-producer-call ordering,
+    and cross-phase consumption -- the regression coverage that didn't exist before. Also
+    confirmed, empirically, that the rank re-sync below eliminated `temp_adjust_run`'s own
+    per-vertical-layer promotion-loop dispatch entirely: once its own args are genuinely 2D
+    (matching the caller's arrays), no slicing/promotion is needed at all -- one direct call
+    with the whole array, exactly matching real capgen-v1's own dispatch shape (its
+    `temp_adjust_run` does its own internal `do col_index = 1, foo` loop, never externally
+    sliced). Full suite: 577 passed (574 + 3 new), 1 pre-existing unrelated environment failure
+    deselected, 1 xfailed.
+  - **Not done, deliberately deferred:** (1) the narrow `col_start`/`col_end`-only sizing
+    fallback (no current real example needs it); (2) DDT-typed and non-`real` interstitial
+    spot-checks (still genuinely unexercised); (3) the chained-dimension case itself, tracked as
+    its own item above.
+- **`temp_adjust`/`temp_calc_adjust`/`temp_set` rank/dimensionality re-sync to real upstream —
+  Done (2026-08-17), S as scoped.** `examples/capgen`'s ported `temp_set.meta` already matched
+  upstream's dimensionality exactly; `temp_adjust.meta` did not: upstream's
+  `temp_prev`/`temp_layer`/`qv`/`to_promote` are all `(horizontal_dimension,
+  vertical_layer_dimension)`, 2D; the port had flattened them to `(horizontal_dimension)` only,
+  1D. Confirmed this wasn't a real xdsl-ccpp capability gap forcing the simplification: 2D
+  optional real arrays already worked correctly (`examples/var_compat`'s own `effrg_in`, the
+  exact pattern the unit-conversion buffer-allocate fix above was verified against) -- so
+  restoring the real ranks was a mechanical `.meta` + `.F90` dimension/declaration change, not
+  new generator work, confirmed by direct regeneration with zero xdsl_ccpp code changes needed.
+  Also dropped the stray `state_variable = true` on `ps`, which upstream's `temp_adjust.meta`
+  doesn't set.
+  - **One additional divergence found while restoring, not in the original scope note:**
+    `temp_calc_adjust.meta`'s own `temp_calc` output (matched by standard_name
+    `potential_temperature_at_previous_timestep` against `temp_adjust_run`'s `temp_prev`) was
+    *also* still 1D in our port (upstream's is 2D too) -- since `temp_adjust_run`'s `temp_prev`
+    is now 2D, leaving `temp_calc` at 1D would have been a genuine rank mismatch between a
+    scheme's own declared output and its consumer's now-2D input (an invalid Fortran
+    assumed-shape actual/dummy rank mismatch). Fixed the same way, in both
+    `temp_calc_adjust.meta` and `.F90`.
+  - **Verified directly on regenerated output**, and found a genuinely pleasant side effect:
+    with `temp_adjust_run`'s own args now truly 2D (matching its caller's arrays), the generator
+    no longer needs a per-vertical-layer promotion loop to slice them down to 1D before calling
+    it -- the whole call collapsed to one direct invocation with the full arrays, which is
+    exactly real capgen-v1's own dispatch shape (`temp_adjust_run` does its own internal
+    per-column loop, never externally sliced/promoted). Updated
+    `tests/unit/test_optional_args.py::TestSuiteCapDeclaration::test_qv_is_array` (asserted the
+    old 1D shape) and the `frontend`/`completed_ir`/`end_to_end` capgen-xml.mlir filecheck
+    goldens to match. Full suite: 577 passed, 1 pre-existing unrelated environment failure
+    deselected, 1 xfailed.
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified

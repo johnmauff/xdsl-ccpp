@@ -62,5 +62,5 @@
   standard_name = potential_temperature_at_previous_timestep
   long_name = potential temperature from previous timestep
   units = K
-  dimensions = (horizontal_dimension)
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
