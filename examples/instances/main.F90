@@ -55,7 +55,8 @@ program test_unit_conv
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do ins=1,ninstances
-    call ccpp_register(suite_name=ccpp_suite, errmsg=errmsg, errflg=errflg)
+    call ccpp_register(suite_name=ccpp_suite, instance=ins, &
+        number_of_instances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_register:"
       write(error_unit, '(a)') trim(errmsg)
@@ -68,7 +69,8 @@ program test_unit_conv
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do ins=1,ninstances
-    call ccpp_init(suite_name=ccpp_suite, errmsg=errmsg, errflg=errflg)
+    call ccpp_init(suite_name=ccpp_suite, instance=ins, &
+        number_of_instances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_init:"
       write(error_unit, '(a)') trim(errmsg)
@@ -82,7 +84,8 @@ program test_unit_conv
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do ins=1,ninstances
-    call ccpp_physics_timestep_init(suite_name=ccpp_suite, errmsg=errmsg, errflg=errflg)
+    call ccpp_physics_timestep_init(suite_name=ccpp_suite, instance=ins, &
+        number_of_instances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_init:"
       write(error_unit, '(a)') trim(errmsg)
@@ -97,7 +100,8 @@ program test_unit_conv
   do ins=1,ninstances
     call ccpp_physics_run( &
         suite_name=ccpp_suite, suite_part=ccpp_group, &
-        lb=1, ub=ncols, instance=ins, errmsg=errmsg, errflg=errflg)
+        lb=1, ub=ncols, instance=ins, number_of_instances=ninstances, &
+        errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_physics_run:"
       write(error_unit, '(a)') trim(errmsg)
@@ -111,7 +115,8 @@ program test_unit_conv
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do ins=1,ninstances
-    call ccpp_physics_timestep_final(suite_name=ccpp_suite, errmsg=errmsg, errflg=errflg)
+    call ccpp_physics_timestep_final(suite_name=ccpp_suite, instance=ins, &
+        number_of_instances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_final:"
       write(error_unit, '(a)') trim(errmsg)
@@ -125,7 +130,8 @@ program test_unit_conv
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do ins=1,ninstances
-    call ccpp_final(suite_name=ccpp_suite, errmsg=errmsg, errflg=errflg)
+    call ccpp_final(suite_name=ccpp_suite, instance=ins, &
+        number_of_instances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_final:"
       write(error_unit, '(a)') trim(errmsg)

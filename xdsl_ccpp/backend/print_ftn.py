@@ -483,8 +483,17 @@ class ftnPrintContext:
             case llvm.AddressOfOp():
                 name = op.global_name.root_reference.data
                 if "ccpp_instance_ref" in op.attributes:
+                    # Real capgen-v1's multi-instance model
+                    # (ccpp_cap_refactor_plan.md's "instances/
+                    # instances_advection" entry): ccpp_instance_ref holds
+                    # the plain local Fortran name of this call's own
+                    # instance_number-standard-name scalar arg -- the
+                    # global (ccpp_suite_state) is itself dimensioned by
+                    # number_of_instances for such a suite (see suite_cap.py's
+                    # _build_state_globals), so indexing it directly by that
+                    # bare scalar is the whole story; no member access needed.
                     instance_var = op.attributes["ccpp_instance_ref"].data
-                    name = f"{name}({instance_var}%ccpp_instance)"
+                    name = f"{name}({instance_var})"
                 self.variables[op.result] = name
             case llvm.LoadOp():
                 # Propagate the pointer's name to the loaded value
@@ -1177,13 +1186,19 @@ class ftnPrintContext:
                         prefix="  ",
                     )
                 else:
-                    # Mutable state variable (e.g. ccpp_suite_state).
-                    # When "dimension" attribute is set, emit a per-instance array.
-                    dim = op.attributes.get("dimension")
-                    if dim is not None:
+                    # Mutable state variable (e.g. ccpp_suite_state). For a
+                    # multi-instance suite (see suite_cap.py's
+                    # _build_state_globals), "allocatable" is set: one entry
+                    # per model instance is needed, but number_of_instances
+                    # is itself a runtime HOST scalar, not a compile-time
+                    # constant, so this must be a deferred-shape allocatable
+                    # -- actually allocated+initialized on first use by a
+                    # LazyAllocOp (see _build_suite_state_lazy_alloc), not
+                    # given an inline initializer here.
+                    if "allocatable" in op.attributes:
                         self.print(
-                            f"character(len={char_len}), dimension({dim.data})"
-                            f" :: {name} = '{val}'",
+                            f"character(len={char_len}), allocatable,"
+                            f" dimension(:) :: {name}",
                             prefix="  ",
                         )
                     else:

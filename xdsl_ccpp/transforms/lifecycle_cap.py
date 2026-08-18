@@ -116,6 +116,21 @@ def _generate_lifecycle_fn(
     _ccpp_info_type_for_scan = kwargs.get("ccpp_info_type")
 
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)
+    # Inverted (local var name -> standard_name) fallback for callee args no
+    # scheme's own entry-point metadata declares at all for THIS phase --
+    # e.g. instance_number/number_of_instances (real capgen-v1's
+    # multi-instance model, ccpp_cap_refactor_plan.md's "instances/
+    # instances_advection" entry): suite_cap.py's
+    # _synthesize_instance_number_arg/_synthesize_number_of_instances_arg
+    # add them straight to the suite callee's own signature for every
+    # lifecycle phase, not because any scheme's _init/_finalize/
+    # _timestep_init/_timestep_final entry point declares them (only _run
+    # ever does, and only instance_number at that) -- so _std_name_of below
+    # never has an entry for them, even though the callee's real signature
+    # now requires a value. Mirrors run_dispatch.py's own HOST/MODULE/DDT
+    # table name-matching fallback for the identical problem on the _run
+    # side (_build_per_suite_run_info).
+    name_to_std_all: dict = {v: k for k, (v, _m) in host_var_map_all.items()}
     extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
     for _sn, _suite_callee, _ret, _scheme_names, _entry_postfix, _ri in suite_entries:
         if _entry_postfix is None:
@@ -145,7 +160,7 @@ def _generate_lifecycle_fn(
                 break
         for _arg_name, _arg_type in zip(_callee_in_names, _callee_in_types):
             _bare_name = _bare(_arg_name)
-            _std_name = _std_name_of.get(_bare_name)
+            _std_name = _std_name_of.get(_bare_name) or name_to_std_all.get(_bare_name)
             if (
                 _std_name
                 and _std_name in host_var_map_all

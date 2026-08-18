@@ -78,6 +78,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
@@ -650,6 +651,139 @@ class GenerateSuiteSubroutine(RewritePattern):
             new_arg.setAttr("dimensions", 0)
             new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
             all_args[std_key] = new_arg
+
+    def _synthesize_instance_number_arg(self, all_args) -> None:
+        """Mutate all_args in place: if the host declares an
+        instance_number-standard-name scalar (real capgen-v1's
+        multi-instance model, ccpp_cap_refactor_plan.md's "instances/
+        instances_advection" entry) and no scheme's own entry point for
+        this phase already provides one, synthesize a fresh HostMatched
+        CCPPArgument for it -- named after the host's own local variable --
+        exactly as _synthesize_dynamic_loop_count_args already does for a
+        subcycle's dynamic loop count.
+
+        Real capgen-v1 treats instance_number as a fixed CCPP-protocol
+        argument present on *every* lifecycle call (register/init/
+        finalize/timestep_init/timestep_final/run), regardless of whether
+        any particular scheme's own entry point for that phase happens to
+        declare it -- e.g. examples/instances' own schemes declare
+        instance_number only on their _run entry point, never on
+        _register/_init/_finalize, yet the driver calls
+        ccpp_register(..., instance=ins, ...) for every instance the same
+        way real capgen-v1's own driver does.
+
+        Without this, a multi-instance suite's register/init/finalize/
+        timestep_init/timestep_final subroutines have no way to know which
+        instance's own ccpp_suite_state entry to check/set -- see
+        generateStateCheckOps/generateStateAssignment -- which is exactly
+        the bug a real ctest failure exposed on examples/instances: every
+        instance shared one scalar ccpp_suite_state, so registering
+        instance 2 saw instance 1's own already-'initialized' state and
+        errored.
+
+        Called for every phase, not just physics_mode (unlike
+        _synthesize_dynamic_loop_count_args) -- and is a no-op whenever
+        the host doesn't declare instance_number at all, so ordinary
+        (non-multi-instance) suites are entirely unaffected.
+        """
+        std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
+        if std_key in all_args:
+            return
+        host_var = self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME)
+        if host_var is None:
+            return
+        new_arg = CCPPArgument(host_var.name)
+        new_arg.setAttr("standard_name", CCPP_INSTANCE_NUMBER_STD_NAME)
+        new_arg.setAttr("type", host_var.getAttr("type"))
+        new_arg.setAttr("intent", "in")
+        if host_var.hasAttr("kind"):
+            new_arg.setAttr("kind", host_var.getAttr("kind"))
+        new_arg.setAttr("dimensions", 0)
+        new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+        all_args[std_key] = new_arg
+
+    def _synthesize_number_of_instances_arg(self, all_args) -> None:
+        """Mutate all_args in place: companion to
+        _synthesize_instance_number_arg, for number_of_instances.
+
+        Threaded the same way real capgen-v1 threads it: as an ordinary
+        caller-supplied dummy argument, never use-associated -- confirmed
+        against examples/instances' own test_host.meta, a HOST-type table
+        with no backing test_host.F90 module at all (the driver, main.F90,
+        supplies the value directly; there is nothing to `use`). Its own
+        block-arg SSA value sizes ccpp_suite_state's allocation -- see
+        generateSubroutineCall's own instance_local_name/
+        _build_suite_state_lazy_alloc wiring.
+
+        A no-op whenever the host doesn't declare number_of_instances at
+        all, exactly like _synthesize_instance_number_arg.
+        """
+        std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
+        if std_key in all_args:
+            return
+        host_var = self._resolve_host_only_std_name(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+        if host_var is None:
+            return
+        new_arg = CCPPArgument(host_var.name)
+        new_arg.setAttr("standard_name", CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+        new_arg.setAttr("type", host_var.getAttr("type"))
+        new_arg.setAttr("intent", "in")
+        if host_var.hasAttr("kind"):
+            new_arg.setAttr("kind", host_var.getAttr("kind"))
+        new_arg.setAttr("dimensions", 0)
+        new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+        all_args[std_key] = new_arg
+
+    def _instance_arg_local_name(self, input_arg_list) -> "str | None":
+        """Return the local Fortran name of input_arg_list's own
+        instance_number-standard-name arg, or None if this subroutine's
+        signature has none (a non-multi-instance suite)."""
+        std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
+        for a in input_arg_list:
+            if self._std_key(a) == std_key:
+                return a.name
+        return None
+
+    def _number_of_instances_local_name(self, input_arg_list) -> "str | None":
+        """Return the local Fortran name of input_arg_list's own
+        number_of_instances-standard-name arg, or None if this
+        subroutine's signature has none."""
+        std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
+        for a in input_arg_list:
+            if self._std_key(a) == std_key:
+                return a.name
+        return None
+
+    @staticmethod
+    def _build_suite_state_lazy_alloc(ninstances_ssa) -> "LazyAllocOp":
+        """Return a LazyAllocOp allocating ccpp_suite_state -- dimensioned
+        by ninstances_ssa (this call's own already-in-scope
+        number_of_instances dummy arg -- see
+        _synthesize_number_of_instances_arg/
+        _number_of_instances_local_name, resolved from data_ops by the
+        caller) and initialized to 'uninitialized' -- on first use.
+
+        number_of_instances is a genuine runtime HOST-declared scalar in
+        real capgen-v1's own model (confirmed against
+        ccpp-framework-fresh/capgen/generator/suite_cap.py), not a
+        compile-time constant, so ccpp_suite_state can only become a
+        correctly-sized array via a real Fortran ALLOCATE at runtime --
+        reusing the same guarded "if (.not. allocated(...))" LazyAllocOp
+        idiom already used for SuiteOwned/framework arrays (see
+        _build_framework_refs), rather than inventing a second mechanism.
+        Threaded as an ordinary dummy argument, not use-associated --
+        examples/instances' own test_host.meta is a HOST-type table with
+        no backing test_host.F90 module at all, so there is nothing to
+        `use`; ninstances_ssa is already the right SSA value precisely
+        because _synthesize_number_of_instances_arg put it in the block's
+        own arg list.
+        """
+        return LazyAllocOp(
+            var_name="ccpp_suite_state",
+            kind_name="character",
+            dim_var_refs=[ninstances_ssa],
+            init_value="'uninitialized'",
+        )
 
     def _build_promoted_call_ops(
         self,
@@ -1498,7 +1632,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         )
 
     def generateStateCheckOps(
-        self, check_string: str, data_ops, fn_name: str | None = None
+        self, check_string: str, data_ops, fn_name: str | None = None,
+        instance_local_name: str | None = None,
     ):
         """Emit ops that compare ccpp_suite_state against check_string.
 
@@ -1506,6 +1641,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         and, when fn_name is provided, an error message is written into errmsg.
         The comparison uses ccpp_utils.StrCmpOp (lowered later by the
         lower-ccpp-utils pass) and an XOrI to negate the equality result.
+
+        instance_local_name -- for a multi-instance suite, the local
+        Fortran name of this call's own instance_number-standard-name arg
+        (see _synthesize_instance_number_arg); tags the ccpp_suite_state
+        AddressOfOp with ccpp_instance_ref so print_ftn.py prints
+        ccpp_suite_state(<instance_local_name>), not the bare shared name.
         """
         arr_type = llvm.LLVMArrayType.from_size_and_type(16, i8)
 
@@ -1513,6 +1654,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         addr_const = llvm.AddressOfOp("const_" + check_string, llvm.LLVMPointerType())
         loaded_const = llvm.LoadOp(addr_const, arr_type)
         addr_state = llvm.AddressOfOp("ccpp_suite_state", llvm.LLVMPointerType())
+        if instance_local_name is not None:
+            addr_state.attributes["ccpp_instance_ref"] = StringAttr(instance_local_name)
         loaded_state = llvm.LoadOp(addr_state, arr_type)
 
         strcmp_op = ccpp_utils.StrCmpOp(loaded_const, loaded_state, len(check_string))
@@ -1548,13 +1691,20 @@ class GenerateSuiteSubroutine(RewritePattern):
             if_op,
         ]
 
-    def generateStateAssignment(self, state_string: str):
-        """Emit ops that write state_string into the ccpp_suite_state global."""
+    def generateStateAssignment(
+        self, state_string: str, instance_local_name: str | None = None
+    ):
+        """Emit ops that write state_string into the ccpp_suite_state global.
+
+        instance_local_name -- see generateStateCheckOps's own docstring.
+        """
         arr_type = llvm.LLVMArrayType.from_size_and_type(16, i8)
         # Load from the string constant global and store into ccpp_suite_state
         addr_src = llvm.AddressOfOp("const_" + state_string, llvm.LLVMPointerType())
         loaded = llvm.LoadOp(addr_src, arr_type)
         addr_dst = llvm.AddressOfOp("ccpp_suite_state", llvm.LLVMPointerType())
+        if instance_local_name is not None:
+            addr_dst.attributes["ccpp_instance_ref"] = StringAttr(instance_local_name)
         store = llvm.StoreOp(loaded, addr_dst)
         return [addr_src, loaded, addr_dst, store]
 
@@ -1941,6 +2091,8 @@ class GenerateSuiteSubroutine(RewritePattern):
 
             if physics_mode:
                 self._synthesize_dynamic_loop_count_args(suite_description, arg_tables, all_args)
+            self._synthesize_instance_number_arg(all_args)
+            self._synthesize_number_of_instances_arg(all_args)
 
         # Two or more schemes sharing a standard_name can each independently
         # declare a genuinely different kind, units, or vertical-layer
@@ -2003,6 +2155,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         framework_ref_ops,
         lazy_alloc_ops,
         suite_lifecycle_call_ops=(),
+        instance_local_name: str | None = None,
     ):
         """Assemble all op lists into the body block and return the FuncOp.
 
@@ -2012,6 +2165,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         "_finalize" subroutine. Placed after the ordinary call_ops (mirrors
         capgen-v1's own placement: after group-scheme init/finalize calls)
         and before state_ops (before the suite-state transition).
+
+        instance_local_name -- see generateStateCheckOps's own docstring;
+        forwarded to both the check and the assignment so a multi-instance
+        suite's ccpp_suite_state access is indexed by this call's own
+        instance.
         """
         # Use the ORIGINAL block arg (by position), not data_ops[a.name] --
         # for a scalar arg with a kind or unit mismatch, data_ops[a.name] has
@@ -2033,12 +2191,14 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         errmsg_fn_name = suite_description.attributes["name"] + generated_subroutine_posfix
         check_ops = (
-            self.generateStateCheckOps(check_string, data_ops, errmsg_fn_name)
+            self.generateStateCheckOps(
+                check_string, data_ops, errmsg_fn_name, instance_local_name
+            )
             if check_string is not None
             else []
         )
         state_ops = (
-            self.generateStateAssignment(state_string)
+            self.generateStateAssignment(state_string, instance_local_name)
             if state_string is not None
             else []
         )
@@ -2711,6 +2871,26 @@ class GenerateSuiteSubroutine(RewritePattern):
             divergent_std_keys=divergent_std_keys,
         )
 
+        # Multi-instance suite (real capgen-v1's model, ccpp_cap_refactor_
+        # plan.md's "instances/instances_advection" entry): this call's own
+        # instance_number-standard-name arg indexes ccpp_suite_state, which
+        # must itself be allocated -- and sized by number_of_instances --
+        # before the check/assignment ops below read/write it. Only needed
+        # on phases that actually touch ccpp_suite_state (every non-run
+        # lifecycle phase except _register, which never checks/assigns
+        # state at all, plus each physics group's _run) -- see
+        # subroutine_specs in _generate_lifecycle_fns.
+        instance_local_name = self._instance_arg_local_name(input_arg_list)
+        ninstances_local_name = self._number_of_instances_local_name(input_arg_list)
+        if (
+            instance_local_name is not None
+            and ninstances_local_name is not None
+            and (check_string is not None or state_string is not None)
+        ):
+            lazy_alloc_ops.append(
+                self._build_suite_state_lazy_alloc(data_ops[ninstances_local_name])
+            )
+
         # Suite-level <init>/<final> scheme hook (v2.0 SDF schema): note the
         # entry-point postfix is "_init"/"_final" here, NOT tgt_subroutine_
         # postfix's own "_init"/"_finalize" -- confirmed against the real
@@ -2748,6 +2928,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             framework_ref_ops=framework_ref_ops,
             lazy_alloc_ops=lazy_alloc_ops,
             suite_lifecycle_call_ops=suite_lifecycle_call_ops,
+            instance_local_name=instance_local_name,
         )
         return new_func, list(fn_sigs.values()), suite_use_stubs
 
@@ -2889,13 +3070,27 @@ class GenerateSuiteSubroutine(RewritePattern):
         return _collect_ddt_use_stubs(arg_tables_iterable, self.ddt_source_module)
 
     def _build_state_globals(self, all_strings_used: set):
-        """Return the mutable ccpp_suite_state global and one read-only global per state string."""
+        """Return the mutable ccpp_suite_state global and one read-only global per state string.
+
+        For a multi-instance suite (host declares instance_number -- real
+        capgen-v1's multi-instance model, ccpp_cap_refactor_plan.md's
+        "instances/instances_advection" entry), ccpp_suite_state must hold
+        one entry per model instance, not a single shared scalar -- else
+        two instances collide on the same state (the real ctest failure on
+        examples/instances this fixes). number_of_instances is itself a
+        runtime HOST-declared scalar, not a compile-time constant, so the
+        array is declared allocatable/deferred-shape here and actually
+        sized+allocated lazily on first use -- see
+        _build_suite_state_lazy_alloc, wired into generateSubroutineCall.
+        """
         ccpp_suite_state_global = llvm.GlobalOp(
             llvm.LLVMArrayType.from_size_and_type(16, i8),
             "ccpp_suite_state",
             "internal",
             value=StringAttr("uninitialized"),
         )
+        if self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME) is not None:
+            ccpp_suite_state_global.attributes["allocatable"] = StringAttr("1")
         string_const_globals = [
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)
         ]

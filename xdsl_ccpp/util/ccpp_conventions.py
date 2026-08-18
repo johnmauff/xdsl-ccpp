@@ -140,6 +140,15 @@ CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical laye
 # metadata.
 CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"
 
+# Companion to CCPP_INSTANCE_NUMBER_STD_NAME above: the number of model
+# instances, also threaded as an ordinary caller-supplied dummy argument
+# (real capgen-v1 never use-associates either -- both are genuine runtime
+# HOST scalars with no guaranteed backing Fortran module, e.g. a driver-only
+# test_host.meta with no test_host.F90 at all). Used to size
+# ccpp_suite_state (suite_cap.py's _build_suite_state_lazy_alloc), one entry
+# per instance.
+CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
+
 # ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
 # A small, fixed set of CCPP-protocol standard names that behave as generic,
 # call-scoped dispatch parameters rather than real host-owned state --

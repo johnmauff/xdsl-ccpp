@@ -56,7 +56,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Follow-ups spawned by `constituents_dim`: single-source migration for `advection`; naming-convention audit | 📋 Backlog | L3224 |
 | `suite_allocate` | ✅ Done (2026-08-17) | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
-| `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
+| `instances`/`instances_advection` | ✅ `instances` done (2026-08-18: multi-instance `ccpp_suite_state` narrow fix, per user decision); `instances_advection` still hard-fails at cap generation, tracked separately | L3296 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
@@ -3779,6 +3779,130 @@ dependency is noted.
             `if ((instance_data(instance)%opt_array_flag)) then`, a real,
             valid Fortran reference, with exactly one `use data, only:
             instance_data` stub, no duplicates.
+      - **Post-Stage-5 fix #2 (2026-08-18) — shared-scalar `ccpp_suite_state`
+        broke multi-instance lifecycle ordering, caught by the real
+        `ctest_instances` run.** CI error:
+        ```
+        An error occurred in ccpp_init:
+        Invalid initial CCPP state, 'initialized' in unit_conv_suite_initialize
+        instance: 2
+        ```
+        Root cause: `ccpp_suite_state` was (and, before this codebase's own
+        multi-instance work, always had been) a single module-scope
+        *scalar*. Once two model instances round-tripped through
+        register/init independently, instance 2's `_initialize` call saw
+        instance 1's own already-`'initialized'` value and errored --
+        exactly the collision real capgen-v1's own array-per-instance model
+        exists to avoid. Confirmed against
+        `ccpp-framework-fresh/capgen/generator/suite_cap.py`: real capgen-v1
+        makes `ccpp_suite_state` an **allocatable integer array** indexed by
+        instance number, with dedicated `<suite>_suite_state_alloc`/
+        `_dealloc` subroutines and integer-enum states (`CCPP_SUITE_
+        UNREGISTERED`/`_REGISTERED`/`_FRAMEWORK_INITIALIZED`) -- a materially
+        bigger, cross-cutting redesign than this bug needs (this codebase's
+        existing 3-string-literal-state model, `'uninitialized'`/
+        `'initialized'`/`'in_time_step'`, is a pre-existing, orthogonal gap
+        from real capgen-v1's own 4-state model, tracked separately, not
+        part of this fix).
+        - **Two design forks surfaced and resolved with the user before
+          implementing, per this backlog's own established practice for
+          genuinely architectural (not just mechanical) gaps:**
+          1. *Narrow fix (index the existing 3-state scalar per-instance)
+             vs. full capgen-v1 match (integer enums + alloc/dealloc API).*
+             User chose the **narrow fix** after asking how big the full
+             match would be (answered: cross-cutting, touches the state
+             *representation* everywhere, not just this bug -- better
+             sequenced after task #28's 6-to-8-phase lifecycle match, not
+             before).
+          2. *Thread `instance`/`number_of_instances` through every
+             lifecycle phase (matches capgen-v1 exactly) vs. have each
+             phase operate on all instances at once.* User chose **thread
+             through every phase**, discovered mid-implementation once it
+             became clear the narrow fix alone couldn't avoid the
+             collision without some way to know which instance a given
+             register/init/finalize/timestep call is for.
+        - **Fixed, in `suite_cap.py` unless noted:**
+          - `generateStateCheckOps`/`generateStateAssignment` gained an
+            `instance_local_name` parameter; when set, they tag their
+            `ccpp_suite_state` `llvm.AddressOfOp`s with the (Stage 1-era,
+            previously-orphaned) `ccpp_instance_ref` attribute --
+            `print_ftn.py`'s `AddressOfOp` case already had a consumer for
+            this attribute left over from the old, removed `ccpp_handle`
+            mechanism; repurposed to print a plain `name(instance_var)`
+            subscript instead of the old `%ccpp_instance` derived-type
+            member access.
+          - `_build_state_globals` declares `ccpp_suite_state` allocatable/
+            deferred-shape (`character(len=16), allocatable, dimension(:)`)
+            whenever the host declares `instance_number` at all --
+            `number_of_instances` is itself a genuine runtime HOST scalar,
+            never a compile-time constant, so a fixed-size array is not an
+            option.
+          - New `_build_suite_state_lazy_alloc` reuses the existing
+            `ccpp_utils.LazyAllocOp` idiom (already used for suite-owned/
+            framework arrays: `if (.not. allocated(x)) then allocate(...);
+            x = init; end if`) to allocate + initialize `ccpp_suite_state`
+            on first use, sized by `number_of_instances`. Wired into
+            `generateSubroutineCall` for every phase that actually touches
+            state (every non-run lifecycle phase except `_register`, which
+            never checks/assigns state at all, plus each physics group's
+            `_run`).
+          - New `_synthesize_instance_number_arg`/
+            `_synthesize_number_of_instances_arg` (mirroring the existing
+            `_synthesize_dynamic_loop_count_args` precedent), called
+            unconditionally from `_build_arg_tables` for every lifecycle
+            phase: whenever the host declares `instance_number`/
+            `number_of_instances` and no scheme's own entry point for this
+            phase already provides one, synthesize a fresh `HostMatched`
+            dummy argument for it. A no-op for non-multi-instance suites.
+          - **A second layer of plumbing, discovered only once the above
+            was regenerated and inspected**: the *outer* dispatcher
+            wrappers (`ccpp_cap.py`'s `ccpp_register`/`ccpp_init`/
+            `ccpp_final`/`ccpp_physics_timestep_init`/
+            `ccpp_physics_timestep_final`, built by `lifecycle_cap.py`)
+            don't automatically forward a newly-synthesized suite-callee
+            arg -- `lifecycle_cap.py`'s own pre-scan only exposes a
+            passthrough dummy arg for a bare name some *scheme's own*
+            entry-point metadata declares for that specific phase, which
+            `instance`/`ninstances` never are (only `_run` ever declares
+            `instance_number`, and no scheme ever declares
+            `number_of_instances` at all). Without a fix, these two args
+            would have silently fallen to the wrapper's generic "no host
+            match" branch -- a fresh, always-zero local `alloca` -- a
+            silent-wrong-value bug, not a compile error. Fixed by adding an
+            inverted (local-name -> standard_name) fallback lookup over
+            `host_var_map_all`, mirroring `run_dispatch.py`'s own already-
+            generic HOST/MODULE/DDT table name-matching fallback for the
+            identical problem on the `_run`/`ccpp_physics_run` side (which
+            needed no changes at all -- it already handled this case
+            generically).
+          - `examples/instances/main.F90` re-adapted to pass
+            `instance=ins, number_of_instances=ninstances` into all six
+            lifecycle/run calls (dropped in Stage 5 since those signatures
+            didn't accept them yet).
+        - **New regression test** (`tests/unit/test_multi_instance_suite_state.py`,
+          5 cases) covering: `ccpp_suite_state` declared allocatable (not the
+          old fixed scalar), lazily allocated + sized by `number_of_instances`,
+          check/assignment indexed by `instance`, and every non-run lifecycle
+          wrapper (including `ccpp_register`, which never itself
+          checks/assigns state) correctly forwarding `instance`/`ninstances`
+          as real passthrough dummy args rather than a fresh local. Confirmed
+          to actually catch the regression by stashing the fix and
+          re-running (all 5 new tests failed, as expected) before restoring it.
+        - **Verified**: full suite 594 passed (589 + 5 new), 0 failures.
+          Regenerated `examples/instances` directly and via the real
+          `xdsl_ccpp_capgen()` CMake macro path -- `unit_conv_suite_cap.F90`
+          now declares `character(len=16), allocatable, dimension(:) ::
+          ccpp_suite_state`, lazily allocates it
+          (`allocate(ccpp_suite_state(ninstances))`), and every state
+          check/assignment indexes it by `instance`
+          (`ccpp_suite_state(instance)`); `test_host_ccpp_cap.F90`'s
+          `ccpp_register`/`ccpp_init`/`ccpp_final`/
+          `ccpp_physics_timestep_init`/`ccpp_physics_timestep_final` all now
+          accept `(suite_name, instance, ninstances, errmsg, errflg)` and
+          forward `instance, ninstances` straight into the suite callee
+          (not a local alloca). Real `ctest_instances` execution itself
+          still can't be verified locally (no Fortran compiler on this
+          laptop) -- left for the next CI run to confirm end-to-end.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
