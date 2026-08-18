@@ -93,6 +93,60 @@ def _module_var_fortran_type(op: "CCPPModuleVarOp") -> str:
     return ftn
 
 
+def classify_arg_intent(
+    *,
+    is_allocatable_char: bool,
+    is_alloc: bool,
+    is_in: bool,
+    has_array_dims: bool,
+    is_inout_return: bool,
+) -> str:
+    """Return the CCPP-cap intent ('in'/'inout'/'out') for a block argument.
+
+    Single source of truth for the intent-classification decision tree --
+    both this file's own `_print_fn` (the Fortran printer) and
+    `print_cpp_header.py`'s `_intent_from_arg` (the BIND(C) header printer)
+    must produce the identical intent for the identical argument, since
+    they're printing two views of the same generated subroutine signature.
+    Before this was extracted, `print_cpp_header.py` carried its own
+    hand-copied replica that was missing the `is_alloc` branch entirely --
+    harmless today only because every current allocatable (non-character)
+    argument also happens to have array dims, so it fell through to the
+    same "inout" via `has_array_dims` instead; a future scalar allocatable
+    argument (e.g. a scalar workspace scratch var) would have silently
+    gotten the wrong intent in the C++ header while the Fortran side
+    stayed correct. A pure function over booleans (no xDSL type
+    dependency) so it can't accidentally pick up file-specific state and
+    both callers are forced through the exact same branch order.
+
+    is_allocatable_char -- True for memref<memref<?xi8>> (allocatable
+        character array): always intent(out), the callee allocates and
+        fills it.
+    is_alloc -- True when the arg's own name_hint carries the "__alloc"
+        suffix (allocatable, non-character): intent(inout).
+    is_in -- True when the name_hint carries the "__in" suffix (an array
+        arg deliberately narrowed to intent(in), e.g. after being copied
+        into a local for unit conversion): intent(in).
+    has_array_dims -- True when the type has at least one dynamic array
+        dimension: intent(inout) (the host provides the buffer, the
+        scheme may write to it in place).
+    is_inout_return -- True when this block arg is echoed back in the
+        function's own ReturnOp (see `_print_fn`'s `inout_block_args`
+        scan): intent(inout).
+    """
+    if is_allocatable_char:
+        return "out"
+    if is_alloc:
+        return "inout"
+    if is_in:
+        return "in"
+    if has_array_dims:
+        return "inout"
+    if is_inout_return:
+        return "inout"
+    return "in"
+
+
 @dataclass
 class ftnPrintContext:
     """Stateful context for printing MLIR IR as Fortran source text.
@@ -1654,20 +1708,16 @@ class ftnPrintContext:
                             and arg.name_hint.endswith("__in"))
                 type_str = inner.mlir_type_to_ftn_type(arg.type)
                 dim_suffix = inner._ftn_dim_suffix(arg.type)
-                if ftnPrintContext._is_allocatable_char(arg.type):
+                is_allocatable_char = ftnPrintContext._is_allocatable_char(arg.type)
+                intent = classify_arg_intent(
+                    is_allocatable_char=is_allocatable_char,
+                    is_alloc=is_alloc,
+                    is_in=is_in,
+                    has_array_dims=bool(dim_suffix),
+                    is_inout_return=arg in inout_block_args,
+                )
+                if is_allocatable_char or is_alloc:
                     type_str = type_str + ", allocatable"
-                    intent = "out"
-                elif is_alloc:
-                    type_str = type_str + ", allocatable"
-                    intent = "inout"
-                elif is_in:
-                    intent = "in"
-                elif dim_suffix:
-                    intent = "inout"
-                elif arg in inout_block_args:
-                    intent = "inout"
-                else:
-                    intent = "in"
                 if bind_c:
                     inner.print(inner._bind_c_arg_decl_line(arg.type, arg_name, intent, is_opt))
                 else:

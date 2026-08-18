@@ -14,6 +14,7 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.utils.hints import isa
 
+from xdsl_ccpp.backend.print_ftn import classify_arg_intent
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import KindDefOp
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
@@ -121,17 +122,17 @@ def _rank_comment(mlir_type: object) -> str:
 
 
 def _intent_from_arg(arg: object, inout_block_args: set) -> str:
-    """Replicate the intent logic from print_ftn._print_fn for a block argument."""
+    """Return the intent for a block argument via print_ftn.py's shared
+    classify_arg_intent -- see that function's own docstring for why this
+    must go through the shared decision tree rather than its own copy."""
     mlir_type = arg.type
-    if _is_allocatable_char(mlir_type):
-        return "out"
-    if arg.name_hint and arg.name_hint.endswith("__in"):
-        return "in"
-    if _has_array_dims(mlir_type):
-        return "inout"
-    if arg in inout_block_args:
-        return "inout"
-    return "in"
+    return classify_arg_intent(
+        is_allocatable_char=_is_allocatable_char(mlir_type),
+        is_alloc=bool(arg.name_hint and arg.name_hint.endswith("__alloc")),
+        is_in=bool(arg.name_hint and arg.name_hint.endswith("__in")),
+        has_array_dims=_has_array_dims(mlir_type),
+        is_inout_return=arg in inout_block_args,
+    )
 
 
 def _fn_params(fn_op: func.FuncOp) -> list[tuple[str, str, str]]:
