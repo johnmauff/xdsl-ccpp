@@ -80,6 +80,8 @@ jobs:
             targets: opt_arg_host_integration
           - example: suite_allocate
             targets: suite_allocate.exe
+          - example: instances
+            targets: instances.exe
 
     steps:
       - uses: actions/checkout@v4

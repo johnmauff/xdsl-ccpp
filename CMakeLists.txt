@@ -40,21 +40,18 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # was being discarded into a throwaway local instead of written back to the
 # host).
 #
-# NOT wired in yet: examples/instances and examples/instances_advection
-# exist (ported from capgen-v1's feature/capgen-v1 branch
-# end-to-end-tests/, same as chunked_data/constituents_dim/opt_arg/
-# suite_allocate) but each hit a confirmed xdsl_ccpp generation or
-# cap-correctness bug during porting -- see the "capgen-v1 end-to-end-tests
-# capability gaps" backlog in ccpp_cap_refactor_plan.md for the specific
-# errors. instances_advection's own cap generation hard-fails outright
+# examples/instances (as of 2026-08-18, after implementing real capgen-v1's
+# own multi-instance model -- see ccpp_cap_refactor_plan.md's "instances/
+# instances_advection" backlog entry, Stages 1-5) is now wired in below.
+#
+# NOT wired in yet: examples/instances_advection (ported from the same
+# upstream location, combining the multi-instance mechanism above with
+# constituent registration) still hard-fails cap generation outright with an
+# unrelated xDSL IR verifier crash inside constituent-registration cap code
 # (would abort this file's own configure step with a FATAL_ERROR if
-# add_subdirectory'd), so it's deliberately left out of the list below;
-# instances's cap generation succeeds but either produces silently-wrong
-# generated code or omits the actual feature under test, so its own
-# CMakeLists.txt exists and works standalone but isn't add_subdirectory'd
-# here either, to avoid presenting a known-incomplete ctest as passing.
-# examples/instances is additionally a real, open architecture decision
-# (see the backlog entry) -- not just a bug.
+# add_subdirectory'd) -- see the same backlog entry. Deliberately deferred
+# until that's diagnosed on its own; get plain instances solid first (done),
+# don't debug the harder constituents+multi-instance combination before it.
 
 enable_testing()
 
@@ -197,3 +194,4 @@ add_subdirectory(examples/chunked_data)
 add_subdirectory(examples/constituents_dim)
 add_subdirectory(examples/opt_arg)
 add_subdirectory(examples/suite_allocate)
+add_subdirectory(examples/instances)

@@ -1,13 +1,16 @@
 #------------------------------------------------------------------------------
 #
 # instances: ported from capgen-v1's own upstream end-to-end-tests/instances
-# (feature/capgen-v1 branch) -- exercises capgen-v1's own explicit
-# instance_number/number_of_instances multi-instance dispatch pattern, an
-# architecturally different model from xdsl-ccpp's existing ccpp_t-handle
-# mechanism (see the "instances/instances_advection" backlog entry in
-# ccpp_cap_refactor_plan.md for the full comparison). Brought in on request
-# to have the real source available for a later decision, NOT because the
-# mechanism is confirmed to work end-to-end yet -- see the caveat below.
+# (feature/capgen-v1 branch) -- exercises real capgen-v1's own explicit
+# instance_number/number_of_instances multi-instance dispatch pattern: a
+# HOST-owned array of DDT (`instance_data`, one entry per model instance),
+# indexed at each call by an ordinary instance_number-standard-name scalar
+# arg. xdsl-ccpp previously had a second, structurally different mechanism
+# of its own (`ccpp_handle`/`num_instances`, an opaque handle type) for the
+# same general idea; that was removed (Stage 1 of the "instances/
+# instances_advection" backlog entry in ccpp_cap_refactor_plan.md) in favor
+# of matching real capgen-v1's model directly (Stages 2-4, same entry) --
+# this example now builds and runs against that real mechanism.
 #
 # main.meta's upstream `type = control` table isn't a recognized xdsl-ccpp
 # table type -- folded into test_host.meta (type = host), dropping
@@ -18,24 +21,16 @@
 # -- unlike suite_name/group_name/etc, these two are exactly the mechanism
 # under test, not dispatch plumbing to discard.
 #
-# Cap generation SUCCEEDS with this conversion -- but inspecting the
-# generated output shows the actual per-instance DDT-array mechanism is NOT
-# implemented: `instance_data` (the host's own `instance_type` array,
-# dimensioned by number_of_instances) never appears anywhere in the
-# generated Fortran at all. `data_array`/`data_array2`/`data_array_opt`
-# (DDT members of `instance_type`) get resolved as ordinary top-level
-# caller-supplied ("Block") arguments instead of being indexed through
-# `instance_data(instance)%...` -- `instance` itself is accepted and
-# forwarded to the scheme calls correctly, but nothing in the generated
-# code ever uses it to select which instance's own storage to touch. A
-# driver could still manually pass `instance_data(ins)%data_array(:,2)`
-# etc. at each call (similar to how examples/chunked_data's driver manually
-# slices by [lb,ub]) to recover real per-instance separation by hand -- but
-# that's a workaround, not the automatic per-instance dispatch capgen-v1
-# itself provides, and building it means taking a position on the open
-# architecture question this backlog entry raises. main.F90 is left as
-# upstream's own unadapted generic-dispatch driver for now, pending that
-# decision -- not add_subdirectory'd from the root CMakeLists.txt.
+# main.F90's driver was adapted from real capgen-v1's own upstream driver to
+# match xdsl-ccpp's actual generated calling convention -- see main.F90's
+# own header comment for exactly what changed and why (in short: xdsl-ccpp's
+# lifecycle still has 6 phases where capgen-v1 has 8, splitting
+# "initialize"/"finalize" further into separate per-group physics_init/
+# physics_final calls that don't exist here yet -- ccpp_cap_refactor_plan.md's
+# "Full 6-phase to 8-phase lifecycle match" backlog entry, still open; same
+# rationale as examples/opt_arg's and examples/chunked_data's own drivers).
+# The loop-over-instances structure itself -- the actual mechanism under
+# test -- is unchanged from upstream.
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "unit_conv_scheme_1" "unit_conv_scheme_2")
@@ -63,3 +58,17 @@ xdsl_ccpp_capgen(HOSTFILES ${INSTANCES_HOST_METADATA_FILES}
                  SUITES ${SUITE_FILES}
                  HOST_NAME ${HOST}
                  OUTPUT_ROOT "${CCPP_CAP_FILES}")
+
+if(XDSL_CCPP_HAVE_FORTRAN)
+  add_library(INSTANCES_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
+                                        ${INSTANCES_HOST_FORTRAN_FILES}
+                                        ${CCPP_CAPS_LIST})
+  set_target_properties(INSTANCES_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
+  target_include_directories(INSTANCES_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+
+  add_executable(instances.exe main.F90)
+  target_link_libraries(instances.exe PRIVATE INSTANCES_TESTLIB)
+  target_include_directories(instances.exe PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
+
+  add_test(NAME ctest_instances COMMAND instances.exe)
+endif()

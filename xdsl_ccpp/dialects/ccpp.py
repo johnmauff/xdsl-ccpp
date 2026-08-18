@@ -186,32 +186,6 @@ class SubcycleOp(IRDLOperation):
         )
 
 
-@irdl_op_definition
-class CcppHandleOp(IRDLOperation):
-    """Records the host model's ccpp_t variable for use by cap-generation passes.
-
-    Emitted by HostVariableMatchPass when it finds a host metadata argument
-    with ``type = ccpp_t``.  Cap-generation passes locate this op to thread
-    the ccpp_t handle through every generated subroutine signature.
-
-    ``var_name``    — local Fortran variable name (e.g. ``ccpp_data``)
-    ``module_name`` — host Fortran module that declares it (e.g. ``data``)
-    """
-
-    name = "ccpp.ccpp_handle"
-
-    var_name    = prop_def(StringAttr)
-    module_name = prop_def(StringAttr)
-
-    def __init__(self, var_name: str, module_name: str):
-        super().__init__(
-            properties={
-                "var_name":    StringAttr(var_name),
-                "module_name": StringAttr(module_name),
-            }
-        )
-
-
 class TableBaseOp(IRDLOperation):
     table_name = prop_def(StringAttr, prop_name="name")
     table_type = prop_def(TableTypeKindAttr, prop_name="type")
@@ -532,7 +506,16 @@ class ResolvedArgOp(IRDLOperation):
 
     Required properties by ``source_kind``:
       - Host:      ``var_name``, ``module_name``
-      - DdtMember: ``var_name``, ``module_name``, ``member_path``
+      - DdtMember: ``var_name``, ``module_name``, ``member_path``, and
+                   optionally ``index_std_name`` (real capgen-v1's
+                   multi-instance model: set when ``var_name`` is itself a
+                   HOST-owned array of DDT, one entry per model instance --
+                   see cap_shared.py's _build_ddt_resolution_maps -- and this
+                   call already resolves a sibling scalar with this standard
+                   name; ``instance_std_name%member_path`` on ``var_name``
+                   becomes ``var_name(<local index>)%member_path`` once
+                   _build_run_dispatch_chain resolves the standard name to a
+                   local Fortran reference)
       - CapVar:    ``std_name``
       - Block:     none of the above
     """
@@ -545,6 +528,7 @@ class ResolvedArgOp(IRDLOperation):
     module_name = opt_prop_def(StringAttr)
     member_path = opt_prop_def(StringAttr)
     std_name = opt_prop_def(StringAttr)
+    index_std_name = opt_prop_def(StringAttr)
 
     def __init__(
         self,
@@ -554,6 +538,7 @@ class ResolvedArgOp(IRDLOperation):
         module_name: str | StringAttr | None = None,
         member_path: str | StringAttr | None = None,
         std_name: str | StringAttr | None = None,
+        index_std_name: str | StringAttr | None = None,
     ):
         if isa(arg_name, str):
             arg_name = StringAttr(arg_name)
@@ -571,6 +556,10 @@ class ResolvedArgOp(IRDLOperation):
             properties["member_path"] = StringAttr(member_path) if isa(member_path, str) else member_path
         if std_name is not None:
             properties["std_name"] = StringAttr(std_name) if isa(std_name, str) else std_name
+        if index_std_name is not None:
+            properties["index_std_name"] = (
+                StringAttr(index_std_name) if isa(index_std_name, str) else index_std_name
+            )
 
         super().__init__(properties=properties)
 
@@ -580,15 +569,17 @@ class ResolvedArgOp(IRDLOperation):
         has_mod = self.module_name is not None
         has_member = self.member_path is not None
         has_std = self.std_name is not None
+        has_index_std = self.index_std_name is not None
 
         if kind == ArgSourceKind.Host:
             if not (has_var and has_mod):
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=Host requires var_name and module_name"
                 )
-            if has_member or has_std:
+            if has_member or has_std or has_index_std:
                 raise VerifyException(
-                    "ResolvedArgOp: source_kind=Host must not set member_path or std_name"
+                    "ResolvedArgOp: source_kind=Host must not set member_path, "
+                    "std_name, or index_std_name"
                 )
         elif kind == ArgSourceKind.DdtMember:
             if not (has_var and has_mod and has_member):
@@ -605,13 +596,13 @@ class ResolvedArgOp(IRDLOperation):
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=CapVar requires std_name"
                 )
-            if has_var or has_mod or has_member:
+            if has_var or has_mod or has_member or has_index_std:
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=CapVar must not set var_name, "
-                    "module_name, or member_path"
+                    "module_name, member_path, or index_std_name"
                 )
         elif kind == ArgSourceKind.Block:
-            if has_var or has_mod or has_member or has_std:
+            if has_var or has_mod or has_member or has_std or has_index_std:
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=Block must not set any source payload"
                 )
@@ -682,7 +673,6 @@ CCPP = Dialect(
         GroupOp,
         SchemeOp,
         SubcycleOp,
-        CcppHandleOp,
         KindOp,
         KindsOp,
         TablePropertiesOp,

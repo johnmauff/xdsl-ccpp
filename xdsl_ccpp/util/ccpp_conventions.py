@@ -31,20 +31,6 @@ CCPP_SCHEME_NAME_LEN = 64
 # be emitted; we assume a named loop count always means "loop more than once."
 CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT = 2
 
-# ── ccpp_t handle ───────────────────────────────────────────────────────────
-# The ccpp_t derived type carries per-instance state (instance index, error
-# handling, loop counters) and is threaded through every generated cap
-# subroutine.  Host .meta files declare the variable with this standard name
-# and type; the cap generator recognises it and handles it specially.
-CCPP_T_INSTANCE_STD_NAME = "ccpp_t_instance"
-CCPP_T_TYPE               = "ccpp_t"
-
-# Maximum number of simultaneous CCPP instances (ensemble members, perturbed
-# runs, thread-parallel physics).  Mirrors CCPP_NUM_INSTANCES in capgen-ng.
-# The suite cap generates a per-instance state array of this length.
-# TODO: expose via --num-instances CLI argument.
-CCPP_NUM_INSTANCES = 200
-
 # ── Framework-internal standard names ──────────────────────────────────────
 # Variables managed entirely by the CCPP framework — schemes reference them
 # but they are never matched to host model variables.
@@ -68,7 +54,6 @@ CCPP_FRAMEWORK_STD_NAMES: frozenset = frozenset({
     "ccpp_constituents",              # constituent transport array
     "ccpp_constituent_tendencies",    # constituent tendency array
     "number_of_ccpp_constituents",    # count of registered constituents
-    CCPP_T_INSTANCE_STD_NAME,         # ccpp_t handle threaded by the cap generator
 })
 
 # The full set of names the host variable match pass skips without error.
@@ -143,6 +128,26 @@ CCPP_LOOP_BEGIN_STD_NAME  = "horizontal_loop_begin"    # first column index
 CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
 CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
+
+# Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
+# instances/instances_advection entry): a scalar with this standard name,
+# threaded as an ordinary caller-supplied dummy argument, selects which
+# entry of a HOST-owned array-of-DDT (dimensioned by number_of_instances,
+# see cap_shared.py's _build_ddt_resolution_maps) the current call operates
+# on. Not a dispatch scalar (DISPATCH_SCALAR_STD_NAMES above) -- it's real
+# host state that happens to also serve as an array index, not a fixed
+# CCPP-protocol parameter every call has regardless of any scheme's own
+# metadata.
+CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"
+
+# Companion to CCPP_INSTANCE_NUMBER_STD_NAME above: the number of model
+# instances, also threaded as an ordinary caller-supplied dummy argument
+# (real capgen-v1 never use-associates either -- both are genuine runtime
+# HOST scalars with no guaranteed backing Fortran module, e.g. a driver-only
+# test_host.meta with no test_host.F90 at all). Used to size
+# ccpp_suite_state (suite_cap.py's _build_suite_state_lazy_alloc), one entry
+# per instance.
+CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 
 # ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
 # A small, fixed set of CCPP-protocol standard names that behave as generic,

@@ -86,6 +86,33 @@ class TestDdtMemberConstruction:
         op.verify()
         assert op.source_kind.data == ArgSourceKind.DdtMember
 
+    def test_construct_with_index_std_name(self):
+        """index_std_name (real capgen-v1's multi-instance model: var_name is
+        itself a HOST-owned array of DDT) is an optional DdtMember-only field."""
+        op = ResolvedArgOp(
+            "data_array",
+            ArgSourceKind.DdtMember,
+            var_name="instance_data",
+            module_name="data",
+            member_path="data_array",
+            index_std_name="instance_number",
+        )
+        op.verify()
+        assert op.index_std_name.data == "instance_number"
+
+    def test_index_std_name_optional(self):
+        """The ordinary (non-array-instance) DdtMember case still verifies
+        with no index_std_name set at all."""
+        op = ResolvedArgOp(
+            "rad_temp",
+            ArgSourceKind.DdtMember,
+            var_name="phys_state",
+            module_name="test_host_mod",
+            member_path="rad%temp",
+        )
+        op.verify()
+        assert op.index_std_name is None
+
 
 class TestCapVarConstruction:
     """source_kind=CapVar: a cap-owned module variable (e.g. a constituent)."""
@@ -148,6 +175,15 @@ class TestVerifyRejectsInvalidCombinations:
         with pytest.raises(VerifyException, match="must not set"):
             op.verify()
 
+    def test_host_with_index_std_name_rejected(self):
+        """index_std_name is a DdtMember-only field; Host must not set it."""
+        op = ResolvedArgOp(
+            "x", ArgSourceKind.Host, var_name="v", module_name="m",
+            index_std_name="instance_number",
+        )
+        with pytest.raises(VerifyException, match="must not set"):
+            op.verify()
+
     def test_ddt_member_missing_member_path(self):
         op = ResolvedArgOp(
             "x", ArgSourceKind.DdtMember, var_name="v", module_name="m"
@@ -177,7 +213,21 @@ class TestVerifyRejectsInvalidCombinations:
         with pytest.raises(VerifyException, match="must not set"):
             op.verify()
 
+    def test_cap_var_with_index_std_name_rejected(self):
+        """index_std_name is a DdtMember-only field; CapVar must not set it."""
+        op = ResolvedArgOp(
+            "x", ArgSourceKind.CapVar, std_name="s", index_std_name="instance_number"
+        )
+        with pytest.raises(VerifyException, match="must not set"):
+            op.verify()
+
     def test_block_with_any_payload_rejected(self):
         op = ResolvedArgOp("x", ArgSourceKind.Block, std_name="s")
+        with pytest.raises(VerifyException, match="must not set"):
+            op.verify()
+
+    def test_block_with_index_std_name_rejected(self):
+        """index_std_name is a DdtMember-only field; Block must not set it."""
+        op = ResolvedArgOp("x", ArgSourceKind.Block, index_std_name="instance_number")
         with pytest.raises(VerifyException, match="must not set"):
             op.verify()

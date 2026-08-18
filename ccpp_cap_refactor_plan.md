@@ -56,7 +56,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Follow-ups spawned by `constituents_dim`: single-source migration for `advection`; naming-convention audit | 📋 Backlog | L3224 |
 | `suite_allocate` | ✅ Done (2026-08-17) | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
-| `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
+| `instances`/`instances_advection` | ✅ `instances` done (2026-08-18: multi-instance `ccpp_suite_state` narrow fix, per user decision); `instances_advection` still hard-fails at cap generation, tracked separately | L3296 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
@@ -3466,6 +3466,443 @@ dependency is noted.
       a `memref.copy` shape mismatch, also inside a constituent-registration path) — worth
       comparing the two directly before scoping either, they may share one root cause. Not
       diagnosed further.
+  - **Architecture decision made (2026-08-18): build capgen-v1's real model (option B),
+    not the existing `ccpp_handle`/`num_instances` mechanism (option A).** Re-examined
+    option A before deciding: no example anywhere declares a ccpp-handle host var, and
+    `ccpp_handle` resolves to `None` on every real build today -- it was never wired into
+    a compiled/ctest-run example, only exercised at the unit/filecheck level (see the
+    "Stage 1 done" note below for the corrected record of exactly what coverage it had).
+    Removing option A is part of this task's scope, not a separate cleanup to schedule
+    later: the rationale is "two structurally different multi-instance mechanisms is more
+    than we want to maintain, and capgen-v1's model is the one that matches upstream,"
+    not that option A was unused.
+    - **What building option B actually requires**, narrowed down from the general
+      architecture question to concrete engineering: `instance`/`ninstances`
+      (`instance_number`/`number_of_instances`) as ordinary host-matched scalar args
+      already works today with no changes -- confirmed by the 2026-07-30 port, cap
+      generation for plain `instances` already threads `instance` correctly into every
+      scheme call. The real, and only, generator gap is DDT-member resolution
+      (`cap_shared.py`'s `_build_ddt_resolution_maps`/`_resolve_ddt_access_path`): it only
+      knows how to resolve a member access to one statically-known Fortran symbol, so a
+      HOST-owned array-of-DDT indexed by a runtime scalar (`instance_data(instance)%member`,
+      dimensioned `number_of_instances`) silently falls back to flat Block-arg treatment
+      instead of erroring or resolving correctly. Needs a new access-pattern case: recognize
+      a HOST-owned array-of-DDT dimensioned by `number_of_instances`, and when resolving one
+      of its members inside a call whose signature already carries an
+      `instance_number`-standard-name arg, emit the `arr(instance)%member` subscript instead
+      of resolving to a single symbol -- without disturbing the existing single-instance
+      DDT-resolution path every other example relies on.
+    - **Deliberately out of scope for now, sequencing decision, not a design question:**
+      (a) whether this shares the missing "suite-data-module construction pass" concept
+      that would also help the chained-interstitial ordering bug (separate Index entry) --
+      not folding that in here; (b) `instances_advection`'s hard `memref.copy` verifier
+      crash above -- get plain `instances` working end-to-end first, don't debug the
+      constituents+multi-instance combination before the simpler mechanism is solid.
+    - **Stage 1 done (2026-08-18): removed option A (`ccpp_handle`/`num_instances`)
+      entirely.** Turned out bigger than "mechanical" once traced -- it wasn't an
+      isolated add-on, it was woven into `run_dispatch.py`'s and `lifecycle_cap.py`'s
+      shared block-signature/dispatch-chain/inout-echo machinery via a 3-way
+      `if ccpp_info_type / elif ccpp_t_type / else` pattern at ~10 distinct sites,
+      collapsed to a clean 2-way `if ccpp_info_type / else` everywhere (`ccpp_info_t`
+      -- the real, distinct capgen-v1 mechanism -- untouched throughout). Also
+      **corrected a wrong claim from the design-conversation scoping**: option A is
+      not "dead code with zero exercised paths" -- `tests/unit/test_ccpp_t_threading.py`
+      (12 tests) and `tests/filecheck/examples/end_to_end/helloworld-ccpp-t.mlir` were
+      real and passing; that finding was made while investigating the scratchpad
+      during the environment corruption described in the recovery note above, before
+      it was known to be corrupted, and a stale/missing `.pyc`-only file was mistaken
+      for a deleted one. Confirmed with the user before deleting anything anyway --
+      the removal rationale shifted from "it's dead" to "two structurally different
+      multi-instance mechanisms is more than we want to maintain, and capgen-v1's
+      model is the one that matches upstream," not withdrawn.
+      - **Removed:** `CcppHandleOp` (dialects/ccpp.py, class + dialect registration);
+        its emission in `host_var_match_pass.py`'s `_build_model_var_index`; the
+        `--num-instances` CLI flag and `ccpp.num_instances` IR attribute embedding
+        in `ccpp_xml.py`; all `ccpp_handle`/`num_instances`/`ccpp_t_type`/
+        `ccpp_data_block_arg`/`ccpp_t_var_name` plumbing in `suite_cap.py`,
+        `ccpp_cap.py`, `lifecycle_cap.py`, `run_dispatch.py`; `CCPP_T_TYPE`,
+        `CCPP_T_INSTANCE_STD_NAME`, `CCPP_NUM_INSTANCES` from `ccpp_conventions.py`
+        (including removing `CCPP_T_INSTANCE_STD_NAME` from
+        `CCPP_FRAMEWORK_STD_NAMES`); `tests/unit/test_ccpp_t_threading.py` (whole
+        file); `TestCcppHandleRecognition` + its `_get_ccpp_handle` helper from
+        `tests/unit/test_host_var_match.py`; `examples/helloworld/
+        hello_world_host_ccpp_t.meta` and its `helloworld-ccpp-t.mlir` golden.
+      - **Verified:** full suite green, 0 failures both before and after -- the only
+        change in the total is exactly the 18 deleted tests (12 from
+        `test_ccpp_t_threading.py` + 5 from `TestCcppHandleRecognition` + 1 filecheck
+        golden), confirmed by diffing the pass count across the removal. (Absolute
+        pass/skip counts aren't recorded here on purpose -- they shift for unrelated
+        environment reasons, e.g. whether `fparser` is installed in the venv used for
+        the run, and would go stale; see `git log`/CI for the actual current totals.)
+        Regenerated `examples/helloworld` (both schemes, `hello_scheme` +
+        `temp_adjust`, matching its real `CMakeLists.txt` invocation) and
+        `examples/capgen` directly through the full pipeline: both succeed, and
+        `grep` for `ccpp_t`/`ccpp_data`/`ccpp_handle` in the generated Fortran
+        returns nothing.
+      - **Stage 2 done (2026-08-18): `_build_ddt_resolution_maps`/`_resolve_ddt_access_path`
+        now carry array-dimension info, with zero consumers yet -- pure plumbing, no
+        behavior change.** `ddt_instance_map`'s per-type value grew a 3rd element,
+        `instance_array_dim_std_name`: `None` for the ordinary scalar-instance case
+        every ported example uses today, or the instance var's own first `dim_names`
+        entry (e.g. `"number_of_instances"`) when it's array-dimensioned -- extracted
+        straight off the existing `dimensions`/`dim_names` descriptor attributes
+        (`ccpp_descriptors.py`'s `CCPPArgument`), no new metadata vocabulary needed.
+        `_resolve_ddt_access_path` grew a matching 4th return element, propagated
+        unchanged through nested-member recursion (it describes the base instance's
+        own array-ness, independent of how many `%member`s get prepended to reach a
+        leaf). Only the top-level module/host-level instance is covered -- a DDT
+        member that's itself an array of a nested DDT type is out of scope, no real
+        capgen-v1 example needs that shape.
+        - **All 5 call sites of `_resolve_ddt_access_path`** (`run_dispatch.py`,
+          `lifecycle_cap.py`, `suite_cap.py`'s `--emit-resolved-vars` path,
+          `cap_shared.py`'s own recursive self-call and `_resolve_host_var_key`)
+          updated to unpack the new 4-tuple; every site except `run_dispatch.py`'s
+          (the one Stage 3 will actually change) discards the new value for now.
+        - **Test fixtures fixed, not just production code**: two test files
+          (`test_run_dispatch.py`, `test_run_dispatch_host_wrapper_resolution.py`)
+          hand-construct `ddt_instance_map`/`_resolve_ddt_access_path` results as
+          literal tuples rather than via the real builder -- all updated to the new
+          shape, plus two new tests added (`test_array_instance_dim_reported_at_direct_level`,
+          `test_array_instance_dim_propagates_through_nesting`) and a third
+          (`test_ddt_instance_map_captures_array_instance_dim`) exercising the real
+          extraction logic in `_build_ddt_resolution_maps` itself against a
+          HOST-table array-of-DDT var shaped like `instances/data.meta`'s
+          `instance_data` -- none of the pre-existing tests actually declared an
+          array-dimensioned DDT instance, so this was previously untested even at
+          the level `_resolve_ddt_access_path`'s own hand-built-dict tests now cover.
+        - **Verified:** full suite green, 0 failures, +3 tests over pre-Stage-2 (2
+          new `_resolve_ddt_access_path` tests + 1 new `_build_ddt_resolution_maps`
+          test). No filecheck golden needed updating -- since those check exact
+          generated IR/Fortran text across every DDT-touching example (`capgen`,
+          `ddthost`, `var_compat`'s nested DDTs, etc.), that's direct confirmation
+          this stage changed zero generated output, as intended.
+      - **Stage 3 done (2026-08-18): `run_dispatch.py` now recognizes the
+        array-of-DDT-instance case and constructs the extended resolved-arg
+        shape carrying the index -- IR-level change only, generated Fortran
+        text unchanged (print_ftn.py doesn't read it yet -- Stage 4's job).**
+        `CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"` added to
+        `ccpp_conventions.py` (real capgen-v1's own standard name for the
+        per-call model-instance index scalar). `ResolvedArgOp` (dialects/ccpp.py)
+        gained an optional `index_std_name` property, valid only for
+        `DdtMember` -- deliberately a *standard name*, not a resolved local
+        Fortran reference, since the local name isn't knowable yet at the
+        point `_build_per_suite_run_info` runs (it depends on
+        `non_host_std_to_canonical`, built later in a separate function).
+        `HostVarRefOp` (dialects/ccpp_utils.py) gained a matching optional
+        `index_expr` attribute (this one *is* the final resolved local
+        Fortran name, since by the time `_build_run_dispatch_chain`
+        constructs it, `non_host_std_to_canonical`/`block_arg_map` are both
+        available) -- its docstring explicitly flags that the printer
+        doesn't consume it yet.
+        - **`_build_per_suite_run_info`'s DDT branch**: when
+          `_resolve_ddt_access_path`'s 4th value (Stage 2) is not `None`,
+          searches this same call's own `callee_input_names` for a sibling
+          arg whose standard_name is `instance_number`; if found, builds
+          `ResolvedArgOp(..., DdtMember, ..., index_std_name=...)` instead of
+          the existing unconditional "instance lives in a HOST-type table ->
+          Block" rule. If no sibling instance-number arg is present in this
+          specific call, falls through to the *exact* prior behavior --
+          real, tested guard, not just documented intent (see
+          `test_no_sibling_instance_arg_falls_back_to_block`).
+        - **`_build_run_dispatch_chain`'s `HostVarRefOp` construction site**:
+          when `index_std_name` is set, resolves it via
+          `non_host_std_to_canonical`/`block_arg_map` (the same mechanism
+          already used for `col_start`/`col_end`) to the real local Fortran
+          name, passed through as `index_expr`.
+        - **Verified two ways.** Unit-level: 7 new tests (`ResolvedArgOp`
+          construction + verify() rules for `index_std_name` across all 4
+          source kinds; `_build_per_suite_run_info`'s positive case and its
+          negative/guard case, shaped like `examples/instances/data.meta`'s
+          real `instance_data` + `unit_conv_scheme_1`). Real-example,
+          IR-level: regenerated `examples/instances` up through
+          `generate-ccpp-cap` with `-t mlir` (not `-t ftn`, since the printer
+          doesn't consume the new field yet) and confirmed
+          `"ccpp_utils.host_var_ref"() <{var_name = "instance_data", ...}>
+          {member_name = "data_array(:, 2)", index_expr = "instance"}` --
+          the exact intended shape -- appears for all three `instance_data`
+          members. Confirmed real Fortran generation for `examples/instances`
+          is unaffected (still prints `instance_data%data_array(:, 2)`, no
+          subscript, exactly as before) and every other example's full
+          suite run is unaffected: 584 passed, 0 failures, +7 over
+          pre-Stage-3 (exactly the new tests), no filecheck golden changed.
+      - **Stage 4 done (2026-08-18): `print_ftn.py` now actually prints
+        `HostVarRefOp.index_expr` -- `examples/instances`' real generated
+        Fortran finally shows `instance_data(instance)%data_array2(lb:ub)`
+        instead of the un-indexed `instance_data%data_array2(lb:ub)`.**
+        The `CCPPHostVarRefOp` printer case now builds a `base_name` of
+        `var_name(index_expr)` when `index_expr` is set (else plain
+        `var_name`, unchanged), then appends `%member_name` as before.
+        - **Found and fixed a real, previously-latent bug in the same
+          printer file while verifying against the real example, not a
+          synthetic case: `CCPPArraySectionOp`'s merge logic.** `data_array`/
+          `data_array_opt` (whose own declared subscript is a fixed
+          species index, e.g. `data_array(:, 2)`) printed correctly on the
+          first try, but `data_array2` (a genuine 1-D
+          `horizontal_dimension`-dimensioned member that the *existing*
+          lb:ub column-chunking fallback wraps in an `ArraySectionOp`)
+          printed as bare `instance_data(instance)` -- **the `%data_array2`
+          member vanished entirely.** Root cause: the merge-existing-
+          subscript logic located "the subscript to merge into" via
+          `source_name.find("(")` -- the *first* `(` in the whole string.
+          Once `HostVarRefOp` could also prepend an index_expr paren before
+          the member, that first `(` became the instance index, not the
+          member's own subscript; the merge logic treated `"instance"` as
+          an existing placeholder token, discarded everything after its
+          matching `)` (the real `%member` access), and rebuilt just
+          `instance_data(instance)`. This is exactly the kind of arity/
+          identity mismatch this session has hit before in unrelated
+          contexts (wrong dummy-argument binding, not just a cosmetic
+          miss) -- would have shipped silently, since no existing
+          filecheck golden exercises an array-of-DDT member that also
+          needs column-chunking. Fixed by searching for the member's own
+          `(` only after the last `%`, which is a no-op when there's no
+          `%` at all (the ordinary non-DDT-member array case) and correctly
+          skips the instance-index paren when both are present.
+        - **New dedicated regression test**
+          (`tests/unit/test_run_dispatch_multi_instance_array_section.py`,
+          shaped like `examples/instances/data.meta`'s real
+          `instance_data`/`data_array2`, driven through the same
+          `ArgOwnershipPass`→`SuiteCAP`→`CCPPCAP`→`print_to_ftn` in-process
+          pipeline `test_run_dispatch_inout_echo.py`/
+          `test_run_dispatch_col_bounds_fallback.py` already established
+          for this class of printer bug) -- confirmed to actually catch the
+          regression by temporarily reverting the fix and re-running (both
+          new tests failed, as expected) before restoring it.
+        - **Verified on the real example directly**: `examples/instances`
+          now regenerates `instance_data(instance)%data_array(:, 2)`,
+          `instance_data(instance)%data_array2(lb:ub)`, and
+          `instance_data(instance)%data_array(:, 1)` -- exactly real
+          capgen-v1's own shape, all three members, both the fixed-index
+          and column-chunked cases. Full suite: 586 passed, 0 failures, +2
+          over pre-Stage-4 (the new regression test), no filecheck golden
+          changed (no existing example combines an array-of-DDT instance
+          with a column-chunked member, so nothing else was ever exercising
+          either the new index_expr path or the latent ArraySectionOp bug).
+      - **Stage 5 done (2026-08-18): `examples/instances` wired into the real
+        build, driver adapted, all 5 stages of this backlog entry now
+        complete.**
+        - **Driver (`main.F90`) adapted from real capgen-v1's own upstream
+          driver**, keeping the loop-over-instances structure (the actual
+          mechanism under test) unchanged, but dropping two things xdsl-ccpp
+          doesn't generate: (1) the `ccpp_physics_init`/`ccpp_physics_final`
+          calls -- confirmed by inspecting the real generated
+          `test_host_ccpp_cap.F90` that xdsl-ccpp's `ccpp_init`/`ccpp_final`
+          already do this work (they call the suite's own
+          `_initialize`/`_finalize`), since xdsl-ccpp's lifecycle is still
+          6-phase where real capgen-v1 splits further into 8 (the "Full
+          6-phase to 8-phase lifecycle match" backlog entry, still open --
+          this is exactly that gap, already tracked, not fixed here); (2)
+          `group_name`/`thread_num`/`nthreads`/`nphys_threads` keyword args
+          the generated signatures don't accept at all (confirmed via the
+          real signatures, e.g. `ccpp_physics_run(suite_name, suite_part,
+          lb, ub, instance, errmsg, errflg)` -- no thread-count params
+          exist), replacing `group_name='all'` with the real
+          `suite_part='unit_conv_group'` (the suite's actual group name,
+          from `suite_unit_conv_suite.xml`). Both adaptations match
+          `examples/opt_arg`'s own driver exactly -- same root cause, same
+          fix shape, already precedented.
+        - **`examples/instances/CMakeLists.txt`**: added the
+          `if(XDSL_CCPP_HAVE_FORTRAN)` executable-build block
+          (`INSTANCES_TESTLIB` + `instances.exe` + `ctest_instances`),
+          mirroring `examples/opt_arg`/`examples/chunked_data`'s identical
+          structure exactly. Refreshed the file's own header comment, which
+          was still describing the pre-Stages-1-4 state (mechanism not
+          implemented, cap generation producing silently-wrong output).
+        - **Root `CMakeLists.txt`**: added `add_subdirectory(examples/instances)`;
+          refreshed the stale "NOT wired in yet" comment block that used to
+          cover both `instances` and `instances_advection` -- now only
+          `instances_advection` remains excluded (separate, unrelated
+          `memref.copy` crash, deliberately still deferred).
+        - **`.github/workflows/compile-tests-cmake.yml`**: added the
+          `instances` / `instances.exe` matrix entry, matching every other
+          example's own entry shape. No `ctest_filter` needed (no other
+          wired-in test name collides with the substring "instances" --
+          `instances_advection` isn't wired in).
+        - **Verified**: full CMake configure (not build -- no Fortran
+          compiler on this laptop, matching every other example's own
+          caveat throughout this repo) succeeds end to end for the whole
+          repo with `examples/instances` included, through the real
+          `xdsl_ccpp_capgen()` macro path (not a manual CLI invocation) --
+          confirmed the generated Fortran via that path is byte-identical
+          to the manual Stage 3/4 verification
+          (`instance_data(instance)%data_array(:, 2)`,
+          `instance_data(instance)%data_array2(lb:ub)`,
+          `instance_data(instance)%data_array(:, 1)`, all three members
+          correct). Python suite unaffected (586 passed, 0 failures --
+          these changes are CMake/Fortran-only). **Not yet compile/run-
+          verified** -- CI is the first real check, same limitation every
+          other example ported this way already has.
+        - **`examples/instances_advection` stays explicitly out of scope**
+          until plain `instances` is proven in CI -- separate, unrelated
+          `memref.copy` verifier crash to diagnose on its own first.
+        - **Real gfortran CI build failure found and fixed after the above
+          (2026-08-18): `active = <expr>` property resolution never handled
+          a DDT-member reference at all -- a genuine pre-existing gap, not
+          introduced by any of the 5 stages, just never exercised until
+          `examples/instances`'s own `data_array_opt` (`active =
+          (flag_for_opt_array)`, `flag_for_opt_array` a member of the
+          `instance_type` DDT).** CI error: `Symbol 'flag_for_opt_array' at
+          (1) has no IMPLICIT type` in the generated `unit_conv_suite_cap.F90`.
+          `suite_cap.py`'s `_resolve_active_condition` (added for `opt_arg`'s
+          own dead-`active` fix, task #2) only ever resolved a MODULE-type
+          or 'state'-classified HOST-type standard-name reference to its
+          real local name -- a DDT-member reference fell through to the
+          "assume it's a Fortran keyword/operator, print verbatim" default,
+          producing the bare, undeclared standard-name text.
+          **This was never actually correct** -- it only ever "worked" for
+          `examples/opt_arg`'s own `flag_for_opt_arg` because that example's
+          local variable name happens to be spelled identically to its
+          standard name, so printing the raw standard-name text verbatim
+          happened to compile by pure coincidence.
+          - **Fixed** by adding a new `_active_expr_ddt_member_indexes`
+            helper (standard_name -> (member_local_name, ddt_type_name) over
+            every DDT table) and extending `_resolve_active_condition` to
+            resolve a DDT-member token via the same `_resolve_ddt_access_path`
+            machinery `run_dispatch.py`'s own DDT-member resolution already
+            uses -- including the array-of-DDT-instance case Stages 2-4
+            built: when the DDT's module-level instance is itself a
+            HOST-owned array (`instance_array_dim` set), the calling
+            scheme's own `arg_table` (now threaded into
+            `_resolve_active_condition`) is searched for a sibling
+            `instance_number`-standard-name arg to index by, raising a
+            clear error (matching the existing `dispatch_scalar` case's own
+            philosophy) if there isn't one, rather than silently emitting
+            an unindexed (and therefore wrong) reference.
+          - **New regression test**
+            (`tests/unit/test_active_condition_ddt_member.py`, shaped like
+            the real `examples/instances` case) -- confirmed to actually
+            catch the bug by stashing the fix and re-running (all 3 new
+            tests failed, as expected) before restoring it.
+          - **Verified**: full suite 589 passed (586 + 3 new), 0 failures.
+            Regenerated `examples/instances` directly and via the real
+            `xdsl_ccpp_capgen()` CMake macro path -- both now print
+            `if ((instance_data(instance)%opt_array_flag)) then`, a real,
+            valid Fortran reference, with exactly one `use data, only:
+            instance_data` stub, no duplicates.
+      - **Post-Stage-5 fix #2 (2026-08-18) — shared-scalar `ccpp_suite_state`
+        broke multi-instance lifecycle ordering, caught by the real
+        `ctest_instances` run.** CI error:
+        ```
+        An error occurred in ccpp_init:
+        Invalid initial CCPP state, 'initialized' in unit_conv_suite_initialize
+        instance: 2
+        ```
+        Root cause: `ccpp_suite_state` was (and, before this codebase's own
+        multi-instance work, always had been) a single module-scope
+        *scalar*. Once two model instances round-tripped through
+        register/init independently, instance 2's `_initialize` call saw
+        instance 1's own already-`'initialized'` value and errored --
+        exactly the collision real capgen-v1's own array-per-instance model
+        exists to avoid. Confirmed against
+        `ccpp-framework-fresh/capgen/generator/suite_cap.py`: real capgen-v1
+        makes `ccpp_suite_state` an **allocatable integer array** indexed by
+        instance number, with dedicated `<suite>_suite_state_alloc`/
+        `_dealloc` subroutines and integer-enum states (`CCPP_SUITE_
+        UNREGISTERED`/`_REGISTERED`/`_FRAMEWORK_INITIALIZED`) -- a materially
+        bigger, cross-cutting redesign than this bug needs (this codebase's
+        existing 3-string-literal-state model, `'uninitialized'`/
+        `'initialized'`/`'in_time_step'`, is a pre-existing, orthogonal gap
+        from real capgen-v1's own 4-state model, tracked separately, not
+        part of this fix).
+        - **Two design forks surfaced and resolved with the user before
+          implementing, per this backlog's own established practice for
+          genuinely architectural (not just mechanical) gaps:**
+          1. *Narrow fix (index the existing 3-state scalar per-instance)
+             vs. full capgen-v1 match (integer enums + alloc/dealloc API).*
+             User chose the **narrow fix** after asking how big the full
+             match would be (answered: cross-cutting, touches the state
+             *representation* everywhere, not just this bug -- better
+             sequenced after task #28's 6-to-8-phase lifecycle match, not
+             before).
+          2. *Thread `instance`/`number_of_instances` through every
+             lifecycle phase (matches capgen-v1 exactly) vs. have each
+             phase operate on all instances at once.* User chose **thread
+             through every phase**, discovered mid-implementation once it
+             became clear the narrow fix alone couldn't avoid the
+             collision without some way to know which instance a given
+             register/init/finalize/timestep call is for.
+        - **Fixed, in `suite_cap.py` unless noted:**
+          - `generateStateCheckOps`/`generateStateAssignment` gained an
+            `instance_local_name` parameter; when set, they tag their
+            `ccpp_suite_state` `llvm.AddressOfOp`s with the (Stage 1-era,
+            previously-orphaned) `ccpp_instance_ref` attribute --
+            `print_ftn.py`'s `AddressOfOp` case already had a consumer for
+            this attribute left over from the old, removed `ccpp_handle`
+            mechanism; repurposed to print a plain `name(instance_var)`
+            subscript instead of the old `%ccpp_instance` derived-type
+            member access.
+          - `_build_state_globals` declares `ccpp_suite_state` allocatable/
+            deferred-shape (`character(len=16), allocatable, dimension(:)`)
+            whenever the host declares `instance_number` at all --
+            `number_of_instances` is itself a genuine runtime HOST scalar,
+            never a compile-time constant, so a fixed-size array is not an
+            option.
+          - New `_build_suite_state_lazy_alloc` reuses the existing
+            `ccpp_utils.LazyAllocOp` idiom (already used for suite-owned/
+            framework arrays: `if (.not. allocated(x)) then allocate(...);
+            x = init; end if`) to allocate + initialize `ccpp_suite_state`
+            on first use, sized by `number_of_instances`. Wired into
+            `generateSubroutineCall` for every phase that actually touches
+            state (every non-run lifecycle phase except `_register`, which
+            never checks/assigns state at all, plus each physics group's
+            `_run`).
+          - New `_synthesize_instance_number_arg`/
+            `_synthesize_number_of_instances_arg` (mirroring the existing
+            `_synthesize_dynamic_loop_count_args` precedent), called
+            unconditionally from `_build_arg_tables` for every lifecycle
+            phase: whenever the host declares `instance_number`/
+            `number_of_instances` and no scheme's own entry point for this
+            phase already provides one, synthesize a fresh `HostMatched`
+            dummy argument for it. A no-op for non-multi-instance suites.
+          - **A second layer of plumbing, discovered only once the above
+            was regenerated and inspected**: the *outer* dispatcher
+            wrappers (`ccpp_cap.py`'s `ccpp_register`/`ccpp_init`/
+            `ccpp_final`/`ccpp_physics_timestep_init`/
+            `ccpp_physics_timestep_final`, built by `lifecycle_cap.py`)
+            don't automatically forward a newly-synthesized suite-callee
+            arg -- `lifecycle_cap.py`'s own pre-scan only exposes a
+            passthrough dummy arg for a bare name some *scheme's own*
+            entry-point metadata declares for that specific phase, which
+            `instance`/`ninstances` never are (only `_run` ever declares
+            `instance_number`, and no scheme ever declares
+            `number_of_instances` at all). Without a fix, these two args
+            would have silently fallen to the wrapper's generic "no host
+            match" branch -- a fresh, always-zero local `alloca` -- a
+            silent-wrong-value bug, not a compile error. Fixed by adding an
+            inverted (local-name -> standard_name) fallback lookup over
+            `host_var_map_all`, mirroring `run_dispatch.py`'s own already-
+            generic HOST/MODULE/DDT table name-matching fallback for the
+            identical problem on the `_run`/`ccpp_physics_run` side (which
+            needed no changes at all -- it already handled this case
+            generically).
+          - `examples/instances/main.F90` re-adapted to pass
+            `instance=ins, number_of_instances=ninstances` into all six
+            lifecycle/run calls (dropped in Stage 5 since those signatures
+            didn't accept them yet).
+        - **New regression test** (`tests/unit/test_multi_instance_suite_state.py`,
+          5 cases) covering: `ccpp_suite_state` declared allocatable (not the
+          old fixed scalar), lazily allocated + sized by `number_of_instances`,
+          check/assignment indexed by `instance`, and every non-run lifecycle
+          wrapper (including `ccpp_register`, which never itself
+          checks/assigns state) correctly forwarding `instance`/`ninstances`
+          as real passthrough dummy args rather than a fresh local. Confirmed
+          to actually catch the regression by stashing the fix and
+          re-running (all 5 new tests failed, as expected) before restoring it.
+        - **Verified**: full suite 594 passed (589 + 5 new), 0 failures.
+          Regenerated `examples/instances` directly and via the real
+          `xdsl_ccpp_capgen()` CMake macro path -- `unit_conv_suite_cap.F90`
+          now declares `character(len=16), allocatable, dimension(:) ::
+          ccpp_suite_state`, lazily allocates it
+          (`allocate(ccpp_suite_state(ninstances))`), and every state
+          check/assignment indexes it by `instance`
+          (`ccpp_suite_state(instance)`); `test_host_ccpp_cap.F90`'s
+          `ccpp_register`/`ccpp_init`/`ccpp_final`/
+          `ccpp_physics_timestep_init`/`ccpp_physics_timestep_final` all now
+          accept `(suite_name, instance, ninstances, errmsg, errflg)` and
+          forward `instance, ninstances` straight into the suite callee
+          (not a local alloca). Real `ctest_instances` execution itself
+          still can't be verified locally (no Fortran compiler on this
+          laptop) -- left for the next CI run to confirm end-to-end.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes

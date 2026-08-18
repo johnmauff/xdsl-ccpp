@@ -140,21 +140,33 @@ class HostVarRefOp(IRDLOperation):
     ``var_name%member_name`` (e.g. ``phys_state%ps``).  The USE statement
     is still generated for `var_name` (the DDT instance), not the member.
 
+    When `index_expr` is also set (real capgen-v1's multi-instance model:
+    `var_name` is itself a HOST-owned array of DDT, one entry per model
+    instance -- see cap_shared.py's _build_ddt_resolution_maps and
+    run_dispatch.py's CCPP_INSTANCE_NUMBER_STD_NAME handling), the printed
+    reference becomes ``var_name(index_expr)%member_name`` -- `var_name` is
+    subscripted before the member access, matching real capgen-v1's own
+    ``instance_data(instance)%data_array`` shape.
+
     A corresponding llvm.GlobalOp stub (with a 'module' attribute) is placed
-    at the enclosing module level to drive 'use module, only: var' generation.
+    at the enclosing module level to drive 'use module, only: var' generation
+    -- for `var_name` itself (the bare array/DDT name), never for `index_expr`.
     """
 
     name = "ccpp_utils.host_var_ref"
 
     var_name = prop_def(StringAttr)
     module_name = prop_def(StringAttr)
-    # member_name is stored in the attributes dict (not a formal property) when
-    # this op references a DDT member: reference emitted as var_name%member_name.
+    # member_name and index_expr are stored in the attributes dict (not
+    # formal properties): member_name when this op references a DDT member
+    # (reference emitted as var_name%member_name), index_expr when var_name
+    # is itself an array that must be subscripted first (see class docstring
+    # -- not yet consumed by the printer).
     res = result_def()  # type set at construction to match callee expectation
 
     def __init__(
         self, var_name: str | StringAttr, module_name: str | StringAttr,
-        result_type, member_name: str | None = None,
+        result_type, member_name: str | None = None, index_expr: str | None = None,
     ):
         if isinstance(var_name, str):
             var_name = StringAttr(var_name)
@@ -166,6 +178,8 @@ class HostVarRefOp(IRDLOperation):
         )
         if member_name is not None:
             self.attributes["member_name"] = StringAttr(member_name)
+        if index_expr is not None:
+            self.attributes["index_expr"] = StringAttr(index_expr)
 
 
 @irdl_op_definition

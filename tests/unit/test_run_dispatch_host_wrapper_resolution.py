@@ -290,7 +290,7 @@ class TestSynthesizedArgResolvesThroughDDTTable:
             host_block_std_names=set(),
             constituent_std_names=set(),
             ddt_type_names={"phys_state_t"},
-            ddt_instance_map={"phys_state_t": ("phys_state", "test_host_mod")},
+            ddt_instance_map={"phys_state_t": ("phys_state", "test_host_mod", None)},
             ddt_parent_map={},
         )
 

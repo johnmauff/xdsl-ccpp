@@ -19,12 +19,11 @@ def build_host_var_index(ccpp_mod):
     (lowercased) -> (local_var_name, module_name, is_host_table, is_protected)
     index.
 
-    A smaller, side-effect-free sibling of HostVariableMatchPass's own
-    _build_model_var_index (host_var_match_pass.py) -- deliberately
-    separate rather than reused directly, since that method also emits a
-    CcppHandleOp as a side effect, which must only ever happen once (during
-    the real generate-host-match pass), not on every reuse. This one is
-    read-only.
+    A smaller sibling of HostVariableMatchPass's own _build_model_var_index
+    (host_var_match_pass.py) -- deliberately separate rather than reused
+    directly, since that method also builds produced_in_init (an extra
+    traversal this read-only introspection path never needs) and returns a
+    richer per-entry tuple this one doesn't.
 
     Used by generate-suite-cap's --emit-resolved-vars introspection to
     recover a host binding for framework-level identities (e.g.
