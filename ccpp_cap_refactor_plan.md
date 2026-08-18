@@ -3539,10 +3539,47 @@ dependency is noted.
         `examples/capgen` directly through the full pipeline: both succeed, and
         `grep` for `ccpp_t`/`ccpp_data`/`ccpp_handle` in the generated Fortran
         returns nothing.
-      - **Not yet done:** stages 2-5 (extending `_build_ddt_resolution_maps` with
-        array-dimension info, teaching `run_dispatch.py`'s DDT branch the new
-        runtime-index case, extending the IR op/`print_ftn.py` to print
-        `arr(idx)%member`, wiring `examples/instances` into the real build).
+      - **Stage 2 done (2026-08-18): `_build_ddt_resolution_maps`/`_resolve_ddt_access_path`
+        now carry array-dimension info, with zero consumers yet -- pure plumbing, no
+        behavior change.** `ddt_instance_map`'s per-type value grew a 3rd element,
+        `instance_array_dim_std_name`: `None` for the ordinary scalar-instance case
+        every ported example uses today, or the instance var's own first `dim_names`
+        entry (e.g. `"number_of_instances"`) when it's array-dimensioned -- extracted
+        straight off the existing `dimensions`/`dim_names` descriptor attributes
+        (`ccpp_descriptors.py`'s `CCPPArgument`), no new metadata vocabulary needed.
+        `_resolve_ddt_access_path` grew a matching 4th return element, propagated
+        unchanged through nested-member recursion (it describes the base instance's
+        own array-ness, independent of how many `%member`s get prepended to reach a
+        leaf). Only the top-level module/host-level instance is covered -- a DDT
+        member that's itself an array of a nested DDT type is out of scope, no real
+        capgen-v1 example needs that shape.
+        - **All 5 call sites of `_resolve_ddt_access_path`** (`run_dispatch.py`,
+          `lifecycle_cap.py`, `suite_cap.py`'s `--emit-resolved-vars` path,
+          `cap_shared.py`'s own recursive self-call and `_resolve_host_var_key`)
+          updated to unpack the new 4-tuple; every site except `run_dispatch.py`'s
+          (the one Stage 3 will actually change) discards the new value for now.
+        - **Test fixtures fixed, not just production code**: two test files
+          (`test_run_dispatch.py`, `test_run_dispatch_host_wrapper_resolution.py`)
+          hand-construct `ddt_instance_map`/`_resolve_ddt_access_path` results as
+          literal tuples rather than via the real builder -- all updated to the new
+          shape, plus two new tests added (`test_array_instance_dim_reported_at_direct_level`,
+          `test_array_instance_dim_propagates_through_nesting`) and a third
+          (`test_ddt_instance_map_captures_array_instance_dim`) exercising the real
+          extraction logic in `_build_ddt_resolution_maps` itself against a
+          HOST-table array-of-DDT var shaped like `instances/data.meta`'s
+          `instance_data` -- none of the pre-existing tests actually declared an
+          array-dimensioned DDT instance, so this was previously untested even at
+          the level `_resolve_ddt_access_path`'s own hand-built-dict tests now cover.
+        - **Verified:** full suite green, 0 failures, +3 tests over pre-Stage-2 (2
+          new `_resolve_ddt_access_path` tests + 1 new `_build_ddt_resolution_maps`
+          test). No filecheck golden needed updating -- since those check exact
+          generated IR/Fortran text across every DDT-touching example (`capgen`,
+          `ddthost`, `var_compat`'s nested DDTs, etc.), that's direct confirmation
+          this stage changed zero generated output, as intended.
+      - **Not yet done:** stages 3-5 (teaching `run_dispatch.py`'s DDT branch the new
+        runtime-index case so it actually changes behavior for the array-of-DDT
+        case, extending the IR op/`print_ftn.py` to print `arr(idx)%member`, wiring
+        `examples/instances` into the real build).
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes

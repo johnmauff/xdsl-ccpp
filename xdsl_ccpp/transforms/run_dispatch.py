@@ -354,7 +354,12 @@ def _build_per_suite_run_info(
                         ddt_type_name, ddt_instance_map, ddt_parent_map
                     )
                     if result is not None:
-                        instance_var, instance_module, path_prefix = result
+                        # _instance_array_dim: reserved for the multi-instance
+                        # array-of-DDT case (ccpp_cap_refactor_plan.md's
+                        # instances/instances_advection entry) -- not consumed
+                        # yet, so every DDT instance still resolves exactly as
+                        # before regardless of its value.
+                        instance_var, instance_module, path_prefix, _instance_array_dim = result
                         full_member = path_prefix + host_var
                         # Skip DDT instances whose instance variable lives in a HOST-type
                         # table (e.g. ccpp_info_t accessed through 'ccpp' in test_host).

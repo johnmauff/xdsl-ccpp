@@ -305,7 +305,7 @@ def _generate_lifecycle_fn(
                     model_module_name, ddt_instance_map, ddt_parent_map
                 )
                 if result is not None:
-                    instance_var, instance_module, path_prefix = result
+                    instance_var, instance_module, path_prefix, _instance_array_dim = result
                     resolved_member, sub_vars = _resolve_member_subscripts(
                         path_prefix + model_var_name, host_var_map
                     )

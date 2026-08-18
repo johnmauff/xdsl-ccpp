@@ -214,7 +214,7 @@ def _apply_ddt_chain(record: dict, arg, ddt_resolution_maps) -> None:
     result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
     if result is None:
         return
-    instance_var, instance_module, path_prefix = result
+    instance_var, instance_module, path_prefix, _instance_array_dim = result
     member_expr = path_prefix + record["model_var_name"]
     resolved_member, _sub_vars = _resolve_member_subscripts(member_expr, ddt_host_var_map)
     record["model_module_name"] = instance_module

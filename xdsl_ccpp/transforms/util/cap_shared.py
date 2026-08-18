@@ -439,9 +439,18 @@ def classify_host_table_vars(meta_data) -> dict:
 def _build_ddt_resolution_maps(meta_data) -> "tuple[dict, dict]":
     """Build (ddt_instance_map, ddt_parent_map) from host/module/DDT metadata.
 
-    ddt_instance_map: DDT type/table name -> (instance_var_name, table_name)
-        for the module-level variable of that DDT type (e.g.
-        "physics_state" -> ("phys_state", "physics_module")).
+    ddt_instance_map: DDT type/table name -> (instance_var_name, table_name,
+        instance_array_dim_std_name) for the module-level variable of that
+        DDT type (e.g. "physics_state" -> ("phys_state", "physics_module",
+        None)). instance_array_dim_std_name is the variable's own first
+        dimension standard name (e.g. "number_of_instances") when it's
+        array-dimensioned (real capgen-v1's multi-instance model: a
+        HOST-owned array of DDT, one entry per model instance), or None for
+        the ordinary scalar-instance case every ported example uses today.
+        Only the top-level instance var's own array-ness is tracked here --
+        a DDT member that is itself an array of a nested DDT type (as
+        opposed to the module/host-level instance itself) is not covered;
+        no real capgen-v1 example needs that shape.
     ddt_parent_map: DDT type/table name -> [(member_var_name, parent_ddt_type), ...]
         for nested DDTs (a DDT type that is itself a member of another DDT).
 
@@ -467,7 +476,14 @@ def _build_ddt_resolution_maps(meta_data) -> "tuple[dict, dict]":
             if var.hasAttr("type"):
                 var_type = var.getAttr("type")
                 if var_type in ddt_type_names:
-                    ddt_instance_map[var_type] = (var.name, tbl_name)
+                    instance_array_dim = None
+                    if (
+                        var.hasAttr("dimensions")
+                        and var.getAttr("dimensions") > 0
+                        and var.hasAttr("dim_names")
+                    ):
+                        instance_array_dim = var.getAttr("dim_names")[0].strip()
+                    ddt_instance_map[var_type] = (var.name, tbl_name, instance_array_dim)
 
     ddt_parent_map: dict = {}
     for tbl_name, props in meta_data.items():
@@ -514,8 +530,9 @@ def _resolve_ddt_access_path(
     ddt_instance_map: dict,
     ddt_parent_map: dict,
     _depth: int = 0,
-) -> "tuple[str, str, str] | None":
-    """Resolve a DDT type name to (instance_var, instance_module, path_prefix).
+) -> "tuple[str, str, str, str | None] | None":
+    """Resolve a DDT type name to (instance_var, instance_module, path_prefix,
+    instance_array_dim_std_name).
 
     For a type that has a direct module-level instance, path_prefix is "".
     For a nested DDT — e.g. type B is a member of type A, and A has a
@@ -523,21 +540,31 @@ def _resolve_ddt_access_path(
     accessor becomes ``instance_var%path_prefix%leaf_member``
     (e.g. ``phys_state%rad%temperature``).
 
+    instance_array_dim_std_name is ddt_instance_map's own per-instance value
+    (see _build_ddt_resolution_maps) propagated through unchanged at any
+    recursion depth: it describes whether the base instance_var itself is an
+    array (real capgen-v1's multi-instance model), which is independent of
+    how many nested-member "%"s get prepended to reach a particular leaf.
+
     Returns None when no reachable module-level instance exists.
     The depth limit guards against circular DDT type definitions.
     """
     if _depth > 8:
         return None
     if ddt_type_name in ddt_instance_map:
-        instance_var, instance_module = ddt_instance_map[ddt_type_name]
-        return instance_var, instance_module, ""
+        instance_var, instance_module, instance_array_dim = ddt_instance_map[ddt_type_name]
+        return instance_var, instance_module, "", instance_array_dim
     for member_var_name, parent_ddt_type in ddt_parent_map.get(ddt_type_name, []):
         result = _resolve_ddt_access_path(
             parent_ddt_type, ddt_instance_map, ddt_parent_map, _depth + 1
         )
         if result is not None:
-            instance_var, instance_module, parent_prefix = result
-            return instance_var, instance_module, parent_prefix + member_var_name + "%"
+            instance_var, instance_module, parent_prefix, instance_array_dim = result
+            return (
+                instance_var, instance_module,
+                parent_prefix + member_var_name + "%",
+                instance_array_dim,
+            )
     return None
 
 
@@ -602,7 +629,7 @@ def _resolve_host_var_key(arg, ddt_instance_map: dict, ddt_parent_map: dict, hos
     result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
     if result is None:
         return host_var
-    instance_var, _instance_module, path_prefix = result
+    instance_var, _instance_module, path_prefix, _instance_array_dim = result
     resolved_member, _sub_vars = _resolve_member_subscripts(path_prefix + host_var, host_var_map)
     return f"{instance_var}%{resolved_member}"
 

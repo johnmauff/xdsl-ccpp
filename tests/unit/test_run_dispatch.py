@@ -73,34 +73,34 @@ class TestResolveDDTAccessPath:
 
     def test_direct_module_level_instance(self):
         """A type with a direct module-level instance resolves with an empty prefix."""
-        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod")}
+        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         ddt_parent_map = {}
         result = _resolve_ddt_access_path("phys_state_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "")
+        assert result == ("phys_state", "test_host_mod", "", None)
 
     def test_one_level_nested_ddt(self):
         """A type nested one level inside a module-level instance builds a '%'-prefix."""
         # rad_t is a member "rad" of phys_state_t, which has a module-level instance.
-        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod")}
+        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         ddt_parent_map = {"rad_t": [("rad", "phys_state_t")]}
         result = _resolve_ddt_access_path("rad_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "rad%")
+        assert result == ("phys_state", "test_host_mod", "rad%", None)
 
     def test_two_level_nested_ddt(self):
         """Two levels of nesting concatenate the path prefix in outer-to-inner order."""
         # temp_t is a member "temp_field" of rad_t, which is a member "rad" of
         # phys_state_t, which has a module-level instance.
-        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod")}
+        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         ddt_parent_map = {
             "rad_t": [("rad", "phys_state_t")],
             "temp_t": [("temp_field", "rad_t")],
         }
         result = _resolve_ddt_access_path("temp_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "rad%temp_field%")
+        assert result == ("phys_state", "test_host_mod", "rad%temp_field%", None)
 
     def test_unreachable_type_returns_none(self):
         """A type with no module-level instance anywhere in its ancestry returns None."""
-        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod")}
+        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         ddt_parent_map = {}  # orphan_t has no parent entry and no direct instance
         result = _resolve_ddt_access_path("orphan_t", ddt_instance_map, ddt_parent_map)
         assert result is None
@@ -119,7 +119,7 @@ class TestResolveDDTAccessPath:
     def test_multiple_parent_candidates_tries_each(self):
         """When a type has more than one parent-member entry, each is tried in
         order until one resolves."""
-        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod")}
+        ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         # rad_t is (spuriously) listed as a member of both an unreachable type
         # and phys_state_t; the unreachable candidate is tried first and
         # fails, so resolution falls through to the second candidate.
@@ -130,7 +130,27 @@ class TestResolveDDTAccessPath:
             ],
         }
         result = _resolve_ddt_access_path("rad_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "rad_b%")
+        assert result == ("phys_state", "test_host_mod", "rad_b%", None)
+
+    def test_array_instance_dim_reported_at_direct_level(self):
+        """An array-of-DDT instance (real capgen-v1's multi-instance model)
+        reports its own dimension standard name as the 4th tuple element."""
+        ddt_instance_map = {
+            "instance_type": ("instance_data", "data", "number_of_instances"),
+        }
+        ddt_parent_map = {}
+        result = _resolve_ddt_access_path("instance_type", ddt_instance_map, ddt_parent_map)
+        assert result == ("instance_data", "data", "", "number_of_instances")
+
+    def test_array_instance_dim_propagates_through_nesting(self):
+        """The array-dim marker describes the base instance, so it propagates
+        through nested-member prefixes unchanged, not just the direct case."""
+        ddt_instance_map = {
+            "instance_type": ("instance_data", "data", "number_of_instances"),
+        }
+        ddt_parent_map = {"member_t": [("data_array", "instance_type")]}
+        result = _resolve_ddt_access_path("member_t", ddt_instance_map, ddt_parent_map)
+        assert result == ("instance_data", "data", "data_array%", "number_of_instances")
 
 
 # ---------------------------------------------------------------------------
@@ -261,9 +281,37 @@ class TestBuildRunMetadataMaps:
         assert maps.ddt_type_names == {"phys_state_t"}
 
     def test_ddt_instance_map_from_module_table(self):
-        """ddt_instance_map maps a DDT type name to its (var_name, table_name) instance."""
+        """ddt_instance_map maps a DDT type name to its (var_name, table_name,
+        instance_array_dim_std_name) instance -- None here since this scheme's
+        module-level instance is a plain scalar, not an array-of-DDT."""
         maps = _build_run_metadata_maps(self._meta_data())
-        assert maps.ddt_instance_map == {"phys_state_t": ("phys_state", "test_host_mod")}
+        assert maps.ddt_instance_map == {"phys_state_t": ("phys_state", "test_host_mod", None)}
+
+    def test_ddt_instance_map_captures_array_instance_dim(self):
+        """A HOST-owned array-of-DDT instance (real capgen-v1's multi-instance
+        model, e.g. instances/data.meta's instance_data(number_of_instances))
+        reports its own dimension standard name instead of None."""
+        host_props = _make_table_props(
+            "data", "host",
+            _make_arg_table("data", [
+                _make_arg(
+                    "instance_data", type="instance_type",
+                    dimensions=1, dim_names=["number_of_instances"],
+                ),
+            ], "host"),
+        )
+        ddt_props = _make_table_props(
+            "instance_type", "ddt",
+            _make_arg_table("instance_type", [
+                _make_arg("data_array", standard_name="data_array_all_species"),
+            ], "ddt"),
+        )
+        meta_data = {"data": host_props, "instance_type": ddt_props}
+
+        maps = _build_run_metadata_maps(meta_data)
+        assert maps.ddt_instance_map == {
+            "instance_type": ("instance_data", "data", "number_of_instances"),
+        }
 
     def test_ddt_parent_map_empty_when_no_nested_ddts(self):
         """ddt_parent_map is empty when no DDT table has a member of another DDT type."""
@@ -362,7 +410,7 @@ class TestBuildPerSuiteRunInfoResolvedArgOps:
             host_block_std_names=set(),
             constituent_std_names=set(),
             ddt_type_names=set(),
-            ddt_instance_map={"phys_state_t": ("phys_state", "test_host_mod")},
+            ddt_instance_map={"phys_state_t": ("phys_state", "test_host_mod", None)},
             ddt_parent_map={"rad_t": [("rad", "phys_state_t")]},
         )
 
