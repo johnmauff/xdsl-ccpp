@@ -652,6 +652,30 @@ class GenerateSuiteSubroutine(RewritePattern):
             new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
             all_args[std_key] = new_arg
 
+    def _is_multi_instance_host(self) -> bool:
+        """True only when the host declares BOTH instance_number and
+        number_of_instances.
+
+        instance_number/number_of_instances are a single paired contract,
+        not two independent optionals -- every multi-instance codepath
+        (ccpp_suite_state's own allocatable-array declaration, the
+        constituent-API lc_instances(:) bundle, both synthesis methods
+        below) assumes both are present together. Checking only
+        instance_number (this method's own predecessor, before this fix)
+        let a host declaring just one of the two enable multi-instance
+        wrapping with no matching allocation support elsewhere -- e.g.
+        ccpp_suite_state declared allocatable but never actually allocated,
+        since the lazy-alloc guard in generateSubroutineCall separately
+        requires ninstances_local_name too. Caught by Copilot review on
+        PR #77 (for the analogous ccpp_cap.py/constituent_cap.py/
+        lifecycle_cap.py pairing); this is the same bug class in
+        suite_cap.py's own, separate ccpp_suite_state gating.
+        """
+        return (
+            self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME) is not None
+            and self._resolve_host_only_std_name(CCPP_NUMBER_OF_INSTANCES_STD_NAME) is not None
+        )
+
     def _synthesize_instance_number_arg(self, all_args) -> None:
         """Mutate all_args in place: if the host declares an
         instance_number-standard-name scalar (real capgen-v1's
@@ -682,16 +706,17 @@ class GenerateSuiteSubroutine(RewritePattern):
         errored.
 
         Called for every phase, not just physics_mode (unlike
-        _synthesize_dynamic_loop_count_args) -- and is a no-op whenever
-        the host doesn't declare instance_number at all, so ordinary
-        (non-multi-instance) suites are entirely unaffected.
+        _synthesize_dynamic_loop_count_args) -- and is a no-op unless the
+        host declares BOTH instance_number and number_of_instances (see
+        _is_multi_instance_host), so ordinary (non-multi-instance) suites,
+        and hosts declaring only one of the pair, are entirely unaffected.
         """
         std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
         if std_key in all_args:
             return
-        host_var = self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME)
-        if host_var is None:
+        if not self._is_multi_instance_host():
             return
+        host_var = self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME)
         new_arg = CCPPArgument(host_var.name)
         new_arg.setAttr("standard_name", CCPP_INSTANCE_NUMBER_STD_NAME)
         new_arg.setAttr("type", host_var.getAttr("type"))
@@ -715,15 +740,15 @@ class GenerateSuiteSubroutine(RewritePattern):
         generateSubroutineCall's own instance_local_name/
         _build_suite_state_lazy_alloc wiring.
 
-        A no-op whenever the host doesn't declare number_of_instances at
-        all, exactly like _synthesize_instance_number_arg.
+        A no-op unless the host declares BOTH names (see
+        _is_multi_instance_host), exactly like _synthesize_instance_number_arg.
         """
         std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
         if std_key in all_args:
             return
-        host_var = self._resolve_host_only_std_name(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-        if host_var is None:
+        if not self._is_multi_instance_host():
             return
+        host_var = self._resolve_host_only_std_name(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
         new_arg = CCPPArgument(host_var.name)
         new_arg.setAttr("standard_name", CCPP_NUMBER_OF_INSTANCES_STD_NAME)
         new_arg.setAttr("type", host_var.getAttr("type"))
@@ -2880,8 +2905,23 @@ class GenerateSuiteSubroutine(RewritePattern):
         # lifecycle phase except _register, which never checks/assigns
         # state at all, plus each physics group's _run) -- see
         # subroutine_specs in _generate_lifecycle_fns.
+        #
+        # instance_local_name here can come from a SCHEME's own explicit
+        # arg-table declaration (e.g. a physics scheme's _run entry point
+        # declaring instance_number itself), not only from
+        # _synthesize_instance_number_arg -- so it is NOT already
+        # guaranteed paired with ninstances_local_name the way
+        # _is_multi_instance_host's callers are. Drop it back to None
+        # whenever ninstances_local_name is absent, else
+        # generateStateCheckOps/generateStateAssignment below would index
+        # ccpp_suite_state(instance) into what _build_state_globals
+        # correctly declared as a plain (non-array) scalar in that case --
+        # invalid Fortran. Same paired-contract bug class as Copilot's
+        # PR #77 review; found via this file's own regression test.
         instance_local_name = self._instance_arg_local_name(input_arg_list)
         ninstances_local_name = self._number_of_instances_local_name(input_arg_list)
+        if ninstances_local_name is None:
+            instance_local_name = None
         if (
             instance_local_name is not None
             and ninstances_local_name is not None
@@ -3072,16 +3112,24 @@ class GenerateSuiteSubroutine(RewritePattern):
     def _build_state_globals(self, all_strings_used: set):
         """Return the mutable ccpp_suite_state global and one read-only global per state string.
 
-        For a multi-instance suite (host declares instance_number -- real
-        capgen-v1's multi-instance model, ccpp_cap_refactor_plan.md's
-        "instances/instances_advection" entry), ccpp_suite_state must hold
-        one entry per model instance, not a single shared scalar -- else
-        two instances collide on the same state (the real ctest failure on
+        For a multi-instance suite (host declares BOTH instance_number and
+        number_of_instances -- see _is_multi_instance_host; real capgen-v1's
+        multi-instance model, ccpp_cap_refactor_plan.md's "instances/
+        instances_advection" entry), ccpp_suite_state must hold one entry
+        per model instance, not a single shared scalar -- else two
+        instances collide on the same state (the real ctest failure on
         examples/instances this fixes). number_of_instances is itself a
         runtime HOST-declared scalar, not a compile-time constant, so the
         array is declared allocatable/deferred-shape here and actually
         sized+allocated lazily on first use -- see
         _build_suite_state_lazy_alloc, wired into generateSubroutineCall.
+
+        Gated on _is_multi_instance_host (both names), not just
+        instance_number alone -- a host declaring only instance_number
+        would otherwise get an allocatable ccpp_suite_state that the lazy
+        alloc guard (which separately requires ninstances_local_name) can
+        never actually allocate. Same bug class as Copilot's PR #77
+        review; this is suite_cap.py's own instance of it.
         """
         ccpp_suite_state_global = llvm.GlobalOp(
             llvm.LLVMArrayType.from_size_and_type(16, i8),
@@ -3089,7 +3137,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             "internal",
             value=StringAttr("uninitialized"),
         )
-        if self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME) is not None:
+        if self._is_multi_instance_host():
             ccpp_suite_state_global.attributes["allocatable"] = StringAttr("1")
         string_const_globals = [
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)

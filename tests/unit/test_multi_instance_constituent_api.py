@@ -129,10 +129,12 @@ _SUITE_XML = """\
 """
 
 
-def _fortran_output(run_host_match, ccpp_context) -> str:
+def _fortran_output(
+    run_host_match, ccpp_context, host_meta: str = _HOST_META, scheme_meta: str = _SCHEME_META
+) -> str:
     module = run_host_match(
-        scheme_metas=[_SCHEME_META],
-        host_metas=[_HOST_META],
+        scheme_metas=[scheme_meta],
+        host_metas=[host_meta],
         suite_xml=_SUITE_XML,
     )
     ArgOwnershipPass().apply(ccpp_context, module)
@@ -297,3 +299,107 @@ class TestSchemeLevelDynamicRegistrationOutputIsInstanceAware:
         alloc_pos = body.index("if (.not. allocated(lc_instances)) then allocate(lc_instances(ninstances))")
         call_pos = body.index("test_suite_suite_register(lc_instances(instance)%lc_dyn_const")
         assert alloc_pos < call_pos
+
+
+# Host declares only ONE of the two paired standard names -- confirmed real
+# by Copilot review on PR #77: instance_local_name/ninstances_local_name are
+# not two independent optionals, they're a single paired contract every
+# downstream consumer (cap_var_map's lc_instances(instance)% wrapping,
+# constituent_cap.py's bundle/allocation, lifecycle_cap.py's LazyAllocOp
+# guard) assumes holds. Before the fix, a host declaring only
+# instance_number (or only number_of_instances) would incorrectly enable
+# multi-instance wrapping with no matching allocation/signature support --
+# e.g. a literal "None" spliced into allocate(lc_instances(None)).
+_HOST_META_INSTANCE_ONLY = """\
+[ccpp-table-properties]
+  name = test_host
+  type = host
+[ccpp-arg-table]
+  name = test_host
+  type = host
+[ instance ]
+  standard_name = instance_number
+  units = index
+  type = integer
+  dimensions = ()
+"""
+
+_HOST_META_NINSTANCES_ONLY = """\
+[ccpp-table-properties]
+  name = test_host
+  type = host
+[ccpp-arg-table]
+  name = test_host
+  type = host
+[ ninstances ]
+  standard_name = number_of_instances
+  units = count
+  type = integer
+  dimensions = ()
+"""
+
+# _SCHEME_META's own cld_liq_run unconditionally declares an `instance`
+# arg (standard_name=instance_number) that HostVariableMatchPass requires
+# to resolve to *some* host var regardless of the instance/ninstances
+# pairing logic under test here -- unrelated to this bug, but it means
+# _SCHEME_META can't be reused as-is against a host that omits
+# instance_number entirely (_HOST_META_NINSTANCES_ONLY). This variant
+# drops that one arg so the ninstances-alone direction is actually
+# testable; everything else is identical to _SCHEME_META.
+_SCHEME_META_NO_INSTANCE_ARG = _SCHEME_META.replace(
+    """\
+[ instance ]
+  standard_name = instance_number
+  units = index
+  type = integer
+  dimensions = ()
+  intent = in
+""",
+    "",
+)
+
+
+class TestPartialMultiInstanceMetadataStaysSingleInstance:
+    """Regression test for a real correctness bug found by Copilot review
+    on PR #77: multi-instance mode was being gated on instance_local_name
+    alone, without checking ninstances_local_name was also present."""
+
+    def test_instance_number_alone_does_not_enable_multi_instance(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output(run_host_match, ccpp_context, host_meta=_HOST_META_INSTANCE_ONLY)
+        assert "lc_instances" not in fortran
+        assert "None" not in fortran
+        # Falls back to the plain, non-multi-instance constituent API shape.
+        assert "type(ccpp_constituent_properties_t), target, allocatable :: lc_all_constituents(:)" \
+            in fortran
+
+    def test_instance_number_alone_does_not_index_ccpp_suite_state(
+        self, run_host_match, ccpp_context
+    ):
+        """Regression test for a second, suite_cap.py-own instance of the
+        same paired-contract bug, found while probing the fix above: with
+        only instance_number declared, _build_state_globals correctly
+        falls back to a plain scalar ccpp_suite_state -- but
+        _generate_lifecycle_fn's own instance_local_name/
+        ninstances_local_name resolution (fed by a SCHEME's own explicit
+        instance_number arg, not just suite_cap.py's synthesis) still
+        indexed it as ccpp_suite_state(instance), which is invalid Fortran
+        against a scalar."""
+        fortran = _fortran_output(run_host_match, ccpp_context, host_meta=_HOST_META_INSTANCE_ONLY)
+        assert "character(len=16) :: ccpp_suite_state = 'uninitialized'" in fortran
+        assert "ccpp_suite_state(" not in fortran
+
+    def test_number_of_instances_alone_does_not_enable_multi_instance(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output(
+            run_host_match,
+            ccpp_context,
+            host_meta=_HOST_META_NINSTANCES_ONLY,
+            scheme_meta=_SCHEME_META_NO_INSTANCE_ARG,
+        )
+        assert "lc_instances" not in fortran
+        assert "None" not in fortran
+        assert "type(ccpp_constituent_properties_t), target, allocatable :: lc_all_constituents(:)" \
+            in fortran

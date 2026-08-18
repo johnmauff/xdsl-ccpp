@@ -138,6 +138,24 @@ def _generate_constituent_api(
 
     Returns (module_var_ops, constituent_api_op, global_stub_ops).
     """
+    # instance_local_name/ninstances_local_name are a paired contract, not
+    # two independent optionals -- multi_instance below gates the whole
+    # per-instance bundle (declarations, register_constituents' own
+    # allocate(lc_instances(ninstances)), every other subroutine's `instance`
+    # arg) on instance_local_name alone; if ninstances_local_name were ever
+    # missing while instance_local_name was set, that allocate call would
+    # get a literal "None" spliced into generated Fortran. ccpp_cap.py's own
+    # resolution site normalizes both to None together, but assert the
+    # invariant here too, matching this codebase's existing
+    # _assert_call_arg_count_matches_signature precedent for guarding a
+    # coupled-parameter contract at the point that actually relies on it.
+    # Caught by Copilot review on PR #77.
+    assert (instance_local_name is None) == (ninstances_local_name is None), (
+        "instance_local_name and ninstances_local_name must both be set or "
+        "both be None -- got "
+        f"instance_local_name={instance_local_name!r}, "
+        f"ninstances_local_name={ninstances_local_name!r}"
+    )
     h = camel_name
     framework_var_residency = framework_var_residency or {}
     scratch_vars = scratch_vars or []

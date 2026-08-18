@@ -57,6 +57,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `suite_allocate` | ✅ Done (2026-08-17) | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
 | `instances`/`instances_advection` | ✅ Both done (2026-08-18): `instances` via the multi-instance `ccpp_suite_state` narrow fix; `instances_advection` via task #35's constituent-API instance-awareness fix (its own originally-tracked cap-gen crash was already gone by the time it was re-investigated) | L3296 |
+| `instance_number`/`number_of_instances` paired-contract bug (Copilot review, PR #77) + 2 self-found companion bugs of the same class in `suite_cap.py` | ✅ Done (2026-08-18) | L4226 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
@@ -4223,6 +4224,48 @@ dependency is noted.
             the exact same shape (`call cld_suite_suite_register(lc_dyn_const,
             lc_dyn_const_ice, errmsg, errflg)`, both hoisted-and-discarded
             locals) already present there, unrelated to multi-instance.
+          - **RESOLVED (2026-08-18) — Copilot review on PR #77 (3 comments) plus two
+            self-found companion bugs of the same class, all fixed together.** Copilot
+            flagged that `instance_local_name`/`ninstances_local_name` (resolved once in
+            `ccpp_cap.py`'s `_generate_ccpp_cap_module`, threaded into `_build_cap_var_map`/
+            `_generate_constituent_api`/`_generate_lifecycle_fn`) were being treated as two
+            independent optionals rather than one paired contract — a host declaring only
+            one of `instance_number`/`number_of_instances` (nothing in the `.meta` format
+            stops this) could enable multi-instance wrapping with no matching allocation/
+            signature support, e.g. a literal `"None"` spliced into generated Fortran, or a
+            reference to `lc_instances` never allocated. Fixed at the single source
+            (`ccpp_cap.py`: normalize to the pair, both set or both `None`) plus defensive
+            asserts at the two downstream consumers (`constituent_cap.py`'s
+            `_generate_constituent_api`, `lifecycle_cap.py`'s `_generate_lifecycle_fn`) —
+            same "raise, don't silently mask" precedent as the Phase 7 Copilot-review fixes,
+            with `cap_shared.py`'s `_assert_call_arg_count_matches_signature` as this
+            codebase's own existing precedent for guarding a coupled-parameter invariant with
+            an assert. While writing a regression test for this, found `suite_cap.py`'s own,
+            separate `ccpp_suite_state` multi-instance gating (unrelated to what Copilot's
+            review touched — a different subsystem, this suite's own allocation, not the
+            constituent-API bundle) had the identical unpaired-gating flaw in three places:
+            `_synthesize_instance_number_arg`/`_synthesize_number_of_instances_arg` (each
+            gated purely on its own standard name) and `_build_state_globals` (gated
+            `ccpp_suite_state`'s allocatable-array declaration on `instance_number` alone).
+            Fixed by adding a shared `_is_multi_instance_host()` helper (true only when both
+            names resolve) and gating all three on it. A **second, more subtle** companion
+            bug surfaced while probing that fix: `generateSubroutineCall`'s own
+            `instance_local_name` (fed to `generateStateCheckOps`/`generateStateAssignment`,
+            which print `ccpp_suite_state(<instance_local_name>)`) can come from a *scheme's*
+            own explicit `instance_number` arg declaration, not only from
+            `_synthesize_instance_number_arg` — so it wasn't already guaranteed paired the
+            way `_is_multi_instance_host`'s own callers are. With only `instance_number`
+            declared, `_build_state_globals` correctly falls back to a plain scalar
+            `ccpp_suite_state`, but this unpaired `instance_local_name` still indexed it as
+            `ccpp_suite_state(instance)` — invalid Fortran against a scalar. Fixed by
+            dropping `instance_local_name` back to `None` whenever
+            `ninstances_local_name` is absent, right where both are resolved. Three new
+            regression tests added to `tests/unit/test_multi_instance_constituent_api.py`
+            (`TestPartialMultiInstanceMetadataStaysSingleInstance`), each confirmed via
+            git-stash to fail without its corresponding fix. Full suite 606 passed, 1
+            xfailed, no regressions. `examples/instances_advection` (a real, correctly-paired multi-instance host)
+            regenerated via `python -m xdsl_ccpp.tools.ccpp_dsl` directly and confirmed
+            byte-identical before/after all three fixes.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes

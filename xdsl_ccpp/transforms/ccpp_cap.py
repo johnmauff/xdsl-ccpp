@@ -818,11 +818,28 @@ class CCPPCAP(ModulePass):
         # a non-multi-instance host, in which case every downstream
         # constituent-API/cap-var-map consumer below takes its original,
         # unchanged codepath.
+        # instance_local_name/ninstances_local_name form one paired contract
+        # -- every downstream consumer (cap_var_map's lc_instances(instance)%
+        # wrapping, constituent_cap.py's lc_instances bundle/allocation,
+        # lifecycle_cap.py's LazyAllocOp guard) assumes BOTH are set or
+        # NEITHER is. A host declaring only one of the two standard names
+        # (unusual, but nothing stops a .meta file from doing it) would
+        # otherwise enable multi-instance wrapping with no matching
+        # allocation/signature support -- e.g. a literal "None" spliced into
+        # a generated Fortran signature, or a reference to lc_instances that
+        # is never declared. Caught by Copilot review on PR #77; normalize
+        # to the pair here, once, so every downstream site's own "is this
+        # multi-instance" check (instance_local_name is not None) stays a
+        # reliable proxy for "both names are present."
         _host_var_map_all_for_instance = _build_host_var_map(meta_data, include_host=True)
         _instance_match = _host_var_map_all_for_instance.get(CCPP_INSTANCE_NUMBER_STD_NAME)
         _ninstances_match = _host_var_map_all_for_instance.get(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-        instance_local_name = _instance_match[0] if _instance_match is not None else None
-        ninstances_local_name = _ninstances_match[0] if _ninstances_match is not None else None
+        if _instance_match is not None and _ninstances_match is not None:
+            instance_local_name = _instance_match[0]
+            ninstances_local_name = _ninstances_match[0]
+        else:
+            instance_local_name = None
+            ninstances_local_name = None
 
         cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency = _build_cap_var_map(
             meta_data, suite_descriptions, public_fns, instance_local_name=instance_local_name,
