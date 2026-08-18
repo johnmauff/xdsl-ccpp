@@ -456,3 +456,87 @@ class TestBuildPerSuiteRunInfoResolvedArgOps:
             std_name="array_of_volume_mixing_ratios",
         )
         _assert_resolved_arg_op(ops[3], "unmatched_arg", ArgSourceKind.Block)
+
+
+class TestBuildPerSuiteRunInfoMultiInstanceArray:
+    """_build_per_suite_run_info's array-of-DDT-instance case (real
+    capgen-v1's multi-instance model, ccpp_cap_refactor_plan.md's
+    instances/instances_advection entry): a DDT member of a HOST-owned
+    array-of-DDT resolves with index_std_name set when this same call
+    already resolves a sibling instance_number-standard-name scalar --
+    shaped like examples/instances/data.meta's instance_data +
+    unit_conv_scheme_1's own instance/data_array args."""
+
+    def _meta_data(self, *, with_instance_arg: bool):
+        run_args = [
+            _make_arg(
+                "arr", standard_name="data_array_all_species",
+                model_var_name="data_array", model_module_name="instance_type",
+                model_var_is_ddt=True,
+            ),
+        ]
+        if with_instance_arg:
+            run_args.insert(
+                0, _make_arg("instance", standard_name="instance_number")
+            )
+        scheme_props = _make_table_props(
+            "unit_conv_scheme_1", "scheme",
+            _make_arg_table("unit_conv_scheme_1_run", run_args, "scheme"),
+        )
+        scheme_props.arg_tables["unit_conv_scheme_1_run"] = scheme_props.arg_tables.pop(
+            "unit_conv_scheme_1"
+        )
+        host_props = _make_table_props(
+            "data", "host",
+            _make_arg_table("data", [], "host"),
+        )
+        return {"unit_conv_scheme_1": scheme_props, "data": host_props}
+
+    def _maps(self):
+        return _RunMetadataMaps(
+            host_var_map={},
+            host_block_std_names={"instance_number"},
+            constituent_std_names=set(),
+            ddt_type_names=set(),
+            ddt_instance_map={
+                "instance_type": ("instance_data", "data", "number_of_instances"),
+            },
+            ddt_parent_map={},
+        )
+
+    def _run(self, callee_input_names, meta_data):
+        public_fns = {
+            "test_suite_callee": (
+                "test_suite_cap_mod", [], [None] * len(callee_input_names),
+                callee_input_names,
+            ),
+        }
+        suite_run_entries = [
+            ("test_suite", "run", "test_suite_callee", ["unit_conv_scheme_1"]),
+        ]
+        per_suite, _host_global_ops = _build_per_suite_run_info(
+            suite_run_entries, public_fns, meta_data, self._maps(),
+            cap_var_map=None, seen_host_globals=set(),
+        )
+        return per_suite[0]["resolved_arg_ops"]
+
+    def test_sibling_instance_arg_present_sets_index_std_name(self):
+        """With a sibling instance_number arg in the same call, the array
+        member resolves as DdtMember with index_std_name set -- not Block,
+        even though instance_data lives in a HOST-type table."""
+        ops = self._run(
+            ["instance", "arr"], self._meta_data(with_instance_arg=True)
+        )
+        _assert_resolved_arg_op(ops[0], "instance", ArgSourceKind.Block)
+        _assert_resolved_arg_op(
+            ops[1], "arr", ArgSourceKind.DdtMember,
+            var_name="instance_data", module_name="data", member_path="data_array",
+        )
+        assert ops[1].index_std_name.data == "instance_number"
+
+    def test_no_sibling_instance_arg_falls_back_to_block(self):
+        """Without a sibling instance_number arg in THIS call, the guard
+        doesn't fire -- falls back to the existing blanket HOST-table-is-Block
+        rule, exactly as before this feature existed."""
+        ops = self._run(["arr"], self._meta_data(with_instance_arg=False))
+        _assert_resolved_arg_op(ops[0], "arr", ArgSourceKind.Block)

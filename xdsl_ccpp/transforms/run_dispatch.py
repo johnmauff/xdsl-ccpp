@@ -65,6 +65,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_INSTANCE_NUMBER_STD_NAME,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
@@ -354,18 +355,42 @@ def _build_per_suite_run_info(
                         ddt_type_name, ddt_instance_map, ddt_parent_map
                     )
                     if result is not None:
-                        # _instance_array_dim: reserved for the multi-instance
-                        # array-of-DDT case (ccpp_cap_refactor_plan.md's
-                        # instances/instances_advection entry) -- not consumed
-                        # yet, so every DDT instance still resolves exactly as
-                        # before regardless of its value.
-                        instance_var, instance_module, path_prefix, _instance_array_dim = result
+                        instance_var, instance_module, path_prefix, instance_array_dim = result
                         full_member = path_prefix + host_var
+                        # Real capgen-v1's multi-instance model: instance_var
+                        # is itself a HOST-owned array of DDT (one entry per
+                        # model instance) when instance_array_dim is set.
+                        # Only treat it that way when this SAME call also
+                        # resolves a sibling instance_number-standard-name
+                        # scalar arg to index it by -- otherwise there's no
+                        # runtime value to subscript with, so fall through to
+                        # the ordinary (non-indexed) resolution below exactly
+                        # as before.
+                        index_std_name = None
+                        if instance_array_dim is not None:
+                            for _callee_arg in callee_input_names:
+                                if (
+                                    std_name_of.get(_bare(_callee_arg))
+                                    == CCPP_INSTANCE_NUMBER_STD_NAME
+                                ):
+                                    index_std_name = CCPP_INSTANCE_NUMBER_STD_NAME
+                                    break
+                        if index_std_name is not None:
+                            resolved_arg_ops.append(
+                                ResolvedArgOp(
+                                    arg_name,
+                                    ArgSourceKind.DdtMember,
+                                    var_name=instance_var,
+                                    module_name=instance_module,
+                                    member_path=full_member,
+                                    index_std_name=index_std_name,
+                                )
+                            )
                         # Skip DDT instances whose instance variable lives in a HOST-type
                         # table (e.g. ccpp_info_t accessed through 'ccpp' in test_host).
                         # HOST-type tables are caller-provided interfaces, not Fortran
                         # modules — their contents become block args, not USE stubs.
-                        if (
+                        elif (
                             instance_module in meta_data
                             and meta_data[instance_module].getAttr("type") == CCPPType.HOST
                         ):
@@ -900,9 +925,23 @@ def _build_run_dispatch_chain(
                     resolved_member, sub_vars = _resolve_member_subscripts(
                         member_name, host_var_map
                     )
+                    # Real capgen-v1's multi-instance model: instance_var is
+                    # itself a HOST-owned array of DDT, indexed by whichever
+                    # local block arg this call already resolves for
+                    # index_std_name (see _build_per_suite_run_info). NOTE:
+                    # print_ftn.py doesn't read index_expr yet (separate,
+                    # tracked follow-on -- see HostVarRefOp's own docstring),
+                    # so this doesn't change generated Fortran on its own.
+                    index_expr = None
+                    if op.index_std_name is not None:
+                        index_canonical = non_host_std_to_canonical.get(
+                            op.index_std_name.data
+                        )
+                        if index_canonical is not None and index_canonical in block_arg_map:
+                            index_expr = index_canonical
                     ref_op = HostVarRefOp(
                         instance_var, instance_module, arg_type,
-                        member_name=resolved_member,
+                        member_name=resolved_member, index_expr=index_expr,
                     )
                     host_var_ref_ops.append(ref_op)
                     host_var_ref_results[arg_name] = ref_op.res

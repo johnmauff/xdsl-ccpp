@@ -129,6 +129,17 @@ CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
 CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
 
+# Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
+# instances/instances_advection entry): a scalar with this standard name,
+# threaded as an ordinary caller-supplied dummy argument, selects which
+# entry of a HOST-owned array-of-DDT (dimensioned by number_of_instances,
+# see cap_shared.py's _build_ddt_resolution_maps) the current call operates
+# on. Not a dispatch scalar (DISPATCH_SCALAR_STD_NAMES above) -- it's real
+# host state that happens to also serve as an array index, not a fixed
+# CCPP-protocol parameter every call has regardless of any scheme's own
+# metadata.
+CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"
+
 # ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
 # A small, fixed set of CCPP-protocol standard names that behave as generic,
 # call-scoped dispatch parameters rather than real host-owned state --

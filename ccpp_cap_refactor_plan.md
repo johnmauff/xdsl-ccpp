@@ -3576,10 +3576,58 @@ dependency is noted.
           generated IR/Fortran text across every DDT-touching example (`capgen`,
           `ddthost`, `var_compat`'s nested DDTs, etc.), that's direct confirmation
           this stage changed zero generated output, as intended.
-      - **Not yet done:** stages 3-5 (teaching `run_dispatch.py`'s DDT branch the new
-        runtime-index case so it actually changes behavior for the array-of-DDT
-        case, extending the IR op/`print_ftn.py` to print `arr(idx)%member`, wiring
-        `examples/instances` into the real build).
+      - **Stage 3 done (2026-08-18): `run_dispatch.py` now recognizes the
+        array-of-DDT-instance case and constructs the extended resolved-arg
+        shape carrying the index -- IR-level change only, generated Fortran
+        text unchanged (print_ftn.py doesn't read it yet -- Stage 4's job).**
+        `CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"` added to
+        `ccpp_conventions.py` (real capgen-v1's own standard name for the
+        per-call model-instance index scalar). `ResolvedArgOp` (dialects/ccpp.py)
+        gained an optional `index_std_name` property, valid only for
+        `DdtMember` -- deliberately a *standard name*, not a resolved local
+        Fortran reference, since the local name isn't knowable yet at the
+        point `_build_per_suite_run_info` runs (it depends on
+        `non_host_std_to_canonical`, built later in a separate function).
+        `HostVarRefOp` (dialects/ccpp_utils.py) gained a matching optional
+        `index_expr` attribute (this one *is* the final resolved local
+        Fortran name, since by the time `_build_run_dispatch_chain`
+        constructs it, `non_host_std_to_canonical`/`block_arg_map` are both
+        available) -- its docstring explicitly flags that the printer
+        doesn't consume it yet.
+        - **`_build_per_suite_run_info`'s DDT branch**: when
+          `_resolve_ddt_access_path`'s 4th value (Stage 2) is not `None`,
+          searches this same call's own `callee_input_names` for a sibling
+          arg whose standard_name is `instance_number`; if found, builds
+          `ResolvedArgOp(..., DdtMember, ..., index_std_name=...)` instead of
+          the existing unconditional "instance lives in a HOST-type table ->
+          Block" rule. If no sibling instance-number arg is present in this
+          specific call, falls through to the *exact* prior behavior --
+          real, tested guard, not just documented intent (see
+          `test_no_sibling_instance_arg_falls_back_to_block`).
+        - **`_build_run_dispatch_chain`'s `HostVarRefOp` construction site**:
+          when `index_std_name` is set, resolves it via
+          `non_host_std_to_canonical`/`block_arg_map` (the same mechanism
+          already used for `col_start`/`col_end`) to the real local Fortran
+          name, passed through as `index_expr`.
+        - **Verified two ways.** Unit-level: 7 new tests (`ResolvedArgOp`
+          construction + verify() rules for `index_std_name` across all 4
+          source kinds; `_build_per_suite_run_info`'s positive case and its
+          negative/guard case, shaped like `examples/instances/data.meta`'s
+          real `instance_data` + `unit_conv_scheme_1`). Real-example,
+          IR-level: regenerated `examples/instances` up through
+          `generate-ccpp-cap` with `-t mlir` (not `-t ftn`, since the printer
+          doesn't consume the new field yet) and confirmed
+          `"ccpp_utils.host_var_ref"() <{var_name = "instance_data", ...}>
+          {member_name = "data_array(:, 2)", index_expr = "instance"}` --
+          the exact intended shape -- appears for all three `instance_data`
+          members. Confirmed real Fortran generation for `examples/instances`
+          is unaffected (still prints `instance_data%data_array(:, 2)`, no
+          subscript, exactly as before) and every other example's full
+          suite run is unaffected: 584 passed, 0 failures, +7 over
+          pre-Stage-3 (exactly the new tests), no filecheck golden changed.
+      - **Not yet done:** stages 4-5 (extending the IR op/`print_ftn.py` to
+        actually print `arr(idx)%member` using `HostVarRefOp.index_expr`,
+        wiring `examples/instances` into the real build).
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
