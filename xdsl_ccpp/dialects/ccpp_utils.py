@@ -143,15 +143,10 @@ class HostVarRefOp(IRDLOperation):
     When `index_expr` is also set (real capgen-v1's multi-instance model:
     `var_name` is itself a HOST-owned array of DDT, one entry per model
     instance -- see cap_shared.py's _build_ddt_resolution_maps and
-    run_dispatch.py's CCPP_INSTANCE_NUMBER_STD_NAME handling), the intended
-    reference is ``var_name(index_expr)%member_name``. NOTE: as of this
-    property's introduction, print_ftn.py does not yet read it -- it still
-    prints plain ``var_name%member_name``, dropping the index. Teaching the
-    printer to use it is separate, tracked follow-on work
-    (ccpp_cap_refactor_plan.md's instances/instances_advection entry) --
-    this property exists so run_dispatch.py's resolution decision is
-    durable and inspectable on its own, same rationale as ResolvedArgOp's
-    own index_std_name.
+    run_dispatch.py's CCPP_INSTANCE_NUMBER_STD_NAME handling), the printed
+    reference becomes ``var_name(index_expr)%member_name`` -- `var_name` is
+    subscripted before the member access, matching real capgen-v1's own
+    ``instance_data(instance)%data_array`` shape.
 
     A corresponding llvm.GlobalOp stub (with a 'module' attribute) is placed
     at the enclosing module level to drive 'use module, only: var' generation

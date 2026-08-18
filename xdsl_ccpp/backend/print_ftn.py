@@ -565,11 +565,22 @@ class ftnPrintContext:
             case CCPPHostVarRefOp():
                 # Register the host variable name for the result — no Fortran emitted.
                 # When member_name is set the reference is var_name%member_name (DDT).
+                # When index_expr is also set (real capgen-v1's multi-instance
+                # model: var_name is itself a HOST-owned array of DDT, one
+                # entry per model instance -- see HostVarRefOp's own
+                # docstring), var_name is first subscripted:
+                # var_name(index_expr)%member_name.
                 member = op.attributes.get("member_name")
-                ref_name = (
-                    f"{op.var_name.data}%{member.data}"
-                    if member is not None
+                index_expr = op.attributes.get("index_expr")
+                base_name = (
+                    f"{op.var_name.data}({index_expr.data})"
+                    if index_expr is not None
                     else op.var_name.data
+                )
+                ref_name = (
+                    f"{base_name}%{member.data}"
+                    if member is not None
+                    else base_name
                 )
                 self.variables[op.res] = ref_name
             case CCPPClearStringOp():
@@ -593,7 +604,14 @@ class ftnPrintContext:
                 # constituent-index subscript like q(:,:,index_qv)), merge the
                 # section dims INTO those subscripts by replacing ':' placeholders
                 # in order, rather than appending a second set of parens.
-                paren_pos = source_name.find("(")
+                # Search for that subscript's '(' only after the last '%' --
+                # source_name may ALSO have an earlier, unrelated '(' from
+                # HostVarRefOp's own index_expr (real capgen-v1's multi-instance
+                # model: arr(instance)%member), which must not be mistaken for
+                # the member's own subscript (that bug silently dropped
+                # "%member" entirely -- base ended up just "arr(instance)").
+                percent_pos = source_name.rfind("%")
+                paren_pos = source_name.find("(", percent_pos + 1 if percent_pos >= 0 else 0)
                 if paren_pos >= 0:
                     base = source_name[:paren_pos]
                     existing = source_name[paren_pos + 1: source_name.rfind(")")]

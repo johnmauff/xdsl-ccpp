@@ -3625,9 +3625,63 @@ dependency is noted.
           subscript, exactly as before) and every other example's full
           suite run is unaffected: 584 passed, 0 failures, +7 over
           pre-Stage-3 (exactly the new tests), no filecheck golden changed.
-      - **Not yet done:** stages 4-5 (extending the IR op/`print_ftn.py` to
-        actually print `arr(idx)%member` using `HostVarRefOp.index_expr`,
-        wiring `examples/instances` into the real build).
+      - **Stage 4 done (2026-08-18): `print_ftn.py` now actually prints
+        `HostVarRefOp.index_expr` -- `examples/instances`' real generated
+        Fortran finally shows `instance_data(instance)%data_array2(lb:ub)`
+        instead of the un-indexed `instance_data%data_array2(lb:ub)`.**
+        The `CCPPHostVarRefOp` printer case now builds a `base_name` of
+        `var_name(index_expr)` when `index_expr` is set (else plain
+        `var_name`, unchanged), then appends `%member_name` as before.
+        - **Found and fixed a real, previously-latent bug in the same
+          printer file while verifying against the real example, not a
+          synthetic case: `CCPPArraySectionOp`'s merge logic.** `data_array`/
+          `data_array_opt` (whose own declared subscript is a fixed
+          species index, e.g. `data_array(:, 2)`) printed correctly on the
+          first try, but `data_array2` (a genuine 1-D
+          `horizontal_dimension`-dimensioned member that the *existing*
+          lb:ub column-chunking fallback wraps in an `ArraySectionOp`)
+          printed as bare `instance_data(instance)` -- **the `%data_array2`
+          member vanished entirely.** Root cause: the merge-existing-
+          subscript logic located "the subscript to merge into" via
+          `source_name.find("(")` -- the *first* `(` in the whole string.
+          Once `HostVarRefOp` could also prepend an index_expr paren before
+          the member, that first `(` became the instance index, not the
+          member's own subscript; the merge logic treated `"instance"` as
+          an existing placeholder token, discarded everything after its
+          matching `)` (the real `%member` access), and rebuilt just
+          `instance_data(instance)`. This is exactly the kind of arity/
+          identity mismatch this session has hit before in unrelated
+          contexts (wrong dummy-argument binding, not just a cosmetic
+          miss) -- would have shipped silently, since no existing
+          filecheck golden exercises an array-of-DDT member that also
+          needs column-chunking. Fixed by searching for the member's own
+          `(` only after the last `%`, which is a no-op when there's no
+          `%` at all (the ordinary non-DDT-member array case) and correctly
+          skips the instance-index paren when both are present.
+        - **New dedicated regression test**
+          (`tests/unit/test_run_dispatch_multi_instance_array_section.py`,
+          shaped like `examples/instances/data.meta`'s real
+          `instance_data`/`data_array2`, driven through the same
+          `ArgOwnershipPass`→`SuiteCAP`→`CCPPCAP`→`print_to_ftn` in-process
+          pipeline `test_run_dispatch_inout_echo.py`/
+          `test_run_dispatch_col_bounds_fallback.py` already established
+          for this class of printer bug) -- confirmed to actually catch the
+          regression by temporarily reverting the fix and re-running (both
+          new tests failed, as expected) before restoring it.
+        - **Verified on the real example directly**: `examples/instances`
+          now regenerates `instance_data(instance)%data_array(:, 2)`,
+          `instance_data(instance)%data_array2(lb:ub)`, and
+          `instance_data(instance)%data_array(:, 1)` -- exactly real
+          capgen-v1's own shape, all three members, both the fixed-index
+          and column-chunked cases. Full suite: 586 passed, 0 failures, +2
+          over pre-Stage-4 (the new regression test), no filecheck golden
+          changed (no existing example combines an array-of-DDT instance
+          with a column-chunked member, so nothing else was ever exercising
+          either the new index_expr path or the latent ArraySectionOp bug).
+      - **Not yet done:** stage 5 (wiring `examples/instances` into the real
+        build, adapting its driver to the loop-over-instances calling
+        convention real capgen-v1 uses). `examples/instances_advection`
+        stays explicitly out of scope until plain `instances` is solid.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
