@@ -29,7 +29,7 @@
 // CHECK-NEXT:    character(len=16), parameter :: const_initialized = 'initialized'
 // CHECK-NEXT:    character(len=16), parameter :: const_uninitialized = 'uninitialized'
 // CHECK-NEXT:    real(kind=kind_phys) :: temp_inc_set
-// CHECK-NEXT:    real(kind=kind_phys), allocatable :: to_promote(:, :)
+// CHECK-NEXT:    real(kind=kind_temp), allocatable :: to_promote(:, :)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: promote_pcnst(:)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: temp_calc(:)
 // CHECK-NEXT:    public :: temp_suite_suite_register
@@ -652,7 +652,9 @@
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
 // CHECK:         use ISO_FORTRAN_ENV, only: kind_phys => REAL64
+// CHECK-NEXT:    use temp_kinds, only: kind_temp => temp_r8
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         public :: kind_phys
+// CHECK-NEXT:    public :: kind_temp
 // CHECK-NEXT:  end module ccpp_kinds

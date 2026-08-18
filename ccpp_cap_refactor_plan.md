@@ -59,6 +59,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `instances`/`instances_advection` | 📋 Backlog (M); needs an architecture decision first | L3296 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
+| Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
@@ -3959,7 +3960,79 @@ dependency is noted.
     likely M-L) -- a separate, bigger effort from anything Stages 1-5 delivered.
   - Hold `suite_allocate`/`instances`+`instances_advection`/kind_spec/interstitial-variable
     backlog items (all cap-generation-adjacent) until Stage 3 lands -- building on the model
-    being replaced would be redone.
+    being replaced would be redone. **Stage 3 landed 2026-08-13; `suite_allocate` (2026-08-17)
+    and metadata `kind_spec` support (2026-08-17, see the Index and its own entry below) are
+    now both done. `instances`/`instances_advection` and interstitial-variable remain backlog.**
+- **Metadata `kind_spec` support — Done (2026-08-17), S/M as scoped.** Real capgen-v1 lets a
+  `.meta` table's `[ccpp-table-properties]` block declare
+  `kind_spec = <module>:<kind_name>=>spec` (or the `<module>:<spec>` shorthand) to say a kind
+  comes from a real host/scheme Fortran module instead of the hardcoded ISO_FORTRAN_ENV table
+  this codebase's own `generate-meta-kinds` (`suite_kinds.py`'s `MetaKind` pass) previously
+  always assumed. Confirmed as a real, not hypothetical, gap: `examples/capgen`'s own
+  `scheme/temp_set.meta`/`temp_adjust.meta` are ported from capgen-v1's upstream
+  `end-to-end-tests/capgen/{source_dir2/temp_set,temp_adjust}.meta`, and the real originals
+  declare `kind_spec = temp_kinds:kind_temp=>temp_r8` for their `to_promote` argument's kind
+  (`kind_temp`) — the port had silently dropped the `kind_spec` line (the parser's own
+  attribute allow-list would otherwise crash on it) and substituted `kind_phys` for the real
+  `kind_temp` throughout.
+  - **Parsing.** `ccpp_xml.py`'s `CCPPTableProperties` gained `kind_spec` on its allow-list,
+    accumulating into a new `kind_specs: list[tuple[kind_name, module, spec]]` (a table may
+    declare more than one, matching real capgen-v1), parsed by a new `_parse_kind_spec_value`
+    mirroring capgen-v1's own `metadata_table.py:_parse_kind_spec_value` regex exactly.
+  - **IR.** Forwarded onto `TablePropertiesOp`'s attributes (as `kind_specs`, an `ArrayAttr` of
+    `"<module>:<kind_name>=>spec"`-encoded `StringAttr`s -- one canonical encoding decoded by
+    the same helper on both ends) from both `.meta`-parsing frontends that build this op:
+    `ccpp_xml.py`'s `build_meta_ir` *and* `py_api.py`'s `_table_properties_op`/
+    `TableDescriptor`/`SchemeDescriptor` (the two frontends share `parse_meta_file` but each
+    had their own, independently-incomplete attribute-forwarding code -- `py_api.py` had the
+    exact same array_layout/language-only gap).
+  - **Resolution.** `suite_kinds.py`'s `MetaKind` pass gained `_collect_metadata_kind_specs`
+    (mirrors capgen-v1's own `ccpp_capgen.py:_collect_metadata_kind_specs`): aggregates
+    `kind_name -> (module, spec)` across every table, raising `ValueError` on a genuine
+    conflict (two tables declaring different specs for the same kind_name). A kind_spec
+    resolution takes priority over the hardcoded `CCPP_KIND_TO_ISO` table; a kind with no
+    kind_spec declaration falls back to exactly the pre-existing behavior, so every example
+    that never declares one (i.e. all of them except capgen's `temp_set`/`temp_adjust`) is
+    byte-for-byte unaffected.
+  - **IR/codegen threading.** `ccpp.KindOp` and `ccpp_utils.KindDefOp` both gained a `module`/
+    `kind_module` property (default `"iso_fortran_env"`, matching the prior implicit
+    behavior), threaded through `generate_kinds.py`. `print_ftn.py`'s `ccpp_kinds` module
+    preamble now groups kind renames by `kind_module`: the existing
+    `use ISO_FORTRAN_ENV, only: name => value` path is untouched (same condition as before,
+    now additionally gated on `kind_module == "iso_fortran_env"`), and a new, purely additive
+    branch emits a plain `use <module>, only: name => spec` rename for any other module,
+    grouped/sorted by module -- xdsl_ccpp's own existing "declare a kind by rename-on-import"
+    design generalized to a real module instead of always assuming ISO_FORTRAN_ENV, rather
+    than porting capgen-v1's own `kinds_writer.py` verbatim (which declares a separate new
+    parameter after a plain, non-renaming `use`) -- keeps every existing example's
+    `ccpp_kinds.F90` output identical.
+  - **Verified directly on regenerated output.** `examples/capgen`'s `temp_set.meta`/
+    `temp_adjust.meta` restored to their real upstream `kind_spec` declaration and `to_promote`
+    kind (`kind_temp`, was silently `kind_phys`); `temp_set.F90`/`temp_adjust.F90` updated to
+    `use ccpp_kinds, only: kind_phys, kind_temp` and declare `to_promote` as `real(kind_temp)`,
+    matching real capgen-v1's own scheme source exactly (confirmed by reading capgen-v1's own
+    `temp_adjust.F90`/`source_dir2/temp_set.F90` -- schemes always `use ccpp_kinds`, never the
+    underlying kind_spec module directly, so `kind_temp` and `kind_phys` are indistinguishable
+    to scheme code, exactly as this fix's design intends). Added the real upstream
+    `adjust/temp_kinds.F90` (ported verbatim) to `examples/capgen/scheme/` and wired it into
+    `capgen_ftn_host.exe`'s source list. Regenerated `ccpp_kinds.F90` now reads:
+    `use ISO_FORTRAN_ENV, only: kind_phys => REAL64` / `use temp_kinds, only: kind_temp =>
+    temp_r8`, and the suite cap correctly declares/passes `to_promote` as `real(kind=kind_temp)`
+    throughout. New unit tests: `tests/unit/test_kind_spec.py` (parser edge cases, kind_spec
+    resolution, fallback-when-absent, and the conflict-detection error). Updated the
+    `ccpp_utils.kind_def`/`ccpp.kind` IR-text golden fixtures the new `module`/`kind_module`
+    property changed (`completed_ir/{var_compat,helloworld,ddthost,capgen,advection}-xml.mlir`,
+    `completed_ir/{helloworld,ddthost}-py.mlir`) and the `capgen`-specific frontend/completed_ir/
+    end_to_end fixtures affected by the restored `kind_temp`. Full suite: 574 passed (566 +
+    8 new), 1 pre-existing unrelated environment failure deselected (same `ccpp_xdsl` PATH
+    issue as every other fix this session), 1 xfailed.
+  - **Not included, deliberately** (would creep into other backlog items): `dependencies`/
+    `source_path`/`dependencies_path` metadata threading (tracked separately, same
+    `setAttr`/`build_meta_ir` functions but a distinct gap -- see the "Restore real
+    dependencies/source_path tracking" item), real capgen-v1's own hard-error-if-kind-
+    unresolved behavior (would break every example that relies on the implicit `kind_phys`
+    default; not adopted), and a `--kind-type` CLI flag (capgen-v1 has one; this codebase's
+    existing narrower `--extra-kind`/`--extra-iso` analog was left as-is).
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified

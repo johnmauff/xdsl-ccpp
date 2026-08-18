@@ -112,20 +112,52 @@ def _emit_call(append_fn, fn_name: str, call_exprs: list, max_col: int = 80) -> 
 
 
 def _chost_kind_iso_map(ccpp_mod) -> dict:
-    """Extract kind-name → ISO-constant mapping from ccpp.kinds ops in the ccpp module."""
+    """Extract kind-name → (value, module) mapping from ccpp.kinds ops in the
+    ccpp module. `value` is an ISO_FORTRAN_ENV constant ('REAL32'/'REAL64')
+    for the common case, or an arbitrary spec name (e.g. 'temp_r8') when a
+    metadata kind_spec resolved this kind instead -- `module` distinguishes
+    the two ('iso_fortran_env' vs the real host/scheme module name), see
+    _real_width_from_iso.
+    """
     kind_iso: dict = {}
     for inner in ccpp_mod.body.ops:
         if not isa(inner, ccpp.KindsOp):
             continue
         for kind_op in inner.body.ops:
             if isa(kind_op, ccpp.KindOp):
-                kind_iso[kind_op.kind_name.data] = kind_op.kind_value.data
+                kind_iso[kind_op.kind_name.data] = (
+                    kind_op.kind_value.data, kind_op.kind_module.data,
+                )
     return kind_iso
 
 
-def _real_width_from_iso(iso_constant: str) -> int:
-    """Return 32 or 64 given an ISO_FORTRAN_ENV constant like 'REAL32'/'REAL64'."""
-    return 32 if iso_constant == "REAL32" else 64
+def _real_width_from_iso(kind_name: str, kind_entry: "tuple[str, str] | None") -> int:
+    """Return 32 or 64 for real kind *kind_name*, given its (value, module)
+    entry from _chost_kind_iso_map (None if the kind was never seen there).
+
+    Raises ValueError if the kind was resolved via a metadata kind_spec
+    (module != 'iso_fortran_env') rather than the hardcoded ISO_FORTRAN_ENV
+    table: kind_spec only names a symbol (e.g. 'temp_r8'), not a width, so
+    there is no width to read here at all -- silently guessing 64 would risk
+    generating a BIND(C)/C++ struct with the wrong byte size for that field,
+    a real, silent correctness bug across the language boundary. chost/C++
+    interop for a kind_spec-resolved real kind isn't supported yet; add an
+    explicit width mapping here if/when it's actually needed.
+    """
+    if kind_entry is None:
+        return 64
+    value, module = kind_entry
+    if module != "iso_fortran_env":
+        raise ValueError(
+            f"chost cap: real kind '{kind_name}' was resolved via a metadata "
+            f"kind_spec ('{module}:{value}'), not ISO_FORTRAN_ENV -- its "
+            f"width (32- or 64-bit) isn't derivable from that declaration "
+            f"alone, and the C++/BIND(C) interop layer needs a definite "
+            f"width to lay out matching struct fields correctly. Give this "
+            f"kind name an explicit width mapping before using it in a "
+            f"C++/chost host."
+        )
+    return 32 if value == "REAL32" else 64
 
 
 def _chost_build_maps(meta_data):
@@ -217,8 +249,9 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
             if isinstance(elem, Float32Type):
                 real_width = 32
             elif isinstance(elem, RealKindType) and kind_iso_map:
-                iso = kind_iso_map.get(elem.kind_name.data, "REAL64")
-                real_width = _real_width_from_iso(iso)
+                real_width = _real_width_from_iso(
+                    elem.kind_name.data, kind_iso_map.get(elem.kind_name.data)
+                )
             rank = sum(1 for d in mtype.shape if d.data == DYNAMIC_INDEX)
 
     if is_col_start or is_col_end:
@@ -356,8 +389,9 @@ def _chost_expand_ddt_arg(
 
         real_width = 64
         if is_real and var.hasAttr("kind"):
-            iso = kind_iso_map.get(var.getAttr("kind"), "REAL64")
-            real_width = _real_width_from_iso(iso)
+            real_width = _real_width_from_iso(
+                var.getAttr("kind"), kind_iso_map.get(var.getAttr("kind"))
+            )
 
         has_horiz = any(d.lower() in CCPP_HORIZONTAL_DIMENSIONS for d in dim_names)
         has_vert  = any(d.lower() in CCPP_VERTICAL_DIMENSIONS    for d in dim_names)

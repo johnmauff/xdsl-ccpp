@@ -4,7 +4,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from enum import Enum, StrEnum, auto
 
-from xdsl.dialects.builtin import IntegerAttr, ModuleOp, StringAttr, i32
+from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, ModuleOp, StringAttr, i32
 
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
@@ -15,7 +15,7 @@ from xdsl_ccpp.dialects.ccpp import (
     SuiteOp,
     TablePropertiesOp,
 )
-from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value, set_legacy_mode
 
 
 class CCPPType(StrEnum):
@@ -83,12 +83,18 @@ class CCPPItem:
 class CCPPTableProperties(CCPPItem):
     """Descriptor for a ``[ccpp-table-properties]`` block parsed from a ``.meta`` file.
 
-    Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``relative_path``.
-    The ``type`` value is automatically coerced to a `CCPPType` enum member.
+    Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``relative_path``,
+    ``kind_spec``. The ``type`` value is automatically coerced to a `CCPPType` enum
+    member. ``kind_spec`` may be declared more than once (one table can supply more
+    than one kind); each declaration is parsed and accumulated into the
+    ``kind_specs`` list rather than overwriting a single attribute slot.
     """
 
     def __init__(self):
         super().__init__()
+        # List of parsed (kind_name, module, spec) tuples -- see
+        # ccpp_conventions.parse_kind_spec_value.
+        self.kind_specs: list[tuple[str, str, str]] = []
 
     _VALID_ARRAY_LAYOUTS = ("column_major", "row_major")
     _VALID_LANGUAGES = ("fortran", "c++")
@@ -105,8 +111,10 @@ class CCPPTableProperties(CCPPItem):
             raise ValueError(
                 f"language must be one of {self._VALID_LANGUAGES}, got '{value}'"
             )
+        if key == "kind_spec":
+            self.kind_specs.append(parse_kind_spec_value(value))
         super().setAttr(key, value, ["name", "type", "dependencies", "relative_path",
-                                     "array_layout", "language"])
+                                     "array_layout", "language", "kind_spec"])
 
 
 class CCPPArgumentTable(CCPPItem):
@@ -711,6 +719,16 @@ class ccppXML:
             lang = meta.table_properties.getAttr("language")
             if lang != "fortran":
                 attrs["language"] = StringAttr(lang)
+        if meta.table_properties.kind_specs:
+            # Re-encoded in the same "<module>:<kind_name>=>spec" canonical form
+            # ccpp_conventions.parse_kind_spec_value accepts, so suite_kinds.py's
+            # MetaKind pass can decode each entry with that same helper -- one
+            # source of truth for the syntax, rather than inventing a second
+            # IR-only encoding.
+            attrs["kind_specs"] = ArrayAttr([
+                StringAttr(f"{module}:{kind_name}=>{spec}")
+                for kind_name, module, spec in meta.table_properties.kind_specs
+            ])
         return TablePropertiesOp(
             meta.table_properties.getAttr("name"),
             str(meta.table_properties.getAttr("type")),
