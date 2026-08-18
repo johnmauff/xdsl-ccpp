@@ -4112,6 +4112,77 @@ dependency is noted.
             `lc_cld_liq_tend`. Real compilation/`ctest` execution still
             can't be verified locally (no Fortran compiler on this laptop)
             -- left for the next CI run.
+          - **Real CI then found two more real bugs (2026-08-18), both
+            fixed the same day -- exactly why this note keeps saying "left
+            for the next CI run": there is no substitute for it on this
+            laptop.**
+            1. **Fortran forbids the `TARGET` attribute on a derived-type
+               component** (`constituent_cap.py`'s first cut put it there
+               directly, copying the plain-module-var version's own
+               attribute list without checking it transfers) --
+               `gfortran`: `"Attribute at (1) is not allowed in a TYPE
+               definition"`, cascading into dozens of unrelated `"not a
+               member of the structure"` errors for every other component
+               once the type block's own parse got corrupted. **Fixed**:
+               `target` moved to the containing `lc_instances(:)` variable
+               itself -- Fortran's own attribute-propagation rule (`TARGET`
+               on a variable propagates to every subobject, including
+               allocatable components) makes every pointer association
+               into it exactly as valid as before.
+            2. **A genuine regression in the same code path, caught by the
+               same build**: `cld_liq_register`'s own `dyn_const` output is
+               referenced inside `ccpp_register` by a bare `lc_dyn_const`
+               text that `lifecycle_cap.py`'s own dedicated `CapVarRefOp`
+               branch for this exact arg shape emits *deliberately*,
+               matching `constituent_cap.py`'s module-var naming
+               convention on purpose (Fortran resolves the otherwise-
+               undeclared identifier via ordinary same-module scoping --
+               not a bug, and not the "discard" this was originally
+               misdiagnosed as, see the corrected backlog entry below).
+               Once `constituent_cap.py` moved that array into the new
+               per-instance bundle, that branch kept emitting the bare,
+               now-nonexistent name -- `gfortran`: `"Symbol 'lc_dyn_const'
+               ... has no IMPLICIT type"`. **Fixed**: that branch now
+               accepts `instance_local_name` and builds
+               `lc_instances(<instance>)%lc_<bare>` when set,
+               `lc_<bare>` unchanged otherwise -- confirmed
+               `examples/advection`'s own (non-multi-instance) output is
+               byte-identical before/after. New regression test
+               (`TestSchemeLevelDynamicRegistrationOutputIsInstanceAware`
+               in the same test file, using a fixture with a real
+               `_register`-table `dyn_const` entry -- the original test
+               fixture had none, which is exactly why it didn't catch
+               this), confirmed via git-stash.
+          - **Real CI then found a third bug, this time a metadata
+            authoring mistake from the original 2026-07-30 port, not a
+            generator bug**: `data.meta`'s own second table (`ncols`/
+            `pver`/`dt`/`tfreeze`/`index_qv`/`phys_state`) was declared
+            `type = host` even though `data.F90` genuinely is a compiled
+            Fortran module (confirmed: `main.F90` already `use`s it
+            directly) -- unlike `test_host.meta`'s own deliberately
+            module-less host table (`instance`/`ninstances`/etc, no
+            backing `.F90` at all). `examples/advection`'s own equivalent
+            table (`test_host_mod.meta`) is correctly `type = module` for
+            the identical situation. The practical effect: a DDT member's
+            own named-array-slice subscript (`q(:,:,
+            index_of_water_vapor_specific_humidity)`, resolved via
+            `cap_shared.py`'s `_resolve_member_subscripts`, keyed against a
+            MODULE-only host-var map) silently fell through to printing
+            the bare, undeclared standard-name text whenever its resolving
+            variable's own table was HOST- instead of MODULE-typed --
+            `gfortran`: `"Symbol 'index_of_water_vapor_specific_humidity'
+            ... has no IMPLICIT type"`. **Fixed**: `data.meta`'s second
+            table changed to `type = module`. This one change also
+            improved several OTHER call sites to match real capgen-v1's
+            own convention far more closely than before: `ccpp_init`
+            dropped `tfreeze` as an explicit call arg (now use-associated
+            directly) and `ccpp_physics_run` dropped both `ncol` and
+            `timestep` (now `ncol = ub - lb + 1`, matching the standard
+            column-chunking idiom every other example already uses, and
+            `timestep` is the use-associated `dt` directly) -- `main.F90`
+            updated to match the new, shorter call signatures. Not a
+            generator change at all; `xdsl_ccpp` behaved correctly once
+            the metadata correctly described what `data.F90` actually is.
           - **A separate, pre-existing, unrelated bug found while verifying
             this fix, explicitly out of scope for task #35, logged as its
             own new backlog item below ("Scheme-level dynamic constituent

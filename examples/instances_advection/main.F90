@@ -25,6 +25,17 @@
 !      does not alias these to bare ccpp_-prefixed names the way the
 !      lifecycle subroutines are (matches examples/constituents_dim's own
 !      driver, which needed the identical adaptation).
+!   5) tfreeze/ncol/timestep dropped from ccpp_init/ccpp_physics_run's own
+!      call args -- data.meta's own "data" table was mistyped `type = host`
+!      from the original port (found + fixed 2026-08-18: it genuinely has
+!      a backing data.F90 module, unlike test_host.meta's own deliberately
+!      module-less host table, so it should have been `type = module` all
+!      along, matching examples/advection's own test_host_mod.meta
+!      convention for the identical situation). Once fixed, tfreeze/ncols/
+!      pver/dt all resolve via use-association exactly like every other
+!      example's own module-type host vars, and ncol/timestep join
+!      ncols/pver's own established `ncol = ub - lb + 1`-style column-
+!      chunking convention instead of being passed explicitly.
 ! The loop-over-instances structure itself, and the per-instance
 ! constituent-registration calls (instance=/ninstances= on every one of
 ! them) -- the actual mechanism this example exists to exercise -- are
@@ -38,7 +49,7 @@ program test_instances_advection
   use ccpp_kinds, only: kind_phys
   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
 
-  use data, only: ncols, pver, ninstances, dt, tfreeze, num_time_steps
+  use data, only: ncols, pver, ninstances, num_time_steps
   use data, only: phys_state, qv_init, index_qv
   use data, only: allocate_physics_state, init_qv, set_index_qv, &
       verify_results
@@ -164,7 +175,7 @@ program test_instances_advection
   ! 6. ccpp_init per instance.
   !-----------------------------------------------------------------
   do ins = 1, ninstances
-    call ccpp_init(suite_name=ccpp_suite, tfreeze=tfreeze, &
+    call ccpp_init(suite_name=ccpp_suite, &
         instance=ins, ninstances=ninstances, &
         errmsg=errmsg, errflg=errflg)
     if (errflg /= 0) then
@@ -191,7 +202,7 @@ program test_instances_advection
     end do
     do ins = 1, ninstances
       call ccpp_physics_run(suite_name=ccpp_suite, suite_part=ccpp_group, &
-          lb=1, ub=ncols, ncol=ncols, timestep=dt, &
+          lb=1, ub=ncols, &
           instance=ins, ninstances=ninstances, &
           errmsg=errmsg, errflg=errflg)
       if (errflg /= 0) then
