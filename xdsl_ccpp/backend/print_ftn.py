@@ -483,8 +483,17 @@ class ftnPrintContext:
             case llvm.AddressOfOp():
                 name = op.global_name.root_reference.data
                 if "ccpp_instance_ref" in op.attributes:
+                    # Real capgen-v1's multi-instance model
+                    # (ccpp_cap_refactor_plan.md's "instances/
+                    # instances_advection" entry): ccpp_instance_ref holds
+                    # the plain local Fortran name of this call's own
+                    # instance_number-standard-name scalar arg -- the
+                    # global (ccpp_suite_state) is itself dimensioned by
+                    # number_of_instances for such a suite (see suite_cap.py's
+                    # _build_state_globals), so indexing it directly by that
+                    # bare scalar is the whole story; no member access needed.
                     instance_var = op.attributes["ccpp_instance_ref"].data
-                    name = f"{name}({instance_var}%ccpp_instance)"
+                    name = f"{name}({instance_var})"
                 self.variables[op.result] = name
             case llvm.LoadOp():
                 # Propagate the pointer's name to the loaded value
@@ -565,11 +574,22 @@ class ftnPrintContext:
             case CCPPHostVarRefOp():
                 # Register the host variable name for the result — no Fortran emitted.
                 # When member_name is set the reference is var_name%member_name (DDT).
+                # When index_expr is also set (real capgen-v1's multi-instance
+                # model: var_name is itself a HOST-owned array of DDT, one
+                # entry per model instance -- see HostVarRefOp's own
+                # docstring), var_name is first subscripted:
+                # var_name(index_expr)%member_name.
                 member = op.attributes.get("member_name")
-                ref_name = (
-                    f"{op.var_name.data}%{member.data}"
-                    if member is not None
+                index_expr = op.attributes.get("index_expr")
+                base_name = (
+                    f"{op.var_name.data}({index_expr.data})"
+                    if index_expr is not None
                     else op.var_name.data
+                )
+                ref_name = (
+                    f"{base_name}%{member.data}"
+                    if member is not None
+                    else base_name
                 )
                 self.variables[op.res] = ref_name
             case CCPPClearStringOp():
@@ -593,7 +613,14 @@ class ftnPrintContext:
                 # constituent-index subscript like q(:,:,index_qv)), merge the
                 # section dims INTO those subscripts by replacing ':' placeholders
                 # in order, rather than appending a second set of parens.
-                paren_pos = source_name.find("(")
+                # Search for that subscript's '(' only after the last '%' --
+                # source_name may ALSO have an earlier, unrelated '(' from
+                # HostVarRefOp's own index_expr (real capgen-v1's multi-instance
+                # model: arr(instance)%member), which must not be mistaken for
+                # the member's own subscript (that bug silently dropped
+                # "%member" entirely -- base ended up just "arr(instance)").
+                percent_pos = source_name.rfind("%")
+                paren_pos = source_name.find("(", percent_pos + 1 if percent_pos >= 0 else 0)
                 if paren_pos >= 0:
                     base = source_name[:paren_pos]
                     existing = source_name[paren_pos + 1: source_name.rfind(")")]
@@ -1159,13 +1186,19 @@ class ftnPrintContext:
                         prefix="  ",
                     )
                 else:
-                    # Mutable state variable (e.g. ccpp_suite_state).
-                    # When "dimension" attribute is set, emit a per-instance array.
-                    dim = op.attributes.get("dimension")
-                    if dim is not None:
+                    # Mutable state variable (e.g. ccpp_suite_state). For a
+                    # multi-instance suite (see suite_cap.py's
+                    # _build_state_globals), "allocatable" is set: one entry
+                    # per model instance is needed, but number_of_instances
+                    # is itself a runtime HOST scalar, not a compile-time
+                    # constant, so this must be a deferred-shape allocatable
+                    # -- actually allocated+initialized on first use by a
+                    # LazyAllocOp (see _build_suite_state_lazy_alloc), not
+                    # given an inline initializer here.
+                    if "allocatable" in op.attributes:
                         self.print(
-                            f"character(len={char_len}), dimension({dim.data})"
-                            f" :: {name} = '{val}'",
+                            f"character(len={char_len}), allocatable,"
+                            f" dimension(:) :: {name}",
                             prefix="  ",
                         )
                     else:
