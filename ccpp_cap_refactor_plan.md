@@ -63,6 +63,9 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Interstitial-variable register-phase mechanism | ✅ Done (2026-08-17) — non-chained case restored/tested; chained case tracked separately | L4038 |
 | `temp_adjust`/`temp_calc_adjust`/`temp_set` rank/dimensionality re-sync to real upstream | ✅ Done (2026-08-17) | L4098 |
 | Chained-interstitial allocation-ordering bug (`_build_framework_refs`) | 📋 Backlog (M-L, confirmed real bug, not just untested) | L4085 |
+| Metadata `dependencies`/`dependencies_path`/`source_path` tracking (Tier 1: parse + IR-forward, no build-system consumer) | ✅ Done (2026-08-17) | L4176 |
+| Metadata dependency-manifest automation for CMake (Tier 2 of the above, overlaps with CMake configure-time item below) | 📋 Backlog (size TBD, needs its own design pass) | L4176 |
+| `examples/ddthost`'s own copies of `temp_set`/`temp_adjust`/`temp_calc_adjust` have fallen behind `examples/capgen`'s (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | 📋 Backlog (S-M, found while scoping the above) | L4176 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
@@ -4170,6 +4173,101 @@ dependency is noted.
     old 1D shape) and the `frontend`/`completed_ir`/`end_to_end` capgen-xml.mlir filecheck
     goldens to match. Full suite: 577 passed, 1 pre-existing unrelated environment failure
     deselected, 1 xfailed.
+- **Metadata `dependencies`/`dependencies_path`/`source_path` tracking — Tier 1 done (2026-08-17).**
+  Real capgen-v1's own three-key convention (`metadata/metadata_table.py`'s
+  `MetadataTable.apply_table_props`): `source_path` locates a scheme's real `.F90`
+  relative to its `.meta` file; `dependencies` lists extra source files a scheme
+  needs; `dependencies_path` is the base directory for resolving `dependencies`
+  entries. All three feed a generated `datatable.xml` real capgen-v1's own build
+  system reads to auto-discover what to compile -- no human hand-lists dependency
+  files in a real capgen-v1 build script.
+  - **xdsl-ccpp's prior state, confirmed broken, not just incomplete:**
+    `dependencies` was accepted by the parser but never forwarded into IR or used
+    anywhere -- a pure no-op. `source_path` wasn't even in the allow-list --
+    any real `.meta` file declaring it crashed the parser (confirmed: this is
+    exactly why the ported `examples/capgen/scheme/temp_set.meta` silently
+    dropped its real upstream `source_path = source_dir2` line during the
+    port, same silent-drop pattern `kind_spec` had). `relative_path` -- a key
+    **xdsl-ccpp invented**, not real capgen-v1's -- was accepted in its place;
+    confirmed it was actually holding upstream's `dependencies_path` *value*
+    under the wrong name (`temp_adjust.meta`'s real `dependencies_path = adjust`
+    became the port's `relative_path = adjust`, identical value, wrong key).
+    No `datatable.xml`-equivalent exists in xdsl-ccpp at all -- every example's
+    CMakeLists.txt hand-lists scheme `.F90`/dependency files directly.
+  - **Deliberately no behavior change to generated Fortran/C++**, unlike
+    `kind_spec`: these three keys are pure build-tooling metadata with zero
+    downstream consumer today (unlike `kind_spec`, which fixed a real
+    wrong-kind bug in generated code). This fix's value is fixing the
+    `relative_path` naming bug, no longer crashing on `source_path`, and
+    restoring metadata fidelity to match upstream text -- not new generated
+    output.
+  - **What Tier 1 does:** `ccpp_xml.py`'s `CCPPTableProperties` now accepts
+    the real key names (`source_path`, `dependencies_path`, dropping
+    `relative_path` entirely) and accumulates `dependencies` into a list
+    across possibly-multiple `dependencies = ...` lines (each itself
+    optionally comma-separated), skipping the `"none"` sentinel -- mirroring
+    real capgen-v1's own accumulation and sentinel handling exactly. Forwarded
+    onto `TablePropertiesOp`'s IR attributes from both `.meta`-parsing
+    frontends (`ccpp_xml.py`'s `build_meta_ir` and `py_api.py`'s
+    `_table_properties_op`/`SchemeDescriptor`/`TableDescriptor`, via a new
+    shared `_dependencies_kwargs` helper to avoid tripling the three
+    optional-attribute ternaries across `ccpp_scheme_from_meta`/
+    `ccpp_host_from_meta`/`ccpp_ddt_from_meta`). Also fixed the identical
+    `relative_path` naming bug in `transforms/util/ccpp_descriptors.py`'s own,
+    separate `CCPPTableProperties` class (the internal IR→descriptor
+    reconstruction used by `suite_cap.py` etc. via `self.meta_data`) for
+    consistency, though nothing populates these three fields there yet either
+    (deliberately not extended -- no consumer needs `self.meta_data` to carry
+    them; a future consumer, following `kind_spec`'s own precedent, would
+    most likely read straight off `TablePropertiesOp.attributes` the way
+    `suite_kinds.py`'s `MetaKind` pass already does for `kind_specs`, not
+    through this reconstruction layer).
+  - **Restored on a real example, and found a second real bug while doing
+    it.** `examples/capgen/scheme/temp_set.meta`/`temp_adjust.meta` now
+    declare `dependencies = temp_kinds.F90` (a genuine, applicable
+    dependency, matching upstream's own logical intent -- not
+    `dependencies_path`-adjusted subdirectory paths like upstream's literal
+    text, since this port deliberately flattened `temp_kinds.F90` directly
+    into `examples/capgen/scheme/` with no subdirectories at all; restoring
+    upstream's literal `adjust`/`source_dir2` path text would have pointed at
+    directories that don't exist in this checkout). `temp_calc_adjust.meta`'s
+    `dependencies = foo.F90, bar.F90` -- confirmed via `find` that neither
+    file exists anywhere in the repo -- was a **synthetic placeholder someone
+    added purely to exercise comma-separated multi-value parsing**, not a
+    real upstream value (real upstream's own `dependencies` for this table is
+    empty); restored to match upstream (empty) now that
+    `tests/unit/test_dependencies_source_path.py` covers the multi-value case
+    directly instead.
+  - **Second finding, not part of Tier 1, logged as its own item above:**
+    `examples/ddthost` has its own, independent copies of
+    `temp_set.meta`/`temp_adjust.meta`/`temp_calc_adjust.meta` (confirmed via
+    `diff` against `examples/capgen`'s copies) that predate *all* of this
+    session's fixes to these files -- missing `kind_spec`, `interstitial_var`,
+    the 2D rank re-sync, and even a `temp_adjust_register` entry point
+    `examples/capgen`'s copy has. Not touched here -- syncing them is a
+    distinct, separable task, not part of restoring dependencies/source_path
+    parsing.
+  - **Verified:** regenerated `examples/capgen`'s frontend/completed_ir/end_to_end
+    output directly -- `dependencies`/`source_path`/`dependencies_path` are
+    only ever visible at the frontend (pre-pass) stage; `strip-ccpp` removes
+    the whole `ccpp.table_properties` op (and its attributes) before
+    `completed_ir`/`end_to_end` output, so only frontend-stage filecheck
+    goldens needed updating (`capgen-xml.mlir`, and `var_compat-xml.mlir` --
+    `examples/var_compat`'s own `rad_lw.meta`/`test_host_data.meta` already
+    had real `dependencies = module_rad_ddt.F90` declarations that were
+    silently dropped before this fix and are now correctly visible). New
+    tests: `tests/unit/test_dependencies_source_path.py` (single/comma-separated/
+    repeated/empty/`"none"`-sentinel `dependencies` parsing, `source_path`/
+    `dependencies_path` acceptance, and a negative test confirming
+    `relative_path` no longer parses at all). Full suite: 591 passed (583 + 8
+    new), 1 pre-existing unrelated environment failure deselected, 1 xfailed.
+  - **Tier 2, not attempted, logged as its own item above:** actually emitting
+    a dependency manifest and teaching `cmake/xdsl_ccpp_capgen.cmake` to
+    consume it (so CMakeLists.txt stops hand-listing dependency files) is real
+    automation value but overlaps architecturally with the "CMake cap
+    generation runs at configure time" item below -- both are about how CMake
+    and the Python generator discover file lists from each other, and would
+    be worth designing together rather than separately if ever tackled.
 - **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
   Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
   `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified

@@ -83,11 +83,21 @@ class CCPPItem:
 class CCPPTableProperties(CCPPItem):
     """Descriptor for a ``[ccpp-table-properties]`` block parsed from a ``.meta`` file.
 
-    Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``relative_path``,
-    ``kind_spec``. The ``type`` value is automatically coerced to a `CCPPType` enum
-    member. ``kind_spec`` may be declared more than once (one table can supply more
-    than one kind); each declaration is parsed and accumulated into the
-    ``kind_specs`` list rather than overwriting a single attribute slot.
+    Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``dependencies_path``,
+    ``source_path``, ``kind_spec``. The ``type`` value is automatically coerced to a
+    `CCPPType` enum member. ``kind_spec`` and ``dependencies`` may each be declared
+    more than once (one table can supply more than one kind, or split its
+    dependency list across several lines); each declaration is parsed and
+    accumulated into ``kind_specs``/``dependencies`` rather than overwriting a
+    single attribute slot.
+
+    ``dependencies``/``dependencies_path``/``source_path`` mirror real capgen-v1's
+    own three-key convention (``metadata/metadata_table.py``'s
+    ``MetadataTable.apply_table_props``) verbatim in name and shape, but --
+    unlike upstream -- are stored as the raw declared strings, not resolved to
+    absolute filesystem paths: no code here yet consumes them for anything
+    (see ccpp_cap_refactor_plan.md's "dependencies/source_path tracking" entry
+    for why file-path resolution is deliberately out of scope for now).
     """
 
     def __init__(self):
@@ -95,6 +105,12 @@ class CCPPTableProperties(CCPPItem):
         # List of parsed (kind_name, module, spec) tuples -- see
         # ccpp_conventions.parse_kind_spec_value.
         self.kind_specs: list[tuple[str, str, str]] = []
+        # Flat list of raw dependency filenames, in declaration order --
+        # accumulated across every "dependencies = ..." line (each of which
+        # may itself be a comma-separated list, matching real capgen-v1's own
+        # convention), skipping the "none" sentinel (an explicit "no
+        # dependencies" declaration, not a literal filename).
+        self.dependencies: list[str] = []
 
     _VALID_ARRAY_LAYOUTS = ("column_major", "row_major")
     _VALID_LANGUAGES = ("fortran", "c++")
@@ -113,8 +129,13 @@ class CCPPTableProperties(CCPPItem):
             )
         if key == "kind_spec":
             self.kind_specs.append(parse_kind_spec_value(value))
-        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path",
-                                     "array_layout", "language", "kind_spec"])
+        if key == "dependencies":
+            for entry in value.split(","):
+                entry = entry.strip()
+                if entry and entry.lower() != "none":
+                    self.dependencies.append(entry)
+        super().setAttr(key, value, ["name", "type", "dependencies", "dependencies_path",
+                                     "source_path", "array_layout", "language", "kind_spec"])
 
 
 class CCPPArgumentTable(CCPPItem):
@@ -728,6 +749,16 @@ class ccppXML:
             attrs["kind_specs"] = ArrayAttr([
                 StringAttr(f"{module}:{kind_name}=>{spec}")
                 for kind_name, module, spec in meta.table_properties.kind_specs
+            ])
+        if meta.table_properties.hasAttr("source_path"):
+            attrs["source_path"] = StringAttr(meta.table_properties.getAttr("source_path"))
+        if meta.table_properties.hasAttr("dependencies_path"):
+            attrs["dependencies_path"] = StringAttr(
+                meta.table_properties.getAttr("dependencies_path")
+            )
+        if meta.table_properties.dependencies:
+            attrs["dependencies"] = ArrayAttr([
+                StringAttr(dep) for dep in meta.table_properties.dependencies
             ])
         return TablePropertiesOp(
             meta.table_properties.getAttr("name"),
