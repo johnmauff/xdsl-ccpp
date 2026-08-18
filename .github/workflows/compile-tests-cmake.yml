@@ -82,6 +82,16 @@ jobs:
             targets: suite_allocate.exe
           - example: instances
             targets: instances.exe
+            # ctest -R does a plain substring match, and "instances" is a
+            # literal prefix of "instances_advection"'s own test name
+            # (ctest_instances_advection) -- so the bare example name
+            # "instances" would also match and try to run that other
+            # example's test under this job, which never built its
+            # executable. $ anchors to "ends with instances", which
+            # ctest_instances_advection doesn't.
+            ctest_filter: "instances$"
+          - example: instances_advection
+            targets: instances_advection.exe
 
     steps:
       - uses: actions/checkout@v4

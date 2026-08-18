@@ -20,6 +20,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CapVarRefOp,
     DerivedType,
     HostVarRefOp,
+    LazyAllocOp,
     StrCmpOp,
     TrimOp,
 )
@@ -114,6 +115,43 @@ def _generate_lifecycle_fn(
     # redundant block argument alongside the dedicated handling it already
     # gets a few lines down.
     _ccpp_info_type_for_scan = kwargs.get("ccpp_info_type")
+
+    # Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
+    # "instances/instances_advection" entry, task #35): a scheme's own
+    # _register-phase dynamically-registered constituent output (e.g.
+    # dyn_const) is referenced below via a dedicated CapVarRefOp branch,
+    # keyed purely by matching constituent_cap.py's own bare naming
+    # convention (lc_<bare>) -- see that branch's own comment. Multi-
+    # instance moves constituent_cap.py's own module var for each of these
+    # into a per-instance bundle-type component
+    # (lc_instances(instance)%lc_<bare>), so that branch needs to know
+    # instance_local_name too, to build the matching reference text -- and
+    # ninstances_local_name, to size a guarded lazy-allocate of
+    # lc_instances itself: this branch fires inside ccpp_register, which
+    # the driver always calls BEFORE test_host_ccpp_register_constituents
+    # (the entry point constituent_cap.py's own lazy-alloc lives in) --
+    # confirmed the hard way in real CI, a SIGSEGV: indexing
+    # lc_instances(instance) here, before anything has ever allocated
+    # lc_instances at all, is undefined behavior, not merely an
+    # unallocated-component read.
+    instance_local_name = kwargs.get("instance_local_name")
+    ninstances_local_name = kwargs.get("ninstances_local_name")
+    # Paired contract, not two independent optionals -- the dyn_const branch
+    # below gates its own lc_instances(instance)%... reference and
+    # LazyAllocOp on instance_local_name alone; without ninstances_local_name
+    # too, that LazyAllocOp's own allocate(lc_instances(ninstances)) would
+    # get a literal "None" spliced into generated Fortran. ccpp_cap.py's own
+    # resolution site normalizes both to None together, but assert the
+    # invariant here too, matching this codebase's existing
+    # _assert_call_arg_count_matches_signature precedent. Caught by Copilot
+    # review on PR #77.
+    assert (instance_local_name is None) == (ninstances_local_name is None), (
+        "instance_local_name and ninstances_local_name must both be set or "
+        "both be None -- got "
+        f"instance_local_name={instance_local_name!r}, "
+        f"ninstances_local_name={ninstances_local_name!r}"
+    )
+    _lc_instances_alloc_emitted = False
 
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)
     # Inverted (local var name -> standard_name) fallback for callee args no
@@ -387,7 +425,53 @@ def _generate_lifecycle_fn(
                     # Constituent-property arrays are declared at module scope
                     # via ModuleVarOp.  Reference them with CapVarRefOp so the
                     # allocated values persist after physics_register returns.
-                    cap_ref = CapVarRefOp(f"lc_{bare}", arg_type)
+                    #
+                    # Real capgen-v1's multi-instance model (task #35):
+                    # when the host is multi-instance, constituent_cap.py
+                    # moves this same array from a bare module var into a
+                    # per-instance bundle-type component
+                    # (lc_instances(instance)%lc_<bare>) -- this reference
+                    # must match that exactly, or it's a reference to a
+                    # symbol that no longer exists (confirmed the hard way
+                    # in real CI: "has no IMPLICIT type").
+                    _lc_name = f"lc_{bare}"
+                    cap_ref_name = (
+                        f"lc_instances({instance_local_name})%{_lc_name}"
+                        if instance_local_name is not None
+                        else _lc_name
+                    )
+                    if (
+                        instance_local_name is not None
+                        and not _lc_instances_alloc_emitted
+                        and ninstances_local_name in extra_host_arg_index
+                    ):
+                        # lc_instances must be allocated before this
+                        # reference is even formed (indexing an
+                        # unallocated array is undefined behavior, not
+                        # merely an unallocated-component read) -- and
+                        # ccpp_register (this branch only ever fires for a
+                        # _register-phase call) is the first lifecycle
+                        # call the driver makes, running BEFORE
+                        # constituent_cap.py's own register_constituents
+                        # (where lc_instances is normally lazily
+                        # allocated) ever gets a chance to. Confirmed the
+                        # hard way in real CI: a SIGSEGV inside
+                        # cld_suite_suite_register. Guarded exactly like
+                        # every other LazyAllocOp use, and only emitted
+                        # once per function even if multiple schemes each
+                        # have their own dynamic-array output (e.g.
+                        # examples/advection's dyn_const/dyn_const_ice).
+                        hoisted_alloc_ops.append(
+                            LazyAllocOp(
+                                var_name="lc_instances",
+                                kind_name="type",
+                                dim_var_refs=[
+                                    new_block.args[extra_host_arg_index[ninstances_local_name]]
+                                ],
+                            )
+                        )
+                        _lc_instances_alloc_emitted = True
+                    cap_ref = CapVarRefOp(cap_ref_name, arg_type)
                     hoisted_alloc_ops.append(cap_ref)
                     call_inputs.append(cap_ref.res)
                     _ddt_mod = _CCPP_CONSTITUENT_MOD

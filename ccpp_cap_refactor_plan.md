@@ -56,7 +56,8 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Follow-ups spawned by `constituents_dim`: single-source migration for `advection`; naming-convention audit | 📋 Backlog | L3224 |
 | `suite_allocate` | ✅ Done (2026-08-17) | L3242 |
 | `chunked_data` | ✅ Done (ported, wired into root build) | L3276 |
-| `instances`/`instances_advection` | ✅ `instances` done (2026-08-18: multi-instance `ccpp_suite_state` narrow fix, per user decision); `instances_advection` still hard-fails at cap generation, tracked separately | L3296 |
+| `instances`/`instances_advection` | ✅ Both done (2026-08-18): `instances` via the multi-instance `ccpp_suite_state` narrow fix; `instances_advection` via task #35's constituent-API instance-awareness fix (its own originally-tracked cap-gen crash was already gone by the time it was re-investigated) | L3296 |
+| `instance_number`/`number_of_instances` paired-contract bug (Copilot review, PR #77) + 2 self-found companion bugs of the same class in `suite_cap.py` | ✅ Done (2026-08-18) | L4226 |
 | `opt_arg`'s dead `active` property | ✅ Done (2026-08-13) | L3350 |
 | Unconditional unit-conversion buffer allocate for optional args (found while fixing the above) | ✅ Done (2026-08-17) | L3505 |
 | Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
@@ -82,6 +83,8 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `[ccpp-table-properties]`'s `module_name` override unsupported | 📋 Backlog (S) | L3566 |
 | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | 📋 Backlog (modeling gap, currently inconsequential) | L3585 |
 | Suite signature generation ignored host's own unique local name (collision) | ✅ Fixed (2026-07-23) | L3620 |
+| Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | 📋 Backlog (L, deliberately deferred until after task #28) | L5135 |
+| ~~Scheme-level dynamic constituent registration output discarded~~ (corrected: not a bug) + the real multi-instance regression this investigation found in the same code path | ✅ Corrected + fixed (2026-08-18) | L5360 |
 
 ---
 
@@ -3903,6 +3906,366 @@ dependency is noted.
           (not a local alloca). Real `ctest_instances` execution itself
           still can't be verified locally (no Fortran compiler on this
           laptop) -- left for the next CI run to confirm end-to-end.
+      - **`instances_advection` re-investigated (2026-08-18, task #35) now that
+        `instances` is CI-green — the originally-tracked crash is gone, but
+        exposed a much bigger, previously-invisible gap.**
+        - **The tracked `memref.copy` verifier crash no longer reproduces.**
+          Confirmed by regenerating via the exact real CMake macro invocation
+          (temporarily `add_subdirectory`'d, then reverted) on the current
+          tip: cap generation succeeds cleanly, `ccpp_suite_state` is
+          correctly allocatable and instance-indexed (this example also
+          declares `instance_number`/`number_of_instances`, so it picked up
+          the same fix `instances` did), and the constituent-registration
+          code that used to crash now looks structurally sound. Most likely
+          fixed as an incidental side effect of PR #76 (the 5-stage
+          multi-instance migration + `ccpp_suite_state` fix), not by anything
+          targeted at this bug -- never re-tested until now.
+        - **But `main.F90` still can't build, for two different reasons:**
+          1. **Mechanical** (same category `instances`/`opt_arg` already
+             needed): calls `ccpp_physics_init`/`ccpp_physics_final` (this
+             codebase's lifecycle is still 6-phase, not real capgen-v1's
+             8-phase split -- task #28) and passes `group_name`/`thread_num`/
+             `nthreads`/`nphys_threads`/`errcode` kwargs the generated
+             signatures don't have (`errflg`, not `errcode`, etc.). Not yet
+             fixed -- straightforward once the bigger item below is
+             resolved, no point adapting the driver against an API that's
+             about to change shape.
+          2. **Architectural, genuinely new — the constituent-registration
+             API (`constituent_cap.py`) has zero instance-awareness.**
+             Confirmed by reading the whole file: `register_constituents`/
+             `deallocate_dynamic_constituents`/`initialize_constituents`/
+             `const_get_index`/`number_constituents`/`constituents_array`/
+             `is_scheme_constituent`/`model_const_properties` all operate on
+             a single shared set of module-level arrays (`lc_all_constituents`,
+             `lc_constituent_array`, `lc_const_tend`, `lc_const_props`, each
+             scheme's own `lc_<dyn_const_name>`, plus any scratch vars) --
+             no `instance` parameter anywhere, no per-instance dimension on
+             any of them. But `main.F90` calls every one of these with
+             `instance=`/`ninstances=` (`ccpp_register_constituents(...,
+             instance=ins, ninstances=ninstances)`,
+             `ccpp_deallocate_dynamic_constituents(instance=ins)`,
+             `ccpp_constituents_array(ins)` as a function *argument*, not
+             today's zero-arg function) -- real capgen-v1 clearly gives each
+             model instance its own constituent storage; this codebase has
+             no equivalent concept at all.
+          - Also touches `cap_shared.py`'s `FRAMEWORK_STD_NAME_TO_CAP_VAR`
+            (`"ccpp_constituents" -> "lc_constituent_array"`,
+            `"ccpp_constituent_tendencies" -> "lc_const_tend"`,
+            `"number_of_ccpp_constituents" -> "size(lc_all_constituents)"` --
+            plain hardcoded Fortran-text values) and its consumer in
+            `suite_cap.py`'s `_build_framework_refs`/run-phase resolution:
+            `instances_advection`'s own `apply_constituent_tendencies_run`
+            consumes `ccpp_constituents`/`ccpp_constituent_tendencies`
+            directly as `_run` args through exactly this path, so once the
+            underlying arrays are per-instance, this resolution needs to
+            know to index by `instance` too.
+        - **Design sketch for the fix (scoped 2026-08-18, not yet
+          implemented -- user explicitly asked to scope this before
+          committing to implementation, given the size):**
+          - The whole subsystem generates raw Fortran text directly
+            (`ConstituentApiOp`'s body is a plain `StringAttr` -- no
+            structured IR/dialect ops for the array accesses the way
+            `suite_cap.py`'s own fix used), which is actually good news: no
+            new dialect machinery needed, "just" a text-generation and
+            signature change, mirroring the shape of the `ccpp_suite_state`
+            fix rather than anything harder.
+          - Introduce one new module-scope derived type (e.g.
+            `<host>_lc_constituent_instance_t`) bundling every existing
+            `lc_*` module var as a member (one per dynamic-array name, plus
+            `all_constituents`/`constituent_array`/`const_tend`/
+            `const_props`/any scratch vars) -- exactly the same
+            "array-of-DDT-instance" shape `examples/instances`' own
+            `instance_data` already establishes as this codebase's
+            multi-instance storage idiom, just cap-owned/generated instead
+            of host-declared. One module var, `lc_instances(:)`, allocatable,
+            lazily allocated + sized by `number_of_instances` on first use
+            -- reusing the exact `LazyAllocOp`-style guarded-allocate idiom
+            `_build_suite_state_lazy_alloc` already established for
+            `ccpp_suite_state`.
+          - Every constituent-API subroutine gains an `instance` (and, where
+            it allocates `lc_instances` itself, `ninstances`) dummy
+            argument; every internal `lc_foo` reference becomes
+            `lc_instances(instance)%foo`.
+          - `FRAMEWORK_STD_NAME_TO_CAP_VAR`'s resolution in `suite_cap.py`
+            needs to append `(instance)` indexing when the suite is
+            multi-instance, mirroring how `generateStateCheckOps`/
+            `generateStateAssignment` learned to do the same for
+            `ccpp_suite_state`.
+          - All of the above gated on the same check already established
+            for the suite-state fix (`self._resolve_host_only_std_name(
+            CCPP_INSTANCE_NUMBER_STD_NAME) is not None`, evaluated once per
+            host since `_generate_constituent_api` is called once for the
+            whole cap module, not per-suite) -- every existing
+            non-multi-instance constituent-using example (`advection`,
+            `constituents_dim`, `capgen`, `ddthost`, ...) must keep today's
+            flat-scalar-module-var output byte-for-byte identical.
+          - `main.F90`'s mechanical adaptation (item 1 above) still needed
+            on top, once the API's real shape is settled.
+        - **RESOLVED (2026-08-18) — implemented exactly against the sketch
+          above, plus one thing the sketch didn't anticipate.**
+          - **`xdsl_ccpp/dialects/ccpp_utils.py`**: `ConstituentApiOp`
+            gained an optional `type_defs` property -- a derived-type
+            definition that must print in the module's *specification*
+            part (before `CONTAINS`), never inside it. Nothing before this
+            fix ever needed to emit a derived-type *definition* (as
+            opposed to a variable of an already-existing type) from this
+            codebase's own generator, only host-declared ones.
+          - **`xdsl_ccpp/backend/print_ftn.py`**: emits `type_defs`
+            *before* the `CCPPModuleVarOp` preamble loop, not after --
+            **the one thing the sketch missed, and a real bug caught by
+            actually regenerating and reading the output**: Fortran
+            requires a type be defined before any variable of that type is
+            declared in the same specification part; printing `lc_instances`
+            first produced `has no IMPLICIT type` on its own type name.
+          - **`xdsl_ccpp/transforms/constituent_cap.py`**: `_generate_constituent_api`
+            gained `instance_local_name`/`ninstances_local_name` params
+            (both `None` by default, i.e. the non-multi-instance path is
+            untouched). When set: emits `type :: <camel_name>_lc_instance_t`
+            bundling every existing `lc_*` array (one member per
+            dynamic-array name, plus `all_constituents`/
+            `constituent_array`/`const_tend`/`const_props`/scratch vars,
+            preserving each one's own `target`/`pointer` attributes) and a
+            single `lc_instances(:)` module var; every one of the 8
+            constituent-API subroutines gained an `instance` dummy arg and
+            has every internal `lc_foo` reference rewritten to
+            `lc_instances(instance)%foo`. `register_constituents` alone
+            also gained `ninstances` and does the guarded lazy-allocate
+            (`if (.not. allocated(lc_instances)) then allocate(lc_instances
+            (ninstances)); end if`) -- discovered while implementing that
+            only `register_constituents` ever receives `ninstances` from
+            the driver at all (matches real capgen-v1's own driver:
+            `ccpp_initialize_constituents`/`const_get_index`/
+            `number_constituents`/`deallocate_dynamic_constituents` never
+            get it), so every other subroutine's precondition check became
+            "is `lc_instances` allocated at all" first, THEN "is this
+            instance's own array allocated" -- two sequential guards, not
+            one, since indexing an unallocated outer array is illegal
+            Fortran regardless of the inner component's own allocation
+            state.
+          - **`xdsl_ccpp/transforms/ccpp_cap.py`**: `_generate_ccpp_cap_module`
+            resolves `instance_local_name`/`ninstances_local_name` once per
+            host (via `_build_host_var_map(meta_data, include_host=True)`,
+            the same lookup shape `suite_cap.py`'s own
+            `_resolve_host_only_std_name` uses) and threads them into both
+            `_generate_constituent_api` and a new `instance_local_name`
+            param on `_build_cap_var_map`. That second thread matters
+            because `FRAMEWORK_STD_NAME_TO_CAP_VAR`'s resolution
+            (`ccpp_constituents`→`lc_constituent_array`, etc., consumed
+            verbatim by `run_dispatch.py` for a scheme's own `_run` args)
+            and the CapScratch scratch-var branch (constituent-tendency
+            vars like `cld_liq_tend`) both build their cap-var-map *value*
+            in this one function -- wrapping it here, once, means
+            `run_dispatch.py` needed zero changes (it just prints whatever
+            text it's handed). Care taken to keep `framework_var_residency`
+            (GPU-copyin bookkeeping) and `scratch_var_list` keyed by the
+            *bare* name throughout, since `constituent_cap.py` applies its
+            own identical wrapping when it consumes those -- wrapping both
+            ends would have doubled the prefix.
+          - **`examples/instances_advection/main.F90`** fully re-adapted
+            (mirrors `examples/instances`' own Stage-5 adaptation):
+            dropped `ccpp_physics_init`/`ccpp_physics_final` (this
+            codebase's lifecycle is still 6-phase) and
+            `group_name`/`thread_num`/`nthreads`/`nphys_threads`;
+            `suite_part='physics'` in their place; `errcode` renamed to
+            `errflg` throughout (the generated signatures never used
+            `errcode`); constituent-API calls switched from upstream's
+            bare `ccpp_register_constituents`-style names to the real
+            generated `test_host_ccpp_register_constituents`-style names
+            (matching `examples/constituents_dim`'s own driver
+            convention -- xdsl-ccpp never aliases these to bare
+            `ccpp_`-prefixed names the way lifecycle subroutines are).
+          - **`examples/instances_advection/CMakeLists.txt`** rewritten
+            following `examples/advection`'s own template for a
+            constituent-using example (adds
+            `examples/shared/ccpp_constituent_prop_mod.F90`/
+            `ccpp_scheme_utils.F90` to the TESTLIB, which
+            `examples/instances`' own CMakeLists.txt didn't need since it
+            has no constituents at all) plus `examples/instances`' own
+            template for the `test_host.meta`-is-metadata-only host split.
+            Root `CMakeLists.txt`: `add_subdirectory(examples/
+            instances_advection)`. `.github/workflows/compile-tests-cmake.yml`:
+            new matrix entry -- needed a `ctest_filter: "instances$"` on
+            the *existing* `instances` entry (not the new one), since
+            `instances` is a literal prefix of `instances_advection`'s own
+            test name (`ctest_instances_advection`) and would otherwise
+            also match and try to run an executable that entry's own job
+            never built -- the exact collision class
+            `advection`/`advection_flat_host` already needed the same fix
+            for.
+          - **New regression test**
+            (`tests/unit/test_multi_instance_constituent_api.py`, 7 cases)
+            covering: the bundle type printing before the variable that
+            uses it, the old flat module-var declaration NOT surviving,
+            `register_constituents`'s lazy-allocate, every subroutine
+            gaining `instance`, the two-guard precondition check, and
+            `FRAMEWORK_STD_NAME_TO_CAP_VAR`/scratch-var resolution both
+            correctly instance-indexed inside `ccpp_physics_run`'s own
+            dispatch. Confirmed to actually catch the regression by
+            stashing the fix and re-running (all 7 new tests failed, as
+            expected) before restoring it.
+          - **Verified**: full suite 601 passed (594 + 7 new), 0 failures.
+            Regenerated `examples/instances_advection` directly and via the
+            real `xdsl_ccpp_capgen()` CMake macro path (both byte-identical)
+            -- a full repo-wide `cmake -S . -B build` with
+            `instances_advection` permanently wired in configures cleanly,
+            zero errors, `ccpp_physics_run`'s own dispatch correctly prints
+            `lc_instances(instance)%lc_constituent_array`/`lc_const_tend`/
+            `lc_cld_liq_tend`. Real compilation/`ctest` execution still
+            can't be verified locally (no Fortran compiler on this laptop)
+            -- left for the next CI run.
+          - **Real CI then found two more real bugs (2026-08-18), both
+            fixed the same day -- exactly why this note keeps saying "left
+            for the next CI run": there is no substitute for it on this
+            laptop.**
+            1. **Fortran forbids the `TARGET` attribute on a derived-type
+               component** (`constituent_cap.py`'s first cut put it there
+               directly, copying the plain-module-var version's own
+               attribute list without checking it transfers) --
+               `gfortran`: `"Attribute at (1) is not allowed in a TYPE
+               definition"`, cascading into dozens of unrelated `"not a
+               member of the structure"` errors for every other component
+               once the type block's own parse got corrupted. **Fixed**:
+               `target` moved to the containing `lc_instances(:)` variable
+               itself -- Fortran's own attribute-propagation rule (`TARGET`
+               on a variable propagates to every subobject, including
+               allocatable components) makes every pointer association
+               into it exactly as valid as before.
+            2. **A genuine regression in the same code path, caught by the
+               same build**: `cld_liq_register`'s own `dyn_const` output is
+               referenced inside `ccpp_register` by a bare `lc_dyn_const`
+               text that `lifecycle_cap.py`'s own dedicated `CapVarRefOp`
+               branch for this exact arg shape emits *deliberately*,
+               matching `constituent_cap.py`'s module-var naming
+               convention on purpose (Fortran resolves the otherwise-
+               undeclared identifier via ordinary same-module scoping --
+               not a bug, and not the "discard" this was originally
+               misdiagnosed as, see the corrected backlog entry below).
+               Once `constituent_cap.py` moved that array into the new
+               per-instance bundle, that branch kept emitting the bare,
+               now-nonexistent name -- `gfortran`: `"Symbol 'lc_dyn_const'
+               ... has no IMPLICIT type"`. **Fixed**: that branch now
+               accepts `instance_local_name` and builds
+               `lc_instances(<instance>)%lc_<bare>` when set,
+               `lc_<bare>` unchanged otherwise -- confirmed
+               `examples/advection`'s own (non-multi-instance) output is
+               byte-identical before/after. New regression test
+               (`TestSchemeLevelDynamicRegistrationOutputIsInstanceAware`
+               in the same test file, using a fixture with a real
+               `_register`-table `dyn_const` entry -- the original test
+               fixture had none, which is exactly why it didn't catch
+               this), confirmed via git-stash.
+          - **Real CI then found a third bug, this time a metadata
+            authoring mistake from the original 2026-07-30 port, not a
+            generator bug**: `data.meta`'s own second table (`ncols`/
+            `pver`/`dt`/`tfreeze`/`index_qv`/`phys_state`) was declared
+            `type = host` even though `data.F90` genuinely is a compiled
+            Fortran module (confirmed: `main.F90` already `use`s it
+            directly) -- unlike `test_host.meta`'s own deliberately
+            module-less host table (`instance`/`ninstances`/etc, no
+            backing `.F90` at all). `examples/advection`'s own equivalent
+            table (`test_host_mod.meta`) is correctly `type = module` for
+            the identical situation. The practical effect: a DDT member's
+            own named-array-slice subscript (`q(:,:,
+            index_of_water_vapor_specific_humidity)`, resolved via
+            `cap_shared.py`'s `_resolve_member_subscripts`, keyed against a
+            MODULE-only host-var map) silently fell through to printing
+            the bare, undeclared standard-name text whenever its resolving
+            variable's own table was HOST- instead of MODULE-typed --
+            `gfortran`: `"Symbol 'index_of_water_vapor_specific_humidity'
+            ... has no IMPLICIT type"`. **Fixed**: `data.meta`'s second
+            table changed to `type = module`. This one change also
+            improved several OTHER call sites to match real capgen-v1's
+            own convention far more closely than before: `ccpp_init`
+            dropped `tfreeze` as an explicit call arg (now use-associated
+            directly) and `ccpp_physics_run` dropped both `ncol` and
+            `timestep` (now `ncol = ub - lb + 1`, matching the standard
+            column-chunking idiom every other example already uses, and
+            `timestep` is the use-associated `dt` directly) -- `main.F90`
+            updated to match the new, shorter call signatures. Not a
+            generator change at all; `xdsl_ccpp` behaved correctly once
+            the metadata correctly described what `data.F90` actually is.
+          - **Real ctest then found a fourth bug -- a genuine SEGFAULT,
+            confirming the earlier assumption behind the dyn_const fix
+            above ("only register_constituents ever needs ninstances, so
+            only it needs to allocate lc_instances") was wrong for this
+            specific case.** `ccpp_register`'s own call
+            (`cld_suite_suite_register(lc_instances(instance)%lc_dyn_const,
+            ...)`) indexes straight into `lc_instances`, an OUTER array
+            nothing has allocated yet -- the driver's own call order runs
+            `ccpp_register` (the *lifecycle* register) before
+            `test_host_ccpp_register_constituents` (the *constituent-API*
+            register, where `lc_instances` is normally lazily allocated)
+            ever gets a chance to run. Backtrace: `SIGSEGV` inside
+            `cld_suite_suite_register`, called from `MAIN__`. **Fixed**:
+            `lifecycle_cap.py`'s own `CapVarRefOp` branch now also emits a
+            guarded `LazyAllocOp` for `lc_instances` (sized by
+            `ninstances`, which `ccpp_register`'s signature already
+            carries from the earlier `_synthesize_number_of_instances_arg`
+            work) immediately before the reference, emitted once per
+            function even when multiple schemes each have their own
+            dynamic-array output. New regression test
+            (`test_ccpp_register_allocates_lc_instances_before_
+            referencing_it`), confirmed via git-stash. Full suite 603
+            passed (602 + 1 new), `examples/advection`'s own output
+            confirmed unaffected.
+          - **A separate, pre-existing, unrelated bug found while verifying
+            this fix, explicitly out of scope for task #35, logged as its
+            own new backlog item below ("Scheme-level dynamic constituent
+            registration output discarded by `ccpp_register`'s own
+            wrapper")**: `cld_liq_register`'s own `dyn_const` output (a
+            scheme's own dynamically-registered constituent list) is
+            passed into the suite call from a function-scoped local that
+            `lifecycle_cap.py`'s generic "no host match" fallback hoists
+            inside `ccpp_register` itself, then silently discarded the
+            moment that subroutine returns -- confirmed this is **not**
+            something this fix introduced by regenerating the
+            already-CI-green `examples/advection` (which has the identical
+            `cld_liq_register`/`cld_ice_register` scheme pair) and finding
+            the exact same shape (`call cld_suite_suite_register(lc_dyn_const,
+            lc_dyn_const_ice, errmsg, errflg)`, both hoisted-and-discarded
+            locals) already present there, unrelated to multi-instance.
+          - **RESOLVED (2026-08-18) — Copilot review on PR #77 (3 comments) plus two
+            self-found companion bugs of the same class, all fixed together.** Copilot
+            flagged that `instance_local_name`/`ninstances_local_name` (resolved once in
+            `ccpp_cap.py`'s `_generate_ccpp_cap_module`, threaded into `_build_cap_var_map`/
+            `_generate_constituent_api`/`_generate_lifecycle_fn`) were being treated as two
+            independent optionals rather than one paired contract — a host declaring only
+            one of `instance_number`/`number_of_instances` (nothing in the `.meta` format
+            stops this) could enable multi-instance wrapping with no matching allocation/
+            signature support, e.g. a literal `"None"` spliced into generated Fortran, or a
+            reference to `lc_instances` never allocated. Fixed at the single source
+            (`ccpp_cap.py`: normalize to the pair, both set or both `None`) plus defensive
+            asserts at the two downstream consumers (`constituent_cap.py`'s
+            `_generate_constituent_api`, `lifecycle_cap.py`'s `_generate_lifecycle_fn`) —
+            same "raise, don't silently mask" precedent as the Phase 7 Copilot-review fixes,
+            with `cap_shared.py`'s `_assert_call_arg_count_matches_signature` as this
+            codebase's own existing precedent for guarding a coupled-parameter invariant with
+            an assert. While writing a regression test for this, found `suite_cap.py`'s own,
+            separate `ccpp_suite_state` multi-instance gating (unrelated to what Copilot's
+            review touched — a different subsystem, this suite's own allocation, not the
+            constituent-API bundle) had the identical unpaired-gating flaw in three places:
+            `_synthesize_instance_number_arg`/`_synthesize_number_of_instances_arg` (each
+            gated purely on its own standard name) and `_build_state_globals` (gated
+            `ccpp_suite_state`'s allocatable-array declaration on `instance_number` alone).
+            Fixed by adding a shared `_is_multi_instance_host()` helper (true only when both
+            names resolve) and gating all three on it. A **second, more subtle** companion
+            bug surfaced while probing that fix: `generateSubroutineCall`'s own
+            `instance_local_name` (fed to `generateStateCheckOps`/`generateStateAssignment`,
+            which print `ccpp_suite_state(<instance_local_name>)`) can come from a *scheme's*
+            own explicit `instance_number` arg declaration, not only from
+            `_synthesize_instance_number_arg` — so it wasn't already guaranteed paired the
+            way `_is_multi_instance_host`'s own callers are. With only `instance_number`
+            declared, `_build_state_globals` correctly falls back to a plain scalar
+            `ccpp_suite_state`, but this unpaired `instance_local_name` still indexed it as
+            `ccpp_suite_state(instance)` — invalid Fortran against a scalar. Fixed by
+            dropping `instance_local_name` back to `None` whenever
+            `ninstances_local_name` is absent, right where both are resolved. Three new
+            regression tests added to `tests/unit/test_multi_instance_constituent_api.py`
+            (`TestPartialMultiInstanceMetadataStaysSingleInstance`), each confirmed via
+            git-stash to fail without its corresponding fix. Full suite 606 passed, 1
+            xfailed, no regressions. `examples/instances_advection` (a real, correctly-paired multi-instance host)
+            regenerated via `python -m xdsl_ccpp.tools.ccpp_dsl` directly and confirmed
+            byte-identical before/after all three fixes.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
@@ -5131,6 +5494,88 @@ dependency is noted.
     wrote `datatable.xml`), which likely means `xdsl_ccpp_capgen()`'s own
     interface changes too. Sizing this needs a closer look before deciding
     whether it's worth doing.
+
+- **~~Scheme-level dynamic constituent registration output discarded by
+  `ccpp_register`'s own wrapper~~ — CORRECTED, not a bug (found 2026-08-18,
+  corrected same day).** Originally logged as a suspected discard bug:
+  `cld_liq_register`'s own `dyn_const` output is referenced as a bare
+  `lc_dyn_const` inside `ccpp_register`'s generated body, with no local
+  declaration anywhere in sight, which looked exactly like a function-scoped
+  local silently discarded on return.
+  - **Traced fully while fixing a real, related regression in the same code
+    path (below) and found it's by design, not a bug.**
+    `lifecycle_cap.py`'s own dedicated `CapVarRefOp` branch for this exact
+    arg shape (allocatable `ccpp_constituent_properties_t`) emits that bare
+    text *deliberately*, matching `constituent_cap.py`'s own module-var
+    naming convention (`lc_<bare>`) exactly on purpose -- Fortran resolves
+    an otherwise-undeclared identifier inside a subroutine via ordinary
+    module scoping to the module-level variable of the same name in the
+    *same* module (no `use` needed, since `ccpp_register` and
+    `constituent_cap.py`'s own declarations live in the one combined cap
+    module). Nothing is discarded: that bare name IS the persistent module
+    variable `test_host_ccpp_register_constituents` later reads from.
+  - **The real, adjacent bug this same investigation found**: this
+    mechanism is a genuine coupling between two independently-generated
+    parts of the file (`lifecycle_cap.py`'s reference text and
+    `constituent_cap.py`'s declaration), held together only by matching
+    naming convention -- and multi-instance broke exactly that coupling.
+    Once `constituent_cap.py` moved `lc_dyn_const` into the new per-instance
+    bundle (`lc_instances(instance)%lc_dyn_const`, task #35's own fix),
+    `lifecycle_cap.py`'s branch kept emitting the bare, now-nonexistent
+    name -- a real gfortran CI failure (`"Symbol 'lc_dyn_const' ... has no
+    IMPLICIT type"`), not a hypothetical one. **Fixed**: that branch now
+    accepts `instance_local_name` and builds
+    `lc_instances(<instance>)%lc_<bare>` when set, `lc_<bare>` unchanged
+    otherwise -- confirmed `examples/advection`'s own (non-multi-instance)
+    output is byte-identical before/after. New regression test
+    (`tests/unit/test_multi_instance_constituent_api.py`'s
+    `TestSchemeLevelDynamicRegistrationOutputIsInstanceAware`, confirmed via
+    git-stash to catch the regression).
+  - **A second, independent real bug caught by the same CI run**: Fortran
+    forbids the `TARGET` attribute on a derived-type *component*
+    (`constituent_cap.py`'s first cut put it there directly, copying the
+    plain-module-var version's own attribute list without checking it
+    transfers) -- `gfortran`: `"Attribute at (1) is not allowed in a TYPE
+    definition"`, cascading into dozens of unrelated `"not a member of the
+    structure"` errors for every OTHER component once the type block's own
+    parse got corrupted. Fixed: `target` moved to the containing
+    `lc_instances(:)` variable itself, where Fortran's own attribute-
+    propagation rule (`TARGET` on a variable propagates to all its
+    subobjects, including allocatable components) makes every pointer
+    association into it exactly as valid as before.
+
+- **Full capgen-v1 `ccpp_suite_state` match — integer-enum allocatable array
+  + dedicated alloc/dealloc subroutines — L, deliberately deferred
+  (2026-08-18).** The `instances`/`instances_advection` multi-instance fix
+  (see above) gave `ccpp_suite_state` a per-instance allocatable array, but
+  kept this codebase's own pre-existing state *representation* — 3
+  string-literal states (`'uninitialized'`/`'initialized'`/`'in_time_step'`)
+  — rather than switching to real capgen-v1's own model, confirmed against
+  `ccpp-framework-fresh/capgen/generator/suite_cap.py`:
+  - An integer enum (`CCPP_SUITE_UNREGISTERED=0`/`CCPP_SUITE_REGISTERED=1`/
+    `CCPP_SUITE_FRAMEWORK_INITIALIZED=2`), not string comparison — a real
+    **4th state** this codebase's model has no equivalent of at all (this
+    codebase conflates "registered" and "framework-initialized" into one
+    `'initialized'` state; capgen-v1 keeps them distinct).
+  - Dedicated, publicly-exposed `<suite>_suite_state_alloc`/`_dealloc`
+    subroutines, not an internal lazy-allocate-on-first-use (this codebase's
+    narrow fix's own choice, reusing the existing `LazyAllocOp` idiom —
+    functionally equivalent for the one example that exercises it today, but
+    not a byte-for-byte API match).
+  - Why deferred rather than done now: the user explicitly asked how big the
+    full match would be before choosing the narrow fix; the answer was that
+    the state *representation* is cross-cutting — every suite's generated
+    cap (not just multi-instance ones) constructs/compares these string
+    literals via `generateStateCheckOps`/`generateStateAssignment`/
+    `_build_state_globals`, so swapping to integer enums touches all of
+    them, not just `examples/instances`. Also gains a genuine 4th state with
+    no current equivalent, which interacts with task #28 (the pending full
+    6-phase to 8-phase lifecycle match with capgen-v1 above) — sequencing
+    this *after* #28 avoids redoing the state-check/assignment call sites a
+    second time once the phase split changes what needs checking/setting.
+  - **Not scoped in detail yet** — the above is a sizing sketch from reading
+    real capgen-v1's own `suite_cap.py`, not a staged plan. Revisit once #28
+    lands.
 
 ---
 
