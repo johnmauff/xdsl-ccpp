@@ -98,9 +98,14 @@ class CCPPTableProperties(CCPPItem):
     belongs to this table (e.g. ``_run``, ``_init``, ``_finalize``).
 
     Allowed attribute keys: ``name``, ``type``, ``dependencies``,
-    ``relative_path``, ``language``.
-    The ``type`` value is automatically coerced to a `CCPPType` enum member.
-    ``language`` is ``"fortran"`` (default, omitted) or ``"c++"``.
+    ``dependencies_path``, ``source_path``, ``language``. The ``type`` value
+    is automatically coerced to a `CCPPType` enum member. ``language`` is
+    ``"fortran"`` (default, omitted) or ``"c++"``.
+
+    ``dependencies_path``/``source_path`` are the real capgen-v1 key names
+    (mirroring ``frontend/ccpp_xml.py``'s own ``CCPPTableProperties``) --
+    this class previously accepted a nonstandard ``relative_path`` key
+    instead, which nothing ever actually populated or read.
     """
 
     def __init__(self, arg_tables=None):
@@ -115,7 +120,8 @@ class CCPPTableProperties(CCPPItem):
         # Coerce raw string 'type' values into the CCPPType enum
         if key == "type" and isinstance(value, str):
             value = CCPPType(value)
-        super().setAttr(key, value, ["name", "type", "dependencies", "relative_path", "language"])
+        super().setAttr(key, value, ["name", "type", "dependencies",
+                                     "dependencies_path", "source_path", "language"])
 
     def setArgTable(self, k, v):
         """Register an argument table under the given key."""

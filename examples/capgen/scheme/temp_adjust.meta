@@ -1,8 +1,7 @@
 [ccpp-table-properties]
   name = temp_adjust
   type = scheme
-  dependencies = qux.F90
-  relative_path = adjust
+  dependencies = temp_kinds.F90
   kind_spec = temp_kinds:kind_temp=>temp_r8
 [ccpp-arg-table]
   name = temp_adjust_register

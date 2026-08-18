@@ -115,7 +115,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-NEXT:    }) {source_module = "rad_lw"} : () -> ()
+// CHECK-NEXT:    }) {source_module = "rad_lw", dependencies = ["module_rad_ddt.F90"]} : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "rad_sw", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "rad_sw_run", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ncol", type = "integer", standard_name = "horizontal_dimension", intent = "in", units = "count"}> : () -> ()
@@ -156,7 +156,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "scheme_order", type = "integer", standard_name = "scheme_order_in_suite", long_name = "scheme order in suite definition file", units = "None"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "num_subcycles", type = "integer", standard_name = "num_subcycles_for_effr", long_name = "Number of times to subcycle the effr calculation", units = "None"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-NEXT:    }) {source_module = "test_host_data"} : () -> ()
+// CHECK-NEXT:    }) {source_module = "test_host_data", dependencies = ["module_rad_ddt.F90"]} : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host_mod", type = #ccpp<table_type_kind module>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host_mod", type = #ccpp<table_type_kind module>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ncols", type = "integer", standard_name = "horizontal_dimension", units = "count", protected}> : () -> ()
