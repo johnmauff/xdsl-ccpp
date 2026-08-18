@@ -35,6 +35,30 @@ class ccppMain:
         self.set_parser_arguments(parser)
         return parser
 
+    def default_options_db(self) -> dict:
+        """Return this tool's CLI defaults as a plain dict.
+
+        Same key set `build_options_db_from_args` produces, minus its
+        required-argument validation and the comma-string -> list
+        splitting for `--suites`/`--scheme-files`/`--host-files` (those
+        come back as `None` here, not `[]`) -- callers that already have
+        real lists for those three (e.g. `ccpp_prebuild.py`, which derives
+        them from a host model's `ccpp_prebuild_config.py`) overlay their
+        own values on top instead.
+
+        Single source of truth for any tool that drives `ccppMain`
+        programmatically rather than through `main()`'s own CLI parsing --
+        extracted (complexity-audit Tier 1 finding, task #38) after
+        `ccpp_prebuild.py`'s own hand-built `options_db` dict was found
+        already missing 9 keys this parser supports (`py`, `directive`,
+        `kind_map`, `emit_datatable`, `no_memory_space_warning`,
+        `emit_html`, `emit_resolved_vars`, `bind_c`, `legacy_mode`), with
+        nothing to flag it the next time a key is added here. Building
+        from this instead means `ccpp_prebuild.py` can no longer silently
+        drop a key -- new options just carry their real default forward.
+        """
+        return vars(self.initialise_argument_parser().parse_args([]))
+
     def set_parser_arguments(self, parser):
         parser.add_argument(
             "--suites",
