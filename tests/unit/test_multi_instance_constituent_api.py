@@ -68,6 +68,16 @@ _SCHEME_META = f"""\
   name = cld_liq
   type = scheme
 [ccpp-arg-table]
+  name = cld_liq_register
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_cld_liq
+  dimensions = (:)
+  type = ccpp_constituent_properties_t
+  intent = out
+  allocatable = true
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
   name = cld_liq_run
   type = scheme
 [ instance ]
@@ -156,9 +166,9 @@ class TestConstituentApiHasAPerInstanceBundleType:
         before its own type definition produced 'has no IMPLICIT type'."""
         fortran = _fortran_output(run_host_match, ccpp_context)
         assert "type :: Test_lc_instance_t" in fortran
-        assert "type(Test_lc_instance_t), allocatable :: lc_instances(:)" in fortran
+        assert "type(Test_lc_instance_t), target, allocatable :: lc_instances(:)" in fortran
         type_def_pos = fortran.index("type :: Test_lc_instance_t")
-        var_decl_pos = fortran.index("type(Test_lc_instance_t), allocatable :: lc_instances(:)")
+        var_decl_pos = fortran.index("type(Test_lc_instance_t), target, allocatable :: lc_instances(:)")
         assert type_def_pos < var_decl_pos
 
     def test_no_plain_module_scalar_survives(self, run_host_match, ccpp_context):
@@ -166,11 +176,15 @@ class TestConstituentApiHasAPerInstanceBundleType:
         own bare module-scope variable, printed via the CCPPModuleVarOp
         preamble loop with a 2-space indent) must not survive once the
         host is multi-instance -- only the bundle-type COMPONENT form
-        (4-space indent, inside `type :: ... end type`) should."""
+        (4-space indent, inside `type :: ... end type`) should. The
+        component must NOT carry `target` -- Fortran forbids TARGET on a
+        derived-type component; only the containing lc_instances(:)
+        variable (checked above) carries it, and that propagates to every
+        subobject including this one."""
         fortran = _fortran_output(run_host_match, ccpp_context)
         assert "\n  type(ccpp_constituent_properties_t), allocatable, target :: lc_all_constituents(:)\n" \
             not in fortran
-        assert "\n    type(ccpp_constituent_properties_t), allocatable, target :: lc_all_constituents(:)\n" \
+        assert "\n    type(ccpp_constituent_properties_t), allocatable :: lc_all_constituents(:)\n" \
             in fortran
         assert "lc_instances(instance)%lc_all_constituents" in fortran
 
@@ -238,3 +252,31 @@ class TestFrameworkConstituentArraysAreIndexedByInstanceInRunDispatch:
         fortran = _fortran_output(run_host_match, ccpp_context)
         run_body = _unwrapped(_fn_body(fortran, "ccpp_physics_run"))
         assert "lc_instances(instance)%lc_cld_liq_tend" in run_body
+
+
+class TestSchemeLevelDynamicRegistrationOutputIsInstanceAware:
+    """Regression test for a real gfortran CI build failure found AFTER the
+    fix above first landed: cld_liq_register's own dyn_const output
+    (allocatable ccpp_constituent_properties_t, a scheme's own
+    dynamically-registered constituent list) is passed into the suite call
+    from ccpp_register via lifecycle_cap.py's own dedicated CapVarRefOp
+    branch for this exact arg shape -- keyed purely by matching
+    constituent_cap.py's bare naming convention (lc_<bare>). Once
+    constituent_cap.py moved that same array into the per-instance bundle
+    (lc_instances(instance)%lc_dyn_const), this branch kept emitting the
+    bare, now-nonexistent lc_dyn_const -- confirmed in real CI:
+    "Symbol 'lc_dyn_const' at (1) has no IMPLICIT type".
+
+    Not exercised by the other tests in this file: their own _SCHEME_META
+    has no _register table at all, only fixed_advected (`advected=.true.`)
+    -- this class is the only one that actually declares a scheme-level
+    dynamic registration output.
+    """
+
+    def test_ccpp_register_passes_the_per_instance_component(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output(run_host_match, ccpp_context)
+        body = _unwrapped(_fn_body(fortran, "ccpp_register"))
+        assert "test_suite_suite_register(lc_instances(instance)%lc_dyn_const" in body
+        assert "test_suite_suite_register(lc_dyn_const" not in body

@@ -115,6 +115,18 @@ def _generate_lifecycle_fn(
     # gets a few lines down.
     _ccpp_info_type_for_scan = kwargs.get("ccpp_info_type")
 
+    # Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
+    # "instances/instances_advection" entry, task #35): a scheme's own
+    # _register-phase dynamically-registered constituent output (e.g.
+    # dyn_const) is referenced below via a dedicated CapVarRefOp branch,
+    # keyed purely by matching constituent_cap.py's own bare naming
+    # convention (lc_<bare>) -- see that branch's own comment. Multi-
+    # instance moves constituent_cap.py's own module var for each of these
+    # into a per-instance bundle-type component
+    # (lc_instances(instance)%lc_<bare>), so that branch needs to know
+    # instance_local_name too, to build the matching reference text.
+    instance_local_name = kwargs.get("instance_local_name")
+
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)
     # Inverted (local var name -> standard_name) fallback for callee args no
     # scheme's own entry-point metadata declares at all for THIS phase --
@@ -387,7 +399,22 @@ def _generate_lifecycle_fn(
                     # Constituent-property arrays are declared at module scope
                     # via ModuleVarOp.  Reference them with CapVarRefOp so the
                     # allocated values persist after physics_register returns.
-                    cap_ref = CapVarRefOp(f"lc_{bare}", arg_type)
+                    #
+                    # Real capgen-v1's multi-instance model (task #35):
+                    # when the host is multi-instance, constituent_cap.py
+                    # moves this same array from a bare module var into a
+                    # per-instance bundle-type component
+                    # (lc_instances(instance)%lc_<bare>) -- this reference
+                    # must match that exactly, or it's a reference to a
+                    # symbol that no longer exists (confirmed the hard way
+                    # in real CI: "has no IMPLICIT type").
+                    _lc_name = f"lc_{bare}"
+                    cap_ref_name = (
+                        f"lc_instances({instance_local_name})%{_lc_name}"
+                        if instance_local_name is not None
+                        else _lc_name
+                    )
+                    cap_ref = CapVarRefOp(cap_ref_name, arg_type)
                     hoisted_alloc_ops.append(cap_ref)
                     call_inputs.append(cap_ref.res)
                     _ddt_mod = _CCPP_CONSTITUENT_MOD

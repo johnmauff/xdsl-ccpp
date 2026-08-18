@@ -83,7 +83,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | 📋 Backlog (modeling gap, currently inconsequential) | L3585 |
 | Suite signature generation ignored host's own unique local name (collision) | ✅ Fixed (2026-07-23) | L3620 |
 | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | 📋 Backlog (L, deliberately deferred until after task #28) | L5135 |
-| Scheme-level dynamic constituent registration output discarded by `ccpp_register`'s own wrapper | 📋 Backlog (S-M, found 2026-08-18, confirmed pre-existing) | L5359 |
+| ~~Scheme-level dynamic constituent registration output discarded~~ (corrected: not a bug) + the real multi-instance regression this investigation found in the same code path | ✅ Corrected + fixed (2026-08-18) | L5360 |
 
 ---
 
@@ -5357,34 +5357,54 @@ dependency is noted.
     interface changes too. Sizing this needs a closer look before deciding
     whether it's worth doing.
 
-- **Scheme-level dynamic constituent registration output discarded by
-  `ccpp_register`'s own wrapper — S-M, found 2026-08-18 while verifying the
-  task #35 constituent-instance-awareness fix, confirmed pre-existing and
-  unrelated to it.** A scheme's own `_register`-phase dynamically-registered
-  constituent list (e.g. `examples/instances_advection`'s `cld_liq_register`'s
-  `dyn_const`, an `intent(out) ccpp_constituent_properties_t, allocatable`
-  arg) is passed into the suite-level register call from a function-scoped
-  local (`lc_dyn_const`) that `lifecycle_cap.py`'s generic "no host match"
-  fallback hoists inside `ccpp_register` itself (the outer dispatcher
-  wrapper) -- and that local is silently discarded the moment `ccpp_register`
-  returns, since nothing else ever reads it. The scheme's own dynamically-
-  registered constituents (as opposed to the `advected = .true.` fixed-name
-  mechanism, which works correctly and is what every example's own tests
-  actually seem to exercise) never actually reach
-  `test_host_ccpp_register_constituents`'s own `lc_all_constituents`.
-  - **Confirmed pre-existing, not introduced by task #35**: regenerated the
-    already-CI-green `examples/advection` (has the identical
-    `cld_liq_register`/`cld_ice_register` scheme pair, non-multi-instance)
-    and found the exact same shape --
-    `call cld_suite_suite_register(lc_dyn_const, lc_dyn_const_ice, errmsg,
-    errflg)`, both hoisted-and-discarded locals -- already present there.
-  - **Not diagnosed further** -- unclear yet whether real capgen-v1's own
-    generator wires this differently (e.g. the scheme calling directly into
-    a `register_constituents`-equivalent itself, rather than the wrapper
-    threading the value through), or whether this is a genuine gap. Worth
-    checking against `ccpp-framework-fresh/capgen/generator/`'s own handling
-    of a scheme's `_register`-phase dynamic-array output before scoping a
-    fix.
+- **~~Scheme-level dynamic constituent registration output discarded by
+  `ccpp_register`'s own wrapper~~ — CORRECTED, not a bug (found 2026-08-18,
+  corrected same day).** Originally logged as a suspected discard bug:
+  `cld_liq_register`'s own `dyn_const` output is referenced as a bare
+  `lc_dyn_const` inside `ccpp_register`'s generated body, with no local
+  declaration anywhere in sight, which looked exactly like a function-scoped
+  local silently discarded on return.
+  - **Traced fully while fixing a real, related regression in the same code
+    path (below) and found it's by design, not a bug.**
+    `lifecycle_cap.py`'s own dedicated `CapVarRefOp` branch for this exact
+    arg shape (allocatable `ccpp_constituent_properties_t`) emits that bare
+    text *deliberately*, matching `constituent_cap.py`'s own module-var
+    naming convention (`lc_<bare>`) exactly on purpose -- Fortran resolves
+    an otherwise-undeclared identifier inside a subroutine via ordinary
+    module scoping to the module-level variable of the same name in the
+    *same* module (no `use` needed, since `ccpp_register` and
+    `constituent_cap.py`'s own declarations live in the one combined cap
+    module). Nothing is discarded: that bare name IS the persistent module
+    variable `test_host_ccpp_register_constituents` later reads from.
+  - **The real, adjacent bug this same investigation found**: this
+    mechanism is a genuine coupling between two independently-generated
+    parts of the file (`lifecycle_cap.py`'s reference text and
+    `constituent_cap.py`'s declaration), held together only by matching
+    naming convention -- and multi-instance broke exactly that coupling.
+    Once `constituent_cap.py` moved `lc_dyn_const` into the new per-instance
+    bundle (`lc_instances(instance)%lc_dyn_const`, task #35's own fix),
+    `lifecycle_cap.py`'s branch kept emitting the bare, now-nonexistent
+    name -- a real gfortran CI failure (`"Symbol 'lc_dyn_const' ... has no
+    IMPLICIT type"`), not a hypothetical one. **Fixed**: that branch now
+    accepts `instance_local_name` and builds
+    `lc_instances(<instance>)%lc_<bare>` when set, `lc_<bare>` unchanged
+    otherwise -- confirmed `examples/advection`'s own (non-multi-instance)
+    output is byte-identical before/after. New regression test
+    (`tests/unit/test_multi_instance_constituent_api.py`'s
+    `TestSchemeLevelDynamicRegistrationOutputIsInstanceAware`, confirmed via
+    git-stash to catch the regression).
+  - **A second, independent real bug caught by the same CI run**: Fortran
+    forbids the `TARGET` attribute on a derived-type *component*
+    (`constituent_cap.py`'s first cut put it there directly, copying the
+    plain-module-var version's own attribute list without checking it
+    transfers) -- `gfortran`: `"Attribute at (1) is not allowed in a TYPE
+    definition"`, cascading into dozens of unrelated `"not a member of the
+    structure"` errors for every OTHER component once the type block's own
+    parse got corrupted. Fixed: `target` moved to the containing
+    `lc_instances(:)` variable itself, where Fortran's own attribute-
+    propagation rule (`TARGET` on a variable propagates to all its
+    subobjects, including allocatable components) makes every pointer
+    association into it exactly as valid as before.
 
 - **Full capgen-v1 `ccpp_suite_state` match — integer-enum allocatable array
   + dedicated alloc/dealloc subroutines — L, deliberately deferred

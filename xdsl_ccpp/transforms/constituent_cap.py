@@ -194,17 +194,29 @@ def _generate_constituent_api(
             type_def_lines.append(
                 f"  type(ccpp_constituent_properties_t), allocatable :: lc_{n}(:)"
             )
+        # NOT ", target" here -- Fortran forbids the TARGET attribute on a
+        # derived-type COMPONENT (gfortran: "Attribute at (1) is not
+        # allowed in a TYPE definition"), confirmed the hard way in real
+        # CI: gfortran's own parse of the (invalid) type block corrupts its
+        # symbol table for these specific components, cascading into
+        # dozens of unrelated "not a member of the structure" errors
+        # everywhere else they're referenced. TARGET instead goes on the
+        # lc_instances(:) module variable itself below -- the standard's
+        # own rule that TARGET propagates from a variable to all of its
+        # subobjects (including allocatable components) is exactly what
+        # these pointer associations (lc_const_props(i)%ptr,
+        # lc_cld_liq_tend) need.
         type_def_lines.append(
-            "  type(ccpp_constituent_properties_t), allocatable, target :: lc_all_constituents(:)"
+            "  type(ccpp_constituent_properties_t), allocatable :: lc_all_constituents(:)"
         )
         type_def_lines.append(
-            "  real(kind=kind_phys), allocatable, target :: lc_constituent_array(:, :, :)"
+            "  real(kind=kind_phys), allocatable :: lc_constituent_array(:, :, :)"
         )
         type_def_lines.append(
-            "  real(kind=kind_phys), allocatable, target :: lc_const_tend(:, :, :)"
+            "  real(kind=kind_phys), allocatable :: lc_const_tend(:, :, :)"
         )
         type_def_lines.append(
-            "  type(ccpp_constituent_prop_ptr_t), allocatable, target :: lc_const_props(:)"
+            "  type(ccpp_constituent_prop_ptr_t), allocatable :: lc_const_props(:)"
         )
         for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
             shape = ", ".join([":"] * rank)
@@ -218,7 +230,8 @@ def _generate_constituent_api(
                 )
         type_def_lines.append(f"end type {instance_type_name}")
         module_var_ops.append(
-            ModuleVarOp("lc_instances", "type", ddt_name=instance_type_name, rank=1)
+            ModuleVarOp("lc_instances", "type", ddt_name=instance_type_name,
+                        ftn_attrs="target", rank=1)
         )
     type_defs_text = "\n".join(type_def_lines) if type_def_lines else None
 
