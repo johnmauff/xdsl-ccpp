@@ -966,18 +966,36 @@ class ConstituentApiOp(IRDLOperation):
     string; the printer emits them verbatim inside the module's CONTAINS section.
     The `public_names` attribute lists subroutine/function names to export with
     `public ::` declarations.
+
+    `type_defs`, when set, holds a derived-type definition (`type :: ... end
+    type`) that must instead be printed in the module's *specification* part
+    -- before `CONTAINS`, alongside `ModuleVarOp` declarations -- since
+    Fortran forbids a type definition inside the executable/CONTAINS
+    section. Used by the multi-instance constituent-API fix
+    (ccpp_cap_refactor_plan.md's "instances/instances_advection" entry,
+    task #35): real capgen-v1's multi-instance model needs a per-instance
+    bundle of the constituent-registration arrays this API owns
+    (`lc_all_constituents`, `lc_constituent_array`, etc.), and unlike every
+    other derived type this codebase ever prints, that bundle type is
+    itself generated here, not host-declared -- there was no existing
+    mechanism to emit a *type definition* (as opposed to a variable of an
+    already-existing type) into a module's preamble before this.
     """
 
     name = "ccpp_utils.constituent_api"
 
     body         = prop_def(StringAttr, prop_name="body")
     public_names = prop_def(ArrayAttr,  prop_name="public_names")
+    type_defs    = opt_prop_def(StringAttr)
 
-    def __init__(self, body: str, public_names_list: list):
-        super().__init__(properties={
+    def __init__(self, body: str, public_names_list: list, type_defs: str | None = None):
+        props: dict = {
             "body":         StringAttr(body),
             "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
-        })
+        }
+        if type_defs is not None:
+            props["type_defs"] = StringAttr(type_defs)
+        super().__init__(properties=props)
 
 
 @irdl_op_definition

@@ -42,16 +42,11 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 #
 # examples/instances (as of 2026-08-18, after implementing real capgen-v1's
 # own multi-instance model -- see ccpp_cap_refactor_plan.md's "instances/
-# instances_advection" backlog entry, Stages 1-5) is now wired in below.
-#
-# NOT wired in yet: examples/instances_advection (ported from the same
-# upstream location, combining the multi-instance mechanism above with
-# constituent registration) still hard-fails cap generation outright with an
-# unrelated xDSL IR verifier crash inside constituent-registration cap code
-# (would abort this file's own configure step with a FATAL_ERROR if
-# add_subdirectory'd) -- see the same backlog entry. Deliberately deferred
-# until that's diagnosed on its own; get plain instances solid first (done),
-# don't debug the harder constituents+multi-instance combination before it.
+# instances_advection" backlog entry, Stages 1-5), and examples/
+# instances_advection (as of 2026-08-18, task #35 of the same backlog
+# entry -- the constituent-registration API gained the same kind of
+# per-instance awareness the suite lifecycle already had) are now wired in
+# below.
 
 enable_testing()
 
@@ -195,3 +190,4 @@ add_subdirectory(examples/constituents_dim)
 add_subdirectory(examples/opt_arg)
 add_subdirectory(examples/suite_allocate)
 add_subdirectory(examples/instances)
+add_subdirectory(examples/instances_advection)

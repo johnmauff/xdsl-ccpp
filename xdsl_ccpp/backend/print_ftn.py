@@ -1207,6 +1207,22 @@ class ftnPrintContext:
                             prefix="  ",
                         )
 
+        # Emit derived-type definitions a ConstituentApiOp needs declared in
+        # the specification part (before CONTAINS) -- e.g. the multi-instance
+        # constituent-API fix's own per-instance bundle type. Must come
+        # BEFORE the plain ModuleVarOp declarations below: a var of this new
+        # type is one of them (lc_instances), and Fortran requires a
+        # derived-type definition to appear before any variable declared
+        # with it in the same specification part -- confirmed the hard way,
+        # printing these in the other order produced "has no IMPLICIT type"
+        # on lc_instances' own type name. Also its own reason Fortran
+        # forbids a `type :: ... end type` block inside CONTAINS in the
+        # first place, hence needing this separate emission point at all.
+        for op in body.ops:
+            if isa(op, CCPPConstituentApiOp) and op.type_defs is not None:
+                for line in op.type_defs.data.splitlines():
+                    self.print(line, prefix="  ")
+
         # Emit module-level variable declarations (unified ModuleVarOp).
         # rank=0: scalar, rank>0: allocatable array with that many deferred dimensions.
         for op in body.ops:
