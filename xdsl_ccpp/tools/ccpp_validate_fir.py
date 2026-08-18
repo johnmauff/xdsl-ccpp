@@ -29,9 +29,10 @@ from xdsl.dialects import builtin
 from xdsl.parser import Parser
 from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP, TablePropertiesOp
+from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
+from xdsl_ccpp.tools.flang_utils import find_flang, run_flang
 from xdsl_ccpp.transforms.validate_fir import compare_modules
 
 
@@ -44,17 +45,8 @@ def _make_ctx() -> Context:
     return ctx
 
 
-def _find_flang() -> str | None:
-    """Return the name of the first available Flang executable, or None."""
-    import shutil
-    for candidate in ("flang", "flang-new", "flang-20", "flang-19", "flang-18"):
-        if shutil.which(candidate):
-            return candidate
-    return None
-
-
 def _run_flang(f90_file: str, fir_mlir: str) -> bool:
-    flang = _find_flang()
+    flang = find_flang()
     if flang is None:
         print(
             "Error: no Flang executable found on PATH.\n"
@@ -64,20 +56,7 @@ def _run_flang(f90_file: str, fir_mlir: str) -> bool:
             file=sys.stderr,
         )
         return False
-    cmd = [
-        flang, "-fc1", "-emit-hlfir",
-        "-mmlir", "-mlir-print-op-generic",
-        f90_file, "-o", fir_mlir,
-    ]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
-    except FileNotFoundError:
-        print(f"Error: could not execute '{flang}'", file=sys.stderr)
-        return False
-    if result.returncode != 0:
-        print(f"Error: flang failed on '{f90_file}':\n{result.stderr}", file=sys.stderr)
-        return False
-    return True
+    return run_flang(flang, f90_file, fir_mlir)
 
 
 def _run_fir_to_meta(fir_mlir: str) -> str | None:
