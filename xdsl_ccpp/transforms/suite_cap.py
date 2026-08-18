@@ -73,6 +73,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
     CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_INSTANCE_NUMBER_STD_NAME,
     CCPP_KIND_PHYS,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
@@ -868,7 +869,38 @@ class GenerateSuiteSubroutine(RewritePattern):
                     use_associated_index[std_name] = (var.name, tbl_name, var.getAttr("type"))
         return use_associated_index
 
-    def _resolve_active_condition(self, raw_expr: str, suite_use_stubs: list) -> str:
+    def _active_expr_ddt_member_indexes(self) -> dict:
+        """Return standard_name.lower() -> (member_local_name, ddt_type_name)
+        for every member of every DDT-type table.
+
+        Companion to _active_expr_var_indexes: an 'active = <expr>' token
+        may reference a DDT member instead of a plain MODULE/HOST-state var
+        -- e.g. examples/instances' own data_array_opt, gated on
+        flag_for_opt_array, a member of the instance_type DDT (real
+        capgen-v1's multi-instance model: instance_type's own module-level
+        instance, instance_data, is a HOST-owned array of DDT, one entry
+        per model instance -- see cap_shared.py's own
+        _build_ddt_resolution_maps). _resolve_active_condition uses this to
+        resolve such a token via the exact same DDT-access-path machinery
+        run_dispatch.py's own DDT-member resolution already uses.
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+        ddt_member_index: dict = {}
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") != CCPPType.DDT:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if not var.hasAttr("standard_name"):
+                    continue
+                ddt_member_index[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+        return ddt_member_index
+
+    def _resolve_active_condition(
+        self, raw_expr: str, suite_use_stubs: list, arg_table=None,
+    ) -> str:
         """Resolve a host/module var's 'active = <expr>' property text into
         an expression that's actually valid Fortran at the suite-cap call
         site, emitting whatever USE stub(s) a use-associated reference needs.
@@ -890,11 +922,81 @@ class GenerateSuiteSubroutine(RewritePattern):
         host-owned state), resolves to its own local name and emits a USE
         stub for it. A 'dispatch_scalar'-classified HOST-type reference
         (loop bounds, error handling) raises rather than being silently
-        supported -- see _active_expr_var_indexes. A token that doesn't
-        resolve to any known standard_name is left as-is (assumed to be a
-        Fortran keyword/operator, e.g. '.and.'/'.not.').
+        supported -- see _active_expr_var_indexes.
+
+        A DDT-member reference (e.g. examples/instances' own
+        flag_for_opt_array, a member of the instance_type DDT -- see
+        _active_expr_ddt_member_indexes) resolves via the same
+        _resolve_ddt_access_path machinery run_dispatch.py's own DDT-member
+        resolution uses. When the DDT's own module-level instance is itself
+        a HOST-owned array of model instances (real capgen-v1's
+        multi-instance model, ccpp_cap_refactor_plan.md's "instances/
+        instances_advection" entry), <arg_table> -- the calling scheme's
+        own _run table -- must have a sibling instance_number-standard-name
+        arg to index by; this raises a clear error rather than silently
+        emitting an unindexed (and therefore wrong) reference if it
+        doesn't, matching the dispatch_scalar case's own philosophy. Found
+        via a real gfortran CI failure on examples/instances: printing the
+        bare standard-name text verbatim compiled fine for opt_arg's own
+        flag_for_opt_arg only by coincidence (its local name happens to
+        equal its standard name) -- this DDT-member case never worked, it
+        was simply never exercised until this example's active-gated
+        data_array_opt.
+
+        A token that doesn't resolve to any known standard_name is left
+        as-is (assumed to be a Fortran keyword/operator, e.g. '.and.'/'.not.').
         """
         use_associated_index = self._active_expr_var_indexes()
+        ddt_member_index = self._active_expr_ddt_member_indexes()
+
+        def _resolve_ddt_member(std_name: str, member_local_name: str, ddt_type_name: str) -> str:
+            ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(self.meta_data)
+            result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
+            if result is None:
+                raise ValueError(
+                    f"'active = {raw_expr}' references {std_name!r}, a member "
+                    f"of DDT type {ddt_type_name!r} with no reachable "
+                    f"module-level instance -- cannot resolve to a real "
+                    f"Fortran reference."
+                )
+            instance_var, instance_module, path_prefix, instance_array_dim = result
+            member_ref = path_prefix + member_local_name
+            if instance_array_dim is not None:
+                index_local_name = None
+                if arg_table is not None:
+                    for arg in arg_table.getFunctionArguments():
+                        if (
+                            arg.hasAttr("standard_name")
+                            and arg.getAttr("standard_name").lower()
+                                == CCPP_INSTANCE_NUMBER_STD_NAME
+                        ):
+                            index_local_name = arg.name
+                            break
+                if index_local_name is None:
+                    raise ValueError(
+                        f"'active = {raw_expr}' references {std_name!r}, a "
+                        f"member of {instance_var!r}, a HOST-owned array of "
+                        f"model instances -- but this scheme's own call has "
+                        f"no sibling {CCPP_INSTANCE_NUMBER_STD_NAME!r} arg to "
+                        f"index it by, so there is no way to know which "
+                        f"instance's value to test."
+                    )
+                base_name = f"{instance_var}({index_local_name})"
+            else:
+                base_name = instance_var
+            if not any(
+                isinstance(existing, llvm.GlobalOp)
+                and existing.sym_name.data == instance_var
+                and existing.attributes.get("module") == StringAttr(instance_module)
+                for existing in suite_use_stubs
+            ):
+                stub = llvm.GlobalOp(
+                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                    instance_var, "external",
+                )
+                stub.attributes["module"] = StringAttr(instance_module)
+                suite_use_stubs.append(stub)
+            return f"{base_name}%{member_ref}"
 
         def _substitute(match: "re.Match") -> str:
             token = match.group(0)
@@ -916,6 +1018,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                     stub.attributes["module"] = StringAttr(module_name)
                     suite_use_stubs.append(stub)
                 return local_name
+            ddt_entry = ddt_member_index.get(std_name)
+            if ddt_entry is not None:
+                member_local_name, ddt_type_name = ddt_entry
+                return _resolve_ddt_member(std_name, member_local_name, ddt_type_name)
             if is_dispatch_scalar_std_name(std_name):
                 raise ValueError(
                     f"'active = {raw_expr}' references {std_name!r}, a CCPP "
@@ -1000,7 +1106,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             raw_condition_expr = raw_conditions[level]
             if level not in resolved_conditions:
                 resolved_conditions[level] = self._resolve_active_condition(
-                    raw_condition_expr, suite_use_stubs
+                    raw_condition_expr, suite_use_stubs, arg_table
                 )
             condition_expr = resolved_conditions[level]
             with_ops = _build_level(level + 1, excluded_names)

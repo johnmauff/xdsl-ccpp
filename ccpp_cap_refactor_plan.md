@@ -3735,6 +3735,50 @@ dependency is noted.
         - **`examples/instances_advection` stays explicitly out of scope**
           until plain `instances` is proven in CI -- separate, unrelated
           `memref.copy` verifier crash to diagnose on its own first.
+        - **Real gfortran CI build failure found and fixed after the above
+          (2026-08-18): `active = <expr>` property resolution never handled
+          a DDT-member reference at all -- a genuine pre-existing gap, not
+          introduced by any of the 5 stages, just never exercised until
+          `examples/instances`'s own `data_array_opt` (`active =
+          (flag_for_opt_array)`, `flag_for_opt_array` a member of the
+          `instance_type` DDT).** CI error: `Symbol 'flag_for_opt_array' at
+          (1) has no IMPLICIT type` in the generated `unit_conv_suite_cap.F90`.
+          `suite_cap.py`'s `_resolve_active_condition` (added for `opt_arg`'s
+          own dead-`active` fix, task #2) only ever resolved a MODULE-type
+          or 'state'-classified HOST-type standard-name reference to its
+          real local name -- a DDT-member reference fell through to the
+          "assume it's a Fortran keyword/operator, print verbatim" default,
+          producing the bare, undeclared standard-name text.
+          **This was never actually correct** -- it only ever "worked" for
+          `examples/opt_arg`'s own `flag_for_opt_arg` because that example's
+          local variable name happens to be spelled identically to its
+          standard name, so printing the raw standard-name text verbatim
+          happened to compile by pure coincidence.
+          - **Fixed** by adding a new `_active_expr_ddt_member_indexes`
+            helper (standard_name -> (member_local_name, ddt_type_name) over
+            every DDT table) and extending `_resolve_active_condition` to
+            resolve a DDT-member token via the same `_resolve_ddt_access_path`
+            machinery `run_dispatch.py`'s own DDT-member resolution already
+            uses -- including the array-of-DDT-instance case Stages 2-4
+            built: when the DDT's module-level instance is itself a
+            HOST-owned array (`instance_array_dim` set), the calling
+            scheme's own `arg_table` (now threaded into
+            `_resolve_active_condition`) is searched for a sibling
+            `instance_number`-standard-name arg to index by, raising a
+            clear error (matching the existing `dispatch_scalar` case's own
+            philosophy) if there isn't one, rather than silently emitting
+            an unindexed (and therefore wrong) reference.
+          - **New regression test**
+            (`tests/unit/test_active_condition_ddt_member.py`, shaped like
+            the real `examples/instances` case) -- confirmed to actually
+            catch the bug by stashing the fix and re-running (all 3 new
+            tests failed, as expected) before restoring it.
+          - **Verified**: full suite 589 passed (586 + 3 new), 0 failures.
+            Regenerated `examples/instances` directly and via the real
+            `xdsl_ccpp_capgen()` CMake macro path -- both now print
+            `if ((instance_data(instance)%opt_array_flag)) then`, a real,
+            valid Fortran reference, with exactly one `use data, only:
+            instance_data` stub, no duplicates.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
