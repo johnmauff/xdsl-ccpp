@@ -4,7 +4,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 from enum import Enum, StrEnum, auto
 
-from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, ModuleOp, StringAttr, i32
+from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
 
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
@@ -588,7 +588,7 @@ class ccppXML:
         return parser
 
     def set_parser_arguments(self, parser):
-        """Register the ``--scheme-files``, ``--host-files``, ``--suites``, and ``--num-instances`` CLI args."""
+        """Register the ``--scheme-files``, ``--host-files``, and ``--suites`` CLI args."""
         parser.add_argument(
             "--scheme-files",
         )
@@ -601,17 +601,6 @@ class ccppXML:
             "--suites",
         )
 
-        parser.add_argument(
-            "--num-instances",
-            type=int,
-            default=None,
-            metavar="N",
-            help=(
-                "Maximum number of simultaneous CCPP instances (ensemble members). "
-                "When set, the suite cap generates ccpp_suite_state as a per-instance "
-                "array of length N instead of the compiled-in default."
-            ),
-        )
         parser.add_argument(
             "--legacy-mode",
             action="store_true",
@@ -629,8 +618,7 @@ class ccppXML:
         is split into a Python list here.  Missing arguments default to ``[]``.
 
         Returns:
-            A dict with keys ``scheme_files``, ``host_files``, ``suites``, and
-            optionally ``num_instances`` (int or None).
+            A dict with keys ``scheme_files``, ``host_files``, and ``suites``.
         """
         options_db = args.__dict__
 
@@ -804,11 +792,6 @@ class ccppXML:
                 ir_ops.append(self.build_meta_ir(c, source_module=stem))
 
         module = ModuleOp(ir_ops)
-
-        # Embed --num-instances as an IR attribute so downstream passes can read it.
-        num_instances = self.options_db.get("num_instances")
-        if num_instances is not None:
-            module.attributes["ccpp.num_instances"] = IntegerAttr(num_instances, i32)
 
         print(module)
 

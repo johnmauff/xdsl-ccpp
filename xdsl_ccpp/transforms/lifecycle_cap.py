@@ -108,19 +108,12 @@ def _generate_lifecycle_fn(
     # arguments, a case the redesign hasn't touched. Must run before
     # new_block is constructed below, since the extra args have to be part
     # of its arg_types from the start.
-    # ccpp_info_t / ccpp_t are themselves declared in a HOST-type table
-    # (that's how the caller detected them in the first place), so they'd
-    # otherwise also satisfy the "HOST-exclusive" test just below and get
-    # duplicated as a second, redundant block argument alongside the
-    # dedicated handling each already gets a few lines down.
+    # ccpp_info_t is itself declared in a HOST-type table (that's how the
+    # caller detected it in the first place), so it'd otherwise also satisfy
+    # the "HOST-exclusive" test just below and get duplicated as a second,
+    # redundant block argument alongside the dedicated handling it already
+    # gets a few lines down.
     _ccpp_info_type_for_scan = kwargs.get("ccpp_info_type")
-
-    def _is_ccpp_t_type(_t) -> bool:
-        return (
-            hasattr(_t, "element_type")
-            and hasattr(_t.element_type, "type_name")
-            and _t.element_type.type_name.data == "ccpp_t"
-        )
 
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)
     extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
@@ -159,7 +152,6 @@ def _generate_lifecycle_fn(
                 and _std_name not in host_var_map
                 and _bare_name not in extra_host_args
                 and not (_ccpp_info_type_for_scan is not None and _std_name == "host_standard_ccpp_type")
-                and not _is_ccpp_t_type(_arg_type)
             ):
                 extra_host_args[_bare_name] = (_arg_type, _intent_of.get(_bare_name, "in"))
     extra_host_arg_names = list(extra_host_args.keys())
@@ -173,8 +165,6 @@ def _generate_lifecycle_fn(
 
     ccpp_info_type = kwargs.get("ccpp_info_type")
     ccpp_info_module = kwargs.get("ccpp_info_module")
-    ccpp_t_type = kwargs.get("ccpp_t_type")
-    ccpp_t_var_name = kwargs.get("ccpp_t_var_name", "ccpp_data")
 
     if ccpp_info_type is not None:
         # ccpp_info_t pattern: single inout arg bundles errmsg/errflg.
@@ -191,18 +181,6 @@ def _generate_lifecycle_fn(
         errflg_alloc = HostVarRefOp(
             "ccpp_info", ccpp_info_module, errflg_type, member_name="errflg"
         )
-    elif ccpp_t_type is not None:
-        # ccpp_t pattern: ccpp_data is threaded as intent(inout); errmsg/errflg
-        # are still local allocas returned as intent(out) to the host.
-        new_block = Block(arg_types=[suite_name_type, ccpp_t_type] + extra_host_arg_types)
-        new_block.args[0].name_hint = "suite_name"
-        new_block.args[1].name_hint = ccpp_t_var_name
-        for _i, _n in enumerate(extra_host_arg_names):
-            new_block.args[2 + _i].name_hint = _n + "__hostarg"
-        errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
-        errmsg_alloc.memref.name_hint = "errmsg"
-        errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
-        errflg_alloc.memref.name_hint = "errflg"
     else:
         # capgen pattern: function returns errmsg/errflg as separate outputs.
         errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
@@ -372,14 +350,6 @@ def _generate_lifecycle_fn(
                 # The ccpp_info_t block arg IS the CCPP framework handle — pass
                 # it directly to callees that expect host_standard_ccpp_type.
                 call_inputs.append(new_block.args[1])
-            elif (
-                ccpp_t_type is not None
-                and hasattr(arg_type, "element_type")
-                and hasattr(arg_type.element_type, "type_name")
-                and arg_type.element_type.type_name.data == "ccpp_t"
-            ):
-                # The ccpp_t block arg is passed directly to suite callees.
-                call_inputs.append(new_block.args[1])
             elif bare in extra_host_arg_index:
                 # Resolved by the pre-scan above to a HOST-type-table var this
                 # phase's own scheme entry point genuinely needs -- passed
@@ -504,16 +474,6 @@ def _generate_lifecycle_fn(
                     )
                     hv_glob.attributes["module"] = StringAttr(hv_module)
                     all_host_global_ops.append(hv_glob)
-            elif (
-                ccpp_t_type is not None
-                and hasattr(ret_type, "element_type")
-                and hasattr(ret_type.element_type, "type_name")
-                and ret_type.element_type.type_name.data == "ccpp_t"
-            ):
-                # ccpp_t is intent(inout) — mirror back to the block arg so
-                # the printer's inout-echo detection fires and the arg is not
-                # duplicated in the Fortran call argument list.
-                copy_ops.append(memref.CopyOp(result, new_block.args[1]))
 
         # copy_pre_ops (CapVarRefOp/HostVarRefOp) must come BEFORE the call so
         # the printer registers their results in `variables` before _print_call
@@ -530,7 +490,7 @@ def _generate_lifecycle_fn(
     main_chain_ops = current_false_ops[:-1]
 
     # inout/out extra HOST-table args must be echoed back through
-    # func.ReturnOp -- same reasoning as the ccpp_t block arg just above
+    # func.ReturnOp -- same reasoning as the ccpp_info_t block arg just above
     # (print_ftn.py's inout-echo detection: a memref that is both a block
     # arg and a returned value prints as intent(inout), not duplicated in
     # the call argument list). They're memrefs already mutated in place by
@@ -544,12 +504,6 @@ def _generate_lifecycle_fn(
         fn_type = builtin.FunctionType.from_lists(
             [suite_name_type, ccpp_info_type] + extra_host_arg_types,
             [ccpp_info_type] + extra_inout_types,
-        )
-    elif ccpp_t_type is not None:
-        ret_op = func.ReturnOp(new_block.args[1], errmsg_alloc, errflg_alloc, *extra_inout_vals)
-        fn_type = builtin.FunctionType.from_lists(
-            [suite_name_type, ccpp_t_type] + extra_host_arg_types,
-            [ccpp_t_type, errmsg_type, errflg_type] + extra_inout_types,
         )
     else:
         ret_op = func.ReturnOp(errmsg_alloc, errflg_alloc, *extra_inout_vals)

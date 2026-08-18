@@ -9,12 +9,11 @@ from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
-from xdsl_ccpp.dialects.ccpp import CcppHandleOp, TableTypeKind
+from xdsl_ccpp.dialects.ccpp import TableTypeKind
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
     CCPP_INTERNAL_STD_NAMES,
-    CCPP_T_TYPE,
     UNIT_CONVERSIONS,
     dims_compatible,
     normalize_units,
@@ -288,12 +287,8 @@ class HostVariableMatchPass(ModulePass):
                          is_host_table, is_protected, active_expr|None)
         produced_in_init: standard_name → (arg_op, scheme_name, entry_point_name)
             for args produced (intent=out/inout) by any scheme _init/_run entry.
-
-        Side-effect: emits a CcppHandleOp into ccpp_mod when a ccpp_t variable
-        is found in the HOST table.
         """
         model_var_index: dict = {}
-        _ccpp_handle: "tuple[str, str] | None" = None
 
         for table_prop_op in ccpp_mod.body.ops:
             if not isa(table_prop_op, ccpp.TablePropertiesOp):
@@ -325,13 +320,6 @@ class HostVariableMatchPass(ModulePass):
                             if arg_op.memory_space is not None
                             else None
                         )
-                        # ccpp_t handle: captured for CcppHandleOp, not indexed.
-                        if arg_op.arg_type.data.lower() == CCPP_T_TYPE:
-                            _ccpp_handle = (
-                                arg_op.arg_name.data,
-                                table_prop_op.table_name.data,
-                            )
-                            continue
                         model_var_index[arg_op.standard_name.data.lower()] = (
                             arg_op.arg_name.data,
                             table_prop_op.table_name.data,
@@ -343,10 +331,6 @@ class HostVariableMatchPass(ModulePass):
                             arg_op.protected is not None,
                             arg_op.active.data if arg_op.active is not None else None,
                         )
-
-        if _ccpp_handle is not None:
-            var_name, module_name = _ccpp_handle
-            ccpp_mod.body.block.add_op(CcppHandleOp(var_name, module_name))
 
         # Variables produced (intent=out/inout) by a scheme's _init or _run
         # entry point with no host match are interstitial — they flow between

@@ -98,9 +98,7 @@ class _RunBlockSignature:
     errmsg_alloc: "object"        # HostVarRefOp | None
     errflg_alloc: "object"        # HostVarRefOp | None
     ccpp_info_block_arg: "object" # BlockArgument | None
-    ccpp_data_block_arg: "object" # BlockArgument | None
     ccpp_info_type: "object"      # memref type or None
-    ccpp_t_type: "object"         # memref type or None
 
 
 @dataclass
@@ -487,8 +485,6 @@ def _build_run_block_signature(
     """
     ccpp_info_type = kwargs.get("ccpp_info_type")
     ccpp_info_module = kwargs.get("ccpp_info_module")
-    ccpp_t_type = kwargs.get("ccpp_t_type")
-    ccpp_t_var_name = kwargs.get("ccpp_t_var_name", "ccpp_data")
 
     # ── Union of non-host args across all suites (ordered by first appearance) ──
     # Deduplicate by standard_name: different schemes may use different local
@@ -539,13 +535,6 @@ def _build_run_block_signature(
         union_non_host_args = {
             k: v for k, v in union_non_host_args.items()
             if k not in _ccpp_member_names and k not in _ccpp_provided_canonicals
-        }
-
-    if ccpp_t_type is not None and ccpp_t_var_name in union_non_host_args:
-        # Remove the ccpp_t variable; it is threaded at a fixed position (args[2]).
-        union_non_host_args = {
-            k: v for k, v in union_non_host_args.items()
-            if k != ccpp_t_var_name
         }
 
     # A CCPP Fortran host always calls ccpp_physics_run with col_start/col_end
@@ -602,12 +591,6 @@ def _build_run_block_signature(
             [suite_name_type, suite_part_type, ccpp_info_type]
             + list(union_non_host_args.values())
         )
-    elif ccpp_t_type is not None:
-        all_block_types = (
-            [suite_name_type, suite_part_type, ccpp_t_type]
-            + list(union_non_host_args.values())
-            + [errmsg_type, errflg_type]
-        )
     else:
         all_block_types = (
             [suite_name_type, suite_part_type]
@@ -621,7 +604,6 @@ def _build_run_block_signature(
     suite_part_arg = new_block.args[1]
 
     ccpp_info_block_arg = None
-    ccpp_data_block_arg = None
     col_start_ref = None
     col_end_ref = None
     errmsg_alloc = None
@@ -669,23 +651,6 @@ def _build_run_block_signature(
         # Map member names for errmsg/errflg so callee arg lookup works.
         block_arg_map["errmsg"] = errmsg_alloc.res
         block_arg_map["errflg"] = errflg_alloc.res
-    elif ccpp_t_type is not None:
-        # ccpp_t pattern: ccpp_data at args[2], non-host args follow, then errmsg/errflg.
-        ccpp_data_block_arg = new_block.args[2]
-        ccpp_data_block_arg.name_hint = ccpp_t_var_name
-        suite_part_arg.name_hint = "suite_part"
-
-        block_arg_map = {}
-        for i, arg_name in enumerate(union_non_host_args):
-            ba = new_block.args[3 + i]
-            ba.name_hint = arg_name
-            block_arg_map[arg_name] = ba
-        block_arg_map[ccpp_t_var_name] = ccpp_data_block_arg
-
-        errmsg_arg = new_block.args[3 + n_non_host]
-        errmsg_arg.name_hint = "errmsg"
-        errflg_arg = new_block.args[3 + n_non_host + 1]
-        errflg_arg.name_hint = "errflg"
     else:
         suite_part_arg.name_hint = "suite_part"
         block_arg_map = {}
@@ -713,9 +678,7 @@ def _build_run_block_signature(
         errmsg_alloc=errmsg_alloc,
         errflg_alloc=errflg_alloc,
         ccpp_info_block_arg=ccpp_info_block_arg,
-        ccpp_data_block_arg=ccpp_data_block_arg,
         ccpp_info_type=ccpp_info_type,
-        ccpp_t_type=ccpp_t_type,
     )
 
 def _build_run_chain_preamble(
@@ -771,8 +734,6 @@ def _build_run_dispatch_chain(
     cap_var_map,
     seen_host_globals: set,
     current_false_ops: list,
-    ccpp_t_type,
-    ccpp_data_block_arg,
 ) -> "tuple[list, list, list]":
     """Build the nested if/else dispatch chain over suite_name and suite_part.
 
@@ -1333,13 +1294,6 @@ def _build_run_dispatch_chain(
                 if ret_type == errflg_type:
                     return "errflg"
                 if idx < _n_inout_ret:
-                    if (
-                        ccpp_t_type is not None
-                        and hasattr(ret_type, "element_type")
-                        and hasattr(ret_type.element_type, "type_name")
-                        and ret_type.element_type.type_name.data == "ccpp_t"
-                    ):
-                        return ccpp_data_block_arg.name_hint
                     if idx < len(_leading_inout_ret):
                         return _leading_inout_ret[idx][0]
                     return f"_out_{idx}"
@@ -1380,15 +1334,6 @@ def _build_run_dispatch_chain(
                         copy_ops.append(memref.CopyOp(result, errmsg_arg))
                     elif ret_type == errflg_type:
                         copy_ops.append(memref.CopyOp(result, errflg_arg))
-                    elif (
-                        ccpp_t_type is not None
-                        and hasattr(ret_type, "element_type")
-                        and hasattr(ret_type.element_type, "type_name")
-                        and ret_type.element_type.type_name.data == "ccpp_t"
-                    ):
-                        # ccpp_t is intent(inout) — mirror back to the block arg
-                        # so the printer's inout-echo detection fires.
-                        copy_ops.append(memref.CopyOp(result, ccpp_data_block_arg))
                     elif idx < len(_leading_inout_ret):
                         # Ordinary scheme-declared inout scalar -- route the
                         # copy-back the same way the trailing alloc-style
@@ -1574,7 +1519,7 @@ def _assemble_run_fn(
     """Assemble the FuncOp from the block signature, preamble ops, and dispatch chain.
 
     Determines the return type and preamble based on the host framework
-    pattern (ccpp_info_t, ccpp_t, or standard capgen), fills new_block
+    pattern (ccpp_info_t or standard capgen), fills new_block
     with all ops in execution order, and returns a public FuncOp.
 
     wrapper_inout_echo_args are extra, already-existing block args (see
@@ -1597,14 +1542,6 @@ def _assemble_run_fn(
         )
         # Place col_start/col_end/errmsg/errflg HostVarRefOps before dispatch
         preamble_ops = [sig.col_start_ref, sig.col_end_ref, sig.errmsg_alloc, sig.errflg_alloc]
-    elif sig.ccpp_t_type is not None:
-        ret_op = func.ReturnOp(
-            *wrapper_inout_echo_args, sig.ccpp_data_block_arg, sig.errmsg_arg, sig.errflg_arg
-        )
-        fn_type = builtin.FunctionType.from_lists(
-            sig.all_block_types, echo_types + [sig.ccpp_t_type, errmsg_type, errflg_type]
-        )
-        preamble_ops = []
     else:
         ret_op = func.ReturnOp(*wrapper_inout_echo_args, sig.errmsg_arg, sig.errflg_arg)
         fn_type = builtin.FunctionType.from_lists(
@@ -1698,9 +1635,7 @@ def _generate_run_fn(
     errmsg_alloc = _sig.errmsg_alloc
     errflg_alloc = _sig.errflg_alloc
     ccpp_info_block_arg = _sig.ccpp_info_block_arg
-    ccpp_data_block_arg = _sig.ccpp_data_block_arg
     ccpp_info_type = _sig.ccpp_info_type
-    ccpp_t_type = _sig.ccpp_t_type
 
     # ── Dispatch chain preamble ────────────────────────────────────────────
     _pre = _build_run_chain_preamble(
@@ -1730,8 +1665,6 @@ def _generate_run_fn(
             cap_var_map=cap_var_map,
             seen_host_globals=seen_host_globals,
             current_false_ops=current_false_ops,
-            ccpp_t_type=ccpp_t_type,
-            ccpp_data_block_arg=ccpp_data_block_arg,
         )
     )
     all_host_global_ops.extend(chain_global_ops)

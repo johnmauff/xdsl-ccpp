@@ -818,16 +818,6 @@ class CCPPCAP(ModulePass):
             if ccpp_info_type is not None:
                 break
 
-        # Detect CcppHandleOp for ccpp_t threading through generated subroutines.
-        ccpp_t_type = None
-        ccpp_t_var_name = None
-        if ccpp_mod is not None and ccpp_info_type is None:
-            for _op in ccpp_mod.body.block.ops:
-                if isa(_op, ccpp.CcppHandleOp):
-                    ccpp_t_type = memref.MemRefType(DerivedType("ccpp_t"), [])
-                    ccpp_t_var_name = _op.var_name.data
-                    break
-
         for fn_suffix, table_postfix, callee_suffix, suite_part in lifecycle_specs:
             if suite_part is not None:
                 # Run function: one dispatch entry per XML group, all pointing to
@@ -861,8 +851,6 @@ class CCPPCAP(ModulePass):
                     seen_host_globals=shared_seen_host_globals,
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
-                    ccpp_t_type=ccpp_t_type,
-                    ccpp_t_var_name=ccpp_t_var_name,
                     **common,
                 )
                 all_globals.extend(host_global_ops)
@@ -914,8 +902,6 @@ class CCPPCAP(ModulePass):
                     host_var_map_lc=host_var_map_lc,
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
-                    ccpp_t_type=ccpp_t_type,
-                    ccpp_t_var_name=ccpp_t_var_name,
                     **common,
                 )
                 all_globals.extend(lc_host_ops)
