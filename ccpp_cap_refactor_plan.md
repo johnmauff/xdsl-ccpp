@@ -3678,10 +3678,63 @@ dependency is noted.
           changed (no existing example combines an array-of-DDT instance
           with a column-chunked member, so nothing else was ever exercising
           either the new index_expr path or the latent ArraySectionOp bug).
-      - **Not yet done:** stage 5 (wiring `examples/instances` into the real
-        build, adapting its driver to the loop-over-instances calling
-        convention real capgen-v1 uses). `examples/instances_advection`
-        stays explicitly out of scope until plain `instances` is solid.
+      - **Stage 5 done (2026-08-18): `examples/instances` wired into the real
+        build, driver adapted, all 5 stages of this backlog entry now
+        complete.**
+        - **Driver (`main.F90`) adapted from real capgen-v1's own upstream
+          driver**, keeping the loop-over-instances structure (the actual
+          mechanism under test) unchanged, but dropping two things xdsl-ccpp
+          doesn't generate: (1) the `ccpp_physics_init`/`ccpp_physics_final`
+          calls -- confirmed by inspecting the real generated
+          `test_host_ccpp_cap.F90` that xdsl-ccpp's `ccpp_init`/`ccpp_final`
+          already do this work (they call the suite's own
+          `_initialize`/`_finalize`), since xdsl-ccpp's lifecycle is still
+          6-phase where real capgen-v1 splits further into 8 (the "Full
+          6-phase to 8-phase lifecycle match" backlog entry, still open --
+          this is exactly that gap, already tracked, not fixed here); (2)
+          `group_name`/`thread_num`/`nthreads`/`nphys_threads` keyword args
+          the generated signatures don't accept at all (confirmed via the
+          real signatures, e.g. `ccpp_physics_run(suite_name, suite_part,
+          lb, ub, instance, errmsg, errflg)` -- no thread-count params
+          exist), replacing `group_name='all'` with the real
+          `suite_part='unit_conv_group'` (the suite's actual group name,
+          from `suite_unit_conv_suite.xml`). Both adaptations match
+          `examples/opt_arg`'s own driver exactly -- same root cause, same
+          fix shape, already precedented.
+        - **`examples/instances/CMakeLists.txt`**: added the
+          `if(XDSL_CCPP_HAVE_FORTRAN)` executable-build block
+          (`INSTANCES_TESTLIB` + `instances.exe` + `ctest_instances`),
+          mirroring `examples/opt_arg`/`examples/chunked_data`'s identical
+          structure exactly. Refreshed the file's own header comment, which
+          was still describing the pre-Stages-1-4 state (mechanism not
+          implemented, cap generation producing silently-wrong output).
+        - **Root `CMakeLists.txt`**: added `add_subdirectory(examples/instances)`;
+          refreshed the stale "NOT wired in yet" comment block that used to
+          cover both `instances` and `instances_advection` -- now only
+          `instances_advection` remains excluded (separate, unrelated
+          `memref.copy` crash, deliberately still deferred).
+        - **`.github/workflows/compile-tests-cmake.yml`**: added the
+          `instances` / `instances.exe` matrix entry, matching every other
+          example's own entry shape. No `ctest_filter` needed (no other
+          wired-in test name collides with the substring "instances" --
+          `instances_advection` isn't wired in).
+        - **Verified**: full CMake configure (not build -- no Fortran
+          compiler on this laptop, matching every other example's own
+          caveat throughout this repo) succeeds end to end for the whole
+          repo with `examples/instances` included, through the real
+          `xdsl_ccpp_capgen()` macro path (not a manual CLI invocation) --
+          confirmed the generated Fortran via that path is byte-identical
+          to the manual Stage 3/4 verification
+          (`instance_data(instance)%data_array(:, 2)`,
+          `instance_data(instance)%data_array2(lb:ub)`,
+          `instance_data(instance)%data_array(:, 1)`, all three members
+          correct). Python suite unaffected (586 passed, 0 failures --
+          these changes are CMake/Fortran-only). **Not yet compile/run-
+          verified** -- CI is the first real check, same limitation every
+          other example ported this way already has.
+        - **`examples/instances_advection` stays explicitly out of scope**
+          until plain `instances` is proven in CI -- separate, unrelated
+          `memref.copy` verifier crash to diagnose on its own first.
 - **`opt_arg`'s dead `active` property — S/M.** `memory_space`'s silent-ignore sibling: `active`
   (a Fortran logical expression for conditional variable presence) is already a real
   `ArgumentOp` property (`ccpp.py`, `opt_prop_def(StringAttr)`) — parsed into IR, but zero passes
