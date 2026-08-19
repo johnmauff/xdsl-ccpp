@@ -96,6 +96,27 @@ def _collect_public_suite_functions(ops):
 
 
 
+@dataclass
+class _CVArgInfo:
+    """Per-bare-name info collected while scanning one group's schemes, for
+    the CapScratch/framework-var promotion decision in _build_cap_var_map.
+
+    Consolidates 5 previously-separate parallel dicts (all keyed by the
+    same bare arg name, all populated in the same scan loop, always read
+    back together at the same call sites below) into one dict of these
+    (complexity-audit Tier 2 finding, task #55). std_name/dim_names/
+    ownership_kind keep "first occurrence wins" semantics (None means "not
+    yet seen"); is_constituent/needs_gpu are True once any occurrence sets
+    them (never reset).
+    """
+
+    std_name: "str | None" = None
+    dim_names: "list | None" = None
+    is_constituent: bool = False
+    ownership_kind: object = None
+    needs_gpu: bool = False
+
+
 def _build_cap_var_map(
     meta_data, suite_descriptions, public_fns, instance_local_name: "str | None" = None,
 ) -> "tuple[dict, dict, list, dict]":
@@ -190,11 +211,7 @@ def _build_cap_var_map(
                 continue
             _, _, _ci_types, _ci_names = public_fns[_callee_cv]
             _grp_schemes = [_s.attributes["name"] for _s in _iter_schemes(_grp_cv)]
-            _sno_cv: dict = {}
-            _dno_cv: dict = {}
-            _cno_cv: dict = {}  # bare_name → True when constituent=True
-            _own_cv: dict = {}  # bare_name → ArgOwnershipKind
-            _msp_cv: dict = {}  # bare_name → True if ANY occurrence wants memory_space=device
+            _arg_info_cv: dict[str, _CVArgInfo] = {}
             for _scheme_cv in _grp_schemes:
                 _run_tbl_cv = _scheme_cv + "_run"
                 if _scheme_cv not in meta_data:
@@ -205,32 +222,34 @@ def _build_cap_var_map(
                     meta_data[_scheme_cv].getArgTable(_run_tbl_cv).getFunctionArguments()
                 ):
                     _bn_cv = _bare(_fa_cv.name)
-                    if _bn_cv not in _sno_cv and _fa_cv.hasAttr("standard_name"):
-                        _sno_cv[_bn_cv] = _fa_cv.getAttr("standard_name").lower()
-                    if _bn_cv not in _dno_cv and _fa_cv.hasAttr("dim_names"):
-                        _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
+                    _info_cv = _arg_info_cv.setdefault(_bn_cv, _CVArgInfo())
+                    if _info_cv.std_name is None and _fa_cv.hasAttr("standard_name"):
+                        _info_cv.std_name = _fa_cv.getAttr("standard_name").lower()
+                    if _info_cv.dim_names is None and _fa_cv.hasAttr("dim_names"):
+                        _info_cv.dim_names = _fa_cv.getAttr("dim_names")
                     if _fa_cv.hasAttr("constituent"):
-                        _cno_cv[_bn_cv] = True
-                    if _bn_cv not in _own_cv and _fa_cv.hasAttr("ownership_kind"):
-                        _own_cv[_bn_cv] = _fa_cv.getAttr("ownership_kind")
+                        _info_cv.is_constituent = True
+                    if _info_cv.ownership_kind is None and _fa_cv.hasAttr("ownership_kind"):
+                        _info_cv.ownership_kind = _fa_cv.getAttr("ownership_kind")
                     if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
-                        _msp_cv[_bn_cv] = True
+                        _info_cv.needs_gpu = True
             for _an_cv, _at_cv in zip(_ci_names, _ci_types):
                 _bn_cv = _bare(_an_cv)
+                _info_cv = _arg_info_cv.get(_bn_cv)
                 # Anything not classified CapScratch (HostMatched, Block, or
                 # unclassified) has nothing to promote here -- this single
                 # check replaces the old _matched_cv / CCPP_FRAMEWORK_STD_NAMES
                 # / CCPP_ERROR_STD_NAMES / host_block_std / host_var_map_lc
                 # exclusion-set checks, all folded into ownership_kind already.
-                if _own_cv.get(_bn_cv) != ccpp.ArgOwnershipKind.CapScratch:
+                if _info_cv is None or _info_cv.ownership_kind != ccpp.ArgOwnershipKind.CapScratch:
                     continue
-                _std_cv = _sno_cv.get(_bn_cv)
+                _std_cv = _info_cv.std_name
                 if not _std_cv:
                     continue
-                _needs_gpu_cv = _msp_cv.get(_bn_cv, False)
+                _needs_gpu_cv = _info_cv.needs_gpu
                 if _std_cv in FRAMEWORK_STD_NAME_TO_CAP_VAR:
                     _cap_name_cv = resolve_capscratch_cap_var_name(
-                        _std_cv, _cno_cv.get(_bn_cv, False)
+                        _std_cv, _info_cv.is_constituent
                     )
                     if _std_cv not in cap_var_map:
                         cap_var_map[_std_cv] = (_cv_ref(_cap_name_cv), None, None)
@@ -240,14 +259,14 @@ def _build_cap_var_map(
                 if _std_cv not in scratch_var_index:
                     _lc_cv = f"lc_{_bn_cv}"
                     _rank_cv = _rank_of(_at_cv)
-                    _dims_cv = _dno_cv.get(_bn_cv, [])
+                    _dims_cv = _info_cv.dim_names or []
                     _alloc_cv = ", ".join(
                         _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
                     ) if _dims_cv else "ncols, pver"
                     # Constituent-tendency scratch vars (constituent=True in meta)
                     # are pointer slices into lc_const_tend, not separate allocatables.
                     _resolved_cap_var_cv = resolve_capscratch_cap_var_name(
-                        _std_cv, _cno_cv.get(_bn_cv, False)
+                        _std_cv, _info_cv.is_constituent
                     )
                     _const_std_name = (
                         _std_cv[len("tendency_of_"):]

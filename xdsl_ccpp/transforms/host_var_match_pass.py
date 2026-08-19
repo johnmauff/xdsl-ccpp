@@ -20,6 +20,25 @@ from xdsl_ccpp.util.ccpp_conventions import (
 )
 
 
+def _parse_dim_names(arg_op) -> list:
+    """Parse an ArgumentOp's comma-separated dim_names attribute into a
+    stripped list of dimension standard names ([] if unset).
+
+    Extracted (complexity-audit Tier 2 finding, task #52) after this exact
+    shape was found duplicated for both scheme_arg_op and host_arg_op at
+    two sites in _check_compatibility's own dimension rank check (the
+    promotion-prefix branch and the equal-rank per-dimension-name branch).
+    Not shared with validate_fir.py's own similar-looking dim_names split
+    -- that one also lowercases and excludes digit-literal dims for a
+    different (standard-name-lookup) purpose; merging would change its
+    behavior.
+    """
+    return [
+        d.strip()
+        for d in (arg_op.dim_names.data.split(",") if arg_op.dim_names is not None else [])
+    ]
+
+
 @dataclass(frozen=True)
 class HostVariableMatchPass(ModulePass):
     """Annotate scheme ccpp.arg ops with their matched host model variable
@@ -168,22 +187,8 @@ class HostVariableMatchPass(ModulePass):
                 # host's dimensions (with framework substitutions allowed).
                 # The extra host dimensions become the "promoted" dimensions that
                 # the suite cap will loop over.
-                scheme_dim_names = [
-                    d.strip()
-                    for d in (
-                        scheme_arg_op.dim_names.data.split(",")
-                        if scheme_arg_op.dim_names is not None
-                        else []
-                    )
-                ]
-                host_dim_names = [
-                    d.strip()
-                    for d in (
-                        host_arg_op.dim_names.data.split(",")
-                        if host_arg_op.dim_names is not None
-                        else []
-                    )
-                ]
+                scheme_dim_names = _parse_dim_names(scheme_arg_op)
+                host_dim_names = _parse_dim_names(host_arg_op)
                 prefix_ok = True
                 for s_dim, h_dim in zip(scheme_dim_names, host_dim_names):
                     if dims_compatible(s_dim, h_dim):
@@ -215,22 +220,8 @@ class HostVariableMatchPass(ModulePass):
                 )
         elif scheme_rank > 0:
             # Check individual dimension names, allowing known valid substitutions
-            scheme_dim_names = [
-                d.strip()
-                for d in (
-                    scheme_arg_op.dim_names.data.split(",")
-                    if scheme_arg_op.dim_names is not None
-                    else []
-                )
-            ]
-            host_dim_names = [
-                d.strip()
-                for d in (
-                    host_arg_op.dim_names.data.split(",")
-                    if host_arg_op.dim_names is not None
-                    else []
-                )
-            ]
+            scheme_dim_names = _parse_dim_names(scheme_arg_op)
+            host_dim_names = _parse_dim_names(host_arg_op)
             for i, (s_dim, h_dim) in enumerate(
                 zip(scheme_dim_names, host_dim_names)
             ):

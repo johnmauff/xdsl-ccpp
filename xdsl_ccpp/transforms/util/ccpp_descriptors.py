@@ -1,8 +1,7 @@
-from enum import StrEnum, auto
-
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
+from xdsl_ccpp.util.ccpp_item import CCPPArgument, CCPPItem, CCPPType
 from xdsl_ccpp.util.visitor import Visitor
 
 
@@ -33,61 +32,6 @@ def collect_ddt_source_modules(ccpp_mod) -> dict:
         if src is not None:
             result[tbl_op.table_name.data] = src.data
     return result
-
-
-class CCPPType(StrEnum):
-    """Enumeration of the CCPP metadata table types.
-
-    Mirrors the ``type`` field in a ``[ccpp-table-properties]`` block:
-
-    - ``SCHEME``  — a physics parameterisation module
-    - ``MODULE``  — a host-model data module
-    - ``DDT``     — a derived data type definition
-    - ``HOST``    — a host-model subroutine cap
-    """
-
-    SCHEME = auto()
-    MODULE = auto()
-    DDT = auto()
-    HOST = auto()
-
-
-class CCPPItem:
-    """Generic key/value attribute container used as a base for all CCPP descriptors.
-
-    Stores an arbitrary set of named string attributes in a plain dict.  Subclasses
-    may restrict the allowed keys by passing ``allowed_keys`` to `setAttr`, and may
-    coerce values to richer types (e.g. converting ``"scheme"`` → `CCPPType.SCHEME`).
-    """
-
-    def __init__(self):
-        # Dict mapping attribute name → attribute value
-        self.attrs = {}
-
-    def setAttr(self, key, value, allowed_keys=None):
-        """Store an attribute, optionally validating the key against an allow-list.
-
-        Args:
-            key: Attribute name.
-            value: Attribute value (string or coerced type).
-            allowed_keys: If provided, ``key`` must be a member of this collection.
-        """
-        if allowed_keys is not None:
-            assert key in allowed_keys
-        self.attrs[key] = value
-
-    def getAttr(self, key):
-        """Return the value of an attribute, asserting it exists."""
-        assert key in self.attrs
-        return self.attrs[key]
-
-    def hasAttr(self, key):
-        """Return True if the named attribute has been set."""
-        return key in self.attrs
-
-    def getAttrs(self):
-        """Return the full attribute dict."""
-        return self.attrs
 
 
 class CCPPTableProperties(CCPPItem):
@@ -165,19 +109,6 @@ class CCPPArgumentTable(CCPPItem):
     def getFunctionArguments(self):
         """Return all `CCPPArgument` descriptors in declaration order."""
         return self.function_arguments.values()
-
-
-class CCPPArgument(CCPPItem):
-    """Descriptor for a single argument entry within a ``[ccpp-arg-table]`` block.
-
-    Stores the argument's name and any metadata attributes declared in the ``.meta``
-    file (e.g. ``standard_name``, ``type``, ``kind``, ``intent``, ``units``).
-    """
-
-    def __init__(self, name):
-        # The Fortran variable name for this argument
-        self.name = name
-        super().__init__()
 
 
 # ---------------------------------------------------------------------------
