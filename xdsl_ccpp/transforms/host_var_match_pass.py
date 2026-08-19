@@ -10,6 +10,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import TableTypeKind
+from xdsl_ccpp.transforms.util.cap_shared import iter_arg_tables
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
@@ -281,13 +282,9 @@ class HostVariableMatchPass(ModulePass):
         """
         model_var_index: dict = {}
 
-        for table_prop_op in ccpp_mod.body.ops:
-            if not isa(table_prop_op, ccpp.TablePropertiesOp):
-                continue
-            if table_prop_op.table_type.data not in (
-                TableTypeKind.Module, TableTypeKind.Host, TableTypeKind.DDT
-            ):
-                continue
+        for table_prop_op, arg_table_op in iter_arg_tables(
+            ccpp_mod, table_type=(TableTypeKind.Module, TableTypeKind.Host, TableTypeKind.DDT)
+        ):
             is_ddt = table_prop_op.table_type.data == TableTypeKind.DDT
             # True iff this variable is declared in a HOST-type table (as
             # opposed to MODULE or DDT) -- passed to physics via the host's
@@ -299,29 +296,26 @@ class HostVariableMatchPass(ModulePass):
             is_host_table = table_prop_op.table_type.data == TableTypeKind.Host
             array_layout_attr = table_prop_op.attributes.get("array_layout")
             array_layout = array_layout_attr.data if array_layout_attr is not None else None
-            for arg_table_op in table_prop_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    if arg_op.standard_name is not None:
-                        memory_space = (
-                            arg_op.memory_space.data
-                            if arg_op.memory_space is not None
-                            else None
-                        )
-                        model_var_index[arg_op.standard_name.data.lower()] = (
-                            arg_op.arg_name.data,
-                            table_prop_op.table_name.data,
-                            memory_space,
-                            arg_op,
-                            is_ddt,
-                            array_layout,
-                            is_host_table,
-                            arg_op.protected is not None,
-                            arg_op.active.data if arg_op.active is not None else None,
-                        )
+                if arg_op.standard_name is not None:
+                    memory_space = (
+                        arg_op.memory_space.data
+                        if arg_op.memory_space is not None
+                        else None
+                    )
+                    model_var_index[arg_op.standard_name.data.lower()] = (
+                        arg_op.arg_name.data,
+                        table_prop_op.table_name.data,
+                        memory_space,
+                        arg_op,
+                        is_ddt,
+                        array_layout,
+                        is_host_table,
+                        arg_op.protected is not None,
+                        arg_op.active.data if arg_op.active is not None else None,
+                    )
 
         # Variables produced (intent=out/inout) by a scheme's _init or _run
         # entry point with no host match are interstitial — they flow between
@@ -329,29 +323,22 @@ class HostVariableMatchPass(ModulePass):
         produced_in_init: dict = {}
         _INIT_SUFFIXES = ("_init", "_timestep_init", "_register", "_run")
 
-        for table_prop_op in ccpp_mod.body.ops:
-            if not isa(table_prop_op, ccpp.TablePropertiesOp):
-                continue
-            if table_prop_op.table_type.data != TableTypeKind.Scheme:
-                continue
+        for table_prop_op, arg_table_op in iter_arg_tables(ccpp_mod, table_type=TableTypeKind.Scheme):
             scheme_nm = table_prop_op.table_name.data
-            for arg_table_op in table_prop_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+            ep_name = arg_table_op.table_name.data
+            if not any(ep_name.endswith(s) for s in _INIT_SUFFIXES):
+                continue
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                ep_name = arg_table_op.table_name.data
-                if not any(ep_name.endswith(s) for s in _INIT_SUFFIXES):
+                if arg_op.standard_name is None:
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    if arg_op.standard_name is None:
-                        continue
-                    intent = (
-                        arg_op.intent.data if arg_op.intent is not None else None
-                    )
-                    if intent in ("out", "inout"):
-                        sn = arg_op.standard_name.data.lower()
-                        produced_in_init[sn] = (arg_op, scheme_nm, ep_name)
+                intent = (
+                    arg_op.intent.data if arg_op.intent is not None else None
+                )
+                if intent in ("out", "inout"):
+                    sn = arg_op.standard_name.data.lower()
+                    produced_in_init[sn] = (arg_op, scheme_nm, ep_name)
 
         return model_var_index, produced_in_init
 
@@ -365,89 +352,81 @@ class HostVariableMatchPass(ModulePass):
         """
         all_errors: list[str] = []
 
-        for table_prop_op in ccpp_mod.body.ops:
-            if not isa(table_prop_op, ccpp.TablePropertiesOp):
-                continue
-            if table_prop_op.table_type.data != TableTypeKind.Scheme:
-                continue
+        for table_prop_op, arg_table_op in iter_arg_tables(ccpp_mod, table_type=TableTypeKind.Scheme):
             scheme_name = table_prop_op.table_name.data
-
-            for arg_table_op in table_prop_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    if arg_op.standard_name is None:
-                        continue
-                    std_name = arg_op.standard_name.data.lower()
-                    if std_name in self._CCPP_INTERNAL:
-                        continue
-                    # Allocatable, advected, and constituent args are managed by
-                    # the CCPP framework — they never have a direct host var match.
-                    if arg_op.allocatable is not None:
-                        continue
-                    if arg_op.advected is not None:
-                        continue
-                    if arg_op.constituent is not None:
-                        continue
+                if arg_op.standard_name is None:
+                    continue
+                std_name = arg_op.standard_name.data.lower()
+                if std_name in self._CCPP_INTERNAL:
+                    continue
+                # Allocatable, advected, and constituent args are managed by
+                # the CCPP framework — they never have a direct host var match.
+                if arg_op.allocatable is not None:
+                    continue
+                if arg_op.advected is not None:
+                    continue
+                if arg_op.constituent is not None:
+                    continue
 
-                    if std_name in model_var_index:
-                        (
-                            local_name, module_name, model_memory_space, host_arg_op,
-                            is_ddt, array_layout, is_host_table, is_protected,
-                            active_expr,
-                        ) = model_var_index[std_name]
-                        arg_op.properties["model_var_name"]    = StringAttr(local_name)
-                        arg_op.properties["model_module_name"] = StringAttr(module_name)
-                        if model_memory_space is not None:
-                            arg_op.properties["model_var_memory_space"] = StringAttr(
-                                model_memory_space
-                            )
-                        if is_ddt:
-                            arg_op.properties["model_var_is_ddt"] = UnitAttr()
-                        if array_layout == "row_major":
-                            arg_op.properties["model_var_array_layout"] = StringAttr("row_major")
-                        if is_host_table:
-                            arg_op.properties["model_var_is_host_table"] = UnitAttr()
-                        if is_protected:
-                            arg_op.properties["model_var_is_protected"] = UnitAttr()
-                        if active_expr is not None:
-                            arg_op.properties["model_var_active_expr"] = StringAttr(active_expr)
-
-                        errors, warnings = self._check_compatibility(
-                            arg_op, host_arg_op, scheme_name
+                if std_name in model_var_index:
+                    (
+                        local_name, module_name, model_memory_space, host_arg_op,
+                        is_ddt, array_layout, is_host_table, is_protected,
+                        active_expr,
+                    ) = model_var_index[std_name]
+                    arg_op.properties["model_var_name"]    = StringAttr(local_name)
+                    arg_op.properties["model_module_name"] = StringAttr(module_name)
+                    if model_memory_space is not None:
+                        arg_op.properties["model_var_memory_space"] = StringAttr(
+                            model_memory_space
                         )
-                        all_errors.extend(errors)
-                        for w in warnings:
-                            print(f"Warning: {w}", file=sys.stderr)
+                    if is_ddt:
+                        arg_op.properties["model_var_is_ddt"] = UnitAttr()
+                    if array_layout == "row_major":
+                        arg_op.properties["model_var_array_layout"] = StringAttr("row_major")
+                    if is_host_table:
+                        arg_op.properties["model_var_is_host_table"] = UnitAttr()
+                    if is_protected:
+                        arg_op.properties["model_var_is_protected"] = UnitAttr()
+                    if active_expr is not None:
+                        arg_op.properties["model_var_active_expr"] = StringAttr(active_expr)
 
-                    elif arg_op.optional is None and arg_op.default_value is None:
-                        if std_name in produced_in_init:
-                            producer_arg, producer_scheme, producer_ep = (
-                                produced_in_init[std_name]
-                            )
-                            # DDT members are always host-matched, so reaching
-                            # this branch with model_var_is_ddt set is unreachable
-                            # in practice — guard against it explicitly.
-                            if "model_var_is_ddt" in producer_arg.properties:
-                                all_errors.append(
-                                    f"  Scheme '{scheme_name}': argument "
-                                    f"'{arg_op.arg_name.data}' "
-                                    f"(standard_name='{std_name}') is a DDT member "
-                                    f"produced by '{producer_scheme}' ({producer_ep}) "
-                                    f"and cannot be treated as a suite interstitial — "
-                                    f"DDT instance is host-owned."
-                                )
-                            else:
-                                arg_op.properties["is_interstitial"] = UnitAttr()
-                        else:
+                    errors, warnings = self._check_compatibility(
+                        arg_op, host_arg_op, scheme_name
+                    )
+                    all_errors.extend(errors)
+                    for w in warnings:
+                        print(f"Warning: {w}", file=sys.stderr)
+
+                elif arg_op.optional is None and arg_op.default_value is None:
+                    if std_name in produced_in_init:
+                        producer_arg, producer_scheme, producer_ep = (
+                            produced_in_init[std_name]
+                        )
+                        # DDT members are always host-matched, so reaching
+                        # this branch with model_var_is_ddt set is unreachable
+                        # in practice — guard against it explicitly.
+                        if "model_var_is_ddt" in producer_arg.properties:
                             all_errors.append(
                                 f"  Scheme '{scheme_name}': argument "
                                 f"'{arg_op.arg_name.data}' "
-                                f"(standard_name='{std_name}') has no matching "
-                                f"host model variable"
+                                f"(standard_name='{std_name}') is a DDT member "
+                                f"produced by '{producer_scheme}' ({producer_ep}) "
+                                f"and cannot be treated as a suite interstitial — "
+                                f"DDT instance is host-owned."
                             )
+                        else:
+                            arg_op.properties["is_interstitial"] = UnitAttr()
+                    else:
+                        all_errors.append(
+                            f"  Scheme '{scheme_name}': argument "
+                            f"'{arg_op.arg_name.data}' "
+                            f"(standard_name='{std_name}') has no matching "
+                            f"host model variable"
+                        )
 
         if all_errors:
             raise ValueError(

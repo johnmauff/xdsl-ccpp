@@ -10,7 +10,9 @@ ccpp_cap.py itself).
 
 from xdsl.dialects import arith, llvm, memref, scf
 from xdsl.dialects.builtin import StringAttr, i8
+from xdsl.utils.hints import isa
 
+from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, ArgOwnershipOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
@@ -20,6 +22,49 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_FRAMEWORK_STD_NAMES,
     is_dispatch_scalar_std_name,
 )
+
+
+def iter_arg_tables(ccpp_mod, table_type=None, table_name_in=None):
+    """Yield (table_prop_op, arg_table_op) pairs from ccpp_mod's own
+    TablePropertiesOp -> ArgumentTableOp 2-level IR walk.
+
+    table_type: an optional single TableTypeKind/raw-string value, or a
+        collection of them -- a table_prop_op is yielded from only if its
+        own table_type.data is (a member of) this.
+    table_name_in: an optional collection of table names -- a table_prop_op
+        is yielded from only if its own table_name.data is a member.
+
+    Extracted (complexity-audit Tier 2 finding, task #43) after this exact
+    2-level "isa(TablePropertiesOp) -> isa(ArgumentTableOp)" nesting was
+    found reimplemented at ~10 sites across arg_ownership_pass.py,
+    ccpp_cap.py, suite_kinds.py, and host_var_match_pass.py -- each site
+    differs only in *which* table_type/table_name it filters for, never in
+    the nesting/isa boilerplate itself. Deliberately stops one level short
+    of ArgumentOp: every site's own per-arg filter (standard_name presence,
+    entry-point-name suffix, intent, etc.) varies too much to fold into one
+    shared iterator without hiding real differences between call sites --
+    callers still walk `arg_table_op.body.ops` and filter ArgumentOps
+    themselves.
+
+    Not used for `ccpp_descriptors.py`'s own canonical descriptor-builder
+    traversal (the thing every *other* pass's `meta_data` dict is built
+    from in the first place) or `util/ir_utils.py`'s `build_host_var_index`
+    (already its own small, established shared helper) -- both deliberately
+    left alone.
+    """
+    if table_type is not None and not isinstance(table_type, (list, tuple, set, frozenset)):
+        table_type = (table_type,)
+    for table_prop_op in ccpp_mod.body.ops:
+        if not isa(table_prop_op, ccpp.TablePropertiesOp):
+            continue
+        if table_type is not None and table_prop_op.table_type.data not in table_type:
+            continue
+        if table_name_in is not None and table_prop_op.table_name.data not in table_name_in:
+            continue
+        for arg_table_op in table_prop_op.body.ops:
+            if not isa(arg_table_op, ccpp.ArgumentTableOp):
+                continue
+            yield table_prop_op, arg_table_op
 
 # Known framework standard names promoted to a fixed cap-owned module-scope
 # reference (an array's module variable name, or a scalar expression over
