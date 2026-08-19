@@ -148,6 +148,30 @@ def classify_arg_intent(
 
 
 @dataclass
+class _FnBodyAnalysis:
+    """Pure-analysis results for one ``func.FuncOp`` body, computed by
+    ``ftnPrintContext._analyze_fn_body`` before any printing begins.
+
+    input_names/output_names -- dummy-argument names, derived from
+        block-arg/alloca-result name hints (suffix-stripped).
+    output_ret_vals -- the AllocaOp results paired 1:1 with output_names.
+    inout_block_args -- block args echoed back in the function's own
+        ReturnOp -- these get intent(inout) rather than the default in.
+    local_allocas -- AllocaOps whose result is not itself a return value
+        (i.e. real local variables, not output arguments).
+    untracked_call_results -- (SSA value, hint) pairs for call results with
+        no CopyOp consumer -- these become anonymous local declarations.
+    """
+
+    input_names: list
+    output_names: list
+    output_ret_vals: list
+    inout_block_args: set
+    local_allocas: list
+    untracked_call_results: list
+
+
+@dataclass
 class ftnPrintContext:
     """Stateful context for printing MLIR IR as Fortran source text.
 
@@ -1596,14 +1620,10 @@ class ftnPrintContext:
             self.print(f"  end subroutine {fn_name}", prefix="  ")
         self.print("end interface", prefix="  ")
 
-    def _print_fn(
-        self,
-        fn_name: StringAttr,
-        bdy: Region,
-        ftyp: FunctionType,
-        bind_c: bool = False,
-    ):
-        """Print a func.FuncOp definition as a Fortran subroutine.
+    @staticmethod
+    def _analyze_fn_body(bdy: Region) -> _FnBodyAnalysis:
+        """Pure IR analysis for one func.FuncOp body, run before any printing
+        begins.
 
         Argument names are taken from the name_hint set on each block argument
         and alloca result during IR generation, falling back to positional
@@ -1703,7 +1723,268 @@ class ftnPrintContext:
                     )
                     untracked_call_results.append((res, hint))
 
-        args_str = ", ".join(input_names + output_names)
+        return _FnBodyAnalysis(
+            input_names=input_names,
+            output_names=output_names,
+            output_ret_vals=output_ret_vals,
+            inout_block_args=inout_block_args,
+            local_allocas=local_allocas,
+            untracked_call_results=untracked_call_results,
+        )
+
+    def _setup_bind_c_char_conversions(
+        self, inner: ftnPrintContext, bdy: Region, analysis: _FnBodyAnalysis, bind_c: bool,
+    ) -> list[tuple[str, str, str]]:
+        """BIND(C) character conversion: re-map each character parameter's SSA
+        value to a Fortran-local ``_f`` variable so that trim() and calls to
+        non-BIND(C) suite-cap routines use a proper scalar character string
+        instead of the raw c_char(*) assumed-size array. Mutates
+        inner.variables for every character arg found. Conversion loops for
+        the returned list are emitted separately, by
+        _print_c_to_f_char_conversions/_print_f_to_c_char_conversions.
+
+        Returns [] (no-op) when bind_c is False.
+        """
+        bind_c_char_conversions: list[tuple[str, str, str]] = []
+        if not bind_c:
+            return bind_c_char_conversions
+        for arg, arg_name in zip(bdy.block.args, analysis.input_names):
+            if inner.mlir_type_to_ftn_type(arg.type).startswith("character"):
+                ftn_local = f"{arg_name}_f"
+                inner.variables[arg] = ftn_local
+                conv_intent = "inout" if arg in analysis.inout_block_args else "in"
+                bind_c_char_conversions.append((arg_name, ftn_local, conv_intent))
+        for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
+            if inner.mlir_type_to_ftn_type(ret_val.type).startswith("character"):
+                ftn_local = f"{out_name}_f"
+                inner.variables[ret_val] = ftn_local
+                bind_c_char_conversions.append((out_name, ftn_local, "out"))
+        return bind_c_char_conversions
+
+    def _declare_fn_arguments(
+        self, inner: ftnPrintContext, bdy: Region, analysis: _FnBodyAnalysis, bind_c: bool,
+    ) -> None:
+        """Print the subroutine's own dummy-argument declarations: intent(in)/
+        intent(inout) for inputs, intent(out) for outputs (always scalars)."""
+        # Declare input arguments with intent(in) or intent(inout).
+        # Array block args (dynamic memref) are always intent(inout): the host
+        # provides the buffer and the scheme may write to it in-place.
+        # Exception: memref<memref<?xi8>> is an allocatable character array
+        # passed intent(out) — the callee allocates and fills it.
+        for arg, arg_name in zip(bdy.block.args, analysis.input_names):
+            # Check the original name_hint for the __alloc / __opt / __in suffix
+            is_alloc = (arg.name_hint is not None
+                        and arg.name_hint.endswith("__alloc"))
+            is_opt   = (arg.name_hint is not None
+                        and arg.name_hint.endswith("__opt"))
+            is_in    = (arg.name_hint is not None
+                        and arg.name_hint.endswith("__in"))
+            type_str = inner.mlir_type_to_ftn_type(arg.type)
+            dim_suffix = inner._ftn_dim_suffix(arg.type)
+            is_allocatable_char = ftnPrintContext._is_allocatable_char(arg.type)
+            intent = classify_arg_intent(
+                is_allocatable_char=is_allocatable_char,
+                is_alloc=is_alloc,
+                is_in=is_in,
+                has_array_dims=bool(dim_suffix),
+                is_inout_return=arg in analysis.inout_block_args,
+            )
+            if is_allocatable_char or is_alloc:
+                type_str = type_str + ", allocatable"
+            if bind_c:
+                inner.print(inner._bind_c_arg_decl_line(arg.type, arg_name, intent, is_opt))
+            else:
+                if is_opt:
+                    type_str = type_str + ", optional"
+                if dim_suffix and not is_alloc and not ftnPrintContext._is_allocatable_char(arg.type):
+                    type_str = type_str + ", target"
+                inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
+
+        # Declare output arguments with intent(out) (always scalars)
+        for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
+            type_str = inner.mlir_type_to_ftn_type(ret_val.type)
+            dim_suffix = inner._ftn_dim_suffix(ret_val.type)
+            if bind_c:
+                inner.print(inner._bind_c_arg_decl_line(ret_val.type, out_name, "out"))
+            else:
+                if dim_suffix:
+                    type_str = type_str + ", target"
+                inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
+
+    def _declare_fn_locals(
+        self,
+        inner: ftnPrintContext,
+        bdy: Region,
+        analysis: _FnBodyAnalysis,
+        bind_c_char_conversions: list[tuple[str, str, str]],
+    ) -> None:
+        """Print declarations for every local variable the subroutine body
+        itself needs: non-returned allocas, kind-cast/unit-convert/
+        vertical-flip temporaries, row-major transpose temporaries, anonymous
+        locals for untracked call results, and (BIND(C) only) the character
+        marshaling buffers + loop counter."""
+        # Declare local variables (non-returned allocas, e.g. computed scalars).
+        #
+        # Two or more sibling subcycles (nested or not) each allocate their
+        # own loop-count variable with the same "ccpp_loop_cnt" name_hint
+        # (see suite_cap.py's _build_call_ops) -- de-duplicate through
+        # _get_variable_name_for (the same mechanism the do-loop body's own
+        # references already use) rather than printing the raw name_hint
+        # directly, which would emit the identical declaration line twice
+        # (a Fortran compile error) whenever that collision happens.
+        for alloca_op in analysis.local_allocas:
+            var_name = (
+                alloca_op.memref.name_hint
+                if alloca_op.memref.name_hint is not None
+                else f"local_{id(alloca_op)}"
+            )
+            is_alloc = var_name.endswith("__alloc")
+            hint = var_name[: -len("__alloc")] if is_alloc else var_name
+            ftn_name = inner._get_variable_name_for(alloca_op.memref, hint=hint)
+            type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
+            if is_alloc:
+                rank = len(alloca_op.memref.type.shape.data)
+                dim_suffix = "(" + ", ".join(":" for _ in range(rank)) + ")"
+                inner.print(f"{type_str}, allocatable :: {ftn_name}{dim_suffix}")
+            else:
+                inner.print(f"{type_str} :: {ftn_name}")
+
+        # Declare kind-cast and unit-convert temporaries. These are usually
+        # top-level ops in suite caps (the suite-boundary conversion), but
+        # the per-call, cross-scheme-divergent marshaling in suite_cap.py's
+        # generateSchemeSubroutineCallOps can nest them inside scf.IfOps
+        # and subcycle loop bodies -- walk() finds both.
+        for op in bdy.block.walk():
+            if isa(op, CCPPKindCastOp):
+                # Two or more per-call marshaling instances (see
+                # suite_cap.py's generateSchemeSubroutineCallOps) can share
+                # the same name_hint -- e.g. one scheme's own call and
+                # another scheme's own call both adapting the same shared
+                # argument -- de-duplicate through _get_variable_name_for
+                # the same way local_allocas above does, rather than
+                # assigning the raw name_hint directly, which would print
+                # the identical declaration twice.
+                hint = (
+                    op.res.name_hint
+                    if op.res.name_hint is not None
+                    else f"kind_cast_{id(op)}"
+                )
+                var_name = inner._get_variable_name_for(op.res, hint=hint)
+                type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                if dim_suffix:
+                    inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+                else:
+                    inner.print(f"{type_str} :: {var_name}")
+            elif isa(op, CCPPUnitConvertOp):
+                # Local-copy conversion: declare a temp in the same type as source.
+                # Same de-duplication reasoning as CCPPKindCastOp above.
+                hint = (
+                    op.res.name_hint
+                    if op.res.name_hint is not None
+                    else f"unit_conv_{id(op)}"
+                )
+                var_name = inner._get_variable_name_for(op.res, hint=hint)
+                type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                if dim_suffix:
+                    inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+                else:
+                    inner.print(f"{type_str} :: {var_name}")
+            elif isa(op, CCPPVerticalFlipOp):
+                # Always an array (a vertical flip is meaningless for a
+                # scalar). Same de-duplication reasoning as above.
+                hint = (
+                    op.res.name_hint
+                    if op.res.name_hint is not None
+                    else f"vertical_flip_{id(op)}"
+                )
+                var_name = inner._get_variable_name_for(op.res, hint=hint)
+                type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+
+        # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
+        for op in bdy.block.walk():
+            if isa(op, CCPPRowMajorConvertOp):
+                var_name = (
+                    op.res.name_hint
+                    if op.res.name_hint is not None
+                    else f"row_major_col_{id(op)}"
+                )
+                inner.variables[op.res] = var_name
+                type_str = inner.mlir_type_to_ftn_type(op.res.type)
+                dim_suffix = inner._ftn_dim_suffix(op.res.type)
+                if dim_suffix:
+                    inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+                else:
+                    inner.print(f"{type_str} :: {var_name}")
+
+        # Declare anonymous locals for call results that have no CopyOp consumer
+        for res, var_name in analysis.untracked_call_results:
+            inner.variables[res] = var_name
+            type_str = inner.mlir_type_to_ftn_type(res.type)
+            dim_suffix = inner._ftn_dim_suffix(res.type)
+            inner.print(f"{type_str} :: {var_name}{dim_suffix}")
+
+        # Declare Fortran-local character(len=512) temps + loop counter for
+        # the C↔Fortran string conversions emitted below.
+        if bind_c_char_conversions:
+            inner.print("integer :: ccpp_c2f_i")
+            for _, ftn_local, _ in bind_c_char_conversions:
+                inner.print(f"character(len=512) :: {ftn_local}")
+
+    def _print_c_to_f_char_conversions(
+        self, inner: ftnPrintContext, bind_c_char_conversions: list[tuple[str, str, str]],
+    ) -> None:
+        """Emit C→Fortran conversion loops for input/inout BIND(C) character args."""
+        for c_name, ftn_local, conv_intent in bind_c_char_conversions:
+            if conv_intent in ("in", "inout"):
+                inner.print(f"{ftn_local} = ' '")
+                with inner.descend(
+                    f"do ccpp_c2f_i = 1, len({ftn_local})", "end do"
+                ) as loop:
+                    loop.print(f"if ({c_name}(ccpp_c2f_i) == c_null_char) exit")
+                    loop.print(
+                        f"{ftn_local}(ccpp_c2f_i:ccpp_c2f_i) = {c_name}(ccpp_c2f_i)"
+                    )
+            else:
+                inner.print(f"{ftn_local} = ' '")
+
+    def _print_f_to_c_char_conversions(
+        self, inner: ftnPrintContext, bind_c_char_conversions: list[tuple[str, str, str]],
+    ) -> None:
+        """Emit Fortran→C conversion loops for output/inout BIND(C) character args."""
+        for c_name, ftn_local, conv_intent in bind_c_char_conversions:
+            if conv_intent in ("out", "inout"):
+                with inner.descend(
+                    f"do ccpp_c2f_i = 1, len_trim({ftn_local})", "end do"
+                ) as loop:
+                    loop.print(
+                        f"{c_name}(ccpp_c2f_i) = {ftn_local}(ccpp_c2f_i:ccpp_c2f_i)"
+                    )
+                inner.print(f"{c_name}(len_trim({ftn_local})+1) = c_null_char")
+
+    def _print_fn(
+        self,
+        fn_name: StringAttr,
+        bdy: Region,
+        ftyp: FunctionType,
+        bind_c: bool = False,
+    ):
+        """Print a func.FuncOp definition as a Fortran subroutine.
+
+        Delegates to _analyze_fn_body for the pure IR analysis (arg names,
+        ReturnOp inout/output split, local allocas, untracked call results),
+        then _setup_bind_c_char_conversions/_declare_fn_arguments/
+        _declare_fn_locals to print the declaration preamble, then wraps the
+        actual body print (print_block) with the BIND(C) character
+        marshaling loops (_print_c_to_f_char_conversions/
+        _print_f_to_c_char_conversions).
+        """
+        analysis = self._analyze_fn_body(bdy)
+
+        args_str = ", ".join(analysis.input_names + analysis.output_names)
         if bind_c:
             start_signature = (
                 f"\nsubroutine {fn_name.data}({args_str})"
@@ -1715,215 +1996,25 @@ class ftnPrintContext:
 
         with self.descend(start_signature, end_signature) as inner:
             # Register input block args so downstream ops can look them up by name
-            for arg, arg_name in zip(bdy.block.args, input_names):
+            for arg, arg_name in zip(bdy.block.args, analysis.input_names):
                 inner.variables[arg] = arg_name
 
             # Register output alloca results so StoreOp and CallOp can resolve them
-            for ret_val, out_name in zip(output_ret_vals, output_names):
+            for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
                 inner.variables[ret_val] = out_name
 
-            # BIND(C) character conversion: re-map each character parameter's SSA value
-            # to a Fortran-local _f variable so that trim() and calls to non-BIND(C)
-            # suite-cap routines use a proper scalar character string instead of the
-            # raw c_char(*) assumed-size array.  Conversion loops are emitted below.
-            bind_c_char_conversions: list[tuple[str, str, str]] = []
-            if bind_c:
-                for arg, arg_name in zip(bdy.block.args, input_names):
-                    if inner.mlir_type_to_ftn_type(arg.type).startswith("character"):
-                        ftn_local = f"{arg_name}_f"
-                        inner.variables[arg] = ftn_local
-                        conv_intent = "inout" if arg in inout_block_args else "in"
-                        bind_c_char_conversions.append((arg_name, ftn_local, conv_intent))
-                for ret_val, out_name in zip(output_ret_vals, output_names):
-                    if inner.mlir_type_to_ftn_type(ret_val.type).startswith("character"):
-                        ftn_local = f"{out_name}_f"
-                        inner.variables[ret_val] = ftn_local
-                        bind_c_char_conversions.append((out_name, ftn_local, "out"))
+            bind_c_char_conversions = self._setup_bind_c_char_conversions(
+                inner, bdy, analysis, bind_c
+            )
 
-            # Declare input arguments with intent(in) or intent(inout).
-            # Array block args (dynamic memref) are always intent(inout): the host
-            # provides the buffer and the scheme may write to it in-place.
-            # Exception: memref<memref<?xi8>> is an allocatable character array
-            # passed intent(out) — the callee allocates and fills it.
-            for arg, arg_name in zip(bdy.block.args, input_names):
-                # Check the original name_hint for the __alloc / __opt / __in suffix
-                is_alloc = (arg.name_hint is not None
-                            and arg.name_hint.endswith("__alloc"))
-                is_opt   = (arg.name_hint is not None
-                            and arg.name_hint.endswith("__opt"))
-                is_in    = (arg.name_hint is not None
-                            and arg.name_hint.endswith("__in"))
-                type_str = inner.mlir_type_to_ftn_type(arg.type)
-                dim_suffix = inner._ftn_dim_suffix(arg.type)
-                is_allocatable_char = ftnPrintContext._is_allocatable_char(arg.type)
-                intent = classify_arg_intent(
-                    is_allocatable_char=is_allocatable_char,
-                    is_alloc=is_alloc,
-                    is_in=is_in,
-                    has_array_dims=bool(dim_suffix),
-                    is_inout_return=arg in inout_block_args,
-                )
-                if is_allocatable_char or is_alloc:
-                    type_str = type_str + ", allocatable"
-                if bind_c:
-                    inner.print(inner._bind_c_arg_decl_line(arg.type, arg_name, intent, is_opt))
-                else:
-                    if is_opt:
-                        type_str = type_str + ", optional"
-                    if dim_suffix and not is_alloc and not ftnPrintContext._is_allocatable_char(arg.type):
-                        type_str = type_str + ", target"
-                    inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
-
-            # Declare output arguments with intent(out) (always scalars)
-            for ret_val, out_name in zip(output_ret_vals, output_names):
-                type_str = inner.mlir_type_to_ftn_type(ret_val.type)
-                dim_suffix = inner._ftn_dim_suffix(ret_val.type)
-                if bind_c:
-                    inner.print(inner._bind_c_arg_decl_line(ret_val.type, out_name, "out"))
-                else:
-                    if dim_suffix:
-                        type_str = type_str + ", target"
-                    inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
-
-            # Declare local variables (non-returned allocas, e.g. computed scalars).
-            #
-            # Two or more sibling subcycles (nested or not) each allocate their
-            # own loop-count variable with the same "ccpp_loop_cnt" name_hint
-            # (see suite_cap.py's _build_call_ops) -- de-duplicate through
-            # _get_variable_name_for (the same mechanism the do-loop body's own
-            # references already use) rather than printing the raw name_hint
-            # directly, which would emit the identical declaration line twice
-            # (a Fortran compile error) whenever that collision happens.
-            for alloca_op in local_allocas:
-                var_name = (
-                    alloca_op.memref.name_hint
-                    if alloca_op.memref.name_hint is not None
-                    else f"local_{id(alloca_op)}"
-                )
-                is_alloc = var_name.endswith("__alloc")
-                hint = var_name[: -len("__alloc")] if is_alloc else var_name
-                ftn_name = inner._get_variable_name_for(alloca_op.memref, hint=hint)
-                type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
-                if is_alloc:
-                    rank = len(alloca_op.memref.type.shape.data)
-                    dim_suffix = "(" + ", ".join(":" for _ in range(rank)) + ")"
-                    inner.print(f"{type_str}, allocatable :: {ftn_name}{dim_suffix}")
-                else:
-                    inner.print(f"{type_str} :: {ftn_name}")
-
-            # Declare kind-cast and unit-convert temporaries. These are usually
-            # top-level ops in suite caps (the suite-boundary conversion), but
-            # the per-call, cross-scheme-divergent marshaling in suite_cap.py's
-            # generateSchemeSubroutineCallOps can nest them inside scf.IfOps
-            # and subcycle loop bodies -- walk() finds both.
-            for op in bdy.block.walk():
-                if isa(op, CCPPKindCastOp):
-                    # Two or more per-call marshaling instances (see
-                    # suite_cap.py's generateSchemeSubroutineCallOps) can share
-                    # the same name_hint -- e.g. one scheme's own call and
-                    # another scheme's own call both adapting the same shared
-                    # argument -- de-duplicate through _get_variable_name_for
-                    # the same way local_allocas above does, rather than
-                    # assigning the raw name_hint directly, which would print
-                    # the identical declaration twice.
-                    hint = (
-                        op.res.name_hint
-                        if op.res.name_hint is not None
-                        else f"kind_cast_{id(op)}"
-                    )
-                    var_name = inner._get_variable_name_for(op.res, hint=hint)
-                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
-                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
-                    if dim_suffix:
-                        inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
-                    else:
-                        inner.print(f"{type_str} :: {var_name}")
-                elif isa(op, CCPPUnitConvertOp):
-                    # Local-copy conversion: declare a temp in the same type as source.
-                    # Same de-duplication reasoning as CCPPKindCastOp above.
-                    hint = (
-                        op.res.name_hint
-                        if op.res.name_hint is not None
-                        else f"unit_conv_{id(op)}"
-                    )
-                    var_name = inner._get_variable_name_for(op.res, hint=hint)
-                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
-                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
-                    if dim_suffix:
-                        inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
-                    else:
-                        inner.print(f"{type_str} :: {var_name}")
-                elif isa(op, CCPPVerticalFlipOp):
-                    # Always an array (a vertical flip is meaningless for a
-                    # scalar). Same de-duplication reasoning as above.
-                    hint = (
-                        op.res.name_hint
-                        if op.res.name_hint is not None
-                        else f"vertical_flip_{id(op)}"
-                    )
-                    var_name = inner._get_variable_name_for(op.res, hint=hint)
-                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
-                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
-                    inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
-
-            # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
-            for op in bdy.block.walk():
-                if isa(op, CCPPRowMajorConvertOp):
-                    var_name = (
-                        op.res.name_hint
-                        if op.res.name_hint is not None
-                        else f"row_major_col_{id(op)}"
-                    )
-                    inner.variables[op.res] = var_name
-                    type_str = inner.mlir_type_to_ftn_type(op.res.type)
-                    dim_suffix = inner._ftn_dim_suffix(op.res.type)
-                    if dim_suffix:
-                        inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
-                    else:
-                        inner.print(f"{type_str} :: {var_name}")
-
-            # Declare anonymous locals for call results that have no CopyOp consumer
-            for res, var_name in untracked_call_results:
-                inner.variables[res] = var_name
-                type_str = inner.mlir_type_to_ftn_type(res.type)
-                dim_suffix = inner._ftn_dim_suffix(res.type)
-                inner.print(f"{type_str} :: {var_name}{dim_suffix}")
-
-            # Declare Fortran-local character(len=512) temps + loop counter for
-            # the C↔Fortran string conversions emitted below.
-            if bind_c_char_conversions:
-                inner.print("integer :: ccpp_c2f_i")
-                for _, ftn_local, _ in bind_c_char_conversions:
-                    inner.print(f"character(len=512) :: {ftn_local}")
+            self._declare_fn_arguments(inner, bdy, analysis, bind_c)
+            self._declare_fn_locals(inner, bdy, analysis, bind_c_char_conversions)
 
             inner.print("")
 
-            # Emit C→Fortran conversion loops for input/inout character args.
-            for c_name, ftn_local, conv_intent in bind_c_char_conversions:
-                if conv_intent in ("in", "inout"):
-                    inner.print(f"{ftn_local} = ' '")
-                    with inner.descend(
-                        f"do ccpp_c2f_i = 1, len({ftn_local})", "end do"
-                    ) as loop:
-                        loop.print(f"if ({c_name}(ccpp_c2f_i) == c_null_char) exit")
-                        loop.print(
-                            f"{ftn_local}(ccpp_c2f_i:ccpp_c2f_i) = {c_name}(ccpp_c2f_i)"
-                        )
-                else:
-                    inner.print(f"{ftn_local} = ' '")
-
+            self._print_c_to_f_char_conversions(inner, bind_c_char_conversions)
             inner.print_block(bdy.block)
-
-            # Emit Fortran→C conversion loops for output/inout character args.
-            for c_name, ftn_local, conv_intent in bind_c_char_conversions:
-                if conv_intent in ("out", "inout"):
-                    with inner.descend(
-                        f"do ccpp_c2f_i = 1, len_trim({ftn_local})", "end do"
-                    ) as loop:
-                        loop.print(
-                            f"{c_name}(ccpp_c2f_i) = {ftn_local}(ccpp_c2f_i:ccpp_c2f_i)"
-                        )
-                    inner.print(f"{c_name}(len_trim({ftn_local})+1) = c_null_char")
+            self._print_f_to_c_char_conversions(inner, bind_c_char_conversions)
 
     def _emit_acc_directive(
         self, keyword: str, clauses: list, *, sentinel: str = "!$acc"

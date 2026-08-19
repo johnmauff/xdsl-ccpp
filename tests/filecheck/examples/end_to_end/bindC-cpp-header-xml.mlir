@@ -12,9 +12,13 @@
 // CHECK:      extern "C" {
 
 // Register: suite_name is const char* (intent in), outputs are char*/int*.
+// Character params carry a comment documenting the caller-allocated buffer
+// size contract -- xdsl-ccpp's own C++ interop layer is not part of the
+// (Fortran-only) CCPP spec, so this generated comment is the sole
+// documentation of that contract (Copilot review, PR #80).
 // CHECK-LABEL: void ccpp_register(
-// CHECK:          const char*      suite_name,
-// CHECK-NEXT:     char*            errmsg,
+// CHECK:          const char*      suite_name,  /* null-terminated string, any length */
+// CHECK-NEXT:     char*            errmsg,  /* caller must allocate >= 513 bytes (512 + null terminator) */
 // CHECK-NEXT:     int*             errflg
 
 // Initialize: same character/integer pattern.

@@ -121,6 +121,38 @@ def _rank_comment(mlir_type: object) -> str:
     return ""
 
 
+def _char_buffer_comment(mlir_type: object, intent: str) -> str:
+    """Return a comment documenting the required caller-allocated buffer
+    size for a character (char*) BIND(C) parameter.
+
+    The CCPP specification only covers Fortran host models -- there is no
+    external convention governing how a C++ caller's buffer must be sized,
+    so xdsl-ccpp's own generated header is the sole documentation of the
+    actual contract here. For intent(out)/intent(inout), the Fortran side
+    writes a null terminator immediately after the string content, so the
+    caller's buffer must be declared_len + 1 bytes even when the string
+    fully fills the declared length (see Copilot review, PR #80: the
+    generated Fortran code has no way to verify the caller followed this,
+    since the BIND(C) parameter is an assumed-size c_char(*) with no size
+    info at all -- getting this documented, not just assumed, is the fix).
+    For intent(in), the string must be null-terminated within declared_len
+    characters (the Fortran side reads up to declared_len bytes looking for
+    the terminator).
+
+    A dynamic (assumed-length, ``character(len=*)``) declared_len -- e.g.
+    the suite/suite-part name arguments -- has no fixed bound to report; the
+    caller may pass a string of any length as long as it's null-terminated.
+    """
+    if not _is_char_memref(mlir_type):
+        return ""
+    declared_len = list(mlir_type.shape)[-1].data
+    if declared_len == DYNAMIC_INDEX:
+        return "  /* null-terminated string, any length */"
+    if intent == "in":
+        return f"  /* null-terminated string, max {declared_len} chars */"
+    return f"  /* caller must allocate >= {declared_len + 1} bytes ({declared_len} + null terminator) */"
+
+
 def _intent_from_arg(arg: object, inout_block_args: set) -> str:
     """Return the intent for a block argument via print_ftn.py's shared
     classify_arg_intent -- see that function's own docstring for why this
@@ -168,11 +200,13 @@ def _fn_params(fn_op: func.FuncOp) -> list[tuple[str, str, str]]:
         else:
             name = hint
         intent = _intent_from_arg(arg, inout_block_args)
-        params.append((name, _cpp_type(arg.type, intent), _rank_comment(arg.type)))
+        comment = _rank_comment(arg.type) or _char_buffer_comment(arg.type, intent)
+        params.append((name, _cpp_type(arg.type, intent), comment))
 
     for ret_val in output_rets:
         name = ret_val.name_hint or f"out_{len(params)}"
-        params.append((name, _cpp_type(ret_val.type, "out"), _rank_comment(ret_val.type)))
+        comment = _rank_comment(ret_val.type) or _char_buffer_comment(ret_val.type, "out")
+        params.append((name, _cpp_type(ret_val.type, "out"), comment))
 
     return params
 
