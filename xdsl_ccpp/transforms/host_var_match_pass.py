@@ -10,7 +10,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import TableTypeKind
-from xdsl_ccpp.transforms.util.cap_shared import iter_arg_tables
+from xdsl_ccpp.transforms.util.cap_shared import _CONSTITUENT_DDT_NAME, iter_arg_tables
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
@@ -365,6 +365,36 @@ class HostVariableMatchPass(ModulePass):
                 # Allocatable, advected, and constituent args are managed by
                 # the CCPP framework — they never have a direct host var match.
                 if arg_op.allocatable is not None:
+                    # A ccpp_constituent_properties_t registration array is
+                    # only meaningful in a scheme's _register entry point --
+                    # that's the one phase constituent_cap.py's own
+                    # _collect_constituent_info scan (is_register =
+                    # table_name.endswith("_register")) and suite_variable_model.py's
+                    # Case-1-adjacent allocatable-skip both assume. Outside
+                    # _register, this arg is invisible to both of those (never
+                    # suite-owned, never collected as a dynamic constituent
+                    # array) and would otherwise be silently dropped --
+                    # or worse, silently reused: real capgen-v1 has a
+                    # deliberate negative test for exactly this
+                    # (examples/advection/dlc_liq/cld_suite_error.xml) because
+                    # a bare local name shared with another scheme's own
+                    # _register-phase constituent arg (e.g. both named
+                    # "dyn_const") would otherwise let this arg get wired to
+                    # that unrelated scheme's already-registered array in the
+                    # wrong lifecycle phase.
+                    if (
+                        arg_op.arg_type.data == _CONSTITUENT_DDT_NAME
+                        and not arg_table_op.table_name.data.endswith("_register")
+                    ):
+                        all_errors.append(
+                            f"  Scheme '{scheme_name}': argument "
+                            f"'{arg_op.arg_name.data}' (standard_name="
+                            f"'{std_name}') declares an allocatable "
+                            f"'{_CONSTITUENT_DDT_NAME}' in entry point "
+                            f"'{arg_table_op.table_name.data}' — dynamic "
+                            f"constituent registration is only valid in a "
+                            f"scheme's _register phase."
+                        )
                     continue
                 if arg_op.advected is not None:
                     continue

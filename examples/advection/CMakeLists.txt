@@ -1,11 +1,15 @@
 #------------------------------------------------------------------------------
 #
-# advection: a cloud advection example with four schemes, one of which
-# (apply_constituent_tendencies) is invoked twice in the suite. Also GPU-
-# capable via generated OpenACC directives ("--directive acc") -- no
-# upstream capgen-v1 end-to-end-tests example exercises --directive, so
-# this file is written from scratch, like examples/tinyddt's, rather than
-# ported from a real upstream original.
+# advection: a cloud advection example with five schemes, one of which
+# (apply_constituent_tendencies) is invoked twice in the suite. cld_shadow
+# is ported from real capgen-v1's own end-to-end-tests/advection (GitHub
+# issues #772/#774): its own local arg names ("cld_ice_array", "ncols")
+# reuse names already used elsewhere in the group cap for unrelated
+# standard_names, exercising the group cap's local-name-collision handling.
+# Also GPU-capable via generated OpenACC directives ("--directive acc") --
+# no upstream capgen-v1 end-to-end-tests example exercises --directive, so
+# this file's own CMake plumbing is written from scratch, like
+# examples/tinyddt's, rather than ported from a real upstream original.
 #
 # Cap generation always passes --directive acc, regardless of target
 # architecture: the generated Fortran source's "!$acc" comments are inert
@@ -31,7 +35,7 @@ set(ARCH "CPU" CACHE STRING
     "examples/advection target architecture: CPU or GPU (OpenACC, requires nvfortran)")
 set_property(CACHE ARCH PROPERTY STRINGS CPU GPU)
 
-set(SCHEME_FILES "const_indices" "cld_liq" "apply_constituent_tendencies" "cld_ice")
+set(SCHEME_FILES "const_indices" "cld_liq" "apply_constituent_tendencies" "cld_ice" "cld_shadow")
 set(HOST_FILES   "test_host_data" "test_host_mod")
 set(SUITE_FILES  "cld_suite.xml")
 set(HOST "test_host")

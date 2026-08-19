@@ -139,6 +139,10 @@ class SuiteVariableModel:
         self._std_key = std_key_fn
         self._suite_owned: dict[str, SuiteVarEntry] = {}
         self._errors: list[str] = []
+        # Bare names this suite's own schemes host-match to a MODULE-type
+        # (not HOST-type) host variable -- see _process_table's Case 1 and
+        # _resolve_name_collisions. Populated during _build.
+        self._module_matched_names: set = set()
 
         # Ordered list of (scheme_name, group_name) pairs across the suite.
         #
@@ -241,9 +245,27 @@ class SuiteVariableModel:
         harmless in each scheme's own signature, but suite-owned variables
         are all declared in one shared module scope, so an unqualified
         collision would emit two conflicting declarations of the same
-        identifier. Only the colliding subset is touched -- every
-        non-colliding name (the overwhelming majority) is emitted exactly as
-        the scheme author wrote it, unchanged from today's behavior.
+        identifier. A SuiteOwned local_name that happens to equal a bare
+        name this same suite host-matches to a MODULE-type variable is the
+        same class of collision: that name is *also* declared in the same
+        module scope, via a bare ``use <module>, only: <name>`` (found by
+        regenerating examples/advection with a ported
+        interstitial-name-collision scheme, cld_shadow, whose own scratch
+        output arg is coincidentally named "ncols" -- the same bare name as
+        the host's own horizontal-dimension module variable, use-associated
+        by that same name in the very same suite-cap module).
+        self._module_matched_names is scoped to *this suite's own* host
+        matches (not every MODULE var in the whole run's metadata) --
+        e.g. examples/capgen's environ_conditions scheme produces its own
+        allocatable "model_times", which never host-matches (allocatable
+        args are always framework-managed, see _process_table's Case 1 vs.
+        the allocatable check just below it) despite sharing a standard_name
+        with test_host_mod's own unrelated "model_times"; that pair lives in
+        two separate Fortran modules and was never a real collision, so a
+        blanket whole-metadata scan would have falsely renamed it.
+        Only the colliding subset is touched -- every non-colliding name
+        (the overwhelming majority) is emitted exactly as the scheme author
+        wrote it, unchanged from today's behavior.
 
         Processes colliding groups in sorted (local_name, producing_scheme)
         order so the qualified names are a pure function of the suite's own
@@ -256,7 +278,10 @@ class SuiteVariableModel:
 
         for local_name, entries in sorted(by_local_name.items()):
             distinct_std_names = {e.standard_name for e in entries}
-            if len(distinct_std_names) <= 1:
+            if (
+                len(distinct_std_names) <= 1
+                and local_name not in self._module_matched_names
+            ):
                 continue
             for entry in sorted(entries, key=lambda e: e.producing_scheme):
                 entry.local_name = f"{entry.producing_scheme}_{local_name}"
@@ -279,6 +304,11 @@ class SuiteVariableModel:
 
             # Case 1: host-matched variable — not a suite variable.
             if arg.hasAttr("model_var_name"):
+                # Record MODULE-type matches only (not HOST-type, which are
+                # passed through the call chain, never bare `use`-associated
+                # at suite-cap module scope) -- see _resolve_name_collisions.
+                if not arg.hasAttr("model_var_is_host_table"):
+                    self._module_matched_names.add(arg.getAttr("model_var_name"))
                 continue
 
             intent = (

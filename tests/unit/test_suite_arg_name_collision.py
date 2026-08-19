@@ -253,6 +253,107 @@ class TestCollisionAcrossShapeAndIntent:
         assert "host_x_a" not in call_b
 
 
+class TestSuiteOwnedCollisionWithModuleVar:
+    """A SuiteOwned scratch variable's local_name coincidentally equals the
+    bare name of a MODULE-type host variable that this same suite already
+    host-matches (and so bare `use <module>, only: <name>` associates) --
+    the same class of collision suite_variable_model.py's
+    _resolve_name_collisions already handled for two colliding SuiteOwned
+    vars, just not (until this fix) for a SuiteOwned var vs. a host-matched
+    module var.
+
+    Found by porting real capgen-v1's own interstitial-name-collision test
+    (examples/advection/cld_shadow, GitHub issues #772/#774): regenerating
+    examples/advection with cld_shadow added produced
+    ``use test_host_mod, only: ncols`` (host-matched horizontal dimension)
+    *and* a separate module-level ``real ... :: ncols(:)`` declaration
+    (cld_shadow's own unrelated "cld_shadow_column_scratch" scratch output,
+    which happens to reuse the bare local name "ncols") in the very same
+    suite-cap module -- a genuine duplicate-declaration Fortran compile
+    error. This minimal scheme_a/scheme_b reproduction isolates just that
+    shape: scheme_a's own "ncol" arg host-matches to the host's "ncols"
+    (populating the collision-check set) and scheme_a's own "foo" scratch
+    array -- dimensioned by horizontal_dimension -- is what actually forces
+    "ncols" to be use-associated into the suite-cap module (matching the
+    real advection scenario, where it's the framework's own allocation-size
+    resolution, not any scheme's *_run signature, that pulls "ncols" in).
+    scheme_b's own unrelated scratch output arg is *itself* named "ncols".
+    """
+
+    _HOST_META = """\
+[ccpp-table-properties]
+  name = test_host_mod
+  type = module
+[ccpp-arg-table]
+  name = test_host_mod
+  type = module
+[ ncols ]
+  standard_name = horizontal_dimension
+  type = integer
+  units = count
+  dimensions = ()
+"""
+
+    _SCHEME_A = f"""\
+[ccpp-table-properties]
+  name = scheme_a
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_a_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_dimension
+  type = integer
+  units = count
+  dimensions = ()
+  intent = in
+[ foo ]
+  standard_name = scheme_a_scratch_array
+  units = 1
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_dimension)
+  intent = out
+{CCPP_MANDATORY_ARGS}
+"""
+
+    _SCHEME_B = f"""\
+[ccpp-table-properties]
+  name = scheme_b
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_b_run
+  type = scheme
+[ ncols ]
+  standard_name = scheme_b_scratch_count
+  units = count
+  type = integer
+  dimensions = ()
+  intent = out
+{CCPP_MANDATORY_ARGS}
+"""
+
+    def test_no_duplicate_module_scope_declaration(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            [self._SCHEME_A, self._SCHEME_B], [self._HOST_META],
+        )
+        assert "use test_host_mod, only: ncols" in fortran
+        module_body = fortran.split("CONTAINS")[0]
+        declared = [
+            _declared_arg_name(line)
+            for line in module_body.splitlines()
+            if "::" in line and "use " not in line
+        ]
+        assert len(declared) == len(set(declared)), (
+            f"duplicate module-scope declaration(s): {declared}"
+        )
+        assert "ncols" not in declared, (
+            "SuiteOwned scratch var must be renamed away from the "
+            "host-matched module var's own bare name, not redeclared as it"
+        )
+
+
 class TestCollisionWithoutHostNameRaises:
     """Neither scheme's colliding arg has a host match (no model_var_name
     available to disambiguate with) -- must fail loudly at generation time
