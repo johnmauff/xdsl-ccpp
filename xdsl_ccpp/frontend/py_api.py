@@ -359,6 +359,21 @@ def ccpp_scheme(cls) -> SchemeDescriptor:
     return SchemeDescriptor(cls.__name__, entry_points)
 
 
+def _table_descriptor_from_class(cls, table_type: str) -> TableDescriptor:
+    """Shared body for ccpp_ddt/ccpp_module/ccpp_host: every non-private
+    list attribute on the decorated class becomes one arg table.
+
+    Extracted (complexity-audit Tier 2 finding, task #53) after confirming
+    the three decorators below were byte-identical apart from the literal
+    table-type string passed to TableDescriptor.
+    """
+    arg_tables: dict[str, list[Arg]] = {}
+    for attr_name, val in cls.__dict__.items():
+        if not attr_name.startswith("_") and isinstance(val, list):
+            arg_tables[attr_name] = val
+    return TableDescriptor(cls.__name__, table_type, arg_tables)
+
+
 def ccpp_ddt(cls) -> TableDescriptor:
     """Decorator: declare a CCPP derived data type (DDT).
 
@@ -374,11 +389,7 @@ def ccpp_ddt(cls) -> TableDescriptor:
                     type="integer", units="count"),
             ]
     """
-    arg_tables: dict[str, list[Arg]] = {}
-    for attr_name, val in cls.__dict__.items():
-        if not attr_name.startswith("_") and isinstance(val, list):
-            arg_tables[attr_name] = val
-    return TableDescriptor(cls.__name__, "ddt", arg_tables)
+    return _table_descriptor_from_class(cls, "ddt")
 
 
 def ccpp_module(cls) -> TableDescriptor:
@@ -386,11 +397,7 @@ def ccpp_module(cls) -> TableDescriptor:
 
     Each non-private list attribute on the class becomes one arg table.
     """
-    arg_tables: dict[str, list[Arg]] = {}
-    for attr_name, val in cls.__dict__.items():
-        if not attr_name.startswith("_") and isinstance(val, list):
-            arg_tables[attr_name] = val
-    return TableDescriptor(cls.__name__, "module", arg_tables)
+    return _table_descriptor_from_class(cls, "module")
 
 
 def ccpp_host(cls) -> TableDescriptor:
@@ -398,11 +405,7 @@ def ccpp_host(cls) -> TableDescriptor:
 
     Each non-private list attribute on the class becomes one arg table.
     """
-    arg_tables: dict[str, list[Arg]] = {}
-    for attr_name, val in cls.__dict__.items():
-        if not attr_name.startswith("_") and isinstance(val, list):
-            arg_tables[attr_name] = val
-    return TableDescriptor(cls.__name__, "host", arg_tables)
+    return _table_descriptor_from_class(cls, "host")
 
 
 def _run_groups(

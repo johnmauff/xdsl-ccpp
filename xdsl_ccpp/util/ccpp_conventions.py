@@ -7,6 +7,15 @@ literals throughout the codebase.
 
 import re
 
+# ── Primitive Fortran types ──────────────────────────────────────────────────
+# The set of CCPP "primitive" (non-derived) Fortran types -- anything else is
+# a DDT type name. Previously redefined independently in three places
+# (suite_variable_model.py twice, cpp_interop.py once) with no shared source
+# of truth; consolidated here per the 2026-08-18 codebase complexity audit.
+CCPP_PRIMITIVE_TYPES: frozenset = frozenset(
+    {"real", "integer", "character", "logical", "complex"}
+)
+
 # ── Error handling ──────────────────────────────────────────────────────────
 # CCPP framework-defined standard names for error communication.
 CCPP_ERROR_MESSAGE = "ccpp_error_message"

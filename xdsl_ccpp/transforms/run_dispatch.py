@@ -845,6 +845,31 @@ def _build_run_dispatch_chain(
             scheme_names = info["scheme_names"]
             local_to_array_layout = info.get("local_to_array_layout", {})
 
+            def _find_cap_var_inout_ref(ret_type):
+                """Return a CapVarRefOp for this suite call's own first
+                CapVar-sourced input arg whose type matches ret_type, or
+                None if there isn't one.
+
+                Shared by both result-classification branches below (the
+                leading-inout-return branch and the trailing-alloc-return
+                branch) -- previously two independently-maintained,
+                byte-identical copies of this same search (complexity-audit
+                Tier 2 finding, task #50). Read-only lookup with no
+                insertion-point/anchor-order interaction, unlike this
+                file's own GPU-directive-adjacent logic (see task #45's
+                scoping note) -- it only decides *what* ref to build, not
+                *where* to insert it.
+                """
+                for i, (a_name, a_type) in enumerate(
+                    zip(callee_input_names, callee_input_types)
+                ):
+                    if (a_type == ret_type
+                            and resolved_arg_ops[i].source_kind.data == ArgSourceKind.CapVar):
+                        std_name_cv = resolved_arg_ops[i].std_name.data
+                        cv_name, cv_type, _ = cap_var_map[std_name_cv]
+                        return CapVarRefOp(cv_name, a_type)
+                return None
+
             # ── Build standard_name → dim_names for cap_var sources ──────
             cap_var_std_to_dims: dict = {}
             for _sv_scheme in scheme_names:
@@ -975,6 +1000,60 @@ def _build_run_dispatch_chain(
             array_section_main_ops = []
             one_const_for_sections = None
 
+            def _resolve_extra_dim_bounds(dim_std_names, lowers: list, uppers: list) -> bool:
+                """Resolve each dimension beyond the leading (already-seeded)
+                horizontal_dimension bound to a host var ref, appending its
+                upper bound to lowers/uppers in place (lower is always the
+                shared '1' constant -- these dims are never column-chunked).
+
+                Shared by both ArraySectionOp sources below (a CapVar's own
+                dim_names, and a Host/DdtMember var's dim_names) -- they were
+                previously two independently-maintained copies of the same
+                "resolve dim standard_name -> host var ref, dedupe the
+                external-global stub, lazily create the shared '1' constant"
+                logic (run_dispatch.py's own Tier 1 complexity-audit finding,
+                task #40). Returns False and stops at the first dim whose
+                standard_name has no host_var_map entry, matching both call
+                sites' original fail-fast (break-out-of-loop) behavior.
+                """
+                nonlocal one_const_for_sections
+                for dim_std_name in dim_std_names:
+                    dim_std_name = dim_std_name.lower()
+                    if dim_std_name not in host_var_map:
+                        return False
+                    dim_var_name, dim_module_name = host_var_map[dim_std_name]
+
+                    if dim_var_name in host_name_to_ref_result:
+                        dim_upper_ref = host_name_to_ref_result[dim_var_name]
+                    else:
+                        dim_ref_op = HostVarRefOp(
+                            dim_var_name,
+                            dim_module_name,
+                            TypeConversions.getBaseType("integer"),
+                        )
+                        array_section_extra_ops.append(dim_ref_op)
+                        host_name_to_ref_result[dim_var_name] = dim_ref_op.res
+                        dim_upper_ref = dim_ref_op.res
+
+                        key = (dim_var_name, dim_module_name)
+                        if key not in seen_host_globals:
+                            seen_host_globals.add(key)
+                            dim_glob = llvm.GlobalOp(
+                                llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                dim_var_name,
+                                "external",
+                            )
+                            dim_glob.attributes["module"] = StringAttr(dim_module_name)
+                            chain_global_ops.append(dim_glob)
+
+                    if one_const_for_sections is None:
+                        one_const_for_sections = arith.ConstantOp.from_int_and_width(1, 32)
+                        array_section_pre_ops.append(one_const_for_sections)
+
+                    lowers.append(one_const_for_sections.result)
+                    uppers.append(dim_upper_ref)
+                return True
+
             for i, (arg_name, arg_type) in enumerate(
                 zip(callee_input_names, callee_input_types)
             ):
@@ -1047,45 +1126,7 @@ def _build_run_dispatch_chain(
                     # same way the Host/DdtMember branch above does, since
                     # those dimensions (e.g. "pver") are always real host
                     # variables regardless of the array itself being cap-owned.
-                    _cv_valid = True
-                    for dim_std_name in _cv_dims[1:]:
-                        dim_std_name = dim_std_name.lower()
-                        if dim_std_name not in host_var_map:
-                            _cv_valid = False
-                            break
-                        dim_var_name, dim_module_name = host_var_map[dim_std_name]
-
-                        if dim_var_name in host_name_to_ref_result:
-                            dim_upper_ref = host_name_to_ref_result[dim_var_name]
-                        else:
-                            dim_ref_op = HostVarRefOp(
-                                dim_var_name,
-                                dim_module_name,
-                                TypeConversions.getBaseType("integer"),
-                            )
-                            array_section_extra_ops.append(dim_ref_op)
-                            host_name_to_ref_result[dim_var_name] = dim_ref_op.res
-                            dim_upper_ref = dim_ref_op.res
-
-                            key = (dim_var_name, dim_module_name)
-                            if key not in seen_host_globals:
-                                seen_host_globals.add(key)
-                                dim_glob = llvm.GlobalOp(
-                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                    dim_var_name,
-                                    "external",
-                                )
-                                dim_glob.attributes["module"] = StringAttr(dim_module_name)
-                                chain_global_ops.append(dim_glob)
-
-                        if one_const_for_sections is None:
-                            one_const_for_sections = arith.ConstantOp.from_int_and_width(
-                                1, 32
-                            )
-                            array_section_pre_ops.append(one_const_for_sections)
-
-                        lowers.append(one_const_for_sections.result)
-                        uppers.append(dim_upper_ref)
+                    _cv_valid = _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers)
 
                     if not _cv_valid:
                         continue
@@ -1147,45 +1188,7 @@ def _build_run_dispatch_chain(
                 lowers = [block_arg_map[col_begin_key]]
                 uppers = [block_arg_map[col_end_key]]
 
-                valid = True
-                for dim_std_name in dim_names_list[1:]:
-                    dim_std_name = dim_std_name.lower()
-                    if dim_std_name not in host_var_map:
-                        valid = False
-                        break
-                    dim_var_name, dim_module_name = host_var_map[dim_std_name]
-
-                    if dim_var_name in host_name_to_ref_result:
-                        dim_upper_ref = host_name_to_ref_result[dim_var_name]
-                    else:
-                        dim_ref_op = HostVarRefOp(
-                            dim_var_name,
-                            dim_module_name,
-                            TypeConversions.getBaseType("integer"),
-                        )
-                        array_section_extra_ops.append(dim_ref_op)
-                        host_name_to_ref_result[dim_var_name] = dim_ref_op.res
-                        dim_upper_ref = dim_ref_op.res
-
-                        key = (dim_var_name, dim_module_name)
-                        if key not in seen_host_globals:
-                            seen_host_globals.add(key)
-                            dim_glob = llvm.GlobalOp(
-                                llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                dim_var_name,
-                                "external",
-                            )
-                            dim_glob.attributes["module"] = StringAttr(dim_module_name)
-                            chain_global_ops.append(dim_glob)
-
-                    if one_const_for_sections is None:
-                        one_const_for_sections = arith.ConstantOp.from_int_and_width(
-                            1, 32
-                        )
-                        array_section_pre_ops.append(one_const_for_sections)
-
-                    lowers.append(one_const_for_sections.result)
-                    uppers.append(dim_upper_ref)
+                valid = _resolve_extra_dim_bounds(dim_names_list[1:], lowers, uppers)
 
                 # lowers/uppers always has >= 1 entry (the horizontal_dimension
                 # bound seeded above); a genuinely 1-D horizontal-only host
@@ -1442,18 +1445,10 @@ def _build_run_dispatch_chain(
                                 memref.CopyOp(result, host_var_ref_results[canonical])
                             )
                         elif cap_var_map:
-                            for i, (a_name, a_type) in enumerate(
-                                zip(callee_input_names, callee_input_types)
-                            ):
-                                if (a_type == ret_type
-                                        and resolved_arg_ops[i].source_kind.data
-                                        == ArgSourceKind.CapVar):
-                                    std_name_cv = resolved_arg_ops[i].std_name.data
-                                    cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                                    cap_ref = CapVarRefOp(cv_name, a_type)
-                                    cap_var_inout_refs.append(cap_ref)
-                                    copy_ops.append(memref.CopyOp(result, cap_ref.res))
-                                    break
+                            cap_ref = _find_cap_var_inout_ref(ret_type)
+                            if cap_ref is not None:
+                                cap_var_inout_refs.append(cap_ref)
+                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
                 else:
                     ri_idx = idx - _n_inout_ret
                     ret_std_name = _run_ret_alloc[ri_idx][2]
@@ -1492,18 +1487,10 @@ def _build_run_dispatch_chain(
                                 chain_global_ops.append(hv_glob)
                         elif cap_var_map:
                             # 3) cap_var inout echo: suite cap returns cap-owned scalar.
-                            for i, (a_name, a_type) in enumerate(
-                                zip(callee_input_names, callee_input_types)
-                            ):
-                                if (a_type == ret_type
-                                        and resolved_arg_ops[i].source_kind.data
-                                        == ArgSourceKind.CapVar):
-                                    std_name_cv = resolved_arg_ops[i].std_name.data
-                                    cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                                    cap_ref = CapVarRefOp(cv_name, a_type)
-                                    cap_var_inout_refs.append(cap_ref)
-                                    copy_ops.append(memref.CopyOp(result, cap_ref.res))
-                                    break
+                            cap_ref = _find_cap_var_inout_ref(ret_type)
+                            if cap_ref is not None:
+                                cap_var_inout_refs.append(cap_ref)
+                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
 
             # Build write-back ops for row-major arrays (inout/out only).
             row_major_write_back_ops: list = []

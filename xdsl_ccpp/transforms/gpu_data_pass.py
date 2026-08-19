@@ -22,6 +22,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     _bare,
     _iter_schemes,
+    directive_op,
     find_diverged_capscratch_vars,
     find_diverged_suite_vars,
     resolve_capscratch_cap_var_name,
@@ -239,22 +240,26 @@ class GPUDataPass(ModulePass):
         (criss-crossing) !$acc data regions if another diverged var's own
         present run happens to overlap without nesting inside this one.
         """
-        if self.directive == "omp":
-            Rewriter.insert_op(OmpTargetDataBeginOp(alloc=[ref]), InsertPoint.before(call_op))
-            Rewriter.insert_op(OmpTargetDataEndOp(), InsertPoint.after(call_op))
-        else:
-            Rewriter.insert_op(AccDataBeginOp(present=[ref]), InsertPoint.before(call_op))
-            Rewriter.insert_op(AccDataEndOp(), InsertPoint.after(call_op))
+        Rewriter.insert_op(
+            directive_op(self.directive, AccDataBeginOp, {"present": [ref]}, OmpTargetDataBeginOp, {"alloc": [ref]}),
+            InsertPoint.before(call_op),
+        )
+        Rewriter.insert_op(
+            directive_op(self.directive, AccDataEndOp, {}, OmpTargetDataEndOp, {}),
+            InsertPoint.after(call_op),
+        )
 
     def _emit_update(self, ref, first_op, last_op):
         """Sync once before/after a whole run of consecutive update-only
         touches for one host var, instead of once per call."""
-        if self.directive == "omp":
-            Rewriter.insert_op(OmpTargetUpdateFromOp(array_refs=[ref]), InsertPoint.before(first_op))
-            Rewriter.insert_op(OmpTargetUpdateToOp(array_refs=[ref]), InsertPoint.after(last_op))
-        else:
-            Rewriter.insert_op(AccUpdateSelfOp(array_refs=[ref]), InsertPoint.before(first_op))
-            Rewriter.insert_op(AccUpdateDeviceOp(array_refs=[ref]), InsertPoint.after(last_op))
+        Rewriter.insert_op(
+            directive_op(self.directive, AccUpdateSelfOp, {"array_refs": [ref]}, OmpTargetUpdateFromOp, {"array_refs": [ref]}),
+            InsertPoint.before(first_op),
+        )
+        Rewriter.insert_op(
+            directive_op(self.directive, AccUpdateDeviceOp, {"array_refs": [ref]}, OmpTargetUpdateToOp, {"array_refs": [ref]}),
+            InsertPoint.after(last_op),
+        )
 
     def _process_diverged_host_vars(self, calls, meta_data, diverged_vars, arg_by_name):
         """Route present/update clauses per individual scheme call for host

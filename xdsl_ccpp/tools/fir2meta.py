@@ -24,54 +24,19 @@ import os
 import subprocess
 import sys
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.dialects.builtin import StringAttr
 from xdsl.parser import Parser
 from xdsl.printer import Printer
-from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP, TablePropertiesOp
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-
-
-def _make_ctx() -> Context:
-    """Build a Context with all standard + CCPP dialects loaded."""
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
+from xdsl_ccpp.dialects.ccpp import TablePropertiesOp
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
+from xdsl_ccpp.tools.flang_utils import find_flang, run_flang
 
 
 def _parse_mlir_str(text: str) -> builtin.ModuleOp:
-    ctx = _make_ctx()
+    ctx = make_ccpp_context()
     return Parser(ctx, text).parse_op()
-
-
-def _run_flang(f90_file: str, fir_mlir: str, verbose: bool) -> bool:
-    """Run Flang to generate FIR MLIR from *f90_file*, writing to *fir_mlir*."""
-    cmd = [
-        "flang",
-        "-fc1",
-        "-emit-hlfir",
-        "-mmlir",
-        "-mlir-print-op-generic",
-        f90_file,
-        "-o",
-        fir_mlir,
-    ]
-    if verbose:
-        print(f"  flang: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(
-            f"Error: flang failed on '{f90_file}':\n{result.stderr}",
-            file=sys.stderr,
-        )
-        return False
-    return True
 
 
 def _run_fir_to_meta(fir_mlir: str, verbose: bool) -> str | None:
@@ -154,6 +119,17 @@ def main() -> None:
             print(f"Error: input file not found: '{f}'", file=sys.stderr)
         sys.exit(1)
 
+    flang = find_flang()
+    if flang is None:
+        print(
+            "Error: no Flang executable found on PATH.\n"
+            "  Tried: flang, flang-new, flang-18/19/20\n"
+            "  Install via:  brew install llvm   (then add $(brew --prefix llvm)/bin to PATH)\n"
+            "             or conda install -c conda-forge flang",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     os.makedirs(args.tmpdir, exist_ok=True)
 
     # Accumulation module: a single @ccpp_meta ModuleOp that collects all
@@ -169,7 +145,7 @@ def main() -> None:
         print(f"Processing '{f90_file}'...")
 
         # Step 1: F90 → FIR MLIR via Flang
-        if not _run_flang(f90_file, fir_mlir, args.verbose):
+        if not run_flang(flang, f90_file, fir_mlir, args.verbose):
             sys.exit(1)
 
         # Step 2: FIR MLIR → CCPP metadata via fir-to-meta pass

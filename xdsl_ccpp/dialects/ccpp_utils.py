@@ -36,6 +36,35 @@ from xdsl.irdl import (
 from xdsl.traits import NoTerminator
 
 
+def _coerce_str_attr(value: "str | StringAttr | None") -> "StringAttr | None":
+    """Coerce a plain str to StringAttr, passing an already-built StringAttr
+    (or None) through.
+
+    Extracted (complexity-audit Tier 2 finding, task #47) after this exact
+    2-line `if isinstance(value, str): value = StringAttr(value)` pattern
+    was found repeated, byte-identical, across 15 op/attribute constructors
+    in this file. Accepts None because StrCmpOp.__init__ calls this
+    unconditionally on its own optional `literal` param.
+    """
+    return StringAttr(value) if isinstance(value, str) else value
+
+
+def _coerce_int_attr(value: "int | IntegerAttr", width: int = 64) -> IntegerAttr:
+    """Coerce a plain int to IntegerAttr (given bit width), passing an
+    already-built IntegerAttr through. Sibling of _coerce_str_attr -- see
+    its docstring; this covers VerticalFlipOp/VerticalFlipWriteBackOp's own
+    int-coercion pattern, found alongside the 15 str-coercion sites."""
+    return IntegerAttr.from_int_and_width(value, width) if isinstance(value, int) else value
+
+
+def _coerce_str_list_attr(value: "list[str] | ArrayAttr") -> ArrayAttr:
+    """Coerce a list[str] to ArrayAttr[StringAttr], passing an already-built
+    ArrayAttr through. Sibling of _coerce_str_attr -- see its docstring;
+    this covers RowMajorConvertOp/RowMajorWriteBackOp's own list-coercion
+    pattern, found alongside the 15 str-coercion sites."""
+    return ArrayAttr([StringAttr(e) for e in value]) if isinstance(value, list) else value
+
+
 @irdl_attr_definition
 class RealKindType(ParametrizedAttribute, TypeAttribute):
     """MLIR type representing a Fortran real with a named kind qualifier.
@@ -48,9 +77,7 @@ class RealKindType(ParametrizedAttribute, TypeAttribute):
     kind_name: StringAttr = param_def()
 
     def __init__(self, kind_name: str | StringAttr):
-        if isinstance(kind_name, str):
-            kind_name = StringAttr(kind_name)
-        super().__init__(kind_name)
+        super().__init__(_coerce_str_attr(kind_name))
 
 
 @irdl_attr_definition
@@ -65,9 +92,7 @@ class DerivedType(ParametrizedAttribute, TypeAttribute):
     type_name: StringAttr = param_def()
 
     def __init__(self, type_name: str | StringAttr):
-        if isinstance(type_name, str):
-            type_name = StringAttr(type_name)
-        super().__init__(type_name)
+        super().__init__(_coerce_str_attr(type_name))
 
 
 @irdl_op_definition
@@ -100,8 +125,7 @@ class StrCmpOp(IRDLOperation):
         length: int | None = None,
         literal: str | StringAttr | None = None,
     ):
-        if isinstance(literal, str):
-            literal = StringAttr(literal)
+        literal = _coerce_str_attr(literal)
         props: dict = {}
         if length is not None:
             props["length"] = IntegerAttr.from_int_and_width(length, 64)
@@ -168,10 +192,8 @@ class HostVarRefOp(IRDLOperation):
         self, var_name: str | StringAttr, module_name: str | StringAttr,
         result_type, member_name: str | None = None, index_expr: str | None = None,
     ):
-        if isinstance(var_name, str):
-            var_name = StringAttr(var_name)
-        if isinstance(module_name, str):
-            module_name = StringAttr(module_name)
+        var_name = _coerce_str_attr(var_name)
+        module_name = _coerce_str_attr(module_name)
         super().__init__(
             properties={"var_name": var_name, "module_name": module_name},
             result_types=[result_type],
@@ -213,10 +235,8 @@ class WriteErrMsgOp(IRDLOperation):
     suffix = prop_def(StringAttr)
 
     def __init__(self, dest, var, prefix: str | StringAttr, suffix: str | StringAttr):
-        if isinstance(prefix, str):
-            prefix = StringAttr(prefix)
-        if isinstance(suffix, str):
-            suffix = StringAttr(suffix)
+        prefix = _coerce_str_attr(prefix)
+        suffix = _coerce_str_attr(suffix)
         super().__init__(
             operands=[dest, var],
             properties={"prefix": prefix, "suffix": suffix},
@@ -277,12 +297,9 @@ class KindDefOp(IRDLOperation):
         kind_value: str | StringAttr,
         kind_module: str | StringAttr = "iso_fortran_env",
     ):
-        if isinstance(kind_name, str):
-            kind_name = StringAttr(kind_name)
-        if isinstance(kind_value, str):
-            kind_value = StringAttr(kind_value)
-        if isinstance(kind_module, str):
-            kind_module = StringAttr(kind_module)
+        kind_name = _coerce_str_attr(kind_name)
+        kind_value = _coerce_str_attr(kind_value)
+        kind_module = _coerce_str_attr(kind_module)
         super().__init__(
             properties={
                 "kind_name": kind_name,
@@ -375,8 +392,7 @@ class KeywordCallOp(IRDLOperation):
         args: list,
         out_types: list,
     ):
-        if isinstance(callee, str):
-            callee = StringAttr(callee)
+        callee = _coerce_str_attr(callee)
         super().__init__(
             operands=[args],
             properties={
@@ -1085,8 +1101,7 @@ class KindCastOp(IRDLOperation):
         target_kind: "str | StringAttr",
         result_type,
     ):
-        if isinstance(target_kind, str):
-            target_kind = StringAttr(target_kind)
+        target_kind = _coerce_str_attr(target_kind)
         super().__init__(
             operands=[source],
             properties={"target_kind": target_kind},
@@ -1127,8 +1142,7 @@ class UnitConvertOp(IRDLOperation):
         to_scheme_expr: "str | StringAttr",
         result_type,
     ):
-        if isinstance(to_scheme_expr, str):
-            to_scheme_expr = StringAttr(to_scheme_expr)
+        to_scheme_expr = _coerce_str_attr(to_scheme_expr)
         super().__init__(
             operands=[source],
             properties={"to_scheme_expr": to_scheme_expr},
@@ -1162,8 +1176,7 @@ class UnitWriteBackOp(IRDLOperation):
         original_dest: "SSAValue | IRDLOperation",
         to_host_expr:  "str | StringAttr",
     ):
-        if isinstance(to_host_expr, str):
-            to_host_expr = StringAttr(to_host_expr)
+        to_host_expr = _coerce_str_attr(to_host_expr)
         super().__init__(
             operands=[conv_result, original_dest],
             properties={"to_host_expr": to_host_expr},
@@ -1196,8 +1209,7 @@ class KindWriteBackOp(IRDLOperation):
         original_dest: "SSAValue | IRDLOperation",
         original_kind: "str | StringAttr",
     ):
-        if isinstance(original_kind, str):
-            original_kind = StringAttr(original_kind)
+        original_kind = _coerce_str_attr(original_kind)
         super().__init__(
             operands=[conv_result, original_dest],
             properties={"original_kind": original_kind},
@@ -1235,8 +1247,7 @@ class VerticalFlipOp(IRDLOperation):
         vertical_dim: "int | IntegerAttr",
         result_type,
     ):
-        if isinstance(vertical_dim, int):
-            vertical_dim = IntegerAttr.from_int_and_width(vertical_dim, 64)
+        vertical_dim = _coerce_int_attr(vertical_dim)
         super().__init__(
             operands=[source],
             properties={"vertical_dim": vertical_dim},
@@ -1275,8 +1286,7 @@ class VerticalFlipWriteBackOp(IRDLOperation):
         original_dest: "SSAValue | IRDLOperation",
         vertical_dim:  "int | IntegerAttr",
     ):
-        if isinstance(vertical_dim, int):
-            vertical_dim = IntegerAttr.from_int_and_width(vertical_dim, 64)
+        vertical_dim = _coerce_int_attr(vertical_dim)
         super().__init__(
             operands=[conv_result, original_dest],
             properties={"vertical_dim": vertical_dim},
@@ -1311,8 +1321,7 @@ class RowMajorConvertOp(IRDLOperation):
         dim_exprs: "list[str] | ArrayAttr",
         result_type,
     ):
-        if isinstance(dim_exprs, list):
-            dim_exprs = ArrayAttr([StringAttr(e) for e in dim_exprs])
+        dim_exprs = _coerce_str_list_attr(dim_exprs)
         super().__init__(
             operands=[source],
             properties={"dim_exprs": dim_exprs},
@@ -1347,8 +1356,7 @@ class RowMajorWriteBackOp(IRDLOperation):
         host_var:  "SSAValue | IRDLOperation",
         dim_exprs: "list[str] | ArrayAttr",
     ):
-        if isinstance(dim_exprs, list):
-            dim_exprs = ArrayAttr([StringAttr(e) for e in dim_exprs])
+        dim_exprs = _coerce_str_list_attr(dim_exprs)
         super().__init__(
             operands=[local_val, host_var],
             properties={"dim_exprs": dim_exprs},

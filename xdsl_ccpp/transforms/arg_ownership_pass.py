@@ -11,6 +11,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_host_var_map,
     _collect_host_block_std_names,
     classify_arg_ownership,
+    iter_arg_tables,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
@@ -51,19 +52,11 @@ class ArgOwnershipPass(ModulePass):
         host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
         host_block_std_names = _collect_host_block_std_names(meta_data)
 
-        for table_prop_op in ccpp_mod.body.ops:
-            if not isa(table_prop_op, ccpp.TablePropertiesOp):
-                continue
-            if table_prop_op.table_type.data != TableTypeKind.Scheme:
-                continue
-
-            for arg_table_op in table_prop_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+        for _table_prop_op, arg_table_op in iter_arg_tables(ccpp_mod, table_type=TableTypeKind.Scheme):
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    ownership = classify_arg_ownership(
-                        arg_op, host_var_map_lc, host_block_std_names
-                    )
-                    arg_op.properties["ownership_kind"] = ownership.ownership_kind
+                ownership = classify_arg_ownership(
+                    arg_op, host_var_map_lc, host_block_std_names
+                )
+                arg_op.properties["ownership_kind"] = ownership.ownership_kind

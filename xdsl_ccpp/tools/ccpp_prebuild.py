@@ -283,18 +283,20 @@ def main() -> None:
     os.makedirs(caps_dir, exist_ok=True)
 
     tool = ccppMain()
-    tool.options_db = {
+    # Start from ccpp_dsl.py's own CLI defaults (single source of truth --
+    # see default_options_db's own docstring for why) and overlay only the
+    # keys this config-driven flow actually resolves itself; everything
+    # else (--directive, --legacy-mode, --bind-c, etc.) keeps its real CLI
+    # default instead of being silently absent from the dict.
+    tool.options_db = tool.default_options_db()
+    tool.options_db.update({
         "suites": suite_xmls,
         "scheme_files": scheme_metas,
         "host_files": host_metas,
-        "meta_file": None,
         "out": caps_dir,
-        "stdout": False,
-        "host_name": None,
         "tempdir": os.path.join(config["builddir"], "tmp"),
-        "debug": False,
         "verbose": 2 if verbose else 1,
-    }
+    })
 
     tmp_dir = tool.options_db["tempdir"]
     os.makedirs(tmp_dir, exist_ok=True)

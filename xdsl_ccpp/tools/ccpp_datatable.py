@@ -24,14 +24,11 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 from xml.dom import minidom
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.parser import Parser
-from xdsl.universe import Universe
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp import (
-    CCPP,
     ArgumentOp,
     ArgumentTableOp,
     GroupOp,
@@ -40,18 +37,7 @@ from xdsl_ccpp.dialects.ccpp import (
     SuiteOp,
     TablePropertiesOp,
 )
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
-
-
-# ── MLIR context ──────────────────────────────────────────────────────────────
-
-def _make_ctx() -> Context:
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 
 
 # ── IR walkers ────────────────────────────────────────────────────────────────
@@ -158,7 +144,7 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
     Returns:
         An ``xml.etree.ElementTree.Element`` for the ``<datatable>`` root.
     """
-    ctx = _make_ctx()
+    ctx = make_ccpp_context()
     module = Parser(ctx, mlir_text).parse_op()
 
     # Locate the @ccpp named sub-module

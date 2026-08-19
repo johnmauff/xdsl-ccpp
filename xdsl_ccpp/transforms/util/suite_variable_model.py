@@ -7,7 +7,7 @@ Implements the four-case variable resolution algorithm from capgen-ng
 from dataclasses import dataclass
 from enum import Enum
 
-from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES
+from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_PRIMITIVE_TYPES
 
 
 # ---------------------------------------------------------------------------
@@ -305,9 +305,8 @@ class SuiteVariableModel:
             # the suite cap.  Skip them so no spurious module-level scalar var
             # is emitted in the suite cap.
             _arg_type_str = arg.getAttr("type") if arg.hasAttr("type") else "real"
-            _primitive_types = {"real", "integer", "character", "logical", "complex"}
             if (arg.hasAttr("allocatable")
-                    and _arg_type_str.lower() not in _primitive_types):
+                    and _arg_type_str.lower() not in CCPP_PRIMITIVE_TYPES):
                 continue
 
             # Framework-managed arrays (advected/allocatable) are always
@@ -366,8 +365,7 @@ class SuiteVariableModel:
         dim_names    = self._parse_dim_names(arg)
 
         # Primitive types vs DDTs.
-        primitive_types = {"real", "integer", "character", "logical", "complex"}
-        is_ddt = arg_type.lower() not in primitive_types
+        is_ddt = arg_type.lower() not in CCPP_PRIMITIVE_TYPES
 
         needs_device_residency = (
             arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"
