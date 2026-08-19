@@ -37,8 +37,10 @@ _TWO_SCHEME_SUITE_XML = """\
 
 def _scheme_meta(
     name: str, top_at_one: bool = False, units: str = "m", kind: str = "kind_phys",
+    optional: bool = False,
 ) -> str:
     top_at_one_line = "  top_at_one = True\n" if top_at_one else ""
+    optional_line = "  optional = True\n" if optional else ""
     return f"""\
 [ccpp-table-properties]
   name = {name}
@@ -53,7 +55,7 @@ def _scheme_meta(
   kind = {kind}
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   intent = inout
-{top_at_one_line}{CCPP_MANDATORY_ARGS}
+{top_at_one_line}{optional_line}{CCPP_MANDATORY_ARGS}
 """
 
 
@@ -187,3 +189,40 @@ class TestKindUnitsAndFlipChainTogether:
         assert len(declared) == len(set(declared)), (
             f"duplicate dummy-argument declaration(s): {declared}"
         )
+
+
+class TestOptionalArgWithTopAtOneDivergence:
+    """Regression test for a real gap found while scoping task #46: the
+    vertical-flip printer (CCPPVerticalFlipOp/CCPPVerticalFlipWriteBackOp)
+    had no present()-gating for an optional array, unlike the sibling
+    CCPPKindCastOp/CCPPUnitConvertOp printers -- a latent crash risk (an
+    absent optional array has no bounds to call size() on) for any
+    divergent-std-name arg that is also declared optional, since
+    suite_cap.py's own _apply_divergent_marshaling doesn't exclude optional
+    args from the top_at_one branch. Not exercised by any existing example
+    (none combine optional with a divergent top_at_one arg), but confirmed
+    reachable via this fixture."""
+
+    def test_flip_is_gated_on_present(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            [
+                _scheme_meta("scheme_a", optional=True),
+                _scheme_meta("scheme_b", top_at_one=True, optional=True),
+            ],
+        )
+        fn = _fn_body(fortran, "test_suite_suite_physics")
+        call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
+        assert "_vert_flip" in call_b
+        lines = fn.splitlines()
+        flip_alloc_idx = next(
+            i for i, line in enumerate(lines) if "_vert_flip" in line and "allocate" in line
+        )
+        # The allocate+flip must be wrapped in a present() guard, same as
+        # the sibling kind/unit conversions immediately preceding it.
+        preceding = lines[:flip_alloc_idx]
+        guard_idx = next(
+            i for i in range(len(preceding) - 1, -1, -1)
+            if "if (present(" in preceding[i] or preceding[i].strip() == "end if"
+        )
+        assert "if (present(" in preceding[guard_idx]
