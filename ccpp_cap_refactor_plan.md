@@ -67,7 +67,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Metadata `dependencies`/`dependencies_path`/`source_path` tracking (Tier 1: parse + IR-forward, no build-system consumer) | ✅ Done (2026-08-17) | L4176 |
 | Metadata dependency-manifest automation for CMake (Tier 2 of the above, overlaps with CMake configure-time item below) | 📋 Backlog (size TBD, needs its own design pass) | L4176 |
 | `examples/ddthost`'s own copies of `temp_set`/`temp_adjust`/`temp_calc_adjust` have fallen behind `examples/capgen`'s (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | 📋 Backlog (S-M, found while scoping the above) | L4176 |
-| `advection`'s error-path bonus (negative test for constituent-props-outside-register) | 📋 Backlog (S) | L3377 |
+| `advection`'s error-path bonus (negative test for constituent-props-outside-register) | ✅ Done (2026-08-18) — real silent-miswiring bug found and fixed, not just a missing check | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
 
@@ -5099,12 +5099,48 @@ dependency is noted.
     generation runs at configure time" item below -- both are about how CMake
     and the Python generator discover file lists from each other, and would
     be worth designing together rather than separately if ever tackled.
-- **`advection`'s error-path bonus, found while confirming the core suite was a duplicate — S.**
-  Real capgen-v1 has a deliberate negative test (`dlc_liq`/`cld_suite_error.xml`): declaring a
-  `ccpp_constituent_properties_t`-typed arg outside the register phase must error. Unverified
-  whether xdsl-ccpp's own constituent-registration code (`constituent_cap.py`) validates this at
-  all today, or would silently accept/mishandle it. Small, self-contained check-and-raise if
-  missing, matching this session's established validation-gap pattern.
+- **`advection`'s error-path bonus, found while confirming the core suite was a duplicate --
+  RESOLVED (2026-08-18, task #10).** Real capgen-v1 has a deliberate negative test
+  (`dlc_liq`/`cld_suite_error.xml`): declaring a `ccpp_constituent_properties_t`-typed arg outside
+  the register phase must error. Confirmed xdsl-ccpp had **no such check** -- and the actual
+  failure mode was worse than a silent no-op. `constituent_cap.py`'s own dynamic-constituent scan
+  (`_collect_constituent_info`, gated on `table_name.endswith("_register")`) and
+  `suite_variable_model.py`'s allocatable-DDT skip (the "DDT allocatable arrays ... passed as
+  arguments by the ccpp cap" branch, right after the host-matched Case 1 check) both silently
+  ignore any `ccpp_constituent_properties_t` arg outside `_register` -- so regenerating the real
+  `dlc_liq` (`_init` phase) + `cld_liq` (`_register` phase) fixture end-to-end showed `dlc_liq`'s
+  own `dyn_const` bare local name (coincidentally identical to `cld_liq`'s own `_register`-phase
+  `dyn_const` arg) get silently wired to `cld_liq`'s *already-registered* module-level constituent
+  array by bare-name match alone, in the wrong lifecycle phase -- active data corruption, not just
+  a dropped arg. Fixed in `host_var_match_pass.py`'s `_match_and_validate`, right where the
+  existing `if arg_op.allocatable is not None: continue` guard already skips these args for
+  host-matching: now also raises (folded into the existing collected-`all_errors`/single-`ValueError`
+  pattern) when the arg's type is `ccpp_constituent_properties_t` and its own entry-point table name
+  doesn't end in `_register`. New tests in `tests/unit/test_host_var_match.py`
+  (`TestConstituentPropertiesOutsideRegisterPhase`), confirmed via git-stash to fail without the
+  fix. Also ported real capgen-v1's *other* deliberate advection negative/edge case while here:
+  `cld_shadow`, a scheme whose own local arg names (`cld_ice_array`, `ncols`) coincide with names
+  already used elsewhere in the group cap for unrelated standard_names (GitHub issues #772/#774).
+  Regenerating `examples/advection` with `cld_shadow` added surfaced a **second, independent real
+  bug**: `suite_variable_model.py`'s `_resolve_name_collisions` only ever compared SuiteOwned
+  entries against each other, never against a MODULE-type host variable's own bare name that the
+  same suite already `use`-associates -- so `cld_shadow`'s own unrelated "ncols" scratch var
+  produced a literal duplicate `real ... :: ncols(:)` declaration alongside
+  `use test_host_mod, only: ncols` in the same module scope (invalid Fortran). Fixed by tracking,
+  per-suite, the bare names of MODULE-type host matches this suite's own schemes actually resolve
+  (via the same Case 1 loop, not a blanket whole-metadata scan -- an earlier, over-broad version of
+  this fix false-triggered on `examples/capgen`'s `environ_conditions`/`model_times`, a scheme's own
+  allocatable output that shares a standard_name, but not a Fortran module scope, with an unrelated
+  host module var of the same name) and reusing the existing rename-on-collision logic against that
+  set too. New test in `tests/unit/test_suite_arg_name_collision.py`
+  (`TestSuiteOwnedCollisionWithModuleVar`), confirmed via git-stash to fail without the fix. Added
+  `cld_shadow.F90`/`.meta` (wired into `cld_suite.xml`/`CMakeLists.txt`/`README.md`) and
+  `dlc_liq.meta`/`cld_suite_error.xml` (fixture-only, matching upstream's own "not part of the
+  main build" treatment) to `examples/advection`; updated all 3 existing advection filecheck
+  goldens (`frontend`, `completed_ir`, `end_to_end`). Verified byte-identical via git-stash across
+  all 26 other end_to_end filecheck examples (including `capgen`, the one that would have caught
+  the over-broad false positive) and the full unit suite -- 611 passed/1 xfailed, `ruff check`
+  clean on both touched production files.
 - **Retire the legacy `horizontal_loop_extent` vocabulary — migrated 2026-07-27.** xdsl-ccpp
   supported two parallel conventions for "how many columns is this call processing": the older
   `horizontal_loop_extent` (a scheme-declared scalar synthesized into `col_start`/`col_end` via
