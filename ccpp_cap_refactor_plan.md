@@ -5786,6 +5786,48 @@ Findings triaged into four tiers, each now a tracked task:
     lines at the start of task #56. Landed on branch `decompose-suite-cap-stage2`, off `main` at
     `d2472b1` (the post-Stage-1-merge tip). Stage 3 (DDT-resolution-map plumbing, sequenced
     after task #30's fix) not started.
+  - **PR #82 Copilot review, addressed (2026-08-19) — a real, pre-existing correctness bug,
+    surfaced (not introduced) by Stage 2's decomposition.** Flagged: when a single arg carries
+    BOTH a kind mismatch and a unit mismatch against the host at once (e.g. host declares
+    kind_phys/meters, scheme declares kind=8/centimeters -- the ordinary non-divergent case,
+    every scheme sharing the standard_name agrees with every other scheme, only the host
+    differs), `_apply_kind_casts` and `_apply_unit_conversions` each independently read from
+    and wrote back to the raw original block arg instead of chaining, so "the kind write-back
+    can be overwritten by the unit write-back." Reproduced directly (single-scheme suite, arg
+    with both mismatches, intent inout): the forward direction happened to end up numerically
+    right by accident (Fortran auto-promotes real-kind in expressions, so computing the unit
+    scale directly from the untouched host value rather than from the kind-cast result still
+    lands on the same number) but generated a fully dead, disconnected `_kind_cast` temp; the
+    write-back direction was worse -- both write-backs targeted the same original arg, and only
+    got the right *final* answer because `_assemble_func` happens to always emit all
+    kind-write-backs before all unit-write-backs, so the unit one (reading the real, post-call
+    value) always overwrote the kind one (reading a stale pre-call snapshot) last. Confirmed via
+    `git blame`-equivalent reasoning this predates Stage 1/2 entirely -- both stages preserved
+    the logic verbatim per this engagement's "pure code movement" discipline; Copilot's review
+    just happened to land on a PR whose diff touches these lines. No existing test exercised
+    this combination (`test_suite_cross_scheme_unit_kind.py`'s own `TestDivergentKindAndUnitsChain`
+    tests the DIFFERENT, already-correct cross-scheme-divergent case, which goes through
+    `_apply_divergent_marshaling` instead). Fix: merged `_apply_kind_casts`/`_apply_unit_conversions`
+    into one `_apply_kind_and_unit_casts`, mirroring `_apply_divergent_marshaling`'s own
+    proven-correct chain/reversed-writeback pattern exactly -- build a per-arg forward chain
+    (kind cast, then unit convert, each reading the previous step's own result), then on
+    write-back walk that chain in reverse, emitting fully-built `KindWriteBackOp`/
+    `UnitWriteBackOp` instances directly into a single ordered `writeback_ops` list (replacing
+    the old `kind_writeback_pairs`/`unit_writeback_pairs`, which could only represent "all kind
+    write-backs, then all unit write-backs" globally -- structurally unable to express "this
+    arg's unit write-back before this arg's own kind write-back," which chaining requires).
+    `_BlockSignature`/`_assemble_func`'s signatures updated accordingly (both have exactly one
+    caller, so the blast radius was contained). Verified generated Fortran directly: forward
+    `x_kind_cast = real(x, kind=8)` then `x_unit_conv = x_kind_cast * 100.0_8` (now chained, was
+    `x * 100.0_8`); write-back `x_kind_cast = x_unit_conv * 0.01_8` then
+    `x = real(x_kind_cast, kind=kind_phys)` (unit undone first into the kind-cast's own temp,
+    then kind undone into the true original -- matching `_apply_divergent_marshaling`'s own
+    "must be undone unit-first, kind-second" comment). Added
+    `tests/unit/test_suite_boundary_kind_and_unit_chain.py` (3 tests) pinning this exact
+    chained forward/write-back shape; confirmed each test actually fails against the pre-fix
+    code via git-stash (not just passes against the fix). Full suite now 615 passed/1 xfailed
+    (612 + 3 new); `ruff check` unchanged (same 2 pre-existing findings, new test file itself
+    clean). Landed on the same `decompose-suite-cap-stage2` branch.
 - **Tier 4 — minor/verify-first, deliberately deferred** (tasks #61-#62): a handful of small items needing confirmation before touching (two flagged-deprecated op aliases that may be dead, a possibly-fully-subsumed `ArraySectionOp`, a possibly-superseded CLI tool, a possibly-dead-or-possibly-buggy branch in `visitor.py`, a raise-to-fall-through control-flow pattern, cosmetic nits) plus a security/robustness item (`ccpp_dsl.py`'s `os.system()` calls with interpolated paths, alongside the same duplication this whole audit is about). **Updated 2026-08-18:** task #61 also now folds in a batch of pre-existing `ruff check` findings (unsorted imports, unused imports, 15 unused locals from dataclass-unpacking in `run_dispatch.py`) noticed incidentally while verifying tasks #37-#40 -- confirmed via git-stash to predate all of them, zero-behavior-change cleanup, not fixed inline since out of scope for those specific tasks.
 
 **Execution decision (user, 2026-08-18): log everything as tracked tasks (done, tasks #37-#62 above), then execute Tier 1 + Tier 2 in this session; Tier 3 and Tier 4 stay backlog for a dedicated future session.** See each task's own description for the full finding detail — not duplicated in prose here to avoid the two ever drifting apart.

@@ -911,89 +911,96 @@ def _build_block_and_name_hints(input_arg_list) -> tuple:
     return new_block, input_arg_types, data_ops, final_values
 
 
-def _apply_kind_casts(
+def _apply_kind_and_unit_casts(
     input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
 ) -> tuple:
-    """Insert KindCastOps for host/scheme kind-mismatched input args.
+    """Insert KindCastOps/UnitConvertOps for host/scheme kind- and
+    unit-mismatched input args, chaining the two when an arg has both.
 
     Character length mismatches are resolved by declaring the block arg
     with the host's concrete length -- no runtime KindCastOp required.
     Divergent standard_names (divergent_std_keys) are skipped entirely:
     the dummy argument stays in the host's own native representation for
     the whole function body, and each individual scheme call marshals to
-    its own kind independently (see generateSchemeSubroutineCallOps).
+    its own kind/units independently (see generateSchemeSubroutineCallOps
+    / _apply_divergent_marshaling, the per-call-site analog of this
+    function for exactly that case).
+
+    A single arg can carry BOTH a kind mismatch and a unit mismatch (e.g.
+    the host declares kind_phys/meters, the scheme declares kind=8/cm) --
+    the two must chain (kind cast, then unit convert, reading the kind
+    cast's own result) rather than each independently reading/writing the
+    raw block arg, or the write-backs corrupt each other (Copilot review,
+    PR #82): the two write-backs must run in *reverse* forward order
+    (undo the unit convert first, back into the kind-cast's own SSA
+    value, THEN undo the kind cast, back into the true original block
+    arg) -- mirroring _apply_divergent_marshaling's own chain/reversed-
+    writeback pattern for the same underlying problem. Building the
+    write-back ops directly here (rather than as (value, target, param)
+    pairs assembled into ops later) is what lets them be interleaved in
+    this correct per-arg order in a single list; assembling ops from two
+    independently-ordered pair-lists later can't represent "unit write-
+    back before kind write-back for this specific arg" since it packs
+    all kind write-backs before all unit write-backs, globally.
 
     Mutates data_ops/final_values in place; returns (kind_cast_ops,
-    kind_writeback_pairs).
+    unit_convert_ops, writeback_ops).
     """
     kind_cast_ops: list = []
-    kind_writeback_pairs: list = []
+    unit_convert_ops: list = []
+    writeback_ops: list = []
     for idx, fn_arg in enumerate(input_arg_list):
         if _std_key(fn_arg) in divergent_std_keys:
             continue
-        if not fn_arg.hasAttr("model_var_kind_mismatch"):
-            continue
+        intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+        cur = new_block.args[idx]
+        chain: list = []  # (kind/unit, result_ssa, source_ssa, param)
+
         # Character length mismatches are resolved by declaring the block arg
         # with the host's concrete length — no runtime KindCastOp required.
-        if fn_arg.getAttr("type") == "character":
+        if (
+            fn_arg.hasAttr("model_var_kind_mismatch")
+            and fn_arg.getAttr("type") != "character"
+        ):
+            scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
+            scheme_type = TypeConversions.convert(
+                fn_arg.getAttr("type"), scheme_kind, _arg_dims(fn_arg)
+            )
+            cast_op = KindCastOp(cur, scheme_kind, scheme_type)
+            cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
+            kind_cast_ops.append(cast_op)
+            chain.append(("kind", cast_op.res, cur, host_kind))
+            cur = cast_op.res
+
+        if fn_arg.hasAttr("model_var_unit_mismatch"):
+            scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
+            to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+            arg_type = TypeConversions.convert(
+                fn_arg.getAttr("type"),
+                fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
+                _arg_dims(fn_arg),
+            )
+            pre_expr = "" if intent == "out" else to_scheme_expr
+            conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+            conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
+            unit_convert_ops.append(conv_op)
+            chain.append(("unit", conv_op.res, cur, to_host_expr))
+            cur = conv_op.res
+
+        if not chain:
             continue
-        scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
-        block_arg_ssa = new_block.args[idx]
-        scheme_type = TypeConversions.convert(
-            fn_arg.getAttr("type"), scheme_kind, _arg_dims(fn_arg)
-        )
-        cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
-        cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
-        kind_cast_ops.append(cast_op)
-        data_ops[fn_arg.name] = cast_op.res
-        final_values[idx] = cast_op.res
 
-        intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-        if intent in ("inout", "out"):
-            kind_writeback_pairs.append((cast_op.res, block_arg_ssa, host_kind))
-
-    return kind_cast_ops, kind_writeback_pairs
-
-
-def _apply_unit_conversions(
-    input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
-) -> tuple:
-    """Insert UnitConvertOps for host/scheme unit-mismatched input args.
-
-    Same divergent_std_keys skip-and-defer-to-per-call-site marshaling as
-    _apply_kind_casts (see its docstring). Mutates data_ops/final_values
-    in place; returns (unit_convert_ops, unit_writeback_pairs).
-    """
-    unit_convert_ops: list = []
-    unit_writeback_pairs: list = []
-    for idx, fn_arg in enumerate(input_arg_list):
-        if _std_key(fn_arg) in divergent_std_keys:
-            continue
-        if not fn_arg.hasAttr("model_var_unit_mismatch"):
-            continue
-        scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
-        to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
-
-        block_arg_ssa = new_block.args[idx]
-        arg_type = TypeConversions.convert(
-            fn_arg.getAttr("type"),
-            fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
-            _arg_dims(fn_arg),
-        )
-
-        intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-        pre_expr = "" if intent == "out" else to_scheme_expr
-
-        conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
-        conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
-        unit_convert_ops.append(conv_op)
-        data_ops[fn_arg.name] = conv_op.res
-        final_values[idx] = conv_op.res
+        data_ops[fn_arg.name] = cur
+        final_values[idx] = cur
 
         if intent in ("inout", "out"):
-            unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
+            for kind_or_unit, result_ssa, source_ssa, param in reversed(chain):
+                if kind_or_unit == "kind":
+                    writeback_ops.append(KindWriteBackOp(result_ssa, source_ssa, param))
+                else:
+                    writeback_ops.append(UnitWriteBackOp(result_ssa, source_ssa, param))
 
-    return unit_convert_ops, unit_writeback_pairs
+    return kind_cast_ops, unit_convert_ops, writeback_ops
 
 
 def _alloc_output_error_args(output_arg_list, data_ops) -> dict:
@@ -1121,9 +1128,8 @@ class _BlockSignature:
     data_ops: dict
     alloc_ops: dict
     kind_cast_ops: list
-    kind_writeback_pairs: list
     unit_convert_ops: list
-    unit_writeback_pairs: list
+    writeback_ops: list
 
 
 @dataclass
@@ -2048,10 +2054,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         new_block, input_arg_types, data_ops, final_values = _build_block_and_name_hints(
             input_arg_list
         )
-        kind_cast_ops, kind_writeback_pairs = _apply_kind_casts(
-            input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
-        )
-        unit_convert_ops, unit_writeback_pairs = _apply_unit_conversions(
+        kind_cast_ops, unit_convert_ops, writeback_ops = _apply_kind_and_unit_casts(
             input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
         )
         alloc_ops = _alloc_output_error_args(output_arg_list, data_ops)
@@ -2063,9 +2066,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             data_ops=data_ops,
             alloc_ops=alloc_ops,
             kind_cast_ops=kind_cast_ops,
-            kind_writeback_pairs=kind_writeback_pairs,
             unit_convert_ops=unit_convert_ops,
-            unit_writeback_pairs=unit_writeback_pairs,
+            writeback_ops=writeback_ops,
         )
 
     def _classify_args(self, all_args, physics_mode) -> "_ArgClassification":
@@ -2237,9 +2239,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         data_ops,
         alloc_ops,
         kind_cast_ops,
-        kind_writeback_pairs,
         unit_convert_ops,
-        unit_writeback_pairs,
+        writeback_ops,
         call_ops,
         initialisation_ops,
         ncol_compute_ops,
@@ -2294,15 +2295,6 @@ class GenerateSuiteSubroutine(RewritePattern):
             else []
         )
 
-        kind_writeback_ops = [
-            KindWriteBackOp(conv_res, orig_dest, orig_kind)
-            for conv_res, orig_dest, orig_kind in kind_writeback_pairs
-        ]
-        unit_writeback_ops = [
-            UnitWriteBackOp(conv_res, orig_dest, to_host)
-            for conv_res, orig_dest, to_host in unit_writeback_pairs
-        ]
-
         body_ops = (
             alloc_return_vals
             + initialisation_ops
@@ -2313,8 +2305,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             + unit_convert_ops
             + check_ops
             + call_ops
-            + kind_writeback_ops
-            + unit_writeback_ops
+            + writeback_ops
             + list(suite_lifecycle_call_ops)
             + state_ops
             + [func.ReturnOp(*inout_return_vals, *alloc_return_vals)]
@@ -2937,9 +2928,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         data_ops = _sig.data_ops
         alloc_ops = _sig.alloc_ops
         kind_cast_ops = _sig.kind_cast_ops
-        kind_writeback_pairs = _sig.kind_writeback_pairs
         unit_convert_ops = _sig.unit_convert_ops
-        unit_writeback_pairs = _sig.unit_writeback_pairs
+        writeback_ops = _sig.writeback_ops
 
         ncol_compute_ops = self._build_ncol_compute_ops(physics_mode, data_ops, ncol_meta)
 
@@ -3034,9 +3024,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             data_ops=data_ops,
             alloc_ops=alloc_ops,
             kind_cast_ops=kind_cast_ops,
-            kind_writeback_pairs=kind_writeback_pairs,
             unit_convert_ops=unit_convert_ops,
-            unit_writeback_pairs=unit_writeback_pairs,
+            writeback_ops=writeback_ops,
             call_ops=call_ops,
             initialisation_ops=initialisation_ops,
             ncol_compute_ops=ncol_compute_ops,
