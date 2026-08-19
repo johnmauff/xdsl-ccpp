@@ -93,6 +93,60 @@ def _module_var_fortran_type(op: "CCPPModuleVarOp") -> str:
     return ftn
 
 
+def classify_arg_intent(
+    *,
+    is_allocatable_char: bool,
+    is_alloc: bool,
+    is_in: bool,
+    has_array_dims: bool,
+    is_inout_return: bool,
+) -> str:
+    """Return the CCPP-cap intent ('in'/'inout'/'out') for a block argument.
+
+    Single source of truth for the intent-classification decision tree --
+    both this file's own `_print_fn` (the Fortran printer) and
+    `print_cpp_header.py`'s `_intent_from_arg` (the BIND(C) header printer)
+    must produce the identical intent for the identical argument, since
+    they're printing two views of the same generated subroutine signature.
+    Before this was extracted, `print_cpp_header.py` carried its own
+    hand-copied replica that was missing the `is_alloc` branch entirely --
+    harmless today only because every current allocatable (non-character)
+    argument also happens to have array dims, so it fell through to the
+    same "inout" via `has_array_dims` instead; a future scalar allocatable
+    argument (e.g. a scalar workspace scratch var) would have silently
+    gotten the wrong intent in the C++ header while the Fortran side
+    stayed correct. A pure function over booleans (no xDSL type
+    dependency) so it can't accidentally pick up file-specific state and
+    both callers are forced through the exact same branch order.
+
+    is_allocatable_char -- True for memref<memref<?xi8>> (allocatable
+        character array): always intent(out), the callee allocates and
+        fills it.
+    is_alloc -- True when the arg's own name_hint carries the "__alloc"
+        suffix (allocatable, non-character): intent(inout).
+    is_in -- True when the name_hint carries the "__in" suffix (an array
+        arg deliberately narrowed to intent(in), e.g. after being copied
+        into a local for unit conversion): intent(in).
+    has_array_dims -- True when the type has at least one dynamic array
+        dimension: intent(inout) (the host provides the buffer, the
+        scheme may write to it in place).
+    is_inout_return -- True when this block arg is echoed back in the
+        function's own ReturnOp (see `_print_fn`'s `inout_block_args`
+        scan): intent(inout).
+    """
+    if is_allocatable_char:
+        return "out"
+    if is_alloc:
+        return "inout"
+    if is_in:
+        return "in"
+    if has_array_dims:
+        return "inout"
+    if is_inout_return:
+        return "inout"
+    return "in"
+
+
 @dataclass
 class ftnPrintContext:
     """Stateful context for printing MLIR IR as Fortran source text.
@@ -465,6 +519,76 @@ class ftnPrintContext:
             case _:
                 raise AssertionError(f"Unhandled op in print_expr: {type(op)}")
 
+    def _print_guarded_alloc_and_assign(
+        self, src_name: str, result_name: str, sizes: list, is_optional_array: bool,
+        assign_expr: str | None = None,
+    ) -> None:
+        """Print a reentry-safe (deallocate-if-allocated) allocate for
+        result_name, sized by `sizes`, followed by an optional assignment --
+        the whole block gated on `if (present(src_name))` when
+        is_optional_array is True.
+
+        Shared by CCPPKindCastOp/CCPPUnitConvertOp/CCPPVerticalFlipOp's own
+        array-case printing (complexity-audit Tier 2 finding, task #46) --
+        RowMajorConvertOp is deliberately NOT included: its rank/sizes come
+        from an explicit `dim_exprs` attribute, not the result type's own
+        shape the way the other three derive theirs from
+        `self._ftn_dim_suffix`, and its source is always a host module-var
+        reference (`HostVarRefOp`), which -- confirmed against
+        `suite_cap.py`'s own `_hint_for`, the sole site anywhere that ever
+        tags a value `"__opt"` -- can never be an optional dummy argument in
+        the first place, so it needs no present() gate at all.
+
+        assign_expr=None skips the assignment line entirely (UnitConvertOp's
+        own intent(out) case, where to_expr is empty and there is nothing to
+        pre-copy).
+
+        The reentry-safe deallocate-before-allocate guards against a
+        subcycle loop re-invoking this same conversion with no intervening
+        deallocate -- see the original per-case comments this replaced for
+        the full reasoning.
+        """
+        sizes_str = ", ".join(sizes)
+
+        def _body(printer) -> None:
+            printer.print(f"if (allocated({result_name})) deallocate({result_name})")
+            printer.print(f"allocate({result_name}({sizes_str}))")
+            if assign_expr is not None:
+                printer.print(assign_expr)
+
+        if is_optional_array:
+            self.print(f"if (present({src_name})) then")
+            with self.descend() as inner:
+                _body(inner)
+            self.print("end if")
+        else:
+            _body(self)
+
+    def _print_guarded_writeback_and_dealloc(
+        self, dest_name: str, conv_name: str, is_optional_array: bool,
+        assign_expr: str, has_dims: bool = True,
+    ) -> None:
+        """Print a write-back assignment followed by deallocate(conv_name),
+        gated on `if (present(dest_name))` when is_optional_array is True
+        (else unconditional, with the deallocate only when has_dims -- a
+        scalar write-back has nothing allocated to free).
+
+        Shared by CCPPKindWriteBackOp/CCPPUnitWriteBackOp/
+        CCPPVerticalFlipWriteBackOp's own write-back printing -- see
+        _print_guarded_alloc_and_assign's own docstring for why
+        RowMajorWriteBackOp is deliberately excluded.
+        """
+        if is_optional_array:
+            self.print(f"if (present({dest_name})) then")
+            with self.descend() as inner:
+                inner.print(assign_expr)
+                inner.print(f"deallocate({conv_name})")
+            self.print("end if")
+        else:
+            self.print(assign_expr)
+            if has_dims:
+                self.print(f"deallocate({conv_name})")
+
     def print_op(self, op: Operation):
         """Dispatch an MLIR operation to the appropriate Fortran printer.
 
@@ -834,7 +958,7 @@ class ftnPrintContext:
                 if dim_suffix:
                     # mold= requires matching kind; use explicit size() dims instead
                     rank = dim_suffix.count(":")
-                    sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    sizes = [f"size({src_name}, {i+1})" for i in range(rank)]
                     # An optional array dummy that the caller genuinely did
                     # not pass has no bounds to call size() on at all --
                     # gate the whole allocate+convert on present() so this
@@ -847,27 +971,10 @@ class ftnPrintContext:
                         op.source.name_hint is not None
                         and op.source.name_hint.endswith("__opt")
                     )
-                    if is_optional_array:
-                        self.print(f"if (present({src_name})) then")
-                        with self.descend() as inner:
-                            # Guard against re-entry into this same code with no
-                            # intervening deallocate -- e.g. a subcycle loop calling
-                            # the consuming scheme (and this conversion) more than
-                            # once per suite invocation. The paired *WriteBackOp
-                            # case below only ever deallocates when a write-back is
-                            # actually needed (intent=inout/out); a pure intent=in
-                            # value has no write-back at all, so without this guard
-                            # its temp is never deallocated between iterations,
-                            # crashing on the second allocate ("Attempting to
-                            # allocate already allocated variable").
-                            inner.print(f"if (allocated({result_name})) deallocate({result_name})")
-                            inner.print(f"allocate({result_name}({sizes}))")
-                            inner.print(f"{result_name} = real({src_name}, kind={target_kind})")
-                        self.print("end if")
-                    else:
-                        self.print(f"if (allocated({result_name})) deallocate({result_name})")
-                        self.print(f"allocate({result_name}({sizes}))")
-                        self.print(f"{result_name} = real({src_name}, kind={target_kind})")
+                    self._print_guarded_alloc_and_assign(
+                        src_name, result_name, sizes, is_optional_array,
+                        assign_expr=f"{result_name} = real({src_name}, kind={target_kind})",
+                    )
                 else:
                     self.print(f"{result_name} = real({src_name}, kind={target_kind})")
             case CCPPKindWriteBackOp():
@@ -878,21 +985,16 @@ class ftnPrintContext:
                 # Mirror the presence-gating above: an absent optional array
                 # was never allocated/converted in the first place, so there
                 # is nothing to write back or deallocate either.
-                is_optional_array = (
+                is_optional_array = bool(
                     dim_suffix
                     and op.original_dest.name_hint is not None
                     and op.original_dest.name_hint.endswith("__opt")
                 )
-                if is_optional_array:
-                    self.print(f"if (present({dest_name})) then")
-                    with self.descend() as inner:
-                        inner.print(f"{dest_name} = real({conv_name}, kind={orig_kind})")
-                        inner.print(f"deallocate({conv_name})")
-                    self.print("end if")
-                else:
-                    self.print(f"{dest_name} = real({conv_name}, kind={orig_kind})")
-                    if dim_suffix:
-                        self.print(f"deallocate({conv_name})")
+                self._print_guarded_writeback_and_dealloc(
+                    dest_name, conv_name, is_optional_array,
+                    assign_expr=f"{dest_name} = real({conv_name}, kind={orig_kind})",
+                    has_dims=bool(dim_suffix),
+                )
             case CCPPUnitConvertOp():
                 # Local-copy pre-conversion (host units → scheme units).
                 # Allocates a local temp and copies the converted value into it;
@@ -904,7 +1006,7 @@ class ftnPrintContext:
                 dim_suffix = self._ftn_dim_suffix(op.res.type)
                 if dim_suffix:
                     rank = dim_suffix.count(":")
-                    sizes = ", ".join(f"size({src_name}, {i+1})" for i in range(rank))
+                    sizes = [f"size({src_name}, {i+1})" for i in range(rank)]
                     # See CCPPKindCastOp's own comment above: an absent
                     # optional array has no bounds to call size() on, so
                     # gate the whole allocate(+copy) on present().
@@ -912,24 +1014,10 @@ class ftnPrintContext:
                         op.source.name_hint is not None
                         and op.source.name_hint.endswith("__opt")
                     )
-                    if is_optional_array:
-                        self.print(f"if (present({src_name})) then")
-                        with self.descend() as inner:
-                            # See CCPPKindCastOp's own comment above: guards against
-                            # re-entry (e.g. a subcycle loop) with no intervening
-                            # deallocate when this value is pure intent=in (no
-                            # write-back, so the *WriteBackOp case's own deallocate
-                            # never runs at all).
-                            inner.print(f"if (allocated({result_name})) deallocate({result_name})")
-                            inner.print(f"allocate({result_name}({sizes}))")
-                            if to_expr:
-                                inner.print(f"{result_name} = {src_name} {to_expr}")
-                        self.print("end if")
-                    else:
-                        self.print(f"if (allocated({result_name})) deallocate({result_name})")
-                        self.print(f"allocate({result_name}({sizes}))")
-                        if to_expr:
-                            self.print(f"{result_name} = {src_name} {to_expr}")
+                    self._print_guarded_alloc_and_assign(
+                        src_name, result_name, sizes, is_optional_array,
+                        assign_expr=f"{result_name} = {src_name} {to_expr}" if to_expr else None,
+                    )
                 elif to_expr:
                     self.print(f"{result_name} = {src_name} {to_expr}")
                 # intent(out): no pre-copy — scheme fills the local from scratch
@@ -943,43 +1031,48 @@ class ftnPrintContext:
                 # Mirror CCPPUnitConvertOp's own presence gating: an absent
                 # optional array was never allocated/converted, so there is
                 # nothing to write back or deallocate either.
-                is_optional_array = (
+                is_optional_array = bool(
                     dim_suffix
                     and op.original_dest.name_hint is not None
                     and op.original_dest.name_hint.endswith("__opt")
                 )
-                if is_optional_array:
-                    self.print(f"if (present({dest_name})) then")
-                    with self.descend() as inner:
-                        inner.print(f"{dest_name} = {conv_name} {to_expr}")
-                        inner.print(f"deallocate({conv_name})")
-                    self.print("end if")
-                else:
-                    self.print(f"{dest_name} = {conv_name} {to_expr}")
-                    if dim_suffix:
-                        self.print(f"deallocate({conv_name})")
+                self._print_guarded_writeback_and_dealloc(
+                    dest_name, conv_name, is_optional_array,
+                    assign_expr=f"{dest_name} = {conv_name} {to_expr}",
+                    has_dims=bool(dim_suffix),
+                )
             case CCPPVerticalFlipOp():
                 # Local-copy vertical flip: reverse an array section along the
                 # vertical dimension into a local temp; the host's array is
-                # never modified.
+                # never modified. Always array-shaped (top_at_one is only
+                # ever meaningful for an array with a vertical dimension),
+                # unlike CCPPKindCastOp/CCPPUnitConvertOp -- no scalar branch.
                 src_name    = self._get_variable_name_for(op.source)
                 result_name = self._get_variable_name_for(op.res)
                 vert_dim = op.vertical_dim.value.data
                 dim_suffix = self._ftn_dim_suffix(op.res.type)
                 rank = dim_suffix.count(":")
-                sizes = ", ".join(f"size({src_name}, {i + 1})" for i in range(rank))
-                # See CCPPKindCastOp's own comment above: guards against
-                # re-entry (e.g. a subcycle loop) with no intervening
-                # deallocate when this value is pure intent=in (no
-                # write-back, so the *WriteBackOp case's own deallocate
-                # never runs at all).
-                self.print(f"if (allocated({result_name})) deallocate({result_name})")
-                self.print(f"allocate({result_name}({sizes}))")
+                sizes = [f"size({src_name}, {i + 1})" for i in range(rank)]
                 sections = [
                     f"size({src_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
                     for i in range(rank)
                 ]
-                self.print(f"{result_name} = {src_name}({', '.join(sections)})")
+                # See CCPPKindCastOp's own comment above: an absent optional
+                # array has no bounds to call size() on, so gate the whole
+                # allocate+flip on present() -- this arg only ever reaches
+                # this op via suite_cap.py's _apply_divergent_marshaling
+                # (a cross-scheme divergent standard_name with top_at_one
+                # set), which doesn't itself exclude optional args, so the
+                # gate is a real (if not yet exercised by any current
+                # example) latent-crash guard, not just defensive symmetry.
+                is_optional_array = (
+                    op.source.name_hint is not None
+                    and op.source.name_hint.endswith("__opt")
+                )
+                self._print_guarded_alloc_and_assign(
+                    src_name, result_name, sizes, is_optional_array,
+                    assign_expr=f"{result_name} = {src_name}({', '.join(sections)})",
+                )
             case CCPPVerticalFlipWriteBackOp():
                 # Post-flip: write the local temp back to the host, reversed
                 # along the same vertical dimension (a second reversal
@@ -992,8 +1085,16 @@ class ftnPrintContext:
                     f"size({conv_name}, {vert_dim}):1:-1" if i + 1 == vert_dim else ":"
                     for i in range(rank)
                 ]
-                self.print(f"{dest_name} = {conv_name}({', '.join(sections)})")
-                self.print(f"deallocate({conv_name})")
+                # See CCPPVerticalFlipOp's own comment above for why this
+                # gate matters despite no current example exercising it.
+                is_optional_array = (
+                    op.original_dest.name_hint is not None
+                    and op.original_dest.name_hint.endswith("__opt")
+                )
+                self._print_guarded_writeback_and_dealloc(
+                    dest_name, conv_name, is_optional_array,
+                    assign_expr=f"{dest_name} = {conv_name}({', '.join(sections)})",
+                )
             case CCPPRowMajorConvertOp():
                 # Forward transpose: row-major host → column-major local temp.
                 src_name    = self._get_variable_name_for(op.source)
@@ -1654,20 +1755,16 @@ class ftnPrintContext:
                             and arg.name_hint.endswith("__in"))
                 type_str = inner.mlir_type_to_ftn_type(arg.type)
                 dim_suffix = inner._ftn_dim_suffix(arg.type)
-                if ftnPrintContext._is_allocatable_char(arg.type):
+                is_allocatable_char = ftnPrintContext._is_allocatable_char(arg.type)
+                intent = classify_arg_intent(
+                    is_allocatable_char=is_allocatable_char,
+                    is_alloc=is_alloc,
+                    is_in=is_in,
+                    has_array_dims=bool(dim_suffix),
+                    is_inout_return=arg in inout_block_args,
+                )
+                if is_allocatable_char or is_alloc:
                     type_str = type_str + ", allocatable"
-                    intent = "out"
-                elif is_alloc:
-                    type_str = type_str + ", allocatable"
-                    intent = "inout"
-                elif is_in:
-                    intent = "in"
-                elif dim_suffix:
-                    intent = "inout"
-                elif arg in inout_block_args:
-                    intent = "inout"
-                else:
-                    intent = "in"
                 if bind_c:
                     inner.print(inner._bind_c_arg_decl_line(arg.type, arg_name, intent, is_opt))
                 else:

@@ -28,34 +28,23 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.parser import Parser
-from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
+from xdsl_ccpp.tools.flang_utils import find_flang, run_flang
 from xdsl_ccpp.transforms.validate_fir import (
     check_dimension_names,
     collect_standard_names,
     compare_modules,
 )
 
-
 # ── backend detection ─────────────────────────────────────────────────────────
-
-def _find_flang() -> str | None:
-    for candidate in ("flang", "flang-new", "flang-20", "flang-19", "flang-18"):
-        if shutil.which(candidate):
-            return candidate
-    return None
-
 
 def _fparser_available() -> bool:
     try:
@@ -68,7 +57,7 @@ def _fparser_available() -> bool:
 def _select_backend(requested: str | None) -> str:
     """Return 'flang' or 'fparser2', or exit with a helpful message."""
     if requested == "flang":
-        if _find_flang() is None:
+        if find_flang() is None:
             print(
                 "Error: --backend flang requested but no Flang executable found.\n"
                 "  Install via:  brew install llvm  (add $(brew --prefix llvm)/bin to PATH)\n"
@@ -87,7 +76,7 @@ def _select_backend(requested: str | None) -> str:
             sys.exit(1)
         return "fparser2"
     # Auto-detect
-    if _find_flang():
+    if find_flang():
         return "flang"
     if _fparser_available():
         return "fparser2"
@@ -103,28 +92,6 @@ def _select_backend(requested: str | None) -> str:
 
 # ── Flang pipeline ────────────────────────────────────────────────────────────
 
-def _make_ctx() -> Context:
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
-
-
-def _run_flang(flang: str, f90_file: str, fir_mlir: str) -> bool:
-    cmd = [
-        flang, "-fc1", "-emit-hlfir",
-        "-mmlir", "-mlir-print-op-generic",
-        f90_file, "-o", fir_mlir,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"Error: flang failed on '{f90_file}':\n{result.stderr}", file=sys.stderr)
-        return False
-    return True
-
-
 def _run_fir_to_meta(fir_mlir: str) -> str | None:
     cmd = [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", fir_mlir, "-p", "fir-to-meta"]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -137,13 +104,13 @@ def _run_fir_to_meta(fir_mlir: str) -> str | None:
 def _extract_fir(flang: str, f90_file: str, tmpdir: str) -> builtin.ModuleOp | None:
     stem = os.path.splitext(os.path.basename(f90_file))[0]
     fir_mlir = os.path.join(tmpdir, f"{stem}.mlir")
-    if not _run_flang(flang, f90_file, fir_mlir):
+    if not run_flang(flang, f90_file, fir_mlir):
         return None
     meta_text = _run_fir_to_meta(fir_mlir)
     if meta_text is None:
         return None
     try:
-        return Parser(_make_ctx(), meta_text).parse_op()
+        return Parser(make_ccpp_context(), meta_text).parse_op()
     except Exception as exc:
         print(f"Error: failed to parse fir-to-meta output: {exc}", file=sys.stderr)
         return None
@@ -176,8 +143,8 @@ def _parse_meta_file(meta_path: str) -> builtin.ModuleOp | None:
 
 def _load_meta_file(meta_path: str, verbose: bool = False) -> builtin.ModuleOp | None:
     """Load a scheme .meta file.  Returns None if the file is a host/module type."""
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
     from xdsl_ccpp.dialects.ccpp import TableTypeKind
+    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
     module = _parse_meta_file(meta_path)
     if module is None:
         return None
@@ -222,7 +189,7 @@ def main() -> None:
     args = parser.parse_args()
 
     backend = _select_backend(args.backend)
-    flang = _find_flang() if backend == "flang" else None
+    flang = find_flang() if backend == "flang" else None
     if args.verbose:
         print(f"Backend: {backend}" + (f" ({flang})" if flang else ""))
 

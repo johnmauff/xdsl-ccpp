@@ -42,6 +42,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
+    iter_arg_tables,
     resolve_capscratch_cap_var_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -94,6 +95,27 @@ def _collect_public_suite_functions(ops):
 
 
 
+
+
+@dataclass
+class _CVArgInfo:
+    """Per-bare-name info collected while scanning one group's schemes, for
+    the CapScratch/framework-var promotion decision in _build_cap_var_map.
+
+    Consolidates 5 previously-separate parallel dicts (all keyed by the
+    same bare arg name, all populated in the same scan loop, always read
+    back together at the same call sites below) into one dict of these
+    (complexity-audit Tier 2 finding, task #55). std_name/dim_names/
+    ownership_kind keep "first occurrence wins" semantics (None means "not
+    yet seen"); is_constituent/needs_gpu are True once any occurrence sets
+    them (never reset).
+    """
+
+    std_name: "str | None" = None
+    dim_names: "list | None" = None
+    is_constituent: bool = False
+    ownership_kind: object = None
+    needs_gpu: bool = False
 
 
 def _build_cap_var_map(
@@ -190,11 +212,7 @@ def _build_cap_var_map(
                 continue
             _, _, _ci_types, _ci_names = public_fns[_callee_cv]
             _grp_schemes = [_s.attributes["name"] for _s in _iter_schemes(_grp_cv)]
-            _sno_cv: dict = {}
-            _dno_cv: dict = {}
-            _cno_cv: dict = {}  # bare_name → True when constituent=True
-            _own_cv: dict = {}  # bare_name → ArgOwnershipKind
-            _msp_cv: dict = {}  # bare_name → True if ANY occurrence wants memory_space=device
+            _arg_info_cv: dict[str, _CVArgInfo] = {}
             for _scheme_cv in _grp_schemes:
                 _run_tbl_cv = _scheme_cv + "_run"
                 if _scheme_cv not in meta_data:
@@ -205,32 +223,34 @@ def _build_cap_var_map(
                     meta_data[_scheme_cv].getArgTable(_run_tbl_cv).getFunctionArguments()
                 ):
                     _bn_cv = _bare(_fa_cv.name)
-                    if _bn_cv not in _sno_cv and _fa_cv.hasAttr("standard_name"):
-                        _sno_cv[_bn_cv] = _fa_cv.getAttr("standard_name").lower()
-                    if _bn_cv not in _dno_cv and _fa_cv.hasAttr("dim_names"):
-                        _dno_cv[_bn_cv] = _fa_cv.getAttr("dim_names")
+                    _info_cv = _arg_info_cv.setdefault(_bn_cv, _CVArgInfo())
+                    if _info_cv.std_name is None and _fa_cv.hasAttr("standard_name"):
+                        _info_cv.std_name = _fa_cv.getAttr("standard_name").lower()
+                    if _info_cv.dim_names is None and _fa_cv.hasAttr("dim_names"):
+                        _info_cv.dim_names = _fa_cv.getAttr("dim_names")
                     if _fa_cv.hasAttr("constituent"):
-                        _cno_cv[_bn_cv] = True
-                    if _bn_cv not in _own_cv and _fa_cv.hasAttr("ownership_kind"):
-                        _own_cv[_bn_cv] = _fa_cv.getAttr("ownership_kind")
+                        _info_cv.is_constituent = True
+                    if _info_cv.ownership_kind is None and _fa_cv.hasAttr("ownership_kind"):
+                        _info_cv.ownership_kind = _fa_cv.getAttr("ownership_kind")
                     if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
-                        _msp_cv[_bn_cv] = True
+                        _info_cv.needs_gpu = True
             for _an_cv, _at_cv in zip(_ci_names, _ci_types):
                 _bn_cv = _bare(_an_cv)
+                _info_cv = _arg_info_cv.get(_bn_cv)
                 # Anything not classified CapScratch (HostMatched, Block, or
                 # unclassified) has nothing to promote here -- this single
                 # check replaces the old _matched_cv / CCPP_FRAMEWORK_STD_NAMES
                 # / CCPP_ERROR_STD_NAMES / host_block_std / host_var_map_lc
                 # exclusion-set checks, all folded into ownership_kind already.
-                if _own_cv.get(_bn_cv) != ccpp.ArgOwnershipKind.CapScratch:
+                if _info_cv is None or _info_cv.ownership_kind != ccpp.ArgOwnershipKind.CapScratch:
                     continue
-                _std_cv = _sno_cv.get(_bn_cv)
+                _std_cv = _info_cv.std_name
                 if not _std_cv:
                     continue
-                _needs_gpu_cv = _msp_cv.get(_bn_cv, False)
+                _needs_gpu_cv = _info_cv.needs_gpu
                 if _std_cv in FRAMEWORK_STD_NAME_TO_CAP_VAR:
                     _cap_name_cv = resolve_capscratch_cap_var_name(
-                        _std_cv, _cno_cv.get(_bn_cv, False)
+                        _std_cv, _info_cv.is_constituent
                     )
                     if _std_cv not in cap_var_map:
                         cap_var_map[_std_cv] = (_cv_ref(_cap_name_cv), None, None)
@@ -240,14 +260,14 @@ def _build_cap_var_map(
                 if _std_cv not in scratch_var_index:
                     _lc_cv = f"lc_{_bn_cv}"
                     _rank_cv = _rank_of(_at_cv)
-                    _dims_cv = _dno_cv.get(_bn_cv, [])
+                    _dims_cv = _info_cv.dim_names or []
                     _alloc_cv = ", ".join(
                         _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
                     ) if _dims_cv else "ncols, pver"
                     # Constituent-tendency scratch vars (constituent=True in meta)
                     # are pointer slices into lc_const_tend, not separate allocatables.
                     _resolved_cap_var_cv = resolve_capscratch_cap_var_name(
-                        _std_cv, _cno_cv.get(_bn_cv, False)
+                        _std_cv, _info_cv.is_constituent
                     )
                     _const_std_name = (
                         _std_cv[len("tendency_of_"):]
@@ -405,192 +425,175 @@ class CCPPCAP(ModulePass):
             # value as a meaningful physics output.
             interstitial_std_names: set = set()
             state_var_unit_mismatch: set = set()
-            for tbl_op in ccpp_mod.body.ops:
-                if not isa(tbl_op, ccpp.TablePropertiesOp):
-                    continue
-                if tbl_op.table_type.data != "scheme":
-                    continue
-                if tbl_op.table_name.data not in scheme_names:
-                    continue
-                for arg_table_op in tbl_op.body.ops:
-                    if not isa(arg_table_op, ccpp.ArgumentTableOp):
+            for _tbl_op, arg_table_op in iter_arg_tables(
+                ccpp_mod, table_type="scheme", table_name_in=scheme_names
+            ):
+                for arg_op in arg_table_op.body.ops:
+                    if not isa(arg_op, ccpp.ArgumentOp):
                         continue
-                    for arg_op in arg_table_op.body.ops:
-                        if not isa(arg_op, ccpp.ArgumentOp):
-                            continue
-                        if arg_op.properties.get("is_interstitial") is not None:
-                            sn_prop = arg_op.properties.get("standard_name")
-                            if sn_prop is not None:
-                                interstitial_std_names.add(sn_prop.data.lower())
-                        if arg_op.properties.get("state_variable") is not None:
-                            sn_prop = arg_op.properties.get("standard_name")
-                            if sn_prop is not None:
-                                _sn = sn_prop.data.lower()
-                                _su = arg_op.properties.get("units")
-                                _su_str = _su.data.lower() if _su is not None else None
-                                _hu = host_std_names.get(_sn)
-                                if (_su_str is not None and _hu is not None
-                                        and _su_str != _hu):
-                                    state_var_unit_mismatch.add(_sn)
+                    if arg_op.properties.get("is_interstitial") is not None:
+                        sn_prop = arg_op.properties.get("standard_name")
+                        if sn_prop is not None:
+                            interstitial_std_names.add(sn_prop.data.lower())
+                    if arg_op.properties.get("state_variable") is not None:
+                        sn_prop = arg_op.properties.get("standard_name")
+                        if sn_prop is not None:
+                            _sn = sn_prop.data.lower()
+                            _su = arg_op.properties.get("units")
+                            _su_str = _su.data.lower() if _su is not None else None
+                            _hu = host_std_names.get(_sn)
+                            if (_su_str is not None and _hu is not None
+                                    and _su_str != _hu):
+                                state_var_unit_mismatch.add(_sn)
 
             input_vars: set = set()
             output_vars: set = set()
             all_dim_names: set = set()
 
             # Pass 2: build input/output variable sets
-            for tbl_op in ccpp_mod.body.ops:
-                if not isa(tbl_op, ccpp.TablePropertiesOp):
-                    continue
-                if tbl_op.table_type.data != "scheme":
-                    continue
-                if tbl_op.table_name.data not in scheme_names:
-                    continue
-
-                # Iterate all entry-point arg tables (_init, _run, _finalize …)
-                for arg_table_op in tbl_op.body.ops:
-                    if not isa(arg_table_op, ccpp.ArgumentTableOp):
+            for _tbl_op, arg_table_op in iter_arg_tables(
+                ccpp_mod, table_type="scheme", table_name_in=scheme_names
+            ):
+                for arg_op in arg_table_op.body.ops:
+                    if not isa(arg_op, ccpp.ArgumentOp):
                         continue
 
-                    for arg_op in arg_table_op.body.ops:
-                        if not isa(arg_op, ccpp.ArgumentOp):
-                            continue
+                    sn_prop = arg_op.properties.get("standard_name")
+                    if sn_prop is None:
+                        continue
+                    std_name = sn_prop.data.lower()
 
-                        sn_prop = arg_op.properties.get("standard_name")
-                        if sn_prop is None:
-                            continue
-                        std_name = sn_prop.data.lower()
+                    # Collect dimension names for the post-scan sweep
+                    dim_names_prop = arg_op.properties.get("dim_names")
+                    if dim_names_prop is not None:
+                        for dn in dim_names_prop.data.split(","):
+                            dn = dn.strip().lower()
+                            # Skip bare colons and integer literals
+                            if dn and dn[0].isalpha():
+                                all_dim_names.add(dn)
 
-                        # Collect dimension names for the post-scan sweep
-                        dim_names_prop = arg_op.properties.get("dim_names")
-                        if dim_names_prop is not None:
-                            for dn in dim_names_prop.data.split(","):
-                                dn = dn.strip().lower()
-                                # Skip bare colons and integer literals
-                                if dn and dn[0].isalpha():
-                                    all_dim_names.add(dn)
+                    if std_name in interstitial_std_names:
+                        continue
+                    if std_name in _INTERNAL:
+                        continue
 
-                        if std_name in interstitial_std_names:
-                            continue
-                        if std_name in _INTERNAL:
-                            continue
+                    # An OPTIONAL CapScratch arg with no host match at all
+                    # and no recognized framework meaning (e.g.
+                    # var_compat's ncl_out/cloud_liquid_number_concentration
+                    # -- an optional intent=out array no host .meta
+                    # declares, resolved to a throwaway cap-owned scratch
+                    # variable) never actually reaches the host in either
+                    # direction, so it must not appear in the suite's
+                    # variable list at all. Recognized framework arrays
+                    # (ccpp_constituents, ccpp_constituent_tendencies --
+                    # also CapScratch, since no host ever declares them
+                    # either) are real physics arrays and must still
+                    # appear, so only exclude when std_name isn't one of
+                    # those known names.
+                    #
+                    # Require "optional" specifically (not just
+                    # CapScratch + unmatched): examples/advection's own
+                    # end-to-end FileCheck golden runs a deliberately
+                    # reduced pass list with no generate-host-match at
+                    # all (see DEVELOPERS.md's own caveat that these
+                    # manually-composed pass lists aren't a stand-in for
+                    # the real driver pipeline), so ownership_kind alone
+                    # is unreliable there -- e.g. cld_liq's tcld
+                    # (minimum_temperature_for_cloud_liquid, a genuine
+                    # intra-suite interstitial the real pipeline's
+                    # generate-host-match would mark and exclude via
+                    # interstitial_std_names instead) and cld_liq_tend
+                    # (tendency_of_cloud_liquid_dry_mixing_ratio,
+                    # constituent=True, _build_cap_var_map's own
+                    # docstring names this as an intentional CapScratch
+                    # example that must still appear here) both come out
+                    # CapScratch-and-unmatched in that reduced pipeline,
+                    # but neither is declared optional -- unlike
+                    # var_compat's ncl_out, which is. A mandatory
+                    # unmatched arg means the suite genuinely needs it
+                    # (interstitial, constituent, or otherwise); only an
+                    # optional one can be silently absent, which is
+                    # exactly what makes it safe to omit from this list.
+                    #
+                    # Also require host_std_names to be non-empty AND
+                    # missing this std_name -- e.g. a FileCheck-only
+                    # invocation with no --host-files at all (see
+                    # tests/filecheck/examples/end_to_end/
+                    # helloworld-xml.mlir, which deliberately omits
+                    # --host-files to exercise the scheme-only frontend
+                    # path) makes EVERY scheme var CapScratch regardless
+                    # of whether a real host would match it -- confirmed
+                    # via helloworld's own hello_world_mod.meta, which
+                    # genuinely does declare potential_temperature; only
+                    # this specific host-less invocation makes it look
+                    # unmatched. host_std_names (built from every
+                    # non-scheme table actually present in the module)
+                    # is empty in exactly that scenario, so guarding on
+                    # it non-empty distinguishes "no host files supplied
+                    # to this run" from "host files supplied, and this
+                    # var genuinely isn't in any of them" (var_compat's
+                    # real case).
+                    ownership_prop = arg_op.properties.get("ownership_kind")
+                    if (
+                        ownership_prop is not None
+                        and ownership_prop.data == ccpp.ArgOwnershipKind.CapScratch
+                        and std_name not in FRAMEWORK_STD_NAME_TO_CAP_VAR
+                        and arg_op.properties.get("optional") is not None
+                        and host_std_names
+                        and std_name not in host_std_names
+                    ):
+                        continue
 
-                        # An OPTIONAL CapScratch arg with no host match at all
-                        # and no recognized framework meaning (e.g.
-                        # var_compat's ncl_out/cloud_liquid_number_concentration
-                        # -- an optional intent=out array no host .meta
-                        # declares, resolved to a throwaway cap-owned scratch
-                        # variable) never actually reaches the host in either
-                        # direction, so it must not appear in the suite's
-                        # variable list at all. Recognized framework arrays
-                        # (ccpp_constituents, ccpp_constituent_tendencies --
-                        # also CapScratch, since no host ever declares them
-                        # either) are real physics arrays and must still
-                        # appear, so only exclude when std_name isn't one of
-                        # those known names.
-                        #
-                        # Require "optional" specifically (not just
-                        # CapScratch + unmatched): examples/advection's own
-                        # end-to-end FileCheck golden runs a deliberately
-                        # reduced pass list with no generate-host-match at
-                        # all (see DEVELOPERS.md's own caveat that these
-                        # manually-composed pass lists aren't a stand-in for
-                        # the real driver pipeline), so ownership_kind alone
-                        # is unreliable there -- e.g. cld_liq's tcld
-                        # (minimum_temperature_for_cloud_liquid, a genuine
-                        # intra-suite interstitial the real pipeline's
-                        # generate-host-match would mark and exclude via
-                        # interstitial_std_names instead) and cld_liq_tend
-                        # (tendency_of_cloud_liquid_dry_mixing_ratio,
-                        # constituent=True, _build_cap_var_map's own
-                        # docstring names this as an intentional CapScratch
-                        # example that must still appear here) both come out
-                        # CapScratch-and-unmatched in that reduced pipeline,
-                        # but neither is declared optional -- unlike
-                        # var_compat's ncl_out, which is. A mandatory
-                        # unmatched arg means the suite genuinely needs it
-                        # (interstitial, constituent, or otherwise); only an
-                        # optional one can be silently absent, which is
-                        # exactly what makes it safe to omit from this list.
-                        #
-                        # Also require host_std_names to be non-empty AND
-                        # missing this std_name -- e.g. a FileCheck-only
-                        # invocation with no --host-files at all (see
-                        # tests/filecheck/examples/end_to_end/
-                        # helloworld-xml.mlir, which deliberately omits
-                        # --host-files to exercise the scheme-only frontend
-                        # path) makes EVERY scheme var CapScratch regardless
-                        # of whether a real host would match it -- confirmed
-                        # via helloworld's own hello_world_mod.meta, which
-                        # genuinely does declare potential_temperature; only
-                        # this specific host-less invocation makes it look
-                        # unmatched. host_std_names (built from every
-                        # non-scheme table actually present in the module)
-                        # is empty in exactly that scenario, so guarding on
-                        # it non-empty distinguishes "no host files supplied
-                        # to this run" from "host files supplied, and this
-                        # var genuinely isn't in any of them" (var_compat's
-                        # real case).
-                        ownership_prop = arg_op.properties.get("ownership_kind")
-                        if (
-                            ownership_prop is not None
-                            and ownership_prop.data == ccpp.ArgOwnershipKind.CapScratch
-                            and std_name not in FRAMEWORK_STD_NAME_TO_CAP_VAR
-                            and arg_op.properties.get("optional") is not None
-                            and host_std_names
-                            and std_name not in host_std_names
-                        ):
-                            continue
+                    # Variables with a default_value that are not matched to a
+                    # host variable AND are not advected constituents are managed
+                    # internally by the cap and must not appear in the variable list.
+                    # Advected constituents (advected=true) have default_value as an
+                    # initial fill, but are still real physics arrays visible to the host.
+                    if (arg_op.properties.get("default_value") is not None
+                            and arg_op.properties.get("model_var_name") is None
+                            and arg_op.properties.get("advected") is None):
+                        continue
 
-                        # Variables with a default_value that are not matched to a
-                        # host variable AND are not advected constituents are managed
-                        # internally by the cap and must not appear in the variable list.
-                        # Advected constituents (advected=true) have default_value as an
-                        # initial fill, but are still real physics arrays visible to the host.
-                        if (arg_op.properties.get("default_value") is not None
-                                and arg_op.properties.get("model_var_name") is None
-                                and arg_op.properties.get("advected") is None):
-                            continue
+                    # Error flags → output-only special case
+                    if std_name in _CCPP_ERR:
+                        output_vars.add(std_name)
+                        continue
 
-                        # Error flags → output-only special case
-                        if std_name in _CCPP_ERR:
+                    # intent: StringAttr when set
+                    intent_prop = arg_op.properties.get("intent")
+                    intent = intent_prop.data.lower() if intent_prop is not None else None
+
+                    if std_name in protected_std_names:
+                        # Protected vars are blocked from input, but a scheme
+                        # may still write one as output (e.g. constituent-index
+                        # arrays like test_banana_constituent_indices).
+                        if intent in ("out", "inout"):
                             output_vars.add(std_name)
-                            continue
+                        continue
 
-                        # intent: StringAttr when set
-                        intent_prop = arg_op.properties.get("intent")
-                        intent = intent_prop.data.lower() if intent_prop is not None else None
-
-                        if std_name in protected_std_names:
-                            # Protected vars are blocked from input, but a scheme
-                            # may still write one as output (e.g. constituent-index
-                            # arrays like test_banana_constituent_indices).
-                            if intent in ("out", "inout"):
-                                output_vars.add(std_name)
-                            continue
-
-                        # Advected constituents go to both input and output.
-                        # state_variable=true args go to both ONLY when no scheme
-                        # in the suite uses different units than the host (unit
-                        # conversion would mean the suite cap rewrites the value
-                        # in-place, so the host should not treat the returned value
-                        # as a meaningful physics output in that case).
-                        if arg_op.properties.get("advected") is not None:
+                    # Advected constituents go to both input and output.
+                    # state_variable=true args go to both ONLY when no scheme
+                    # in the suite uses different units than the host (unit
+                    # conversion would mean the suite cap rewrites the value
+                    # in-place, so the host should not treat the returned value
+                    # as a meaningful physics output in that case).
+                    if arg_op.properties.get("advected") is not None:
+                        input_vars.add(std_name)
+                        output_vars.add(std_name)
+                    elif arg_op.properties.get("state_variable") is not None:
+                        if std_name not in state_var_unit_mismatch:
                             input_vars.add(std_name)
                             output_vars.add(std_name)
-                        elif arg_op.properties.get("state_variable") is not None:
-                            if std_name not in state_var_unit_mismatch:
-                                input_vars.add(std_name)
-                                output_vars.add(std_name)
-                            else:
-                                if intent in ("in", "inout"):
-                                    input_vars.add(std_name)
-                                if intent in ("out", "inout"):
-                                    output_vars.add(std_name)
                         else:
                             if intent in ("in", "inout"):
                                 input_vars.add(std_name)
                             if intent in ("out", "inout"):
                                 output_vars.add(std_name)
+                    else:
+                        if intent in ("in", "inout"):
+                            input_vars.add(std_name)
+                        if intent in ("out", "inout"):
+                            output_vars.add(std_name)
 
             # Pass 2b: add dynamic (non-literal) subcycle loop-count standard
             # names (e.g. var_compat's num_subcycles_for_effr). These are
@@ -651,12 +654,8 @@ class CCPPCAP(ModulePass):
                 # a referenced standard_name.
                 "eq", "ne", "lt", "le", "gt", "ge",
             })
-            for tbl_op in (ccpp_mod.body.ops if len(suite_descriptions) == 1 else ()):
-                if not isa(tbl_op, ccpp.TablePropertiesOp):
-                    continue
-                for arg_table_op in tbl_op.body.ops:
-                    if not isa(arg_table_op, ccpp.ArgumentTableOp):
-                        continue
+            if len(suite_descriptions) == 1:
+                for _tbl_op, arg_table_op in iter_arg_tables(ccpp_mod):
                     for arg_op in arg_table_op.body.ops:
                         if not isa(arg_op, ccpp.ArgumentOp):
                             continue
@@ -1134,42 +1133,32 @@ class CCPPCAP(ModulePass):
         # state_variable args (a unit mismatch means the suite cap rewrites the
         # value in-place, so it should not be listed as an output variable).
         host_std_names: dict[str, str | None] = {}
-        for tbl_op in ccpp_mod.body.ops:
-            if not isa(tbl_op, ccpp.TablePropertiesOp):
-                continue
-            if tbl_op.table_type.data == "scheme":
-                continue
-            for arg_table_op in tbl_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+        for _tbl_op, arg_table_op in iter_arg_tables(
+            ccpp_mod, table_type=("module", "host", "ddt")
+        ):
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    if arg_op.standard_name is not None:
-                        _sn = arg_op.standard_name.data.lower()
-                        _u = arg_op.properties.get("units")
-                        host_std_names[_sn] = _u.data.lower() if _u is not None else None
+                if arg_op.standard_name is not None:
+                    _sn = arg_op.standard_name.data.lower()
+                    _u = arg_op.properties.get("units")
+                    host_std_names[_sn] = _u.data.lower() if _u is not None else None
 
         # Build set of protected host-variable standard_names.
         # Protected variables (e.g. vertical_layer_dimension, horizontal_dimension)
         # are framework-managed and excluded from ccpp_physics_suite_variables lists.
         protected_std_names: set[str] = set()
-        for tbl_op in ccpp_mod.body.ops:
-            if not isa(tbl_op, ccpp.TablePropertiesOp):
-                continue
-            if tbl_op.table_type.data not in ("module", "host", "ddt"):
-                continue
-            for arg_table_op in tbl_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+        for _tbl_op, arg_table_op in iter_arg_tables(
+            ccpp_mod, table_type=("module", "host", "ddt")
+        ):
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    if (arg_op.properties.get("protected") is not None
-                            and arg_op.standard_name is not None):
-                        protected_std_names.add(
-                            arg_op.standard_name.data.lower()
-                        )
+                if (arg_op.properties.get("protected") is not None
+                        and arg_op.standard_name is not None):
+                    protected_std_names.add(
+                        arg_op.standard_name.data.lower()
+                    )
 
         # Generate ONE combined CCPP cap module for all suites
         cap_mod = self._generate_ccpp_cap_module(

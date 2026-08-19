@@ -2,31 +2,19 @@ import argparse
 import os
 import sys
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.parser import Parser
 from xdsl.printer import Printer
-from xdsl.universe import Universe
 
 from xdsl_ccpp.dialects.ccpp import (
-    CCPP,
     ArgumentOp,
     ArgumentTableOp,
     TablePropertiesOp,
     TableTypeKind,
 )
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
-
-
-def _make_ctx() -> Context:
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
 
 
 class ccppMain:
@@ -34,6 +22,30 @@ class ccppMain:
         parser = argparse.ArgumentParser(description="xDSL CCPP DSL compiler flow")
         self.set_parser_arguments(parser)
         return parser
+
+    def default_options_db(self) -> dict:
+        """Return this tool's CLI defaults as a plain dict.
+
+        Same key set `build_options_db_from_args` produces, minus its
+        required-argument validation and the comma-string -> list
+        splitting for `--suites`/`--scheme-files`/`--host-files` (those
+        come back as `None` here, not `[]`) -- callers that already have
+        real lists for those three (e.g. `ccpp_prebuild.py`, which derives
+        them from a host model's `ccpp_prebuild_config.py`) overlay their
+        own values on top instead.
+
+        Single source of truth for any tool that drives `ccppMain`
+        programmatically rather than through `main()`'s own CLI parsing --
+        extracted (complexity-audit Tier 1 finding, task #38) after
+        `ccpp_prebuild.py`'s own hand-built `options_db` dict was found
+        already missing 9 keys this parser supports (`py`, `directive`,
+        `kind_map`, `emit_datatable`, `no_memory_space_warning`,
+        `emit_html`, `emit_resolved_vars`, `bind_c`, `legacy_mode`), with
+        nothing to flag it the next time a key is added here. Building
+        from this instead means `ccpp_prebuild.py` can no longer silently
+        drop a key -- new options just carry their real default forward.
+        """
+        return vars(self.initialise_argument_parser().parse_args([]))
 
     def set_parser_arguments(self, parser):
         parser.add_argument(
@@ -290,7 +302,7 @@ class ccppMain:
             f"Merging .meta metadata from {len(scheme_files)} scheme + {len(host_files)} host files into '{mlir_file}'",
         )
 
-        ctx = _make_ctx()
+        ctx = make_ccpp_context()
         with open(mlir_file) as f:
             ccpp_module = Parser(ctx, f.read()).parse_op()
 
@@ -331,12 +343,12 @@ class ccppMain:
             f"Merging ccpp.table_properties from '{meta_path}' into '{mlir_file}'",
         )
 
-        ctx = _make_ctx()
+        ctx = make_ccpp_context()
         with open(mlir_file) as f:
             ccpp_module = Parser(ctx, f.read()).parse_op()
 
         with open(meta_path) as f:
-            meta_module = Parser(_make_ctx(), f.read()).parse_op()
+            meta_module = Parser(make_ccpp_context(), f.read()).parse_op()
 
         # Extract ccpp.table_properties from the first sub-module in meta_module
         table_props = []
@@ -378,7 +390,7 @@ class ccppMain:
         if self.options_db.get("no_memory_space_warning"):
             return
 
-        ctx = _make_ctx()
+        ctx = make_ccpp_context()
         with open(mlir_file) as f:
             top_module = Parser(ctx, f.read()).parse_op()
 

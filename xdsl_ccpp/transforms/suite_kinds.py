@@ -7,6 +7,7 @@ from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
+from xdsl_ccpp.transforms.util.cap_shared import iter_arg_tables
 from xdsl_ccpp.util.ccpp_conventions import CCPP_KIND_TO_ISO, parse_kind_spec_value
 
 
@@ -89,27 +90,22 @@ class MetaKind(ModulePass):
         # Use a dict as an ordered set (insertion-ordered since Python 3.7).
         kind_names: dict[str, None] = {}
 
-        for table_prop_op in ccpp_module.body.ops:
-            if not isa(table_prop_op, ccpp.TablePropertiesOp):
-                continue
-            for arg_table_op in table_prop_op.body.ops:
-                if not isa(arg_table_op, ccpp.ArgumentTableOp):
+        for _table_prop_op, arg_table_op in iter_arg_tables(ccpp_module):
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
                     continue
-                for arg_op in arg_table_op.body.ops:
-                    if not isa(arg_op, ccpp.ArgumentOp):
-                        continue
-                    # A real arg with a named kind qualifier (not a len= qualifier,
-                    # and not a bare numeric kind literal e.g. `kind = 8` -- that's
-                    # already valid, self-contained Fortran (`real(kind=8)`) with no
-                    # ccpp_kinds dependency, so treating it as a symbolic name to
-                    # declare/export would emit an invalid `public :: 8`).
-                    if (
-                        arg_op.arg_type.data == "real"
-                        and arg_op.kind is not None
-                        and "len=" not in arg_op.kind.data
-                        and not arg_op.kind.data.isdigit()
-                    ):
-                        kind_names[arg_op.kind.data] = None
+                # A real arg with a named kind qualifier (not a len= qualifier,
+                # and not a bare numeric kind literal e.g. `kind = 8` -- that's
+                # already valid, self-contained Fortran (`real(kind=8)`) with no
+                # ccpp_kinds dependency, so treating it as a symbolic name to
+                # declare/export would emit an invalid `public :: 8`).
+                if (
+                    arg_op.arg_type.data == "real"
+                    and arg_op.kind is not None
+                    and "len=" not in arg_op.kind.data
+                    and not arg_op.kind.data.isdigit()
+                ):
+                    kind_names[arg_op.kind.data] = None
 
         if not kind_names:
             return

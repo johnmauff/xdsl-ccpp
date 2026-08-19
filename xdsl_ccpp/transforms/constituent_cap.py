@@ -284,6 +284,34 @@ def _generate_constituent_api(
     _instance_decl = (
         [f"    integer, intent(in) :: {instance_local_name}"] if multi_instance else []
     )
+    # Sole-arg form (no leading comma): shared by constituents_array/
+    # model_const_properties below, the only two subroutines here with a
+    # single, optional instance parameter and no other args to comma-append
+    # after -- everything else uses _instance_arg's comma-prefixed form.
+    _instance_sole_arg = instance_local_name if multi_instance else ""
+
+    def _error_guard(condition: str, errmsg_text: str) -> list:
+        """Return a 5-line 'if not <condition>, set errflg/errmsg and
+        return' guard block.
+
+        Shared by the 4 identically-shaped full-error-return sites in
+        ic_lines/ci_lines below (complexity-audit Tier 2 finding, task #49)
+        -- confirmed byte-for-byte identical apart from condition/message
+        text. Do NOT reuse this for this file's other 3 precondition-guard
+        shapes (a silent-skip with no errflg/errmsg touched, in isc_lines/
+        nc_lines; a bare `return` with no message, in da_lines; and rc_lines'
+        own lazy-*allocate* guard, which has the opposite polarity -- it
+        creates lc_instances rather than rejecting the call) -- collapsing
+        those into this same helper would paper over a real semantic
+        difference, the same bug class Copilot's PR #77 review caught.
+        """
+        return [
+            f"    if (.not. {condition}) then",
+            f"      errflg = 1",
+            f"      errmsg = '{errmsg_text}'",
+            f"      return",
+            f"    end if",
+        ]
 
     # ── 1. is_scheme_constituent ─────────────────────────────────────────
     fixed_names_str = ", ".join(f"'{s}'" for s, _u, _d in fixed_advected)
@@ -501,19 +529,15 @@ def _generate_constituent_api(
         f"    errmsg = ''",
     ]
     if multi_instance:
-        ic_lines += [
-            f"    if (.not. allocated(lc_instances)) then",
-            f"      errflg = 1",
-            f"      errmsg = 'ccpp_initialize_constituents: register_constituents not called'",
-            f"      return",
-            f"    end if",
-        ]
+        ic_lines += _error_guard(
+            "allocated(lc_instances)",
+            "ccpp_initialize_constituents: register_constituents not called",
+        )
+    ic_lines += _error_guard(
+        f"allocated({ref('lc_all_constituents')})",
+        "ccpp_initialize_constituents: register_constituents not called",
+    )
     ic_lines += [
-        f"    if (.not. allocated({ref('lc_all_constituents')})) then",
-        f"      errflg = 1",
-        f"      errmsg = 'ccpp_initialize_constituents: register_constituents not called'",
-        f"      return",
-        f"    end if",
         f"    lc_num = size({ref('lc_all_constituents')})",
         f"    if (allocated({ref('lc_constituent_array')})) deallocate({ref('lc_constituent_array')})",
         f"    allocate({ref('lc_constituent_array')}(ncols, pver, lc_num))",
@@ -573,7 +597,7 @@ def _generate_constituent_api(
 
     # ── 6. constituents_array ────────────────────────────────────────────
     ca_lines = [
-        f"  function {h}_constituents_array({instance_local_name if multi_instance else ''}) result(ptr)",
+        f"  function {h}_constituents_array({_instance_sole_arg}) result(ptr)",
         *_instance_decl,
         f"    real(kind=kind_phys), pointer :: ptr(:, :, :)",
         f"    ptr => {ref('lc_constituent_array')}",
@@ -594,19 +618,15 @@ def _generate_constituent_api(
         f"    index = -1",
     ]
     if multi_instance:
-        ci_lines += [
-            f"    if (.not. allocated(lc_instances)) then",
-            f"      errflg = 1",
-            f"      errmsg = 'const_get_index: constituents not registered'",
-            f"      return",
-            f"    end if",
-        ]
+        ci_lines += _error_guard(
+            "allocated(lc_instances)",
+            "const_get_index: constituents not registered",
+        )
+    ci_lines += _error_guard(
+        f"allocated({ref('lc_all_constituents')})",
+        "const_get_index: constituents not registered",
+    )
     ci_lines += [
-        f"    if (.not. allocated({ref('lc_all_constituents')})) then",
-        f"      errflg = 1",
-        f"      errmsg = 'const_get_index: constituents not registered'",
-        f"      return",
-        f"    end if",
         f"    do lc_i = 1, size({ref('lc_all_constituents')})",
         f"      if (trim({ref('lc_all_constituents')}(lc_i)%std_name) == trim(std_name)) then",
         f"        index = lc_i",
@@ -620,7 +640,7 @@ def _generate_constituent_api(
 
     # ── 8. model_const_properties ────────────────────────────────────────
     mp_lines = [
-        f"  function {h}_model_const_properties({instance_local_name if multi_instance else ''}) result(ptr)",
+        f"  function {h}_model_const_properties({_instance_sole_arg}) result(ptr)",
         *_instance_decl,
         f"    type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
         f"    ptr => {ref('lc_const_props')}",
