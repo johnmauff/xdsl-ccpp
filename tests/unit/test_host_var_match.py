@@ -574,3 +574,100 @@ class TestFrameworkFallbackStdNames:
         arg = _get_scheme_arg(module, "test_scheme", "number_of_ccpp_constituents")
         assert arg is not None
         assert arg.model_var_name is None
+
+
+# ── ccpp_constituent_properties_t outside the register phase ─────────────────
+#
+# Ported from real capgen-v1's own deliberate negative test
+# (examples/advection/dlc_liq.meta + cld_suite_error.xml, task #10): declaring
+# a ccpp_constituent_properties_t-typed allocatable arg anywhere but a
+# scheme's _register entry point must be rejected. Before this fix, xdsl-ccpp
+# had no such check: constituent_cap.py's own dynamic-constituent scan
+# (_collect_constituent_info) only ever looks at _register tables, so the arg
+# was invisible there, and suite_variable_model.py's allocatable-DDT skip
+# (Case 1's sibling check, just below "host-matched") never registered it as
+# suite-owned either -- both silently ignore it. Confirmed via a real
+# end-to-end regeneration of examples/advection/cld_suite_error.xml (dlc_liq
+# + cld_liq + cld_ice) that this was worse than a silent no-op: dlc_liq's own
+# "dyn_const" bare local name coincides with cld_liq's own _register-phase
+# "dyn_const" arg, and downstream lifecycle-call wiring resolved dlc_liq's
+# _init-phase "dyn_const" to that SAME already-registered module-level array
+# by bare name alone -- silently reusing cld_liq's real constituent storage
+# in the wrong lifecycle phase, rather than erroring or even just dropping
+# the arg.
+
+class TestConstituentPropertiesOutsideRegisterPhase:
+
+    def test_raises_when_declared_in_init_phase(self, run_host_match):
+        scheme = """\
+[ccpp-table-properties]
+  name = dlc_liq
+  type = scheme
+[ccpp-arg-table]
+  name = dlc_liq_init
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_dlc_liq
+  dimensions = (:)
+  type = ccpp_constituent_properties_t
+  intent = out
+  allocatable = true
+""" + CCPP_MANDATORY_ARGS
+        with pytest.raises(
+            ValueError,
+            match="dynamic constituent registration is only valid in a scheme's _register phase",
+        ):
+            run_host_match(
+                scheme_metas=[scheme],
+                host_metas=[],
+                suite_xml=minimal_suite_xml("dlc_liq"),
+            )
+
+    def test_error_names_scheme_and_entry_point(self, run_host_match):
+        scheme = """\
+[ccpp-table-properties]
+  name = dlc_liq
+  type = scheme
+[ccpp-arg-table]
+  name = dlc_liq_init
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_dlc_liq
+  dimensions = (:)
+  type = ccpp_constituent_properties_t
+  intent = out
+  allocatable = true
+""" + CCPP_MANDATORY_ARGS
+        with pytest.raises(ValueError) as exc_info:
+            run_host_match(
+                scheme_metas=[scheme],
+                host_metas=[],
+                suite_xml=minimal_suite_xml("dlc_liq"),
+            )
+        msg = str(exc_info.value)
+        assert "dlc_liq" in msg
+        assert "dlc_liq_init" in msg
+        assert "dyn_const" in msg
+
+    def test_register_phase_does_not_raise(self, run_host_match):
+        """The same shape in a _register table (real capgen-v1's own
+        cld_liq_register) is the normal, valid case -- must not raise."""
+        scheme = """\
+[ccpp-table-properties]
+  name = cld_liq
+  type = scheme
+[ccpp-arg-table]
+  name = cld_liq_register
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_cld_liq
+  dimensions = (:)
+  type = ccpp_constituent_properties_t
+  intent = out
+  allocatable = true
+""" + CCPP_MANDATORY_ARGS
+        run_host_match(
+            scheme_metas=[scheme],
+            host_metas=[],
+            suite_xml=minimal_suite_xml("cld_liq"),
+        )
