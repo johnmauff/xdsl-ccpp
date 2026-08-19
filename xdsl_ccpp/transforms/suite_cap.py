@@ -272,6 +272,487 @@ def _write_resolved_vars(resolved_vars: dict, path: str, host_vars: dict = None)
         json.dump(out, f, indent=2)
 
 
+# ── Task #56 Stage 1: mechanical extractions out of GenerateSuiteSubroutine ──
+#
+# Each of these was previously a method reading only self.meta_data (plus,
+# for a couple, other now-also-extracted helpers) -- no other instance state,
+# so each becomes a free function taking meta_data explicitly. Every
+# docstring/comment is preserved verbatim from the original method; only the
+# self-references were mechanically rewritten to parameters/other free-
+# function calls. See GenerateSuiteSubroutine's own remaining call sites for
+# where these are invoked from.
+
+def _resolve_host_only_std_name(meta_data, std_name: str):
+    """Find a host-declared arg with this exact standard_name, scanning
+    every non-scheme table in meta_data (module, host, or ddt -- unlike
+    _find_loop_upper_bound's fallback, which only scans MODULE-type tables
+    for a different case, a promotion loop's upper bound). Used for a
+    subcycle's own dynamic loop-count standard_name when no scheme anywhere
+    declares a matching arg of its own, so it never enters all_args through
+    the ordinary scheme-arg host-matching path the way e.g.
+    scheme_order_in_suite does (several schemes' own .meta files declare
+    that one as their own arg; nothing declares num_subcycles_for_effr as
+    its own arg anywhere in examples/var_compat).
+    """
+    from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+    for tbl_name, props in meta_data.items():
+        if props.getAttr("type") == CCPPType.SCHEME:
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if (var.hasAttr("standard_name")
+                    and var.getAttr("standard_name").lower() == std_name.lower()):
+                return var
+    return None
+
+
+def _synthesize_dynamic_loop_count_args(meta_data, call_sequence, arg_tables, all_args) -> None:
+    """Mutate all_args in place: for every subcycle in call_sequence with a
+    dynamic (non-literal) loop count whose standard_name has no matching
+    scheme arg anywhere, synthesize a fresh HostMatched CCPPArgument for it
+    -- named after the host's own local variable -- so it becomes a genuine,
+    correctly-declared dummy argument of the suite subroutine the same way
+    any other host-matched value already does. Without this, _emit_subcycle
+    would have nothing but the raw, undeclared standard_name to print as
+    the Fortran do-loop bound.
+
+    call_sequence is the caller's own GenerateSuiteSubroutine.getCallSequence(
+    suite_description) result. arg_tables is per-postfix (only schemes with
+    an entry point matching the CURRENT tgt_subroutine_postfix, e.g. "_init"
+    vs "_run" vs "_finalize"). A subcycle's loop count is only actually
+    needed for postfixes where at least one of its own schemes (recursively)
+    is in arg_tables -- matching _emit_subcycle_items's own "if sn in
+    arg_tables" filter exactly -- so this only fires for the specific
+    postfix that will actually emit a SubcycleLoopOp using it, not every
+    lifecycle postfix the suite happens to have (register/finalize/
+    timestep_initial/timestep_final have no subcycles of their own to emit
+    at all, and must not gain an unused dummy argument here).
+
+    Only called when physics_mode is True (see the caller in
+    _build_arg_tables): _emit_subcycle itself only ever emits a
+    SubcycleLoopOp under that same condition (its own "if _lc_int > 1 and
+    physics_mode and body_ops" guard) -- a postfix like "_init" can still
+    have every one of a subcycle's own schemes present in arg_tables (e.g.
+    effr_calc has both a _run and an _init entry point), so the
+    arg_tables-based check above isn't sufficient on its own to avoid
+    adding an unused argument to non-physics postfixes.
+    """
+    def _subcycle_has_active_schemes(items) -> bool:
+        for item in items:
+            if item[0] == "scheme":
+                _, sn, _ = item
+                if sn in arg_tables:
+                    return True
+            else:
+                _, _, _, sub_items = item
+                if _subcycle_has_active_schemes(sub_items):
+                    return True
+        return False
+
+    def _collect_dynamic_counts(items) -> set:
+        counts: set = set()
+        for item in items:
+            if item[0] == "subcycle":
+                _, loop_count, is_literal, sub_items = item
+                if not is_literal and _subcycle_has_active_schemes(sub_items):
+                    counts.add(loop_count)
+                counts |= _collect_dynamic_counts(sub_items)
+        return counts
+
+    for std_name in _collect_dynamic_counts(call_sequence):
+        std_key = std_name.lower()
+        if std_key in all_args:
+            continue
+        host_var = _resolve_host_only_std_name(meta_data, std_name)
+        if host_var is None:
+            continue
+        new_arg = CCPPArgument(host_var.name)
+        new_arg.setAttr("standard_name", std_name)
+        new_arg.setAttr("type", host_var.getAttr("type"))
+        new_arg.setAttr("intent", "in")
+        if host_var.hasAttr("kind"):
+            new_arg.setAttr("kind", host_var.getAttr("kind"))
+        new_arg.setAttr("dimensions", 0)
+        new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+        all_args[std_key] = new_arg
+
+
+def _is_multi_instance_host(meta_data) -> bool:
+    """True only when the host declares BOTH instance_number and
+    number_of_instances.
+
+    instance_number/number_of_instances are a single paired contract, not
+    two independent optionals -- every multi-instance codepath
+    (ccpp_suite_state's own allocatable-array declaration, the
+    constituent-API lc_instances(:) bundle, both synthesis functions below)
+    assumes both are present together. Checking only instance_number (this
+    function's own predecessor, before this fix) let a host declaring just
+    one of the two enable multi-instance wrapping with no matching
+    allocation support elsewhere -- e.g. ccpp_suite_state declared
+    allocatable but never actually allocated, since the lazy-alloc guard in
+    generateSubroutineCall separately requires ninstances_local_name too.
+    Caught by Copilot review on PR #77 (for the analogous ccpp_cap.py/
+    constituent_cap.py/lifecycle_cap.py pairing); this is the same bug
+    class in suite_cap.py's own, separate ccpp_suite_state gating.
+    """
+    return (
+        _resolve_host_only_std_name(meta_data, CCPP_INSTANCE_NUMBER_STD_NAME) is not None
+        and _resolve_host_only_std_name(meta_data, CCPP_NUMBER_OF_INSTANCES_STD_NAME) is not None
+    )
+
+
+def _synthesize_instance_number_arg(meta_data, all_args) -> None:
+    """Mutate all_args in place: if the host declares an
+    instance_number-standard-name scalar (real capgen-v1's multi-instance
+    model, ccpp_cap_refactor_plan.md's "instances/instances_advection"
+    entry) and no scheme's own entry point for this phase already provides
+    one, synthesize a fresh HostMatched CCPPArgument for it -- named after
+    the host's own local variable -- exactly as
+    _synthesize_dynamic_loop_count_args already does for a subcycle's
+    dynamic loop count.
+
+    Real capgen-v1 treats instance_number as a fixed CCPP-protocol argument
+    present on *every* lifecycle call (register/init/finalize/
+    timestep_init/timestep_final/run), regardless of whether any particular
+    scheme's own entry point for that phase happens to declare it -- e.g.
+    examples/instances' own schemes declare instance_number only on their
+    _run entry point, never on _register/_init/_finalize, yet the driver
+    calls ccpp_register(..., instance=ins, ...) for every instance the same
+    way real capgen-v1's own driver does.
+
+    Without this, a multi-instance suite's register/init/finalize/
+    timestep_init/timestep_final subroutines have no way to know which
+    instance's own ccpp_suite_state entry to check/set -- see
+    generateStateCheckOps/generateStateAssignment -- which is exactly the
+    bug a real ctest failure exposed on examples/instances: every instance
+    shared one scalar ccpp_suite_state, so registering instance 2 saw
+    instance 1's own already-'initialized' state and errored.
+
+    Called for every phase, not just physics_mode (unlike
+    _synthesize_dynamic_loop_count_args) -- and is a no-op unless the host
+    declares BOTH instance_number and number_of_instances (see
+    _is_multi_instance_host), so ordinary (non-multi-instance) suites, and
+    hosts declaring only one of the pair, are entirely unaffected.
+    """
+    std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
+    if std_key in all_args:
+        return
+    if not _is_multi_instance_host(meta_data):
+        return
+    host_var = _resolve_host_only_std_name(meta_data, CCPP_INSTANCE_NUMBER_STD_NAME)
+    new_arg = CCPPArgument(host_var.name)
+    new_arg.setAttr("standard_name", CCPP_INSTANCE_NUMBER_STD_NAME)
+    new_arg.setAttr("type", host_var.getAttr("type"))
+    new_arg.setAttr("intent", "in")
+    if host_var.hasAttr("kind"):
+        new_arg.setAttr("kind", host_var.getAttr("kind"))
+    new_arg.setAttr("dimensions", 0)
+    new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+    all_args[std_key] = new_arg
+
+
+def _synthesize_number_of_instances_arg(meta_data, all_args) -> None:
+    """Mutate all_args in place: companion to
+    _synthesize_instance_number_arg, for number_of_instances.
+
+    Threaded the same way real capgen-v1 threads it: as an ordinary
+    caller-supplied dummy argument, never use-associated -- confirmed
+    against examples/instances' own test_host.meta, a HOST-type table with
+    no backing test_host.F90 module at all (the driver, main.F90, supplies
+    the value directly; there is nothing to `use`). Its own block-arg SSA
+    value sizes ccpp_suite_state's allocation -- see
+    generateSubroutineCall's own instance_local_name/
+    _build_suite_state_lazy_alloc wiring.
+
+    A no-op unless the host declares BOTH names (see _is_multi_instance_host),
+    exactly like _synthesize_instance_number_arg.
+    """
+    std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
+    if std_key in all_args:
+        return
+    if not _is_multi_instance_host(meta_data):
+        return
+    host_var = _resolve_host_only_std_name(meta_data, CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+    new_arg = CCPPArgument(host_var.name)
+    new_arg.setAttr("standard_name", CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+    new_arg.setAttr("type", host_var.getAttr("type"))
+    new_arg.setAttr("intent", "in")
+    if host_var.hasAttr("kind"):
+        new_arg.setAttr("kind", host_var.getAttr("kind"))
+    new_arg.setAttr("dimensions", 0)
+    new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+    all_args[std_key] = new_arg
+
+
+def _instance_arg_local_name(input_arg_list) -> "str | None":
+    """Return the local Fortran name of input_arg_list's own
+    instance_number-standard-name arg, or None if this subroutine's
+    signature has none (a non-multi-instance suite)."""
+    std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
+    for a in input_arg_list:
+        _key = a.getAttr("standard_name").lower() if a.hasAttr("standard_name") else a.name
+        if _key == std_key:
+            return a.name
+    return None
+
+
+def _number_of_instances_local_name(input_arg_list) -> "str | None":
+    """Return the local Fortran name of input_arg_list's own
+    number_of_instances-standard-name arg, or None if this subroutine's
+    signature has none."""
+    std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
+    for a in input_arg_list:
+        _key = a.getAttr("standard_name").lower() if a.hasAttr("standard_name") else a.name
+        if _key == std_key:
+            return a.name
+    return None
+
+
+def _build_suite_state_lazy_alloc(ninstances_ssa) -> "LazyAllocOp":
+    """Return a LazyAllocOp allocating ccpp_suite_state -- dimensioned by
+    ninstances_ssa (this call's own already-in-scope number_of_instances
+    dummy arg -- see _synthesize_number_of_instances_arg/
+    _number_of_instances_local_name, resolved from data_ops by the caller)
+    and initialized to 'uninitialized' -- on first use.
+
+    number_of_instances is a genuine runtime HOST-declared scalar in real
+    capgen-v1's own model (confirmed against
+    ccpp-framework-fresh/capgen/generator/suite_cap.py), not a compile-time
+    constant, so ccpp_suite_state can only become a correctly-sized array
+    via a real Fortran ALLOCATE at runtime -- reusing the same guarded "if
+    (.not. allocated(...))" LazyAllocOp idiom already used for
+    SuiteOwned/framework arrays (see _build_framework_refs), rather than
+    inventing a second mechanism. Threaded as an ordinary dummy argument,
+    not use-associated -- examples/instances' own test_host.meta is a
+    HOST-type table with no backing test_host.F90 module at all, so there
+    is nothing to `use`; ninstances_ssa is already the right SSA value
+    precisely because _synthesize_number_of_instances_arg put it in the
+    block's own arg list.
+    """
+    return LazyAllocOp(
+        var_name="ccpp_suite_state",
+        kind_name="character",
+        dim_var_refs=[ninstances_ssa],
+        init_value="'uninitialized'",
+    )
+
+
+# Fortran-keyword/relational-operator tokens that can appear inside an
+# 'active = <expr>' expression but are never themselves a referenced
+# standard_name -- see _resolve_active_condition below. (Moved from
+# GenerateSuiteSubroutine._ACTIVE_EXPR_TOKEN_RE -- task #56 Stage 1.)
+_ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _active_expr_var_indexes(meta_data) -> dict:
+    """Return use_associated_index for resolving 'active = <expr>' property
+    text: standard_name.lower() -> (local_name, table_name, ftn_type).
+
+    Covers every MODULE-type var (always use-associated in this codebase)
+    *and* every 'state'-classified HOST-type var -- real host-owned data
+    with its own backing Fortran module (Stage 2a of the vocabulary-
+    resolution redesign, ccpp_cap_refactor_plan.md: resolved the same way
+    MODULE-type vars already are, via a USE stub, rather than threaded as a
+    dummy argument the way every HOST-type var used to be regardless of
+    classification).
+
+    'dispatch_scalar'-classified HOST-type vars (the fixed CCPP-protocol
+    set -- loop bounds, error handling) are deliberately excluded: they
+    have no backing Fortran module to use-associate from, and no example
+    anywhere gates an optional arg on one (nor does it make semantic sense
+    to -- a loop bound or error code isn't the kind of thing a scheme's
+    optionality would depend on). _resolve_active_condition raises a clear
+    error if one is ever referenced in an 'active =' expression rather than
+    silently threading an untested dummy-argument workaround for a case
+    that has never actually occurred (Stage 3 of the redesign -- see
+    ccpp_cap_refactor_plan.md).
+    """
+    from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+    host_classification = classify_host_table_vars(meta_data)
+    use_associated_index: dict = {}
+    for tbl_name, props in meta_data.items():
+        tbl_type = props.getAttr("type")
+        if tbl_type not in (CCPPType.MODULE, CCPPType.HOST):
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if not var.hasAttr("standard_name"):
+                continue
+            std_name = var.getAttr("standard_name").lower()
+            if tbl_type == CCPPType.MODULE or host_classification.get(std_name) == "state":
+                use_associated_index[std_name] = (var.name, tbl_name, var.getAttr("type"))
+    return use_associated_index
+
+
+def _active_expr_ddt_member_indexes(meta_data) -> dict:
+    """Return standard_name.lower() -> (member_local_name, ddt_type_name)
+    for every member of every DDT-type table.
+
+    Companion to _active_expr_var_indexes: an 'active = <expr>' token may
+    reference a DDT member instead of a plain MODULE/HOST-state var -- e.g.
+    examples/instances' own data_array_opt, gated on flag_for_opt_array, a
+    member of the instance_type DDT (real capgen-v1's multi-instance model:
+    instance_type's own module-level instance, instance_data, is a
+    HOST-owned array of DDT, one entry per model instance -- see
+    cap_shared.py's own _build_ddt_resolution_maps). _resolve_active_condition
+    uses this to resolve such a token via the exact same DDT-access-path
+    machinery run_dispatch.py's own DDT-member resolution already uses.
+    """
+    from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+    ddt_member_index: dict = {}
+    for tbl_name, props in meta_data.items():
+        if props.getAttr("type") != CCPPType.DDT:
+            continue
+        if tbl_name not in props.arg_tables:
+            continue
+        for var in props.getArgTable(tbl_name).getFunctionArguments():
+            if not var.hasAttr("standard_name"):
+                continue
+            ddt_member_index[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
+    return ddt_member_index
+
+
+def _resolve_active_condition(
+    meta_data, raw_expr: str, suite_use_stubs: list, arg_table=None,
+) -> str:
+    """Resolve a host/module var's 'active = <expr>' property text into an
+    expression that's actually valid Fortran at the suite-cap call site,
+    emitting whatever USE stub(s) a use-associated reference needs.
+
+    The raw property text (e.g. "(flag_indicating_cloud_microphysics_
+    has_graupel)") is written in *standard-name* space -- CCPP's own
+    convention for this property, matching how default_value/dimension
+    expressions work: identifier-like tokens are standard-name references
+    to be resolved at the point of use, not pre-baked local Fortran names.
+    Printing it verbatim (the first cut of this fix) compiles as a
+    reference to an undeclared symbol the moment the real local name
+    differs from the standard name -- confirmed by gfortran in CI on
+    examples/var_compat and examples/nested_suite's own
+    flag_indicating_cloud_microphysics_has_graupel -> has_graupel case.
+
+    A MODULE-type reference, or a 'state'-classified HOST-type reference
+    (Stage 2a of the vocabulary-resolution redesign -- e.g. opt_arg's own
+    flag_for_opt_arg, data.meta's type=host but genuinely host-owned
+    state), resolves to its own local name and emits a USE stub for it. A
+    'dispatch_scalar'-classified HOST-type reference (loop bounds, error
+    handling) raises rather than being silently supported -- see
+    _active_expr_var_indexes.
+
+    A DDT-member reference (e.g. examples/instances' own flag_for_opt_array,
+    a member of the instance_type DDT -- see _active_expr_ddt_member_indexes)
+    resolves via the same _resolve_ddt_access_path machinery run_dispatch.py's
+    own DDT-member resolution uses. When the DDT's own module-level instance
+    is itself a HOST-owned array of model instances (real capgen-v1's
+    multi-instance model, ccpp_cap_refactor_plan.md's "instances/
+    instances_advection" entry), <arg_table> -- the calling scheme's own
+    _run table -- must have a sibling instance_number-standard-name arg to
+    index by; this raises a clear error rather than silently emitting an
+    unindexed (and therefore wrong) reference if it doesn't, matching the
+    dispatch_scalar case's own philosophy. Found via a real gfortran CI
+    failure on examples/instances: printing the bare standard-name text
+    verbatim compiled fine for opt_arg's own flag_for_opt_arg only by
+    coincidence (its local name happens to equal its standard name) -- this
+    DDT-member case never worked, it was simply never exercised until this
+    example's active-gated data_array_opt.
+
+    A token that doesn't resolve to any known standard_name is left as-is
+    (assumed to be a Fortran keyword/operator, e.g. '.and.'/'.not.').
+    """
+    use_associated_index = _active_expr_var_indexes(meta_data)
+    ddt_member_index = _active_expr_ddt_member_indexes(meta_data)
+
+    def _resolve_ddt_member(std_name: str, member_local_name: str, ddt_type_name: str) -> str:
+        ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(meta_data)
+        result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
+        if result is None:
+            raise ValueError(
+                f"'active = {raw_expr}' references {std_name!r}, a member "
+                f"of DDT type {ddt_type_name!r} with no reachable "
+                f"module-level instance -- cannot resolve to a real "
+                f"Fortran reference."
+            )
+        instance_var, instance_module, path_prefix, instance_array_dim = result
+        member_ref = path_prefix + member_local_name
+        if instance_array_dim is not None:
+            index_local_name = None
+            if arg_table is not None:
+                for arg in arg_table.getFunctionArguments():
+                    if (
+                        arg.hasAttr("standard_name")
+                        and arg.getAttr("standard_name").lower()
+                            == CCPP_INSTANCE_NUMBER_STD_NAME
+                    ):
+                        index_local_name = arg.name
+                        break
+            if index_local_name is None:
+                raise ValueError(
+                    f"'active = {raw_expr}' references {std_name!r}, a "
+                    f"member of {instance_var!r}, a HOST-owned array of "
+                    f"model instances -- but this scheme's own call has "
+                    f"no sibling {CCPP_INSTANCE_NUMBER_STD_NAME!r} arg to "
+                    f"index it by, so there is no way to know which "
+                    f"instance's value to test."
+                )
+            base_name = f"{instance_var}({index_local_name})"
+        else:
+            base_name = instance_var
+        if not any(
+            isinstance(existing, llvm.GlobalOp)
+            and existing.sym_name.data == instance_var
+            and existing.attributes.get("module") == StringAttr(instance_module)
+            for existing in suite_use_stubs
+        ):
+            stub = llvm.GlobalOp(
+                llvm.LLVMArrayType.from_size_and_type(1, i8),
+                instance_var, "external",
+            )
+            stub.attributes["module"] = StringAttr(instance_module)
+            suite_use_stubs.append(stub)
+        return f"{base_name}%{member_ref}"
+
+    def _substitute(match: "re.Match") -> str:
+        token = match.group(0)
+        std_name = token.lower()
+        entry = use_associated_index.get(std_name)
+        if entry is not None:
+            local_name, module_name, _ftn_type = entry
+            already_stubbed = any(
+                isinstance(existing, llvm.GlobalOp)
+                and existing.sym_name.data == local_name
+                and existing.attributes.get("module") == StringAttr(module_name)
+                for existing in suite_use_stubs
+            )
+            if not already_stubbed:
+                stub = llvm.GlobalOp(
+                    llvm.LLVMArrayType.from_size_and_type(1, i8),
+                    local_name, "external",
+                )
+                stub.attributes["module"] = StringAttr(module_name)
+                suite_use_stubs.append(stub)
+            return local_name
+        ddt_entry = ddt_member_index.get(std_name)
+        if ddt_entry is not None:
+            member_local_name, ddt_type_name = ddt_entry
+            return _resolve_ddt_member(std_name, member_local_name, ddt_type_name)
+        if is_dispatch_scalar_std_name(std_name):
+            raise ValueError(
+                f"'active = {raw_expr}' references {std_name!r}, a CCPP "
+                f"dispatch-scalar standard name (loop bounds/error "
+                f"handling) with no backing Fortran module to "
+                f"use-associate from. Gating an optional arg's presence "
+                f"on one isn't supported -- no example does this, and it "
+                f"has no clear Fortran realization. Give the host a real "
+                f"state variable to gate on instead."
+            )
+        return token
+
+    return _ACTIVE_EXPR_TOKEN_RE.sub(_substitute, raw_expr)
+
+
 class GatherMetaFunctionSignatures(Visitor):
     """Collects all external func.FuncOp declarations from the ccpp module.
 
@@ -558,258 +1039,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                     return size_ref.res
         return None
 
-    def _resolve_host_only_std_name(self, std_name: str):
-        """Find a host-declared arg with this exact standard_name, scanning
-        every non-scheme table in self.meta_data (module, host, or ddt --
-        unlike _find_loop_upper_bound's fallback above, which only scans
-        MODULE-type tables for a different case, a promotion loop's upper
-        bound). Used for a subcycle's own dynamic loop-count standard_name
-        when no scheme anywhere declares a matching arg of its own, so it
-        never enters all_args through the ordinary scheme-arg host-matching
-        path the way e.g. scheme_order_in_suite does (several schemes'
-        own .meta files declare that one as their own arg; nothing declares
-        num_subcycles_for_effr as its own arg anywhere in examples/var_compat).
-        """
-        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
-        for tbl_name, props in self.meta_data.items():
-            if props.getAttr("type") == CCPPType.SCHEME:
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if (var.hasAttr("standard_name")
-                        and var.getAttr("standard_name").lower() == std_name.lower()):
-                    return var
-        return None
-
-    def _synthesize_dynamic_loop_count_args(self, suite_description, arg_tables, all_args) -> None:
-        """Mutate all_args in place: for every subcycle in suite_description
-        with a dynamic (non-literal) loop count whose standard_name has no
-        matching scheme arg anywhere, synthesize a fresh HostMatched
-        CCPPArgument for it -- named after the host's own local variable --
-        so it becomes a genuine, correctly-declared dummy argument of the
-        suite subroutine the same way any other host-matched value already
-        does. Without this, _emit_subcycle would have nothing but the raw,
-        undeclared standard_name to print as the Fortran do-loop bound.
-
-        arg_tables is per-postfix (only schemes with an entry point matching
-        the CURRENT tgt_subroutine_postfix, e.g. "_init" vs "_run" vs
-        "_finalize"). A subcycle's loop count is only actually needed for
-        postfixes where at least one of its own schemes (recursively) is in
-        arg_tables -- matching _emit_subcycle_items's own "if sn in
-        arg_tables" filter exactly -- so this only fires for the specific
-        postfix that will actually emit a SubcycleLoopOp using it, not every
-        lifecycle postfix the suite happens to have (register/finalize/
-        timestep_initial/timestep_final have no subcycles of their own to
-        emit at all, and must not gain an unused dummy argument here).
-
-        Only called when physics_mode is True (see the caller in
-        _build_arg_tables): _emit_subcycle itself only ever emits a
-        SubcycleLoopOp under that same condition (its own "if _lc_int > 1
-        and physics_mode and body_ops" guard) -- a postfix like "_init" can
-        still have every one of a subcycle's own schemes present in
-        arg_tables (e.g. effr_calc has both a _run and an _init entry
-        point), so the arg_tables-based check above isn't sufficient on its
-        own to avoid adding an unused argument to non-physics postfixes.
-        """
-        def _subcycle_has_active_schemes(items) -> bool:
-            for item in items:
-                if item[0] == "scheme":
-                    _, sn, _ = item
-                    if sn in arg_tables:
-                        return True
-                else:
-                    _, _, _, sub_items = item
-                    if _subcycle_has_active_schemes(sub_items):
-                        return True
-            return False
-
-        def _collect_dynamic_counts(items) -> set:
-            counts: set = set()
-            for item in items:
-                if item[0] == "subcycle":
-                    _, loop_count, is_literal, sub_items = item
-                    if not is_literal and _subcycle_has_active_schemes(sub_items):
-                        counts.add(loop_count)
-                    counts |= _collect_dynamic_counts(sub_items)
-            return counts
-
-        call_sequence = self.getCallSequence(suite_description)
-        for std_name in _collect_dynamic_counts(call_sequence):
-            std_key = std_name.lower()
-            if std_key in all_args:
-                continue
-            host_var = self._resolve_host_only_std_name(std_name)
-            if host_var is None:
-                continue
-            new_arg = CCPPArgument(host_var.name)
-            new_arg.setAttr("standard_name", std_name)
-            new_arg.setAttr("type", host_var.getAttr("type"))
-            new_arg.setAttr("intent", "in")
-            if host_var.hasAttr("kind"):
-                new_arg.setAttr("kind", host_var.getAttr("kind"))
-            new_arg.setAttr("dimensions", 0)
-            new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
-            all_args[std_key] = new_arg
-
-    def _is_multi_instance_host(self) -> bool:
-        """True only when the host declares BOTH instance_number and
-        number_of_instances.
-
-        instance_number/number_of_instances are a single paired contract,
-        not two independent optionals -- every multi-instance codepath
-        (ccpp_suite_state's own allocatable-array declaration, the
-        constituent-API lc_instances(:) bundle, both synthesis methods
-        below) assumes both are present together. Checking only
-        instance_number (this method's own predecessor, before this fix)
-        let a host declaring just one of the two enable multi-instance
-        wrapping with no matching allocation support elsewhere -- e.g.
-        ccpp_suite_state declared allocatable but never actually allocated,
-        since the lazy-alloc guard in generateSubroutineCall separately
-        requires ninstances_local_name too. Caught by Copilot review on
-        PR #77 (for the analogous ccpp_cap.py/constituent_cap.py/
-        lifecycle_cap.py pairing); this is the same bug class in
-        suite_cap.py's own, separate ccpp_suite_state gating.
-        """
-        return (
-            self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME) is not None
-            and self._resolve_host_only_std_name(CCPP_NUMBER_OF_INSTANCES_STD_NAME) is not None
-        )
-
-    def _synthesize_instance_number_arg(self, all_args) -> None:
-        """Mutate all_args in place: if the host declares an
-        instance_number-standard-name scalar (real capgen-v1's
-        multi-instance model, ccpp_cap_refactor_plan.md's "instances/
-        instances_advection" entry) and no scheme's own entry point for
-        this phase already provides one, synthesize a fresh HostMatched
-        CCPPArgument for it -- named after the host's own local variable --
-        exactly as _synthesize_dynamic_loop_count_args already does for a
-        subcycle's dynamic loop count.
-
-        Real capgen-v1 treats instance_number as a fixed CCPP-protocol
-        argument present on *every* lifecycle call (register/init/
-        finalize/timestep_init/timestep_final/run), regardless of whether
-        any particular scheme's own entry point for that phase happens to
-        declare it -- e.g. examples/instances' own schemes declare
-        instance_number only on their _run entry point, never on
-        _register/_init/_finalize, yet the driver calls
-        ccpp_register(..., instance=ins, ...) for every instance the same
-        way real capgen-v1's own driver does.
-
-        Without this, a multi-instance suite's register/init/finalize/
-        timestep_init/timestep_final subroutines have no way to know which
-        instance's own ccpp_suite_state entry to check/set -- see
-        generateStateCheckOps/generateStateAssignment -- which is exactly
-        the bug a real ctest failure exposed on examples/instances: every
-        instance shared one scalar ccpp_suite_state, so registering
-        instance 2 saw instance 1's own already-'initialized' state and
-        errored.
-
-        Called for every phase, not just physics_mode (unlike
-        _synthesize_dynamic_loop_count_args) -- and is a no-op unless the
-        host declares BOTH instance_number and number_of_instances (see
-        _is_multi_instance_host), so ordinary (non-multi-instance) suites,
-        and hosts declaring only one of the pair, are entirely unaffected.
-        """
-        std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
-        if std_key in all_args:
-            return
-        if not self._is_multi_instance_host():
-            return
-        host_var = self._resolve_host_only_std_name(CCPP_INSTANCE_NUMBER_STD_NAME)
-        new_arg = CCPPArgument(host_var.name)
-        new_arg.setAttr("standard_name", CCPP_INSTANCE_NUMBER_STD_NAME)
-        new_arg.setAttr("type", host_var.getAttr("type"))
-        new_arg.setAttr("intent", "in")
-        if host_var.hasAttr("kind"):
-            new_arg.setAttr("kind", host_var.getAttr("kind"))
-        new_arg.setAttr("dimensions", 0)
-        new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
-        all_args[std_key] = new_arg
-
-    def _synthesize_number_of_instances_arg(self, all_args) -> None:
-        """Mutate all_args in place: companion to
-        _synthesize_instance_number_arg, for number_of_instances.
-
-        Threaded the same way real capgen-v1 threads it: as an ordinary
-        caller-supplied dummy argument, never use-associated -- confirmed
-        against examples/instances' own test_host.meta, a HOST-type table
-        with no backing test_host.F90 module at all (the driver, main.F90,
-        supplies the value directly; there is nothing to `use`). Its own
-        block-arg SSA value sizes ccpp_suite_state's allocation -- see
-        generateSubroutineCall's own instance_local_name/
-        _build_suite_state_lazy_alloc wiring.
-
-        A no-op unless the host declares BOTH names (see
-        _is_multi_instance_host), exactly like _synthesize_instance_number_arg.
-        """
-        std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
-        if std_key in all_args:
-            return
-        if not self._is_multi_instance_host():
-            return
-        host_var = self._resolve_host_only_std_name(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-        new_arg = CCPPArgument(host_var.name)
-        new_arg.setAttr("standard_name", CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-        new_arg.setAttr("type", host_var.getAttr("type"))
-        new_arg.setAttr("intent", "in")
-        if host_var.hasAttr("kind"):
-            new_arg.setAttr("kind", host_var.getAttr("kind"))
-        new_arg.setAttr("dimensions", 0)
-        new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
-        all_args[std_key] = new_arg
-
-    def _instance_arg_local_name(self, input_arg_list) -> "str | None":
-        """Return the local Fortran name of input_arg_list's own
-        instance_number-standard-name arg, or None if this subroutine's
-        signature has none (a non-multi-instance suite)."""
-        std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
-        for a in input_arg_list:
-            if self._std_key(a) == std_key:
-                return a.name
-        return None
-
-    def _number_of_instances_local_name(self, input_arg_list) -> "str | None":
-        """Return the local Fortran name of input_arg_list's own
-        number_of_instances-standard-name arg, or None if this
-        subroutine's signature has none."""
-        std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
-        for a in input_arg_list:
-            if self._std_key(a) == std_key:
-                return a.name
-        return None
-
-    @staticmethod
-    def _build_suite_state_lazy_alloc(ninstances_ssa) -> "LazyAllocOp":
-        """Return a LazyAllocOp allocating ccpp_suite_state -- dimensioned
-        by ninstances_ssa (this call's own already-in-scope
-        number_of_instances dummy arg -- see
-        _synthesize_number_of_instances_arg/
-        _number_of_instances_local_name, resolved from data_ops by the
-        caller) and initialized to 'uninitialized' -- on first use.
-
-        number_of_instances is a genuine runtime HOST-declared scalar in
-        real capgen-v1's own model (confirmed against
-        ccpp-framework-fresh/capgen/generator/suite_cap.py), not a
-        compile-time constant, so ccpp_suite_state can only become a
-        correctly-sized array via a real Fortran ALLOCATE at runtime --
-        reusing the same guarded "if (.not. allocated(...))" LazyAllocOp
-        idiom already used for SuiteOwned/framework arrays (see
-        _build_framework_refs), rather than inventing a second mechanism.
-        Threaded as an ordinary dummy argument, not use-associated --
-        examples/instances' own test_host.meta is a HOST-type table with
-        no backing test_host.F90 module at all, so there is nothing to
-        `use`; ninstances_ssa is already the right SSA value precisely
-        because _synthesize_number_of_instances_arg put it in the block's
-        own arg list.
-        """
-        return LazyAllocOp(
-            var_name="ccpp_suite_state",
-            kind_name="character",
-            dim_var_refs=[ninstances_ssa],
-            init_value="'uninitialized'",
-        )
-
     def _build_promoted_call_ops(
         self,
         subroutine_name,
@@ -983,218 +1212,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         present_op = PresentCheckOp(guard_name, with_body_ops, without_call_ops)
         return shared_slice_ops + [present_op]
 
-    _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-
-    def _active_expr_var_indexes(self) -> dict:
-        """Return use_associated_index for resolving 'active = <expr>'
-        property text: standard_name.lower() -> (local_name, table_name,
-        ftn_type).
-
-        Covers every MODULE-type var (always use-associated in this
-        codebase) *and* every 'state'-classified HOST-type var -- real
-        host-owned data with its own backing Fortran module (Stage 2a of
-        the vocabulary-resolution redesign, ccpp_cap_refactor_plan.md:
-        resolved the same way MODULE-type vars already are, via a USE stub,
-        rather than threaded as a dummy argument the way every HOST-type
-        var used to be regardless of classification).
-
-        'dispatch_scalar'-classified HOST-type vars (the fixed
-        CCPP-protocol set -- loop bounds, error handling) are deliberately
-        excluded: they have no backing Fortran module to use-associate
-        from, and no example anywhere gates an optional arg on one (nor
-        does it make semantic sense to -- a loop bound or error code isn't
-        the kind of thing a scheme's optionality would depend on).
-        _resolve_active_condition raises a clear error if one is ever
-        referenced in an 'active =' expression rather than silently
-        threading an untested dummy-argument workaround for a case that
-        has never actually occurred (Stage 3 of the redesign -- see
-        ccpp_cap_refactor_plan.md).
-        """
-        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
-
-        host_classification = classify_host_table_vars(self.meta_data)
-        use_associated_index: dict = {}
-        for tbl_name, props in self.meta_data.items():
-            tbl_type = props.getAttr("type")
-            if tbl_type not in (CCPPType.MODULE, CCPPType.HOST):
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if not var.hasAttr("standard_name"):
-                    continue
-                std_name = var.getAttr("standard_name").lower()
-                if tbl_type == CCPPType.MODULE or host_classification.get(std_name) == "state":
-                    use_associated_index[std_name] = (var.name, tbl_name, var.getAttr("type"))
-        return use_associated_index
-
-    def _active_expr_ddt_member_indexes(self) -> dict:
-        """Return standard_name.lower() -> (member_local_name, ddt_type_name)
-        for every member of every DDT-type table.
-
-        Companion to _active_expr_var_indexes: an 'active = <expr>' token
-        may reference a DDT member instead of a plain MODULE/HOST-state var
-        -- e.g. examples/instances' own data_array_opt, gated on
-        flag_for_opt_array, a member of the instance_type DDT (real
-        capgen-v1's multi-instance model: instance_type's own module-level
-        instance, instance_data, is a HOST-owned array of DDT, one entry
-        per model instance -- see cap_shared.py's own
-        _build_ddt_resolution_maps). _resolve_active_condition uses this to
-        resolve such a token via the exact same DDT-access-path machinery
-        run_dispatch.py's own DDT-member resolution already uses.
-        """
-        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
-
-        ddt_member_index: dict = {}
-        for tbl_name, props in self.meta_data.items():
-            if props.getAttr("type") != CCPPType.DDT:
-                continue
-            if tbl_name not in props.arg_tables:
-                continue
-            for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if not var.hasAttr("standard_name"):
-                    continue
-                ddt_member_index[var.getAttr("standard_name").lower()] = (var.name, tbl_name)
-        return ddt_member_index
-
-    def _resolve_active_condition(
-        self, raw_expr: str, suite_use_stubs: list, arg_table=None,
-    ) -> str:
-        """Resolve a host/module var's 'active = <expr>' property text into
-        an expression that's actually valid Fortran at the suite-cap call
-        site, emitting whatever USE stub(s) a use-associated reference needs.
-
-        The raw property text (e.g. "(flag_indicating_cloud_microphysics_
-        has_graupel)") is written in *standard-name* space -- CCPP's own
-        convention for this property, matching how default_value/dimension
-        expressions work: identifier-like tokens are standard-name
-        references to be resolved at the point of use, not pre-baked local
-        Fortran names. Printing it verbatim (the first cut of this fix)
-        compiles as a reference to an undeclared symbol the moment the real
-        local name differs from the standard name -- confirmed by gfortran
-        in CI on examples/var_compat and examples/nested_suite's own
-        flag_indicating_cloud_microphysics_has_graupel -> has_graupel case.
-
-        A MODULE-type reference, or a 'state'-classified HOST-type reference
-        (Stage 2a of the vocabulary-resolution redesign -- e.g. opt_arg's
-        own flag_for_opt_arg, data.meta's type=host but genuinely
-        host-owned state), resolves to its own local name and emits a USE
-        stub for it. A 'dispatch_scalar'-classified HOST-type reference
-        (loop bounds, error handling) raises rather than being silently
-        supported -- see _active_expr_var_indexes.
-
-        A DDT-member reference (e.g. examples/instances' own
-        flag_for_opt_array, a member of the instance_type DDT -- see
-        _active_expr_ddt_member_indexes) resolves via the same
-        _resolve_ddt_access_path machinery run_dispatch.py's own DDT-member
-        resolution uses. When the DDT's own module-level instance is itself
-        a HOST-owned array of model instances (real capgen-v1's
-        multi-instance model, ccpp_cap_refactor_plan.md's "instances/
-        instances_advection" entry), <arg_table> -- the calling scheme's
-        own _run table -- must have a sibling instance_number-standard-name
-        arg to index by; this raises a clear error rather than silently
-        emitting an unindexed (and therefore wrong) reference if it
-        doesn't, matching the dispatch_scalar case's own philosophy. Found
-        via a real gfortran CI failure on examples/instances: printing the
-        bare standard-name text verbatim compiled fine for opt_arg's own
-        flag_for_opt_arg only by coincidence (its local name happens to
-        equal its standard name) -- this DDT-member case never worked, it
-        was simply never exercised until this example's active-gated
-        data_array_opt.
-
-        A token that doesn't resolve to any known standard_name is left
-        as-is (assumed to be a Fortran keyword/operator, e.g. '.and.'/'.not.').
-        """
-        use_associated_index = self._active_expr_var_indexes()
-        ddt_member_index = self._active_expr_ddt_member_indexes()
-
-        def _resolve_ddt_member(std_name: str, member_local_name: str, ddt_type_name: str) -> str:
-            ddt_instance_map, ddt_parent_map = _build_ddt_resolution_maps(self.meta_data)
-            result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
-            if result is None:
-                raise ValueError(
-                    f"'active = {raw_expr}' references {std_name!r}, a member "
-                    f"of DDT type {ddt_type_name!r} with no reachable "
-                    f"module-level instance -- cannot resolve to a real "
-                    f"Fortran reference."
-                )
-            instance_var, instance_module, path_prefix, instance_array_dim = result
-            member_ref = path_prefix + member_local_name
-            if instance_array_dim is not None:
-                index_local_name = None
-                if arg_table is not None:
-                    for arg in arg_table.getFunctionArguments():
-                        if (
-                            arg.hasAttr("standard_name")
-                            and arg.getAttr("standard_name").lower()
-                                == CCPP_INSTANCE_NUMBER_STD_NAME
-                        ):
-                            index_local_name = arg.name
-                            break
-                if index_local_name is None:
-                    raise ValueError(
-                        f"'active = {raw_expr}' references {std_name!r}, a "
-                        f"member of {instance_var!r}, a HOST-owned array of "
-                        f"model instances -- but this scheme's own call has "
-                        f"no sibling {CCPP_INSTANCE_NUMBER_STD_NAME!r} arg to "
-                        f"index it by, so there is no way to know which "
-                        f"instance's value to test."
-                    )
-                base_name = f"{instance_var}({index_local_name})"
-            else:
-                base_name = instance_var
-            if not any(
-                isinstance(existing, llvm.GlobalOp)
-                and existing.sym_name.data == instance_var
-                and existing.attributes.get("module") == StringAttr(instance_module)
-                for existing in suite_use_stubs
-            ):
-                stub = llvm.GlobalOp(
-                    llvm.LLVMArrayType.from_size_and_type(1, i8),
-                    instance_var, "external",
-                )
-                stub.attributes["module"] = StringAttr(instance_module)
-                suite_use_stubs.append(stub)
-            return f"{base_name}%{member_ref}"
-
-        def _substitute(match: "re.Match") -> str:
-            token = match.group(0)
-            std_name = token.lower()
-            entry = use_associated_index.get(std_name)
-            if entry is not None:
-                local_name, module_name, _ftn_type = entry
-                already_stubbed = any(
-                    isinstance(existing, llvm.GlobalOp)
-                    and existing.sym_name.data == local_name
-                    and existing.attributes.get("module") == StringAttr(module_name)
-                    for existing in suite_use_stubs
-                )
-                if not already_stubbed:
-                    stub = llvm.GlobalOp(
-                        llvm.LLVMArrayType.from_size_and_type(1, i8),
-                        local_name, "external",
-                    )
-                    stub.attributes["module"] = StringAttr(module_name)
-                    suite_use_stubs.append(stub)
-                return local_name
-            ddt_entry = ddt_member_index.get(std_name)
-            if ddt_entry is not None:
-                member_local_name, ddt_type_name = ddt_entry
-                return _resolve_ddt_member(std_name, member_local_name, ddt_type_name)
-            if is_dispatch_scalar_std_name(std_name):
-                raise ValueError(
-                    f"'active = {raw_expr}' references {std_name!r}, a CCPP "
-                    f"dispatch-scalar standard name (loop bounds/error "
-                    f"handling) with no backing Fortran module to "
-                    f"use-associate from. Gating an optional arg's presence "
-                    f"on one isn't supported -- no example does this, and it "
-                    f"has no clear Fortran realization. Give the host a "
-                    f"real state variable to gate on instead."
-                )
-            return token
-
-        return self._ACTIVE_EXPR_TOKEN_RE.sub(_substitute, raw_expr)
-
     def _build_active_gated_call_ops(
         self, subroutine_name, arg_table, data_ops, overrides=None,
         divergent_std_keys: frozenset = frozenset(), *, suite_use_stubs: list,
@@ -1264,8 +1281,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                 return _build_leaf(excluded_names)
             raw_condition_expr = raw_conditions[level]
             if level not in resolved_conditions:
-                resolved_conditions[level] = self._resolve_active_condition(
-                    raw_condition_expr, suite_use_stubs, arg_table
+                resolved_conditions[level] = _resolve_active_condition(
+                    self.meta_data, raw_condition_expr, suite_use_stubs, arg_table
                 )
             condition_expr = resolved_conditions[level]
             with_ops = _build_level(level + 1, excluded_names)
@@ -2093,9 +2110,12 @@ class GenerateSuiteSubroutine(RewritePattern):
                         all_args[std_key] = fn_arg
 
             if physics_mode:
-                self._synthesize_dynamic_loop_count_args(suite_description, arg_tables, all_args)
-            self._synthesize_instance_number_arg(all_args)
-            self._synthesize_number_of_instances_arg(all_args)
+                _synthesize_dynamic_loop_count_args(
+                    self.meta_data, self.getCallSequence(suite_description),
+                    arg_tables, all_args,
+                )
+            _synthesize_instance_number_arg(self.meta_data, all_args)
+            _synthesize_number_of_instances_arg(self.meta_data, all_args)
 
         # Two or more schemes sharing a standard_name can each independently
         # declare a genuinely different kind, units, or vertical-layer
@@ -2730,6 +2750,61 @@ class GenerateSuiteSubroutine(RewritePattern):
             lbound_one_store,
         ]
 
+    def _record_resolved_vars_for_phase(
+        self, tgt_subroutine_postfix, physics_mode,
+        framework_vars, input_arg_list, output_arg_list, ncol_meta,
+    ) -> None:
+        """--emit-resolved-vars bookkeeping (task #56 Stage 1 extraction,
+        pure code movement out of generateSubroutineCall): append this
+        phase's resolved-variable records to self.resolved_vars.
+        """
+        phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
+        if phase_name is None:
+            return
+        records = self.resolved_vars.setdefault(phase_name, [])
+        for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list):
+            record = _resolved_var_record(arg)
+            if record is not None:
+                _apply_ddt_chain(record, arg, self.ddt_resolution_maps)
+                records.append(record)
+        # ncol_meta is the *original* loop-extent arg (real standard_name
+        # intact) that _classify_args replaces in input_arg_list with
+        # nameless synthetic col_start/col_end scalars for physics_mode
+        # dispatch -- included here so the loop-extent variable's identity
+        # isn't lost entirely (capgen_v1_parity_backlog.md Stage 4 found it
+        # otherwise silently disappears, since _resolved_var_record filters
+        # out the nameless col_start/col_end args that replace it). Unlike
+        # framework_vars/input_arg_list/output_arg_list, ncol_meta was
+        # never itself run through HostVariableMatchPass (that pass runs
+        # before this synthesis exists), so its model_var_name is always
+        # None here even when the host directly declares the normalized
+        # identity (e.g. horizontal_dimension) -- real capgen-v1 resolves
+        # this via its own VarLoopSubst mechanism.
+        # capgen_v1_parity_backlog.md Stage 7 confirmed this blocked every
+        # CAM-SIMA fixture using the (still-valid, still-supported)
+        # horizontal_loop_extent column-chunking convention. Fixed here,
+        # not in HostVariableMatchPass itself: a fallback lookup against
+        # host_var_index (built once per SuiteCAP.apply() from the same
+        # HOST/MODULE tables that pass already indexes), keyed by the
+        # *normalized* standard name _resolved_var_record just computed --
+        # scoped to ncol_meta specifically, not framework_vars/
+        # input_arg_list/output_arg_list, since those can be legitimately
+        # host-unmatched by design (e.g. CapScratch vars), where forcing a
+        # host match would be wrong.
+        if ncol_meta is not None:
+            ncol_record = _resolved_var_record(ncol_meta)
+            if ncol_record is not None:
+                if ncol_record["model_var_name"] is None:
+                    host_match = self.host_var_index.get(
+                        ncol_record["standard_name"].lower()
+                    )
+                    if host_match is not None:
+                        ncol_record["model_var_name"] = host_match[0]
+                        ncol_record["model_module_name"] = host_match[1]
+                        ncol_record["is_host_table_var"] = host_match[2]
+                        ncol_record["is_protected"] = ncol_record["is_protected"] or host_match[3]
+                records.append(ncol_record)
+
     def generateSubroutineCall(
         self,
         suite_description,
@@ -2781,56 +2856,10 @@ class GenerateSuiteSubroutine(RewritePattern):
         output_arg_list = _cls.output_arg_list
         ncol_meta = _cls.ncol_meta
 
-        phase_name = "run" if physics_mode else _PHASE_NAMES.get((tgt_subroutine_postfix, False))
-        if phase_name is not None:
-            records = self.resolved_vars.setdefault(phase_name, [])
-            for arg in (*framework_vars.values(), *input_arg_list, *output_arg_list):
-                record = _resolved_var_record(arg)
-                if record is not None:
-                    _apply_ddt_chain(record, arg, self.ddt_resolution_maps)
-                    records.append(record)
-            # ncol_meta is the *original* loop-extent arg (real
-            # standard_name intact) that _classify_args replaces in
-            # input_arg_list with nameless synthetic col_start/col_end
-            # scalars for physics_mode dispatch -- included here so the
-            # loop-extent variable's identity isn't lost entirely
-            # (capgen_v1_parity_backlog.md Stage 4 found it otherwise
-            # silently disappears, since _resolved_var_record filters out
-            # the nameless col_start/col_end args that replace it). Unlike
-            # framework_vars/input_arg_list/output_arg_list, ncol_meta was
-            # never itself run through HostVariableMatchPass (that pass
-            # runs before this synthesis exists), so its model_var_name is
-            # always None here even when the host directly declares the
-            # normalized identity (e.g. horizontal_dimension) -- real
-            # capgen-v1 resolves this via its own VarLoopSubst mechanism.
-            # capgen_v1_parity_backlog.md Stage 7 confirmed this blocked
-            # every CAM-SIMA fixture using the (still-valid, still-
-            # supported) horizontal_loop_extent column-chunking convention.
-            # Fixed here, not in HostVariableMatchPass itself: a fallback
-            # lookup against host_var_index (built once per SuiteCAP.apply()
-            # from the same HOST/MODULE tables that pass already indexes),
-            # keyed by the *normalized* standard name _resolved_var_record
-            # just computed -- scoped to ncol_meta specifically, not
-            # framework_vars/input_arg_list/output_arg_list, since those
-            # can be legitimately host-unmatched by design (e.g. CapScratch
-            # vars), where forcing a host match would be wrong.
-            if ncol_meta is not None:
-                ncol_record = _resolved_var_record(ncol_meta)
-                if ncol_record is not None:
-                    if ncol_record["model_var_name"] is None:
-                        host_match = self.host_var_index.get(
-                            ncol_record["standard_name"].lower()
-                        )
-                        if host_match is not None:
-                            ncol_record["model_var_name"] = host_match[0]
-                            ncol_record["model_module_name"] = host_match[1]
-                            ncol_record["is_host_table_var"] = host_match[2]
-                            ncol_record["is_protected"] = ncol_record["is_protected"] or host_match[3]
-                        # end if
-                    # end if
-                    records.append(ncol_record)
-                # end if
-            # end if
+        self._record_resolved_vars_for_phase(
+            tgt_subroutine_postfix, physics_mode,
+            framework_vars, input_arg_list, output_arg_list, ncol_meta,
+        )
 
         _sig = self._build_block_signature(
             input_arg_list, output_arg_list, divergent_std_keys=divergent_std_keys,
@@ -2896,8 +2925,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         # correctly declared as a plain (non-array) scalar in that case --
         # invalid Fortran. Same paired-contract bug class as Copilot's
         # PR #77 review; found via this file's own regression test.
-        instance_local_name = self._instance_arg_local_name(input_arg_list)
-        ninstances_local_name = self._number_of_instances_local_name(input_arg_list)
+        instance_local_name = _instance_arg_local_name(input_arg_list)
+        ninstances_local_name = _number_of_instances_local_name(input_arg_list)
         if ninstances_local_name is None:
             instance_local_name = None
         if (
@@ -2906,7 +2935,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             and (check_string is not None or state_string is not None)
         ):
             lazy_alloc_ops.append(
-                self._build_suite_state_lazy_alloc(data_ops[ninstances_local_name])
+                _build_suite_state_lazy_alloc(data_ops[ninstances_local_name])
             )
 
         # Suite-level <init>/<final> scheme hook (v2.0 SDF schema): note the
@@ -3115,7 +3144,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             "internal",
             value=StringAttr("uninitialized"),
         )
-        if self._is_multi_instance_host():
+        if _is_multi_instance_host(self.meta_data):
             ccpp_suite_state_global.attributes["allocatable"] = StringAttr("1")
         string_const_globals = [
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)
