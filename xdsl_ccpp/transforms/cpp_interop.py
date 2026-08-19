@@ -7,6 +7,8 @@ generated ccpp_cap module. Runs as its own pass, generate-cpp-cap, right after
 generate-ccpp-cap in the pipeline.
 """
 
+from dataclasses import dataclass
+
 from xdsl.context import Context
 from xdsl.dialects import builtin, func
 from xdsl.dialects.builtin import (
@@ -187,6 +189,60 @@ def _chost_build_maps(meta_data):
     return std_to_host, local_to_std, ncol_var, nz_var
 
 
+@dataclass
+class ChostArgInfo:
+    """Arg descriptor for one chost (C++/BIND(C) host-interop) cap argument.
+
+    Union of the fields ever populated across this module's ~7 construction
+    sites (_chost_arg_info, _chost_expand_ddt_arg, _chost_out_infos x3,
+    _chost_maybe_inject_ncol, _chost_maybe_inject_nz) -- no single site sets
+    every field, so each one defaults to whatever the ~100+ existing read
+    sites already assumed as a fallback (matching their .get(key, default)
+    calls, or plain None/False for keys only ever read via bracket access
+    after being unconditionally set at every construction site).
+
+    Implements __getitem__/__setitem__/get() as a drop-in replacement for the
+    plain dicts these call sites used to build, so every existing read/mutate
+    site (bracket access, .get(), bracket assignment) keeps working unchanged.
+    """
+
+    hint: str | None = None
+    bare: str = ""
+    host: str = ""
+    std: str = ""
+    is_col_start: bool = False
+    is_col_end: bool = False
+    is_ncol: bool = False
+    is_nz: bool = False
+    is_dim_scalar: bool = False
+    is_errmsg: bool = False
+    is_errflg: bool = False
+    is_sname: bool = False
+    is_char: bool = False
+    is_int: bool = False
+    is_real: bool = False
+    is_logical: bool = False
+    real_width: int = 64
+    rank: int = 0
+    intent: str | None = None
+    dim_nz: str | None = None
+    dim_n3: str | None = None
+    dim_ncol: str | None = None
+    char_len: int | None = None
+    _ddt_member: str | None = None
+    _ddt_local: str | None = None
+    _ddt_prefix: str | None = None
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+
 def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
                     local_to_dim_names=None):
     """Return an arg descriptor dict for a single suite cap input argument."""
@@ -291,7 +347,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
                 if dim_n3:
                     break
 
-    return dict(
+    return ChostArgInfo(
         hint=hint, bare=bare, host=host, std=std,
         is_col_start=is_col_start, is_col_end=is_col_end,
         is_ncol=is_ncol, is_nz=is_nz, is_errmsg=is_errmsg,
@@ -419,7 +475,7 @@ def _chost_expand_ddt_arg(
         else:
             intent = original_intent
 
-        ai = dict(
+        ai = ChostArgInfo(
             hint=None, bare=flat_name, host=flat_name, std=std,
             is_col_start=False, is_col_end=False,
             is_ncol=is_ncol, is_nz=is_nz, is_dim_scalar=False,
@@ -481,7 +537,7 @@ def _chost_out_infos(pfn_out_types, std_to_host):
             char_len = static_dims[0] if static_dims else CCPP_ERRMSG_LEN
             if char_len == CCPP_ERRMSG_LEN:
                 host = std_to_host.get("ccpp_error_message", "errmsg")
-                out_infos.append(dict(
+                out_infos.append(ChostArgInfo(
                     hint="errmsg", bare="errmsg", host=host,
                     std="ccpp_error_message",
                     is_col_start=False, is_col_end=False,
@@ -492,7 +548,7 @@ def _chost_out_infos(pfn_out_types, std_to_host):
                 ))
             else:
                 host = std_to_host.get("scheme_name", "scheme_name")
-                out_infos.append(dict(
+                out_infos.append(ChostArgInfo(
                     hint="scheme_name", bare="scheme_name", host=host,
                     std="scheme_name",
                     is_col_start=False, is_col_end=False,
@@ -503,7 +559,7 @@ def _chost_out_infos(pfn_out_types, std_to_host):
                 ))
         elif isinstance(elem, IntegerType):
             host = std_to_host.get("ccpp_error_code", "errflg")
-            out_infos.append(dict(
+            out_infos.append(ChostArgInfo(
                 hint="errflg", bare="errflg", host=host,
                 std="ccpp_error_code",
                 is_col_start=False, is_col_end=False,
@@ -528,7 +584,7 @@ def _chost_maybe_inject_ncol(visible: list, infos: list, ncol_var: str) -> list:
     has_horiz_array = any(ai["is_real"] and ai["rank"] >= 1      for ai in infos)
     ncol_in_visible = any(ai["is_ncol"]                          for ai in visible)
     if (has_col_end or has_horiz_array) and not ncol_in_visible:
-        visible = [dict(
+        visible = [ChostArgInfo(
             hint=ncol_var, bare=ncol_var, host=ncol_var,
             std=CCPP_HORIZ_DIM_STD_NAME,
             is_col_start=False, is_col_end=False,
@@ -565,7 +621,7 @@ def _chost_maybe_inject_nz(visible: list, infos: list, std_to_host: dict) -> lis
             None,
         )
         if nz_std and dz not in to_inject:
-            to_inject[dz] = dict(
+            to_inject[dz] = ChostArgInfo(
                 hint=dz, bare=dz, host=dz, std=nz_std,
                 is_col_start=False, is_col_end=False,
                 is_ncol=False, is_nz=True, is_errmsg=False,
