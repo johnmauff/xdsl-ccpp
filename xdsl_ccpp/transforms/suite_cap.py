@@ -753,6 +753,332 @@ def _resolve_active_condition(
     return _ACTIVE_EXPR_TOKEN_RE.sub(_substitute, raw_expr)
 
 
+# ── Task #59 Stage 2: kind/unit-cast helpers + _build_block_signature decomposition ──
+
+def _std_key(arg) -> str:
+    """Return the standard_name (lowercase) if set, otherwise the local arg name."""
+    if arg.hasAttr("standard_name"):
+        return arg.getAttr("standard_name").lower()
+    return arg.name
+
+
+def _vertical_dim_index(fn_arg) -> "int | None":
+    """Return the 1-based Fortran dimension index of fn_arg's vertical
+    (layer) dimension, or None if it has no recognized one.
+
+    dim_names (set by BuildSchemeDescription from the ArgumentOp's own
+    dim_names property) preserves the scheme's own declared dimension
+    order, so this is per-scheme -- correct even if two schemes sharing
+    a standard_name order their dimensions differently.
+    """
+    if not fn_arg.hasAttr("dim_names"):
+        return None
+    for idx, dim_name in enumerate(fn_arg.getAttr("dim_names")):
+        if is_vertical_dimension(dim_name):
+            return idx + 1
+    return None
+
+
+def _has_dims(a) -> bool:
+    return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
+
+
+def _arg_dims(a) -> int:
+    """Return the dimension count to use for the block arg type.
+
+    For promoted args, use scheme_rank + 1 so the suite physics
+    subroutine receives the full host 2D array (e.g. temp_layer(:,:))
+    rather than the scheme's 1D slice declaration (temp_layer(:)).
+    """
+    base = a.getAttr("dimensions") if a.hasAttr("dimensions") else 0
+    if a.hasAttr("is_promoted"):
+        return base + 1
+    return base
+
+
+def _block_arg_kind(a):
+    """Return the kind to use for the suite function block arg.
+
+    For kind-mismatched args the host provides the value in its own
+    kind, so the block arg is declared in the HOST kind.  The suite
+    function body then creates a temp in the SCHEME kind and converts.
+    """
+    if a.hasAttr("model_var_kind_mismatch"):
+        return a.getAttr("model_var_kind_mismatch").split(":")[1]
+    return a.getAttr("kind") if a.hasAttr("kind") else None
+
+
+def _build_block_and_name_hints(input_arg_list) -> tuple:
+    """Build the Block (with kind/dims-derived arg types), resolve each
+    input arg's dummy-argument name hint (disambiguating collisions via
+    model_var_name where needed), and seed data_ops/final_values from it.
+
+    Returns (new_block, input_arg_types, data_ops, final_values).
+    """
+    input_arg_types = [
+        TypeConversions.convert(a.getAttr("type"), _block_arg_kind(a), _arg_dims(a))
+        for a in input_arg_list
+    ]
+
+    new_block = Block(arg_types=input_arg_types)
+
+    def _hint_for(fn_arg, base_name: str) -> str:
+        if fn_arg.hasAttr("allocatable"):
+            return base_name + "__alloc"
+        if fn_arg.hasAttr("optional"):
+            return base_name + "__opt"
+        if _has_dims(fn_arg) and fn_arg.getAttr("intent") == "in":
+            # Array args that are truly intent(in) get __in so the printer
+            # emits intent(in) rather than the default intent(inout).
+            # Unit-mismatched args are now converted into a local copy so
+            # the host's array is never modified — intent(in) is correct.
+            return base_name + "__in"
+        return base_name
+
+    def _printed_name(hint: str) -> str:
+        # print_ftn.py strips this exact __alloc/__opt/__in suffix before
+        # emitting the Fortran identifier (see its input_names comprehension),
+        # so collision detection must compare on this stripped form -- e.g. a
+        # scalar "x" and an array intent(in) "x" have different hints ("x" vs
+        # "x__in") but print as the same duplicate dummy-argument name.
+        if hint.endswith("__alloc"):
+            return hint[: -len("__alloc")]
+        if hint.endswith("__opt"):
+            return hint[: -len("__opt")]
+        if hint.endswith("__in"):
+            return hint[: -len("__in")]
+        return hint
+
+    # input_arg_list comes from all_args.values() (a dict keyed by
+    # std_key), so every entry here is a genuinely distinct standard_name.
+    # Compute each arg's default hint (its own scheme's local name, exactly
+    # as before) first, unchanged for the common case. Only when two
+    # different standard_names' schemes independently chose the same
+    # local name -- a real collision, e.g. examples/var_compat's four
+    # schemes all using "scalar_var" for four unrelated standard_names --
+    # fall back to the host-matched canonical name (model_var_name) for
+    # just those colliding entries, since the host routinely already
+    # gives each standard_name a distinct name for this exact reason
+    # (var_compat's own host table: scalar_var/scalar_varA/scalar_varB/
+    # scalar_varC). Every non-colliding arg keeps its original name,
+    # byte-identical to before this existed.
+    default_hints = [_hint_for(fn_arg, fn_arg.name) for fn_arg in input_arg_list]
+    collision_counts: dict[str, int] = {}
+    for h in default_hints:
+        printed = _printed_name(h)
+        collision_counts[printed] = collision_counts.get(printed, 0) + 1
+
+    data_ops = {}
+    printed_seen: dict[str, str] = {}  # printed dummy-arg name -> the fn_arg.name that claimed it
+    for idx, fn_arg in enumerate(input_arg_list):
+        hint = default_hints[idx]
+        printed = _printed_name(hint)
+        if collision_counts[printed] > 1:
+            if not fn_arg.hasAttr("model_var_name"):
+                raise ValueError(
+                    f"Suite dummy-argument name collision on {printed!r}: "
+                    f"scheme argument {fn_arg.name!r} shares this local name "
+                    f"with another, unrelated standard_name, and has no "
+                    f"host-matched canonical name (model_var_name) to "
+                    f"disambiguate with. Give the host a distinct local "
+                    f"name for this standard_name, or rename one of the "
+                    f"colliding schemes' arguments."
+                )
+            hint = _hint_for(fn_arg, fn_arg.getAttr("model_var_name"))
+            printed = _printed_name(hint)
+            if printed in printed_seen:
+                raise ValueError(
+                    f"Suite dummy-argument name collision: both "
+                    f"{printed_seen[printed]!r} and {fn_arg.name!r} (different "
+                    f"standard_names) resolve to the same dummy-argument "
+                    f"name {printed!r} even after preferring model_var_name. "
+                    f"Give the host a distinct local name for one of these "
+                    f"standard_names."
+                )
+        printed_seen[printed] = fn_arg.name
+        new_block.args[idx].name_hint = hint
+        data_ops[fn_arg.name] = new_block.args[idx]
+
+    # Index-keyed (not name-keyed) record of each input arg's current
+    # resolved SSA value, updated alongside data_ops[fn_arg.name] below
+    # by the kind-cast/unit-cast loops. Needed because data_ops is keyed
+    # by fn_arg.name, which -- for the very args this collision handling
+    # exists for -- is NOT unique across entries (that's the collision);
+    # tracking by position instead means a later entry's write can never
+    # clobber an earlier entry's value, unlike the name-keyed dict.
+    final_values: list = [new_block.args[idx] for idx in range(len(input_arg_list))]
+
+    return new_block, input_arg_types, data_ops, final_values
+
+
+def _apply_kind_casts(
+    input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
+) -> tuple:
+    """Insert KindCastOps for host/scheme kind-mismatched input args.
+
+    Character length mismatches are resolved by declaring the block arg
+    with the host's concrete length -- no runtime KindCastOp required.
+    Divergent standard_names (divergent_std_keys) are skipped entirely:
+    the dummy argument stays in the host's own native representation for
+    the whole function body, and each individual scheme call marshals to
+    its own kind independently (see generateSchemeSubroutineCallOps).
+
+    Mutates data_ops/final_values in place; returns (kind_cast_ops,
+    kind_writeback_pairs).
+    """
+    kind_cast_ops: list = []
+    kind_writeback_pairs: list = []
+    for idx, fn_arg in enumerate(input_arg_list):
+        if _std_key(fn_arg) in divergent_std_keys:
+            continue
+        if not fn_arg.hasAttr("model_var_kind_mismatch"):
+            continue
+        # Character length mismatches are resolved by declaring the block arg
+        # with the host's concrete length — no runtime KindCastOp required.
+        if fn_arg.getAttr("type") == "character":
+            continue
+        scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
+        block_arg_ssa = new_block.args[idx]
+        scheme_type = TypeConversions.convert(
+            fn_arg.getAttr("type"), scheme_kind, _arg_dims(fn_arg)
+        )
+        cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
+        cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
+        kind_cast_ops.append(cast_op)
+        data_ops[fn_arg.name] = cast_op.res
+        final_values[idx] = cast_op.res
+
+        intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+        if intent in ("inout", "out"):
+            kind_writeback_pairs.append((cast_op.res, block_arg_ssa, host_kind))
+
+    return kind_cast_ops, kind_writeback_pairs
+
+
+def _apply_unit_conversions(
+    input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
+) -> tuple:
+    """Insert UnitConvertOps for host/scheme unit-mismatched input args.
+
+    Same divergent_std_keys skip-and-defer-to-per-call-site marshaling as
+    _apply_kind_casts (see its docstring). Mutates data_ops/final_values
+    in place; returns (unit_convert_ops, unit_writeback_pairs).
+    """
+    unit_convert_ops: list = []
+    unit_writeback_pairs: list = []
+    for idx, fn_arg in enumerate(input_arg_list):
+        if _std_key(fn_arg) in divergent_std_keys:
+            continue
+        if not fn_arg.hasAttr("model_var_unit_mismatch"):
+            continue
+        scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
+        to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+
+        block_arg_ssa = new_block.args[idx]
+        arg_type = TypeConversions.convert(
+            fn_arg.getAttr("type"),
+            fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
+            _arg_dims(fn_arg),
+        )
+
+        intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+        pre_expr = "" if intent == "out" else to_scheme_expr
+
+        conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
+        conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
+        unit_convert_ops.append(conv_op)
+        data_ops[fn_arg.name] = conv_op.res
+        final_values[idx] = conv_op.res
+
+        if intent in ("inout", "out"):
+            unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
+
+    return unit_convert_ops, unit_writeback_pairs
+
+
+def _alloc_output_error_args(output_arg_list, data_ops) -> dict:
+    """Allocate every output arg, plus a fallback errflg/errmsg pair if the
+    suite's own output_arg_list doesn't already carry a
+    ccpp_error_code/ccpp_error_message-standard-name entry.
+
+    Mutates data_ops in place (adds each fn_arg.name, plus canonical
+    "errflg"/"errmsg" aliases); returns alloc_ops.
+    """
+    alloc_ops = {}
+    # Track by standard_name, not by fn_arg.name -- a scheme is free to
+    # name its error-handling args anything (e.g. "errcode" instead of
+    # "errflg", as examples/constituents_dim's schemes do); only the
+    # standard_name (ccpp_error_code/ccpp_error_message) is authoritative
+    # for "is this already covered." Checking the literal string
+    # "errflg"/"errmsg" against data_ops below would otherwise miss a
+    # same-meaning-different-name entry already in output_arg_list and
+    # add a second, spurious allocation for the same error value --
+    # producing an extra, unintended return value in this function's
+    # signature (return_types is built from alloc_ops right below).
+    has_errflg_std = False
+    has_errmsg_std = False
+    for fn_arg in output_arg_list:
+        arg_type = fn_arg.getAttr("type")
+        kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
+        full_type = TypeConversions.convert(arg_type, kind, 0)
+        alloc_op = memref.AllocaOp.get(
+            full_type.element_type, shape=list(full_type.shape.data)
+        )
+        alloc_op.memref.name_hint = fn_arg.name
+        alloc_ops[fn_arg.name] = alloc_op
+        data_ops[fn_arg.name] = alloc_op
+        std_name = (
+            fn_arg.getAttr("standard_name").lower()
+            if fn_arg.hasAttr("standard_name") else None
+        )
+        if std_name == CCPP_ERROR_CODE:
+            has_errflg_std = True
+            data_ops["errflg"] = alloc_op  # canonical internal alias
+        elif std_name == CCPP_ERROR_MESSAGE:
+            has_errmsg_std = True
+            data_ops["errmsg"] = alloc_op  # canonical internal alias
+
+    if not has_errflg_std:
+        alloc_op = memref.AllocaOp.get(
+            TypeConversions.getBaseType("integer"), shape=[]
+        )
+        alloc_op.memref.name_hint = "errflg"
+        alloc_ops["errflg"] = alloc_op
+        data_ops["errflg"] = alloc_op
+    if not has_errmsg_std:
+        alloc_op = memref.AllocaOp.get(
+            TypeConversions.getBaseType("character"), shape=[CCPP_ERRMSG_LEN]
+        )
+        alloc_op.memref.name_hint = "errmsg"
+        alloc_ops["errmsg"] = alloc_op
+        data_ops["errmsg"] = alloc_op
+
+    return alloc_ops
+
+
+def _tag_data_ops_by_std_name(input_arg_list, final_values, data_ops) -> None:
+    """Also register every input arg under the ("std_name", ...) tagged key
+    that generateSchemeSubroutineCallOps already prefers when resolving
+    a scheme's own call arguments (see its "val = data_ops.get(
+    ('std_name', ...), data_ops[arg.name])" lookups). Sourced from
+    final_values (index-keyed) rather than data_ops[fn_arg.name]
+    (name-keyed): for exactly the args this collision handling exists
+    for, fn_arg.name is NOT unique across entries (that's the
+    collision), so data_ops[fn_arg.name] itself only ever holds
+    whichever entry was processed last -- reading from it here would
+    silently tag every colliding std_name with that same last value.
+    Purely additive for the common, non-colliding case (same value
+    data_ops[arg.name] already holds) -- but without it, two different
+    standard_names whose schemes independently chose the same local
+    arg name would ALSO collide on the bare-name key, so every scheme
+    sharing that bare name would be called with the same wrong value
+    regardless of which standard_name it actually declared -- not just
+    a naming cosmetic, a real wrong-value bug.
+    """
+    for idx, fn_arg in enumerate(input_arg_list):
+        data_ops[("std_name", _std_key(fn_arg))] = final_values[idx]
+
+
 class GatherMetaFunctionSignatures(Visitor):
     """Collects all external func.FuncOp declarations from the ccpp module.
 
@@ -913,30 +1239,6 @@ class GenerateSuiteSubroutine(RewritePattern):
             if arg.hasAttr("is_promoted"):
                 return True
         return False
-
-    @staticmethod
-    def _std_key(arg) -> str:
-        """Return the standard_name (lowercase) if set, otherwise the local arg name."""
-        if arg.hasAttr("standard_name"):
-            return arg.getAttr("standard_name").lower()
-        return arg.name
-
-    @staticmethod
-    def _vertical_dim_index(fn_arg) -> "int | None":
-        """Return the 1-based Fortran dimension index of fn_arg's vertical
-        (layer) dimension, or None if it has no recognized one.
-
-        dim_names (set by BuildSchemeDescription from the ArgumentOp's own
-        dim_names property) preserves the scheme's own declared dimension
-        order, so this is per-scheme -- correct even if two schemes sharing
-        a standard_name order their dimensions differently.
-        """
-        if not fn_arg.hasAttr("dim_names"):
-            return None
-        for idx, dim_name in enumerate(fn_arg.getAttr("dim_names")):
-            if is_vertical_dimension(dim_name):
-                return idx + 1
-        return None
 
     def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops,
                                framework_ref_ops=None, suite_use_stubs=None):
@@ -1170,7 +1472,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # copy -- generateSchemeSubroutineCallOps prefers the tagged
                 # entry, and without this it would still resolve to the
                 # pre-slice value inherited from the shallow copy above.
-                promoted_data_ops[("std_name", self._std_key(arg))] = slice_op
+                promoted_data_ops[("std_name", _std_key(arg))] = slice_op
                 is_opt_promoted = arg.hasAttr("optional") and arg.hasAttr("is_promoted")
                 if is_opt_promoted:
                     opt_slice_ops[arg.name] = slice_op
@@ -1503,7 +1805,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             steps in either order without changing the final result;
             applied last here purely for a stable, deterministic order.
             """
-            if self._std_key(arg) not in divergent_std_keys:
+            if _std_key(arg) not in divergent_std_keys:
                 return val
             intent = arg.getAttr("intent") if arg.hasAttr("intent") else "in"
             chain: list = []  # (kind/unit/flip, result_ssa, source_ssa, param)
@@ -1511,7 +1813,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             if arg.hasAttr("model_var_kind_mismatch") and arg.getAttr("type") != "character":
                 scheme_kind, host_kind = arg.getAttr("model_var_kind_mismatch").split(":")
                 scheme_type = TypeConversions.convert(
-                    arg.getAttr("type"), scheme_kind, self._arg_dims(arg)
+                    arg.getAttr("type"), scheme_kind, _arg_dims(arg)
                 )
                 cast_op = KindCastOp(cur, scheme_kind, scheme_type)
                 cast_op.res.name_hint = f"{arg.name}_kind_cast"
@@ -1524,7 +1826,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 arg_type = TypeConversions.convert(
                     arg.getAttr("type"),
                     arg.getAttr("kind") if arg.hasAttr("kind") else None,
-                    self._arg_dims(arg),
+                    _arg_dims(arg),
                 )
                 pre_expr = "" if intent == "out" else to_scheme_expr
                 conv_op = UnitConvertOp(cur, pre_expr, arg_type)
@@ -1533,7 +1835,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 chain.append(("unit", conv_op.res, cur, to_host_expr))
                 cur = conv_op.res
             if arg.hasAttr("top_at_one"):
-                vert_dim = self._vertical_dim_index(arg)
+                vert_dim = _vertical_dim_index(arg)
                 if vert_dim is not None:
                     flip_op = VerticalFlipOp(cur, vert_dim, cur.type)
                     flip_op.res.name_hint = f"{arg.name}_vert_flip"
@@ -1582,7 +1884,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # genuinely ambiguous in that case. Every arg still has a
                 # bare-name entry regardless (block args and non-tagged
                 # framework refs alike), so the fallback always resolves.
-                val = data_ops.get(("std_name", self._std_key(arg)), data_ops[arg.name])
+                val = data_ops.get(("std_name", _std_key(arg)), data_ops[arg.name])
                 val = _apply_divergent_marshaling(arg, val)
                 actual_type = (
                     val.type if isinstance(val, SSAValue) else val.results[0].type
@@ -1728,35 +2030,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         store = llvm.StoreOp(loaded, addr_dst)
         return [addr_src, loaded, addr_dst, store]
 
-    @staticmethod
-    def _has_dims(a) -> bool:
-        return a.hasAttr("dimensions") and a.getAttr("dimensions") > 0
-
-    @staticmethod
-    def _arg_dims(a) -> int:
-        """Return the dimension count to use for the block arg type.
-
-        For promoted args, use scheme_rank + 1 so the suite physics
-        subroutine receives the full host 2D array (e.g. temp_layer(:,:))
-        rather than the scheme's 1D slice declaration (temp_layer(:)).
-        """
-        base = a.getAttr("dimensions") if a.hasAttr("dimensions") else 0
-        if a.hasAttr("is_promoted"):
-            return base + 1
-        return base
-
-    @staticmethod
-    def _block_arg_kind(a):
-        """Return the kind to use for the suite function block arg.
-
-        For kind-mismatched args the host provides the value in its own
-        kind, so the block arg is declared in the HOST kind.  The suite
-        function body then creates a temp in the SCHEME kind and converts.
-        """
-        if a.hasAttr("model_var_kind_mismatch"):
-            return a.getAttr("model_var_kind_mismatch").split(":")[1]
-        return a.getAttr("kind") if a.hasAttr("kind") else None
-
     def _build_block_signature(
         self, input_arg_list, output_arg_list, divergent_std_keys: frozenset = frozenset(),
     ) -> "_BlockSignature":
@@ -1772,222 +2045,17 @@ class GenerateSuiteSubroutine(RewritePattern):
         whichever scheme happened to become canonical, would be wrong for
         every other scheme sharing the name.
         """
-        input_arg_types = [
-            TypeConversions.convert(a.getAttr("type"), self._block_arg_kind(a), self._arg_dims(a))
-            for a in input_arg_list
-        ]
-
-        new_block = Block(arg_types=input_arg_types)
-
-        def _hint_for(fn_arg, base_name: str) -> str:
-            if fn_arg.hasAttr("allocatable"):
-                return base_name + "__alloc"
-            if fn_arg.hasAttr("optional"):
-                return base_name + "__opt"
-            if self._has_dims(fn_arg) and fn_arg.getAttr("intent") == "in":
-                # Array args that are truly intent(in) get __in so the printer
-                # emits intent(in) rather than the default intent(inout).
-                # Unit-mismatched args are now converted into a local copy so
-                # the host's array is never modified — intent(in) is correct.
-                return base_name + "__in"
-            return base_name
-
-        def _printed_name(hint: str) -> str:
-            # print_ftn.py strips this exact __alloc/__opt/__in suffix before
-            # emitting the Fortran identifier (see its input_names comprehension),
-            # so collision detection must compare on this stripped form -- e.g. a
-            # scalar "x" and an array intent(in) "x" have different hints ("x" vs
-            # "x__in") but print as the same duplicate dummy-argument name.
-            if hint.endswith("__alloc"):
-                return hint[: -len("__alloc")]
-            if hint.endswith("__opt"):
-                return hint[: -len("__opt")]
-            if hint.endswith("__in"):
-                return hint[: -len("__in")]
-            return hint
-
-        # input_arg_list comes from all_args.values() (a dict keyed by
-        # std_key), so every entry here is a genuinely distinct standard_name.
-        # Compute each arg's default hint (its own scheme's local name, exactly
-        # as before) first, unchanged for the common case. Only when two
-        # different standard_names' schemes independently chose the same
-        # local name -- a real collision, e.g. examples/var_compat's four
-        # schemes all using "scalar_var" for four unrelated standard_names --
-        # fall back to the host-matched canonical name (model_var_name) for
-        # just those colliding entries, since the host routinely already
-        # gives each standard_name a distinct name for this exact reason
-        # (var_compat's own host table: scalar_var/scalar_varA/scalar_varB/
-        # scalar_varC). Every non-colliding arg keeps its original name,
-        # byte-identical to before this existed.
-        default_hints = [_hint_for(fn_arg, fn_arg.name) for fn_arg in input_arg_list]
-        collision_counts: dict[str, int] = {}
-        for h in default_hints:
-            printed = _printed_name(h)
-            collision_counts[printed] = collision_counts.get(printed, 0) + 1
-
-        data_ops = {}
-        printed_seen: dict[str, str] = {}  # printed dummy-arg name -> the fn_arg.name that claimed it
-        for idx, fn_arg in enumerate(input_arg_list):
-            hint = default_hints[idx]
-            printed = _printed_name(hint)
-            if collision_counts[printed] > 1:
-                if not fn_arg.hasAttr("model_var_name"):
-                    raise ValueError(
-                        f"Suite dummy-argument name collision on {printed!r}: "
-                        f"scheme argument {fn_arg.name!r} shares this local name "
-                        f"with another, unrelated standard_name, and has no "
-                        f"host-matched canonical name (model_var_name) to "
-                        f"disambiguate with. Give the host a distinct local "
-                        f"name for this standard_name, or rename one of the "
-                        f"colliding schemes' arguments."
-                    )
-                hint = _hint_for(fn_arg, fn_arg.getAttr("model_var_name"))
-                printed = _printed_name(hint)
-                if printed in printed_seen:
-                    raise ValueError(
-                        f"Suite dummy-argument name collision: both "
-                        f"{printed_seen[printed]!r} and {fn_arg.name!r} (different "
-                        f"standard_names) resolve to the same dummy-argument "
-                        f"name {printed!r} even after preferring model_var_name. "
-                        f"Give the host a distinct local name for one of these "
-                        f"standard_names."
-                    )
-            printed_seen[printed] = fn_arg.name
-            new_block.args[idx].name_hint = hint
-            data_ops[fn_arg.name] = new_block.args[idx]
-
-        # Index-keyed (not name-keyed) record of each input arg's current
-        # resolved SSA value, updated alongside data_ops[fn_arg.name] below
-        # by the kind-cast/unit-cast loops. Needed because data_ops is keyed
-        # by fn_arg.name, which -- for the very args this collision handling
-        # exists for -- is NOT unique across entries (that's the collision);
-        # tracking by position instead means a later entry's write can never
-        # clobber an earlier entry's value, unlike the name-keyed dict.
-        final_values: list = [new_block.args[idx] for idx in range(len(input_arg_list))]
-
-        kind_cast_ops: list = []
-        kind_writeback_pairs: list = []
-        for idx, fn_arg in enumerate(input_arg_list):
-            if self._std_key(fn_arg) in divergent_std_keys:
-                continue
-            if not fn_arg.hasAttr("model_var_kind_mismatch"):
-                continue
-            # Character length mismatches are resolved by declaring the block arg
-            # with the host's concrete length — no runtime KindCastOp required.
-            if fn_arg.getAttr("type") == "character":
-                continue
-            scheme_kind, host_kind = fn_arg.getAttr("model_var_kind_mismatch").split(":")
-            block_arg_ssa = new_block.args[idx]
-            scheme_type = TypeConversions.convert(
-                fn_arg.getAttr("type"), scheme_kind, self._arg_dims(fn_arg)
-            )
-            cast_op = KindCastOp(block_arg_ssa, scheme_kind, scheme_type)
-            cast_op.res.name_hint = f"{fn_arg.name}_kind_cast"
-            kind_cast_ops.append(cast_op)
-            data_ops[fn_arg.name] = cast_op.res
-            final_values[idx] = cast_op.res
-
-            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-            if intent in ("inout", "out"):
-                kind_writeback_pairs.append((cast_op.res, block_arg_ssa, host_kind))
-
-        unit_convert_ops: list = []
-        unit_writeback_pairs: list = []
-        for idx, fn_arg in enumerate(input_arg_list):
-            if self._std_key(fn_arg) in divergent_std_keys:
-                continue
-            if not fn_arg.hasAttr("model_var_unit_mismatch"):
-                continue
-            scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
-            to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
-
-            block_arg_ssa = new_block.args[idx]
-            arg_type = TypeConversions.convert(
-                fn_arg.getAttr("type"),
-                fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
-                self._arg_dims(fn_arg),
-            )
-
-            intent = fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-            pre_expr = "" if intent == "out" else to_scheme_expr
-
-            conv_op = UnitConvertOp(block_arg_ssa, pre_expr, arg_type)
-            conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
-            unit_convert_ops.append(conv_op)
-            data_ops[fn_arg.name] = conv_op.res
-            final_values[idx] = conv_op.res
-
-            if intent in ("inout", "out"):
-                unit_writeback_pairs.append((conv_op.res, block_arg_ssa, to_host_expr))
-
-        alloc_ops = {}
-        # Track by standard_name, not by fn_arg.name -- a scheme is free to
-        # name its error-handling args anything (e.g. "errcode" instead of
-        # "errflg", as examples/constituents_dim's schemes do); only the
-        # standard_name (ccpp_error_code/ccpp_error_message) is authoritative
-        # for "is this already covered." Checking the literal string
-        # "errflg"/"errmsg" against data_ops below would otherwise miss a
-        # same-meaning-different-name entry already in output_arg_list and
-        # add a second, spurious allocation for the same error value --
-        # producing an extra, unintended return value in this function's
-        # signature (return_types is built from alloc_ops right below).
-        has_errflg_std = False
-        has_errmsg_std = False
-        for fn_arg in output_arg_list:
-            arg_type = fn_arg.getAttr("type")
-            kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
-            full_type = TypeConversions.convert(arg_type, kind, 0)
-            alloc_op = memref.AllocaOp.get(
-                full_type.element_type, shape=list(full_type.shape.data)
-            )
-            alloc_op.memref.name_hint = fn_arg.name
-            alloc_ops[fn_arg.name] = alloc_op
-            data_ops[fn_arg.name] = alloc_op
-            std_name = (
-                fn_arg.getAttr("standard_name").lower()
-                if fn_arg.hasAttr("standard_name") else None
-            )
-            if std_name == CCPP_ERROR_CODE:
-                has_errflg_std = True
-                data_ops["errflg"] = alloc_op  # canonical internal alias
-            elif std_name == CCPP_ERROR_MESSAGE:
-                has_errmsg_std = True
-                data_ops["errmsg"] = alloc_op  # canonical internal alias
-
-        if not has_errflg_std:
-            alloc_op = memref.AllocaOp.get(
-                TypeConversions.getBaseType("integer"), shape=[]
-            )
-            alloc_op.memref.name_hint = "errflg"
-            alloc_ops["errflg"] = alloc_op
-            data_ops["errflg"] = alloc_op
-        if not has_errmsg_std:
-            alloc_op = memref.AllocaOp.get(
-                TypeConversions.getBaseType("character"), shape=[CCPP_ERRMSG_LEN]
-            )
-            alloc_op.memref.name_hint = "errmsg"
-            alloc_ops["errmsg"] = alloc_op
-            data_ops["errmsg"] = alloc_op
-
-        # Also register every input arg under the ("std_name", ...) tagged key
-        # that generateSchemeSubroutineCallOps already prefers when resolving
-        # a scheme's own call arguments (see its "val = data_ops.get(
-        # ('std_name', ...), data_ops[arg.name])" lookups). Sourced from
-        # final_values (index-keyed) rather than data_ops[fn_arg.name]
-        # (name-keyed): for exactly the args this collision handling exists
-        # for, fn_arg.name is NOT unique across entries (that's the
-        # collision), so data_ops[fn_arg.name] itself only ever holds
-        # whichever entry was processed last -- reading from it here would
-        # silently tag every colliding std_name with that same last value.
-        # Purely additive for the common, non-colliding case (same value
-        # data_ops[arg.name] already holds) -- but without it, two different
-        # standard_names whose schemes independently chose the same local
-        # arg name would ALSO collide on the bare-name key, so every scheme
-        # sharing that bare name would be called with the same wrong value
-        # regardless of which standard_name it actually declared -- not just
-        # a naming cosmetic, a real wrong-value bug.
-        for idx, fn_arg in enumerate(input_arg_list):
-            data_ops[("std_name", self._std_key(fn_arg))] = final_values[idx]
+        new_block, input_arg_types, data_ops, final_values = _build_block_and_name_hints(
+            input_arg_list
+        )
+        kind_cast_ops, kind_writeback_pairs = _apply_kind_casts(
+            input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
+        )
+        unit_convert_ops, unit_writeback_pairs = _apply_unit_conversions(
+            input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
+        )
+        alloc_ops = _alloc_output_error_args(output_arg_list, data_ops)
+        _tag_data_ops_by_std_name(input_arg_list, final_values, data_ops)
 
         return _BlockSignature(
             new_block=new_block,
@@ -2028,21 +2096,21 @@ class GenerateSuiteSubroutine(RewritePattern):
         # entries into one, dropping the other from framework_vars/
         # _build_framework_refs entirely.
         framework_vars = {
-            self._std_key(a): a
+            _std_key(a): a
             for a in all_args.values()
             if a.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
         }
         input_arg_list = [
             a
             for a in all_args.values()
-            if (a.getAttr("intent") in ("in", "inout") or self._has_dims(a))
-            and self._std_key(a) not in framework_vars
+            if (a.getAttr("intent") in ("in", "inout") or _has_dims(a))
+            and _std_key(a) not in framework_vars
         ]
         output_arg_list = [
             a
             for a in all_args.values()
-            if a.getAttr("intent") == "out" and not self._has_dims(a)
-            and self._std_key(a) not in framework_vars
+            if a.getAttr("intent") == "out" and not _has_dims(a)
+            and _std_key(a) not in framework_vars
         ]
 
         ncol_meta = None
@@ -2103,7 +2171,7 @@ class GenerateSuiteSubroutine(RewritePattern):
 
             for scheme_name in arg_tables:
                 for fn_arg in arg_tables[scheme_name].getFunctionArguments():
-                    std_key = self._std_key(fn_arg)
+                    std_key = _std_key(fn_arg)
                     if std_key in all_args:
                         assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
                     else:
@@ -2136,7 +2204,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             for fn_arg in arg_tables[scheme_name].getFunctionArguments():
                 if fn_arg.getAttr("type") != "real":
                     continue
-                std_key = self._std_key(fn_arg)
+                std_key = _std_key(fn_arg)
                 kind = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
                 units = normalize_units(
                     fn_arg.getAttr("units") if fn_arg.hasAttr("units") else None
@@ -2208,7 +2276,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         inout_return_vals = [
             new_block.args[idx]
             for idx, a in enumerate(input_arg_list)
-            if a.getAttr("intent") == "inout" and not self._has_dims(a)
+            if a.getAttr("intent") == "inout" and not _has_dims(a)
         ]
         alloc_return_vals = list(alloc_ops.values())
 
@@ -2518,7 +2586,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         lazy_alloc_ops = []
         if framework_vars:
             for fw_arg in framework_vars.values():
-                _fw_std_key = self._std_key(fw_arg)
+                _fw_std_key = _std_key(fw_arg)
                 _scheme_dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
 
                 if suite_model is not None:
@@ -2705,7 +2773,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         if tgt_subroutine_postfix is not None:
             for _scheme_name in arg_tables:
                 for _fn_arg in arg_tables[_scheme_name].getFunctionArguments():
-                    _sk = self._std_key(_fn_arg)
+                    _sk = _std_key(_fn_arg)
                     _canonical = all_args.get(_sk)
                     if _canonical is not None and _fn_arg.name != _canonical.name:
                         if _fn_arg.name not in data_ops and _canonical.name in data_ops:
@@ -3272,7 +3340,7 @@ class GenerateSuiteSubroutine(RewritePattern):
     def match_and_rewrite(self, op: ccpp.SuiteOp, rewriter: PatternRewriter):
         """Generate the complete cap module for one ccpp.SuiteOp."""
         suite_description = self.suite_descriptions[op.suite_name.data]
-        suite_model = SuiteVariableModel(suite_description, self.meta_data, self._std_key)
+        suite_model = SuiteVariableModel(suite_description, self.meta_data, _std_key)
 
         _lc = self._generate_lifecycle_fns(suite_description, suite_model)
         generated_fns = _lc.generated_fns
