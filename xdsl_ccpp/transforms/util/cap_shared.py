@@ -852,3 +852,23 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
         return _make(ArgOwnershipKind.Block)
 
     return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
+
+
+def directive_op(directive: str, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs: dict):
+    """Return the ACC or OMP op for one GPU directive role, given each
+    side's already-built kwargs dict and the pass's own `self.directive`
+    ('acc' or 'omp'/None -- 'acc' is the default for anything else).
+
+    Shared by gpu_ccpp_cap_pass.py and gpu_data_pass.py's own otherwise-
+    independent `if self.directive == "omp": ... else: ...` dispatch
+    blocks -- extracted (complexity-audit Tier 2 finding, task #45) after
+    confirming ~10 of the 13 total GPU-directive dispatch sites across the
+    two files are genuine 1:1 substitutions (same shape, different op
+    class/kwarg names only). The remaining ~3 sites (a call site's own
+    copy/copyin/copyout clauses collapsing into OMP's single, coarser
+    `tofrom`) keep their own hand-written branch -- ACC's finer-grained
+    clauses merge into OMP's differently per call site, so folding them
+    into this shared helper would either lose that merge or need a bespoke
+    list-combining parameter, defeating the point of sharing this.
+    """
+    return omp_cls(**omp_kwargs) if directive == "omp" else acc_cls(**acc_kwargs)

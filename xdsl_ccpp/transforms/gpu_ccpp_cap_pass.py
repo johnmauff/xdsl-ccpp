@@ -28,6 +28,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_host_var_map,
     _iter_schemes,
     _resolve_host_var_key,
+    directive_op,
     find_diverged_suite_vars,
     split_scheme_table_name,
 )
@@ -687,6 +688,14 @@ class GPUCcppCapPass(ModulePass):
         Rewriter.insert_op(new_ref, InsertPoint.at_start(true_block))
         return new_ref.res
 
+    def _directive_op(self, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs: dict):
+        """Return the ACC or OMP op for one GPU directive role, chosen by
+        self.directive -- see cap_shared.directive_op's own docstring for
+        why this dispatch is centralized (complexity-audit Tier 2 finding,
+        task #45), shared with gpu_data_pass.py.
+        """
+        return directive_op(self.directive, acc_cls, acc_kwargs, omp_cls, omp_kwargs)
+
     def _wrap_scheme_call(self, true_block, suite_call, lifetimes, phase, donor_refs):
         """Classify every host var referenced in true_block (plus any
         hoisted var whose forced entry/exit anchor is this phase but has no
@@ -842,40 +851,46 @@ class GPUCcppCapPass(ModulePass):
         if enter_copyin or enter_create:
             enter_copyin_refs = self._resolve_array_refs(true_block, set(enter_copyin), use_sections=False)
             enter_create_refs = self._resolve_array_refs(true_block, set(enter_create), use_sections=False)
-            if self.directive == "omp":
-                # OMP's map(to:...) is the enter-data equivalent of ACC's
-                # copyin(...); map(alloc:...) of create(...).
-                enter_op = OmpTargetEnterDataOp(to=enter_copyin_refs, alloc=enter_create_refs)
-            else:  # acc (default)
-                enter_op = AccEnterDataOp(copyin=enter_copyin_refs, create=enter_create_refs)
+            # OMP's map(to:...) is the enter-data equivalent of ACC's
+            # copyin(...); map(alloc:...) of create(...).
+            enter_op = self._directive_op(
+                AccEnterDataOp, {"copyin": enter_copyin_refs, "create": enter_create_refs},
+                OmpTargetEnterDataOp, {"to": enter_copyin_refs, "alloc": enter_create_refs},
+            )
             Rewriter.insert_op(enter_op, enter_anchor)
 
         if exit_copyout or exit_delete:
             exit_copyout_refs = self._resolve_array_refs(true_block, set(exit_copyout), use_sections=False)
             exit_delete_refs  = self._resolve_array_refs(true_block, set(exit_delete),  use_sections=False)
-            if self.directive == "omp":
-                # OMP's map(from:...) is the exit-data equivalent of ACC's
-                # copyout(...); map(release:...) of delete(...).
-                exit_op = OmpTargetExitDataOp(from_=exit_copyout_refs, release=exit_delete_refs)
-            else:  # acc (default)
-                exit_op = AccExitDataOp(copyout=exit_copyout_refs, delete=exit_delete_refs)
+            # OMP's map(from:...) is the exit-data equivalent of ACC's
+            # copyout(...); map(release:...) of delete(...).
+            exit_op = self._directive_op(
+                AccExitDataOp, {"copyout": exit_copyout_refs, "delete": exit_delete_refs},
+                OmpTargetExitDataOp, {"from_": exit_copyout_refs, "release": exit_delete_refs},
+            )
             Rewriter.insert_op(exit_op, exit_anchor)
 
         # Hoisted "update" variables: a single sync pair per suite instead
         # of one per touching call site.
         if update_enter_vars:
             update_enter_refs = self._resolve_array_refs(true_block, update_enter_vars, use_sections=False)
-            if self.directive == "omp":
-                Rewriter.insert_op(OmpTargetUpdateFromOp(array_refs=update_enter_refs), enter_anchor)
-            else:  # acc (default)
-                Rewriter.insert_op(AccUpdateSelfOp(array_refs=update_enter_refs), enter_anchor)
+            Rewriter.insert_op(
+                self._directive_op(
+                    AccUpdateSelfOp, {"array_refs": update_enter_refs},
+                    OmpTargetUpdateFromOp, {"array_refs": update_enter_refs},
+                ),
+                enter_anchor,
+            )
 
         if update_exit_vars:
             update_exit_refs = self._resolve_array_refs(true_block, update_exit_vars, use_sections=False)
-            if self.directive == "omp":
-                Rewriter.insert_op(OmpTargetUpdateToOp(array_refs=update_exit_refs), exit_anchor)
-            else:  # acc (default)
-                Rewriter.insert_op(AccUpdateDeviceOp(array_refs=update_exit_refs), exit_anchor)
+            Rewriter.insert_op(
+                self._directive_op(
+                    AccUpdateDeviceOp, {"array_refs": update_exit_refs},
+                    OmpTargetUpdateToOp, {"array_refs": update_exit_refs},
+                ),
+                exit_anchor,
+            )
 
         # Update directives go inside the inner scf.IfOp's true region,
         # bracketing the actual suite physics call. This is the legacy
@@ -886,24 +901,20 @@ class GPUCcppCapPass(ModulePass):
             update_refs = self._resolve_array_refs(
                 true_block, update_vars
             )
-            if self.directive == "omp":
-                Rewriter.insert_op(
-                    OmpTargetUpdateFromOp(array_refs=update_refs),
-                    InsertPoint.before(suite_call),
-                )
-                Rewriter.insert_op(
-                    OmpTargetUpdateToOp(array_refs=update_refs),
-                    InsertPoint.after(suite_call),
-                )
-            else:  # acc (default)
-                Rewriter.insert_op(
-                    AccUpdateSelfOp(array_refs=update_refs),
-                    InsertPoint.before(suite_call),
-                )
-                Rewriter.insert_op(
-                    AccUpdateDeviceOp(array_refs=update_refs),
-                    InsertPoint.after(suite_call),
-                )
+            Rewriter.insert_op(
+                self._directive_op(
+                    AccUpdateSelfOp, {"array_refs": update_refs},
+                    OmpTargetUpdateFromOp, {"array_refs": update_refs},
+                ),
+                InsertPoint.before(suite_call),
+            )
+            Rewriter.insert_op(
+                self._directive_op(
+                    AccUpdateDeviceOp, {"array_refs": update_refs},
+                    OmpTargetUpdateToOp, {"array_refs": update_refs},
+                ),
+                InsertPoint.after(suite_call),
+            )
 
     def _wrap_residency_directives(self, true_block, suite_call, residency_lifetimes, phase, donor_refs):
         """Establish/tear down device residency for HostMatched vars that
@@ -973,28 +984,33 @@ class GPUCcppCapPass(ModulePass):
 
         if legacy_vars:
             legacy_refs = self._resolve_array_refs(true_block, set(legacy_vars), use_sections=True)
-            if self.directive == "omp":
-                data_begin_op = OmpTargetDataBeginOp(tofrom=legacy_refs)
-                data_end_op = OmpTargetDataEndOp()
-            else:
-                data_begin_op = AccDataBeginOp(copy=legacy_refs)
-                data_end_op = AccDataEndOp()
+            data_begin_op = self._directive_op(
+                AccDataBeginOp, {"copy": legacy_refs},
+                OmpTargetDataBeginOp, {"tofrom": legacy_refs},
+            )
+            data_end_op = self._directive_op(AccDataEndOp, {}, OmpTargetDataEndOp, {})
             Rewriter.insert_op(data_begin_op, InsertPoint.before(suite_call))
             Rewriter.insert_op(data_end_op, InsertPoint.after(suite_call))
 
         if enter_vars:
             enter_refs = self._resolve_array_refs(true_block, set(enter_vars), use_sections=False)
-            if self.directive == "omp":
-                Rewriter.insert_op(OmpTargetEnterDataOp(to=enter_refs), InsertPoint.before(suite_call))
-            else:
-                Rewriter.insert_op(AccEnterDataOp(copyin=enter_refs), InsertPoint.before(suite_call))
+            Rewriter.insert_op(
+                self._directive_op(
+                    AccEnterDataOp, {"copyin": enter_refs},
+                    OmpTargetEnterDataOp, {"to": enter_refs},
+                ),
+                InsertPoint.before(suite_call),
+            )
 
         if exit_vars:
             exit_refs = self._resolve_array_refs(true_block, set(exit_vars), use_sections=False)
-            if self.directive == "omp":
-                Rewriter.insert_op(OmpTargetExitDataOp(from_=exit_refs), InsertPoint.after(suite_call))
-            else:
-                Rewriter.insert_op(AccExitDataOp(copyout=exit_refs), InsertPoint.after(suite_call))
+            Rewriter.insert_op(
+                self._directive_op(
+                    AccExitDataOp, {"copyout": exit_refs},
+                    OmpTargetExitDataOp, {"from_": exit_refs},
+                ),
+                InsertPoint.after(suite_call),
+            )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)

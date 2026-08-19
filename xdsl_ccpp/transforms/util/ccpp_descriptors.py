@@ -250,6 +250,55 @@ class XMLSuite(XMLSuiteBase):
 # Visitor passes that walk CCPP IR and populate descriptor objects
 # ---------------------------------------------------------------------------
 
+# Flag properties on a ccpp.ArgumentOp: presence in arg_op.properties means
+# True (the actual property value, a UnitAttr, is never read) -- copied onto
+# the CCPPArgument descriptor by BuildMetaDataDescriptions.traverse_argument_op
+# below. Extracted from 10 previously separate, identically-shaped
+# `if "<flag>" in arg_op.properties: arg.setAttr("<flag>", True)` blocks
+# (complexity-audit Tier 2 finding, task #53) into one tuple + loop; each
+# flag's own explanation (several non-obvious) is preserved here rather than
+# dropped:
+#   optional                -- a flag attribute (vs. a value-carrying one)
+#   advected                -- points to an existing data-structure
+#   allocatable             -- an allocated variable managed by CCPP
+#   constituent             -- marks constituent/tendency vars managed by the framework
+#   model_var_is_ddt        -- marks DDT member variables
+#   model_var_is_host_table -- marks a matched host variable declared in a
+#                              HOST-type (not MODULE-type) table -- passed to
+#                              physics via the host's own argument list rather
+#                              than use-associated, and always considered
+#                              initialized. capgen_v1_parity_backlog.md Stage 7:
+#                              surfaced via --emit-resolved-vars as
+#                              is_host_table_var, matching real capgen-v1's
+#                              own Var.host_interface_var.
+#   model_var_is_protected  -- marks a matched host/module variable that is
+#                              itself declared 'protected' -- distinct from
+#                              this arg's own 'protected' property (which a
+#                              scheme argument never carries directly; only
+#                              the host/module declaration does).
+#                              capgen_v1_parity_backlog.md Stage 7: surfaced
+#                              via --emit-resolved-vars as is_protected,
+#                              matching real capgen-v1's own propagation of
+#                              the host declaration's protected status onto
+#                              the resolved call-list entry.
+#   is_interstitial         -- marks variables that flow between lifecycle phases
+#   is_promoted             -- marks variables where scheme rank < host rank
+#   top_at_one              -- marks a scheme's own vertical-layer convention
+#                              as top-of-atmosphere at index 1; absent means
+#                              not-flipped.
+_ARG_BOOLEAN_FLAG_PROPS = (
+    "optional",
+    "advected",
+    "allocatable",
+    "constituent",
+    "model_var_is_ddt",
+    "model_var_is_host_table",
+    "model_var_is_protected",
+    "is_interstitial",
+    "is_promoted",
+    "top_at_one",
+)
+
 
 class BuildMetaDataDescriptions(Visitor):
     """Visitor that walks CCPP metadata IR and builds `CCPPTableProperties` descriptors.
@@ -359,62 +408,15 @@ class BuildMetaDataDescriptions(Visitor):
         if "dim_names" in arg_op.properties:
             arg.setAttr("dim_names", arg_op.properties["dim_names"].data.split(","))
 
-        # 'optional' is a flag attribute — store as a boolean rather than a string
-        if "optional" in arg_op.properties:
-            arg.setAttr("optional", True)
-
-        # 'advected' is a field that points to an existing data-structure
-        if "advected" in arg_op.properties:
-            arg.setAttr("advected", True)
-
-        # 'allocatable' is an allocated variable managed by CCPP
-        if "allocatable" in arg_op.properties:
-            arg.setAttr("allocatable", True)
-
-        # 'constituent' marks constituent/tendency variables managed by the framework
-        if "constituent" in arg_op.properties:
-            arg.setAttr("constituent", True)
-
-        # 'model_var_is_ddt' marks DDT member variables
-        if "model_var_is_ddt" in arg_op.properties:
-            arg.setAttr("model_var_is_ddt", True)
-
-        # 'model_var_is_host_table' marks a matched host variable declared
-        # in a HOST-type (not MODULE-type) table -- passed to physics via
-        # the host's own argument list rather than use-associated, and
-        # always considered initialized. capgen_v1_parity_backlog.md
-        # Stage 7: surfaced via --emit-resolved-vars as is_host_table_var,
-        # matching real capgen-v1's Var.host_interface_var.
-        if "model_var_is_host_table" in arg_op.properties:
-            arg.setAttr("model_var_is_host_table", True)
-
-        # 'model_var_is_protected' marks a matched host/module variable
-        # that is itself declared 'protected' -- distinct from this arg's
-        # own 'protected' property (which a scheme argument never carries
-        # directly; only the host/module declaration does).
-        # capgen_v1_parity_backlog.md Stage 7: surfaced via
-        # --emit-resolved-vars as is_protected, matching real capgen-v1's
-        # own propagation of the host declaration's protected status onto
-        # the resolved call-list entry.
-        if "model_var_is_protected" in arg_op.properties:
-            arg.setAttr("model_var_is_protected", True)
+        # Flag properties: presence means True -- see _ARG_BOOLEAN_FLAG_PROPS'
+        # own module-level comment for what each flag means.
+        for flag in _ARG_BOOLEAN_FLAG_PROPS:
+            if flag in arg_op.properties:
+                arg.setAttr(flag, True)
 
         # 'model_var_array_layout' is "row_major" when matched host table declares array_layout = row_major
         if "model_var_array_layout" in arg_op.properties:
             arg.setAttr("model_var_array_layout", arg_op.properties["model_var_array_layout"].data)
-
-        # 'is_interstitial' marks variables that flow between lifecycle phases
-        if "is_interstitial" in arg_op.properties:
-            arg.setAttr("is_interstitial", True)
-
-        # 'is_promoted' marks variables where scheme rank < host rank
-        if "is_promoted" in arg_op.properties:
-            arg.setAttr("is_promoted", True)
-
-        # 'top_at_one' marks a scheme's own vertical-layer convention as
-        # top-of-atmosphere at index 1; absent means not-flipped.
-        if "top_at_one" in arg_op.properties:
-            arg.setAttr("top_at_one", True)
 
         # Surface the completed argument to the parent traversal via self.arg_token
         self.arg_token = arg

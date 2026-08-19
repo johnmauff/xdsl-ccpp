@@ -845,6 +845,31 @@ def _build_run_dispatch_chain(
             scheme_names = info["scheme_names"]
             local_to_array_layout = info.get("local_to_array_layout", {})
 
+            def _find_cap_var_inout_ref(ret_type):
+                """Return a CapVarRefOp for this suite call's own first
+                CapVar-sourced input arg whose type matches ret_type, or
+                None if there isn't one.
+
+                Shared by both result-classification branches below (the
+                leading-inout-return branch and the trailing-alloc-return
+                branch) -- previously two independently-maintained,
+                byte-identical copies of this same search (complexity-audit
+                Tier 2 finding, task #50). Read-only lookup with no
+                insertion-point/anchor-order interaction, unlike this
+                file's own GPU-directive-adjacent logic (see task #45's
+                scoping note) -- it only decides *what* ref to build, not
+                *where* to insert it.
+                """
+                for i, (a_name, a_type) in enumerate(
+                    zip(callee_input_names, callee_input_types)
+                ):
+                    if (a_type == ret_type
+                            and resolved_arg_ops[i].source_kind.data == ArgSourceKind.CapVar):
+                        std_name_cv = resolved_arg_ops[i].std_name.data
+                        cv_name, cv_type, _ = cap_var_map[std_name_cv]
+                        return CapVarRefOp(cv_name, a_type)
+                return None
+
             # ── Build standard_name → dim_names for cap_var sources ──────
             cap_var_std_to_dims: dict = {}
             for _sv_scheme in scheme_names:
@@ -1420,18 +1445,10 @@ def _build_run_dispatch_chain(
                                 memref.CopyOp(result, host_var_ref_results[canonical])
                             )
                         elif cap_var_map:
-                            for i, (a_name, a_type) in enumerate(
-                                zip(callee_input_names, callee_input_types)
-                            ):
-                                if (a_type == ret_type
-                                        and resolved_arg_ops[i].source_kind.data
-                                        == ArgSourceKind.CapVar):
-                                    std_name_cv = resolved_arg_ops[i].std_name.data
-                                    cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                                    cap_ref = CapVarRefOp(cv_name, a_type)
-                                    cap_var_inout_refs.append(cap_ref)
-                                    copy_ops.append(memref.CopyOp(result, cap_ref.res))
-                                    break
+                            cap_ref = _find_cap_var_inout_ref(ret_type)
+                            if cap_ref is not None:
+                                cap_var_inout_refs.append(cap_ref)
+                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
                 else:
                     ri_idx = idx - _n_inout_ret
                     ret_std_name = _run_ret_alloc[ri_idx][2]
@@ -1470,18 +1487,10 @@ def _build_run_dispatch_chain(
                                 chain_global_ops.append(hv_glob)
                         elif cap_var_map:
                             # 3) cap_var inout echo: suite cap returns cap-owned scalar.
-                            for i, (a_name, a_type) in enumerate(
-                                zip(callee_input_names, callee_input_types)
-                            ):
-                                if (a_type == ret_type
-                                        and resolved_arg_ops[i].source_kind.data
-                                        == ArgSourceKind.CapVar):
-                                    std_name_cv = resolved_arg_ops[i].std_name.data
-                                    cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                                    cap_ref = CapVarRefOp(cv_name, a_type)
-                                    cap_var_inout_refs.append(cap_ref)
-                                    copy_ops.append(memref.CopyOp(result, cap_ref.res))
-                                    break
+                            cap_ref = _find_cap_var_inout_ref(ret_type)
+                            if cap_ref is not None:
+                                cap_var_inout_refs.append(cap_ref)
+                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
 
             # Build write-back ops for row-major arrays (inout/out only).
             row_major_write_back_ops: list = []

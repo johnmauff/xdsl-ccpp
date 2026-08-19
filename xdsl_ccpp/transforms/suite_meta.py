@@ -89,13 +89,15 @@ class MetaCAP(ModulePass):
     def generate_function_signature(self, arg_table):
         """Build an external `func.FuncOp` declaration from a CCPP argument table.
 
-        Each argument in the table contributes to either the input or output list
-        depending on its ``intent`` attribute:
-
-        - ``intent = in``    → input only
-        - ``intent = out``   → output only
-        - ``intent = inout`` → both input and output
-        - (no intent)        → treated as ``inout`` by convention
+        Fortran always passes arguments by reference, so every argument --
+        regardless of intent(in)/intent(out)/intent(inout)/no intent at all
+        -- contributes to the input list only; there is never a separate
+        MLIR return value to model intent(out) here. (A previous version of
+        this method branched on intent's three values plus the no-intent
+        case, but every branch did the same `in_args.append(arg_type)` --
+        pure vestigial classification, simplified away in the
+        complexity-audit's Tier 2 pass, task #54.) An unrecognized intent
+        value is still rejected rather than silently accepted.
 
         Args:
             arg_table: A `CCPPArgumentTable` descriptor for one scheme entry point.
@@ -104,37 +106,18 @@ class MetaCAP(ModulePass):
             An external `func.FuncOp` with the matching MLIR type signature.
         """
         in_args = []
-        out_args = []
 
-        # Classify each metadata argument into in/out lists based on its intent
         for fn_arg in arg_table.getFunctionArguments():
             arg_type = TypeConversions.convert(
                 fn_arg.getAttr("type"),
                 fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
                 fn_arg.getAttr("dimensions") if fn_arg.hasAttr("dimensions") else 0,
             )
-            if fn_arg.hasAttr("intent"):
-                if fn_arg.getAttr("intent") == "in":
-                    in_args.append(arg_type)
-                elif fn_arg.getAttr("intent") == "out":
-                    # Fortran always passes arguments by reference; intent(out) means the
-                    # callee writes the value, but the ABI is still pass-by-reference.
-                    # Put all out args in in_args so scheme calls preserve positional order.
-                    in_args.append(arg_type)
-                elif fn_arg.getAttr("intent") == "inout":
-                    # inout: passed by reference in Fortran — the callee reads and
-                    # modifies the argument in-place through the reference.
-                    # Only appears in the input list; no separate return value needed.
-                    in_args.append(arg_type)
-                else:
-                    raise AssertionError(
-                        f"Unexpected intent: {fn_arg.getAttr('intent')}"
-                    )
-            else:
-                # No intent specified — treat as inout: passed by reference, in-place.
-                in_args.append(arg_type)
+            if fn_arg.hasAttr("intent") and fn_arg.getAttr("intent") not in ("in", "out", "inout"):
+                raise AssertionError(f"Unexpected intent: {fn_arg.getAttr('intent')}")
+            in_args.append(arg_type)
 
-        return func.FuncOp.external(arg_table.getAttr("name"), in_args, out_args)
+        return func.FuncOp.external(arg_table.getAttr("name"), in_args, [])
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         # Create the dedicated 'ccpp' module that will hold all CCPP dialect ops

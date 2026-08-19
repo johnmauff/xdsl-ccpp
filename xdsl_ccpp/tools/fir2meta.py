@@ -24,30 +24,18 @@ import os
 import subprocess
 import sys
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.dialects.builtin import StringAttr
 from xdsl.parser import Parser
 from xdsl.printer import Printer
-from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP, TablePropertiesOp
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
+from xdsl_ccpp.dialects.ccpp import TablePropertiesOp
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 from xdsl_ccpp.tools.flang_utils import find_flang, run_flang
 
 
-def _make_ctx() -> Context:
-    """Build a Context with all standard + CCPP dialects loaded."""
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
-
-
 def _parse_mlir_str(text: str) -> builtin.ModuleOp:
-    ctx = _make_ctx()
+    ctx = make_ccpp_context()
     return Parser(ctx, text).parse_op()
 
 

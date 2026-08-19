@@ -24,25 +24,13 @@ import subprocess
 import sys
 import tempfile
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.parser import Parser
-from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 from xdsl_ccpp.tools.flang_utils import find_flang, run_flang
 from xdsl_ccpp.transforms.validate_fir import compare_modules
-
-
-def _make_ctx() -> Context:
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
 
 
 def _run_flang(f90_file: str, fir_mlir: str) -> bool:
@@ -86,7 +74,7 @@ def _load_meta_file(meta_path: str) -> builtin.ModuleOp | None:
 
 def _parse_mlir(text: str) -> builtin.ModuleOp | None:
     try:
-        return Parser(_make_ctx(), text).parse_op()
+        return Parser(make_ccpp_context(), text).parse_op()
     except Exception as exc:
         print(f"Error parsing MLIR output: {exc}", file=sys.stderr)
         return None

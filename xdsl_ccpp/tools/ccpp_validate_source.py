@@ -32,14 +32,11 @@ import subprocess
 import sys
 import tempfile
 
-from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.parser import Parser
-from xdsl.universe import Universe
 
-from xdsl_ccpp.dialects.ccpp import CCPP
-from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
+from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 from xdsl_ccpp.tools.flang_utils import find_flang, run_flang
 from xdsl_ccpp.transforms.validate_fir import (
     check_dimension_names,
@@ -95,15 +92,6 @@ def _select_backend(requested: str | None) -> str:
 
 # ── Flang pipeline ────────────────────────────────────────────────────────────
 
-def _make_ctx() -> Context:
-    ctx = Context()
-    for name, factory in Universe.get_multiverse().all_dialects.items():
-        ctx.register_dialect(name, factory)
-    ctx.load_dialect(CCPP)
-    ctx.load_dialect(CCPPUtils)
-    return ctx
-
-
 def _run_fir_to_meta(fir_mlir: str) -> str | None:
     cmd = [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", fir_mlir, "-p", "fir-to-meta"]
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -122,7 +110,7 @@ def _extract_fir(flang: str, f90_file: str, tmpdir: str) -> builtin.ModuleOp | N
     if meta_text is None:
         return None
     try:
-        return Parser(_make_ctx(), meta_text).parse_op()
+        return Parser(make_ccpp_context(), meta_text).parse_op()
     except Exception as exc:
         print(f"Error: failed to parse fir-to-meta output: {exc}", file=sys.stderr)
         return None
