@@ -234,7 +234,10 @@ class ChostArgInfo:
     _ddt_prefix: str | None = None
 
     def __getitem__(self, key):
-        return getattr(self, key)
+        try:
+            return getattr(self, key)
+        except AttributeError:
+            raise KeyError(key) from None
 
     def __setitem__(self, key, value):
         setattr(self, key, value)

@@ -36,13 +36,15 @@ from xdsl.irdl import (
 from xdsl.traits import NoTerminator
 
 
-def _coerce_str_attr(value: "str | StringAttr") -> StringAttr:
-    """Coerce a plain str to StringAttr, passing an already-built StringAttr through.
+def _coerce_str_attr(value: "str | StringAttr | None") -> "StringAttr | None":
+    """Coerce a plain str to StringAttr, passing an already-built StringAttr
+    (or None) through.
 
     Extracted (complexity-audit Tier 2 finding, task #47) after this exact
     2-line `if isinstance(value, str): value = StringAttr(value)` pattern
     was found repeated, byte-identical, across 15 op/attribute constructors
-    in this file.
+    in this file. Accepts None because StrCmpOp.__init__ calls this
+    unconditionally on its own optional `literal` param.
     """
     return StringAttr(value) if isinstance(value, str) else value
 
