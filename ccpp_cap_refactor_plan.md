@@ -5689,6 +5689,64 @@ Findings triaged into four tiers, each now a tracked task:
     explicit `CHECK` for the new comment text to `bindC-cpp-header-xml.mlir` so it's actually
     regression-guarded, not just incidentally unbroken by the existing prefix-only `CHECK`
     patterns.
+  - **#56, `suite_cap.py::GenerateSuiteSubroutine` — scoped (2026-08-19), staged plan agreed.**
+    Re-read the full 2,954-line/49-method class fresh (not relying on the earlier size estimate)
+    and grouped its methods into roughly 9 clusters by what they actually depend on: (1)
+    multi-instance synthesis (`_is_multi_instance_host`, `_synthesize_instance_number_arg`,
+    `_synthesize_number_of_instances_arg`, `_instance_arg_local_name`,
+    `_number_of_instances_local_name`, `_build_suite_state_lazy_alloc`) — pure functions of
+    `self.meta_data`/explicit args, no other instance state; (2) dynamic-subcycle-count synthesis
+    (`_synthesize_dynamic_loop_count_args` + its nested closures) — same shape; (3)
+    active-expression conditional gating (`_ACTIVE_EXPR_TOKEN_RE`,
+    `_active_expr_var_indexes`/`_active_expr_ddt_member_indexes`/`_resolve_active_condition`) —
+    same shape, only `_build_active_gated_call_ops` itself stays behind since it also calls
+    `self.generateSchemeSubroutineCallOps`; (4) the `--emit-resolved-vars` introspection
+    bookkeeping block inlined in `generateSubroutineCall` — genuinely needs `self.resolved_vars`/
+    `self.ddt_resolution_maps`/`self.host_var_index`, so it becomes a method, not a free
+    function, but is still a clean single-purpose extraction; (5) kind/unit-cast construction;
+    (6) `_build_block_signature`; (7) DDT-resolution-map plumbing (tangled with task #57's
+    `_build_run_dispatch_chain` coupling — deferred, not mechanical); (8) the core
+    `generateSubroutineCall`/`_build_arg_tables` orchestration (stays, it's the class's real
+    reason to exist); (9) misc small helpers. Clusters 1-4 are pure mechanical extractions with
+    no design judgment calls — recommended as **Stage 1**. Cluster 5-6 line up with task #59's
+    existing description (kind/unit-cast helpers + `_build_block_signature` decomposition) —
+    recommended as **Stage 2 = task #59**. Cluster 7 is tied to task #30's chained-interstitial
+    bug fix and shouldn't be untangled before that bug is fixed — recommended as **Stage 3**,
+    sequenced after #30. Cluster 9 folds into whichever stage touches its caller. Agreed order:
+    Stage 1 (this task, mechanical) → Stage 2 (= #59) → fix #30 → Stage 3. User approved: "Go
+    ahead and implement stage 1."
+  - **#56 Stage 1 — RESOLVED (2026-08-19).** Extracted clusters 1-3 verbatim into new
+    module-level free functions inserted in the pre-class free-helpers zone (same zone task #58
+    used): `_resolve_host_only_std_name`, `_synthesize_dynamic_loop_count_args` (nested
+    `_subcycle_has_active_schemes`/`_collect_dynamic_counts` closures preserved),
+    `_is_multi_instance_host`, `_synthesize_instance_number_arg`,
+    `_synthesize_number_of_instances_arg`, `_instance_arg_local_name`,
+    `_number_of_instances_local_name` (both `_*_local_name` functions inline the
+    `a.getAttr("standard_name").lower() if a.hasAttr(...) else a.name` std-key check that used to
+    live in a shared private helper, since neither depends on other instance state),
+    `_build_suite_state_lazy_alloc` (trivial move, was already `@staticmethod`), plus a new
+    module constant `_ACTIVE_EXPR_TOKEN_RE` and free functions
+    `_active_expr_var_indexes`/`_active_expr_ddt_member_indexes`/`_resolve_active_condition`
+    (nested `_resolve_ddt_member`/`_substitute` closures preserved). `_build_active_gated_call_ops`
+    stays on the class (per the scoping note above) but now calls
+    `_resolve_active_condition(self.meta_data, ...)` instead of `self._resolve_active_condition(...)`.
+    Cluster 4 (`--emit-resolved-vars` bookkeeping) became a new method,
+    `_record_resolved_vars_for_phase`, since it genuinely needs `self.resolved_vars`/
+    `self.ddt_resolution_maps`/`self.host_var_index` — the ~50-line inline block in
+    `generateSubroutineCall` is now a single call to it. All 8 call sites across
+    `_build_active_gated_call_ops`, `_build_arg_tables`, `generateSubroutineCall`, and
+    `_build_state_globals` updated to the new free-function/method calls; confirmed via grep that
+    zero stray `self._` references to any moved method remain. Pure code movement, every
+    docstring/comment preserved verbatim, zero behavior change. Verified: full suite 612
+    passed/1 xfailed (unchanged); `ruff check xdsl_ccpp/transforms/suite_cap.py` shows the same 2
+    pre-existing findings before/after (unused `i32` import, `F841 scheme_entries` unused local at
+    line 2845 in `generateSubroutineCall` — confirmed via git-stash, neither touched by this
+    stage); the 47-file filecheck corpus is wired into the pytest run itself (`tests/conftest.py`
+    discovers every `*.mlir` under `tests/filecheck/`), so the same 612-passed run already is the
+    byte-identical regeneration check — no separate diff pass needed. Landed on branch
+    `decompose-generate-suite-subroutine`, off `main` at `2c7c390` (the post-PR-#80 merge tip).
+    Stage 2 (task #59) and Stage 3 (after task #30) not started — staged plan, one stage at a
+    time per this engagement's established pattern.
 - **Tier 4 — minor/verify-first, deliberately deferred** (tasks #61-#62): a handful of small items needing confirmation before touching (two flagged-deprecated op aliases that may be dead, a possibly-fully-subsumed `ArraySectionOp`, a possibly-superseded CLI tool, a possibly-dead-or-possibly-buggy branch in `visitor.py`, a raise-to-fall-through control-flow pattern, cosmetic nits) plus a security/robustness item (`ccpp_dsl.py`'s `os.system()` calls with interpolated paths, alongside the same duplication this whole audit is about). **Updated 2026-08-18:** task #61 also now folds in a batch of pre-existing `ruff check` findings (unsorted imports, unused imports, 15 unused locals from dataclass-unpacking in `run_dispatch.py`) noticed incidentally while verifying tasks #37-#40 -- confirmed via git-stash to predate all of them, zero-behavior-change cleanup, not fixed inline since out of scope for those specific tasks.
 
 **Execution decision (user, 2026-08-18): log everything as tracked tasks (done, tasks #37-#62 above), then execute Tier 1 + Tier 2 in this session; Tier 3 and Tier 4 stay backlog for a dedicated future session.** See each task's own description for the full finding detail — not duplicated in prose here to avoid the two ever drifting apart.
