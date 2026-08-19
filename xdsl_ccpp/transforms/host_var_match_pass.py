@@ -383,7 +383,7 @@ class HostVariableMatchPass(ModulePass):
                     # that unrelated scheme's already-registered array in the
                     # wrong lifecycle phase.
                     if (
-                        arg_op.arg_type.data == _CONSTITUENT_DDT_NAME
+                        arg_op.arg_type.data.lower() == _CONSTITUENT_DDT_NAME
                         and not arg_table_op.table_name.data.endswith("_register")
                     ):
                         all_errors.append(

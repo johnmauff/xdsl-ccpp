@@ -60,7 +60,7 @@ def _collect_constituent_info(meta_data):
                     is_register
                     and fn_arg.hasAttr("allocatable")
                     and fn_arg.hasAttr("type")
-                    and fn_arg.getAttr("type") == "ccpp_constituent_properties_t"
+                    and fn_arg.getAttr("type").lower() == "ccpp_constituent_properties_t"
                 ):
                     bare = _bare(fn_arg.name)
                     if bare not in dynamic_array_names:

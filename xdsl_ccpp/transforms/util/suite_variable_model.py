@@ -305,9 +305,20 @@ class SuiteVariableModel:
             # Case 1: host-matched variable — not a suite variable.
             if arg.hasAttr("model_var_name"):
                 # Record MODULE-type matches only (not HOST-type, which are
-                # passed through the call chain, never bare `use`-associated
-                # at suite-cap module scope) -- see _resolve_name_collisions.
-                if not arg.hasAttr("model_var_is_host_table"):
+                # passed through the call chain, and not DDT-member matches,
+                # which are accessed via `instance%member_name` -- neither
+                # ever gets a bare `use module, only: <name>` at suite-cap
+                # module scope, unlike a genuine MODULE-type match) -- see
+                # _resolve_name_collisions. Without also excluding DDT
+                # matches, a DDT member's own bare name (e.g. "ps", a common
+                # short name reused across many DDT members) would be
+                # spuriously treated as module-scope-occupied, renaming an
+                # unrelated SuiteOwned var that could never actually collide
+                # with it.
+                if (
+                    not arg.hasAttr("model_var_is_host_table")
+                    and not arg.hasAttr("model_var_is_ddt")
+                ):
                     self._module_matched_names.add(arg.getAttr("model_var_name"))
                 continue
 

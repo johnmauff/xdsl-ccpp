@@ -354,6 +354,109 @@ class TestSuiteOwnedCollisionWithModuleVar:
         )
 
 
+class TestNoFalseCollisionWithDDTMember:
+    """A DDT member's own bare local name (e.g. "ps") must NOT be treated as
+    occupying suite-cap module scope, unlike a genuine MODULE-type host
+    match.
+
+    Found via a Copilot review comment on PR #79: suite_variable_model.py's
+    _module_matched_names collection excluded HOST-type matches
+    (model_var_is_host_table) but not DDT-type matches (model_var_is_ddt) --
+    both lack model_var_is_host_table, so a DDT member match was
+    incorrectly folded into the same "occupies module scope" set as a real
+    MODULE match. A DDT member is only ever accessed as
+    `instance%member_name` (e.g. `phys_state%ps`) -- its own bare member
+    name is never itself `use`-associated at suite-cap module scope, so an
+    unrelated SuiteOwned var coincidentally sharing that bare name (a
+    realistic case: short member names like "ps" get reused across many
+    DDTs) would be spuriously renamed for a collision that could never
+    actually happen.
+    """
+
+    _DDT_TYPE = """\
+[ccpp-table-properties]
+  name = test_collision_ddt_type
+  type = ddt
+[ccpp-arg-table]
+  name = test_collision_ddt_type
+  type = ddt
+[ ps ]
+  standard_name = test_collision_ddt_member_std
+  units = Pa
+  type = real | kind = kind_phys
+  dimensions = (horizontal_dimension)
+"""
+
+    _HOST_MOD = """\
+[ccpp-table-properties]
+  name = test_collision_ddt_host_mod
+  type = module
+[ccpp-arg-table]
+  name = test_collision_ddt_host_mod
+  type = module
+[ phys_state ]
+  standard_name = test_collision_ddt_instance
+  type = test_collision_ddt_type
+  units = DDT
+  dimensions = ()
+"""
+
+    _SCHEME_A = f"""\
+[ccpp-table-properties]
+  name = scheme_a
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_a_run
+  type = scheme
+[ surf_pres ]
+  standard_name = test_collision_ddt_member_std
+  units = Pa
+  type = real | kind = kind_phys
+  dimensions = (horizontal_dimension)
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+    _SCHEME_B = f"""\
+[ccpp-table-properties]
+  name = scheme_b
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_b_run
+  type = scheme
+[ ps ]
+  standard_name = scheme_b_own_scratch_value
+  units = 1
+  type = real | kind = kind_phys
+  dimensions = ()
+  intent = out
+{CCPP_MANDATORY_ARGS}
+"""
+
+    def test_ddt_member_bare_name_does_not_trigger_rename(self, run_host_match, ccpp_context):
+        fortran = _fortran_output(
+            run_host_match, ccpp_context,
+            [self._SCHEME_A, self._SCHEME_B],
+            [self._DDT_TYPE, self._HOST_MOD],
+        )
+        # scheme_a's DDT-member match is accessed via phys_state%ps, never a
+        # bare "ps" use-association -- confirms the fixture actually
+        # exercises a DDT match, not a plain MODULE one.
+        assert "use test_collision_ddt_host_mod, only: ps" not in fortran
+        module_body = fortran.split("CONTAINS")[0]
+        declared = [
+            _declared_arg_name(line)
+            for line in module_body.splitlines()
+            if "::" in line and "use " not in line
+        ]
+        assert "ps" in declared, (
+            "scheme_b's own unrelated scratch var must keep its bare name "
+            "'ps' -- a DDT member's bare name is never actually "
+            "use-associated at module scope, so there is nothing to "
+            "collide with"
+        )
+
+
 class TestCollisionWithoutHostNameRaises:
     """Neither scheme's colliding arg has a host match (no model_var_name
     available to disambiguate with) -- must fail loudly at generation time
