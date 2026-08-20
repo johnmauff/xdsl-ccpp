@@ -6129,6 +6129,82 @@ Findings triaged into four tiers, each now a tracked task:
     code via git-stash (not just passes against the fix). Full suite now 615 passed/1 xfailed
     (612 + 3 new); `ruff check` unchanged (same 2 pre-existing findings, new test file itself
     clean). Landed on the same `decompose-suite-cap-stage2` branch.
+  - **Task #57, `run_dispatch.py::_build_run_dispatch_chain` — RESOLVED (2026-08-20).** Re-scoped
+    fresh before touching anything, since this was flagged (2026-08-19 scoping) as genuinely the
+    highest-risk item in Tier 3 -- "a 14-param free function, one sprawling loop, no nested
+    helper defs" with "no internal seams at all," unlike `suite_cap.py`'s own decompositions
+    which could hang off already-separate closures. Read the full 789-line body end to end
+    before designing anything (deliberately not just skimming for `def` boundaries, since the
+    earlier scoping already confirmed there weren't any at the top level). Found the function
+    actually does have real internal structure, just not expressed as nested `def`s: a
+    two-level loop (per suite name, then per suite part, both walked in `reversed()` order to
+    build the nested if/else chain inside-out) whose inner body is organized into four
+    already-comment-delimited sections ("HostVarRefOps", "ArraySectionOps",
+    "RowMajorConvertOps", the call-building + copy-back block), plus three small nested
+    closures (`_find_cap_var_inout_ref`, `_resolve_extra_dim_bounds`, `_result_keyword_name`)
+    redefined on every inner-loop iteration, capturing per-suite-part loop-local state. The one
+    genuinely tricky spot: `_build_array_section_ops`'s own per-arg loop has a shared tail (var-
+    descriptor lookup + column-chunk bound resolution) reached by *both* the Host and DdtMember
+    branches falling through (not `continue`-ing), while the CapVar branch and the `else`
+    always `continue`s before reaching it -- extracted as one cohesive per-arg decision, not
+    split further, to avoid disturbing that control-flow relationship.
+    **Design**: bundled the invariant, read-only parameters (`block_arg_map`,
+    `non_host_std_to_canonical`, `host_var_map`, `meta_data`, `cap_var_map`,
+    `state_host_var_map`, plus the two mutable-but-shared-throughout accumulators
+    `seen_host_globals`/`chain_global_ops`) into a new `_RunChainCtx` dataclass, mirroring
+    `suite_cap.py`'s own `_CallSeqContext` from task #56 Stage 3 -- the same shape of problem
+    (many params invariant across a whole call-sequence walk) got the same solution. Extracted,
+    in dependency order: `_build_state_host_var_map` (the small preamble block),
+    `_build_suite_part_not_found_branch`, `_build_cap_var_std_to_dims`, `_build_host_var_refs`,
+    `_build_array_section_ops` (kept `_resolve_extra_dim_bounds` as a nested closure inside it,
+    unchanged, rather than converting its `nonlocal one_const_for_sections` into an artificial
+    mutable-box parameter -- the nesting relationship to its own enclosing function is identical
+    to before, just one level shallower overall), `_build_row_major_convert_ops`,
+    `_build_call_args`, `_build_call_and_copy_back_ops` (kept `_find_cap_var_inout_ref`/
+    `_result_keyword_name` as nested closures for the same reason), and
+    `_build_one_suite_part_dispatch` (the per-suite-part orchestrator, called once per inner-
+    loop iteration). `_build_run_dispatch_chain` itself shrank from 789 lines to a ~100-line
+    orchestrator (mostly docstring) walking `per_suite_grouped` and delegating each suite part
+    to `_build_one_suite_part_dispatch`. Pure code movement, every comment/docstring preserved
+    verbatim, zero logic changes.
+    **One real (if minor) finding, not a regression**: `_build_array_section_ops`'s own
+    DdtMember branch unpacks `instance_var, instance_module, member_name = (...)` but never
+    reads `instance_var` -- true in the *original* code too, but `ruff`'s F841 check hadn't
+    flagged it there because the *other* DdtMember branch (now `_build_host_var_refs`, which
+    *does* use `instance_var`) shared the same enclosing scope in the original monolithic
+    function; per-name dead-store analysis apparently doesn't distinguish separate bindings of
+    the same name within one scope as finely as it does across genuinely separate function
+    scopes. Splitting the two branches into their own functions correctly surfaces the
+    already-dead second binding. Fixed inline (renamed to `_instance_var`, matching this
+    codebase's existing convention for intentionally-unused unpacked values) rather than left
+    as a new finding, since it's a trivial, zero-behavior-change, one-line fix directly caused
+    by this decomposition.
+    **Verified**: full suite still 620 passed/1 xfailed (unchanged); `ruff check` shows the same
+    16 pre-existing findings before/after once the `instance_var` fix above is applied
+    (confirmed via git-stash: 16 before this change, 17 immediately after extraction, 16 again
+    after the one-line fix); the 47-file filecheck corpus is exercised inside that same pytest
+    run and stayed byte-identical -- confirming zero behavior change, including through the
+    trickiest shared-tail control flow in `_build_array_section_ops`. No new test added:
+    `_build_run_dispatch_chain` is exercised by every example with a `_run`-phase dispatch (63
+    existing unit tests directly targeting array-section/row-major/DDT-member behavior, plus
+    the full filecheck corpus), giving strong existing regression coverage for pure code
+    movement with no logic change -- matching how #56 Stage 3's own pure-movement work was
+    verified. Landed on branch `decompose-run-dispatch-chain`, off `main` at `c95eabe` (the
+    post-Stage-3-merge tip).
+  - **PR #85 Copilot review, addressed (2026-08-20).** Flagged `cv_type` unpacked from
+    `cap_var_map` but never read, at two sites (`_build_host_var_refs` and
+    `_build_call_and_copy_back_ops`'s own `_find_cap_var_inout_ref` closure). Confirmed
+    pre-existing (checked against `main`, unchanged by the decomposition -- these lines just
+    moved location) and, unlike the `instance_var` case above, genuinely the odd one out: the
+    *third* element of the same tuple unpack is already marked `_ftn`/`_` at both sites for
+    being unused, so `cv_type` never getting the same treatment looks like a plain oversight
+    rather than a deliberate choice. Fixed both to `_cv_type`, matching the codebase's own
+    existing convention. Verified: full suite still 620 passed/1 xfailed; `ruff check` unchanged
+    (same 16 pre-existing findings -- this specific pattern isn't one `ruff`'s own F841 rule
+    currently flags at all, since it doesn't apply unused-variable checks to tuple-unpacking
+    from a non-literal right-hand side the way it does for the `instance_var` case's literal
+    tuple; fixed anyway since Copilot's underlying code-quality point holds regardless of which
+    linter happens to catch it).
 - **Tier 4 — minor/verify-first, deliberately deferred** (tasks #61-#62): a handful of small items needing confirmation before touching (two flagged-deprecated op aliases that may be dead, a possibly-fully-subsumed `ArraySectionOp`, a possibly-superseded CLI tool, a possibly-dead-or-possibly-buggy branch in `visitor.py`, a raise-to-fall-through control-flow pattern, cosmetic nits) plus a security/robustness item (`ccpp_dsl.py`'s `os.system()` calls with interpolated paths, alongside the same duplication this whole audit is about). **Updated 2026-08-18:** task #61 also now folds in a batch of pre-existing `ruff check` findings (unsorted imports, unused imports, 15 unused locals from dataclass-unpacking in `run_dispatch.py`) noticed incidentally while verifying tasks #37-#40 -- confirmed via git-stash to predate all of them, zero-behavior-change cleanup, not fixed inline since out of scope for those specific tasks.
 
 **Execution decision (user, 2026-08-18): log everything as tracked tasks (done, tasks #37-#62 above), then execute Tier 1 + Tier 2 in this session; Tier 3 and Tier 4 stay backlog for a dedicated future session.** See each task's own description for the full finding detail — not duplicated in prose here to avoid the two ever drifting apart.
