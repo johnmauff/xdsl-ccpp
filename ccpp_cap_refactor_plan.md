@@ -5085,6 +5085,58 @@ dependency is noted.
       pass justified; the code path is covered by direct reasoning and `py_compile`/type
       correctness, but not by a dedicated test. Flagged as a small, honest gap, not silently
       skipped.
+  - **PR #83 Copilot review, addressed (2026-08-19) -- two real findings, both confirmed against
+    a real example already in this repo, not hypotheticals.**
+    1. **The `suite_owned_vars()` sweep (the second of `_build_framework_refs`'s two allocation
+       sites) never checked `allocatable` at all**, so a var reachable only through that sweep
+       -- not the `framework_vars` loop, which already had the mechanism-1 guard -- still got a
+       `LazyAllocOp` scheduled, reintroducing exactly the redundant/wrong-order allocation
+       mechanism 1 exists to prevent. Copilot's own example (`environ_conditions.meta`'s
+       `model_times`) turned out to be real, not illustrative: it already exists at
+       `examples/capgen/scheme/environ_conditions.meta`, dimensioned by
+       `number_of_model_times`, itself produced by the very same scheme's very same `_init`
+       call (`environ_conditions_init` does `ntimes = input_model_times; allocate(model_times(
+       ntimes))` itself, confirmed by reading `environ_conditions.F90`) -- and it's marked
+       `allocatable = True`. Reproducing it directly showed the bug precisely: BOTH a
+       redundant `use test_host_mod, only: num_model_times` plus two separate wrong
+       `allocate(model_times(...))` blocks -- one in `ddt_suite_suite_register` keyed to the
+       *host's* `num_model_times` (found via the sweep's own fallback to
+       `_find_loop_upper_bound`'s MODULE-table path, since `environ_conditions`'s `_init`-only
+       table isn't part of `_register`'s own `arg_tables`, yet the sweep runs for both `_init`
+       and `_register`), one in `ddt_suite_suite_initialize` keyed to the scheme's own `ntimes`
+       (found via the framework_vars loop's mechanism-2 deferral) -- confirming `model_times`
+       was being independently, wrongly allocated by *both* loops at once. **Fixed** by adding
+       an `allocatable: bool` field to `SuiteVarEntry` (`suite_variable_model.py`, set from the
+       first-writer's own arg in `_make_entry`) and skipping the sweep entirely when
+       `entry.allocatable` is set -- mirroring the framework_vars loop's own existing guard,
+       just expressed through the suite-wide model instead of a live arg object (the sweep
+       walks `SuiteVarEntry` objects spanning every phase, not `all_args`, which is why it
+       needed its own lookup path rather than reusing `fw_arg.hasAttr("allocatable")`
+       directly). Verified on the real regenerated output: no `allocate(model_times...)` or
+       `num_model_times` use-stub appears anywhere in the suite-cap module's own generated
+       code any more (the driver/`main.F90`'s own, unrelated `test_host_mod`-side
+       `model_times`/`num_model_times` references -- a *different* pair of host module vars
+       with the same names, used as actual arguments when the driver calls the suite -- are
+       correctly untouched). Updated 4 golden `CHECK` blocks that had pinned the old, wrong
+       behavior (`tests/filecheck/examples/{completed_ir,end_to_end}/{capgen,ddthost}-xml.mlir`
+       -- `ddthost` hits the identical pattern via its own copy of `environ_conditions.meta`).
+       New regression test (`TestSchemeSelfAllocatedPrimitiveViaSuiteOwnedVarsSweepSkipsPreamble`
+       in `test_chained_interstitial_allocation.py`, using the real `examples/capgen` files
+       directly rather than a synthetic fixture, since the real one already exercises the exact
+       shape), confirmed via git-stash to fail against the pre-fix code.
+    2. **The unresolved-pending-allocation error message was factually wrong**: it claimed a
+       producer nested inside "a promoted-dimension or subcycle loop body" was unsupported and
+       told the user to make the producer run "un-nested" -- but the subcycle case already works
+       (see task #30's own "pleasant surprise" note above: `_emit_subcycle_items` routes through
+       the same `_emit_ordered_list` the flat case uses, and a dedicated test already asserts
+       this). **Fixed**: reworded to name only `PromotionLoopOp` nesting as unsupported, and
+       dropped the inaccurate "un-nested" requirement -- a subcycle-nested producer is fine, a
+       promoted-dimension-nested one is not.
+    Verified: full suite 620 passed (619 + 1 new)/1 xfailed; `ruff check` shows the same 3
+    pre-existing findings before/after across both touched files (confirmed via git-stash,
+    including a pre-existing `I001` import-order finding in `suite_variable_model.py` that
+    predates this change); the 47-file filecheck corpus stayed green after the 4 golden updates
+    above.
   - **Task #65, logged separately (2026-08-19) — broader allocation-dependency model, deliberately NOT
     part of #30's own scope.** While scoping #30's design, several adjacent improvements were
     raised as possible "free" side benefits of a dependency-graph approach; checked honestly
@@ -5983,6 +6035,58 @@ Findings triaged into four tiers, each now a tracked task:
     lines at the start of task #56. Landed on branch `decompose-suite-cap-stage2`, off `main` at
     `d2472b1` (the post-Stage-1-merge tip). Stage 3 (DDT-resolution-map plumbing, sequenced
     after task #30's fix) not started.
+  - **#56 Stage 3 — redirected (2026-08-19) before implementation, then RESOLVED against the
+    redirected target the same day.** Re-checked the original "Cluster 7: DDT-resolution-map
+    plumbing" scope fresh against the current code before touching anything, since Stage 1/2 and
+    task #30's fix had since reshaped large parts of the class. Found the original scope had
+    already evaporated: what's left of the DDT-resolution plumbing inside
+    `GenerateSuiteSubroutine` is just the constructor storing `ddt_source_module`/
+    `host_var_index`/`ddt_resolution_maps` plus three small read-sites
+    (`_apply_ddt_chain(...)`, `self.host_var_index.get(...)`,
+    `_collect_ddt_use_stubs(...)`) -- the actual resolution logic
+    (`_build_ddt_resolution_maps`/`_resolve_ddt_access_path`) already lives in `cap_shared.py`
+    as free functions, already shared by both `suite_cap.py` *and* `run_dispatch.py` (confirmed
+    by grep -- no duplication between them to unify, contrary to the original "tangled with
+    task #57" concern). No large method left in this cluster to decompose.
+    **Redirected instead to the real complexity hotspot that emerged from task #30's own
+    implementation**: `_build_call_ops` and `_build_framework_refs` had grown to 278 lines each
+    -- now the two largest methods in the class, bigger than anything Stage 1/2 had already
+    extracted from, entirely as a side effect of adding the `pending_allocs`/
+    `resolved_producers` mechanism-1/2 logic into both without decomposing the surrounding
+    structure at the time.
+    - **`_build_call_ops`**: its four nested closures (`_flush_promoted`, `_emit_ordered_list`,
+      `_emit_subcycle_items`, `_emit_subcycle`) shared mutable state (`fn_sigs`,
+      `resolved_producers`, `pending_allocs`, `hoisted_allocas`) entirely via Python closure
+      capture. Converted each into a proper method, threading the previously-closed-over
+      read-only parameters through a new `_CallSeqContext` dataclass (bundling `all_args`/
+      `data_ops`/`framework_ref_ops`/`suite_use_stubs`/`actual_postfixes`/
+      `tgt_subroutine_postfix`/`physics_mode`/`scheme_overrides`/`divergent_std_keys`/
+      `arg_tables` -- ten params that don't change across the whole call-sequence walk) and
+      passing the genuinely-mutated accumulators (`fn_sigs`, `resolved_producers`,
+      `pending_allocs`, `hoisted_allocas`) as explicit arguments, exactly as Stage 1/2 already
+      did for other shared-mutable-state extractions. Additionally pulled the retry-and-splice
+      block out of `_emit_ordered_list` into its own `_resolve_and_splice_pending_allocs` method,
+      and the final unresolved-pending-allocs error into a free function,
+      `_raise_unresolved_pending_allocs_error`. `_build_call_ops` itself shrank from 278 lines to
+      a ~65-line orchestrator.
+    - **`_build_framework_refs`**: decomposed along its own three already-distinct phases into
+      `_build_framework_var_ref` (HostVarRefOp/ArraySectionOp construction for one framework
+      var), `_maybe_schedule_framework_var_alloc` (task #30's mechanism-1/2 allocation decision
+      for one var), and `_sweep_suite_owned_var_allocations` (the whole `suite_owned_vars()`
+      sweep, as its own method since it's fully self-contained once handed the shared
+      accumulators). The small tail aliasing loop became a free function,
+      `_alias_canonical_data_ops` (previously uncommented inline code; given a docstring since
+      extraction is a natural point to explain what it does). `_build_framework_refs` itself
+      shrank from 278 lines to a ~65-line orchestrator.
+    Pure code movement, every comment/docstring preserved verbatim (or added, for the two
+    previously-uncommented tail blocks); zero behavior change. Verified: full suite still 620
+    passed/1 xfailed (unchanged); `ruff check` shows the same 2 pre-existing findings
+    before/after; the 47-file filecheck corpus is exercised inside that same pytest run, so no
+    separate byte-diff pass was needed. `GenerateSuiteSubroutine` is now 43 methods/~2,487
+    lines (methods count went up, since splitting one large method into several smaller named
+    ones adds some `def`/docstring overhead per Stage 1/2's own established pattern -- the real
+    win is that the two largest remaining methods are now ~65 lines each instead of 278).
+    **Task #56 is now fully complete** -- all three stages done, no further stages planned.
   - **PR #82 Copilot review, addressed (2026-08-19) — a real, pre-existing correctness bug,
     surfaced (not introduced) by Stage 2's decomposition.** Flagged: when a single arg carries
     BOTH a kind mismatch and a unit mismatch against the host at once (e.g. host declares
