@@ -84,7 +84,11 @@ program test_unit_conv
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do ins=1,ninstances
-    call ccpp_physics_timestep_init(suite_name=ccpp_suite, instance=ins, &
+    ! ccpp_physics_timestep_init is now group-scoped (task #28, Stage 1),
+    ! matching ccpp_physics_run's own signature (same lb/ub full-extent
+    ! convention this driver already uses for run).
+    call ccpp_physics_timestep_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
+        lb=1, ub=ncols, instance=ins, &
         ninstances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_init:"

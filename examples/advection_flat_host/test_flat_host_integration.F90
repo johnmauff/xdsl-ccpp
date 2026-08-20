@@ -72,12 +72,21 @@ program test_flat_host_integration
    if (errflg /= 0) write(6, '(a)') trim(errmsg)
 
    call check('initialize', flat_host_ccpp_init_wrap())
-   call check('timestep_initial', flat_host_ccpp_physics_timestep_init_wrap())
 
+   ! ccpp_physics_timestep_init is now group-scoped (task #28, Stage 1),
+   ! matching ccpp_physics_run's own per-part shape -- query part_list here
+   ! (moved earlier from just before the run loop) so both loops can use it.
    call ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg)
    call check('suite_part_list', errflg == 0)
    if (errflg /= 0) then
       write(6, '(a)') trim(errmsg)
+   end if
+
+   if (allocated(part_list)) then
+      do ipart = 1, size(part_list)
+         call check('timestep_initial(' // trim(part_list(ipart)) // ')', &
+              flat_host_ccpp_physics_timestep_init_wrap(trim(part_list(ipart))))
+      end do
    end if
 
    if (allocated(part_list)) then
@@ -155,8 +164,10 @@ contains
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
    end function flat_host_ccpp_init_wrap
 
-   logical function flat_host_ccpp_physics_timestep_init_wrap()
-      call ccpp_physics_timestep_init(suite_name, errmsg, errflg)
+   logical function flat_host_ccpp_physics_timestep_init_wrap(suite_part)
+      character(len=*), intent(in) :: suite_part
+      call ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, &
+           errmsg, errflg)
       flat_host_ccpp_physics_timestep_init_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
    end function flat_host_ccpp_physics_timestep_init_wrap

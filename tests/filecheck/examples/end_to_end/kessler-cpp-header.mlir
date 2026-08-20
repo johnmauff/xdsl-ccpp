@@ -27,8 +27,7 @@
 // CHECK-LABEL: void ccpp_final(
 // CHECK:          const char*      suite_name,
 
-// Timestep initial/final.
-// CHECK-LABEL: void ccpp_physics_timestep_init(
+// Timestep final: still flat/minimal signature (unchanged by task #28 Stage 1).
 // CHECK-LABEL: void ccpp_physics_timestep_final(
 
 // Run: with the horizontal_dimension convention, all per-call physics args
@@ -36,6 +35,16 @@
 // host module rather than threaded through the framework-level dispatch
 // entry point, so the signature collapses to just the standard 6 args.
 // CHECK-LABEL: void ccpp_physics_run(
+// CHECK:          const char*      suite_name,
+// CHECK-NEXT:     const char*      suite_part,
+// CHECK-NEXT:     int              col_start,
+// CHECK-NEXT:     int              col_end,
+// CHECK-NEXT:     char*            errmsg,
+// CHECK-NEXT:     int*             errflg
+
+// Timestep initial: now group-scoped (task #28), emitted AFTER ccpp_physics_run
+// in generation order -- same physics signature ccpp_physics_run has.
+// CHECK-LABEL: void ccpp_physics_timestep_init(
 // CHECK:          const char*      suite_name,
 // CHECK-NEXT:     const char*      suite_part,
 // CHECK-NEXT:     int              col_start,

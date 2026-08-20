@@ -186,9 +186,11 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             "errmsg=errmsg, errflg=errflg)"
         ) in init_fn
 
-        # Not spuriously called anywhere else.
+        # Not spuriously called anywhere else. test_suite_suite_timestep_init_g1
+        # (task #28: timestep_init is now group-scoped), not the old flat
+        # test_suite_suite_timestep_initial.
         for other_fn_name in (
-            "test_suite_suite_timestep_initial",
+            "test_suite_suite_timestep_init_g1",
             "test_suite_suite_timestep_final",
             "test_suite_suite_g1",
         ):
@@ -205,9 +207,11 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             "errmsg=errmsg, errflg=errflg)"
         ) in final_fn
 
+        # test_suite_suite_timestep_init_g1 (task #28: timestep_init is now
+        # group-scoped), not the old flat test_suite_suite_timestep_initial.
         for other_fn_name in (
             "test_suite_suite_initialize",
-            "test_suite_suite_timestep_initial",
+            "test_suite_suite_timestep_init_g1",
             "test_suite_suite_timestep_final",
             "test_suite_suite_g1",
         ):

@@ -821,8 +821,11 @@ class TestTimestepPhaseHostTableArgs:
         assert "lc_nx" not in timestep_host_arg_fortran
 
     def test_call_forwards_the_real_wrapper_args(self, timestep_host_arg_fortran):
+        # timestep_host_arg_suite_suite_timestep_init_physics (task #28:
+        # timestep_init is now group-scoped -- group name "physics" here),
+        # not the old flat timestep_host_arg_suite_suite_timestep_initial.
         text = timestep_host_arg_fortran
-        call_idx = text.index("call timestep_host_arg_suite_suite_timestep_initial(")
+        call_idx = text.index("call timestep_host_arg_suite_suite_timestep_init_physics(")
         call_end = text.index(")", call_idx)
         call = text[call_idx:call_end]
         assert "nx" in call

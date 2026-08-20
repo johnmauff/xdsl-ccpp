@@ -41,7 +41,10 @@ program test_kessler_ccpp_driver
   !------------------------------------------------------
   ! Timestep initial (saves temp into temp_prev, zeros ttend_t)
   !------------------------------------------------------
-  call ccpp_physics_timestep_init('kessler_suite', errmsg, errflg)
+  ! ccpp_physics_timestep_init is now group-scoped (task #28, Stage 1),
+  ! matching ccpp_physics_run's own signature -- full extent (1, ncol),
+  ! not chunked (this driver never chunks columns for run either).
+  call ccpp_physics_timestep_init('kessler_suite', 'physics', 1, ncol, errmsg, errflg)
   if (errflg /= 0) then
     print *, 'Timestep initial error: ', trim(errmsg)
     stop

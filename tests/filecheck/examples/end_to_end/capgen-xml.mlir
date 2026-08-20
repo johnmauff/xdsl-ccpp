@@ -37,10 +37,11 @@
 // CHECK-NEXT:    public :: temp_suite_suite_register
 // CHECK-NEXT:    public :: temp_suite_suite_initialize
 // CHECK-NEXT:    public :: temp_suite_suite_finalize
-// CHECK-NEXT:    public :: temp_suite_suite_timestep_initial
 // CHECK-NEXT:    public :: temp_suite_suite_timestep_final
 // CHECK-NEXT:    public :: temp_suite_suite_physics1
+// CHECK-NEXT:    public :: temp_suite_suite_timestep_init_physics1
 // CHECK-NEXT:    public :: temp_suite_suite_physics2
+// CHECK-NEXT:    public :: temp_suite_suite_timestep_init_physics2
 // CHECK:       CONTAINS
 // CHECK-LABEL:   subroutine temp_suite_suite_register(config_var, errmsg, errflg)
 // CHECK:           logical, intent(in) :: config_var
@@ -121,28 +122,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine temp_suite_suite_finalize
-// CHECK-LABEL:   subroutine temp_suite_suite_timestep_initial(coeffs, ncol, temp_level, errmsg, errflg)
-// CHECK:           real(kind=kind_phys), target, intent(inout) :: coeffs(:)
-// CHECK-NEXT:      integer, intent(in) :: ncol
-// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: temp_level(:, :)
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in temp_suite_timestep_initial"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call setup_coeffs_timestep_init(coeffs=coeffs, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call temp_set_timestep_initialize(ncol=ncol, temp_inc=temp_inc_set, temp_level=temp_level,  &
-// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
-// CHECK-NEXT:    end subroutine temp_suite_suite_timestep_initial
 // CHECK-LABEL:   subroutine temp_suite_suite_timestep_final(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -183,6 +162,26 @@
 // CHECK-NEXT:          var_array=var_array, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine temp_suite_suite_physics1
+
+// Timestep init for group physics1: now group-scoped (task #28).
+// CHECK-LABEL:   subroutine temp_suite_suite_timestep_init_physics1(coeffs, ncol, temp_level, errmsg, errflg)
+// CHECK:           real(kind=kind_phys), target, intent(inout) :: coeffs(:)
+// CHECK-NEXT:      integer, intent(in) :: ncol
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: temp_level(:, :)
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:      integer, intent(out) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call setup_coeffs_timestep_init(coeffs=coeffs, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call temp_set_timestep_initialize(ncol=ncol, temp_inc=temp_inc_set, temp_level=temp_level,  &
+// CHECK-NEXT:          errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
+// CHECK-NEXT:    end subroutine temp_suite_suite_timestep_init_physics1
+
 // CHECK-LABEL:   subroutine temp_suite_suite_physics2(nbox, timestep, temp_level, temp_layer, qv, ps, errmsg,    &
 // CHECK:           errflg)
 // CHECK-NEXT:      integer, intent(in) :: nbox
@@ -218,6 +217,15 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine temp_suite_suite_physics2
+
+// Timestep init for group physics2: now group-scoped (task #28).
+// CHECK-LABEL:   subroutine temp_suite_suite_timestep_init_physics2(errflg, errmsg)
+// CHECK:           integer, intent(out) :: errflg
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
+// CHECK-NEXT:    end subroutine temp_suite_suite_timestep_init_physics2
 // CHECK-NEXT:  end module temp_suite_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ddt_suite_cap.F90
@@ -244,9 +252,9 @@
 // CHECK-NEXT:    public :: ddt_suite_suite_register
 // CHECK-NEXT:    public :: ddt_suite_suite_initialize
 // CHECK-NEXT:    public :: ddt_suite_suite_finalize
-// CHECK-NEXT:    public :: ddt_suite_suite_timestep_initial
 // CHECK-NEXT:    public :: ddt_suite_suite_timestep_final
 // CHECK-NEXT:    public :: ddt_suite_suite_data_prep
+// CHECK-NEXT:    public :: ddt_suite_suite_timestep_init_data_prep
 // CHECK:       CONTAINS
 // CHECK-LABEL:   subroutine ddt_suite_suite_register(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
@@ -306,18 +314,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine ddt_suite_suite_finalize
-// CHECK-LABEL:   subroutine ddt_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK:           integer, intent(out) :: errflg
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in ddt_suite_timestep_initial"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
-// CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_initial
 // CHECK-LABEL:   subroutine ddt_suite_suite_timestep_final(ncols, errmsg, errflg)
 // CHECK:           integer, intent(in) :: ncols
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -355,6 +351,15 @@
 // CHECK-NEXT:        call environ_conditions_run(psurf=psurf, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ddt_suite_suite_data_prep
+
+// Timestep init for group data_prep: now group-scoped (task #28).
+// CHECK-LABEL:   subroutine ddt_suite_suite_timestep_init_data_prep(errflg, errmsg)
+// CHECK:           integer, intent(out) :: errflg
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
+// CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_init_data_prep
 // CHECK-NEXT:  end module ddt_suite_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: Ddt_ccpp_cap.F90
@@ -365,7 +370,7 @@
 // CHECK-NEXT:    use ddt_suite_cap, only: ddt_suite_suite_initialize
 // CHECK-NEXT:    use ddt_suite_cap, only: ddt_suite_suite_register
 // CHECK-NEXT:    use ddt_suite_cap, only: ddt_suite_suite_timestep_final
-// CHECK-NEXT:    use ddt_suite_cap, only: ddt_suite_suite_timestep_initial
+// CHECK-NEXT:    use ddt_suite_cap, only: ddt_suite_suite_timestep_init_data_prep
 // CHECK-NEXT:    use make_ddt, only: vmr_type
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_finalize
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_initialize
@@ -373,7 +378,8 @@
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_physics2
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_register
 // CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_timestep_final
-// CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_timestep_initial
+// CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_timestep_init_physics1
+// CHECK-NEXT:    use temp_suite_cap, only: temp_suite_suite_timestep_init_physics2
 // CHECK-NEXT:    use test_host_data, only: physics_state
 // CHECK-NEXT:    use test_host_mod, only: coeffs
 // CHECK-NEXT:    use test_host_mod, only: config_var
@@ -402,9 +408,9 @@
 // CHECK-NEXT:    public :: ccpp_register
 // CHECK-NEXT:    public :: ccpp_init
 // CHECK-NEXT:    public :: ccpp_final
-// CHECK-NEXT:    public :: ccpp_physics_timestep_init
 // CHECK-NEXT:    public :: ccpp_physics_timestep_final
 // CHECK-NEXT:    public :: ccpp_physics_run
+// CHECK-NEXT:    public :: ccpp_physics_timestep_init
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
@@ -458,22 +464,6 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_final
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg)
-// CHECK:           character(len=*), intent(in) :: suite_name
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:        call ddt_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK-NEXT:      else
-// CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
-// CHECK-NEXT:          call temp_suite_suite_timestep_initial(coeffs, ncols, temp_interfaces, errmsg, errflg)
-// CHECK-NEXT:        else
-// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
-// CHECK-NEXT:          errflg = 1
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -533,6 +523,47 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_run
+
+// Timestep initial: now group-scoped (task #28), emitted AFTER ccpp_physics_run
+// in generation order -- same physics signature ccpp_physics_run has.
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
+// CHECK:           errflg)
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:      integer, intent(in) :: col_start
+// CHECK-NEXT:      integer, intent(in) :: col_end
+// CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:      integer, intent(inout) :: errflg
+// CHECK-NEXT:      integer :: ncol
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
+// CHECK-NEXT:        if (trim(suite_part) .eq. 'data_prep') then
+// CHECK-NEXT:          call ddt_suite_suite_timestep_init_data_prep(errflg, errmsg)
+// CHECK-NEXT:        else
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite ddt_suite"
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      else
+// CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
+// CHECK-NEXT:          ncol = col_end - col_start + 1
+// CHECK-NEXT:          if (trim(suite_part) .eq. 'physics1') then
+// CHECK-NEXT:            call temp_suite_suite_timestep_init_physics1(coeffs(col_start:col_end), ncol,           &
+// CHECK-NEXT:              temp_interfaces(col_start:col_end, 1:pverP), errmsg, errflg)
+// CHECK-NEXT:          else
+// CHECK-NEXT:            if (trim(suite_part) .eq. 'physics2') then
+// CHECK-NEXT:              call temp_suite_suite_timestep_init_physics2(errflg, errmsg)
+// CHECK-NEXT:            else
+// CHECK-NEXT:              write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                       &
+// CHECK-NEXT:                " found in suite temp_suite"
+// CHECK-NEXT:              errflg = 1
+// CHECK-NEXT:            end if
+// CHECK-NEXT:          end if
+// CHECK-NEXT:        else
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)
 // CHECK:           character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:           allocate(suites(2))
