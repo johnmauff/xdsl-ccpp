@@ -937,7 +937,7 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
                     ctx.chain_global_ops.append(sv_glob)
         elif op.source_kind.data == ArgSourceKind.CapVar:
             std_name_cv = op.std_name.data
-            cv_name, cv_type, _ftn = ctx.cap_var_map[std_name_cv]
+            cv_name, _cv_type, _ftn = ctx.cap_var_map[std_name_cv]
             _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
             if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
                 _cv_rank = _rank_of(arg_type)
@@ -1316,7 +1316,7 @@ def _build_call_and_copy_back_ops(
             if (a_type == ret_type
                     and resolved_arg_ops[i].source_kind.data == ArgSourceKind.CapVar):
                 std_name_cv = resolved_arg_ops[i].std_name.data
-                cv_name, cv_type, _ = ctx.cap_var_map[std_name_cv]
+                cv_name, _cv_type, _ = ctx.cap_var_map[std_name_cv]
                 return CapVarRefOp(cv_name, a_type)
         return None
 

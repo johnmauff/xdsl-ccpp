@@ -6191,6 +6191,20 @@ Findings triaged into four tiers, each now a tracked task:
     movement with no logic change -- matching how #56 Stage 3's own pure-movement work was
     verified. Landed on branch `decompose-run-dispatch-chain`, off `main` at `c95eabe` (the
     post-Stage-3-merge tip).
+  - **PR #85 Copilot review, addressed (2026-08-20).** Flagged `cv_type` unpacked from
+    `cap_var_map` but never read, at two sites (`_build_host_var_refs` and
+    `_build_call_and_copy_back_ops`'s own `_find_cap_var_inout_ref` closure). Confirmed
+    pre-existing (checked against `main`, unchanged by the decomposition -- these lines just
+    moved location) and, unlike the `instance_var` case above, genuinely the odd one out: the
+    *third* element of the same tuple unpack is already marked `_ftn`/`_` at both sites for
+    being unused, so `cv_type` never getting the same treatment looks like a plain oversight
+    rather than a deliberate choice. Fixed both to `_cv_type`, matching the codebase's own
+    existing convention. Verified: full suite still 620 passed/1 xfailed; `ruff check` unchanged
+    (same 16 pre-existing findings -- this specific pattern isn't one `ruff`'s own F841 rule
+    currently flags at all, since it doesn't apply unused-variable checks to tuple-unpacking
+    from a non-literal right-hand side the way it does for the `instance_var` case's literal
+    tuple; fixed anyway since Copilot's underlying code-quality point holds regardless of which
+    linter happens to catch it).
 - **Tier 4 — minor/verify-first, deliberately deferred** (tasks #61-#62): a handful of small items needing confirmation before touching (two flagged-deprecated op aliases that may be dead, a possibly-fully-subsumed `ArraySectionOp`, a possibly-superseded CLI tool, a possibly-dead-or-possibly-buggy branch in `visitor.py`, a raise-to-fall-through control-flow pattern, cosmetic nits) plus a security/robustness item (`ccpp_dsl.py`'s `os.system()` calls with interpolated paths, alongside the same duplication this whole audit is about). **Updated 2026-08-18:** task #61 also now folds in a batch of pre-existing `ruff check` findings (unsorted imports, unused imports, 15 unused locals from dataclass-unpacking in `run_dispatch.py`) noticed incidentally while verifying tasks #37-#40 -- confirmed via git-stash to predate all of them, zero-behavior-change cleanup, not fixed inline since out of scope for those specific tasks.
 
 **Execution decision (user, 2026-08-18): log everything as tracked tasks (done, tasks #37-#62 above), then execute Tier 1 + Tier 2 in this session; Tier 3 and Tier 4 stay backlog for a dedicated future session.** See each task's own description for the full finding detail — not duplicated in prose here to avoid the two ever drifting apart.
