@@ -26,16 +26,6 @@
 // CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg
 
-// Timestep final: ncol, nz, then intent(in) arrays, then inout array.
-// CHECK-LABEL: void Kessler_chost_physics_timestep_final(
-// CHECK:           int              ncol,
-// CHECK-NEXT:      int              nz,
-// CHECK:           const double*    cpair,
-// CHECK:           const double*    z,
-// CHECK:           double*          st_energy,
-// CHECK:           char*            errmsg,
-// CHECK-NEXT:      int*             errflg
-
 // Run: ncol and nz first (col_start/col_end are no longer threaded through --
 // they were unused placeholders in the chost API and are dropped now that
 // the horizontal_dimension convention resolves the call window internally);
@@ -64,5 +54,18 @@
 // CHECK:           const double*    temp,
 // CHECK:           double*          temp_prev,
 // CHECK:           double*          ttend_t,
+// CHECK:           char*            errmsg,
+// CHECK-NEXT:      int*             errflg
+
+// Timestep final: ncol, nz, then intent(in) arrays, then inout array.
+// (task #28 Stage 2: still a per-scheme chost wrapper, unaffected in
+// content -- only its position moved, since chost functions are always
+// generated in fixed lifecycle order and timestep_final is now last.)
+// CHECK-LABEL: void Kessler_chost_physics_timestep_final(
+// CHECK:           int              ncol,
+// CHECK-NEXT:      int              nz,
+// CHECK:           const double*    cpair,
+// CHECK:           const double*    z,
+// CHECK:           double*          st_energy,
 // CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg

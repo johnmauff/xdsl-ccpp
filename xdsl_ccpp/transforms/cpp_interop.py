@@ -674,14 +674,15 @@ def _chost_fn_name(camel_name: str, lc: str) -> str:
 def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
     """Return the list of suite cap function names for a given lifecycle.
 
-    "run" and (task #28) "timestep_initial" are group-scoped -- one suite
-    cap function per XML group, named suite_cap.py's own
-    generated_subroutine_posfix convention (f"_{group_name}" for run,
-    f"_timestep_init_{group_name}" for timestep_initial). Every other
-    lifecycle stays a single flat function -- this is the same "run is
-    special, everything else is flat" assumption already found and fixed
-    in gpu_data_pass.py/gpu_ccpp_cap_pass.py; timestep_initial needs the
-    same generalization here.
+    "run" and (task #28) "timestep_initial"/"timestep_final" are
+    group-scoped -- one suite cap function per XML group, named
+    suite_cap.py's own generated_subroutine_posfix convention
+    (f"_{group_name}" for run, f"_timestep_init_{group_name}" for
+    timestep_initial, f"_timestep_final_{group_name}" for timestep_final).
+    Every other lifecycle stays a single flat function -- this is the same
+    "run is special, everything else is flat" assumption already found and
+    fixed in gpu_data_pass.py/gpu_ccpp_cap_pass.py; timestep_initial/
+    timestep_final need the same generalization here.
     """
     if lc == "run":
         return [
@@ -691,6 +692,11 @@ def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
     if lc == "timestep_initial":
         return [
             f"{suite_name}_suite_timestep_init_{grp.attributes['name']}"
+            for grp in suite_descriptions.get(suite_name, [])
+        ]
+    if lc == "timestep_final":
+        return [
+            f"{suite_name}_suite_timestep_final_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
     return [f"{suite_name}_suite_{lc}"]

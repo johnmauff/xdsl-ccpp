@@ -216,7 +216,10 @@ program test_instances_advection
       end if
     end do
     do ins = 1, ninstances
-      call ccpp_physics_timestep_final(suite_name=ccpp_suite, &
+      ! ccpp_physics_timestep_final is now group-scoped (task #28, Stage 2),
+      ! matching ccpp_physics_timestep_init's own signature above.
+      call ccpp_physics_timestep_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
+          lb=1, ub=ncols, &
           instance=ins, ninstances=ninstances, &
           errmsg=errmsg, errflg=errflg)
       if (errflg /= 0) then

@@ -30,18 +30,18 @@
 // CHECK-NEXT:   public :: tiny_suite_suite_register
 // CHECK-NEXT:   public :: tiny_suite_suite_initialize
 // CHECK-NEXT:   public :: tiny_suite_suite_finalize
-// CHECK-NEXT:   public :: tiny_suite_suite_timestep_final
 // CHECK-NEXT:   public :: tiny_suite_suite_physics
 // CHECK-NEXT:   public :: tiny_suite_suite_timestep_init_physics
+// CHECK-NEXT:   public :: tiny_suite_suite_timestep_final_physics
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine tiny_suite_suite_register(errflg, errmsg) 
-// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:   end subroutine tiny_suite_suite_register 
 // CHECK-LABEL:   subroutine tiny_suite_suite_initialize(errflg, errmsg) 
-// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
@@ -53,7 +53,7 @@
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine tiny_suite_suite_initialize 
 // CHECK-LABEL:   subroutine tiny_suite_suite_finalize(errflg, errmsg) 
-// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
@@ -64,20 +64,8 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:   end subroutine tiny_suite_suite_finalize 
-// CHECK-LABEL:   subroutine tiny_suite_suite_timestep_final(errflg, errmsg) 
-// CHECK:     integer, intent(out) :: errflg
-// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK:     errflg = 0    
-// CHECK-NEXT:     errmsg = ''
-// CHECK-NEXT:     if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
-// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in tiny_suite_timestep_final"
-// CHECK-NEXT:       errflg = 1      
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     ccpp_suite_state = const_initialized
-// CHECK-NEXT:   end subroutine tiny_suite_suite_timestep_final 
 // CHECK-LABEL:   subroutine tiny_suite_suite_physics(col_start, col_end, nz, temp, theta, errmsg, errflg) 
-// CHECK:     integer, intent(in) :: col_start
+// CHECK-NEXT:     integer, intent(in) :: col_start
 // CHECK-NEXT:     integer, intent(in) :: col_end
 // CHECK-NEXT:     integer, intent(in) :: nz
 // CHECK-NEXT:     real(kind=kind_phys), target, intent(inout) :: temp(:)
@@ -100,14 +88,21 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine tiny_suite_suite_physics 
 // CHECK-LABEL:   subroutine tiny_suite_suite_timestep_init_physics(errflg, errmsg) 
-// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:   end subroutine tiny_suite_suite_timestep_init_physics 
-// CHECK-NEXT: end module tiny_suite_cap
-// CHECK-NEXT: // -----
+// CHECK-LABEL:   subroutine tiny_suite_suite_timestep_final_physics(errflg, errmsg) 
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     ccpp_suite_state = const_initialized
+// CHECK-NEXT:   end subroutine tiny_suite_suite_timestep_final_physics 
+// CHECK-LABEL: end module tiny_suite_cap
+// CHECK-LABEL: // -----
 // CHECK-LABEL: // FILE: Tiny_ccpp_cap.F90
 // CHECK-LABEL: module Tiny_ccpp_cap
 // CHECK:   use ccpp_kinds
@@ -118,7 +113,7 @@
 // CHECK-NEXT:   use tiny_suite_cap, only: tiny_suite_suite_initialize
 // CHECK-NEXT:   use tiny_suite_cap, only: tiny_suite_suite_physics
 // CHECK-NEXT:   use tiny_suite_cap, only: tiny_suite_suite_register
-// CHECK-NEXT:   use tiny_suite_cap, only: tiny_suite_suite_timestep_final
+// CHECK-NEXT:   use tiny_suite_cap, only: tiny_suite_suite_timestep_final_physics
 // CHECK-NEXT:   use tiny_suite_cap, only: tiny_suite_suite_timestep_init_physics
 // CHECK:   implicit none
 // CHECK-NEXT:   private
@@ -127,15 +122,15 @@
 // CHECK-NEXT:   public :: ccpp_register
 // CHECK-NEXT:   public :: ccpp_init
 // CHECK-NEXT:   public :: ccpp_final
-// CHECK-NEXT:   public :: ccpp_physics_timestep_final
 // CHECK-NEXT:   public :: ccpp_physics_run
 // CHECK-NEXT:   public :: ccpp_physics_timestep_init
+// CHECK-NEXT:   public :: ccpp_physics_timestep_final
 // CHECK-NEXT:   public :: ccpp_physics_suite_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_variables
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) 
-// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
@@ -147,7 +142,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_register 
 // CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) 
-// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
@@ -159,7 +154,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_init 
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) 
-// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
@@ -170,20 +165,8 @@
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_final 
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg) 
-// CHECK:     character(len=*), intent(in) :: suite_name
-// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK:     errflg = 0    
-// CHECK-NEXT:     if (trim(suite_name) .eq. 'tiny_suite') then
-// CHECK-NEXT:       call tiny_suite_suite_timestep_final(errflg, errmsg)
-// CHECK-NEXT:     else
-// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
-// CHECK-NEXT:       errflg = 1      
-// CHECK-NEXT:     end if
-// CHECK-NEXT:   end subroutine ccpp_physics_timestep_final 
 // CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg, errflg) 
-// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: col_start
 // CHECK-NEXT:     integer, intent(in) :: col_end
@@ -211,7 +194,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_run 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
-// CHECK:     errflg) 
+// CHECK-NEXT:     errflg) 
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: col_start
@@ -232,13 +215,35 @@
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_init 
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, suite_part, col_start, col_end, errmsg,      &
+// CHECK-NEXT:     errflg) 
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     integer, intent(in) :: col_start
+// CHECK-NEXT:     integer, intent(in) :: col_end
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'tiny_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:         call tiny_suite_suite_timestep_final_physics(errflg, errmsg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
+// CHECK-NEXT:           " found in suite tiny_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_timestep_final 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites) 
-// CHECK:     character(len=*), allocatable, intent(out) :: suites(:)
+// CHECK-NEXT:     character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:     allocate(suites(1))
 // CHECK-NEXT:     suites(1) = str_tiny_suite
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg) 
-// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: part_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -252,7 +257,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_part_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
-// CHECK:     output_vars)
+// CHECK-NEXT:     output_vars)
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: var_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -291,12 +296,12 @@
 // CHECK-NEXT:       errflg = 1
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_variables
-// CHECK-NEXT: end module Tiny_ccpp_cap
-// CHECK-NEXT: // -----
+// CHECK-LABEL: end module Tiny_ccpp_cap
+// CHECK-LABEL: // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
-// CHECK:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
+// CHECK-NEXT:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
 // CHECK:   implicit none
 // CHECK-NEXT:   private
 // CHECK:   public :: kind_phys
-// CHECK-NEXT: end module ccpp_kinds
+// CHECK-LABEL: end module ccpp_kinds

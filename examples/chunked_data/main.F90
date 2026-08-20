@@ -83,7 +83,11 @@ program test_chunked_data
   ! CCPP physics timestep finalize step            !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  call ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
+  ! ccpp_physics_timestep_final is now group-scoped (task #28, Stage 2),
+  ! matching ccpp_physics_timestep_init's own signature -- full extent
+  ! (1, ncols), not chunked.
+  call ccpp_physics_timestep_final(ccpp_suite, ccpp_group, 1, ncols, &
+      chunked_data_instance%array_data(1:ncols), errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_finalize:"
     write(error_unit, '(a)') trim(errmsg)

@@ -228,19 +228,33 @@ contains
              end do
           end do
 
+          ! Finalize the timestep. ccpp_physics_timestep_final is now
+          ! group-scoped (task #28, Stage 2), matching
+          ! ccpp_physics_timestep_init's own per-part call above -- full
+          ! extent (not chunked) via ccpp_info%col_start/col_end.
+          ccpp_info%col_start = 1
+          ccpp_info%col_end = ncols
           do sind = 1, num_suites
              if (ccpp_info%errflg /= 0) then
                 exit
              end if
-             if (ccpp_info%errflg == 0) then
-                call ccpp_physics_timestep_final(                   &
-                     test_suites(sind)%suite_name, ccpp_info)
-             end if
-             if (ccpp_info%errflg /= 0) then
-                write(6, '(3a)') trim(test_suites(sind)%suite_name), ': ',    &
-                     trim(ccpp_info%errmsg)
-                exit
-             end if
+             do index = 1, size(test_suites(sind)%suite_parts)
+                if (ccpp_info%errflg /= 0) then
+                   exit
+                end if
+                if (ccpp_info%errflg == 0) then
+                   call ccpp_physics_timestep_final(                &
+                        test_suites(sind)%suite_name,                      &
+                        test_suites(sind)%suite_parts(index),              &
+                        ccpp_info)
+                end if
+                if (ccpp_info%errflg /= 0) then
+                   write(6, '(5a)') trim(test_suites(sind)%suite_name),    &
+                        '/', trim(test_suites(sind)%suite_parts(index)),   &
+                        ': ', trim(ccpp_info%errmsg)
+                   exit
+                end if
+             end do
           end do
        end do ! End time step loop
 

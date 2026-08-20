@@ -49,24 +49,23 @@ _PHASE_RANK = {p: i for i, p in enumerate(_PHASE_ORDER)}
 _ONE_TIME_PHASES = frozenset({"register", "initialize", "finalize"})
 _PER_TIMESTEP_PHASES = frozenset({"timestep_initial", "run", "timestep_final"})
 
-# ccpp_physics_run and ccpp_physics_timestep_init are handled separately in
-# apply() (substring match, not suffix, via _TWO_LEVEL_DISPATCH_PHASES)
-# since their dispatch shape -- an outer per-suite IfOp wrapping a second,
-# nested per-suite-part/group IfOp -- differs from these single-level
-# dispatchers, so neither is in this map. Task #28 moved
-# ccpp_physics_timestep_init from a flat, single-level dispatcher (matching
-# this map's own shape) to the same two-level, per-group shape ccpp_physics_run
-# already had, matching real capgen-v1's own group-scoped
-# ccpp_physics_timestep_init. Names are bare (Stage 5 of the
-# vocabulary-resolution redesign, ccpp_cap_refactor_plan.md: capgen-v1-style
-# generic subroutine names, no host prefix) -- matched with endswith rather
-# than == purely for defensive robustness against a future prefix, not
-# because one exists today.
+# ccpp_physics_run, ccpp_physics_timestep_init, and ccpp_physics_timestep_final
+# are handled separately in apply() (substring match, not suffix, via
+# _TWO_LEVEL_DISPATCH_PHASES) since their dispatch shape -- an outer
+# per-suite IfOp wrapping a second, nested per-suite-part/group IfOp --
+# differs from these single-level dispatchers, so none of the three are in
+# this map. Task #28 moved ccpp_physics_timestep_init (Stage 1) and
+# ccpp_physics_timestep_final (Stage 2) from flat, single-level dispatchers
+# (matching this map's own shape) to the same two-level, per-group shape
+# ccpp_physics_run already had, matching real capgen-v1's own group-scoped
+# entry points. Names are bare (Stage 5 of the vocabulary-resolution
+# redesign, ccpp_cap_refactor_plan.md: capgen-v1-style generic subroutine
+# names, no host prefix) -- matched with endswith rather than == purely for
+# defensive robustness against a future prefix, not because one exists today.
 _LIFECYCLE_FN_SUFFIX_TO_PHASE = {
     "ccpp_register": "register",
     "ccpp_init": "initialize",
     "ccpp_final": "finalize",
-    "ccpp_physics_timestep_final": "timestep_final",
 }
 
 # fn-name substring -> phase, for dispatchers with the two-level (suite_name
@@ -74,6 +73,7 @@ _LIFECYCLE_FN_SUFFIX_TO_PHASE = {
 _TWO_LEVEL_DISPATCH_PHASES = {
     "ccpp_physics_run": "run",
     "ccpp_physics_timestep_init": "timestep_initial",
+    "ccpp_physics_timestep_final": "timestep_final",
 }
 
 
@@ -542,7 +542,7 @@ class GPUCcppCapPass(ModulePass):
     # fixed literal segment of the callee name regardless of the group's own
     # name (suite_cap.py's generated_subroutine_posfix always inserts it
     # before the group name, never depending on what the group is called).
-    _SUITE_CALLEE_MARKERS = ("_suite_physics", "_suite_timestep_init_")
+    _SUITE_CALLEE_MARKERS = ("_suite_physics", "_suite_timestep_init_", "_suite_timestep_final_")
 
     def _find_inner_suite_part_if(self, true_block):
         """Find the scf.IfOp in true_block whose true region contains a
