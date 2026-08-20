@@ -231,7 +231,6 @@
 // CHECK-NEXT:    use make_ddt, only: make_ddt_timestep_final
 // CHECK-NEXT:    use make_ddt, only: vmr_type
 // CHECK-NEXT:    use test_host_mod, only: ncols
-// CHECK-NEXT:    use test_host_mod, only: num_model_times
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         character(len=16) :: ccpp_suite_state = 'uninitialized'
@@ -260,9 +259,6 @@
 // CHECK-NEXT:      if (.not. allocated(hno3)) then
 // CHECK-NEXT:        allocate(hno3(ncols))
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(model_times)) then
-// CHECK-NEXT:        allocate(model_times(num_model_times))
-// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ddt_suite_suite_register
 // CHECK-LABEL:   subroutine ddt_suite_suite_initialize(nbox, model_times, errmsg, errflg, ntimes)
 // CHECK:           integer, intent(in) :: nbox
@@ -277,9 +273,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(hno3)) then
 // CHECK-NEXT:        allocate(hno3(nbox))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(model_times)) then
-// CHECK-NEXT:        allocate(model_times(ntimes))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
