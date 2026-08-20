@@ -1453,12 +1453,22 @@ def _build_call_and_copy_back_ops(
     for idx, ret_type in enumerate(callee_output_types):
         result = call_op.results[idx]
         if idx < _n_inout_ret:
-            # inout return vals: type-match only (no positional info available)
-            if ret_type == ctx.errmsg_type:
-                copy_ops.append(memref.CopyOp(result, ctx.errmsg_arg))
-            elif ret_type == ctx.errflg_type:
-                copy_ops.append(memref.CopyOp(result, ctx.errflg_arg))
-            elif idx < len(_leading_inout_ret):
+            # Leading positions [0, len(_leading_inout_ret)) are ALWAYS
+            # ordinary scheme-declared inout echoes -- checked by POSITION
+            # first, not type, and only the remaining 1-2 positions
+            # (errmsg/errflg) fall through to type-matching below. This
+            # order matters: an ordinary inout scalar can share errflg's
+            # own i32 type (e.g. examples/nested_suite's scheme_order,
+            # task #28 Stage 3's own physics_init/final phases -- the
+            # first time a leading-inout echo of exactly this type reached
+            # this code path). Checking type first (the previous order)
+            # silently misrouted such a scalar's real write-back into
+            # errflg instead, corrupting errflg's own value AND losing the
+            # scalar's real host write-back entirely -- confirmed via a
+            # real regression, a CI build failure on examples/nested_suite
+            # ("Type mismatch in argument 'errmsg'"), caught only because
+            # the resulting extra call arg also happened to shift arity.
+            if idx < len(_leading_inout_ret):
                 # Ordinary scheme-declared inout scalar -- route the
                 # copy-back the same way the trailing alloc-style
                 # branch below does, and record the echoed block arg
@@ -1526,6 +1536,10 @@ def _build_call_and_copy_back_ops(
                     if cap_ref is not None:
                         cap_var_inout_refs.append(cap_ref)
                         copy_ops.append(memref.CopyOp(result, cap_ref.res))
+            elif ret_type == ctx.errmsg_type:
+                copy_ops.append(memref.CopyOp(result, ctx.errmsg_arg))
+            elif ret_type == ctx.errflg_type:
+                copy_ops.append(memref.CopyOp(result, ctx.errflg_arg))
         else:
             ri_idx = idx - _n_inout_ret
             ret_std_name = _run_ret_alloc[ri_idx][2]

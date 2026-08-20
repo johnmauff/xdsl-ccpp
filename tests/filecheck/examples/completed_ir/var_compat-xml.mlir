@@ -600,7 +600,7 @@
 // CHECK-NEXT:         %6 = "ccpp_utils.strcmp"(%3) <{literal = "radiation"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:         scf.if %6 {
 // CHECK-NEXT:           %7, %8, %9 = func.call @var_compatibility_suite_suite_init_radiation(%4, %5) : (memref<i32>, memref<i32>) -> (memref<i32>, memref<512xi8>, memref<i32>)
-// CHECK-NEXT:           "memref.copy"(%7, %errflg) : (memref<i32>, memref<i32>) -> ()
+// CHECK-NEXT:           "memref.copy"(%7, %4) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:           "memref.copy"(%8, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:           "memref.copy"(%9, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:         } else {

@@ -52,11 +52,17 @@ int main() {
 
     // CCPP call sequence
     check("register",         CapgenChost_chost::do_register());
-    check("initialize",       CapgenChost_chost::initialize(state));
+    check("initialize",       CapgenChost_chost::initialize());
+    // physics_initial (task #28, Stage 3): owns the scheme-level _init
+    // calls initialize() no longer makes itself.
+    check("physics_initial",  CapgenChost_chost::physics_initial(state));
     check("timestep_initial", CapgenChost_chost::timestep_initial(state));
     check("run",              CapgenChost_chost::run(state, 1, NCOL));
     // make_ddt_timestep_final validates vmr_array in Fortran; errflg!=0 == fail
     check("timestep_final",   CapgenChost_chost::timestep_final(state));
+    // physics_final (task #28, Stage 3): owns the scheme-level _finalize
+    // calls finalize() no longer makes itself.
+    check("physics_final",    CapgenChost_chost::physics_final());
     check("finalize",         CapgenChost_chost::finalize());
 
     // Verify vmr_vmr_array in C++ (column-major: first col = O3, second = HNO3)

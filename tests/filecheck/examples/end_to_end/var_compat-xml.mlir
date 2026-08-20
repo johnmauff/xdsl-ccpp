@@ -631,7 +631,7 @@
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:       if (trim(suite_part) .eq. 'radiation') then
 // CHECK-NEXT:         call var_compatibility_suite_suite_init_radiation(phys_state%scheme_order,                &
-// CHECK-NEXT:           phys_state%num_subcycles, errflg, errmsg, errflg)
+// CHECK-NEXT:           phys_state%num_subcycles, errmsg, errflg)
 // CHECK-NEXT:       else
 // CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:           " found in suite var_compatibility_suite"

@@ -41,10 +41,18 @@ int main() {
     ccpp_register("kessler_suite", errmsg, &errflg);
     check("register", errmsg, errflg);
 
-    // Initialise physics constants (kessler_init, kessler_update_init).
+    // Initialise the suite (framework setup only -- task #28, Stage 3
+    // moved the scheme-level kessler_init/kessler_update_init calls to
+    // ccpp_physics_init below).
     std::memset(errmsg, 0, sizeof(errmsg));
     ccpp_init("kessler_suite", errmsg, &errflg);
     check("initialize", errmsg, errflg);
+
+    // Physics initialize (task #28, Stage 3): group-scoped, owns the
+    // scheme-level _init calls ccpp_init no longer makes itself.
+    std::memset(errmsg, 0, sizeof(errmsg));
+    ccpp_physics_init("kessler_suite", "physics", 1, 1000, errmsg, &errflg);
+    check("physics_initial", errmsg, errflg);
 
     // Timestep initial: copies temp → temp_prev, zeroes ttend_t.
     std::memset(errmsg, 0, sizeof(errmsg));
@@ -65,6 +73,12 @@ int main() {
     std::memset(errmsg, 0, sizeof(errmsg));
     ccpp_physics_timestep_final("kessler_suite", "physics", 1, 1000, errmsg, &errflg);
     check("timestep_final", errmsg, errflg);
+
+    // Physics finalize (task #28, Stage 3): owns the scheme-level
+    // _finalize calls ccpp_final no longer makes itself.
+    std::memset(errmsg, 0, sizeof(errmsg));
+    ccpp_physics_final("kessler_suite", "physics", 1, 1000, errmsg, &errflg);
+    check("physics_final", errmsg, errflg);
 
     // Finalise.
     std::memset(errmsg, 0, sizeof(errmsg));

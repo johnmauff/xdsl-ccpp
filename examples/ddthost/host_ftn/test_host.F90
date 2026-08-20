@@ -106,6 +106,15 @@ contains
 
        use host_ccpp_ddt,      only: ccpp_info_t
        use test_host_mod,      only: ncols, num_time_steps
+       ! model_times (module var, allocatable): ccpp_physics_init's own
+       ! "_init" call needs it threaded explicitly -- its scheme arg is
+       ! intent=out/allocatable, which xdsl-ccpp deliberately never
+       ! host-matches (the scheme allocates a FRESH array; it can't just
+       ! claim an existing host one), unlike the intent=in "_final" call,
+       ! which DOES get host-matched and resolved via a module-level use
+       ! inside ccpp_physics_final's own dispatcher module -- no explicit
+       ! arg needed there.
+       use test_host_mod,      only: model_times
        use test_host_ccpp_cap, only: ccpp_init
        use test_host_ccpp_cap, only: ccpp_physics_init
        use test_host_ccpp_cap, only: ccpp_physics_timestep_init
@@ -127,6 +136,12 @@ contains
        integer                         :: num_suites
        character(len=128), allocatable :: suite_names(:)
        type(ccpp_info_t)               :: ccpp_info
+       ! random_fudge_factor has no host variable match (temp_set.meta's
+       ! own metadata documents 1.0_kind_phys as its intended default) --
+       ! ccpp_physics_init's real signature (task #28, Stage 3) surfaces it
+       ! as a genuine caller-supplied argument now, matching how
+       ! ccpp_physics_run already treats any similarly host-unmatched arg.
+       real(kind=kind_phys)            :: fudge = 1.0_kind_phys
 
        ! Initialize our 'data'
        call init_data()
@@ -187,7 +202,7 @@ contains
                 call ccpp_physics_init(                              &
                      test_suites(sind)%suite_name,                      &
                      test_suites(sind)%suite_parts(index),              &
-                     ccpp_info)
+                     ccpp_info, model_times, fudge)
              end if
              if (ccpp_info%errflg /= 0) then
                 write(6, '(5a)') trim(test_suites(sind)%suite_name),    &
