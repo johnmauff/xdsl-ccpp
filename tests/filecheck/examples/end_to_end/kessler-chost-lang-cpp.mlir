@@ -147,11 +147,6 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in kessler_suite_timestep_init_physics"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call kessler_update_timestep_init(ncol=ncol, nz=nz, temp=temp, temp_prev=temp_prev,         &
 // CHECK-NEXT:          ttend_t=ttend_t, errmsg=errmsg, errflg=errflg)

@@ -172,11 +172,6 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in temp_suite_timestep_init_physics1"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call setup_coeffs_timestep_init(coeffs=coeffs, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
@@ -229,11 +224,6 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in temp_suite_timestep_init_physics2"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:    end subroutine temp_suite_suite_timestep_init_physics2
 // CHECK-NEXT:  end module temp_suite_cap
@@ -368,11 +358,6 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in ddt_suite_timestep_init_data_prep"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:    end subroutine ddt_suite_suite_timestep_init_data_prep
 // CHECK-NEXT:  end module ddt_suite_cap

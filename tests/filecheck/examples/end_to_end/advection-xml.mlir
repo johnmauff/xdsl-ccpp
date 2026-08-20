@@ -222,11 +222,6 @@
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0
 // CHECK-NEXT:     errmsg = ''
-// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in cld_suite_timestep_init_physics"
-// CHECK-NEXT:       errflg = 1
-// CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:   end subroutine cld_suite_suite_timestep_init_physics
 // CHECK-NEXT: end module cld_suite_cap

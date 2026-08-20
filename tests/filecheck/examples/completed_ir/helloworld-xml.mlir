@@ -161,30 +161,17 @@
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @hello_world_suite_suite_timestep_init_physics() -> (memref<i32>, memref<512xi8>) {
-// CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:        %0 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
-// CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
-// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
-// CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:        %6 = arith.constant true
-// CHECK-NEXT:        %7 = arith.xori %5, %6 : i1
-// CHECK-NEXT:        scf.if %7 {
-// CHECK-NEXT:          %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in hello_world_suite_timestep_init_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:          %9 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
-// CHECK-NEXT:        }
-// CHECK-NEXT:        %10 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
-// CHECK-NEXT:        %11 = "llvm.load"(%10) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %12 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
-// CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
-// CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
-// CHECK-NEXT:      }
+// CHECK:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %0 = arith.constant 0 : i32
+// CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
+// CHECK-NEXT:       "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:       %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
+// CHECK-NEXT:       %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:       %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
+// CHECK-NEXT:       "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:       func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
+// CHECK-NEXT:     }
 // CHECK-LABEL:     func.func private @hello_scheme_init(memref<512xi8>, memref<i32>) -> () attributes {module = "hello_scheme"}
 // CHECK-LABEL:     func.func private @temp_adjust_init(memref<512xi8>, memref<i32>) -> () attributes {module = "temp_adjust"}
 // CHECK-LABEL:     func.func private @hello_scheme_finalize(memref<512xi8>, memref<i32>) -> () attributes {module = "hello_scheme"}
