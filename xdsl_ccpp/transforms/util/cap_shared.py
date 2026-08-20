@@ -234,6 +234,34 @@ LIFECYCLE_POSTFIX_ALIASES: dict[str, str] = {
     "_finalize": "_final",
 }
 
+
+def _resolve_lifecycle_table_name(scheme_name: str, meta_data, postfix: str) -> "str | None":
+    """Return scheme_name's own arg-table name at lifecycle phase `postfix`
+    (trying the canonical form, then LIFECYCLE_POSTFIX_ALIASES' short form),
+    or None if scheme_name isn't in meta_data or declares neither.
+
+    Single shared postfix-then-alias lookup for the several call sites that
+    used to either hardcode a bare "_run" (never needing an alias, since
+    "_run" has none) or build the table name directly without trying the
+    alias form at all -- both wrong once a caller needs a postfix that DOES
+    have a short-form alias (task #28's phase-parameterization of
+    run_dispatch.py's own per-suite scheme-table scans and
+    _get_suite_lifecycle_ret_info/_get_suite_leading_inout_ret_info below).
+    suite_cap.py's own _build_arg_tables inlines the identical candidate-list
+    idea for its own arg-table resolution; this is the same idea, shared,
+    for run_dispatch.py's and cap_shared.py's own table-name-only lookups.
+    """
+    if scheme_name not in meta_data:
+        return None
+    candidates = [postfix]
+    if postfix in LIFECYCLE_POSTFIX_ALIASES:
+        candidates.append(LIFECYCLE_POSTFIX_ALIASES[postfix])
+    for candidate in candidates:
+        table_name = scheme_name + candidate
+        if table_name in meta_data[scheme_name].arg_tables:
+            return table_name
+    return None
+
 # Ordered (longest/most-specific first) so a longer suffix is never shadowed
 # by a shorter one it contains as a trailing substring:
 #   - '_timestep_finalize' before '_finalize' ('foo_timestep_finalize' ends
@@ -692,10 +720,8 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
     """
     all_out_args = {}
     for scheme_name in scheme_names:
-        table_name = scheme_name + table_postfix
-        if scheme_name not in meta_data:
-            continue
-        if table_name not in meta_data[scheme_name].arg_tables:
+        table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, table_postfix)
+        if table_name is None:
             continue
         arg_table = meta_data[scheme_name].getArgTable(table_name)
         for fn_arg in arg_table.getFunctionArguments():
@@ -770,10 +796,8 @@ def _get_suite_leading_inout_ret_info(scheme_names, meta_data, table_postfix):
     """
     all_inout_args = {}
     for scheme_name in scheme_names:
-        table_name = scheme_name + table_postfix
-        if scheme_name not in meta_data:
-            continue
-        if table_name not in meta_data[scheme_name].arg_tables:
+        table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, table_postfix)
+        if table_name is None:
             continue
         arg_table = meta_data[scheme_name].getArgTable(table_name)
         for fn_arg in arg_table.getFunctionArguments():

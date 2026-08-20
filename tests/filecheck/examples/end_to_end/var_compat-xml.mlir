@@ -106,9 +106,9 @@
 // CHECK-NEXT:    public :: var_compatibility_suite_suite_register
 // CHECK-NEXT:    public :: var_compatibility_suite_suite_initialize
 // CHECK-NEXT:    public :: var_compatibility_suite_suite_finalize
-// CHECK-NEXT:    public :: var_compatibility_suite_suite_timestep_initial
 // CHECK-NEXT:    public :: var_compatibility_suite_suite_timestep_final
 // CHECK-NEXT:    public :: var_compatibility_suite_suite_radiation
+// CHECK-NEXT:    public :: var_compatibility_suite_suite_timestep_init_radiation
 // CHECK:       CONTAINS
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_register(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
@@ -159,18 +159,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine var_compatibility_suite_suite_finalize
-// CHECK-LABEL:   subroutine var_compatibility_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK:           integer, intent(out) :: errflg
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in var_compatibility_suite_timestep_initial"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
-// CHECK-NEXT:    end subroutine var_compatibility_suite_suite_timestep_initial
 // CHECK-LABEL:   subroutine var_compatibility_suite_suite_timestep_final(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -438,7 +426,19 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      scalar_var = scalar_var_unit_conv * 1000.0_kind_phys
 // CHECK-NEXT:      tke_inout = tke_inout_unit_conv * 1.0_kind_phys
-// CHECK-NEXT:    end subroutine var_compatibility_suite_suite_radiation 
+// CHECK-NEXT:    end subroutine var_compatibility_suite_suite_radiation
+// CHECK-LABEL:   subroutine var_compatibility_suite_suite_timestep_init_radiation(errflg, errmsg)
+// CHECK:           integer, intent(out) :: errflg
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:          "' in var_compatibility_suite_timestep_init_radiation"
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
+// CHECK-NEXT:    end subroutine var_compatibility_suite_suite_timestep_init_radiation
 // CHECK-NEXT:  end module var_compatibility_suite_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: VarCompatibility_ccpp_cap.F90
@@ -459,7 +459,7 @@
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_radiation
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_register
 // CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_timestep_final
-// CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_timestep_initial
+// CHECK-NEXT:    use var_compatibility_suite_cap, only: var_compatibility_suite_suite_timestep_init_radiation
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         character(len=23), parameter :: str_var_compatibility_suite = 'var_compatibility_suite'
@@ -472,9 +472,9 @@
 // CHECK-NEXT:    public :: ccpp_register
 // CHECK-NEXT:    public :: ccpp_init
 // CHECK-NEXT:    public :: ccpp_final
-// CHECK-NEXT:    public :: ccpp_physics_timestep_init
 // CHECK-NEXT:    public :: ccpp_physics_timestep_final
 // CHECK-NEXT:    public :: ccpp_physics_run
+// CHECK-NEXT:    public :: ccpp_physics_timestep_init
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
@@ -523,18 +523,6 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_final
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg)
-// CHECK:           character(len=*), intent(in) :: suite_name
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
-// CHECK-NEXT:        call var_compatibility_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -570,6 +558,28 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_run
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
+// CHECK-NEXT:      errflg)
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:      integer, intent(in) :: col_start
+// CHECK-NEXT:      integer, intent(in) :: col_end
+// CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:      integer, intent(inout) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'var_compatibility_suite') then
+// CHECK-NEXT:        if (trim(suite_part) .eq. 'radiation') then
+// CHECK-NEXT:          call var_compatibility_suite_suite_timestep_init_radiation(errflg, errmsg)
+// CHECK-NEXT:        else
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
+// CHECK-NEXT:            " found in suite var_compatibility_suite"
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      else
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)
 // CHECK:           character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:           allocate(suites(1))

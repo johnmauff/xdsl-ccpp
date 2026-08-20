@@ -43,9 +43,9 @@
 // CHECK-NEXT:   public :: cld_suite_suite_register
 // CHECK-NEXT:   public :: cld_suite_suite_initialize
 // CHECK-NEXT:   public :: cld_suite_suite_finalize
-// CHECK-NEXT:   public :: cld_suite_suite_timestep_initial
 // CHECK-NEXT:   public :: cld_suite_suite_timestep_final
 // CHECK-NEXT:   public :: cld_suite_suite_physics
+// CHECK-NEXT:   public :: cld_suite_suite_timestep_init_physics
 // CHECK: CONTAINS
 // CHECK:   subroutine cld_suite_suite_register(dyn_const, dyn_const_ice, errmsg, errflg)
 // CHECK-NEXT:     type(ccpp_constituent_properties_t), allocatable, intent(inout) :: dyn_const(:)
@@ -151,18 +151,6 @@
 // CHECK-NEXT:     !$acc exit data delete(cld_liq_array)
 // CHECK-NEXT: #endif
 // CHECK-NEXT:   end subroutine cld_suite_suite_finalize
-// CHECK:   subroutine cld_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK:     errflg = 0
-// CHECK-NEXT:     errmsg = ''
-// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in cld_suite_timestep_initial"
-// CHECK-NEXT:       errflg = 1
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     ccpp_suite_state = const_in_time_step
-// CHECK-NEXT:   end subroutine cld_suite_suite_timestep_initial
 // CHECK:   subroutine cld_suite_suite_timestep_final(errflg, errmsg)
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -229,6 +217,18 @@
 // CHECK-NEXT:         ncols=cld_shadow_ncols, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine cld_suite_suite_physics
+// CHECK:   subroutine cld_suite_suite_timestep_init_physics(errflg, errmsg)
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in cld_suite_timestep_init_physics"
+// CHECK-NEXT:       errflg = 1
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     ccpp_suite_state = const_in_time_step
+// CHECK-NEXT:   end subroutine cld_suite_suite_timestep_init_physics
 // CHECK-NEXT: end module cld_suite_cap
 // CHECK: // -----
 // CHECK-LABEL: // FILE: Cld_ccpp_cap.F90
@@ -241,7 +241,7 @@
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_physics
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_register
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_timestep_final
-// CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_timestep_initial
+// CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_timestep_init_physics
 // CHECK-NEXT:   use test_host_data, only: const_index
 // CHECK-NEXT:   use test_host_data, only: const_inds
 // CHECK-NEXT:   use test_host_data, only: const_std_name
@@ -269,9 +269,9 @@
 // CHECK-NEXT:   public :: ccpp_register
 // CHECK-NEXT:   public :: ccpp_init
 // CHECK-NEXT:   public :: ccpp_final
-// CHECK-NEXT:   public :: ccpp_physics_timestep_init
 // CHECK-NEXT:   public :: ccpp_physics_timestep_final
 // CHECK-NEXT:   public :: ccpp_physics_run
+// CHECK-NEXT:   public :: ccpp_physics_timestep_init
 // CHECK-NEXT:   public :: ccpp_physics_suite_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_variables
@@ -324,18 +324,6 @@
 // CHECK-NEXT:     !$acc exit data delete(lc_const_tend)
 // CHECK-NEXT: #endif
 // CHECK-NEXT:   end subroutine ccpp_final
-// CHECK:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg)
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
-// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK:     errflg = 0
-// CHECK-NEXT:     if (trim(suite_name) .eq. 'cld_suite') then
-// CHECK-NEXT:       call cld_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK-NEXT:     else
-// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
-// CHECK-NEXT:       errflg = 1
-// CHECK-NEXT:     end if
-// CHECK-NEXT:   end subroutine ccpp_physics_timestep_init
 // CHECK:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg)
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -373,6 +361,27 @@
 // CHECK-NEXT:       errflg = 1
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_run
+// CHECK:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
+// CHECK-NEXT:     errflg)
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     integer, intent(in) :: col_start
+// CHECK-NEXT:     integer, intent(in) :: col_end
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'cld_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:         call cld_suite_suite_timestep_init_physics(errflg, errmsg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite cld_suite"
+// CHECK-NEXT:         errflg = 1
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_timestep_init
 // CHECK:   subroutine ccpp_physics_suite_list(suites)
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:     allocate(suites(1))

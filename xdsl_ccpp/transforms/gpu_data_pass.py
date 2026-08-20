@@ -519,14 +519,17 @@ class GPUDataPass(ModulePass):
     # Suffixes of the suite-level lifecycle subroutines built by
     # suite_cap.py (suite_name + "_suite" + generated_subroutine_posfix; see
     # ccpp_cap.py's lifecycle_specs for the matching callee_suffix values).
-    # "_suite_physics" is handled separately below via substring match,
-    # since per-group run callees are suffixed with the group name (e.g.
-    # "_suite_physics1"), not an exact "_suite_physics" ending.
+    # "_suite_physics"/"_suite_timestep_init_" are handled separately below
+    # via substring match, since per-group callees are suffixed with the
+    # group name (e.g. "_suite_physics1", "_suite_timestep_init_g1"), not an
+    # exact ending -- task #28 moved timestep_init from a flat
+    # "_suite_timestep_initial" (exact-suffix, matched below like the other
+    # still-flat phases) to per-group, the same shape "_suite_physics"
+    # already has.
     _LIFECYCLE_SUITE_FN_SUFFIXES = (
         "_suite_register",
         "_suite_initialize",
         "_suite_finalize",
-        "_suite_timestep_initial",
         "_suite_timestep_final",
     )
 
@@ -580,8 +583,10 @@ class GPUDataPass(ModulePass):
                 if not (isa(child, func.FuncOp) and not child.is_declaration):
                     continue
                 fn_name = child.sym_name.data
-                if "_suite_physics" in fn_name or fn_name.endswith(
-                    self._LIFECYCLE_SUITE_FN_SUFFIXES
+                if (
+                    "_suite_physics" in fn_name
+                    or "_suite_timestep_init_" in fn_name
+                    or fn_name.endswith(self._LIFECYCLE_SUITE_FN_SUFFIXES)
                 ):
                     self._process_physics_fn(
                         child, meta_data, diverged_vars, diverged_capscratch_vars

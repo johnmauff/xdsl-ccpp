@@ -27,8 +27,14 @@
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) BIND(C,
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 
-// Timestep initial/final.
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg) BIND(C,
+// Timestep initial: now group-scoped (task #28), same physics signature ccpp_physics_run has.
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(
+// CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK:           character(kind=c_char, len=1), intent(in) :: suite_part(*)
+// CHECK:           integer(c_int), value, intent(in) :: col_start
+// CHECK:           integer(c_int), value, intent(in) :: col_end
+
+// Timestep final: still flat/minimal signature (unchanged by task #28 Stage 1).
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,
 
 // Run: scalar intent(in) values use VALUE; strings use c_char; real arrays use c_double.
