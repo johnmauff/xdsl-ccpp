@@ -69,7 +69,9 @@ program test_kessler_ccpp_driver
   !------------------------------------------------------
   ! Timestep final (computes dry static energy)
   !------------------------------------------------------
-  call ccpp_physics_timestep_final('kessler_suite', errmsg, errflg)
+  ! ccpp_physics_timestep_final is now group-scoped (task #28, Stage 2),
+  ! matching ccpp_physics_timestep_init's own signature above exactly.
+  call ccpp_physics_timestep_final('kessler_suite', 'physics', 1, ncol, errmsg, errflg)
   if (errflg /= 0) then
     print *, 'Timestep final error: ', trim(errmsg)
     stop

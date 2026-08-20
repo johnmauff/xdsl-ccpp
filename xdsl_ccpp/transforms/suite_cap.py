@@ -3416,26 +3416,26 @@ class GenerateSuiteSubroutine(RewritePattern):
         ]
 
     def _generate_lifecycle_fns(self, suite_description, suite_model) -> "_LifecycleFnsResult":
-        """Generate FuncOps for the four fixed, flat lifecycle specs, plus
-        one group-scoped _run and one group-scoped _timestep_initialize per
-        physics group.
+        """Generate FuncOps for the three fixed, flat lifecycle specs, plus
+        one group-scoped _run, one group-scoped _timestep_initialize, and
+        one group-scoped _timestep_finalize per physics group.
 
-        _timestep_initialize used to also be a fifth flat spec here (see
-        git history) -- task #28's real-capgen-v1 lifecycle match moved it
-        to per-group (matching upstream's own group-scoped
-        ccpp_physics_timestep_init), since real capgen-v1 has no flat,
-        whole-suite timestep_init/timestep_final subroutine at all. This
-        also relocates ownership of the "in_time_step" state SET: the
-        group-scoped _run FuncOp below only ever *checks* "in_time_step"
-        (state_string=None there, unchanged) -- something else in the call
-        order must SET it first, and that's now this group's own
-        timestep_initialize call, not a flat one shared by the whole suite.
+        _timestep_initialize/_timestep_finalize used to also be flat specs
+        here (see git history) -- task #28's real-capgen-v1 lifecycle match
+        moved both to per-group (matching upstream's own group-scoped
+        ccpp_physics_timestep_init/ccpp_physics_timestep_final), since real
+        capgen-v1 has no flat, whole-suite timestep_init/timestep_final
+        subroutine at all. This also relocates ownership of the per-timestep
+        "initialized" -> "in_time_step" -> "initialized" round trip entirely
+        to these two group-scoped FuncOps (the flat _init/_finalize specs
+        below still own the suite-level "uninitialized" <-> "initialized"
+        transitions, unchanged): the group-scoped _run FuncOp below only
+        ever *checks* "in_time_step" (state_string=None there, unchanged).
         """
         subroutine_specs = [
             ("_register",            "_register",         None,            None),
             ("_init",                "_initialize",       "initialized",   "uninitialized"),
             ("_finalize",            "_finalize",         "uninitialized", "initialized"),
-            ("_timestep_finalize",   "_timestep_final",   "initialized",   "in_time_step"),
         ]
 
         generated_fns: list = []
@@ -3473,26 +3473,26 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         # Per-group physics phases: (tgt_postfix, generated-name prefix,
         # state_string, check_string). "_run" is the original, unchanged
-        # entry; "_timestep_initialize" is task #28's Stage 1 addition,
-        # replacing the flat spec removed above and taking over ownership
-        # of setting "in_time_step" (which "_run" here only ever checks).
-        # _timestep_initialize deliberately passes check_string=None (no
-        # state check), not "initialized": task #28's Stage 1 originally
-        # kept a check here "for defensive consistency" with _run's own
-        # check (see Open Question #2 in the Stage 1 plan), but a suite
-        # with more than one group (e.g. examples/nested_suite, via
-        # <nested_suite> XML includes) calls this once per group, and the
-        # first group's own check+set would poison every subsequent group's
-        # check (state is already "in_time_step", not "initialized",
-        # after group 1 runs). Real capgen-v1 has zero ccpp_suite_state
+        # entry, only ever checking "in_time_step". "_timestep_initialize"
+        # (task #28 Stage 1) and "_timestep_finalize" (Stage 2) own the two
+        # state transitions in and out of "in_time_step", respectively.
+        # Both deliberately pass check_string=None (no state check): a
+        # suite with more than one group (e.g. examples/nested_suite, via
+        # <nested_suite> XML includes) calls each of these once per group,
+        # and the first group's own check+set would poison every
+        # subsequent group's check (state has already moved on by the time
+        # group 2's call runs). Real capgen-v1 has zero ccpp_suite_state
         # checks at group granularity at all (verified via group_cap.py) --
-        # dropping the check here matches upstream and is idempotent across
-        # any group count. state_string="in_time_step" stays: something
-        # still has to perform the actual transition so the still-flat
-        # _timestep_finalize's own check (above) keeps working.
+        # dropping the check matches upstream and is idempotent across any
+        # group count. The state_string SET on each stays, since nothing
+        # else performs these transitions now that both phases are fully
+        # per-group -- there is no longer any flat suite-wide
+        # _timestep_finalize to fall back on (Stage 1's docstring above
+        # still described one; Stage 2 removed it).
         group_phase_specs = [
-            ("_run",                "",              None,           "in_time_step"),
-            ("_timestep_initialize", "timestep_init_", "in_time_step", None),
+            ("_run",                 "",                None,            "in_time_step"),
+            ("_timestep_initialize", "timestep_init_",  "in_time_step",  None),
+            ("_timestep_finalize",   "timestep_final_",  "initialized",  None),
         ]
 
         for group in suite_description:

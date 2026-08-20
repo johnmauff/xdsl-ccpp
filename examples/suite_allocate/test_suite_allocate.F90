@@ -50,7 +50,9 @@ program test_suite_allocate
   write(output_unit, '(a,f0.6)') &
       "PASS: After physics_run: suite-owned allocatable workspace summed to ", checksum
 
-  call ccpp_physics_timestep_final(ccpp_suite, errmsg, errflg)
+  ! ccpp_physics_timestep_final is now group-scoped (task #28, Stage 2),
+  ! matching ccpp_physics_timestep_init's own signature/extent above exactly.
+  call ccpp_physics_timestep_final(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
   call check_err('timestep_final', errflg, errmsg)
 
   call ccpp_final(ccpp_suite, errmsg, errflg)

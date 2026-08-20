@@ -27,9 +27,6 @@
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) BIND(C,
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 
-// Timestep final: still flat/minimal signature (unchanged by task #28 Stage 1).
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,
-
 // Run: scalar intent(in) values use VALUE; strings use c_char; real arrays use c_double.
 // CHECK-LABEL:   subroutine ccpp_physics_run(
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
@@ -48,6 +45,15 @@
 // in generation order (its lifecycle_specs row was appended after run's own
 // row) -- same physics signature ccpp_physics_run has.
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_init(
+// CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK:           character(kind=c_char, len=1), intent(in) :: suite_part(*)
+// CHECK:           integer(c_int), value, intent(in) :: col_start
+// CHECK:           integer(c_int), value, intent(in) :: col_end
+
+// Timestep final: now group-scoped (task #28 Stage 2), emitted AFTER
+// ccpp_physics_timestep_init in generation order -- same physics signature
+// ccpp_physics_run/ccpp_physics_timestep_init already have.
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_final(
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_part(*)
 // CHECK:           integer(c_int), value, intent(in) :: col_start

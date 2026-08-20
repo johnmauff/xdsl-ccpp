@@ -15,6 +15,21 @@
 //
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites tests/filecheck/fixtures/ddt_intent_in/suite.xml --scheme-files examples/ddthost/scheme/make_ddt.meta --host-files tests/filecheck/fixtures/ddt_intent_in/host_mod.meta,tests/filecheck/fixtures/ddt_intent_in/host_sub.meta,examples/ddthost/scheme/host_ccpp_ddt.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p "generate-meta-cap,generate-meta-kinds,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},generate-cpp-cap,generate-kinds,strip-ccpp" -t ftn | python3 -m filecheck %s
 
+// ── run/physics: vmr is intent=inout → writeback present ─────────────────────
+// (chost functions are generated in fixed lifecycle order -- register,
+// initialize, finalize, run, timestep_initial, timestep_final -- so the
+// run subroutine appears before timestep_final's in the real output; task
+// #28 Stage 2 moved timestep_final later in that order, which is why this
+// block now comes first.)
+
+// The run subroutine declares vmr_vmr_array as intent(inout).
+// CHECK-LABEL: subroutine DdtIn_chost_physics_run(
+// CHECK:     real(c_double), target, intent(inout) :: vmr_vmr_array(ncols, vmr_nvmr)
+
+// Writeback IS present in the run subroutine.
+// CHECK:     vmr_vmr_array = real(vmr_local%vmr_array, c_double)
+// CHECK:     deallocate(vmr_local%vmr_array)
+
 // ── timestep_final: vmr is intent=in → no writeback ──────────────────────────
 
 // The chost subroutine for timestep_final is generated.
@@ -31,7 +46,7 @@
 // CHECK:     vmr_local%vmr_array = real(vmr_vmr_array, kind_phys)
 
 // Suite call must be present.
-// CHECK:     call ddt_in_suite_suite_timestep_final(
+// CHECK:     call ddt_in_suite_suite_timestep_final_physics(
 
 // Deallocation must happen (even for intent=in).
 // CHECK:     deallocate(vmr_local%vmr_array)
@@ -40,13 +55,3 @@
 // The real(vmr_local%vmr_array, c_double) assignment that would copy data back
 // to vmr_vmr_array is absent for intent=in.
 // CHECK-NOT: vmr_vmr_array = real(vmr_local%vmr_array
-
-// ── run/physics: vmr is intent=inout → writeback present ─────────────────────
-
-// The run subroutine declares vmr_vmr_array as intent(inout).
-// CHECK-LABEL: subroutine DdtIn_chost_physics_run(
-// CHECK:     real(c_double), target, intent(inout) :: vmr_vmr_array(ncols, vmr_nvmr)
-
-// Writeback IS present in the run subroutine.
-// CHECK:     vmr_vmr_array = real(vmr_local%vmr_array, c_double)
-// CHECK:     deallocate(vmr_local%vmr_array)

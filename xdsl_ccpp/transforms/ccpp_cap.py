@@ -876,17 +876,18 @@ class CCPPCAP(ModulePass):
             ("ccpp_register", "_register", "_suite_register", None),
             ("ccpp_init", "_init", "_suite_initialize", None),
             ("ccpp_final", "_finalize", "_suite_finalize", None),
-            ("ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final", None),
             # Per-group dispatch — each group calls its own suite cap function.
             # ccpp_physics_run: the original, unchanged entry (table_postfix
             # None here means "_run" via _generate_run_fn's own default).
-            # ccpp_physics_timestep_init: task #28 Stage 1 -- moved from the
+            # ccpp_physics_timestep_init (task #28 Stage 1) and
+            # ccpp_physics_timestep_final (Stage 2) moved from the
             # flat/minimal-signature form to match real capgen-v1's own
-            # group-scoped ccpp_physics_timestep_init (a breaking signature
-            # change: it now takes the full physics signature, not just
+            # group-scoped entry points (a breaking signature change: both
+            # now take the full physics signature, not just
             # suite_name/errmsg/errflg).
             ("ccpp_physics_run", None, "_suite_", "__per_group__"),
             ("ccpp_physics_timestep_init", "_timestep_initialize", "_suite_timestep_init_", "__per_group__"),
+            ("ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final_", "__per_group__"),
         ]
 
         all_globals: list = []
