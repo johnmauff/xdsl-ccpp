@@ -49,6 +49,16 @@ class SuiteVarEntry:
                                 # SuiteOwned var's residency need can't
                                 # conflict across schemes, only be requested
                                 # or not. See _process_table's Case 4 handling.
+    allocatable: bool = False  # True if the first-writer's own arg declares
+                                # `allocatable` -- the scheme itself performs
+                                # the allocate() in its own Fortran body (see
+                                # examples/advection/dlc_liq.F90,
+                                # examples/suite_allocate/make_workspace.F90).
+                                # suite_cap.py's _build_framework_refs must
+                                # never also schedule a LazyAllocOp for such a
+                                # var, whichever of its two allocation sites
+                                # would otherwise reach it (task #30, Copilot
+                                # review PR #83).
 
 
 # ---------------------------------------------------------------------------
@@ -424,4 +434,5 @@ class SuiteVariableModel:
             producing_group=group_name,
             producing_scheme=scheme_name,
             needs_device_residency=needs_device_residency,
+            allocatable=arg.hasAttr("allocatable"),
         )

@@ -2688,12 +2688,14 @@ class GenerateSuiteSubroutine(RewritePattern):
                 f"{_unresolved}. This means either the producing scheme's "
                 f"call never appears in this suite's call sequence for "
                 f"'{tgt_subroutine_postfix}', or it's nested inside a "
-                f"promoted-dimension or subcycle loop body -- not yet "
-                f"supported for a same-phase allocation dependency (see "
-                f"task #30 in ccpp_cap_refactor_plan.md). Give the host/SDF "
-                f"a call sequence where the producing scheme runs, un-nested, "
-                f"before whatever consumes its output as an allocation "
-                f"dimension."
+                f"promoted-dimension loop body -- not yet supported for a "
+                f"same-phase allocation dependency (see task #30 in "
+                f"ccpp_cap_refactor_plan.md; a subcycle-nested producer IS "
+                f"supported, since subcycle bodies route through the same "
+                f"call-emission path as the flat case). Give the host/SDF a "
+                f"call sequence where the producing scheme runs before "
+                f"whatever consumes its output as an allocation dimension, "
+                f"outside of any promoted-dimension loop."
             )
 
         return hoisted_allocas + call_ops, fn_sigs
@@ -2924,6 +2926,15 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if not suite_model.needs_allocation(entry.standard_name):
                     continue
                 if entry.local_name in already_allocated:
+                    continue
+                if entry.allocatable:
+                    # Task #30, mechanism 1 (Copilot review, PR #83): this
+                    # var's own first-writer scheme declares it allocatable
+                    # and self-allocates it in its own Fortran body -- same
+                    # as the framework_vars loop's own guard above, this
+                    # sweep must never also schedule a LazyAllocOp for it,
+                    # immediately or deferred, regardless of which of the
+                    # two allocation sites happened to reach it first.
                     continue
                 dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
                     entry.alloc_dim_std_names, all_args, data_ops, framework_ref_ops,

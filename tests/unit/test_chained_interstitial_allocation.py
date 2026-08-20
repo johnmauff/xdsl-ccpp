@@ -199,3 +199,60 @@ class TestSchemeSelfAllocatedPrimitiveNoLongerDoubleAllocates:
         fortran = out.getvalue()
         assert "allocated(work)" not in fortran
         assert "call make_workspace_run" in fortran
+
+
+class TestSchemeSelfAllocatedPrimitiveViaSuiteOwnedVarsSweepSkipsPreamble:
+    """Copilot review, PR #83: the suite_owned_vars() sweep (the SECOND of
+    _build_framework_refs's two allocation sites) didn't check `allocatable`
+    at all, so a var only reachable through that sweep -- not the
+    framework_vars loop -- still got a (duplicate, wrong-order) LazyAllocOp.
+    Real, confirmed example already in this repo:
+    examples/capgen/scheme/environ_conditions.meta's own `model_times`
+    (dimensioned by `number_of_model_times`, itself produced by the SAME
+    scheme's SAME `_init` call, immediately before its own `allocate()`) --
+    `environ_conditions.F90`'s `environ_conditions_init` already does
+    `ntimes = input_model_times; allocate(model_times(ntimes))` itself.
+    Before this fix: regenerating examples/capgen produced a redundant
+    `use test_host_mod, only: num_model_times` plus TWO separate wrong
+    `allocate(model_times(...))` blocks -- one keyed to the host's own
+    `num_model_times` (found via the sweep's fallback to
+    _find_loop_upper_bound's MODULE-table path, since environ_conditions's
+    own _init table isn't part of _register's arg_tables and the sweep
+    runs for both _init and _register), one keyed to the scheme's own
+    `ntimes` (found via the framework_vars loop's mechanism-2 deferral).
+    After this fix: no allocation of `model_times` appears in the suite-cap
+    module's own generated code at all."""
+
+    def test_no_allocation_via_the_sweep(self, run_host_match, ccpp_context):
+        module_path = Path("examples/capgen/scheme")
+        host_path = Path("examples/capgen/host_ftn")
+        env_meta = (module_path / "environ_conditions.meta").read_text()
+        make_ddt_meta = (module_path / "make_ddt.meta").read_text()
+        test_host_data_meta = (host_path / "test_host_data.meta").read_text()
+        test_host_mod_meta = (host_path / "test_host_mod.meta").read_text()
+        test_host_meta = (host_path / "test_host.meta").read_text()
+
+        suite_xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="ddt_suite" version="1.0">
+  <group name="ddt_group">
+    <scheme>make_ddt</scheme>
+    <scheme>environ_conditions</scheme>
+  </group>
+</suite>
+"""
+        module = run_host_match(
+            scheme_metas=[env_meta, make_ddt_meta],
+            host_metas=[test_host_data_meta, test_host_mod_meta, test_host_meta],
+            suite_xml=suite_xml,
+        )
+        ArgOwnershipPass().apply(ccpp_context, module)
+        SuiteCAP().apply(ccpp_context, module)
+        out = StringIO()
+        print_to_ftn(module, out)
+        fortran = out.getvalue()
+        register_body = _fn_body(fortran, "ddt_suite_suite_register")
+        initialize_body = _fn_body(fortran, "ddt_suite_suite_initialize")
+        assert "allocate(model_times" not in register_body
+        assert "allocate(model_times" not in initialize_body
+        assert "num_model_times" not in register_body
