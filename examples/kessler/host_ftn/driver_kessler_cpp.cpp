@@ -63,7 +63,7 @@ int main() {
 
     // Timestep final: computes dry static energy.
     std::memset(errmsg, 0, sizeof(errmsg));
-    ccpp_physics_timestep_final("kessler_suite", errmsg, &errflg);
+    ccpp_physics_timestep_final("kessler_suite", "physics", 1, 1000, errmsg, &errflg);
     check("timestep_final", errmsg, errflg);
 
     // Finalise.

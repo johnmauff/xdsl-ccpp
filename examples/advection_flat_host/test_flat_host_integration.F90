@@ -100,7 +100,14 @@ program test_flat_host_integration
       end do
    end if
 
-   call check('timestep_final', flat_host_ccpp_physics_timestep_final_wrap())
+   ! ccpp_physics_timestep_final is now group-scoped (task #28, Stage 2),
+   ! matching ccpp_physics_timestep_init's own per-part shape above.
+   if (allocated(part_list)) then
+      do ipart = 1, size(part_list)
+         call check('timestep_final(' // trim(part_list(ipart)) // ')', &
+              flat_host_ccpp_physics_timestep_final_wrap(trim(part_list(ipart))))
+      end do
+   end if
    call check('finalize', flat_host_ccpp_final_wrap())
 
    ! Level 1 (below tcld): expect condensation/freezing to have fired.
@@ -172,8 +179,10 @@ contains
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
    end function flat_host_ccpp_physics_timestep_init_wrap
 
-   logical function flat_host_ccpp_physics_timestep_final_wrap()
-      call ccpp_physics_timestep_final(suite_name, errmsg, errflg)
+   logical function flat_host_ccpp_physics_timestep_final_wrap(suite_part)
+      character(len=*), intent(in) :: suite_part
+      call ccpp_physics_timestep_final(suite_name, suite_part, col_start, col_end, &
+           errmsg, errflg)
       flat_host_ccpp_physics_timestep_final_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
    end function flat_host_ccpp_physics_timestep_final_wrap

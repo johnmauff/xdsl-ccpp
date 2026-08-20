@@ -61,13 +61,19 @@
 // CHECK:     return {errflg, errflg ? errmsg : ""};
 
 // State struct aggregates all lifecycle fields; col_start/col_end excluded.
-// Fields appear in order of first use across lifecycles (initialize → run).
+// Fields appear in order of first use across lifecycles, scanned in fixed
+// canonical phase order (register, initialize, finalize, run,
+// timestep_initial, timestep_final) -- task #28 Stage 2 moved
+// timestep_final's own emission to last in that order, so a field cpair
+// shares with timestep_final (previously the first phase to introduce it)
+// now first appears via run instead, where run's own scalars-before-arrays
+// convention puts dt ahead of cpair.
 // All pointer fields are non-const (host owns and initialises the memory).
 // CHECK-LABEL: struct State {
 // CHECK:     double           lv = 0;
 // CHECK:     int              ncol = 0;
-// CHECK:     double*          cpair = nullptr;
 // CHECK:     double           dt = 0;
+// CHECK:     double*          cpair = nullptr;
 // CHECK:     double*          theta = nullptr;
 // CHECK:     double*          precl = nullptr;
 // Constructor initialises dimension scalars; remaining fields default to 0/nullptr.

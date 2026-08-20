@@ -1005,16 +1005,24 @@ CONTAINS
        call check_errflg(subname//" check suite indices", errflg, errmsg,          &
             errflg_final)
 
+          ! Finalize the timestep. ccpp_physics_timestep_final is now
+          ! group-scoped (task #28, Stage 2) -- called once per suite part,
+          ! full column extent, matching ccpp_physics_timestep_init's own
+          ! per-part call above.
           do sind = 1, num_suites
-             if (errflg == 0) then
-                call ccpp_physics_timestep_final(                   &
-                     test_suites(sind)%suite_name, errmsg, errflg)
-             end if
-             if (errflg /= 0) then
-                write(6, '(3a)') trim(test_suites(sind)%suite_name), ': ',    &
-                     trim(errmsg)
-                exit
-             end if
+             do index = 1, size(test_suites(sind)%suite_parts)
+                if (errflg == 0) then
+                   call ccpp_physics_timestep_final(                &
+                        test_suites(sind)%suite_name,                      &
+                        test_suites(sind)%suite_parts(index),              &
+                        1, ncols, errmsg, errflg)
+                   if (errflg /= 0) then
+                      write(6, '(5a)') trim(test_suites(sind)%suite_name), &
+                           '/', trim(test_suites(sind)%suite_parts(index)),&
+                           ': ', trim(errmsg)
+                   end if
+                end if
+             end do
           end do
 
           ! Run "dycore"

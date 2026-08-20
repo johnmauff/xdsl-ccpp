@@ -9,7 +9,7 @@
 
 // CHECK-LABEL: builtin.module {
 // CHECK-LABEL:   builtin.module @kw_suite_cap {
-// CHECK:     "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "ccpp_suite_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, value = "uninitialized"}> ({
+// CHECK-NEXT:     "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "ccpp_suite_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, value = "uninitialized"}> ({
 // CHECK-NEXT:     }) : () -> ()
 // CHECK-NEXT:     "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "const_in_time_step", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "in_time_step"}> ({
 // CHECK-NEXT:     }) : () -> ()
@@ -18,7 +18,7 @@
 // CHECK-NEXT:     "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "const_uninitialized", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "uninitialized"}> ({
 // CHECK-NEXT:     }) : () -> ()
 // CHECK-LABEL:     func.func public @kw_suite_suite_register() -> (memref<i32>, memref<512xi8>) {
-// CHECK:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -26,7 +26,7 @@
 // CHECK-NEXT:       func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @kw_suite_suite_initialize() -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -57,7 +57,7 @@
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @kw_suite_suite_finalize() -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -87,33 +87,8 @@
 // CHECK-NEXT:       "llvm.store"(%14, %15) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
-// CHECK-LABEL:     func.func public @kw_suite_suite_timestep_final() -> (memref<i32>, memref<512xi8>) {
-// CHECK:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:       %0 = arith.constant 0 : i32
-// CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
-// CHECK-NEXT:       "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
-// CHECK-NEXT:       %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
-// CHECK-NEXT:       %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:       %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
-// CHECK-NEXT:       %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:       %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 12 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:       %6 = arith.constant true
-// CHECK-NEXT:       %7 = arith.xori %5, %6 : i1
-// CHECK-NEXT:       scf.if %7 {
-// CHECK-NEXT:         %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:         "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in kw_suite_timestep_final"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:         %9 = arith.constant 1 : i32
-// CHECK-NEXT:         memref.store %9, %errflg[] : memref<i32>
-// CHECK-NEXT:       }
-// CHECK-NEXT:       %10 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:       %11 = "llvm.load"(%10) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:       %12 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
-// CHECK-NEXT:       "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
-// CHECK-NEXT:       func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
-// CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @kw_suite_suite_physics(%col_start : memref<i32>, %col_end : memref<i32>, %lev : memref<i32>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -150,7 +125,7 @@
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @kw_suite_suite_timestep_init_physics() -> (memref<i32>, memref<512xi8>) {
-// CHECK:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -161,12 +136,24 @@
 // CHECK-NEXT:       "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:       func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:     }
+// CHECK-LABEL:     func.func public @kw_suite_suite_timestep_final_physics() -> (memref<i32>, memref<512xi8>) {
+// CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %0 = arith.constant 0 : i32
+// CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
+// CHECK-NEXT:       "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:       %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:       %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:       %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
+// CHECK-NEXT:       "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:       func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
+// CHECK-NEXT:     }
 // CHECK-LABEL:     func.func private @hello_scheme_init(memref<512xi8>, memref<i32>) -> () attributes {module = "hello_scheme"} 
 // CHECK-LABEL:     func.func private @hello_scheme_finalize(memref<512xi8>, memref<i32>) -> () attributes {module = "hello_scheme"} 
 // CHECK-LABEL:     func.func private @hello_scheme_run(memref<i32>, memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "hello_scheme"} 
-// CHECK:   }
+// CHECK-NEXT:   }
 // CHECK-LABEL:   builtin.module @Kw_ccpp_cap {
-// CHECK:     "llvm.mlir.global"() <{global_type = !llvm.array<8 x i8>, sym_name = "str_kw_suite", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "kw_suite"}> ({
+// CHECK-NEXT:     "llvm.mlir.global"() <{global_type = !llvm.array<8 x i8>, sym_name = "str_kw_suite", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "kw_suite"}> ({
 // CHECK-NEXT:     }) : () -> ()
 // CHECK-NEXT:     "llvm.mlir.global"() <{global_type = !llvm.array<7 x i8>, sym_name = "str_physics", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "physics"}> ({
 // CHECK-NEXT:     }) : () -> ()
@@ -175,7 +162,7 @@
 // CHECK-NEXT:     "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "ccpp_constituent_prop_ptr_t", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:     }) {module = "ccpp_constituent_prop_mod"} : () -> ()
 // CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -193,7 +180,7 @@
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @ccpp_init(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -211,7 +198,7 @@
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @ccpp_final(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -228,26 +215,8 @@
 // CHECK-NEXT:       }
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:       %0 = arith.constant 0 : i32
-// CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
-// CHECK-NEXT:       %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
-// CHECK-NEXT:       %2 = "ccpp_utils.strcmp"(%1) <{literal = "kw_suite"}> : (memref<?xi8>) -> i1
-// CHECK-NEXT:       scf.if %2 {
-// CHECK-NEXT:         %3, %4 = func.call @kw_suite_suite_timestep_final() : () -> (memref<i32>, memref<512xi8>)
-// CHECK-NEXT:         "memref.copy"(%3, %errflg) : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:         "memref.copy"(%4, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
-// CHECK-NEXT:       } else {
-// CHECK-NEXT:         "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:         %5 = arith.constant 1 : i32
-// CHECK-NEXT:         memref.store %5, %errflg[] : memref<i32>
-// CHECK-NEXT:       }
-// CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
-// CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %col_start : memref<i32>, %col_end : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %0 = arith.constant 0 : i32
+// CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:       %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:       %2 = "ccpp_utils.strcmp"(%1) <{literal = "kw_suite"}> : (memref<?xi8>) -> i1
@@ -272,7 +241,7 @@
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %0 = arith.constant 0 : i32
+// CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:       %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:       %2 = "ccpp_utils.strcmp"(%1) <{literal = "kw_suite"}> : (memref<?xi8>) -> i1
@@ -295,8 +264,32 @@
 // CHECK-NEXT:       }
 // CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:     }
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-NEXT:       %0 = arith.constant 0 : i32
+// CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
+// CHECK-NEXT:       %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
+// CHECK-NEXT:       %2 = "ccpp_utils.strcmp"(%1) <{literal = "kw_suite"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:       scf.if %2 {
+// CHECK-NEXT:         %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
+// CHECK-NEXT:         %4 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:         scf.if %4 {
+// CHECK-NEXT:           %5, %6 = func.call @kw_suite_suite_timestep_final_physics() : () -> (memref<i32>, memref<512xi8>)
+// CHECK-NEXT:           "memref.copy"(%5, %errflg) : (memref<i32>, memref<i32>) -> ()
+// CHECK-NEXT:           "memref.copy"(%6, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
+// CHECK-NEXT:         } else {
+// CHECK-NEXT:           "ccpp_utils.write_errmsg"(%errmsg, %3) <{prefix = "No suite part named ", suffix = " found in suite kw_suite"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:           %7 = arith.constant 1 : i32
+// CHECK-NEXT:           memref.store %7, %errflg[] : memref<i32>
+// CHECK-NEXT:         }
+// CHECK-NEXT:       } else {
+// CHECK-NEXT:         "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:         %8 = arith.constant 1 : i32
+// CHECK-NEXT:         memref.store %8, %errflg[] : memref<i32>
+// CHECK-NEXT:       }
+// CHECK-NEXT:       func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
+// CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @ccpp_physics_suite_list(%suites : memref<memref<?xi8>>) {
-// CHECK:       %0 = arith.constant 8 : index
+// CHECK-NEXT:       %0 = arith.constant 8 : index
 // CHECK-NEXT:       %1 = memref.alloc(%0) : memref<?xi8>
 // CHECK-NEXT:       %2 = "llvm.mlir.addressof"() <{global_name = @str_kw_suite}> : () -> !llvm.ptr
 // CHECK-NEXT:       %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<8 x i8>
@@ -305,7 +298,7 @@
 // CHECK-NEXT:       func.return
 // CHECK-NEXT:     }
 // CHECK-LABEL:     func.func public @ccpp_physics_suite_part_list(%suite_name : memref<?xi8>, %part_list : memref<memref<?xi8>>) -> (memref<512xi8>, memref<i32>) {
-// CHECK:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK-NEXT:       %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:       %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:       %0 = arith.constant 0 : i32
 // CHECK-NEXT:       memref.store %0, %errflg[] : memref<i32>
@@ -335,8 +328,8 @@
 // CHECK-LABEL:     func.func private @kw_suite_suite_register() -> (memref<i32>, memref<512xi8>) attributes {module = "kw_suite_cap"} 
 // CHECK-LABEL:     func.func private @kw_suite_suite_initialize() -> (memref<512xi8>, memref<i32>) attributes {module = "kw_suite_cap"} 
 // CHECK-LABEL:     func.func private @kw_suite_suite_finalize() -> (memref<512xi8>, memref<i32>) attributes {module = "kw_suite_cap"} 
-// CHECK-LABEL:     func.func private @kw_suite_suite_timestep_final() -> (memref<i32>, memref<512xi8>) attributes {module = "kw_suite_cap"} 
 // CHECK-LABEL:     func.func private @kw_suite_suite_physics(memref<i32>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {module = "kw_suite_cap"} 
 // CHECK-LABEL:     func.func private @kw_suite_suite_timestep_init_physics() -> (memref<i32>, memref<512xi8>) attributes {module = "kw_suite_cap"} 
-// CHECK:   }
+// CHECK-LABEL:     func.func private @kw_suite_suite_timestep_final_physics() -> (memref<i32>, memref<512xi8>) attributes {module = "kw_suite_cap"} 
+// CHECK-NEXT:   }
 // CHECK-NEXT: }

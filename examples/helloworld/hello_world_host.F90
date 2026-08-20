@@ -65,7 +65,11 @@ CONTAINS
       end if
     end do
 
-    call ccpp_physics_timestep_final('hello_world_suite', errmsg, errflg)
+    ! Finalize the timestep. ccpp_physics_timestep_final is now
+    ! group-scoped (task #28, Stage 2), matching ccpp_physics_timestep_init's
+    ! own signature -- full extent (1, ncols), not chunked.
+    call ccpp_physics_timestep_final('hello_world_suite', 'physics', 1, ncols, &
+        errmsg, errflg)
 
     call ccpp_final('hello_world_suite', errmsg, errflg)
     if (errflg /= 0) then
