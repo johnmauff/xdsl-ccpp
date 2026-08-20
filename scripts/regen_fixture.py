@@ -239,7 +239,7 @@ def process_fixture(
         )
         print(f"[literal-mirror, ratio={ratio:.2f}] {rel} -- WOULD CHANGE (pass --apply to write):")
         sys.stdout.writelines(diff)
-    return False
+    return apply
 
 
 def main() -> int:

@@ -3425,10 +3425,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         moved both to per-group (matching upstream's own group-scoped
         ccpp_physics_timestep_init/ccpp_physics_timestep_final), since real
         capgen-v1 has no flat, whole-suite timestep_init/timestep_final
-        subroutine at all. This also relocates ownership of the
-        "in_time_step"/"initialized" state SETs entirely to these two
-        group-scoped FuncOps: the group-scoped _run FuncOp below only ever
-        *checks* "in_time_step" (state_string=None there, unchanged).
+        subroutine at all. This also relocates ownership of the per-timestep
+        "initialized" -> "in_time_step" -> "initialized" round trip entirely
+        to these two group-scoped FuncOps (the flat _init/_finalize specs
+        below still own the suite-level "uninitialized" <-> "initialized"
+        transitions, unchanged): the group-scoped _run FuncOp below only
+        ever *checks* "in_time_step" (state_string=None there, unchanged).
         """
         subroutine_specs = [
             ("_register",            "_register",         None,            None),
