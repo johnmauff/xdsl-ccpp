@@ -5747,6 +5747,87 @@ Findings triaged into four tiers, each now a tracked task:
     `decompose-generate-suite-subroutine`, off `main` at `2c7c390` (the post-PR-#80 merge tip).
     Stage 2 (task #59) and Stage 3 (after task #30) not started — staged plan, one stage at a
     time per this engagement's established pattern.
+  - **#56/#59 Stage 2 — RESOLVED (2026-08-19).** Target: cluster 5 (kind/unit-cast
+    construction) and cluster 6 (`_build_block_signature`) from the Stage 1 scoping note above.
+    (Cluster 4, `--emit-resolved-vars` bookkeeping, was already folded into Stage 1 as
+    `_record_resolved_vars_for_phase` -- task #59's description names all three, but two were
+    already done by the time this stage started.) First promoted 5 small `@staticmethod`
+    helpers used throughout `_build_block_signature` (and ~15 other call sites across the
+    class) to true module-level free functions, since none of them touch instance state:
+    `_std_key`, `_vertical_dim_index`, `_has_dims`, `_arg_dims`, `_block_arg_kind` -- every
+    `self._x(...)` call site across the whole class updated to `_x(...)` (mechanical rename,
+    confirmed via grep no `self._std_key`/etc. references remain except one bare
+    `self._std_key` passed as a callback into `SuiteVariableModel(...)`, updated to the bare
+    function reference `_std_key`). Then decomposed `_build_block_signature` itself (previously
+    ~227 lines, one long function building the Block, resolving dummy-arg name-hint collisions,
+    applying kind casts, applying unit conversions, allocating output/error args, and tagging
+    data_ops by standard-name) along its own already-commented boundaries into:
+    `_build_block_and_name_hints` (Block construction + collision-disambiguated name hints +
+    initial `data_ops`/`final_values`), `_apply_kind_casts`/`_apply_unit_conversions` (the two
+    "kind/unit-cast helpers" the task title names -- kept as two functions rather than one
+    parameterized by cast-kind, matching the same reasoning task #58 used for
+    `_print_c_to_f_char_conversions`/`_print_f_to_c_char_conversions`: the two loop bodies use
+    genuinely different ops/type-conversion arguments, not just a swapped direction flag),
+    `_alloc_output_error_args` (the errflg/errmsg fallback-allocation block), and
+    `_tag_data_ops_by_std_name` (the final `("std_name", ...)`-tagged registration loop).
+    `_build_block_signature` itself shrank to a ~20-line orchestrator, still a method (its
+    signature/return type `_BlockSignature` is unchanged) since it's the one piece
+    `_assemble_func`/`generateSubroutineCall` actually call. Every docstring/comment preserved
+    verbatim, pure code movement, zero behavior change. Left `_build_suite_lifecycle_call_ops`'s
+    own `_apply_divergent_marshaling` closure untouched -- it's the per-scheme-call-site
+    counterpart for divergent standard_names (already cross-referenced by a comment at this
+    function's own site before this stage), genuinely a different call site with different
+    write-back-op types, not a duplicate of the extracted loops. Verified: full suite 612
+    passed/1 xfailed (unchanged); `ruff check` shows the same 2 pre-existing findings before/after
+    (unused `i32` import, `F841 scheme_entries` unused local -- both untouched by this stage,
+    already confirmed pre-existing during Stage 1's own verification); the 47-file filecheck
+    corpus is exercised inside that same pytest run, so no separate byte-diff pass was needed.
+    `GenerateSuiteSubroutine` is now 34 methods / ~2,245 lines, down from 49 methods / 2,954
+    lines at the start of task #56. Landed on branch `decompose-suite-cap-stage2`, off `main` at
+    `d2472b1` (the post-Stage-1-merge tip). Stage 3 (DDT-resolution-map plumbing, sequenced
+    after task #30's fix) not started.
+  - **PR #82 Copilot review, addressed (2026-08-19) — a real, pre-existing correctness bug,
+    surfaced (not introduced) by Stage 2's decomposition.** Flagged: when a single arg carries
+    BOTH a kind mismatch and a unit mismatch against the host at once (e.g. host declares
+    kind_phys/meters, scheme declares kind=8/centimeters -- the ordinary non-divergent case,
+    every scheme sharing the standard_name agrees with every other scheme, only the host
+    differs), `_apply_kind_casts` and `_apply_unit_conversions` each independently read from
+    and wrote back to the raw original block arg instead of chaining, so "the kind write-back
+    can be overwritten by the unit write-back." Reproduced directly (single-scheme suite, arg
+    with both mismatches, intent inout): the forward direction happened to end up numerically
+    right by accident (Fortran auto-promotes real-kind in expressions, so computing the unit
+    scale directly from the untouched host value rather than from the kind-cast result still
+    lands on the same number) but generated a fully dead, disconnected `_kind_cast` temp; the
+    write-back direction was worse -- both write-backs targeted the same original arg, and only
+    got the right *final* answer because `_assemble_func` happens to always emit all
+    kind-write-backs before all unit-write-backs, so the unit one (reading the real, post-call
+    value) always overwrote the kind one (reading a stale pre-call snapshot) last. Confirmed via
+    `git blame`-equivalent reasoning this predates Stage 1/2 entirely -- both stages preserved
+    the logic verbatim per this engagement's "pure code movement" discipline; Copilot's review
+    just happened to land on a PR whose diff touches these lines. No existing test exercised
+    this combination (`test_suite_cross_scheme_unit_kind.py`'s own `TestDivergentKindAndUnitsChain`
+    tests the DIFFERENT, already-correct cross-scheme-divergent case, which goes through
+    `_apply_divergent_marshaling` instead). Fix: merged `_apply_kind_casts`/`_apply_unit_conversions`
+    into one `_apply_kind_and_unit_casts`, mirroring `_apply_divergent_marshaling`'s own
+    proven-correct chain/reversed-writeback pattern exactly -- build a per-arg forward chain
+    (kind cast, then unit convert, each reading the previous step's own result), then on
+    write-back walk that chain in reverse, emitting fully-built `KindWriteBackOp`/
+    `UnitWriteBackOp` instances directly into a single ordered `writeback_ops` list (replacing
+    the old `kind_writeback_pairs`/`unit_writeback_pairs`, which could only represent "all kind
+    write-backs, then all unit write-backs" globally -- structurally unable to express "this
+    arg's unit write-back before this arg's own kind write-back," which chaining requires).
+    `_BlockSignature`/`_assemble_func`'s signatures updated accordingly (both have exactly one
+    caller, so the blast radius was contained). Verified generated Fortran directly: forward
+    `x_kind_cast = real(x, kind=8)` then `x_unit_conv = x_kind_cast * 100.0_8` (now chained, was
+    `x * 100.0_8`); write-back `x_kind_cast = x_unit_conv * 0.01_8` then
+    `x = real(x_kind_cast, kind=kind_phys)` (unit undone first into the kind-cast's own temp,
+    then kind undone into the true original -- matching `_apply_divergent_marshaling`'s own
+    "must be undone unit-first, kind-second" comment). Added
+    `tests/unit/test_suite_boundary_kind_and_unit_chain.py` (3 tests) pinning this exact
+    chained forward/write-back shape; confirmed each test actually fails against the pre-fix
+    code via git-stash (not just passes against the fix). Full suite now 615 passed/1 xfailed
+    (612 + 3 new); `ruff check` unchanged (same 2 pre-existing findings, new test file itself
+    clean). Landed on the same `decompose-suite-cap-stage2` branch.
 - **Tier 4 — minor/verify-first, deliberately deferred** (tasks #61-#62): a handful of small items needing confirmation before touching (two flagged-deprecated op aliases that may be dead, a possibly-fully-subsumed `ArraySectionOp`, a possibly-superseded CLI tool, a possibly-dead-or-possibly-buggy branch in `visitor.py`, a raise-to-fall-through control-flow pattern, cosmetic nits) plus a security/robustness item (`ccpp_dsl.py`'s `os.system()` calls with interpolated paths, alongside the same duplication this whole audit is about). **Updated 2026-08-18:** task #61 also now folds in a batch of pre-existing `ruff check` findings (unsorted imports, unused imports, 15 unused locals from dataclass-unpacking in `run_dispatch.py`) noticed incidentally while verifying tasks #37-#40 -- confirmed via git-stash to predate all of them, zero-behavior-change cleanup, not fixed inline since out of scope for those specific tasks.
 
 **Execution decision (user, 2026-08-18): log everything as tracked tasks (done, tasks #37-#62 above), then execute Tier 1 + Tier 2 in this session; Tier 3 and Tier 4 stay backlog for a dedicated future session.** See each task's own description for the full finding detail — not duplicated in prose here to avoid the two ever drifting apart.
