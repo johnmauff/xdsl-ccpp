@@ -1103,6 +1103,22 @@ def _find_producer_scheme(matching_arg, arg_tables) -> "str | None":
     return None
 
 
+def _alias_canonical_data_ops(arg_tables, all_args, data_ops) -> None:
+    """For every scheme arg whose bare name differs from its standard-
+    name's canonical (first-declared) arg name, also register data_ops
+    under the non-canonical name if it's not already there -- lets a
+    later scheme's own differently-named arg for the same standard_name
+    resolve correctly.
+    """
+    for _scheme_name in arg_tables:
+        for _fn_arg in arg_tables[_scheme_name].getFunctionArguments():
+            _sk = _std_key(_fn_arg)
+            _canonical = all_args.get(_sk)
+            if _canonical is not None and _fn_arg.name != _canonical.name:
+                if _fn_arg.name not in data_ops and _canonical.name in data_ops:
+                    data_ops[_fn_arg.name] = data_ops[_canonical.name]
+
+
 class GatherMetaFunctionSignatures(Visitor):
     """Collects all external func.FuncOp declarations from the ccpp module.
 
@@ -1173,6 +1189,52 @@ class _PendingAlloc:
     init_value: object
     needs_device_residency: bool
     producer_scheme: str
+
+
+@dataclass
+class _CallSeqContext:
+    """Read-only context shared across _build_call_ops's own call-sequence
+    walk (task #56 Stage 3 decomposition of its former nested closures).
+    """
+    all_args: dict
+    data_ops: dict
+    framework_ref_ops: list
+    suite_use_stubs: list
+    actual_postfixes: dict
+    tgt_subroutine_postfix: "str | None"
+    physics_mode: bool
+    scheme_overrides: dict
+    divergent_std_keys: frozenset
+    arg_tables: dict
+
+
+def _raise_unresolved_pending_allocs_error(pending_allocs, tgt_subroutine_postfix) -> None:
+    """Task #30: at least one deferred allocation was never resolved by
+    the time the whole call sequence finished -- either its producer
+    scheme's call never appears in this phase's own sequence, or it's
+    nested inside a promoted-dimension loop body (subcycle nesting IS
+    supported, since subcycle bodies route through the same call-emission
+    path as the flat case). Raises rather than silently emitting
+    wrong-order Fortran.
+    """
+    _unresolved = ", ".join(
+        f"{p.var_name!r} (needs {p.producer_scheme!r} to run first)"
+        for _plist in pending_allocs.values() for p in _plist
+    )
+    raise ValueError(
+        f"Chained-interstitial allocation could not be resolved for: "
+        f"{_unresolved}. This means either the producing scheme's "
+        f"call never appears in this suite's call sequence for "
+        f"'{tgt_subroutine_postfix}', or it's nested inside a "
+        f"promoted-dimension loop body -- not yet supported for a "
+        f"same-phase allocation dependency (see task #30 in "
+        f"ccpp_cap_refactor_plan.md; a subcycle-nested producer IS "
+        f"supported, since subcycle bodies route through the same "
+        f"call-emission path as the flat case). Give the host/SDF a "
+        f"call sequence where the producing scheme runs before "
+        f"whatever consumes its output as an allocation dimension, "
+        f"outside of any promoted-dimension loop."
+    )
 
 
 class GenerateSuiteSubroutine(RewritePattern):
@@ -2422,6 +2484,237 @@ class GenerateSuiteSubroutine(RewritePattern):
             visibility="public",
         )
 
+    def _flush_promoted(self, ctx, cur_pdim, cur_pgroup, fn_sigs) -> list:
+        """Emit either ordinary calls for cur_pgroup (upper bound
+        unresolvable) or a single PromotionLoopOp wrapping all of them
+        (upper bound resolved). Mutates fn_sigs in place.
+        """
+        if not cur_pgroup:
+            return []
+        upper_bound_ref = (
+            self._find_loop_upper_bound(
+                cur_pdim, ctx.all_args, ctx.data_ops,
+                framework_ref_ops=ctx.framework_ref_ops,
+                suite_use_stubs=ctx.suite_use_stubs,
+            )
+            if cur_pdim
+            else None
+        )
+        if upper_bound_ref is None:
+            ops = []
+            for sn, tbl in cur_pgroup:
+                full_name = sn + ctx.actual_postfixes.get(sn, ctx.tgt_subroutine_postfix)
+                ops += self.generateSchemeSubroutineCallOps(
+                    full_name, tbl, ctx.data_ops, ctx.scheme_overrides.get(sn, {}),
+                    divergent_std_keys=ctx.divergent_std_keys,
+                )
+                if full_name not in fn_sigs:
+                    fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+            return ops
+        lv_alloc = memref.AllocaOp.get(
+            TypeConversions.getBaseType("integer"), shape=[]
+        )
+        lv_alloc.memref.name_hint = "vertical_layer_index"
+        ncol_ref = self._find_loop_upper_bound(
+            CCPP_HORIZ_DIM_STD_NAME, ctx.all_args, ctx.data_ops,
+            framework_ref_ops=ctx.framework_ref_ops,
+            suite_use_stubs=ctx.suite_use_stubs,
+        )
+        body_list: list = []
+        for sn, tbl in cur_pgroup:
+            full_name = sn + ctx.actual_postfixes.get(sn, ctx.tgt_subroutine_postfix)
+            body_list += self._build_promoted_call_ops(
+                full_name, tbl, ctx.data_ops, lv_alloc.memref,
+                ctx.scheme_overrides.get(sn, {}),
+                ncol_ref=ncol_ref,
+            )
+            if full_name not in fn_sigs:
+                fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+        return [lv_alloc, PromotionLoopOp(
+            loop_var=lv_alloc.memref,
+            upper_bound=upper_bound_ref,
+            body_ops=body_list,
+        )]
+
+    def _resolve_and_splice_pending_allocs(
+        self, scheme_name, ctx, resolved_producers, pending_allocs,
+        already_scheduled_allocs,
+    ) -> list:
+        """After scheme_name's own call ops have been emitted, retry
+        resolving any pending_allocs entries keyed to it (task #30) --
+        returns the LazyAllocOps to splice in immediately after those call
+        ops, in order. Mutates pending_allocs/already_scheduled_allocs.
+        """
+        ops: list = []
+        if scheme_name not in pending_allocs:
+            return ops
+        for _pending in pending_allocs.pop(scheme_name):
+            _dim_var_refs, _still_pending = self._resolve_alloc_dim_var_refs(
+                _pending.alloc_dim_names, ctx.all_args, ctx.data_ops,
+                ctx.framework_ref_ops, ctx.suite_use_stubs, ctx.arg_tables,
+                resolved_producers,
+            )
+            if _still_pending is not None:
+                # Its own dimension is produced by a
+                # DIFFERENT, later scheme -- re-register
+                # under that scheme and retry when it runs.
+                pending_allocs.setdefault(_still_pending, []).append(_pending)
+            elif _dim_var_refs:
+                ops.append(
+                    LazyAllocOp(
+                        var_name=_pending.var_name,
+                        kind_name=_pending.kind_name,
+                        dim_var_refs=_dim_var_refs,
+                        init_value=_pending.init_value,
+                        needs_device_residency=_pending.needs_device_residency,
+                    )
+                )
+                if already_scheduled_allocs is not None:
+                    already_scheduled_allocs.add(_pending.std_key)
+            # else: a genuinely unresolvable OTHER dimension
+            # on this same var -- silently skipped, matching
+            # the pre-existing narrow gap this fix doesn't
+            # change (not the "producer never ran" case the
+            # validation below exists to catch).
+        return ops
+
+    def _emit_ordered_list(
+        self, scheme_list, ctx, fn_sigs, resolved_producers, pending_allocs,
+        already_scheduled_allocs,
+    ) -> list:
+        """Emit call ops for (scheme_name, tbl) pairs in order.
+
+        Consecutive promoted schemes sharing the same promoted_dim are
+        grouped into a single PromotionLoopOp.
+        """
+        result: list = []
+        cur_pdim: str | None = None
+        cur_pgroup: list = []
+        for sn, tbl in scheme_list:
+            full_name = sn + ctx.actual_postfixes.get(sn, ctx.tgt_subroutine_postfix)
+            assert full_name in self.meta_fn_sigs
+            if full_name not in fn_sigs:
+                fn_sigs[full_name] = self.meta_fn_sigs[full_name]
+            if ctx.physics_mode and self._scheme_has_promoted_args(tbl):
+                pdim = next(
+                    (
+                        arg.getAttr("promoted_dim").lower()
+                        for arg in tbl.getFunctionArguments()
+                        if arg.hasAttr("is_promoted")
+                        and arg.hasAttr("promoted_dim")
+                    ),
+                    None,
+                )
+                if pdim == cur_pdim:
+                    cur_pgroup.append((sn, tbl))
+                else:
+                    result += self._flush_promoted(ctx, cur_pdim, cur_pgroup, fn_sigs)
+                    cur_pgroup = [(sn, tbl)]
+                    cur_pdim = pdim
+            else:
+                result += self._flush_promoted(ctx, cur_pdim, cur_pgroup, fn_sigs)
+                cur_pgroup = []
+                cur_pdim = None
+                result += self._build_active_gated_call_ops(
+                    full_name, tbl, ctx.data_ops, ctx.scheme_overrides.get(sn, {}),
+                    divergent_std_keys=ctx.divergent_std_keys,
+                    suite_use_stubs=ctx.suite_use_stubs,
+                )
+                resolved_producers.add(sn)
+                result += self._resolve_and_splice_pending_allocs(
+                    sn, ctx, resolved_producers, pending_allocs,
+                    already_scheduled_allocs,
+                )
+        result += self._flush_promoted(ctx, cur_pdim, cur_pgroup, fn_sigs)
+        return result
+
+    def _emit_subcycle_items(
+        self, items, ctx, fn_sigs, resolved_producers, pending_allocs,
+        already_scheduled_allocs, hoisted_allocas,
+    ) -> list:
+        """Build call ops for one subcycle's own children.
+
+        Consecutive flat scheme siblings are grouped into a single
+        _emit_ordered_list call each (preserving the original
+        whole-subcycle-body promotion-loop coalescing for the common,
+        non-nested case), and a nested subcycle item recurses via
+        _emit_subcycle -- so grouping never crosses a nested-subcycle
+        boundary, and a nested subcycle's own body is built the same way
+        as this one's, to arbitrary depth.
+        """
+        result: list = []
+        pending: list = []
+        for sub_item in items:
+            if sub_item[0] == "scheme":
+                _, sn, _ = sub_item
+                if sn in ctx.arg_tables:
+                    pending.append((sn, ctx.arg_tables[sn]))
+            else:
+                if pending:
+                    result += self._emit_ordered_list(
+                        pending, ctx, fn_sigs, resolved_producers,
+                        pending_allocs, already_scheduled_allocs,
+                    )
+                    pending = []
+                _, nested_loop_count, nested_is_literal, nested_items = sub_item
+                result += self._emit_subcycle(
+                    nested_loop_count, nested_is_literal, nested_items, ctx,
+                    fn_sigs, resolved_producers, pending_allocs,
+                    already_scheduled_allocs, hoisted_allocas,
+                )
+        if pending:
+            result += self._emit_ordered_list(
+                pending, ctx, fn_sigs, resolved_producers, pending_allocs,
+                already_scheduled_allocs,
+            )
+        return result
+
+    def _emit_subcycle(
+        self, loop_count, is_literal, items, ctx, fn_sigs, resolved_producers,
+        pending_allocs, already_scheduled_allocs, hoisted_allocas,
+    ) -> list:
+        body_ops = self._emit_subcycle_items(
+            items, ctx, fn_sigs, resolved_producers, pending_allocs,
+            already_scheduled_allocs, hoisted_allocas,
+        )
+        _lc_int = (int(loop_count) if is_literal
+                   else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
+        if _lc_int > 1 and ctx.physics_mode and body_ops:
+            sc_alloc = memref.AllocaOp.get(
+                TypeConversions.getBaseType("integer"), shape=[]
+            )
+            sc_alloc.memref.name_hint = "ccpp_loop_cnt"
+            hoisted_allocas.append(sc_alloc)
+            # A non-literal loop_count is a CCPP standard_name, not a
+            # Fortran identifier -- resolve it to the matching arg's own
+            # dummy-argument name (all_args, keyed by std_key) before
+            # printing, whether that arg arrived through the ordinary
+            # scheme-arg host-matching path or through
+            # _synthesize_dynamic_loop_count_args (for a standard_name no
+            # scheme declares its own arg for, e.g. examples/var_compat's
+            # num_subcycles_for_effr). Printing the raw standard_name
+            # directly is not valid Fortran and would not compile.
+            printed_loop_count = loop_count
+            if not is_literal:
+                resolved = ctx.all_args.get(loop_count.lower())
+                if resolved is None:
+                    raise ValueError(
+                        f"Subcycle loop count {loop_count!r} is not a "
+                        f"literal integer and has no matching "
+                        f"host-declared variable anywhere -- give the "
+                        f"host a variable with this standard_name, or "
+                        f"make the subcycle's loop count a literal "
+                        f"integer."
+                    )
+                printed_loop_count = resolved.name
+            return [SubcycleLoopOp(
+                loop_count=printed_loop_count,
+                loop_var=sc_alloc.memref,
+                body_ops=body_ops,
+                is_literal=is_literal,
+            )]
+        return body_ops
+
     def _build_call_ops(
         self,
         suite_description,
@@ -2462,154 +2755,18 @@ class GenerateSuiteSubroutine(RewritePattern):
             return call_ops, fn_sigs
 
         call_sequence = self.getCallSequence(suite_description)
-
-        def _flush_promoted(cur_pdim, cur_pgroup):
-            if not cur_pgroup:
-                return []
-            upper_bound_ref = (
-                self._find_loop_upper_bound(
-                    cur_pdim, all_args, data_ops,
-                    framework_ref_ops=framework_ref_ops,
-                    suite_use_stubs=suite_use_stubs,
-                )
-                if cur_pdim
-                else None
-            )
-            if upper_bound_ref is None:
-                ops = []
-                for sn, tbl in cur_pgroup:
-                    full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
-                    ops += self.generateSchemeSubroutineCallOps(
-                        full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
-                        divergent_std_keys=divergent_std_keys,
-                    )
-                    if full_name not in fn_sigs:
-                        fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-                return ops
-            lv_alloc = memref.AllocaOp.get(
-                TypeConversions.getBaseType("integer"), shape=[]
-            )
-            lv_alloc.memref.name_hint = "vertical_layer_index"
-            ncol_ref = self._find_loop_upper_bound(
-                CCPP_HORIZ_DIM_STD_NAME, all_args, data_ops,
-                framework_ref_ops=framework_ref_ops,
-                suite_use_stubs=suite_use_stubs,
-            )
-            body_list: list = []
-            for sn, tbl in cur_pgroup:
-                full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
-                body_list += self._build_promoted_call_ops(
-                    full_name, tbl, data_ops, lv_alloc.memref,
-                    scheme_overrides.get(sn, {}),
-                    ncol_ref=ncol_ref,
-                )
-                if full_name not in fn_sigs:
-                    fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-            return [lv_alloc, PromotionLoopOp(
-                loop_var=lv_alloc.memref,
-                upper_bound=upper_bound_ref,
-                body_ops=body_list,
-            )]
-
-        def _emit_ordered_list(scheme_list):
-            """Emit call ops for (scheme_name, tbl) pairs in order.
-
-            Consecutive promoted schemes sharing the same promoted_dim are
-            grouped into a single PromotionLoopOp.
-            """
-            result: list = []
-            cur_pdim: str | None = None
-            cur_pgroup: list = []
-            for sn, tbl in scheme_list:
-                full_name = sn + actual_postfixes.get(sn, tgt_subroutine_postfix)
-                assert full_name in self.meta_fn_sigs
-                if full_name not in fn_sigs:
-                    fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-                if physics_mode and self._scheme_has_promoted_args(tbl):
-                    pdim = next(
-                        (
-                            arg.getAttr("promoted_dim").lower()
-                            for arg in tbl.getFunctionArguments()
-                            if arg.hasAttr("is_promoted")
-                            and arg.hasAttr("promoted_dim")
-                        ),
-                        None,
-                    )
-                    if pdim == cur_pdim:
-                        cur_pgroup.append((sn, tbl))
-                    else:
-                        result += _flush_promoted(cur_pdim, cur_pgroup)
-                        cur_pgroup = [(sn, tbl)]
-                        cur_pdim = pdim
-                else:
-                    result += _flush_promoted(cur_pdim, cur_pgroup)
-                    cur_pgroup = []
-                    cur_pdim = None
-                    result += self._build_active_gated_call_ops(
-                        full_name, tbl, data_ops, scheme_overrides.get(sn, {}),
-                        divergent_std_keys=divergent_std_keys,
-                        suite_use_stubs=suite_use_stubs,
-                    )
-                    resolved_producers.add(sn)
-                    if sn in pending_allocs:
-                        for _pending in pending_allocs.pop(sn):
-                            _dim_var_refs, _still_pending = self._resolve_alloc_dim_var_refs(
-                                _pending.alloc_dim_names, all_args, data_ops,
-                                framework_ref_ops, suite_use_stubs, arg_tables,
-                                resolved_producers,
-                            )
-                            if _still_pending is not None:
-                                # Its own dimension is produced by a
-                                # DIFFERENT, later scheme -- re-register
-                                # under that scheme and retry when it runs.
-                                pending_allocs.setdefault(_still_pending, []).append(_pending)
-                            elif _dim_var_refs:
-                                result.append(
-                                    LazyAllocOp(
-                                        var_name=_pending.var_name,
-                                        kind_name=_pending.kind_name,
-                                        dim_var_refs=_dim_var_refs,
-                                        init_value=_pending.init_value,
-                                        needs_device_residency=_pending.needs_device_residency,
-                                    )
-                                )
-                                if already_scheduled_allocs is not None:
-                                    already_scheduled_allocs.add(_pending.std_key)
-                            # else: a genuinely unresolvable OTHER dimension
-                            # on this same var -- silently skipped, matching
-                            # the pre-existing narrow gap this fix doesn't
-                            # change (not the "producer never ran" case the
-                            # validation below exists to catch).
-            result += _flush_promoted(cur_pdim, cur_pgroup)
-            return result
-
-        def _emit_subcycle_items(items):
-            """Build call ops for one subcycle's own children.
-
-            Consecutive flat scheme siblings are grouped into a single
-            _emit_ordered_list call each (preserving the original
-            whole-subcycle-body promotion-loop coalescing for the common,
-            non-nested case), and a nested subcycle item recurses via
-            _emit_subcycle -- so grouping never crosses a nested-subcycle
-            boundary, and a nested subcycle's own body is built the same way
-            as this one's, to arbitrary depth.
-            """
-            result: list = []
-            pending: list = []
-            for sub_item in items:
-                if sub_item[0] == "scheme":
-                    _, sn, _ = sub_item
-                    if sn in arg_tables:
-                        pending.append((sn, arg_tables[sn]))
-                else:
-                    if pending:
-                        result += _emit_ordered_list(pending)
-                        pending = []
-                    _, nested_loop_count, nested_is_literal, nested_items = sub_item
-                    result += _emit_subcycle(nested_loop_count, nested_is_literal, nested_items)
-            if pending:
-                result += _emit_ordered_list(pending)
-            return result
+        ctx = _CallSeqContext(
+            all_args=all_args,
+            data_ops=data_ops,
+            framework_ref_ops=framework_ref_ops,
+            suite_use_stubs=suite_use_stubs,
+            actual_postfixes=actual_postfixes,
+            tgt_subroutine_postfix=tgt_subroutine_postfix,
+            physics_mode=physics_mode,
+            scheme_overrides=scheme_overrides,
+            divergent_std_keys=divergent_std_keys,
+            arg_tables=arg_tables,
+        )
 
         # Every subcycle's own loop-count alloca is hoisted here rather than
         # embedded next to its SubcycleLoopOp -- print_ftn.py's declaration
@@ -2626,79 +2783,261 @@ class GenerateSuiteSubroutine(RewritePattern):
         # SubcycleLoopOp, never inside another loop's body.
         hoisted_allocas: list = []
 
-        def _emit_subcycle(loop_count, is_literal, items):
-            body_ops = _emit_subcycle_items(items)
-            _lc_int = (int(loop_count) if is_literal
-                       else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
-            if _lc_int > 1 and physics_mode and body_ops:
-                sc_alloc = memref.AllocaOp.get(
-                    TypeConversions.getBaseType("integer"), shape=[]
-                )
-                sc_alloc.memref.name_hint = "ccpp_loop_cnt"
-                hoisted_allocas.append(sc_alloc)
-                # A non-literal loop_count is a CCPP standard_name, not a
-                # Fortran identifier -- resolve it to the matching arg's own
-                # dummy-argument name (all_args, keyed by std_key) before
-                # printing, whether that arg arrived through the ordinary
-                # scheme-arg host-matching path or through
-                # _synthesize_dynamic_loop_count_args (for a standard_name no
-                # scheme declares its own arg for, e.g. examples/var_compat's
-                # num_subcycles_for_effr). Printing the raw standard_name
-                # directly is not valid Fortran and would not compile.
-                printed_loop_count = loop_count
-                if not is_literal:
-                    resolved = all_args.get(loop_count.lower())
-                    if resolved is None:
-                        raise ValueError(
-                            f"Subcycle loop count {loop_count!r} is not a "
-                            f"literal integer and has no matching "
-                            f"host-declared variable anywhere -- give the "
-                            f"host a variable with this standard_name, or "
-                            f"make the subcycle's loop count a literal "
-                            f"integer."
-                        )
-                    printed_loop_count = resolved.name
-                return [SubcycleLoopOp(
-                    loop_count=printed_loop_count,
-                    loop_var=sc_alloc.memref,
-                    body_ops=body_ops,
-                    is_literal=is_literal,
-                )]
-            return body_ops
-
         for item in call_sequence:
             if item[0] == "scheme":
                 _, scheme_name, _ = item
                 if scheme_name not in arg_tables:
                     continue
-                call_ops += _emit_ordered_list(
-                    [(scheme_name, arg_tables[scheme_name])]
+                call_ops += self._emit_ordered_list(
+                    [(scheme_name, arg_tables[scheme_name])], ctx, fn_sigs,
+                    resolved_producers, pending_allocs, already_scheduled_allocs,
                 )
             elif item[0] == "subcycle":
                 _, loop_count, is_literal, subcycle_items = item
-                call_ops += _emit_subcycle(loop_count, is_literal, subcycle_items)
+                call_ops += self._emit_subcycle(
+                    loop_count, is_literal, subcycle_items, ctx, fn_sigs,
+                    resolved_producers, pending_allocs, already_scheduled_allocs,
+                    hoisted_allocas,
+                )
 
         if pending_allocs:
-            _unresolved = ", ".join(
-                f"{p.var_name!r} (needs {p.producer_scheme!r} to run first)"
-                for _plist in pending_allocs.values() for p in _plist
-            )
-            raise ValueError(
-                f"Chained-interstitial allocation could not be resolved for: "
-                f"{_unresolved}. This means either the producing scheme's "
-                f"call never appears in this suite's call sequence for "
-                f"'{tgt_subroutine_postfix}', or it's nested inside a "
-                f"promoted-dimension loop body -- not yet supported for a "
-                f"same-phase allocation dependency (see task #30 in "
-                f"ccpp_cap_refactor_plan.md; a subcycle-nested producer IS "
-                f"supported, since subcycle bodies route through the same "
-                f"call-emission path as the flat case). Give the host/SDF a "
-                f"call sequence where the producing scheme runs before "
-                f"whatever consumes its output as an allocation dimension, "
-                f"outside of any promoted-dimension loop."
-            )
+            _raise_unresolved_pending_allocs_error(pending_allocs, tgt_subroutine_postfix)
 
         return hoisted_allocas + call_ops, fn_sigs
+
+    def _build_framework_var_ref(
+        self, fw_arg, fw_std_key, all_args, data_ops, framework_ref_ops,
+        suite_model, physics_mode,
+    ) -> tuple:
+        """Build fw_arg's HostVarRefOp, registering it in data_ops (both
+        under its own bare name and, if the suite model gives it a
+        different canonical local_name, under that name too). For a
+        column-chunked physics-mode 1D array whose first allocation
+        dimension is a horizontal std-name, additionally slices it down to
+        the current chunk via ArraySectionOp instead of using the raw ref.
+
+        Mutates framework_ref_ops/data_ops in place. Returns
+        (var_name, suite_entry) for the caller's own allocation decision.
+        """
+        _scheme_dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
+
+        if suite_model is not None:
+            _entry = suite_model.get(fw_std_key)
+            _rank = _entry.rank if _entry is not None else _scheme_dims
+        else:
+            _rank = _scheme_dims
+
+        var_type = TypeConversions.convert(
+            fw_arg.getAttr("type"),
+            fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else None,
+            _rank,
+        )
+        _suite_entry = suite_model.get(fw_std_key) if suite_model else None
+        _var_name = (
+            _suite_entry.local_name
+            if _suite_entry is not None
+            else fw_arg.name
+        )
+        ref_op = ccpp_utils.HostVarRefOp(_var_name, "", var_type)
+        ref_op.res.name_hint = _var_name
+        framework_ref_ops.append(ref_op)
+        data_ops[fw_arg.name] = ref_op
+        if _var_name != fw_arg.name:
+            data_ops[_var_name] = ref_op
+
+        _horiz_std_names = {
+            CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME,
+            CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME,
+        }
+        _has_horiz_first_dim = False
+        if suite_model is not None:
+            _sentry = suite_model.get(fw_std_key)
+            if _sentry is not None and _sentry.alloc_dim_std_names:
+                _has_horiz_first_dim = (
+                    _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
+                )
+        _dims = _rank
+        if physics_mode and _dims == 1 and _has_horiz_first_dim:
+            _col_begin_ssa = next(
+                (data_ops[a.name] for a in all_args.values()
+                 if a.hasAttr("standard_name")
+                 and a.getAttr("standard_name").lower() == CCPP_LOOP_BEGIN_STD_NAME
+                 and a.name in data_ops),
+                data_ops.get("col_start"),
+            )
+            _col_end_ssa = next(
+                (data_ops[a.name] for a in all_args.values()
+                 if a.hasAttr("standard_name")
+                 and a.getAttr("standard_name").lower() == CCPP_LOOP_END_STD_NAME
+                 and a.name in data_ops),
+                data_ops.get("col_end"),
+            )
+            if _col_begin_ssa is not None and _col_end_ssa is not None:
+                section = ArraySectionOp(
+                    ref_op.res,
+                    [_col_begin_ssa],
+                    [_col_end_ssa],
+                )
+                framework_ref_ops.append(section)
+                data_ops[fw_arg.name] = section
+
+        return _var_name, _suite_entry
+
+    def _maybe_schedule_framework_var_alloc(
+        self, fw_arg, fw_std_key, var_name, suite_entry, is_alloc_phase,
+        suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
+        arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+    ) -> None:
+        """Task #30's mechanism 1/2: decide whether and how fw_arg gets
+        allocated during this phase. A no-op unless is_alloc_phase.
+        Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
+        """
+        if not is_alloc_phase:
+            return
+        if fw_arg.hasAttr("allocatable"):
+            # Task #30, mechanism 1: this array is scheme-self-
+            # allocated -- its own producing scheme declares it
+            # `allocatable, intent(out)` and performs the
+            # allocate() itself in real Fortran (see
+            # examples/advection/dlc_liq.F90, examples/
+            # suite_allocate/make_workspace.F90 -- both already do
+            # exactly this). The suite must not also pre-allocate
+            # it: doing so is redundant (intent(out) on an
+            # allocatable dummy auto-deallocates on entry, so the
+            # scheme's own allocate() immediately discards
+            # whatever the suite just did) and, for a genuinely
+            # chained dimension, would still hit the exact
+            # ordering bug this whole fix exists for. Module-level
+            # storage is still declared above unconditionally;
+            # only the allocation itself is skipped here.
+            return
+
+        _alloc_dim_names = (
+            suite_model.alloc_dims(fw_std_key)
+            if suite_model is not None
+            else (fw_arg.getAttr("dim_names")
+                  if fw_arg.hasAttr("dim_names") else [])
+        )
+        dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
+            _alloc_dim_names, all_args, data_ops, framework_ref_ops,
+            suite_use_stubs, arg_tables, frozenset(),
+        )
+
+        if _pending_producer is not None:
+            pending_allocs.setdefault(_pending_producer, []).append(
+                _PendingAlloc(
+                    var_name=var_name,
+                    std_key=fw_std_key,
+                    alloc_dim_names=list(_alloc_dim_names),
+                    kind_name=(
+                        fw_arg.getAttr("kind") if fw_arg.hasAttr("kind")
+                        else CCPP_KIND_PHYS
+                    ),
+                    init_value=(
+                        fw_arg.getAttr("default_value")
+                        if fw_arg.hasAttr("default_value") else None
+                    ),
+                    needs_device_residency=(
+                        suite_entry.needs_device_residency
+                        if suite_entry is not None else False
+                    ),
+                    producer_scheme=_pending_producer,
+                )
+            )
+        elif dim_var_refs:
+            kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
+            init_val = (
+                fw_arg.getAttr("default_value")
+                if fw_arg.hasAttr("default_value")
+                else None
+            )
+            lazy_alloc_ops.append(
+                LazyAllocOp(
+                    var_name=var_name,
+                    kind_name=kind,
+                    dim_var_refs=dim_var_refs,
+                    init_value=init_val,
+                    needs_device_residency=(
+                        suite_entry.needs_device_residency
+                        if suite_entry is not None
+                        else False
+                    ),
+                )
+            )
+            if already_scheduled_allocs is not None:
+                already_scheduled_allocs.add(fw_std_key)
+
+    def _sweep_suite_owned_var_allocations(
+        self, suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
+        arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+    ) -> None:
+        """Lets a var whose allocation dimension can ONLY be resolved once
+        physics_mode's own _run-phase args are in scope -- e.g.
+        examples/constituents_dim's cwork/awork, dimensioned by
+        number_of_ccpp_constituents, which is never host/module-declared
+        (that's the whole point of that example) and so can never resolve
+        via _find_loop_upper_bound during _init/_register at all, only
+        during _run where n_const is one of the phase's own scheme args --
+        still get allocated, without _run also emitting a second, redundant
+        LazyAllocOp for a var _init/_register already successfully covered.
+
+        Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
+        """
+        already_allocated = {op.var_name.data for op in lazy_alloc_ops}
+        # Also exclude vars the framework_vars loop above already deferred
+        # (task #30): those aren't in lazy_alloc_ops yet (their own
+        # LazyAllocOp won't exist until _build_call_ops resolves them
+        # later), but they've already been claimed -- without this, this
+        # sweep would independently re-discover the same var (it also
+        # walks all_args-derived standard_names) and register it as
+        # pending a second time, producing a duplicate LazyAllocOp once
+        # resolved.
+        already_allocated |= {
+            p.var_name for _plist in pending_allocs.values() for p in _plist
+        }
+        for entry in suite_model.suite_owned_vars():
+            if not suite_model.needs_allocation(entry.standard_name):
+                continue
+            if entry.local_name in already_allocated:
+                continue
+            if entry.allocatable:
+                # Task #30, mechanism 1 (Copilot review, PR #83): this
+                # var's own first-writer scheme declares it allocatable
+                # and self-allocates it in its own Fortran body -- same
+                # as the framework_vars loop's own guard above, this
+                # sweep must never also schedule a LazyAllocOp for it,
+                # immediately or deferred, regardless of which of the
+                # two allocation sites happened to reach it first.
+                continue
+            dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
+                entry.alloc_dim_std_names, all_args, data_ops, framework_ref_ops,
+                suite_use_stubs, arg_tables, frozenset(),
+            )
+            if _pending_producer is not None:
+                pending_allocs.setdefault(_pending_producer, []).append(
+                    _PendingAlloc(
+                        var_name=entry.local_name,
+                        std_key=entry.standard_name,
+                        alloc_dim_names=list(entry.alloc_dim_std_names),
+                        kind_name=entry.kind if entry.kind else CCPP_KIND_PHYS,
+                        init_value=None,
+                        needs_device_residency=entry.needs_device_residency,
+                        producer_scheme=_pending_producer,
+                    )
+                )
+            elif dim_var_refs:
+                kind = entry.kind if entry.kind else CCPP_KIND_PHYS
+                lazy_alloc_ops.append(
+                    LazyAllocOp(
+                        var_name=entry.local_name,
+                        kind_name=kind,
+                        dim_var_refs=dim_var_refs,
+                        init_value=None,
+                        needs_device_residency=entry.needs_device_residency,
+                    )
+                )
+                if already_scheduled_allocs is not None:
+                    already_scheduled_allocs.add(entry.standard_name)
 
     def _build_framework_refs(
         self,
@@ -2725,16 +3064,6 @@ class GenerateSuiteSubroutine(RewritePattern):
         sweep, never via framework_vars, since no _init/_register table of
         their own producing scheme declares them).
 
-        Lets a var whose allocation dimension can ONLY be resolved once
-        physics_mode's own _run-phase args are in scope -- e.g.
-        examples/constituents_dim's cwork/awork, dimensioned by
-        number_of_ccpp_constituents, which is never host/module-declared
-        (that's the whole point of that example) and so can never resolve
-        via _find_loop_upper_bound during _init/_register at all, only
-        during _run where n_const is one of the phase's own scheme args --
-        still get allocated, without _run also emitting a second, redundant
-        LazyAllocOp for a var _init/_register already successfully covered.
-
         Mutates data_ops, suite_use_stubs, and already_scheduled_allocs as
         side effects. Returns (framework_ref_ops, lazy_alloc_ops,
         pending_allocs) -- pending_allocs (task #30) is a dict of
@@ -2751,67 +3080,10 @@ class GenerateSuiteSubroutine(RewritePattern):
         if framework_vars:
             for fw_arg in framework_vars.values():
                 _fw_std_key = _std_key(fw_arg)
-                _scheme_dims = fw_arg.getAttr("dimensions") if fw_arg.hasAttr("dimensions") else 0
-
-                if suite_model is not None:
-                    _entry = suite_model.get(_fw_std_key)
-                    _rank = _entry.rank if _entry is not None else _scheme_dims
-                else:
-                    _rank = _scheme_dims
-
-                var_type = TypeConversions.convert(
-                    fw_arg.getAttr("type"),
-                    fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else None,
-                    _rank,
+                _var_name, _suite_entry = self._build_framework_var_ref(
+                    fw_arg, _fw_std_key, all_args, data_ops, framework_ref_ops,
+                    suite_model, physics_mode,
                 )
-                _suite_entry = suite_model.get(_fw_std_key) if suite_model else None
-                _var_name = (
-                    _suite_entry.local_name
-                    if _suite_entry is not None
-                    else fw_arg.name
-                )
-                ref_op = ccpp_utils.HostVarRefOp(_var_name, "", var_type)
-                ref_op.res.name_hint = _var_name
-                framework_ref_ops.append(ref_op)
-                data_ops[fw_arg.name] = ref_op
-                if _var_name != fw_arg.name:
-                    data_ops[_var_name] = ref_op
-
-                _horiz_std_names = {
-                    CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME,
-                    CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME,
-                }
-                _has_horiz_first_dim = False
-                if suite_model is not None:
-                    _sentry = suite_model.get(_fw_std_key)
-                    if _sentry is not None and _sentry.alloc_dim_std_names:
-                        _has_horiz_first_dim = (
-                            _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
-                        )
-                _dims = _rank
-                if physics_mode and _dims == 1 and _has_horiz_first_dim:
-                    _col_begin_ssa = next(
-                        (data_ops[a.name] for a in all_args.values()
-                         if a.hasAttr("standard_name")
-                         and a.getAttr("standard_name").lower() == CCPP_LOOP_BEGIN_STD_NAME
-                         and a.name in data_ops),
-                        data_ops.get("col_start"),
-                    )
-                    _col_end_ssa = next(
-                        (data_ops[a.name] for a in all_args.values()
-                         if a.hasAttr("standard_name")
-                         and a.getAttr("standard_name").lower() == CCPP_LOOP_END_STD_NAME
-                         and a.name in data_ops),
-                        data_ops.get("col_end"),
-                    )
-                    if _col_begin_ssa is not None and _col_end_ssa is not None:
-                        section = ArraySectionOp(
-                            ref_op.res,
-                            [_col_begin_ssa],
-                            [_col_end_ssa],
-                        )
-                        framework_ref_ops.append(section)
-                        data_ops[fw_arg.name] = section
 
                 _already_scheduled = (
                     already_scheduled_allocs is not None
@@ -2821,78 +3093,12 @@ class GenerateSuiteSubroutine(RewritePattern):
                     tgt_subroutine_postfix in ("_init", "_register")
                     or (physics_mode and not _already_scheduled)
                 )
-                if _is_alloc_phase and fw_arg.hasAttr("allocatable"):
-                    # Task #30, mechanism 1: this array is scheme-self-
-                    # allocated -- its own producing scheme declares it
-                    # `allocatable, intent(out)` and performs the
-                    # allocate() itself in real Fortran (see
-                    # examples/advection/dlc_liq.F90, examples/
-                    # suite_allocate/make_workspace.F90 -- both already do
-                    # exactly this). The suite must not also pre-allocate
-                    # it: doing so is redundant (intent(out) on an
-                    # allocatable dummy auto-deallocates on entry, so the
-                    # scheme's own allocate() immediately discards
-                    # whatever the suite just did) and, for a genuinely
-                    # chained dimension, would still hit the exact
-                    # ordering bug this whole fix exists for. Module-level
-                    # storage is still declared above unconditionally;
-                    # only the allocation itself is skipped here.
-                    pass
-                elif _is_alloc_phase:
-                    _alloc_dim_names = (
-                        suite_model.alloc_dims(_fw_std_key)
-                        if suite_model is not None
-                        else (fw_arg.getAttr("dim_names")
-                              if fw_arg.hasAttr("dim_names") else [])
-                    )
-                    dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
-                        _alloc_dim_names, all_args, data_ops, framework_ref_ops,
-                        suite_use_stubs, arg_tables, frozenset(),
-                    )
-
-                    if _pending_producer is not None:
-                        pending_allocs.setdefault(_pending_producer, []).append(
-                            _PendingAlloc(
-                                var_name=_var_name,
-                                std_key=_fw_std_key,
-                                alloc_dim_names=list(_alloc_dim_names),
-                                kind_name=(
-                                    fw_arg.getAttr("kind") if fw_arg.hasAttr("kind")
-                                    else CCPP_KIND_PHYS
-                                ),
-                                init_value=(
-                                    fw_arg.getAttr("default_value")
-                                    if fw_arg.hasAttr("default_value") else None
-                                ),
-                                needs_device_residency=(
-                                    _suite_entry.needs_device_residency
-                                    if _suite_entry is not None else False
-                                ),
-                                producer_scheme=_pending_producer,
-                            )
-                        )
-                    elif dim_var_refs:
-                        kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
-                        init_val = (
-                            fw_arg.getAttr("default_value")
-                            if fw_arg.hasAttr("default_value")
-                            else None
-                        )
-                        lazy_alloc_ops.append(
-                            LazyAllocOp(
-                                var_name=_var_name,
-                                kind_name=kind,
-                                dim_var_refs=dim_var_refs,
-                                init_value=init_val,
-                                needs_device_residency=(
-                                    _suite_entry.needs_device_residency
-                                    if _suite_entry is not None
-                                    else False
-                                ),
-                            )
-                        )
-                        if already_scheduled_allocs is not None:
-                            already_scheduled_allocs.add(_fw_std_key)
+                self._maybe_schedule_framework_var_alloc(
+                    fw_arg, _fw_std_key, _var_name, _suite_entry, _is_alloc_phase,
+                    suite_model, all_args, data_ops, framework_ref_ops,
+                    suite_use_stubs, arg_tables, already_scheduled_allocs,
+                    pending_allocs, lazy_alloc_ops,
+                )
 
                 # Tagged (never a plain string, so it can't collide with any
                 # bare-name key already in data_ops) entry keyed by this arg's
@@ -2910,70 +3116,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                 data_ops[("std_name", _fw_std_key)] = data_ops[fw_arg.name]
 
         if suite_model is not None and tgt_subroutine_postfix in ("_init", "_register"):
-            already_allocated = {op.var_name.data for op in lazy_alloc_ops}
-            # Also exclude vars the framework_vars loop above already deferred
-            # (task #30): those aren't in lazy_alloc_ops yet (their own
-            # LazyAllocOp won't exist until _build_call_ops resolves them
-            # later), but they've already been claimed -- without this, this
-            # sweep would independently re-discover the same var (it also
-            # walks all_args-derived standard_names) and register it as
-            # pending a second time, producing a duplicate LazyAllocOp once
-            # resolved.
-            already_allocated |= {
-                p.var_name for _plist in pending_allocs.values() for p in _plist
-            }
-            for entry in suite_model.suite_owned_vars():
-                if not suite_model.needs_allocation(entry.standard_name):
-                    continue
-                if entry.local_name in already_allocated:
-                    continue
-                if entry.allocatable:
-                    # Task #30, mechanism 1 (Copilot review, PR #83): this
-                    # var's own first-writer scheme declares it allocatable
-                    # and self-allocates it in its own Fortran body -- same
-                    # as the framework_vars loop's own guard above, this
-                    # sweep must never also schedule a LazyAllocOp for it,
-                    # immediately or deferred, regardless of which of the
-                    # two allocation sites happened to reach it first.
-                    continue
-                dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
-                    entry.alloc_dim_std_names, all_args, data_ops, framework_ref_ops,
-                    suite_use_stubs, arg_tables, frozenset(),
-                )
-                if _pending_producer is not None:
-                    pending_allocs.setdefault(_pending_producer, []).append(
-                        _PendingAlloc(
-                            var_name=entry.local_name,
-                            std_key=entry.standard_name,
-                            alloc_dim_names=list(entry.alloc_dim_std_names),
-                            kind_name=entry.kind if entry.kind else CCPP_KIND_PHYS,
-                            init_value=None,
-                            needs_device_residency=entry.needs_device_residency,
-                            producer_scheme=_pending_producer,
-                        )
-                    )
-                elif dim_var_refs:
-                    kind = entry.kind if entry.kind else CCPP_KIND_PHYS
-                    lazy_alloc_ops.append(
-                        LazyAllocOp(
-                            var_name=entry.local_name,
-                            kind_name=kind,
-                            dim_var_refs=dim_var_refs,
-                            init_value=None,
-                            needs_device_residency=entry.needs_device_residency,
-                        )
-                    )
-                    if already_scheduled_allocs is not None:
-                        already_scheduled_allocs.add(entry.standard_name)
+            self._sweep_suite_owned_var_allocations(
+                suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
+                arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+            )
 
         if tgt_subroutine_postfix is not None:
-            for _scheme_name in arg_tables:
-                for _fn_arg in arg_tables[_scheme_name].getFunctionArguments():
-                    _sk = _std_key(_fn_arg)
-                    _canonical = all_args.get(_sk)
-                    if _canonical is not None and _fn_arg.name != _canonical.name:
-                        if _fn_arg.name not in data_ops and _canonical.name in data_ops:
-                            data_ops[_fn_arg.name] = data_ops[_canonical.name]
+            _alias_canonical_data_ops(arg_tables, all_args, data_ops)
 
         return framework_ref_ops, lazy_alloc_ops, pending_allocs
 
