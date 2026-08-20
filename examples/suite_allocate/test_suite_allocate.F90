@@ -33,7 +33,9 @@ program test_suite_allocate
   call ccpp_init(ccpp_suite, errmsg, errflg)
   call check_err('initialize', errflg, errmsg)
 
-  call ccpp_physics_timestep_init(ccpp_suite, errmsg, errflg)
+  ! ccpp_physics_timestep_init is now group-scoped (task #28, Stage 1),
+  ! matching ccpp_physics_run's own signature/extent below exactly.
+  call ccpp_physics_timestep_init(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
   call check_err('timestep_initial', errflg, errmsg)
 
   call ccpp_physics_run(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)

@@ -27,8 +27,7 @@
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) BIND(C,
 // CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
 
-// Timestep initial/final.
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg) BIND(C,
+// Timestep final: still flat/minimal signature (unchanged by task #28 Stage 1).
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg) BIND(C,
 
 // Run: scalar intent(in) values use VALUE; strings use c_char; real arrays use c_double.
@@ -44,6 +43,15 @@
 // CHECK:           real(c_double), intent(inout) :: precl(*)
 // CHECK:           character(kind=c_char, len=1), intent(inout) :: errmsg(*)
 // CHECK:           integer(c_int), intent(inout) :: errflg
+
+// Timestep initial: now group-scoped (task #28), emitted AFTER ccpp_physics_run
+// in generation order (its lifecycle_specs row was appended after run's own
+// row) -- same physics signature ccpp_physics_run has.
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(
+// CHECK:           character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK:           character(kind=c_char, len=1), intent(in) :: suite_part(*)
+// CHECK:           integer(c_int), value, intent(in) :: col_start
+// CHECK:           integer(c_int), value, intent(in) :: col_end
 
 // Utility subroutines must NOT carry BIND(C) — they use allocatable types.
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)

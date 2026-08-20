@@ -23,9 +23,9 @@
 // CHECK-NEXT:    public :: hello_world_suite_suite_register
 // CHECK-NEXT:    public :: hello_world_suite_suite_initialize
 // CHECK-NEXT:    public :: hello_world_suite_suite_finalize
-// CHECK-NEXT:    public :: hello_world_suite_suite_timestep_initial
 // CHECK-NEXT:    public :: hello_world_suite_suite_timestep_final
 // CHECK-NEXT:    public :: hello_world_suite_suite_physics
+// CHECK-NEXT:    public :: hello_world_suite_suite_timestep_init_physics
 // CHECK:       CONTAINS
 // CHECK-LABEL:   subroutine hello_world_suite_suite_register(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
@@ -69,18 +69,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:    end subroutine hello_world_suite_suite_finalize
-// CHECK-LABEL:   subroutine hello_world_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK:           integer, intent(out) :: errflg
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:          "' in hello_world_suite_timestep_initial"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
-// CHECK-NEXT:    end subroutine hello_world_suite_suite_timestep_initial
 // CHECK-LABEL:   subroutine hello_world_suite_suite_timestep_final(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -131,6 +119,13 @@
 // CHECK-NEXT:      temp_layer = temp_layer_unit_conv - 273.15_kind_phys
 // CHECK-NEXT:      deallocate(temp_layer_unit_conv)
 // CHECK-NEXT:    end subroutine hello_world_suite_suite_physics
+// CHECK-LABEL:   subroutine hello_world_suite_suite_timestep_init_physics(errflg, errmsg)
+// CHECK:           integer, intent(out) :: errflg
+// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      ccpp_suite_state = const_in_time_step
+// CHECK-NEXT:    end subroutine hello_world_suite_suite_timestep_init_physics
 // CHECK-NEXT:  end module hello_world_suite_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: HelloWorld_ccpp_cap.F90
@@ -147,7 +142,7 @@
 // CHECK-NEXT:    use hello_world_suite_cap, only: hello_world_suite_suite_physics
 // CHECK-NEXT:    use hello_world_suite_cap, only: hello_world_suite_suite_register
 // CHECK-NEXT:    use hello_world_suite_cap, only: hello_world_suite_suite_timestep_final
-// CHECK-NEXT:    use hello_world_suite_cap, only: hello_world_suite_suite_timestep_initial
+// CHECK-NEXT:    use hello_world_suite_cap, only: hello_world_suite_suite_timestep_init_physics
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         character(len=17), parameter :: str_hello_world_suite = 'hello_world_suite'
@@ -155,9 +150,9 @@
 // CHECK-NEXT:    public :: ccpp_register
 // CHECK-NEXT:    public :: ccpp_init
 // CHECK-NEXT:    public :: ccpp_final
-// CHECK-NEXT:    public :: ccpp_physics_timestep_init
 // CHECK-NEXT:    public :: ccpp_physics_timestep_final
 // CHECK-NEXT:    public :: ccpp_physics_run
+// CHECK-NEXT:    public :: ccpp_physics_timestep_init
 // CHECK-NEXT:    public :: ccpp_physics_suite_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:    public :: ccpp_physics_suite_variables
@@ -198,18 +193,6 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_final
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, errmsg, errflg)
-// CHECK:           character(len=*), intent(in) :: suite_name
-// CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      integer, intent(out) :: errflg
-// CHECK:           errflg = 0
-// CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
-// CHECK-NEXT:        call hello_world_suite_suite_timestep_initial(errflg, errmsg)
-// CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
-// CHECK-NEXT:        errflg = 1
-// CHECK-NEXT:      end if
-// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, errmsg, errflg)
 // CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
@@ -247,6 +230,28 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_run
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
+// CHECK-NEXT:      errflg)
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:      character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:      integer, intent(in) :: col_start
+// CHECK-NEXT:      integer, intent(in) :: col_end
+// CHECK-NEXT:      character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:      integer, intent(inout) :: errflg
+// CHECK:           errflg = 0
+// CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
+// CHECK-NEXT:        if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:          call hello_world_suite_suite_timestep_init_physics(errflg, errmsg)
+// CHECK-NEXT:        else
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
+// CHECK-NEXT:            " found in suite hello_world_suite"
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      else
+// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:      end if
+// CHECK-NEXT:    end subroutine ccpp_physics_timestep_init
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites)
 // CHECK:           character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:           allocate(suites(1))

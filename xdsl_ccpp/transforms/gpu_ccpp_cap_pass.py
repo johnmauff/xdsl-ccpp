@@ -49,10 +49,15 @@ _PHASE_RANK = {p: i for i, p in enumerate(_PHASE_ORDER)}
 _ONE_TIME_PHASES = frozenset({"register", "initialize", "finalize"})
 _PER_TIMESTEP_PHASES = frozenset({"timestep_initial", "run", "timestep_final"})
 
-# ccpp_physics_run is handled separately in apply() (substring match, not
-# suffix) since its dispatch shape -- an outer per-suite IfOp wrapping a
-# second, nested per-suite-part IfOp -- differs from these single-level
-# dispatchers, so it isn't in this map. Names are bare (Stage 5 of the
+# ccpp_physics_run and ccpp_physics_timestep_init are handled separately in
+# apply() (substring match, not suffix, via _TWO_LEVEL_DISPATCH_PHASES)
+# since their dispatch shape -- an outer per-suite IfOp wrapping a second,
+# nested per-suite-part/group IfOp -- differs from these single-level
+# dispatchers, so neither is in this map. Task #28 moved
+# ccpp_physics_timestep_init from a flat, single-level dispatcher (matching
+# this map's own shape) to the same two-level, per-group shape ccpp_physics_run
+# already had, matching real capgen-v1's own group-scoped
+# ccpp_physics_timestep_init. Names are bare (Stage 5 of the
 # vocabulary-resolution redesign, ccpp_cap_refactor_plan.md: capgen-v1-style
 # generic subroutine names, no host prefix) -- matched with endswith rather
 # than == purely for defensive robustness against a future prefix, not
@@ -61,8 +66,14 @@ _LIFECYCLE_FN_SUFFIX_TO_PHASE = {
     "ccpp_register": "register",
     "ccpp_init": "initialize",
     "ccpp_final": "finalize",
-    "ccpp_physics_timestep_init": "timestep_initial",
     "ccpp_physics_timestep_final": "timestep_final",
+}
+
+# fn-name substring -> phase, for dispatchers with the two-level (suite_name
+# then suite_part/group) shape -- see _collect_run_call_sites.
+_TWO_LEVEL_DISPATCH_PHASES = {
+    "ccpp_physics_run": "run",
+    "ccpp_physics_timestep_init": "timestep_initial",
 }
 
 
@@ -521,9 +532,22 @@ class GPUCcppCapPass(ModulePass):
             return owner.literal.data
         return None
 
+    # Callee-name markers identifying a per-group suite-cap callee, checked
+    # as substrings (the callee name's own trailing group-name segment
+    # varies per suite XML, so an exact suffix can't be used). "_suite_physics"
+    # is the pre-existing run marker (relies on this codebase's own example
+    # suites conventionally naming their run group "physics" -- narrow, but
+    # pre-existing and out of scope to broaden here); "_suite_timestep_init_"
+    # (task #28) is a genuinely group-name-independent marker, since it's a
+    # fixed literal segment of the callee name regardless of the group's own
+    # name (suite_cap.py's generated_subroutine_posfix always inserts it
+    # before the group name, never depending on what the group is called).
+    _SUITE_CALLEE_MARKERS = ("_suite_physics", "_suite_timestep_init_")
+
     def _find_inner_suite_part_if(self, true_block):
         """Find the scf.IfOp in true_block whose true region contains a
-        *_suite_physics func.CallOp.  Returns (if_op, call_op) or (None, None).
+        per-group suite-cap func.CallOp (see _SUITE_CALLEE_MARKERS).
+        Returns (if_op, call_op) or (None, None).
         """
         for op in true_block.ops:
             if not isa(op, scf.IfOp):
@@ -531,16 +555,18 @@ class GPUCcppCapPass(ModulePass):
             if not op.true_region.blocks:
                 continue
             for inner_op in op.true_region.blocks[0].ops:
-                if (
-                    isa(inner_op, func.CallOp)
-                    and "_suite_physics" in inner_op.callee.root_reference.data
+                if isa(inner_op, func.CallOp) and any(
+                    marker in inner_op.callee.root_reference.data
+                    for marker in self._SUITE_CALLEE_MARKERS
                 ):
                     return op, inner_op
         return None, None
 
-    def _collect_run_call_sites(self, fn_op):
-        """Yield (suite_name, "run", true_block, suite_call) for every
-        per-suite branch of a ccpp_physics_run dispatcher."""
+    def _collect_run_call_sites(self, fn_op, phase="run"):
+        """Yield (suite_name, phase, true_block, suite_call) for every
+        per-suite branch of a two-level (suite_name -> suite_part/group)
+        dispatcher -- ccpp_physics_run, or (task #28) ccpp_physics_timestep_init
+        now that it has the same per-group shape."""
         if not fn_op.body.blocks:
             return
         for op in fn_op.body.blocks[0].ops:
@@ -553,7 +579,7 @@ class GPUCcppCapPass(ModulePass):
             inner_if, suite_call = self._find_inner_suite_part_if(true_block)
             if inner_if is None:
                 continue
-            yield suite_name, "run", true_block, suite_call
+            yield suite_name, phase, true_block, suite_call
 
     def _collect_lifecycle_call_sites(self, fn_op, phase):
         """Yield (suite_name, phase, true_block, suite_call) for every
@@ -1036,8 +1062,12 @@ class GPUCcppCapPass(ModulePass):
                 if not (isa(child, func.FuncOp) and not child.is_declaration):
                     continue
                 fn_name = child.sym_name.data
-                if "ccpp_physics_run" in fn_name:
-                    call_sites.extend(self._collect_run_call_sites(child))
+                two_level_phase = next(
+                    (p for suf, p in _TWO_LEVEL_DISPATCH_PHASES.items() if suf in fn_name),
+                    None,
+                )
+                if two_level_phase is not None:
+                    call_sites.extend(self._collect_run_call_sites(child, two_level_phase))
                 else:
                     phase = next(
                         (p for suf, p in _LIFECYCLE_FN_SUFFIX_TO_PHASE.items()

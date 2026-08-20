@@ -13,16 +13,17 @@
 // CHECK:           float            gravit,
 // CHECK-NOT:       double
 
-// Timestep initial: intent(in) array is const float*, intent(inout) is float*.
-// CHECK-LABEL: void Kessler_chost_physics_timestep_initial(
-// CHECK:           const float*     temp,
-// CHECK:           float*           temp_prev,
-// CHECK-NOT:       double
-
 // Run: scalar dt is float, intent(in) arrays are const float*, inout are float*.
 // CHECK-LABEL: void Kessler_chost_physics_run(
 // CHECK:           float            dt,
 // CHECK:           const float*     cpair,
 // CHECK:           float*           theta,
 // CHECK:           float*           precl,
+// CHECK-NOT:       double
+
+// Timestep initial: intent(in) array is const float*, intent(inout) is float*.
+// (task #28: timestep_init is now group-scoped, generated after run.)
+// CHECK-LABEL: void Kessler_chost_physics_timestep_initial(
+// CHECK:           const float*     temp,
+// CHECK:           float*           temp_prev,
 // CHECK-NOT:       double

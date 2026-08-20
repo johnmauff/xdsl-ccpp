@@ -52,6 +52,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _get_suite_lifecycle_ret_info,
     _rank_of,
     _resolve_ddt_access_path,
+    _resolve_lifecycle_table_name,
     _resolve_member_subscripts,
     classify_host_table_vars,
 )
@@ -153,6 +154,7 @@ def _build_per_suite_run_info(
     maps: "_RunMetadataMaps",
     cap_var_map,
     seen_host_globals: set,
+    phase_postfix: str = "_run",
 ) -> "tuple[list, list]":
     """Classify each suite run entry's args and build per-suite info dicts.
 
@@ -160,6 +162,12 @@ def _build_per_suite_run_info(
     resolves which callee args come from host module variables, DDT members,
     cap-owned vars, or caller block args.  Emits GlobalOp USE-statement stubs
     into seen_host_globals (mutated in-place — shared across lifecycle functions).
+
+    phase_postfix -- which scheme entry-point phase to scan for arg
+    classification (task #28's group-scoped-phase generalization; defaults
+    to "_run" so the original physics-run dispatch is unaffected). Resolved
+    against LIFECYCLE_POSTFIX_ALIASES' short forms too, via
+    _resolve_lifecycle_table_name.
 
     Returns (per_suite, host_global_ops).
     """
@@ -179,13 +187,11 @@ def _build_per_suite_run_info(
             callee_input_names,
         ) = public_fns[suite_callee]
 
-        # Build {local_arg_name → standard_name} from the _run arg tables.
+        # Build {local_arg_name → standard_name} from this phase's own arg tables.
         std_name_of = {}
         for scheme_name in scheme_names:
-            table_name = scheme_name + "_run"
-            if scheme_name not in meta_data:
-                continue
-            if table_name not in meta_data[scheme_name].arg_tables:
+            table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, phase_postfix)
+            if table_name is None:
                 continue
             for fn_arg in (
                 meta_data[scheme_name]
@@ -247,10 +253,8 @@ def _build_per_suite_run_info(
         # ever sees one such entry per std_key.
         _by_bare_name: dict = {}
         for scheme_name in scheme_names:
-            table_name = scheme_name + "_run"
-            if scheme_name not in meta_data:
-                continue
-            if table_name not in meta_data[scheme_name].arg_tables:
+            table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, phase_postfix)
+            if table_name is None:
                 continue
             for fn_arg in (
                 meta_data[scheme_name]
@@ -309,10 +313,8 @@ def _build_per_suite_run_info(
         # These will be transposed via RowMajorConvertOp in the dispatch chain.
         local_to_array_layout: dict = {}
         for scheme_name in scheme_names:
-            table_name = scheme_name + "_run"
-            if scheme_name not in meta_data:
-                continue
-            if table_name not in meta_data[scheme_name].arg_tables:
+            table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, phase_postfix)
+            if table_name is None:
                 continue
             for fn_arg in (
                 meta_data[scheme_name]
@@ -772,6 +774,7 @@ class _RunChainCtx:
     errmsg_type: "object"
     errflg_type: "object"
     state_host_var_map: dict
+    phase_postfix: str = "_run"
 
 
 def _build_state_host_var_map(meta_data, host_var_map) -> dict:
@@ -810,17 +813,15 @@ def _build_suite_part_not_found_branch(
     return [write_part_err, one_part_err, store_part_err, scf.YieldOp()]
 
 
-def _build_cap_var_std_to_dims(scheme_names, meta_data) -> dict:
+def _build_cap_var_std_to_dims(scheme_names, meta_data, phase_postfix: str = "_run") -> dict:
     """Build standard_name -> dim_names for cap_var sources."""
     cap_var_std_to_dims: dict = {}
     for _sv_scheme in scheme_names:
-        _sv_run_tbl = _sv_scheme + "_run"
-        if _sv_scheme not in meta_data:
-            continue
-        if _sv_run_tbl not in meta_data[_sv_scheme].arg_tables:
+        _sv_tbl = _resolve_lifecycle_table_name(_sv_scheme, meta_data, phase_postfix)
+        if _sv_tbl is None:
             continue
         for _sv_fa in (
-            meta_data[_sv_scheme].getArgTable(_sv_run_tbl).getFunctionArguments()
+            meta_data[_sv_scheme].getArgTable(_sv_tbl).getFunctionArguments()
         ):
             if _sv_fa.hasAttr("standard_name") and _sv_fa.hasAttr("dim_names"):
                 _sv_sn = _sv_fa.getAttr("standard_name").lower()
@@ -1333,7 +1334,7 @@ def _build_call_and_copy_back_ops(
     # below can look up each output position's REAL callee dummy-argument
     # name instead of a placeholder (see _result_keyword_name).
     _run_ret_alloc = _get_suite_lifecycle_ret_info(
-        scheme_names, ctx.meta_data, "_run"
+        scheme_names, ctx.meta_data, ctx.phase_postfix
     )
     _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
     # Positional info IS available for the rest of the leading region:
@@ -1345,7 +1346,7 @@ def _build_call_and_copy_back_ops(
     # own declared dummy-arg order) -- see
     # _get_suite_leading_inout_ret_info's own docstring.
     _leading_inout_ret = _get_suite_leading_inout_ret_info(
-        scheme_names, ctx.meta_data, "_run"
+        scheme_names, ctx.meta_data, ctx.phase_postfix
     )
 
     def _result_keyword_name(idx, ret_type):
@@ -1542,7 +1543,7 @@ def _build_one_suite_part_dispatch(
     scheme_names = info["scheme_names"]
 
     # ── Build standard_name → dim_names for cap_var sources ──────
-    cap_var_std_to_dims = _build_cap_var_std_to_dims(scheme_names, ctx.meta_data)
+    cap_var_std_to_dims = _build_cap_var_std_to_dims(scheme_names, ctx.meta_data, ctx.phase_postfix)
 
     # ── HostVarRefOps ─────────────────────────────────────────────
     host_var_ref_ops, host_var_ref_results, host_name_to_ref_result = (
@@ -1620,6 +1621,7 @@ def _build_run_dispatch_chain(
     cap_var_map,
     seen_host_globals: set,
     current_false_ops: list,
+    phase_postfix: str = "_run",
 ) -> "tuple[list, list, list]":
     """Build the nested if/else dispatch chain over suite_name and suite_part.
 
@@ -1663,6 +1665,7 @@ def _build_run_dispatch_chain(
         errmsg_type=errmsg_type,
         errflg_type=errflg_type,
         state_host_var_map=state_host_var_map,
+        phase_postfix=phase_postfix,
     )
 
     for suite_name, suite_infos in reversed(list(per_suite_grouped.items())):
@@ -1775,9 +1778,10 @@ def _generate_run_fn(
     meta_data,
     cap_var_map=None,
     seen_host_globals=None,
+    phase_postfix: str = "_run",
     **kwargs,
 ):
-    """Build the combined CCPP cap physics run FuncOp dispatching over all suites.
+    """Build the combined CCPP cap physics-phase FuncOp dispatching over all suites.
 
     ``suite_run_entries`` is a list of
     ``(suite_name, suite_part, suite_callee, scheme_names)`` tuples.
@@ -1787,6 +1791,13 @@ def _generate_run_fn(
     the appropriate suite; each matching branch has an inner if/else on
     ``suite_part``.  Host variable references and array sections are placed
     inside each suite's branch.
+
+    phase_postfix -- which scheme entry-point phase this per-group dispatch
+    is for (task #28's generalization beyond "_run" alone -- e.g.
+    "_timestep_initialize" for the group-scoped ccpp_physics_timestep_init).
+    Defaults to "_run" so the original physics-run dispatch is unaffected;
+    threaded through to _build_per_suite_run_info and
+    _build_run_dispatch_chain.
 
     Returns ``(FuncOp, [external_decl_FuncOp, ...], host_global_ops)``.
     """
@@ -1813,7 +1824,7 @@ def _generate_run_fn(
         seen_host_globals = set()
     per_suite, all_host_global_ops = _build_per_suite_run_info(
         suite_run_entries, public_fns, meta_data, _maps, cap_var_map,
-        seen_host_globals,
+        seen_host_globals, phase_postfix=phase_postfix,
     )
 
     # ── Block signature ────────────────────────────────────────────────────
@@ -1864,6 +1875,7 @@ def _generate_run_fn(
             cap_var_map=cap_var_map,
             seen_host_globals=seen_host_globals,
             current_false_ops=current_false_ops,
+            phase_postfix=phase_postfix,
         )
     )
     all_host_global_ops.extend(chain_global_ops)

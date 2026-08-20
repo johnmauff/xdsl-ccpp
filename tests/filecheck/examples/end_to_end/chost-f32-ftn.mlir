@@ -12,17 +12,18 @@
 // CHECK:           real(c_float), value, intent(in) :: lv
 // CHECK:           real(c_float), value, intent(in) :: gravit
 
-// 2-D array args in timestep_initial use real(c_float).
-// CHECK-LABEL:   subroutine Kessler_chost_physics_timestep_initial(
-// CHECK:           real(c_float), target, intent(in) :: temp(ncol, nz)
-// CHECK:           real(c_float), target, intent(inout) :: temp_prev(ncol, nz)
-
 // Run: scalar dt and 2-D arrays all use real(c_float).
 // CHECK-LABEL:   subroutine Kessler_chost_physics_run(
 // CHECK:           real(c_float), value, intent(in) :: dt
 // CHECK:           real(c_float), target, intent(in) :: cpair(ncol, nz)
 // CHECK:           real(c_float), target, intent(inout) :: theta(ncol, nz)
 // CHECK:           real(c_float), target, intent(inout) :: precl(ncol)
+
+// 2-D array args in timestep_initial use real(c_float). (task #28: timestep_init
+// is now group-scoped, generated after run -- this block moved to match.)
+// CHECK-LABEL:   subroutine Kessler_chost_physics_timestep_initial(
+// CHECK:           real(c_float), target, intent(in) :: temp(ncol, nz)
+// CHECK:           real(c_float), target, intent(inout) :: temp_prev(ncol, nz)
 
 // ccpp_kinds uses REAL32 — verifies the kind map was applied end-to-end.
 // CHECK-LABEL: module ccpp_kinds

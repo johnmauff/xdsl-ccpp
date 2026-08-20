@@ -42,8 +42,11 @@ program test_opt_arg
     stop 1
   end if
 
-  call ccpp_physics_timestep_init(ccpp_suite, nx, std_arg, opt_arg, opt_arg_2,       &
-    errmsg, errflg)
+  ! ccpp_physics_timestep_init is now group-scoped (task #28, Stage 1),
+  ! matching ccpp_physics_run's own signature exactly (same col_start/
+  ! col_end=1,nx full-extent convention this driver already uses for run).
+  call ccpp_physics_timestep_init(ccpp_suite, ccpp_group, 1, nx, nx, std_arg, &
+    opt_arg, opt_arg_2, errmsg, errflg)
   if (errflg /= 0) then
     write(error_unit, '(a)') "An error occurred in timestep_initial: "//trim(errmsg)
     stop 1
