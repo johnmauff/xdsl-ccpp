@@ -26,6 +26,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
+    FRAMEWORK_STD_NAME_TO_CAP_VAR,
     LIFECYCLE_POSTFIX_ALIASES,
     _assert_call_arg_count_matches_signature,
     _bare,
@@ -280,6 +281,19 @@ def _generate_lifecycle_fn(
 
         # Build {bare_arg_name → standard_name} from the scheme entry-point tables
         std_name_of: dict = {}
+        # {bare_arg_name → intent} from the same scan -- needed to gate the
+        # cap_var_map input-resolution branch below (task #60) to genuine
+        # intent(in)/intent(inout) reads only. An intent(out)-only arg (e.g.
+        # environ_conditions_init's own "o3"/"hno3" outputs, real examples
+        # in examples/ddthost) just needs a fresh writable local, exactly as
+        # before -- it must not be redirected to whatever cap_var_map's
+        # standard_name lookup happens to return, since that's this suite's
+        # OWN unrelated cap-var namespace and can collide by std_name with a
+        # completely different call's own output-only arg (confirmed via a
+        # real regression while verifying this fix: environ_conditions's
+        # "ozone"/"nitric_acid" outputs got wrongly rewired to a same-named,
+        # unrelated cap_var_map entry).
+        intent_of: dict = {}
         # {bare_arg_name → (model_var_name, model_module_name)} for args
         # HostVariableMatchPass resolved to a DDT member (e.g. var_compat's
         # scheme_order, matched to phys_state%scheme_order) -- module-level
@@ -312,6 +326,10 @@ def _generate_lifecycle_fn(
                         bare = _bare(fn_arg.name)
                         if bare not in std_name_of and fn_arg.hasAttr("standard_name"):
                             std_name_of[bare] = fn_arg.getAttr("standard_name").lower()
+                        if bare not in intent_of:
+                            intent_of[bare] = (
+                                fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
+                            )
                         if (
                             bare not in ddt_member_info
                             and fn_arg.hasAttr("model_var_is_ddt")
@@ -396,6 +414,48 @@ def _generate_lifecycle_fn(
                     alloc_op.memref.name_hint = f"lc_{bare}"
                     true_branch_pre_ops.append(alloc_op)
                     call_inputs.append(alloc_op.memref)
+            elif (
+                std_name
+                and std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR
+                and std_name in _cap_var_map
+                and intent_of.get(bare, "in") in ("in", "inout")
+            ):
+                # A well-known framework array (ccpp_constituents,
+                # ccpp_constituent_tendencies, ...) needed as a genuine READ
+                # (intent in/inout) on this lifecycle phase -- mirrors
+                # run_dispatch.py's own CapVar resolution for the "_run"
+                # dispatch (_build_per_suite_run_info's `std_name in
+                # cap_var_map` check). Without this branch, such an arg fell
+                # through to the "not host-matched" local-alloca fallback
+                # below and silently read an uninitialized value -- the same
+                # bug class the opt_arg pre-scan (extra_host_arg_index,
+                # above) already fixed for HOST-type-table args. Task #60.
+                #
+                # Deliberately narrower than "any std_name in cap_var_map":
+                # cap_var_map ALSO accumulates plain CapScratch scratch vars
+                # (ccpp_cap.py's own scratch_var_list branch) keyed only by
+                # standard_name, and standard_name is NOT a reliable identity
+                # there -- two unrelated schemes' own unmatched args can
+                # share one standard_name by pure coincidence, each meaning
+                # a fresh, call-scoped value with no cross-call relationship
+                # at all. Confirmed via a real regression while verifying
+                # this fix: examples/ddthost's own make_ddt_run declares an
+                # intent(in) "vmr" (standard_name volume_mixing_ratio_ddt,
+                # no host match) that lands in cap_var_map as a scratch var;
+                # a same-named, but semantically unrelated, intent(in) "vmr"
+                # on make_ddt_timestep_final was wrongly redirected to that
+                # scratch entry instead of getting its own fresh local (the
+                # correct, pre-existing behavior). FRAMEWORK_STD_NAME_TO_CAP_VAR's
+                # names are the one case where "same standard_name" IS a real
+                # identity guarantee -- they always denote the one shared,
+                # always-declared framework array, by design.
+                # Also gated to in/inout only -- an intent(out)-only arg just
+                # needs a fresh writable local (see intent_of's own comment
+                # above).
+                var_name, var_type, _ftn = _cap_var_map[std_name]
+                cap_ref = CapVarRefOp(var_name, var_type or arg_type)
+                true_branch_pre_ops.append(cap_ref)
+                call_inputs.append(cap_ref.res)
             elif (
                 ccpp_info_type is not None
                 and std_name == "host_standard_ccpp_type"

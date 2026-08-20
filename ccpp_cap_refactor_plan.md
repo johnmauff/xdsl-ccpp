@@ -5165,6 +5165,87 @@ dependency is noted.
     (bigger than #30's M-L; closer to the original, broader dependency-graph scope this whole
     discussion started from), deliberately deferred until #30 itself lands and proves the
     pattern out in the simpler, contained case first.
+  - **Task #65 scoping, revisited (2026-08-20) -- honest downgrade after checking each of the
+    4 items above against the current, post-#56/#57 code.** None of the 4 items turned out to
+    need a broader dependency-graph model at all:
+    1. **Cross-phase unification with `already_scheduled_allocs`** -- no forcing bug. The five
+       lifecycle phases run in a fixed, generator-controlled order
+       (`_generate_lifecycle_fns`, `suite_cap.py`), so a same-suite var produced in an earlier
+       phase is always genuinely available by the time a later phase reads it. Unifying this
+       with #30's own scheduler would be a DRY/elegance refactor, not a bug fix -- downgraded to
+       "revisit only if a real need arises," folded into task #61's cleanup bucket rather than
+       kept as its own item.
+    2. **DDT-typed interstitial coverage** -- confirmed unrelated to the allocation-dependency
+       mechanism at all: `_build_module_vars` (`suite_cap.py`) never routes a DDT-typed
+       SuiteOwned var through `LazyAllocOp`/the allocation scheduler in the first place
+       (`entry.is_ddt` means `needs_allocation()` is false -- a DDT interstitial is a module-scope
+       non-allocatable scalar). This is a standalone test-coverage gap on DDT interstitial
+       *declaration*, mis-filed under #65 by proximity, not a design task.
+    3. **Non-`real` interstitial array verification** -- also just a standalone test-coverage
+       task (confirm `LazyAllocOp`/the scheduler generalizes to integer/logical/character arrays
+       without code changes), independent of any design work.
+    4. **Extending validation past same-phase ordering** -- no realistic trigger given (1): the
+       phase order is fixed and generator-controlled, not something an SDF author can get wrong.
+    **Net effect: #65 as a single tracked epic doesn't hold up.** Items 2/3 are worth picking up
+    opportunistically as small, bounded test-writing tasks (no design work required); items 1/4
+    are deferred indefinitely with no open action. Not closed as a separate task -- folded into
+    this note and the interstitial-variable-gaps entry above.
+  - **Task #60, `lifecycle_cap.py`/`run_dispatch.py` arg-resolution unification -- scoped and
+    RESOLVED (2026-08-20).** Read `run_dispatch.py`'s `ResolvedArgOp`/`ArgSourceKind` machinery
+    (`ccpp.py:473-609`, `_build_per_suite_run_info`) and `lifecycle_cap.py`'s
+    `_generate_lifecycle_fn` in full before designing anything. Findings:
+    - **Full `ResolvedArgOp` unification rejected.** `lifecycle_cap.py`'s "no match" tail has
+      three genuinely distinct outcomes (`ccpp_info_t` passthrough, `extra_host_arg_index`
+      promotion to a real wrapper dummy arg, or a plain fallback local) that `ArgSourceKind.Block`
+      doesn't distinguish -- squashing them into one `Block` case would lose real information
+      rather than unify anything, the same class of false-unification #56 Stage 3 and #48 already
+      declined elsewhere in this codebase.
+    - **The Host/DdtMember "shared helper" half of the original plan also didn't hold up.** The
+      actual path-resolution primitives (`_resolve_ddt_access_path`, `_resolve_member_subscripts`,
+      `_build_ddt_resolution_maps`) are already factored into `cap_shared.py` and both files
+      already call them identically (confirmed via grep). What's left divergent in each file --
+      which args are DDT-matched in the first place, and durable-op-emission vs. immediate
+      inline ref-construction -- is genuinely call-site-specific, not an accidental duplicate.
+    - **The one real, confirmed gap:** `run_dispatch.py`'s own `_run`-dispatch input classification
+      explicitly checks `std_name in cap_var_map` to resolve a cap-owned input
+      (`ArgSourceKind.CapVar`); `lifecycle_cap.py`'s input-arg resolution never did the same check
+      for register/init/finalize/timestep_* -- an unresolved cap-var input silently fell through
+      to a fresh, uninitialized local, the same bug class as this file's own pre-existing
+      DDT-member fix (`test_lifecycle_ddt_member_resolution.py`) and the opt_arg HOST-table bug.
+      Confirmed latent, not live: no current example's non-`_run` phase needs this today (grepped
+      every example's `.meta` for a non-run-phase arg beyond errmsg/errflg/suite_name/instance
+      args; zero hits), and the function's own docstring already said as much.
+    - **Fixed, narrower than first drafted.** Initial fix checked `std_name in cap_var_map`
+      unconditionally (mirroring `run_dispatch.py`'s own check literally) -- caught a real
+      regression against `examples/ddthost` during verification: `cap_var_map` also accumulates
+      plain CapScratch *scratch* vars keyed only by `standard_name`
+      (`ccpp_cap.py::_build_cap_var_map`'s `scratch_var_list` branch), and standard_name is NOT a
+      reliable identity there -- `examples/ddthost`'s own `make_ddt_run` declares an intent(in)
+      "vmr" (standard_name `volume_mixing_ratio_ddt`, no host match) that lands in `cap_var_map`
+      as a scratch entry; a same-named but semantically unrelated intent(in) "vmr" on
+      `make_ddt_timestep_final` was wrongly redirected to that scratch entry instead of getting
+      its own fresh local (the correct, pre-existing behavior) -- confirmed via direct
+      byte-diff against `examples/ddthost`'s real generated Fortran, not just reasoning. Narrowed
+      the fix to only fire when `std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR` (`ccpp_constituents`,
+      `ccpp_constituent_tendencies`, `number_of_ccpp_constituents`) -- the one class where "same
+      standard_name" is a real design guarantee (always the one shared, always-declared framework
+      array), not a coincidence. Also gated to `intent in ("in", "inout")` only, via a new
+      `intent_of` dict built alongside the existing `std_name_of` scan -- an intent(out)-only arg
+      (e.g. `environ_conditions_init`'s own "o3"/"hno3" outputs, real args in this same example)
+      needs a fresh writable local exactly as before; the ungated version, before the intent fix,
+      also briefly mis-resolved these the same way, caught by the same ddthost byte-diff.
+    - **Verified:** new regression test
+      (`tests/unit/test_lifecycle_capscratch_input_resolution.py`), confirmed via git-stash to
+      fail against the pre-fix code; since the real bug is latent (no example naturally populates
+      `cap_var_map` with a non-`_run`-consumed entry), the test monkeypatches
+      `ccpp_cap.py::_build_cap_var_map` to inject one, isolating the resolution fix itself from
+      the separate question of how `cap_var_map` gets populated -- documented explicitly in the
+      test's own docstring so this isn't mistaken for full coverage of the population path. Full
+      suite 605 passed (603 + 2 new) plus the pre-existing, unrelated `python3`-subprocess PATH
+      environment failures (confirmed identical via git-stash); `ruff check` clean before and
+      after; byte-identical regeneration confirmed directly on `examples/ddthost` (the one example
+      that actually exercises this code path, and the one that caught the regression) plus the
+      full 47-file filecheck corpus via the same pytest run.
   - **Done (2026-08-17):** restored the real `interstitial_var` argument into `examples/capgen`'s
     `temp_adjust.meta`/`.F90` (`temp_adjust_run` produces it `intent(out)`,
     `temp_adjust_finalize` consumes it `intent(in)` -- genuinely cross-phase, separate generated
