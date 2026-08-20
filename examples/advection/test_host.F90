@@ -956,16 +956,24 @@ CONTAINS
 
        ! Loop over time steps
        do time_step = 1, num_time_steps
-          ! Initialize the timestep
+          ! Initialize the timestep. ccpp_physics_timestep_init is now
+          ! group-scoped (task #28, Stage 1) -- called once per suite part,
+          ! full column extent, matching ccpp_physics_run's own per-part
+          ! call below.
           do sind = 1, num_suites
-             if (errflg == 0) then
-                call ccpp_physics_timestep_init(                 &
-                     test_suites(sind)%suite_name, errmsg, errflg)
-                if (errflg /= 0) then
-                   write(6, '(3a)') trim(test_suites(sind)%suite_name), ': ', &
-                        trim(errmsg)
+             do index = 1, size(test_suites(sind)%suite_parts)
+                if (errflg == 0) then
+                   call ccpp_physics_timestep_init(                 &
+                        test_suites(sind)%suite_name,                      &
+                        test_suites(sind)%suite_parts(index),              &
+                        1, ncols, errmsg, errflg)
+                   if (errflg /= 0) then
+                      write(6, '(5a)') trim(test_suites(sind)%suite_name), &
+                           '/', trim(test_suites(sind)%suite_parts(index)),&
+                           ': ', trim(errmsg)
+                   end if
                 end if
-             end if
+             end do
           end do
 
           do col_start = 1, ncols, 5

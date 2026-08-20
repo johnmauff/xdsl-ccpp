@@ -26,17 +26,6 @@
 // CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg
 
-// Timestep initial: ncol and nz as int; intent(in) array is const double*;
-// intent(inout) arrays are double*.
-// CHECK-LABEL: void Kessler_chost_physics_timestep_initial(
-// CHECK:           int              ncol,
-// CHECK-NEXT:      int              nz,
-// CHECK:           const double*    temp,
-// CHECK:           double*          temp_prev,
-// CHECK:           double*          ttend_t,
-// CHECK:           char*            errmsg,
-// CHECK-NEXT:      int*             errflg
-
 // Timestep final: ncol, nz, then intent(in) arrays, then inout array.
 // CHECK-LABEL: void Kessler_chost_physics_timestep_final(
 // CHECK:           int              ncol,
@@ -64,4 +53,16 @@
 // CHECK:           double*          precl,
 // CHECK:           char*            scheme_name,
 // CHECK-NEXT:      char*            errmsg,
+// CHECK-NEXT:      int*             errflg
+
+// Timestep initial: ncol and nz as int; intent(in) array is const double*;
+// intent(inout) arrays are double*. (task #28: timestep_init is now
+// group-scoped, generated after run.)
+// CHECK-LABEL: void Kessler_chost_physics_timestep_initial(
+// CHECK:           int              ncol,
+// CHECK-NEXT:      int              nz,
+// CHECK:           const double*    temp,
+// CHECK:           double*          temp_prev,
+// CHECK:           double*          ttend_t,
+// CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg

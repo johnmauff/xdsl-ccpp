@@ -167,23 +167,34 @@ contains
        end do
        ! Loop over time steps
        do time_step = 1, num_time_steps
-          ! Initialize the timestep
+          ! Initialize the timestep. ccpp_physics_timestep_init is now
+          ! group-scoped (task #28, Stage 1), matching ccpp_physics_run's
+          ! own per-part call below -- full extent (not chunked) via
+          ! ccpp_info%col_start/col_end, same as this file's own convention
+          ! for passing column bounds through the bundled ccpp_info_t.
+          ccpp_info%col_start = 1
+          ccpp_info%col_end = ncols
           do sind = 1, num_suites
              if (ccpp_info%errflg /= 0) then
                 exit
              end if
-             if (ccpp_info%errflg == 0) then
-                call ccpp_physics_timestep_init(                 &
-                     test_suites(sind)%suite_name, ccpp_info)
-             end if
-             if (ccpp_info%errflg /= 0) then
-                write(6, '(3a)') trim(test_suites(sind)%suite_name), ': ', &
-                     trim(ccpp_info%errmsg)
-                exit
-             end if
-             if (ccpp_info%errflg /= 0) then
-                exit
-             end if
+             do index = 1, size(test_suites(sind)%suite_parts)
+                if (ccpp_info%errflg /= 0) then
+                   exit
+                end if
+                if (ccpp_info%errflg == 0) then
+                   call ccpp_physics_timestep_init(                 &
+                        test_suites(sind)%suite_name,                      &
+                        test_suites(sind)%suite_parts(index),              &
+                        ccpp_info)
+                end if
+                if (ccpp_info%errflg /= 0) then
+                   write(6, '(5a)') trim(test_suites(sind)%suite_name),    &
+                        '/', trim(test_suites(sind)%suite_parts(index)),   &
+                        ': ', trim(ccpp_info%errmsg)
+                   exit
+                end if
+             end do
           end do
 
           do col_start = 1, ncols, 5

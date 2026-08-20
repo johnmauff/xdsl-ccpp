@@ -40,8 +40,11 @@ CONTAINS
       stop
     end if
 
-    ! Initialize the timestep
-    call ccpp_physics_timestep_init('hello_world_suite', errmsg, errflg)
+    ! Initialize the timestep. ccpp_physics_timestep_init is now
+    ! group-scoped (task #28, Stage 1), matching ccpp_physics_run's own
+    ! signature -- full extent (1, ncols), not chunked.
+    call ccpp_physics_timestep_init('hello_world_suite', 'physics', 1, ncols, &
+        errmsg, errflg)
     if (errflg /= 0) then
       write(6, *) trim(errmsg)
       stop
