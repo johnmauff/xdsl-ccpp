@@ -874,8 +874,23 @@ class CCPPCAP(ModulePass):
         # itself.
         lifecycle_specs = [
             ("ccpp_register", "_register", "_suite_register", None),
-            ("ccpp_init", "_init", "_suite_initialize", None),
-            ("ccpp_final", "_finalize", "_suite_finalize", None),
+            # ccpp_init/ccpp_final: table_postfix=None (task #28 Stage 3),
+            # not "_init"/"_finalize" -- those postfixes would make the
+            # branch below scan every scheme's own _init/_finalize arg
+            # table via _get_suite_lifecycle_ret_info, which still finds
+            # real entries (schemes still declare those tables; they just
+            # aren't called from here anymore -- see suite_cap.py's
+            # emit_scheme_calls). That produced a real arg-count mismatch
+            # against the callee's own (now scheme-call-free) signature --
+            # confirmed via a real regression while verifying this stage
+            # against examples/ddthost. None skips straight to the same
+            # fallback branch used whenever no scheme has a matching table
+            # (e.g. ccpp_register's own "_register" postfix commonly hits
+            # this same fallback in practice): read the callee's ACTUAL
+            # signature straight from public_fns, which can't drift out of
+            # sync with what suite_cap.py really generated.
+            ("ccpp_init", None, "_suite_initialize", None),
+            ("ccpp_final", None, "_suite_finalize", None),
             # Per-group dispatch — each group calls its own suite cap function.
             # ccpp_physics_run: the original, unchanged entry (table_postfix
             # None here means "_run" via _generate_run_fn's own default).
@@ -888,6 +903,17 @@ class CCPPCAP(ModulePass):
             ("ccpp_physics_run", None, "_suite_", "__per_group__"),
             ("ccpp_physics_timestep_init", "_timestep_initialize", "_suite_timestep_init_", "__per_group__"),
             ("ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final_", "__per_group__"),
+            # ccpp_physics_init/ccpp_physics_final (task #28 Stage 3): net
+            # new entry points, not a moved/renamed existing one -- unlike
+            # Stage 1/2, ccpp_init/ccpp_final above are UNCHANGED rows,
+            # still flat and still present (real capgen-v1's own suite-level
+            # <suite>_init/<suite>_final are framework-setup-only). These
+            # own the scheme-level _init/_finalize calls instead (matching
+            # real capgen-v1's own group-scoped ccpp_physics_init/
+            # ccpp_physics_final) -- see suite_cap.py's emit_scheme_calls
+            # for why ccpp_init/ccpp_final no longer emit those calls.
+            ("ccpp_physics_init", "_init", "_suite_init_", "__per_group__"),
+            ("ccpp_physics_final", "_finalize", "_suite_final_", "__per_group__"),
         ]
 
         all_globals: list = []

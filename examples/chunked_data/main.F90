@@ -11,9 +11,11 @@ program test_chunked_data
 
   use test_host_ccpp_cap, only: ccpp_register, &
       ccpp_init, &
+      ccpp_physics_init, &
       ccpp_physics_timestep_init, &
       ccpp_physics_run, &
       ccpp_physics_timestep_final, &
+      ccpp_physics_final, &
       ccpp_final
 
   implicit none
@@ -42,6 +44,17 @@ program test_chunked_data
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   call ccpp_init(ccpp_suite, errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_init:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
+
+  ! Physics initialize (task #28, Stage 3): group-scoped, matching
+  ! ccpp_physics_run's own signature -- owns the scheme-level _init calls
+  ! ccpp_init no longer makes itself (see suite_cap.py's emit_scheme_calls).
+  call ccpp_physics_init(ccpp_suite, ccpp_group, 1, ncols, &
+      chunked_data_instance%array_data(1:ncols), errmsg, errflg)
   if (errflg/=0) then
     write(error_unit, '(a)') "An error occurred in ccpp_physics_init:"
     write(error_unit, '(a)') trim(errmsg)
@@ -97,6 +110,17 @@ program test_chunked_data
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   ! CCPP physics finalize step                     !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  ! Physics finalize (task #28, Stage 3): group-scoped, matching
+  ! ccpp_physics_init's own signature above -- owns the scheme-level
+  ! _finalize calls ccpp_final no longer makes itself.
+  call ccpp_physics_final(ccpp_suite, ccpp_group, 1, ncols, &
+      chunked_data_instance%array_data(1:ncols), errmsg, errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_final:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   call ccpp_final(ccpp_suite, errmsg, errflg)
   if (errflg/=0) then

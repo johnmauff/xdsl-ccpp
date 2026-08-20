@@ -16,9 +16,11 @@ CONTAINS
 
     use hello_world_mod,     only: ncols
     use HelloWorld_ccpp_cap, only: ccpp_init
+    use HelloWorld_ccpp_cap, only: ccpp_physics_init
     use HelloWorld_ccpp_cap, only: ccpp_physics_timestep_init
     use HelloWorld_ccpp_cap, only: ccpp_physics_run
     use HelloWorld_ccpp_cap, only: ccpp_physics_timestep_final
+    use HelloWorld_ccpp_cap, only: ccpp_physics_final
     use HelloWorld_ccpp_cap, only: ccpp_final
     use HelloWorld_ccpp_cap, only: ccpp_physics_suite_list
     use HelloWorld_ccpp_cap, only: ccpp_physics_suite_part_list
@@ -35,6 +37,17 @@ CONTAINS
 
     ! Use the suite information to setup the run
     call ccpp_init('hello_world_suite', errmsg, errflg)
+    if (errflg /= 0) then
+      write(6, *) trim(errmsg)
+      stop
+    end if
+
+    ! Physics initialize (task #28, Stage 3): group-scoped, matching
+    ! ccpp_physics_run's own signature -- owns the scheme-level _init
+    ! calls ccpp_init no longer makes itself (see suite_cap.py's
+    ! emit_scheme_calls).
+    call ccpp_physics_init('hello_world_suite', 'physics', 1, ncols, &
+        errmsg, errflg)
     if (errflg /= 0) then
       write(6, *) trim(errmsg)
       stop
@@ -70,6 +83,16 @@ CONTAINS
     ! own signature -- full extent (1, ncols), not chunked.
     call ccpp_physics_timestep_final('hello_world_suite', 'physics', 1, ncols, &
         errmsg, errflg)
+
+    ! Physics finalize (task #28, Stage 3): group-scoped, matching
+    ! ccpp_physics_init's own signature above -- owns the scheme-level
+    ! _finalize calls ccpp_final no longer makes itself.
+    call ccpp_physics_final('hello_world_suite', 'physics', 1, ncols, &
+        errmsg, errflg)
+    if (errflg /= 0) then
+      write(6, *) trim(errmsg)
+      stop
+    end if
 
     call ccpp_final('hello_world_suite', errmsg, errflg)
     if (errflg /= 0) then

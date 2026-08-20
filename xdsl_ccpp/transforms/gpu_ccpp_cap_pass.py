@@ -38,29 +38,43 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 )
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
-# Canonical execution order of the six lifecycle phases a scheme's arg
+# Canonical execution order of the eight lifecycle phases a scheme's arg
 # tables can belong to (see cap_shared.split_scheme_table_name). register/
 # initialize/finalize each run exactly once per simulation; timestep_initial/
 # run/timestep_final each run once per timestep (always at the same count).
+# physics_initial/physics_final (task #28 Stage 3) also run exactly once per
+# simulation -- like register/initialize/finalize, NOT once per timestep --
+# they just happen to have the same two-level, per-group dispatch SHAPE as
+# run/timestep_initial/timestep_final (see _TWO_LEVEL_DISPATCH_PHASES),
+# bracketing the whole timestep loop rather than running inside it (matching
+# real capgen-v1's own ccpp_physics_init/ccpp_physics_final, and this
+# codebase's own driver convention: physics_init right after ccpp_init/
+# before the timestep loop, physics_final right after the loop/before
+# ccpp_final).
 _PHASE_ORDER = (
-    "register", "initialize", "timestep_initial", "run", "timestep_final", "finalize",
+    "register", "initialize", "physics_initial", "timestep_initial", "run",
+    "timestep_final", "physics_final", "finalize",
 )
 _PHASE_RANK = {p: i for i, p in enumerate(_PHASE_ORDER)}
-_ONE_TIME_PHASES = frozenset({"register", "initialize", "finalize"})
+_ONE_TIME_PHASES = frozenset({"register", "initialize", "physics_initial", "physics_final", "finalize"})
 _PER_TIMESTEP_PHASES = frozenset({"timestep_initial", "run", "timestep_final"})
 
-# ccpp_physics_run, ccpp_physics_timestep_init, and ccpp_physics_timestep_final
-# are handled separately in apply() (substring match, not suffix, via
-# _TWO_LEVEL_DISPATCH_PHASES) since their dispatch shape -- an outer
-# per-suite IfOp wrapping a second, nested per-suite-part/group IfOp --
-# differs from these single-level dispatchers, so none of the three are in
-# this map. Task #28 moved ccpp_physics_timestep_init (Stage 1) and
-# ccpp_physics_timestep_final (Stage 2) from flat, single-level dispatchers
-# (matching this map's own shape) to the same two-level, per-group shape
-# ccpp_physics_run already had, matching real capgen-v1's own group-scoped
-# entry points. Names are bare (Stage 5 of the vocabulary-resolution
-# redesign, ccpp_cap_refactor_plan.md: capgen-v1-style generic subroutine
-# names, no host prefix) -- matched with endswith rather than == purely for
+# ccpp_physics_run, ccpp_physics_timestep_init, ccpp_physics_timestep_final,
+# ccpp_physics_init, and ccpp_physics_final are handled separately in
+# apply() (substring match, not suffix, via _TWO_LEVEL_DISPATCH_PHASES)
+# since their dispatch shape -- an outer per-suite IfOp wrapping a second,
+# nested per-suite-part/group IfOp -- differs from these single-level
+# dispatchers, so none of the five are in this map. Task #28 moved
+# ccpp_physics_timestep_init (Stage 1) and ccpp_physics_timestep_final
+# (Stage 2) from flat, single-level dispatchers (matching this map's own
+# shape) to the same two-level, per-group shape ccpp_physics_run already
+# had; Stage 3 added ccpp_physics_init/ccpp_physics_final as net-new
+# entries with that same shape (NOT a move -- ccpp_init/ccpp_final below
+# are unchanged, still flat, still exist; see suite_cap.py's
+# emit_scheme_calls for why they no longer emit scheme calls themselves).
+# Names are bare (Stage 5 of the vocabulary-resolution redesign,
+# ccpp_cap_refactor_plan.md: capgen-v1-style generic subroutine names, no
+# host prefix) -- matched with endswith rather than == purely for
 # defensive robustness against a future prefix, not because one exists today.
 _LIFECYCLE_FN_SUFFIX_TO_PHASE = {
     "ccpp_register": "register",
@@ -74,6 +88,8 @@ _TWO_LEVEL_DISPATCH_PHASES = {
     "ccpp_physics_run": "run",
     "ccpp_physics_timestep_init": "timestep_initial",
     "ccpp_physics_timestep_final": "timestep_final",
+    "ccpp_physics_init": "physics_initial",
+    "ccpp_physics_final": "physics_final",
 }
 
 
@@ -542,7 +558,10 @@ class GPUCcppCapPass(ModulePass):
     # fixed literal segment of the callee name regardless of the group's own
     # name (suite_cap.py's generated_subroutine_posfix always inserts it
     # before the group name, never depending on what the group is called).
-    _SUITE_CALLEE_MARKERS = ("_suite_physics", "_suite_timestep_init_", "_suite_timestep_final_")
+    _SUITE_CALLEE_MARKERS = (
+        "_suite_physics", "_suite_timestep_init_", "_suite_timestep_final_",
+        "_suite_init_", "_suite_final_",
+    )
 
     def _find_inner_suite_part_if(self, true_block):
         """Find the scf.IfOp in true_block whose true region contains a

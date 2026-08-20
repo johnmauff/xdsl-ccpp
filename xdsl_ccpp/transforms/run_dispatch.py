@@ -498,6 +498,20 @@ def _build_per_suite_run_info(
 
     return per_suite, host_global_ops
 
+
+def _ddt_type_name_of(arg_type) -> "str | None":
+    """Return arg_type's own DDT type name if it's a memref of a derived
+    type (e.g. "ccpp_info_t"), else None. Mirrors the same
+    `.element_type.type_name.data` access already used above for
+    ccpp_info_type itself -- used to detect a scheme arg whose type is a
+    WHOLE instance of the framework's own ccpp_info_t DDT, not just one of
+    its member fields (see this function's caller for why that distinction
+    matters)."""
+    element_type = getattr(arg_type, "element_type", None)
+    type_name = getattr(element_type, "type_name", None)
+    return type_name.data if type_name is not None else None
+
+
 def _build_run_block_signature(
     per_suite: list,
     meta_data,
@@ -538,6 +552,15 @@ def _build_run_block_signature(
                     seen_non_host_std_names[std_name] = arg_name
                     non_host_std_to_canonical[std_name] = arg_name
 
+    # Bare names of args filtered out below because their own declared type
+    # IS the ccpp_info_t DDT (not one of its member fields) -- populated
+    # only when ccpp_info_type is not None; used further down to map each
+    # such name directly to ccpp_info_block_arg itself (same identity, not
+    # a separate value) when building block_arg_map, since after the
+    # filter removes them from union_non_host_args, nothing else would
+    # ever populate an entry for them.
+    _ccpp_whole_instance_arg_names: set = set()
+
     # When the host uses the ccpp_info_t pattern, loop bounds (col_start/col_end)
     # come from ccpp_info%col_start/col_end — exclude them from the block args.
     if ccpp_info_type is not None:
@@ -562,11 +585,28 @@ def _build_run_block_signature(
             for s in _ccpp_member_std_names
             if s in non_host_std_to_canonical
         }
-        # Filter: remove args whose arg_name matches a ccpp_info member OR
-        # whose canonical name maps to a ccpp_info-provided std_name.
+        # Filter: remove args whose arg_name matches a ccpp_info member, OR
+        # whose canonical name maps to a ccpp_info-provided std_name, OR
+        # whose own declared TYPE is the ccpp_info_t DDT itself (task #28
+        # Stage 3, examples/ddthost: make_ddt's own "_init" table declares
+        # an arg of type ccpp_info_t -- the DDT-instance-creating scheme's
+        # normal output, unrelated to this host's ccpp_info_t bundling
+        # convention for errmsg/errflg/col_start/col_end. The member-name
+        # check above only catches an arg that IS one of ccpp_info_t's own
+        # fields; it doesn't catch an arg whose type is a WHOLE instance of
+        # ccpp_info_t, which collided with the framework's own reserved
+        # "ccpp_info" block-arg name -- confirmed via a real regression
+        # (duplicate "ccpp_info" dummy argument, invalid Fortran) while
+        # verifying this stage against examples/ddthost's real signature.
+        _ccpp_whole_instance_arg_names = {
+            k for k, v in union_non_host_args.items()
+            if _ddt_type_name_of(v) == _ccpp_ddt_name
+        }
         union_non_host_args = {
             k: v for k, v in union_non_host_args.items()
-            if k not in _ccpp_member_names and k not in _ccpp_provided_canonicals
+            if k not in _ccpp_member_names
+            and k not in _ccpp_provided_canonicals
+            and k not in _ccpp_whole_instance_arg_names
         }
 
     # A CCPP Fortran host always calls ccpp_physics_run with col_start/col_end
@@ -651,6 +691,13 @@ def _build_run_block_signature(
             ba = new_block.args[3 + i]
             ba.name_hint = arg_name
             block_arg_map[arg_name] = ba
+        # A scheme arg whose own type IS ccpp_info_t (see
+        # _ccpp_whole_instance_arg_names above) maps to the SAME
+        # ccpp_info_block_arg identity, not a separate value -- it was
+        # filtered out of union_non_host_args entirely, so nothing else
+        # would ever populate its block_arg_map entry.
+        for arg_name in _ccpp_whole_instance_arg_names:
+            block_arg_map[arg_name] = ccpp_info_block_arg
 
         # Loop bounds from ccpp_info%col_start / col_end
         int_type = memref.MemRefType(int_base, [])

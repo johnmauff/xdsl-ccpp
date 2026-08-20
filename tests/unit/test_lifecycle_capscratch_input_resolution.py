@@ -125,10 +125,17 @@ class TestLifecycleInitResolvesCapScratchInput:
     def test_init_call_uses_real_cap_var_not_fresh_local(
         self, run_host_match, ccpp_context, monkeypatch
     ):
+        # task #28 Stage 3: scheme_a's own _init call now happens via the
+        # group-scoped ccpp_physics_init/test_suite_suite_init_physics, not
+        # the flat ccpp_init/test_suite_suite_initialize (which no longer
+        # emits any scheme calls at all -- see suite_cap.py's
+        # emit_scheme_calls). The resolution fix this test guards is
+        # unaffected -- it just runs through run_dispatch.py's own,
+        # already-correct cap_var_map lookup now, same as ccpp_physics_run.
         fortran = _fortran_output(run_host_match, ccpp_context, monkeypatch)
-        fn = _fn_body(fortran, "ccpp_init")
+        fn = _fn_body(fortran, "ccpp_physics_init")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_initialize" in line
+            line for line in fn.splitlines() if "call test_suite_suite_init_physics" in line
         )
         assert "lc_real_cap_var" in call_line, (
             f"expected the real cap-owned module var threaded into the call, "
@@ -142,7 +149,7 @@ class TestLifecycleInitResolvesCapScratchInput:
         declared and passed instead of the persisted cap var, silently
         discarding whatever value the real producer had set."""
         fortran = _fortran_output(run_host_match, ccpp_context, monkeypatch)
-        fn = _fn_body(fortran, "ccpp_init")
+        fn = _fn_body(fortran, "ccpp_physics_init")
         assert "lc_consumed" not in fn, (
             f"dead/wrong scratch local still declared and used:\n{fn}"
         )

@@ -22,7 +22,11 @@
 
 // ── Gap 3 + Gap 4: initialize subroutine ────────────────────────────────────
 
-// CHECK-LABEL: subroutine DdtIn_chost_physics_initialize(
+// task #28 Stage 3: make_ddt's own _init call now happens via the
+// group-scoped chost wrapper DdtIn_chost_physics_physics_initial, not the
+// flat DdtIn_chost_physics_initialize (which no longer wraps any scheme
+// call -- see suite_cap.py's emit_scheme_calls).
+// CHECK-LABEL: subroutine DdtIn_chost_physics_physics_initial(
 
 // Gap 4: ccpp_info_errmsg must NOT appear in the signature or body.
 // (It must be absent from the whole module since ccpp_info is only used here.)
@@ -42,7 +46,7 @@
 // CHECK-NOT: allocate(vmr_local%vmr_array
 
 // Suite call must include vmr_local (the intent=out DDT local variable).
-// CHECK:     call ddt_in_suite_suite_initialize(
+// CHECK:     call ddt_in_suite_suite_init_physics(
 // CHECK:     ncols, ccpp_info_local, vmr_local, errmsg_f, errflg)
 
 // Gap 3 writeback: vmr_vmr_array must be assigned from vmr_local%vmr_array.

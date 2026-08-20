@@ -55,3 +55,10 @@
 // The real(vmr_local%vmr_array, c_double) assignment that would copy data back
 // to vmr_vmr_array is absent for intent=in.
 // CHECK-NOT: vmr_vmr_array = real(vmr_local%vmr_array
+
+// Bound the CHECK-NOT above to timestep_final's own body: task #28 Stage 3
+// added a new physics_initial chost wrapper after timestep_final in
+// generation order, and its own vmr is intent=out (writeback legitimately
+// IS present there) -- without this label, the CHECK-NOT above would
+// incorrectly scan into that unrelated, later subroutine too.
+// CHECK-LABEL: subroutine DdtIn_chost_physics_physics_initial(

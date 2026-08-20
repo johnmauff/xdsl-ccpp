@@ -7,11 +7,11 @@
 // typedef uses float for REAL32 kind.
 // CHECK: typedef float     kind_phys_t;
 
-// Initialize: scalar real args are float, not double.
+// task #28 Stage 3: initialize's own scheme calls (and their float args)
+// moved to the new, group-scoped physics_initial entry point below --
+// initialize itself is now scheme-call-free (errmsg/errflg only).
 // CHECK-LABEL: void Kessler_chost_physics_initialize(
-// CHECK:           float            lv,
-// CHECK:           float            gravit,
-// CHECK-NOT:       double
+// CHECK:           char*            errmsg,
 
 // Run: scalar dt is float, intent(in) arrays are const float*, inout are float*.
 // CHECK-LABEL: void Kessler_chost_physics_run(
@@ -26,4 +26,11 @@
 // CHECK-LABEL: void Kessler_chost_physics_timestep_initial(
 // CHECK:           const float*     temp,
 // CHECK:           float*           temp_prev,
+// CHECK-NOT:       double
+
+// Scalar real args (rank 0) in physics_initial use float, not double
+// (task #28 Stage 3: generated last, after run/timestep_*/timestep_final).
+// CHECK-LABEL: void Kessler_chost_physics_physics_initial(
+// CHECK:           float            lv,
+// CHECK:           float            gravit,
 // CHECK-NOT:       double

@@ -645,6 +645,8 @@ _LIFECYCLE = {
     "ccpp_physics_timestep_init": "timestep_initial",
     "ccpp_physics_timestep_final": "timestep_final",
     "ccpp_physics_run":           "run",
+    "ccpp_physics_init":          "physics_initial",
+    "ccpp_physics_final":         "physics_final",
 }
 
 
@@ -674,15 +676,19 @@ def _chost_fn_name(camel_name: str, lc: str) -> str:
 def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
     """Return the list of suite cap function names for a given lifecycle.
 
-    "run" and (task #28) "timestep_initial"/"timestep_final" are
-    group-scoped -- one suite cap function per XML group, named
-    suite_cap.py's own generated_subroutine_posfix convention
-    (f"_{group_name}" for run, f"_timestep_init_{group_name}" for
-    timestep_initial, f"_timestep_final_{group_name}" for timestep_final).
-    Every other lifecycle stays a single flat function -- this is the same
-    "run is special, everything else is flat" assumption already found and
-    fixed in gpu_data_pass.py/gpu_ccpp_cap_pass.py; timestep_initial/
-    timestep_final need the same generalization here.
+    "run", "timestep_initial"/"timestep_final" (task #28 Stages 1-2), and
+    "physics_initial"/"physics_final" (Stage 3) are all group-scoped -- one
+    suite cap function per XML group, named suite_cap.py's own
+    generated_subroutine_posfix convention (f"_{group_name}" for run,
+    f"_timestep_init_{group_name}" for timestep_initial,
+    f"_timestep_final_{group_name}" for timestep_final,
+    f"_init_{group_name}" for physics_initial, f"_final_{group_name}" for
+    physics_final). Every other lifecycle stays a single flat function --
+    "physics_initial"/"physics_final" are net-new lifecycles, not a moved
+    "initialize"/"finalize" (those stay flat, unchanged, and no longer
+    emit any scheme calls at all -- see suite_cap.py's emit_scheme_calls).
+    This is the same "run is special, everything else is flat" assumption
+    already found and fixed in gpu_data_pass.py/gpu_ccpp_cap_pass.py.
     """
     if lc == "run":
         return [
@@ -697,6 +703,16 @@ def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
     if lc == "timestep_final":
         return [
             f"{suite_name}_suite_timestep_final_{grp.attributes['name']}"
+            for grp in suite_descriptions.get(suite_name, [])
+        ]
+    if lc == "physics_initial":
+        return [
+            f"{suite_name}_suite_init_{grp.attributes['name']}"
+            for grp in suite_descriptions.get(suite_name, [])
+        ]
+    if lc == "physics_final":
+        return [
+            f"{suite_name}_suite_final_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
     return [f"{suite_name}_suite_{lc}"]
@@ -734,6 +750,17 @@ _LC_TO_ENTRY_SUFFIX = {
     "timestep_final":   ("_timestep_final",),
     "finalize":         ("_finalize",),
     "register":         ("_register",),
+    # physics_initial/physics_final (task #28 Stage 3): the new group-scoped
+    # ccpp_physics_init/ccpp_physics_final call schemes via the SAME
+    # "_init"/"_finalize" scheme-table postfixes "initialize"/"finalize"
+    # above already use (see suite_cap.py's group_phase_specs) -- without
+    # these entries, _ddt_arg_intent's lookup below silently falls through
+    # to its "not found" default ("inout"), which caused a DDT arg's real
+    # intent=out to be lost, dropping it from the chost wrapper entirely
+    # (confirmed via a real regression, examples/ddthost-shaped
+    # ddt-intent-out-chost-ftn.mlir fixture, while verifying this stage).
+    "physics_initial":  ("_init", "_initialize"),
+    "physics_final":    ("_finalize",),
 }
 
 

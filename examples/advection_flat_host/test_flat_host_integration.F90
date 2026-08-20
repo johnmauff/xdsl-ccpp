@@ -20,9 +20,11 @@ program test_flat_host_integration
    use flat_host_ccpp_cap, only:                                             &
         ccpp_register,                                    &
         ccpp_init,                                  &
+        ccpp_physics_init,                                &
         ccpp_physics_timestep_init,                            &
         ccpp_physics_run,                                         &
         ccpp_physics_timestep_final,                              &
+        ccpp_physics_final,                               &
         ccpp_final,                                    &
         flat_host_ccpp_register_constituents,                               &
         flat_host_ccpp_initialize_constituents,                             &
@@ -82,6 +84,17 @@ program test_flat_host_integration
       write(6, '(a)') trim(errmsg)
    end if
 
+   ! Physics initialize (task #28, Stage 3): group-scoped, matching
+   ! ccpp_physics_run's own per-part shape -- owns the scheme-level _init
+   ! calls ccpp_init no longer makes itself (see suite_cap.py's
+   ! emit_scheme_calls).
+   if (allocated(part_list)) then
+      do ipart = 1, size(part_list)
+         call check('physics_init(' // trim(part_list(ipart)) // ')', &
+              flat_host_ccpp_physics_init_wrap(trim(part_list(ipart))))
+      end do
+   end if
+
    if (allocated(part_list)) then
       do ipart = 1, size(part_list)
          call check('timestep_initial(' // trim(part_list(ipart)) // ')', &
@@ -108,6 +121,17 @@ program test_flat_host_integration
               flat_host_ccpp_physics_timestep_final_wrap(trim(part_list(ipart))))
       end do
    end if
+
+   ! Physics finalize (task #28, Stage 3): group-scoped, matching
+   ! ccpp_physics_init's own per-part shape above -- owns the scheme-level
+   ! _finalize calls ccpp_final no longer makes itself.
+   if (allocated(part_list)) then
+      do ipart = 1, size(part_list)
+         call check('physics_final(' // trim(part_list(ipart)) // ')', &
+              flat_host_ccpp_physics_final_wrap(trim(part_list(ipart))))
+      end do
+   end if
+
    call check('finalize', flat_host_ccpp_final_wrap())
 
    ! Level 1 (below tcld): expect condensation/freezing to have fired.
@@ -170,6 +194,22 @@ contains
       flat_host_ccpp_init_wrap = (errflg == 0)
       if (errflg /= 0) write(6, '(a)') trim(errmsg)
    end function flat_host_ccpp_init_wrap
+
+   logical function flat_host_ccpp_physics_init_wrap(suite_part)
+      character(len=*), intent(in) :: suite_part
+      call ccpp_physics_init(suite_name, suite_part, col_start, col_end, &
+           errmsg, errflg)
+      flat_host_ccpp_physics_init_wrap = (errflg == 0)
+      if (errflg /= 0) write(6, '(a)') trim(errmsg)
+   end function flat_host_ccpp_physics_init_wrap
+
+   logical function flat_host_ccpp_physics_final_wrap(suite_part)
+      character(len=*), intent(in) :: suite_part
+      call ccpp_physics_final(suite_name, suite_part, col_start, col_end, &
+           errmsg, errflg)
+      flat_host_ccpp_physics_final_wrap = (errflg == 0)
+      if (errflg /= 0) write(6, '(a)') trim(errmsg)
+   end function flat_host_ccpp_physics_final_wrap
 
    logical function flat_host_ccpp_physics_timestep_init_wrap(suite_part)
       character(len=*), intent(in) :: suite_part
