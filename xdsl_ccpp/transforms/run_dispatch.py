@@ -749,6 +749,862 @@ def _build_run_chain_preamble(
         per_suite_grouped=per_suite_grouped,
     )
 
+
+# ── Task #57: decomposition of _build_run_dispatch_chain's former 789-line body ──
+
+@dataclass
+class _RunChainCtx:
+    """Read-only context shared across every suite/suite-part processed by
+    _build_run_dispatch_chain. seen_host_globals and chain_global_ops are
+    the two exceptions -- both mutable, accumulated across the whole
+    chain, but bundled here since every extracted helper below needs
+    read/write access to them alongside the genuinely read-only fields.
+    """
+    block_arg_map: dict
+    non_host_std_to_canonical: dict
+    host_var_map: dict
+    meta_data: dict
+    cap_var_map: dict
+    seen_host_globals: set
+    chain_global_ops: list
+    errmsg_arg: "object"
+    errflg_arg: "object"
+    errmsg_type: "object"
+    errflg_type: "object"
+    state_host_var_map: dict
+
+
+def _build_state_host_var_map(meta_data, host_var_map) -> dict:
+    """host_var_map (MODULE-type only, see _build_run_metadata_maps)
+    enriched with 'state'-classified HOST-type vars -- real host-owned
+    data (e.g. suite_allocate's own workspace_checksum) that real
+    capgen-v1 resolves via use-association, same as MODULE-type vars,
+    rather than discarding it into a throwaway local. Used only at the
+    result write-back sites below (never for dimension-name/DDT-member
+    resolution elsewhere in this file), since those other host_var_map
+    lookups aren't yet confirmed safe to widen the same way -- see
+    ccpp_cap_refactor_plan.md's suite_allocate scoping note for why this
+    is deliberately narrow, not a blanket include_host=True flip.
+    'dispatch_scalar'-classified HOST-type vars (loop bounds, error
+    handling) are excluded -- they have no backing Fortran module to
+    use-associate from.
+    """
+    host_classification = classify_host_table_vars(meta_data)
+    state_host_var_map = dict(host_var_map)
+    for std_name, (var_name, tbl_name) in _build_host_var_map(meta_data).items():
+        if host_classification.get(std_name) == "state":
+            state_host_var_map[std_name] = (var_name, tbl_name)
+    return state_host_var_map
+
+
+def _build_suite_part_not_found_branch(
+    errmsg_arg, errflg_arg, trim_suite_part, suite_name,
+) -> list:
+    """Innermost false branch: no suite_part matched."""
+    write_part_err = WriteErrMsgOp(
+        errmsg_arg, trim_suite_part.res,
+        "No suite part named ", f" found in suite {suite_name}",
+    )
+    one_part_err = arith.ConstantOp.from_int_and_width(1, 32)
+    store_part_err = memref.StoreOp.get(one_part_err, errflg_arg, [])
+    return [write_part_err, one_part_err, store_part_err, scf.YieldOp()]
+
+
+def _build_cap_var_std_to_dims(scheme_names, meta_data) -> dict:
+    """Build standard_name -> dim_names for cap_var sources."""
+    cap_var_std_to_dims: dict = {}
+    for _sv_scheme in scheme_names:
+        _sv_run_tbl = _sv_scheme + "_run"
+        if _sv_scheme not in meta_data:
+            continue
+        if _sv_run_tbl not in meta_data[_sv_scheme].arg_tables:
+            continue
+        for _sv_fa in (
+            meta_data[_sv_scheme].getArgTable(_sv_run_tbl).getFunctionArguments()
+        ):
+            if _sv_fa.hasAttr("standard_name") and _sv_fa.hasAttr("dim_names"):
+                _sv_sn = _sv_fa.getAttr("standard_name").lower()
+                if _sv_sn not in cap_var_std_to_dims:
+                    cap_var_std_to_dims[_sv_sn] = _sv_fa.getAttr("dim_names")
+    return cap_var_std_to_dims
+
+
+def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
+    """Build HostVarRefOps for every Host/DdtMember/CapVar-sourced input
+    arg of this suite call. Mutates ctx.seen_host_globals/
+    ctx.chain_global_ops in place. Returns (host_var_ref_ops,
+    host_var_ref_results, host_name_to_ref_result).
+    """
+    callee_input_names = info["callee_input_names"]
+    callee_input_types = info["callee_input_types"]
+    resolved_arg_ops = info["resolved_arg_ops"]
+    std_name_of = info["std_name_of"]
+
+    host_var_ref_ops = []
+    host_var_ref_results = {}
+    host_name_to_ref_result = {}
+
+    for i, (arg_name, arg_type) in enumerate(
+        zip(callee_input_names, callee_input_types)
+    ):
+        op = resolved_arg_ops[i]
+        if op.source_kind.data == ArgSourceKind.Host:
+            host_var_name, host_module_name = op.var_name.data, op.module_name.data
+            _col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+            _col_end_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+            if (
+                std_name_of.get(_bare(arg_name)) == CCPP_HORIZ_DIM_STD_NAME
+                and _rank_of(arg_type) == 0
+                and _col_begin_key is not None
+                and _col_end_key is not None
+                and _col_begin_key in ctx.block_arg_map
+                and _col_end_key in ctx.block_arg_map
+            ):
+                # This scalar means "how many columns in THIS call"
+                # (capgen-v1's own ncol=(col_end - col_start + 1)),
+                # not the host's total column count -- the ArraySectionOp
+                # block below slices this call's array args down to
+                # col_start:col_end, so the scheme must be told the
+                # matching (possibly smaller) chunk width, not ncols.
+                # Mirrors suite_cap.py's _build_ncol_compute_ops (same
+                # alloc/load/sub/add-one/store op sequence), just built
+                # against block_arg_map's plain block-argument memrefs
+                # instead of that method's own data_ops dict.
+                _ncol_alloc = memref.AllocaOp.get(
+                    TypeConversions.getBaseType("integer"), shape=[]
+                )
+                _ncol_alloc.memref.name_hint = _bare(arg_name)
+                _load_col_start = memref.LoadOp.get(
+                    ctx.block_arg_map[_col_begin_key], []
+                )
+                _load_col_end = memref.LoadOp.get(
+                    ctx.block_arg_map[_col_end_key], []
+                )
+                sub_op = arith.SubiOp(_load_col_end, _load_col_start)
+                one_const = arith.ConstantOp.from_int_and_width(1, 32)
+                add_op = arith.AddiOp(sub_op, one_const)
+                store_op = memref.StoreOp.get(add_op, _ncol_alloc, [])
+                host_var_ref_ops.extend([
+                    _ncol_alloc, _load_col_start, _load_col_end,
+                    sub_op, one_const, add_op, store_op,
+                ])
+                host_var_ref_results[arg_name] = _ncol_alloc.memref
+                host_name_to_ref_result[host_var_name] = _ncol_alloc.memref
+            else:
+                ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
+                host_var_ref_ops.append(ref_op)
+                host_var_ref_results[arg_name] = ref_op.res
+                host_name_to_ref_result[host_var_name] = ref_op.res
+        elif op.source_kind.data == ArgSourceKind.DdtMember:
+            instance_var, instance_module, member_name = (
+                op.var_name.data, op.module_name.data, op.member_path.data
+            )
+            # Resolve std_name tokens in subscript to local variable names
+            resolved_member, sub_vars = _resolve_member_subscripts(
+                member_name, ctx.host_var_map
+            )
+            # Real capgen-v1's multi-instance model: instance_var is
+            # itself a HOST-owned array of DDT, indexed by whichever
+            # local block arg this call already resolves for
+            # index_std_name (see _build_per_suite_run_info). NOTE:
+            # print_ftn.py doesn't read index_expr yet (separate,
+            # tracked follow-on -- see HostVarRefOp's own docstring),
+            # so this doesn't change generated Fortran on its own.
+            index_expr = None
+            if op.index_std_name is not None:
+                index_canonical = ctx.non_host_std_to_canonical.get(
+                    op.index_std_name.data
+                )
+                if index_canonical is not None and index_canonical in ctx.block_arg_map:
+                    index_expr = index_canonical
+            ref_op = HostVarRefOp(
+                instance_var, instance_module, arg_type,
+                member_name=resolved_member, index_expr=index_expr,
+            )
+            host_var_ref_ops.append(ref_op)
+            host_var_ref_results[arg_name] = ref_op.res
+            host_name_to_ref_result[f"{instance_var}%{resolved_member}"] = ref_op.res
+            # Emit USE stubs for subscript variables (already resolved to local names)
+            for local_name, module_name in sub_vars:
+                key = (local_name, module_name)
+                if key not in ctx.seen_host_globals:
+                    ctx.seen_host_globals.add(key)
+                    sv_glob = llvm.GlobalOp(
+                        llvm.LLVMArrayType.from_size_and_type(1, i8),
+                        local_name, "external",
+                    )
+                    sv_glob.attributes["module"] = StringAttr(module_name)
+                    ctx.chain_global_ops.append(sv_glob)
+        elif op.source_kind.data == ArgSourceKind.CapVar:
+            std_name_cv = op.std_name.data
+            cv_name, _cv_type, _ftn = ctx.cap_var_map[std_name_cv]
+            _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
+            if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
+                _cv_rank = _rank_of(arg_type)
+                if _cv_rank > 0:
+                    cv_name = f"{cv_name}({', '.join([':'] * _cv_rank)})"
+            cap_ref = CapVarRefOp(cv_name, arg_type)
+            host_var_ref_ops.append(cap_ref)
+            host_var_ref_results[arg_name] = cap_ref.res
+
+    return host_var_ref_ops, host_var_ref_results, host_name_to_ref_result
+
+
+def _build_array_section_ops(
+    ctx, info, host_var_ref_results, host_name_to_ref_result, cap_var_std_to_dims,
+) -> list:
+    """Build ArraySectionOps slicing host/ddt-member/cap-var input args
+    down to this call's own column chunk (and any further host-resolvable
+    dimension). Mutates host_var_ref_results in place (slicing replaces
+    the raw ref with the sliced result) and ctx.chain_global_ops/
+    ctx.seen_host_globals for any newly-discovered dimension host var.
+    """
+    callee_input_names = info["callee_input_names"]
+    callee_input_types = info["callee_input_types"]
+    resolved_arg_ops = info["resolved_arg_ops"]
+    local_to_array_layout = info.get("local_to_array_layout", {})
+
+    array_section_pre_ops = []
+    array_section_extra_ops = []
+    array_section_main_ops = []
+    one_const_for_sections = None
+
+    def _resolve_extra_dim_bounds(dim_std_names, lowers: list, uppers: list) -> bool:
+        """Resolve each dimension beyond the leading (already-seeded)
+        horizontal_dimension bound to a host var ref, appending its
+        upper bound to lowers/uppers in place (lower is always the
+        shared '1' constant -- these dims are never column-chunked).
+
+        Shared by both ArraySectionOp sources below (a CapVar's own
+        dim_names, and a Host/DdtMember var's dim_names) -- they were
+        previously two independently-maintained copies of the same
+        "resolve dim standard_name -> host var ref, dedupe the
+        external-global stub, lazily create the shared '1' constant"
+        logic (run_dispatch.py's own Tier 1 complexity-audit finding,
+        task #40). Returns False and stops at the first dim whose
+        standard_name has no host_var_map entry, matching both call
+        sites' original fail-fast (break-out-of-loop) behavior.
+        """
+        nonlocal one_const_for_sections
+        for dim_std_name in dim_std_names:
+            dim_std_name = dim_std_name.lower()
+            if dim_std_name not in ctx.host_var_map:
+                return False
+            dim_var_name, dim_module_name = ctx.host_var_map[dim_std_name]
+
+            if dim_var_name in host_name_to_ref_result:
+                dim_upper_ref = host_name_to_ref_result[dim_var_name]
+            else:
+                dim_ref_op = HostVarRefOp(
+                    dim_var_name,
+                    dim_module_name,
+                    TypeConversions.getBaseType("integer"),
+                )
+                array_section_extra_ops.append(dim_ref_op)
+                host_name_to_ref_result[dim_var_name] = dim_ref_op.res
+                dim_upper_ref = dim_ref_op.res
+
+                key = (dim_var_name, dim_module_name)
+                if key not in ctx.seen_host_globals:
+                    ctx.seen_host_globals.add(key)
+                    dim_glob = llvm.GlobalOp(
+                        llvm.LLVMArrayType.from_size_and_type(1, i8),
+                        dim_var_name,
+                        "external",
+                    )
+                    dim_glob.attributes["module"] = StringAttr(dim_module_name)
+                    ctx.chain_global_ops.append(dim_glob)
+
+            if one_const_for_sections is None:
+                one_const_for_sections = arith.ConstantOp.from_int_and_width(1, 32)
+                array_section_pre_ops.append(one_const_for_sections)
+
+            lowers.append(one_const_for_sections.result)
+            uppers.append(dim_upper_ref)
+        return True
+
+    for i, (arg_name, arg_type) in enumerate(
+        zip(callee_input_names, callee_input_types)
+    ):
+        # Row-major rank≥2 arrays are handled by RowMajorConvertOp below;
+        # skip ArraySectionOp for them so we don't double-slice.
+        if _bare(arg_name) in local_to_array_layout:
+            continue
+        op = resolved_arg_ops[i]
+        if op.source_kind.data == ArgSourceKind.Host:
+            host_var_name, host_module_name = op.var_name.data, op.module_name.data
+            lookup_var, lookup_mod = host_var_name, host_module_name
+        elif op.source_kind.data == ArgSourceKind.DdtMember:
+            _instance_var, instance_module, member_name = (
+                op.var_name.data, op.module_name.data, op.member_path.data
+            )
+            # For nested paths like "b%x" or "b%x(ncol)", strip the
+            # chain prefix and any array subscripts to get the leaf
+            # member name for the var descriptor lookup.
+            leaf = member_name.rsplit("%", 1)[-1].split("(")[0]
+            lookup_var, lookup_mod = leaf, instance_module
+        elif op.source_kind.data == ArgSourceKind.CapVar:
+            std_name_cv = op.std_name.data
+            _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
+            if not _cv_dims:
+                continue
+            _cv_first_dim = _cv_dims[0].lower()
+            if _cv_first_dim == CCPP_LOOP_EXTENT_STD_NAME:
+                # Original, already-working convention (advection):
+                # single-dimension slice only, behavior unchanged --
+                # do not extend to additional dimensions here, since
+                # that would change already-correct, already-verified
+                # output for every existing horizontal_loop_extent
+                # example.
+                col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                if not col_begin_key or not col_end_key:
+                    continue
+                if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
+                    continue
+                section = ArraySectionOp(
+                    host_var_ref_results[arg_name],
+                    [ctx.block_arg_map[col_begin_key]],
+                    [ctx.block_arg_map[col_end_key]],
+                )
+                array_section_main_ops.append(section)
+                host_var_ref_results[arg_name] = section.res
+                continue
+            if _cv_first_dim != CCPP_HORIZ_DIM_STD_NAME:
+                continue
+            # Newer horizontal_dimension-always-means-this-call's-
+            # columns convention (var_compat's own effr_calc, whose
+            # unmatched optional ncl_out output falls back to a
+            # cap-owned scratch buffer, sized to the full host column
+            # count, dimensioned by horizontal_dimension like any
+            # other array arg) -- same reasoning as the Host/DdtMember
+            # branch above, including proper multi-dimension support.
+            col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+            col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+            if not col_begin_key or not col_end_key:
+                continue
+            if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
+                continue
+
+            lowers = [ctx.block_arg_map[col_begin_key]]
+            uppers = [ctx.block_arg_map[col_end_key]]
+
+            # A cap-owned scratch buffer can be rank >= 2 too (e.g.
+            # ncl_out's horizontal_dimension, vertical_layer_dimension)
+            # -- resolve every additional dimension's upper bound the
+            # same way the Host/DdtMember branch above does, since
+            # those dimensions (e.g. "pver") are always real host
+            # variables regardless of the array itself being cap-owned.
+            _cv_valid = _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers)
+
+            if not _cv_valid:
+                continue
+
+            section = ArraySectionOp(
+                host_var_ref_results[arg_name],
+                lowers,
+                uppers,
+            )
+            array_section_main_ops.append(section)
+            host_var_ref_results[arg_name] = section.res
+            continue
+        else:
+            continue
+
+        # Look up the var descriptor; for DDT members, search the DDT table
+        host_var_name = lookup_var
+        host_module_name = lookup_mod
+        try:
+            # Try the module table first, then DDT tables
+            if lookup_mod in ctx.meta_data and lookup_mod in ctx.meta_data[lookup_mod].arg_tables:
+                mod_arg_table = ctx.meta_data[lookup_mod].getArgTable(lookup_mod)
+                host_var_desc = mod_arg_table.getFunctionArgument(lookup_var)
+            else:
+                # DDT member: search all DDT tables for the member
+                raise AssertionError("not found in module, try DDT")
+        except (KeyError, AssertionError):
+            # Try DDT tables
+            found = False
+            for tbl_name, props in ctx.meta_data.items():
+                if props.getAttr("type") != CCPPType.DDT:
+                    continue
+                if tbl_name not in props.arg_tables:
+                    continue
+                try:
+                    host_var_desc = props.getArgTable(tbl_name).getFunctionArgument(lookup_var)
+                    found = True
+                    break
+                except (KeyError, AssertionError):
+                    continue
+            if not found:
+                continue
+
+        if not host_var_desc.hasAttr("dim_names"):
+            continue
+        dim_names_list = host_var_desc.getAttr("dim_names")
+        if not dim_names_list or dim_names_list[0].lower() != CCPP_HORIZ_DIM_STD_NAME:
+            continue
+
+        # Find the canonical block arg names for loop begin/end via
+        # standard_name, since different schemes use different local names.
+        col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+        col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+        if not col_begin_key or not col_end_key:
+            continue
+        if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
+            continue
+
+        lowers = [ctx.block_arg_map[col_begin_key]]
+        uppers = [ctx.block_arg_map[col_end_key]]
+
+        valid = _resolve_extra_dim_bounds(dim_names_list[1:], lowers, uppers)
+
+        # lowers/uppers always has >= 1 entry (the horizontal_dimension
+        # bound seeded above); a genuinely 1-D horizontal-only host
+        # array (e.g. var_compat's fluxLW, sfc_up_sw, sfc_down_sw) has
+        # no further dim_names to append and is still a fully valid
+        # single-dimension ArraySectionOp -- do not require a second
+        # dimension to have been found.
+        if not valid:
+            continue
+
+        section = ArraySectionOp(
+            host_var_ref_results[arg_name],
+            lowers,
+            uppers,
+        )
+        array_section_main_ops.append(section)
+        host_var_ref_results[arg_name] = section.res
+
+    return array_section_pre_ops + array_section_extra_ops + array_section_main_ops
+
+
+def _build_row_major_convert_ops(ctx, info, host_var_ref_results) -> tuple:
+    """Transpose row-major host arrays to column-major temps before
+    passing them to the suite.  ArraySectionOps are skipped for these
+    args (see the local_to_array_layout check in _build_array_section_ops)
+    so host_var_ref_results[arg_name] still holds the raw HostVarRefOp
+    result at this point. Mutates host_var_ref_results in place. Returns
+    (row_major_convert_ops, row_major_write_back_pairs).
+    """
+    callee_input_names = info["callee_input_names"]
+    callee_input_types = info["callee_input_types"]
+    resolved_arg_ops = info["resolved_arg_ops"]
+    local_to_array_layout = info.get("local_to_array_layout", {})
+
+    row_major_convert_ops: list = []
+    row_major_write_back_pairs: list = []  # (conv_op, host_ref_result)
+
+    for i, (arg_name, arg_type) in enumerate(
+        zip(callee_input_names, callee_input_types)
+    ):
+        op = resolved_arg_ops[i]
+        if op.source_kind.data != ArgSourceKind.Host:
+            continue
+        bare = _bare(arg_name)
+        if bare not in local_to_array_layout:
+            continue
+
+        dim_std_names, intent = local_to_array_layout[bare]
+        dim_exprs: list = []
+        valid = True
+        for dim_sn in dim_std_names:
+            sn_lower = dim_sn.lower()
+            if sn_lower == CCPP_LOOP_EXTENT_STD_NAME:
+                # horizontal loop extent: express as col_end - col_start + 1
+                col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+                col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+                if (col_begin_key and col_end_key
+                        and col_begin_key in ctx.block_arg_map
+                        and col_end_key in ctx.block_arg_map):
+                    dim_exprs.append(f"{col_end_key} - {col_begin_key} + 1")
+                else:
+                    valid = False
+                    break
+            else:
+                canonical = ctx.non_host_std_to_canonical.get(sn_lower)
+                if canonical:
+                    dim_exprs.append(canonical)
+                elif sn_lower in ctx.host_var_map:
+                    # Dimension is a host module variable; use its name directly
+                    dim_exprs.append(ctx.host_var_map[sn_lower][0])
+                else:
+                    valid = False
+                    break
+        if not valid:
+            continue
+
+        host_ref_result = host_var_ref_results[arg_name]
+        conv_op = RowMajorConvertOp(host_ref_result, dim_exprs, arg_type)
+        conv_op.res.name_hint = f"{bare}_col"
+        row_major_convert_ops.append(conv_op)
+        host_var_ref_results[arg_name] = conv_op.res
+
+        if intent in ("inout", "out"):
+            row_major_write_back_pairs.append((conv_op, host_ref_result, dim_exprs))
+
+    return row_major_convert_ops, row_major_write_back_pairs
+
+
+def _build_call_args(ctx, info, host_var_ref_results) -> tuple:
+    """Build call args in callee order. Returns (call_args, call_arg_bare_names)."""
+    callee_input_names = info["callee_input_names"]
+    resolved_arg_ops = info["resolved_arg_ops"]
+    std_name_of = info["std_name_of"]
+
+    call_args = []
+    call_arg_bare_names = []
+    for i, arg_name in enumerate(callee_input_names):
+        op = resolved_arg_ops[i]
+        if op.source_kind.data in (
+            ArgSourceKind.Host, ArgSourceKind.DdtMember, ArgSourceKind.CapVar
+        ):
+            call_args.append(host_var_ref_results[arg_name])
+        else:
+            # Block arg: use canonical name if this arg was deduplicated
+            bare = _bare(arg_name)
+            std = std_name_of.get(bare, bare)
+            canonical = ctx.non_host_std_to_canonical.get(std, arg_name)
+            # Fall back to arg_name if canonical not in block_arg_map
+            key = canonical if canonical in ctx.block_arg_map else arg_name
+            call_args.append(ctx.block_arg_map[key])
+        call_arg_bare_names.append(_bare(arg_name))
+
+    return call_args, call_arg_bare_names
+
+
+def _build_call_and_copy_back_ops(
+    ctx, info, trim_suite_part, call_args, call_arg_bare_names,
+    host_var_ref_results, wrapper_inout_echo_args, wrapper_inout_echo_seen,
+) -> tuple:
+    """Build this suite part's own StrCmpOp guard and call op (positional
+    or keyword, depending on whether any input is optional), then
+    classify/copy back every one of its outputs to the right destination
+    (errmsg/errflg, an ordinary scheme-declared inout scalar, a host/state
+    module var, or a cap-owned scratch scalar).
+
+    Mutates wrapper_inout_echo_args/wrapper_inout_echo_seen/
+    ctx.seen_host_globals/ctx.chain_global_ops in place. Returns
+    (suite_part_eq, call_op, cap_var_inout_refs, copy_ops).
+    """
+    suite_part = info["suite_part"]
+    suite_callee = info["suite_callee"]
+    callee_output_types = info["callee_output_types"]
+    callee_input_names = info["callee_input_names"]
+    callee_input_types = info["callee_input_types"]
+    resolved_arg_ops = info["resolved_arg_ops"]
+    scheme_names = info["scheme_names"]
+
+    def _find_cap_var_inout_ref(ret_type):
+        """Return a CapVarRefOp for this suite call's own first
+        CapVar-sourced input arg whose type matches ret_type, or
+        None if there isn't one.
+
+        Shared by both result-classification branches below (the
+        leading-inout-return branch and the trailing-alloc-return
+        branch) -- previously two independently-maintained,
+        byte-identical copies of this same search (complexity-audit
+        Tier 2 finding, task #50). Read-only lookup with no
+        insertion-point/anchor-order interaction, unlike this
+        file's own GPU-directive-adjacent logic (see task #45's
+        scoping note) -- it only decides *what* ref to build, not
+        *where* to insert it.
+        """
+        for i, (a_name, a_type) in enumerate(
+            zip(callee_input_names, callee_input_types)
+        ):
+            if (a_type == ret_type
+                    and resolved_arg_ops[i].source_kind.data == ArgSourceKind.CapVar):
+                std_name_cv = resolved_arg_ops[i].std_name.data
+                cv_name, _cv_type, _ = ctx.cap_var_map[std_name_cv]
+                return CapVarRefOp(cv_name, a_type)
+        return None
+
+    # ── Inner if for suite_part ───────────────────────────────────
+    suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
+
+    # Use _get_suite_lifecycle_ret_info to get std_names for alloc returns
+    # (intent=out scalars).  Suite cap returns: inout_vals first, then
+    # alloc_vals.  Compute the offset so alloc positions are matched by
+    # standard_name rather than type, preventing false errflg matches when
+    # another intent=out scalar (e.g. const_index) has the same MLIR type.
+    #
+    # Computed here, before call_op is built, so the keyword-call path
+    # below can look up each output position's REAL callee dummy-argument
+    # name instead of a placeholder (see _result_keyword_name).
+    _run_ret_alloc = _get_suite_lifecycle_ret_info(
+        scheme_names, ctx.meta_data, "_run"
+    )
+    _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
+    # Positional info IS available for the rest of the leading region:
+    # an ordinary scheme-declared intent=inout scalar with no
+    # framework meaning of its own (e.g. examples/var_compat's
+    # scalar_var/tke_inout/tke2_inout) occupies the same relative
+    # position here as it does in suite_cap.py's own
+    # inout_return_vals (built from input_arg_list in the callee's
+    # own declared dummy-arg order) -- see
+    # _get_suite_leading_inout_ret_info's own docstring.
+    _leading_inout_ret = _get_suite_leading_inout_ret_info(
+        scheme_names, ctx.meta_data, "_run"
+    )
+
+    def _result_keyword_name(idx, ret_type):
+        """The real callee dummy-argument name for output position idx.
+
+        Mirrors the copy-back loop's own idx/type-based classification
+        below exactly (errmsg/errflg by type, ccpp_t by type, then the
+        leading-inout region via _leading_inout_ret, then the trailing
+        alloc region via _run_ret_alloc) so a KeywordCallOp's result
+        name always matches the SAME string already used for that same
+        argument's own operand-side keyword whenever one exists --
+        needed so print_ftn.py's name-based dedup in _print_kw_call
+        recognizes an inout echo and skips re-printing it. The
+        previous code used a synthetic "_out_N" placeholder here,
+        which the callee's own signature never declares -- an
+        invalid-Fortran arity mismatch caught only by a real compiler
+        (ifx), not by FileCheck goldens or gfortran's more permissive
+        diagnostics.
+        """
+        if ret_type == ctx.errmsg_type:
+            return "errmsg"
+        if ret_type == ctx.errflg_type:
+            return "errflg"
+        if idx < _n_inout_ret:
+            if idx < len(_leading_inout_ret):
+                return _leading_inout_ret[idx][0]
+            return f"_out_{idx}"
+        ri_idx = idx - _n_inout_ret
+        if ri_idx < len(_run_ret_alloc):
+            return _run_ret_alloc[ri_idx][1]
+        return f"_out_{idx}"
+
+    # Use keyword-argument call when any suite cap input is optional
+    # so that Fortran correctly forwards the OPTIONAL absence status.
+    suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
+    if suite_has_optional:
+        _result_names = [
+            _result_keyword_name(_i, rt)
+            for _i, rt in enumerate(callee_output_types)
+        ]
+        call_op = KeywordCallOp(
+            suite_callee,
+            ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
+            ArrayAttr([StringAttr(n) for n in _result_names]),
+            DictionaryAttr({}),
+            call_args,
+            callee_output_types,
+        )
+    else:
+        call_op = func.CallOp(suite_callee, call_args, callee_output_types)
+
+    # CapVarRefOps for inout-echo returns must be placed BEFORE the call
+    # so the printer can resolve their names when processing return positions.
+
+    cap_var_inout_refs: list = []
+    copy_ops = []
+    for idx, ret_type in enumerate(callee_output_types):
+        result = call_op.results[idx]
+        if idx < _n_inout_ret:
+            # inout return vals: type-match only (no positional info available)
+            if ret_type == ctx.errmsg_type:
+                copy_ops.append(memref.CopyOp(result, ctx.errmsg_arg))
+            elif ret_type == ctx.errflg_type:
+                copy_ops.append(memref.CopyOp(result, ctx.errflg_arg))
+            elif idx < len(_leading_inout_ret):
+                # Ordinary scheme-declared inout scalar -- route the
+                # copy-back the same way the trailing alloc-style
+                # branch below does, and record the echoed block arg
+                # (see wrapper_inout_echo_args) so it also appears in
+                # the wrapper's own ReturnOp -- without that, the
+                # printer has no way to know this argument needs
+                # intent(inout) at the wrapper level, and it silently
+                # stays intent(in) even though the suite callee it's
+                # passed into declares it intent(inout).
+                _leading_local_name, _leading_std_name = _leading_inout_ret[idx]
+                canonical = ctx.non_host_std_to_canonical.get(
+                    _leading_std_name, _leading_local_name
+                ) if _leading_std_name else _leading_local_name
+                if canonical and canonical in ctx.block_arg_map:
+                    target = ctx.block_arg_map[canonical]
+                    copy_ops.append(memref.CopyOp(result, target))
+                    if target not in wrapper_inout_echo_seen:
+                        wrapper_inout_echo_seen.add(target)
+                        wrapper_inout_echo_args.append(target)
+                elif _leading_std_name and _leading_std_name in ctx.state_host_var_map:
+                    hv_name, hv_module = ctx.state_host_var_map[_leading_std_name]
+                    hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
+                    cap_var_inout_refs.append(hv_ref)
+                    copy_ops.append(memref.CopyOp(result, hv_ref.res))
+                    hv_key = (hv_name, hv_module)
+                    if hv_key not in ctx.seen_host_globals:
+                        ctx.seen_host_globals.add(hv_key)
+                        hv_glob = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(1, i8),
+                            hv_name, "external",
+                        )
+                        hv_glob.attributes["module"] = StringAttr(hv_module)
+                        ctx.chain_global_ops.append(hv_glob)
+                elif canonical is not None and any(
+                    a_name == canonical
+                    and resolved_arg_ops[i].source_kind.data == ArgSourceKind.DdtMember
+                    for i, a_name in enumerate(callee_input_names)
+                ) and canonical in host_var_ref_results:
+                    # Ordinary scheme-declared inout scalar host-matched
+                    # to a DDT member (e.g. var_compat's scalar_var/
+                    # tke_inout/tke2_inout, resolved to
+                    # phys_state%scalar_var) -- reuse the exact same
+                    # HostVarRefOp already built as this argument's own
+                    # INPUT reference (the per-callee-arg
+                    # host_var_ref_results loop above) as the copy-back
+                    # target too. Functionally a no-op (Fortran already
+                    # reflects the update through the same aliased
+                    # reference -- nothing needs copying), but marks
+                    # this result as having a real copy consumer so it
+                    # never falls into print_ftn.py's
+                    # untracked-call-result fallback, which otherwise
+                    # invents a throwaway "ccpp_tmp_N" local and
+                    # (whenever the suite callee is dispatched via a
+                    # plain positional call rather than a keyword call)
+                    # prints it as a genuine EXTRA positional argument
+                    # -- a real arity mismatch that also silently
+                    # shifts every later positional argument (including
+                    # errmsg/errflg) into the wrong dummy-argument slot,
+                    # not merely a cosmetic unused-variable warning.
+                    copy_ops.append(
+                        memref.CopyOp(result, host_var_ref_results[canonical])
+                    )
+                elif ctx.cap_var_map:
+                    cap_ref = _find_cap_var_inout_ref(ret_type)
+                    if cap_ref is not None:
+                        cap_var_inout_refs.append(cap_ref)
+                        copy_ops.append(memref.CopyOp(result, cap_ref.res))
+        else:
+            ri_idx = idx - _n_inout_ret
+            ret_std_name = _run_ret_alloc[ri_idx][2]
+            ret_local_name = _run_ret_alloc[ri_idx][1]
+            if ret_std_name == CCPP_ERROR_MESSAGE:
+                copy_ops.append(memref.CopyOp(result, ctx.errmsg_arg))
+            elif ret_std_name == CCPP_ERROR_CODE:
+                copy_ops.append(memref.CopyOp(result, ctx.errflg_arg))
+            else:
+                # Non-error scalar out (e.g. const_index).
+                # 1) block arg (e.g. when not host-matched)
+                canonical = ctx.non_host_std_to_canonical.get(
+                    ret_std_name, ret_local_name
+                ) if ret_std_name else ret_local_name
+                if canonical and canonical in ctx.block_arg_map:
+                    copy_ops.append(
+                        memref.CopyOp(result, ctx.block_arg_map[canonical])
+                    )
+                elif ret_std_name and ret_std_name in ctx.state_host_var_map:
+                    # 2) host module/state var: write result back to the
+                    # host. (intent=out scalars are not in
+                    # callee_input_names so no HostVarRefOp exists yet —
+                    # create one here.)
+                    hv_name, hv_module = ctx.state_host_var_map[ret_std_name]
+                    hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
+                    cap_var_inout_refs.append(hv_ref)
+                    copy_ops.append(memref.CopyOp(result, hv_ref.res))
+                    hv_key = (hv_name, hv_module)
+                    if hv_key not in ctx.seen_host_globals:
+                        ctx.seen_host_globals.add(hv_key)
+                        hv_glob = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(1, i8),
+                            hv_name, "external",
+                        )
+                        hv_glob.attributes["module"] = StringAttr(hv_module)
+                        ctx.chain_global_ops.append(hv_glob)
+                elif ctx.cap_var_map:
+                    # 3) cap_var inout echo: suite cap returns cap-owned scalar.
+                    cap_ref = _find_cap_var_inout_ref(ret_type)
+                    if cap_ref is not None:
+                        cap_var_inout_refs.append(cap_ref)
+                        copy_ops.append(memref.CopyOp(result, cap_ref.res))
+
+    return suite_part_eq, call_op, cap_var_inout_refs, copy_ops
+
+
+def _build_one_suite_part_dispatch(
+    ctx, info, trim_suite_part, part_inner_false, suite_host_refs,
+    suite_array_secs, decls, wrapper_inout_echo_args, wrapper_inout_echo_seen,
+) -> list:
+    """Build one suite part's own inner if/else branch (guarded by a
+    StrCmpOp on suite_part), chaining it in front of part_inner_false as
+    its own false branch. Extends suite_host_refs/suite_array_secs/decls/
+    wrapper_inout_echo_args in place. Returns the new part_inner_false
+    chain for the next (outer, since processed in reverse) suite part.
+    """
+    suite_callee = info["suite_callee"]
+    callee_module = info["callee_module"]
+    callee_output_types = info["callee_output_types"]
+    callee_input_types = info["callee_input_types"]
+    callee_input_names = info["callee_input_names"]
+    scheme_names = info["scheme_names"]
+
+    # ── Build standard_name → dim_names for cap_var sources ──────
+    cap_var_std_to_dims = _build_cap_var_std_to_dims(scheme_names, ctx.meta_data)
+
+    # ── HostVarRefOps ─────────────────────────────────────────────
+    host_var_ref_ops, host_var_ref_results, host_name_to_ref_result = (
+        _build_host_var_refs(ctx, info, cap_var_std_to_dims)
+    )
+
+    # ── ArraySectionOps ───────────────────────────────────────────
+    array_section_ops = _build_array_section_ops(
+        ctx, info, host_var_ref_results, host_name_to_ref_result, cap_var_std_to_dims,
+    )
+
+    # ── RowMajorConvertOps (rank≥2 row_major host arrays) ─────────
+    row_major_convert_ops, row_major_write_back_pairs = _build_row_major_convert_ops(
+        ctx, info, host_var_ref_results,
+    )
+
+    # ── Build call args in callee order ───────────────────────────
+    call_args, call_arg_bare_names = _build_call_args(ctx, info, host_var_ref_results)
+
+    # ── Verify argument count matches callee signature ─────────────
+    _assert_call_arg_count_matches_signature(
+        suite_callee, call_args, callee_input_names, callee_input_types
+    )
+
+    suite_part_eq, call_op, cap_var_inout_refs, copy_ops = _build_call_and_copy_back_ops(
+        ctx, info, trim_suite_part, call_args, call_arg_bare_names,
+        host_var_ref_results, wrapper_inout_echo_args, wrapper_inout_echo_seen,
+    )
+
+    # Build write-back ops for row-major arrays (inout/out only).
+    row_major_write_back_ops: list = []
+    for conv_op, host_ref_result, dim_exprs in row_major_write_back_pairs:
+        wb_op = RowMajorWriteBackOp(conv_op.res, host_ref_result, dim_exprs)
+        row_major_write_back_ops.append(wb_op)
+
+    inner_if_true = (
+        cap_var_inout_refs
+        + row_major_convert_ops
+        + [call_op]
+        + copy_ops
+        + row_major_write_back_ops
+    )
+
+    inner_if = scf.IfOp(
+        suite_part_eq.res,
+        [],
+        [*inner_if_true, scf.YieldOp()],
+        part_inner_false,
+    )
+    new_part_inner_false = [suite_part_eq, inner_if, scf.YieldOp()]
+    suite_host_refs.extend(host_var_ref_ops)
+    suite_array_secs.extend(array_section_ops)
+
+    decl = func.FuncOp.external(
+        suite_callee, callee_input_types, callee_output_types
+    )
+    decl.attributes["module"] = StringAttr(callee_module)
+    decls.append(decl)
+
+    return new_part_inner_false
+
+
 def _build_run_dispatch_chain(
     per_suite_grouped: dict,
     trim_suite_name,
@@ -792,37 +1648,30 @@ def _build_run_dispatch_chain(
     wrapper_inout_echo_args: list = []
     _wrapper_inout_echo_seen: set = set()
 
-    # state_host_var_map: host_var_map (MODULE-type only, see
-    # _build_run_metadata_maps) enriched with 'state'-classified HOST-type
-    # vars -- real host-owned data (e.g. suite_allocate's own
-    # workspace_checksum) that real capgen-v1 resolves via use-association,
-    # same as MODULE-type vars, rather than discarding it into a throwaway
-    # local. Used only at the result write-back sites below (never for
-    # dimension-name/DDT-member resolution elsewhere in this function),
-    # since those other host_var_map lookups aren't yet confirmed safe to
-    # widen the same way -- see ccpp_cap_refactor_plan.md's suite_allocate
-    # scoping note for why this is deliberately narrow, not a blanket
-    # include_host=True flip. 'dispatch_scalar'-classified HOST-type vars
-    # (loop bounds, error handling) are excluded -- they have no backing
-    # Fortran module to use-associate from.
-    host_classification = classify_host_table_vars(meta_data)
-    state_host_var_map = dict(host_var_map)
-    for std_name, (var_name, tbl_name) in _build_host_var_map(meta_data).items():
-        if host_classification.get(std_name) == "state":
-            state_host_var_map[std_name] = (var_name, tbl_name)
+    state_host_var_map = _build_state_host_var_map(meta_data, host_var_map)
+
+    ctx = _RunChainCtx(
+        block_arg_map=block_arg_map,
+        non_host_std_to_canonical=non_host_std_to_canonical,
+        host_var_map=host_var_map,
+        meta_data=meta_data,
+        cap_var_map=cap_var_map,
+        seen_host_globals=seen_host_globals,
+        chain_global_ops=chain_global_ops,
+        errmsg_arg=errmsg_arg,
+        errflg_arg=errflg_arg,
+        errmsg_type=errmsg_type,
+        errflg_type=errflg_type,
+        state_host_var_map=state_host_var_map,
+    )
 
     for suite_name, suite_infos in reversed(list(per_suite_grouped.items())):
         # trim_suite_part is created once and shared across all parts of this suite.
         trim_suite_part = TrimOp(suite_part_arg)
 
-        # Innermost false branch: no suite_part matched.
-        write_part_err = WriteErrMsgOp(
-            errmsg_arg, trim_suite_part.res,
-            "No suite part named ", f" found in suite {suite_name}",
+        part_inner_false = _build_suite_part_not_found_branch(
+            errmsg_arg, errflg_arg, trim_suite_part, suite_name,
         )
-        one_part_err = arith.ConstantOp.from_int_and_width(1, 32)
-        store_part_err = memref.StoreOp.get(one_part_err, errflg_arg, [])
-        part_inner_false = [write_part_err, one_part_err, store_part_err, scf.YieldOp()]
 
         # Collect host var refs and array section ops across all suite parts so
         # they can be placed in the outer (suite_name) if's true region.  This
@@ -834,693 +1683,11 @@ def _build_run_dispatch_chain(
         suite_array_secs: list = []
 
         for info in reversed(suite_infos):
-            suite_part = info["suite_part"]
-            suite_callee = info["suite_callee"]
-            callee_module = info["callee_module"]
-            callee_output_types = info["callee_output_types"]
-            callee_input_types = info["callee_input_types"]
-            callee_input_names = info["callee_input_names"]
-            resolved_arg_ops = info["resolved_arg_ops"]
-            std_name_of = info["std_name_of"]
-            scheme_names = info["scheme_names"]
-            local_to_array_layout = info.get("local_to_array_layout", {})
-
-            def _find_cap_var_inout_ref(ret_type):
-                """Return a CapVarRefOp for this suite call's own first
-                CapVar-sourced input arg whose type matches ret_type, or
-                None if there isn't one.
-
-                Shared by both result-classification branches below (the
-                leading-inout-return branch and the trailing-alloc-return
-                branch) -- previously two independently-maintained,
-                byte-identical copies of this same search (complexity-audit
-                Tier 2 finding, task #50). Read-only lookup with no
-                insertion-point/anchor-order interaction, unlike this
-                file's own GPU-directive-adjacent logic (see task #45's
-                scoping note) -- it only decides *what* ref to build, not
-                *where* to insert it.
-                """
-                for i, (a_name, a_type) in enumerate(
-                    zip(callee_input_names, callee_input_types)
-                ):
-                    if (a_type == ret_type
-                            and resolved_arg_ops[i].source_kind.data == ArgSourceKind.CapVar):
-                        std_name_cv = resolved_arg_ops[i].std_name.data
-                        cv_name, cv_type, _ = cap_var_map[std_name_cv]
-                        return CapVarRefOp(cv_name, a_type)
-                return None
-
-            # ── Build standard_name → dim_names for cap_var sources ──────
-            cap_var_std_to_dims: dict = {}
-            for _sv_scheme in scheme_names:
-                _sv_run_tbl = _sv_scheme + "_run"
-                if _sv_scheme not in meta_data:
-                    continue
-                if _sv_run_tbl not in meta_data[_sv_scheme].arg_tables:
-                    continue
-                for _sv_fa in (
-                    meta_data[_sv_scheme].getArgTable(_sv_run_tbl).getFunctionArguments()
-                ):
-                    if _sv_fa.hasAttr("standard_name") and _sv_fa.hasAttr("dim_names"):
-                        _sv_sn = _sv_fa.getAttr("standard_name").lower()
-                        if _sv_sn not in cap_var_std_to_dims:
-                            cap_var_std_to_dims[_sv_sn] = _sv_fa.getAttr("dim_names")
-
-            # ── HostVarRefOps ─────────────────────────────────────────────
-            host_var_ref_ops = []
-            host_var_ref_results = {}
-            host_name_to_ref_result = {}
-
-            for i, (arg_name, arg_type) in enumerate(
-                zip(callee_input_names, callee_input_types)
-            ):
-                op = resolved_arg_ops[i]
-                if op.source_kind.data == ArgSourceKind.Host:
-                    host_var_name, host_module_name = op.var_name.data, op.module_name.data
-                    _col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                    _col_end_key = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                    if (
-                        std_name_of.get(_bare(arg_name)) == CCPP_HORIZ_DIM_STD_NAME
-                        and _rank_of(arg_type) == 0
-                        and _col_begin_key is not None
-                        and _col_end_key is not None
-                        and _col_begin_key in block_arg_map
-                        and _col_end_key in block_arg_map
-                    ):
-                        # This scalar means "how many columns in THIS call"
-                        # (capgen-v1's own ncol=(col_end - col_start + 1)),
-                        # not the host's total column count -- the ArraySectionOp
-                        # block below slices this call's array args down to
-                        # col_start:col_end, so the scheme must be told the
-                        # matching (possibly smaller) chunk width, not ncols.
-                        # Mirrors suite_cap.py's _build_ncol_compute_ops (same
-                        # alloc/load/sub/add-one/store op sequence), just built
-                        # against block_arg_map's plain block-argument memrefs
-                        # instead of that method's own data_ops dict.
-                        _ncol_alloc = memref.AllocaOp.get(
-                            TypeConversions.getBaseType("integer"), shape=[]
-                        )
-                        _ncol_alloc.memref.name_hint = _bare(arg_name)
-                        _load_col_start = memref.LoadOp.get(
-                            block_arg_map[_col_begin_key], []
-                        )
-                        _load_col_end = memref.LoadOp.get(
-                            block_arg_map[_col_end_key], []
-                        )
-                        sub_op = arith.SubiOp(_load_col_end, _load_col_start)
-                        one_const = arith.ConstantOp.from_int_and_width(1, 32)
-                        add_op = arith.AddiOp(sub_op, one_const)
-                        store_op = memref.StoreOp.get(add_op, _ncol_alloc, [])
-                        host_var_ref_ops.extend([
-                            _ncol_alloc, _load_col_start, _load_col_end,
-                            sub_op, one_const, add_op, store_op,
-                        ])
-                        host_var_ref_results[arg_name] = _ncol_alloc.memref
-                        host_name_to_ref_result[host_var_name] = _ncol_alloc.memref
-                    else:
-                        ref_op = HostVarRefOp(host_var_name, host_module_name, arg_type)
-                        host_var_ref_ops.append(ref_op)
-                        host_var_ref_results[arg_name] = ref_op.res
-                        host_name_to_ref_result[host_var_name] = ref_op.res
-                elif op.source_kind.data == ArgSourceKind.DdtMember:
-                    instance_var, instance_module, member_name = (
-                        op.var_name.data, op.module_name.data, op.member_path.data
-                    )
-                    # Resolve std_name tokens in subscript to local variable names
-                    resolved_member, sub_vars = _resolve_member_subscripts(
-                        member_name, host_var_map
-                    )
-                    # Real capgen-v1's multi-instance model: instance_var is
-                    # itself a HOST-owned array of DDT, indexed by whichever
-                    # local block arg this call already resolves for
-                    # index_std_name (see _build_per_suite_run_info). NOTE:
-                    # print_ftn.py doesn't read index_expr yet (separate,
-                    # tracked follow-on -- see HostVarRefOp's own docstring),
-                    # so this doesn't change generated Fortran on its own.
-                    index_expr = None
-                    if op.index_std_name is not None:
-                        index_canonical = non_host_std_to_canonical.get(
-                            op.index_std_name.data
-                        )
-                        if index_canonical is not None and index_canonical in block_arg_map:
-                            index_expr = index_canonical
-                    ref_op = HostVarRefOp(
-                        instance_var, instance_module, arg_type,
-                        member_name=resolved_member, index_expr=index_expr,
-                    )
-                    host_var_ref_ops.append(ref_op)
-                    host_var_ref_results[arg_name] = ref_op.res
-                    host_name_to_ref_result[f"{instance_var}%{resolved_member}"] = ref_op.res
-                    # Emit USE stubs for subscript variables (already resolved to local names)
-                    for local_name, module_name in sub_vars:
-                        key = (local_name, module_name)
-                        if key not in seen_host_globals:
-                            seen_host_globals.add(key)
-                            sv_glob = llvm.GlobalOp(
-                                llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                local_name, "external",
-                            )
-                            sv_glob.attributes["module"] = StringAttr(module_name)
-                            chain_global_ops.append(sv_glob)
-                elif op.source_kind.data == ArgSourceKind.CapVar:
-                    std_name_cv = op.std_name.data
-                    cv_name, cv_type, _ftn = cap_var_map[std_name_cv]
-                    _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
-                    if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
-                        _cv_rank = _rank_of(arg_type)
-                        if _cv_rank > 0:
-                            cv_name = f"{cv_name}({', '.join([':'] * _cv_rank)})"
-                    cap_ref = CapVarRefOp(cv_name, arg_type)
-                    host_var_ref_ops.append(cap_ref)
-                    host_var_ref_results[arg_name] = cap_ref.res
-
-            # ── ArraySectionOps ───────────────────────────────────────────
-            array_section_pre_ops = []
-            array_section_extra_ops = []
-            array_section_main_ops = []
-            one_const_for_sections = None
-
-            def _resolve_extra_dim_bounds(dim_std_names, lowers: list, uppers: list) -> bool:
-                """Resolve each dimension beyond the leading (already-seeded)
-                horizontal_dimension bound to a host var ref, appending its
-                upper bound to lowers/uppers in place (lower is always the
-                shared '1' constant -- these dims are never column-chunked).
-
-                Shared by both ArraySectionOp sources below (a CapVar's own
-                dim_names, and a Host/DdtMember var's dim_names) -- they were
-                previously two independently-maintained copies of the same
-                "resolve dim standard_name -> host var ref, dedupe the
-                external-global stub, lazily create the shared '1' constant"
-                logic (run_dispatch.py's own Tier 1 complexity-audit finding,
-                task #40). Returns False and stops at the first dim whose
-                standard_name has no host_var_map entry, matching both call
-                sites' original fail-fast (break-out-of-loop) behavior.
-                """
-                nonlocal one_const_for_sections
-                for dim_std_name in dim_std_names:
-                    dim_std_name = dim_std_name.lower()
-                    if dim_std_name not in host_var_map:
-                        return False
-                    dim_var_name, dim_module_name = host_var_map[dim_std_name]
-
-                    if dim_var_name in host_name_to_ref_result:
-                        dim_upper_ref = host_name_to_ref_result[dim_var_name]
-                    else:
-                        dim_ref_op = HostVarRefOp(
-                            dim_var_name,
-                            dim_module_name,
-                            TypeConversions.getBaseType("integer"),
-                        )
-                        array_section_extra_ops.append(dim_ref_op)
-                        host_name_to_ref_result[dim_var_name] = dim_ref_op.res
-                        dim_upper_ref = dim_ref_op.res
-
-                        key = (dim_var_name, dim_module_name)
-                        if key not in seen_host_globals:
-                            seen_host_globals.add(key)
-                            dim_glob = llvm.GlobalOp(
-                                llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                dim_var_name,
-                                "external",
-                            )
-                            dim_glob.attributes["module"] = StringAttr(dim_module_name)
-                            chain_global_ops.append(dim_glob)
-
-                    if one_const_for_sections is None:
-                        one_const_for_sections = arith.ConstantOp.from_int_and_width(1, 32)
-                        array_section_pre_ops.append(one_const_for_sections)
-
-                    lowers.append(one_const_for_sections.result)
-                    uppers.append(dim_upper_ref)
-                return True
-
-            for i, (arg_name, arg_type) in enumerate(
-                zip(callee_input_names, callee_input_types)
-            ):
-                # Row-major rank≥2 arrays are handled by RowMajorConvertOp below;
-                # skip ArraySectionOp for them so we don't double-slice.
-                if _bare(arg_name) in local_to_array_layout:
-                    continue
-                op = resolved_arg_ops[i]
-                if op.source_kind.data == ArgSourceKind.Host:
-                    host_var_name, host_module_name = op.var_name.data, op.module_name.data
-                    lookup_var, lookup_mod = host_var_name, host_module_name
-                elif op.source_kind.data == ArgSourceKind.DdtMember:
-                    instance_var, instance_module, member_name = (
-                        op.var_name.data, op.module_name.data, op.member_path.data
-                    )
-                    # For nested paths like "b%x" or "b%x(ncol)", strip the
-                    # chain prefix and any array subscripts to get the leaf
-                    # member name for the var descriptor lookup.
-                    leaf = member_name.rsplit("%", 1)[-1].split("(")[0]
-                    lookup_var, lookup_mod = leaf, instance_module
-                elif op.source_kind.data == ArgSourceKind.CapVar:
-                    std_name_cv = op.std_name.data
-                    _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
-                    if not _cv_dims:
-                        continue
-                    _cv_first_dim = _cv_dims[0].lower()
-                    if _cv_first_dim == CCPP_LOOP_EXTENT_STD_NAME:
-                        # Original, already-working convention (advection):
-                        # single-dimension slice only, behavior unchanged --
-                        # do not extend to additional dimensions here, since
-                        # that would change already-correct, already-verified
-                        # output for every existing horizontal_loop_extent
-                        # example.
-                        col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                        col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                        if not col_begin_key or not col_end_key:
-                            continue
-                        if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
-                            continue
-                        section = ArraySectionOp(
-                            host_var_ref_results[arg_name],
-                            [block_arg_map[col_begin_key]],
-                            [block_arg_map[col_end_key]],
-                        )
-                        array_section_main_ops.append(section)
-                        host_var_ref_results[arg_name] = section.res
-                        continue
-                    if _cv_first_dim != CCPP_HORIZ_DIM_STD_NAME:
-                        continue
-                    # Newer horizontal_dimension-always-means-this-call's-
-                    # columns convention (var_compat's own effr_calc, whose
-                    # unmatched optional ncl_out output falls back to a
-                    # cap-owned scratch buffer, sized to the full host column
-                    # count, dimensioned by horizontal_dimension like any
-                    # other array arg) -- same reasoning as the Host/DdtMember
-                    # branch above, including proper multi-dimension support.
-                    col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                    col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                    if not col_begin_key or not col_end_key:
-                        continue
-                    if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
-                        continue
-
-                    lowers = [block_arg_map[col_begin_key]]
-                    uppers = [block_arg_map[col_end_key]]
-
-                    # A cap-owned scratch buffer can be rank >= 2 too (e.g.
-                    # ncl_out's horizontal_dimension, vertical_layer_dimension)
-                    # -- resolve every additional dimension's upper bound the
-                    # same way the Host/DdtMember branch above does, since
-                    # those dimensions (e.g. "pver") are always real host
-                    # variables regardless of the array itself being cap-owned.
-                    _cv_valid = _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers)
-
-                    if not _cv_valid:
-                        continue
-
-                    section = ArraySectionOp(
-                        host_var_ref_results[arg_name],
-                        lowers,
-                        uppers,
-                    )
-                    array_section_main_ops.append(section)
-                    host_var_ref_results[arg_name] = section.res
-                    continue
-                else:
-                    continue
-
-                # Look up the var descriptor; for DDT members, search the DDT table
-                host_var_name = lookup_var
-                host_module_name = lookup_mod
-                try:
-                    # Try the module table first, then DDT tables
-                    if lookup_mod in meta_data and lookup_mod in meta_data[lookup_mod].arg_tables:
-                        mod_arg_table = meta_data[lookup_mod].getArgTable(lookup_mod)
-                        host_var_desc = mod_arg_table.getFunctionArgument(lookup_var)
-                    else:
-                        # DDT member: search all DDT tables for the member
-                        raise AssertionError("not found in module, try DDT")
-                except (KeyError, AssertionError):
-                    # Try DDT tables
-                    found = False
-                    for tbl_name, props in meta_data.items():
-                        if props.getAttr("type") != CCPPType.DDT:
-                            continue
-                        if tbl_name not in props.arg_tables:
-                            continue
-                        try:
-                            host_var_desc = props.getArgTable(tbl_name).getFunctionArgument(lookup_var)
-                            found = True
-                            break
-                        except (KeyError, AssertionError):
-                            continue
-                    if not found:
-                        continue
-
-                if not host_var_desc.hasAttr("dim_names"):
-                    continue
-                dim_names_list = host_var_desc.getAttr("dim_names")
-                if not dim_names_list or dim_names_list[0].lower() != CCPP_HORIZ_DIM_STD_NAME:
-                    continue
-
-                # Find the canonical block arg names for loop begin/end via
-                # standard_name, since different schemes use different local names.
-                col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                if not col_begin_key or not col_end_key:
-                    continue
-                if col_begin_key not in block_arg_map or col_end_key not in block_arg_map:
-                    continue
-
-                lowers = [block_arg_map[col_begin_key]]
-                uppers = [block_arg_map[col_end_key]]
-
-                valid = _resolve_extra_dim_bounds(dim_names_list[1:], lowers, uppers)
-
-                # lowers/uppers always has >= 1 entry (the horizontal_dimension
-                # bound seeded above); a genuinely 1-D horizontal-only host
-                # array (e.g. var_compat's fluxLW, sfc_up_sw, sfc_down_sw) has
-                # no further dim_names to append and is still a fully valid
-                # single-dimension ArraySectionOp -- do not require a second
-                # dimension to have been found.
-                if not valid:
-                    continue
-
-                section = ArraySectionOp(
-                    host_var_ref_results[arg_name],
-                    lowers,
-                    uppers,
-                )
-                array_section_main_ops.append(section)
-                host_var_ref_results[arg_name] = section.res
-
-            array_section_ops = (
-                array_section_pre_ops + array_section_extra_ops + array_section_main_ops
+            part_inner_false = _build_one_suite_part_dispatch(
+                ctx, info, trim_suite_part, part_inner_false, suite_host_refs,
+                suite_array_secs, decls, wrapper_inout_echo_args,
+                _wrapper_inout_echo_seen,
             )
-
-            # ── RowMajorConvertOps (rank≥2 row_major host arrays) ─────────
-            # Transpose row-major host arrays to column-major temps before
-            # passing them to the suite.  ArraySectionOps are skipped for
-            # these args (see check above) so host_var_ref_results[arg_name]
-            # still holds the raw HostVarRefOp result at this point.
-            row_major_convert_ops: list = []
-            row_major_write_back_pairs: list = []  # (conv_op, host_ref_result)
-
-            for i, (arg_name, arg_type) in enumerate(
-                zip(callee_input_names, callee_input_types)
-            ):
-                op = resolved_arg_ops[i]
-                if op.source_kind.data != ArgSourceKind.Host:
-                    continue
-                bare = _bare(arg_name)
-                if bare not in local_to_array_layout:
-                    continue
-
-                dim_std_names, intent = local_to_array_layout[bare]
-                dim_exprs: list = []
-                valid = True
-                for dim_sn in dim_std_names:
-                    sn_lower = dim_sn.lower()
-                    if sn_lower == CCPP_LOOP_EXTENT_STD_NAME:
-                        # horizontal loop extent: express as col_end - col_start + 1
-                        col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                        col_end_key   = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                        if (col_begin_key and col_end_key
-                                and col_begin_key in block_arg_map
-                                and col_end_key in block_arg_map):
-                            dim_exprs.append(f"{col_end_key} - {col_begin_key} + 1")
-                        else:
-                            valid = False
-                            break
-                    else:
-                        canonical = non_host_std_to_canonical.get(sn_lower)
-                        if canonical:
-                            dim_exprs.append(canonical)
-                        elif sn_lower in host_var_map:
-                            # Dimension is a host module variable; use its name directly
-                            dim_exprs.append(host_var_map[sn_lower][0])
-                        else:
-                            valid = False
-                            break
-                if not valid:
-                    continue
-
-                host_ref_result = host_var_ref_results[arg_name]
-                conv_op = RowMajorConvertOp(host_ref_result, dim_exprs, arg_type)
-                conv_op.res.name_hint = f"{bare}_col"
-                row_major_convert_ops.append(conv_op)
-                host_var_ref_results[arg_name] = conv_op.res
-
-                if intent in ("inout", "out"):
-                    row_major_write_back_pairs.append((conv_op, host_ref_result, dim_exprs))
-
-            # ── Build call args in callee order ───────────────────────────
-            call_args = []
-            call_arg_bare_names = []
-            for i, arg_name in enumerate(callee_input_names):
-                op = resolved_arg_ops[i]
-                if op.source_kind.data in (
-                    ArgSourceKind.Host, ArgSourceKind.DdtMember, ArgSourceKind.CapVar
-                ):
-                    call_args.append(host_var_ref_results[arg_name])
-                else:
-                    # Block arg: use canonical name if this arg was deduplicated
-                    bare = _bare(arg_name)
-                    std = std_name_of.get(bare, bare)
-                    canonical = non_host_std_to_canonical.get(std, arg_name)
-                    # Fall back to arg_name if canonical not in block_arg_map
-                    key = canonical if canonical in block_arg_map else arg_name
-                    call_args.append(block_arg_map[key])
-                call_arg_bare_names.append(_bare(arg_name))
-
-            # ── Verify argument count matches callee signature ─────────────
-            _assert_call_arg_count_matches_signature(
-                suite_callee, call_args, callee_input_names, callee_input_types
-            )
-
-            # ── Inner if for suite_part ───────────────────────────────────
-            suite_part_eq = StrCmpOp(trim_suite_part.res, literal=suite_part)
-
-            # Use _get_suite_lifecycle_ret_info to get std_names for alloc returns
-            # (intent=out scalars).  Suite cap returns: inout_vals first, then
-            # alloc_vals.  Compute the offset so alloc positions are matched by
-            # standard_name rather than type, preventing false errflg matches when
-            # another intent=out scalar (e.g. const_index) has the same MLIR type.
-            #
-            # Computed here, before call_op is built, so the keyword-call path
-            # below can look up each output position's REAL callee dummy-argument
-            # name instead of a placeholder (see _result_keyword_name).
-            _run_ret_alloc = _get_suite_lifecycle_ret_info(
-                scheme_names, meta_data, "_run"
-            )
-            _n_inout_ret = len(callee_output_types) - len(_run_ret_alloc)
-            # Positional info IS available for the rest of the leading region:
-            # an ordinary scheme-declared intent=inout scalar with no
-            # framework meaning of its own (e.g. examples/var_compat's
-            # scalar_var/tke_inout/tke2_inout) occupies the same relative
-            # position here as it does in suite_cap.py's own
-            # inout_return_vals (built from input_arg_list in the callee's
-            # own declared dummy-arg order) -- see
-            # _get_suite_leading_inout_ret_info's own docstring.
-            _leading_inout_ret = _get_suite_leading_inout_ret_info(
-                scheme_names, meta_data, "_run"
-            )
-
-            def _result_keyword_name(idx, ret_type):
-                """The real callee dummy-argument name for output position idx.
-
-                Mirrors the copy-back loop's own idx/type-based classification
-                below exactly (errmsg/errflg by type, ccpp_t by type, then the
-                leading-inout region via _leading_inout_ret, then the trailing
-                alloc region via _run_ret_alloc) so a KeywordCallOp's result
-                name always matches the SAME string already used for that same
-                argument's own operand-side keyword whenever one exists --
-                needed so print_ftn.py's name-based dedup in _print_kw_call
-                recognizes an inout echo and skips re-printing it. The
-                previous code used a synthetic "_out_N" placeholder here,
-                which the callee's own signature never declares -- an
-                invalid-Fortran arity mismatch caught only by a real compiler
-                (ifx), not by FileCheck goldens or gfortran's more permissive
-                diagnostics.
-                """
-                if ret_type == errmsg_type:
-                    return "errmsg"
-                if ret_type == errflg_type:
-                    return "errflg"
-                if idx < _n_inout_ret:
-                    if idx < len(_leading_inout_ret):
-                        return _leading_inout_ret[idx][0]
-                    return f"_out_{idx}"
-                ri_idx = idx - _n_inout_ret
-                if ri_idx < len(_run_ret_alloc):
-                    return _run_ret_alloc[ri_idx][1]
-                return f"_out_{idx}"
-
-            # Use keyword-argument call when any suite cap input is optional
-            # so that Fortran correctly forwards the OPTIONAL absence status.
-            suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
-            if suite_has_optional:
-                _result_names = [
-                    _result_keyword_name(_i, rt)
-                    for _i, rt in enumerate(callee_output_types)
-                ]
-                call_op = KeywordCallOp(
-                    suite_callee,
-                    ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
-                    ArrayAttr([StringAttr(n) for n in _result_names]),
-                    DictionaryAttr({}),
-                    call_args,
-                    callee_output_types,
-                )
-            else:
-                call_op = func.CallOp(suite_callee, call_args, callee_output_types)
-
-            # CapVarRefOps for inout-echo returns must be placed BEFORE the call
-            # so the printer can resolve their names when processing return positions.
-
-            cap_var_inout_refs: list = []
-            copy_ops = []
-            for idx, ret_type in enumerate(callee_output_types):
-                result = call_op.results[idx]
-                if idx < _n_inout_ret:
-                    # inout return vals: type-match only (no positional info available)
-                    if ret_type == errmsg_type:
-                        copy_ops.append(memref.CopyOp(result, errmsg_arg))
-                    elif ret_type == errflg_type:
-                        copy_ops.append(memref.CopyOp(result, errflg_arg))
-                    elif idx < len(_leading_inout_ret):
-                        # Ordinary scheme-declared inout scalar -- route the
-                        # copy-back the same way the trailing alloc-style
-                        # branch below does, and record the echoed block arg
-                        # (see wrapper_inout_echo_args) so it also appears in
-                        # the wrapper's own ReturnOp -- without that, the
-                        # printer has no way to know this argument needs
-                        # intent(inout) at the wrapper level, and it silently
-                        # stays intent(in) even though the suite callee it's
-                        # passed into declares it intent(inout).
-                        _leading_local_name, _leading_std_name = _leading_inout_ret[idx]
-                        canonical = non_host_std_to_canonical.get(
-                            _leading_std_name, _leading_local_name
-                        ) if _leading_std_name else _leading_local_name
-                        if canonical and canonical in block_arg_map:
-                            target = block_arg_map[canonical]
-                            copy_ops.append(memref.CopyOp(result, target))
-                            if target not in _wrapper_inout_echo_seen:
-                                _wrapper_inout_echo_seen.add(target)
-                                wrapper_inout_echo_args.append(target)
-                        elif _leading_std_name and _leading_std_name in state_host_var_map:
-                            hv_name, hv_module = state_host_var_map[_leading_std_name]
-                            hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
-                            cap_var_inout_refs.append(hv_ref)
-                            copy_ops.append(memref.CopyOp(result, hv_ref.res))
-                            hv_key = (hv_name, hv_module)
-                            if hv_key not in seen_host_globals:
-                                seen_host_globals.add(hv_key)
-                                hv_glob = llvm.GlobalOp(
-                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                    hv_name, "external",
-                                )
-                                hv_glob.attributes["module"] = StringAttr(hv_module)
-                                chain_global_ops.append(hv_glob)
-                        elif canonical is not None and any(
-                            a_name == canonical
-                            and resolved_arg_ops[i].source_kind.data == ArgSourceKind.DdtMember
-                            for i, a_name in enumerate(callee_input_names)
-                        ) and canonical in host_var_ref_results:
-                            # Ordinary scheme-declared inout scalar host-matched
-                            # to a DDT member (e.g. var_compat's scalar_var/
-                            # tke_inout/tke2_inout, resolved to
-                            # phys_state%scalar_var) -- reuse the exact same
-                            # HostVarRefOp already built as this argument's own
-                            # INPUT reference (the per-callee-arg
-                            # host_var_ref_results loop above) as the copy-back
-                            # target too. Functionally a no-op (Fortran already
-                            # reflects the update through the same aliased
-                            # reference -- nothing needs copying), but marks
-                            # this result as having a real copy consumer so it
-                            # never falls into print_ftn.py's
-                            # untracked-call-result fallback, which otherwise
-                            # invents a throwaway "ccpp_tmp_N" local and
-                            # (whenever the suite callee is dispatched via a
-                            # plain positional call rather than a keyword call)
-                            # prints it as a genuine EXTRA positional argument
-                            # -- a real arity mismatch that also silently
-                            # shifts every later positional argument (including
-                            # errmsg/errflg) into the wrong dummy-argument slot,
-                            # not merely a cosmetic unused-variable warning.
-                            copy_ops.append(
-                                memref.CopyOp(result, host_var_ref_results[canonical])
-                            )
-                        elif cap_var_map:
-                            cap_ref = _find_cap_var_inout_ref(ret_type)
-                            if cap_ref is not None:
-                                cap_var_inout_refs.append(cap_ref)
-                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
-                else:
-                    ri_idx = idx - _n_inout_ret
-                    ret_std_name = _run_ret_alloc[ri_idx][2]
-                    ret_local_name = _run_ret_alloc[ri_idx][1]
-                    if ret_std_name == CCPP_ERROR_MESSAGE:
-                        copy_ops.append(memref.CopyOp(result, errmsg_arg))
-                    elif ret_std_name == CCPP_ERROR_CODE:
-                        copy_ops.append(memref.CopyOp(result, errflg_arg))
-                    else:
-                        # Non-error scalar out (e.g. const_index).
-                        # 1) block arg (e.g. when not host-matched)
-                        canonical = non_host_std_to_canonical.get(
-                            ret_std_name, ret_local_name
-                        ) if ret_std_name else ret_local_name
-                        if canonical and canonical in block_arg_map:
-                            copy_ops.append(
-                                memref.CopyOp(result, block_arg_map[canonical])
-                            )
-                        elif ret_std_name and ret_std_name in state_host_var_map:
-                            # 2) host module/state var: write result back to the
-                            # host. (intent=out scalars are not in
-                            # callee_input_names so no HostVarRefOp exists yet —
-                            # create one here.)
-                            hv_name, hv_module = state_host_var_map[ret_std_name]
-                            hv_ref = HostVarRefOp(hv_name, hv_module, ret_type)
-                            cap_var_inout_refs.append(hv_ref)
-                            copy_ops.append(memref.CopyOp(result, hv_ref.res))
-                            hv_key = (hv_name, hv_module)
-                            if hv_key not in seen_host_globals:
-                                seen_host_globals.add(hv_key)
-                                hv_glob = llvm.GlobalOp(
-                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                    hv_name, "external",
-                                )
-                                hv_glob.attributes["module"] = StringAttr(hv_module)
-                                chain_global_ops.append(hv_glob)
-                        elif cap_var_map:
-                            # 3) cap_var inout echo: suite cap returns cap-owned scalar.
-                            cap_ref = _find_cap_var_inout_ref(ret_type)
-                            if cap_ref is not None:
-                                cap_var_inout_refs.append(cap_ref)
-                                copy_ops.append(memref.CopyOp(result, cap_ref.res))
-
-            # Build write-back ops for row-major arrays (inout/out only).
-            row_major_write_back_ops: list = []
-            for conv_op, host_ref_result, dim_exprs in row_major_write_back_pairs:
-                wb_op = RowMajorWriteBackOp(conv_op.res, host_ref_result, dim_exprs)
-                row_major_write_back_ops.append(wb_op)
-
-            inner_if_true = (
-                cap_var_inout_refs
-                + row_major_convert_ops
-                + [call_op]
-                + copy_ops
-                + row_major_write_back_ops
-            )
-
-            inner_if = scf.IfOp(
-                suite_part_eq.res,
-                [],
-                [*inner_if_true, scf.YieldOp()],
-                part_inner_false,
-            )
-            part_inner_false = [suite_part_eq, inner_if, scf.YieldOp()]
-            suite_host_refs.extend(host_var_ref_ops)
-            suite_array_secs.extend(array_section_ops)
-
-            decl = func.FuncOp.external(
-                suite_callee, callee_input_types, callee_output_types
-            )
-            decl.attributes["module"] = StringAttr(callee_module)
-            decls.append(decl)
 
         # Outer if for suite_name (after processing all groups).
         # suite_host_refs and suite_array_secs are placed here (before the
@@ -1537,6 +1704,7 @@ def _build_run_dispatch_chain(
 
     main_chain_ops = current_false_ops[:-1]
     return main_chain_ops, decls, chain_global_ops, wrapper_inout_echo_args
+
 
 def _assemble_run_fn(
     fn_name: str,
