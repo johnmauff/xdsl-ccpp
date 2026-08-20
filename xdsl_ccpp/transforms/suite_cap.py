@@ -2351,7 +2351,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                         else:
                             all_args[std_key] = fn_arg
 
-                if physics_mode:
+                # Matches _emit_subcycle's own "_run"-only gate below: a
+                # dynamic subcycle loop-count arg is only ever printed as
+                # a do-loop bound for the run phase, so synthesizing it
+                # for _init/_finalize/_timestep_initialize/
+                # _timestep_finalize would add an unused dummy argument
+                # to those phases' signatures.
+                if physics_mode and tgt_subroutine_postfix == "_run":
                     _synthesize_dynamic_loop_count_args(
                         self.meta_data, self.getCallSequence(suite_description),
                         arg_tables, all_args,
@@ -2693,7 +2699,20 @@ class GenerateSuiteSubroutine(RewritePattern):
         )
         _lc_int = (int(loop_count) if is_literal
                    else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
-        if _lc_int > 1 and ctx.physics_mode and body_ops:
+        # <subcycle> is a run-phase-only construct (real capgen-v1 never
+        # loops a scheme's _init/_finalize/_timestep_initialize/
+        # _timestep_finalize entry point by subcycle count -- each fires
+        # exactly once per group regardless of how many <subcycle> layers
+        # wrap it in the XML for _run's own purposes). Gating on
+        # ctx.physics_mode alone (task #28 Stage 3's original code) wraps
+        # group-scoped _init/_finalize calls in the same loop too, since
+        # physics_mode is True for all 5 group-scoped phases -- confirmed
+        # via a real CI runtime failure on examples/nested_suite: wrapping
+        # effr_calc_init in main_suite's 2x2 nested subcycle called it 4
+        # times instead of once, tripping its own scheme_order sequencing
+        # check ("effr_calc_init() needs to be called second").
+        if (_lc_int > 1 and ctx.physics_mode and body_ops
+                and ctx.tgt_subroutine_postfix == "_run"):
             sc_alloc = memref.AllocaOp.get(
                 TypeConversions.getBaseType("integer"), shape=[]
             )

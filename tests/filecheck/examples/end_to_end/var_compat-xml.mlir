@@ -148,15 +148,10 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:   end subroutine var_compatibility_suite_suite_finalize 
-// CHECK-LABEL:   subroutine var_compatibility_suite_suite_init_radiation(scheme_order, num_subcycles, errmsg,    &
-// CHECK:     errflg) 
-// CHECK-NEXT:     integer, intent(inout) :: scheme_order
-// CHECK-NEXT:     integer, intent(in) :: num_subcycles
+// CHECK-LABEL:   subroutine var_compatibility_suite_suite_init_radiation(scheme_order, errmsg, errflg) 
+// CHECK:     integer, intent(inout) :: scheme_order
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK-NEXT:     integer :: ccpp_loop_cnt
-// CHECK-NEXT:     integer :: ccpp_loop_cnt0
-// CHECK-NEXT:     integer :: ccpp_loop_cnt1
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     if (.not. allocated(ncl_out)) then
@@ -167,21 +162,15 @@
 // CHECK-NEXT:         "' in var_compatibility_suite_init_radiation"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     do ccpp_loop_cnt1 = 1, num_subcycles
-// CHECK-NEXT:       if (errflg .eq. 0) then
-// CHECK-NEXT:         call effr_pre_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:       end if
-// CHECK-NEXT:       do ccpp_loop_cnt0 = 1, 2
-// CHECK-NEXT:         do ccpp_loop_cnt = 1, 2
-// CHECK-NEXT:           if (errflg .eq. 0) then
-// CHECK-NEXT:             call effr_calc_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:           end if
-// CHECK-NEXT:         end do
-// CHECK-NEXT:       end do
-// CHECK-NEXT:       if (errflg .eq. 0) then
-// CHECK-NEXT:         call effr_post_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:       end if
-// CHECK-NEXT:     end do
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call effr_pre_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call effr_calc_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call effr_post_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
 // CHECK-NEXT:     if (errflg .eq. 0) then
 // CHECK-NEXT:       call effr_diag_init(scheme_order=scheme_order, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:     end if
@@ -630,8 +619,7 @@
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'var_compatibility_suite') then
 // CHECK-NEXT:       if (trim(suite_part) .eq. 'radiation') then
-// CHECK-NEXT:         call var_compatibility_suite_suite_init_radiation(phys_state%scheme_order,                &
-// CHECK-NEXT:           phys_state%num_subcycles, errmsg, errflg)
+// CHECK-NEXT:         call var_compatibility_suite_suite_init_radiation(phys_state%scheme_order, errmsg, errflg)
 // CHECK-NEXT:       else
 // CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part),                           &
 // CHECK-NEXT:           " found in suite var_compatibility_suite"
