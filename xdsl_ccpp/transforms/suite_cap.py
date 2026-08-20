@@ -3476,9 +3476,23 @@ class GenerateSuiteSubroutine(RewritePattern):
         # entry; "_timestep_initialize" is task #28's Stage 1 addition,
         # replacing the flat spec removed above and taking over ownership
         # of setting "in_time_step" (which "_run" here only ever checks).
+        # _timestep_initialize deliberately passes check_string=None (no
+        # state check), not "initialized": task #28's Stage 1 originally
+        # kept a check here "for defensive consistency" with _run's own
+        # check (see Open Question #2 in the Stage 1 plan), but a suite
+        # with more than one group (e.g. examples/nested_suite, via
+        # <nested_suite> XML includes) calls this once per group, and the
+        # first group's own check+set would poison every subsequent group's
+        # check (state is already "in_time_step", not "initialized",
+        # after group 1 runs). Real capgen-v1 has zero ccpp_suite_state
+        # checks at group granularity at all (verified via group_cap.py) --
+        # dropping the check here matches upstream and is idempotent across
+        # any group count. state_string="in_time_step" stays: something
+        # still has to perform the actual transition so the still-flat
+        # _timestep_finalize's own check (above) keeps working.
         group_phase_specs = [
             ("_run",                "",              None,           "in_time_step"),
-            ("_timestep_initialize", "timestep_init_", "in_time_step", "initialized"),
+            ("_timestep_initialize", "timestep_init_", "in_time_step", None),
         ]
 
         for group in suite_description:
