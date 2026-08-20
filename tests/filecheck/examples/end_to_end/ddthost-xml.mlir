@@ -57,9 +57,6 @@
 // CHECK-NEXT:      if (.not. allocated(hno3)) then
 // CHECK-NEXT:        allocate(hno3(nbox))
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(model_times)) then
-// CHECK-NEXT:        allocate(model_times(ntimes))
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in ddt_suite_initialize"

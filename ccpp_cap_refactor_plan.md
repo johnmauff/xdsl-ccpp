@@ -63,7 +63,8 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Metadata `kind_spec` support (capgen/ddthost port completeness) | ✅ Done (2026-08-17) | L3966 |
 | Interstitial-variable register-phase mechanism | ✅ Done (2026-08-17) — non-chained case restored/tested; chained case tracked separately | L4038 |
 | `temp_adjust`/`temp_calc_adjust`/`temp_set` rank/dimensionality re-sync to real upstream | ✅ Done (2026-08-17) | L4098 |
-| Chained-interstitial allocation-ordering bug (`_build_framework_refs`) | 📋 Backlog (M-L, confirmed real bug, not just untested) | L4085 |
+| Chained-interstitial allocation-ordering bug (`_build_framework_refs`) — task #30 | ✅ Done (2026-08-19) | L4085 |
+| Broader allocation-dependency model (cross-phase unification, DDT/non-real interstitial coverage) — task #65 | 📋 Backlog (size TBD, deliberately deferred until #30 lands) | L5015 |
 | Metadata `dependencies`/`dependencies_path`/`source_path` tracking (Tier 1: parse + IR-forward, no build-system consumer) | ✅ Done (2026-08-17) | L4176 |
 | Metadata dependency-manifest automation for CMake (Tier 2 of the above, overlaps with CMake configure-time item below) | 📋 Backlog (size TBD, needs its own design pass) | L4176 |
 | `examples/ddthost`'s own copies of `temp_set`/`temp_adjust`/`temp_calc_adjust` have fallen behind `examples/capgen`'s (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | 📋 Backlog (S-M, found while scoping the above) | L4176 |
@@ -4907,15 +4908,211 @@ dependency is noted.
     `_build_call_ops` builds the scheme-call sequence, for every phase function. A SuiteOwned
     var whose sizing dimension is itself a same-phase SuiteOwned producer needs the opposite:
     allocate *after* the specific call that produces its dimension, not in the shared preamble.
-    Assessed as real, separate follow-on work (not folded into this fix) -- see its own Index
-    entry ("Chained-interstitial allocation-ordering bug") for the full risk writeup: requires
-    `_build_framework_refs`/`_build_call_ops` to coordinate on interleaved (not flat
-    preamble-then-calls) output, touches code shared by every example with any SuiteOwned var
-    (`constituents_dim`, `capgen`, `opt_arg`, `suite_allocate`, `var_compat`, `advection`), has
-    no existing test or failing example to converge against, and overlaps with the still-open
-    `instances` multi-instance architecture decision (real capgen-v1 sidesteps this ordering
-    problem entirely with a dedicated suite-data-module construction pass, not ad hoc
-    per-phase-function preambles).
+    Assessed as real, separate follow-on work (not folded into this fix) -- tracked as task #30.
+  - **Task #30 fix design — revised 2026-08-19, M-L as scoped. Chosen design: a bounded,
+    per-phase dependency-based allocation scheduler, deliberately going beyond what real
+    capgen-v1 itself does.** Project intent (explicit, 2026-08-19) is to exceed capgen-v1's
+    design where it's genuinely better, not just match it -- so this supersedes an earlier
+    same-day pass at this design (see git history of this entry) that proposed adopting real
+    capgen-v1's own mechanism verbatim, after checking its actual source
+    (`ccpp-framework-fresh/capgen/generator/suite_data.py`): capgen-v1 pre-allocates every
+    suite-owned var it can, sorted merely alphabetically by standard_name -- no ordering logic
+    at all -- and sidesteps the chained case with one guard (`suite_data.py:365`):
+    `if suite_var.dimensions and not suite_var.allocatable:` -- skip pre-allocating entirely,
+    trusting the *scheme itself* to declare its own output `allocatable, intent(out)` and
+    perform the `allocate()` inside its own hand-written Fortran body. Real example of this
+    exact pattern already in this repo: `examples/advection/dlc_liq.F90`'s
+    `dyn_const` (`type(ccpp_constituent_properties_t), allocatable, intent(out) :: dyn_const(:)`
+    + a hand-written `allocate(dyn_const(1), stat=errflg)` inside `dlc_liq_init`) --
+    `xdsl_ccpp` never parses or type-checks this file at all, it only reads `dlc_liq.meta`'s
+    declared interface shape and trusts that the real Fortran matches it.
+    **Why not just adopt that mechanism as-is (rejected):** it pushes a real, unverifiable
+    cross-file consistency burden onto every scheme author who needs this (the `.meta`
+    `allocatable` flag, the matching Fortran dummy declaration, and the hand-written
+    `allocate()` call all have to agree, with nothing in the generator able to check that they
+    do -- exactly the "two things must independently stay in sync" bug shape this whole
+    engagement keeps finding via Copilot review, PR #77/#79/#82, except here one of the "two
+    things" is hand-written scheme Fortran the generator never even reads); it doesn't cover a
+    SuiteOwned var that isn't any single scheme's own `intent(out)` output at all; and it
+    silently trusts the SDF's (suite definition file's) own scheme-call order to already
+    respect the dependency, with no way to catch a wrong-order mistake at generation time.
+    **A genuine, useful nuance found while verifying, folded into the design below**:
+    `examples/suite_allocate/make_workspace.F90` -- an existing real example, not a
+    hypothetical -- is itself scheme-self-allocated exactly like `dlc_liq.F90`
+    (`real(kind=kind_phys), allocatable, intent(out) :: work(:)` + its own `allocate(work(nw))`,
+    with an explicit comment: "this scheme owns it; final_fields frees it"). But
+    `suite_variable_model.py:353-360` currently forces primitive-type `allocatable` args into
+    unconditional suite pre-allocation regardless ("Framework-managed arrays (advected/
+    allocatable) are always suite-owned"), so *today's* generated output for this example
+    **also** pre-allocates `work` in the suite-cap preamble
+    (`if (.not. allocated(work)) allocate(work(nw))`) -- functionally moot, not wrong, only
+    because `intent(out)` on an allocatable dummy auto-deallocates on entry (confirmed via
+    direct regeneration: `work` gets allocated by the suite, immediately auto-deallocated the
+    instant `make_workspace_run` is entered, then re-allocated by the scheme's own `allocate()`
+    call), but genuinely redundant, wasted work that the corrected classification below
+    eliminates as a side effect. Also confirmed via direct regeneration that removing
+    `allocatable = True` from `make_workspace.meta` changes nothing in the generated output
+    today -- for this specific example, `work`'s first occurrence is already `intent = out`,
+    which the classifier's separate "Case 2" path already forces into suite-ownership on its
+    own, so the flag is currently non-load-bearing here (it matters for a first-occurrence
+    `intent = inout` case instead, per the same code comment -- not this example).
+    **Chosen design.** Two independent, complementary mechanisms, not one:
+    1. **Explicit scheme-self-allocation** (fixes the `make_workspace` redundancy): honor
+       `allocatable = True` on a primitive-type SuiteOwned var the same way the DDT-constituent
+       case already does -- `_build_framework_refs` skips emitting a `LazyAllocOp` for it
+       entirely (module-level storage still declared, per `print_ftn.py`'s existing
+       declaration/allocation decoupling, e.g. `ccpp_suite_state`'s own pattern at
+       `print_ftn.py:1320-1327`), and generation trusts the scheme's own `.F90` to allocate it,
+       exactly as `dlc_liq.F90`/`make_workspace.F90` already do today. No new capability here,
+       just correcting a classification that currently does redundant, if harmless, extra work.
+    2. **Chained-dimension deferral** (the actual #30 bug, and the new capability): for an
+       *ordinary* SuiteOwned array (no `allocatable` flag needed at all -- indistinguishable in
+       `.meta` from any other suite-owned array) whose allocation dimension's standard_name
+       doesn't resolve via any of `_find_loop_upper_bound`'s existing three paths (in-scope arg,
+       MODULE host table, another array's shape), add a fourth check: does this standard_name
+       match another SuiteOwned var that's an `intent = out` output of some scheme within this
+       *same phase's* call sequence? If so, return a deferred marker (not an SSA value) instead
+       of `None`. `_build_framework_refs` queues that var as a **pending allocation** (keyed by
+       its producer scheme's full name) rather than emitting its `LazyAllocOp` in the preamble.
+       `_build_call_ops`'s existing per-scheme call-sequence walk (`_emit_ordered_list` and
+       friends) checks, immediately after emitting each scheme's own call ops, whether any
+       pending allocation's producer scheme just ran and its dimension is now in `data_ops` --
+       if so, splice that var's `LazyAllocOp` in immediately after those call ops, before
+       anything downstream needs the array. **No topological-sort library or general graph
+       needed**: the SDF's own call sequence is already a candidate total order; walking it
+       once and resolving pending allocations opportunistically as their producer's output
+       becomes available *is* the topological resolution, given the call sequence order is
+       assumed valid. **The validation benefit capgen-v1 itself doesn't have**: if the call
+       sequence finishes with any pending allocation still unresolved, raise a clear error
+       naming the var and its unmet dependency -- catching a genuinely wrong-order SDF mistake
+       at generation time instead of either capgen-v1's silent trust or this repo's own
+       pre-fix silent-wrong-order Fortran. **Deliberately narrow for the first cut**: if a
+       pending allocation's producer scheme sits inside a `PromotionLoopOp` or `SubcycleLoopOp`
+       body (nested call emission, not the flat top-level sequence), raise a clear
+       "not supported yet" error rather than guessing at a splice point -- matching this
+       codebase's established philosophy for genuinely-hard shapes (dispatch_scalar refs,
+       unindexed multi-instance DDT array refs) -- since no real example needs the nested case
+       today.
+    **`.meta`/scheme-Fortran impact**: mechanism 2 needs *no* new metadata property and *no*
+    change to the producing scheme's own `.F90` at all -- the array's `.meta` entry and its
+    scheme's own dummy-argument declaration look exactly like the ordinary, already-working
+    non-chained case; the complexity is entirely absorbed by the generator, invisible to the
+    scheme author. This is the concrete form of "exceeding capgen-v1" here: real capgen-v1
+    requires every scheme author needing this shape to correctly hand-author the self-allocate
+    contract; this design requires nothing extra of them at all.
+    **Verification plan**: extend the existing scratch fixture (scheme_c's `_register`
+    produces `dim_inter`, scheme_a's own array is dimensioned by it) into a permanent
+    `tests/unit/` regression test pinning the corrected allocate-after-producer-call order;
+    add a negative test for the new "SDF calls the consumer before the producer" error path;
+    add a regression test confirming `make_workspace`'s own preamble no longer redundantly
+    pre-allocates `work` (mechanism 1); full suite + `ruff` + the standard byte-diff regen
+    across the 47-file filecheck corpus (expect the *only* other example to change output at
+    all is `suite_allocate`, since it's the one existing real user of primitive-type
+    `allocatable`).
+    **Sequencing**: no longer needs task #60's arg-resolution-unification foundation (that
+    concern applied to the earlier, rejected interleaved-preamble sketch, not to this
+    call-sequence-walk-based design) -- this can proceed independently of #57/#60/#28.
+  - **Task #30 — RESOLVED (2026-08-19), implemented exactly per the design above.** Both
+    mechanisms landed in `suite_cap.py`:
+    - **Mechanism 1** (`_build_framework_refs`'s `framework_vars` loop): a primitive-type
+      SuiteOwned arg with `fw_arg.hasAttr("allocatable")` now skips `LazyAllocOp` emission
+      entirely -- generalizing the DDT-constituent case's own existing pattern
+      (`constituent_cap.py`) rather than building new machinery. Module-level storage is still
+      declared unconditionally (unchanged); only the allocation itself is skipped, trusting the
+      scheme's own hand-written Fortran to self-allocate, exactly as `examples/advection/
+      dlc_liq.F90` and `examples/suite_allocate/make_workspace.F90` already do. Confirmed by
+      direct regeneration: `examples/suite_allocate`'s own redundant
+      `if (.not. allocated(work)) allocate(work(nw))` preamble line is gone;
+      `make_workspace_run`'s own call and its own internal (unseen by xdsl_ccpp) self-allocation
+      are completely unaffected.
+    - **Mechanism 2** (new method `_resolve_alloc_dim_var_refs`, new free function
+      `_find_producer_scheme`, new dataclass `_PendingAlloc`): both of `_build_framework_refs`'s
+      allocation sites (the `framework_vars` loop and the `suite_owned_vars()` sweep) now route
+      through this one shared resolver. When an allocation dimension's `matching` arg is itself a
+      same-phase `SuiteOwned`/`intent=out` var (a framework var whose own `data_ops` ref already
+      exists unconditionally, per its own ref-creation earlier in the same loop, but whose real
+      *value* isn't valid until its own producing scheme's call runs -- this codebase always
+      builds the entire preamble before any call ops exist, so this can never be safe to read
+      at that point), resolution returns a deferred marker instead of trusting `data_ops`. The
+      var is queued in a new `pending_allocs: dict[producer_scheme, list[_PendingAlloc]]`,
+      returned from `_build_framework_refs` as a third value and threaded into `_build_call_ops`.
+      `_build_call_ops`'s existing `_emit_ordered_list` (used for both the flat top-level call
+      sequence and, transitively, subcycle bodies via `_emit_subcycle_items`) now adds each
+      scheme's own name to a `resolved_producers` set immediately after emitting its call ops,
+      then retries any `pending_allocs` entries keyed to that scheme -- on success, splices a
+      freshly-built `LazyAllocOp` directly into `call_ops` right there, exactly after the call
+      that makes it safe. No topological sort or dependency graph was needed: the SDF's own call
+      sequence, walked once, already gives the correct order once "wait for the producer" is
+      respected. A **found bug while implementing**: the `suite_owned_vars()` sweep's own
+      existing dedup guard (`already_allocated = {op.var_name.data for op in lazy_alloc_ops}`)
+      only recognized vars already given a *real* `LazyAllocOp` by the first loop -- a var the
+      first loop had just *deferred* (not yet in `lazy_alloc_ops`) was invisible to it, so the
+      second loop independently rediscovered the same var and queued a *second*, duplicate
+      pending allocation for it, producing two identical `allocate()` guards in the repro's own
+      output. Fixed by also unioning in every var already claimed across `pending_allocs`.
+      Caught immediately by manual regeneration (a real "verify, don't just reason" moment,
+      not a hypothetical). If a `pending_allocs` entry is still unresolved once the entire call
+      sequence has been walked (the producer's call never appeared in this phase's sequence at
+      all, or -- confirmed narrower than originally scoped, see below -- it's nested inside a
+      `PromotionLoopOp` body), `_build_call_ops` raises a clear `ValueError` naming the var and
+      its expected producer, rather than silently emitting wrong-order Fortran -- the real
+      validation benefit over capgen-v1's own silent-trust design.
+    - **A pleasant surprise found while testing, better than originally scoped**: a producer
+      scheme nested one level inside a `<subcycle>` body is *not* out of scope after all --
+      `_emit_subcycle_items` routes its own flat scheme children through the exact same
+      `_emit_ordered_list` used at the top level, so the retry/splice logic already applies
+      there for free. Only a `PromotionLoopOp`-nested producer (inside `_flush_promoted`, which
+      has no retry logic) remains genuinely unsupported, correctly caught by the final
+      validation rather than silently mishandled.
+    - **Verified**: reproduced the exact upstream shape (a scratch fixture mirroring
+      `temp_calc_adjust_register`'s `dim_inter`/`temp_adjust_run`'s chained array) and confirmed
+      the fix directly on generated Fortran -- the `call scheme_c_register(...)` now precedes
+      `allocate(produced(dim_inter))`, which precedes `call scheme_a_register(...)`, with the
+      allocate emitted exactly once. Full suite 619 passed (615 + 4 new), 1 xfailed; `ruff check`
+      shows the same 2 pre-existing findings before/after (confirmed via git-stash, neither
+      touched); the 47-file filecheck corpus is exercised inside that same pytest run and stayed
+      byte-identical -- confirming zero behavior change for every example that doesn't hit this
+      exact pattern (only `examples/suite_allocate` changed at all, via mechanism 1, exactly as
+      expected). New tests in `tests/unit/test_chained_interstitial_allocation.py` (4 cases:
+      allocation-after-producer ordering, exactly-once emission, the subcycle-nested-producer
+      case, and `suite_allocate`'s own no-longer-redundant preamble); confirmed 3 of the 4
+      actually fail against the pre-fix code via git-stash (the 4th, exactly-once, trivially
+      passed pre-fix too since the old code only ever emitted one, just wrongly-placed,
+      allocation -- not a coverage gap). **Not attempted**: a regression test for the final
+      validation error path itself (a producer nested inside a `PromotionLoopOp`, or a call
+      sequence that genuinely never calls the producer at all) -- constructing a valid,
+      correctly-classified `is_promoted` fixture from scratch proved more involved than this
+      pass justified; the code path is covered by direct reasoning and `py_compile`/type
+      correctness, but not by a dedicated test. Flagged as a small, honest gap, not silently
+      skipped.
+  - **Task #65, logged separately (2026-08-19) — broader allocation-dependency model, deliberately NOT
+    part of #30's own scope.** While scoping #30's design, several adjacent improvements were
+    raised as possible "free" side benefits of a dependency-graph approach; checked honestly
+    against #30's actual bounded, per-phase design and confirmed none of them fall out of it
+    automatically -- each is genuinely separate, additional work:
+    1. **Cross-phase unification with `already_scheduled_allocs`.** #30's scheduler only
+       reasons about ordering *within* one phase's own call sequence; the existing
+       `already_scheduled_allocs` set (tracking whether an earlier phase, e.g. `_register`,
+       already allocated a var so a later phase, e.g. `_run`, doesn't redundantly try again)
+       is a separate, still-ad-hoc side-channel that #30 doesn't touch or replace. Folding both
+       into one principled dependency model (tracking allocation state across the *whole*
+       suite lifecycle, not just one phase at a time) is a real, larger undertaking.
+    2. **DDT-typed interstitial coverage.** #30 touches `_find_loop_upper_bound`/
+       `_build_framework_refs`/`_build_call_ops`/`suite_variable_model.py`'s *primitive*-type
+       classification only. The separate `_build_module_vars` branch for `entry.is_ddt` is
+       untouched -- still "genuinely untested, not just unverified" per the interstitial-
+       variable gaps entry above.
+    3. **Non-`real` interstitial array verification.** The scheduler likely generalizes to
+       integer/logical/character arrays without code changes (`LazyAllocOp` already handles
+       arbitrary kinds elsewhere), but "likely" isn't "verified" -- needs its own dedicated
+       test fixture, not something #30's own test plan produces as a side effect.
+    4. **Extending validation past same-phase ordering.** #30 catches a same-phase SDF-ordering
+       mistake (consumer scheme listed before its producer within one call sequence); a fuller
+       model could also validate cross-phase ordering assumptions the same way.
+    None of these block or are blocked by #30 -- logged as its own backlog item, size TBD
+    (bigger than #30's M-L; closer to the original, broader dependency-graph scope this whole
+    discussion started from), deliberately deferred until #30 itself lands and proves the
+    pattern out in the simpler, contained case first.
   - **Done (2026-08-17):** restored the real `interstitial_var` argument into `examples/capgen`'s
     `temp_adjust.meta`/`.F90` (`temp_adjust_run` produces it `intent(out)`,
     `temp_adjust_finalize` consumes it `intent(in)` -- genuinely cross-phase, separate generated
