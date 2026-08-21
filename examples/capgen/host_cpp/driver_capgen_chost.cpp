@@ -34,7 +34,14 @@ static void check(const char* label, const CapgenChost_chost::Status& s) {
 }
 
 int main() {
-    CapgenChost_chost::State state(NCOL, VMR_NVS, PVERP, PVER);
+    // State's real constructor order is (ncols, pverP, pver, vmr_nvmr) --
+    // NOT (ncols, vmr_nvmr, pverP, pver) -- confirmed against the generated
+    // CapgenChost_chost.hpp. The old (wrong) argument order here silently
+    // mis-sized every array in state.allocate() (e.g. temp_interfaces
+    // undersized at ncols*pverP=10 instead of ncols*pverP=20 once pverP and
+    // vmr_nvmr get swapped), causing a real heap buffer overflow that
+    // surfaced downstream as "double free or corruption (out)" in CI.
+    CapgenChost_chost::State state(NCOL, PVERP, PVER, VMR_NVS);
     state.allocate();
 
     // Driving data: O3[i] = (i+1)*1e-6, HNO3[i] = (i+1)*1e-9  (0-indexed C++)
