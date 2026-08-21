@@ -7,7 +7,9 @@ program test_kessler_ccpp_driver
       ccpp_final,        &
       ccpp_physics_timestep_init, &
       ccpp_physics_timestep_final,  &
-      ccpp_physics_run
+      ccpp_physics_run, &
+      ccpp_physics_init, &
+      ccpp_physics_final
 
   implicit none
 
@@ -35,6 +37,17 @@ program test_kessler_ccpp_driver
   call ccpp_init('kessler_suite', errmsg, errflg)
   if (errflg /= 0) then
     print *, 'Initialize error: ', trim(errmsg)
+    stop
+  end if
+
+  !------------------------------------------------------
+  ! Physics initialize (task #28, Stage 3): group-scoped, matching
+  ! ccpp_physics_run's own signature -- owns the scheme-level _init calls
+  ! ccpp_init no longer makes itself (see suite_cap.py's emit_scheme_calls).
+  !------------------------------------------------------
+  call ccpp_physics_init('kessler_suite', 'physics', 1, ncol, errmsg, errflg)
+  if (errflg /= 0) then
+    print *, 'Physics initialize error: ', trim(errmsg)
     stop
   end if
 
@@ -74,6 +87,17 @@ program test_kessler_ccpp_driver
   call ccpp_physics_timestep_final('kessler_suite', 'physics', 1, ncol, errmsg, errflg)
   if (errflg /= 0) then
     print *, 'Timestep final error: ', trim(errmsg)
+    stop
+  end if
+
+  !------------------------------------------------------
+  ! Physics finalize (task #28, Stage 3): group-scoped, matching
+  ! ccpp_physics_init's own signature above -- owns the scheme-level
+  ! _finalize calls ccpp_final no longer makes itself.
+  !------------------------------------------------------
+  call ccpp_physics_final('kessler_suite', 'physics', 1, ncol, errmsg, errflg)
+  if (errflg /= 0) then
+    print *, 'Physics finalize error: ', trim(errmsg)
     stop
   end if
 

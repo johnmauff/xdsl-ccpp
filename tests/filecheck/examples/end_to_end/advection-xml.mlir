@@ -43,12 +43,14 @@
 // CHECK-NEXT:   public :: cld_suite_suite_register
 // CHECK-NEXT:   public :: cld_suite_suite_initialize
 // CHECK-NEXT:   public :: cld_suite_suite_finalize
+// CHECK-NEXT:   public :: cld_suite_suite_init_physics
 // CHECK-NEXT:   public :: cld_suite_suite_physics
 // CHECK-NEXT:   public :: cld_suite_suite_timestep_init_physics
 // CHECK-NEXT:   public :: cld_suite_suite_timestep_final_physics
+// CHECK-NEXT:   public :: cld_suite_suite_final_physics
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine cld_suite_suite_register(dyn_const, dyn_const_ice, errmsg, errflg) 
-// CHECK-NEXT:     type(ccpp_constituent_properties_t), allocatable, intent(inout) :: dyn_const(:)
+// CHECK:     type(ccpp_constituent_properties_t), allocatable, intent(inout) :: dyn_const(:)
 // CHECK-NEXT:     type(ccpp_constituent_properties_t), allocatable, intent(inout) :: dyn_const_ice(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -79,8 +81,56 @@
 // CHECK-NEXT:       call cld_ice_register(dyn_const_ice=dyn_const_ice, errmsg=errmsg, errcode=errflg)
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine cld_suite_suite_register 
-// CHECK-LABEL:   subroutine cld_suite_suite_initialize(const_std_name, num_consts, test_stdname_array,           &
-// CHECK-NEXT:     const_inds, tfreeze, const_index, errmsg, errflg) 
+// CHECK-LABEL:   subroutine cld_suite_suite_initialize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.not. allocated(cld_liq_array)) then
+// CHECK-NEXT:       allocate(cld_liq_array(ncols, pver))
+// CHECK-NEXT: #ifdef USE_GPU
+// CHECK-NEXT:       !$acc enter data create(cld_liq_array)
+// CHECK-NEXT: #endif
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (.not. allocated(cld_ice_cld_ice_array)) then
+// CHECK-NEXT:       allocate(cld_ice_cld_ice_array(ncols, pver))
+// CHECK-NEXT: #ifdef USE_GPU
+// CHECK-NEXT:       !$acc enter data create(cld_ice_cld_ice_array)
+// CHECK-NEXT: #endif
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (.not. allocated(cld_shadow_cld_ice_array)) then
+// CHECK-NEXT:       allocate(cld_shadow_cld_ice_array(ncols, pver))
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (.not. allocated(cld_shadow_ncols)) then
+// CHECK-NEXT:       allocate(cld_shadow_ncols(ncols))
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in cld_suite_initialize"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     ccpp_suite_state = const_initialized
+// CHECK-NEXT:   end subroutine cld_suite_suite_initialize 
+// CHECK-LABEL:   subroutine cld_suite_suite_finalize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in cld_suite_finalize"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     ccpp_suite_state = const_uninitialized
+// CHECK-NEXT: #ifdef USE_GPU
+// CHECK-NEXT:     !$acc exit data delete(cld_ice_cld_ice_array)
+// CHECK-NEXT: #endif
+// CHECK-NEXT: #ifdef USE_GPU
+// CHECK-NEXT:     !$acc exit data delete(cld_liq_array)
+// CHECK-NEXT: #endif
+// CHECK-NEXT:   end subroutine cld_suite_suite_finalize 
+// CHECK-LABEL:   subroutine cld_suite_suite_init_physics(const_std_name, num_consts, test_stdname_array,         &
+// CHECK:     const_inds, tfreeze, const_index, errmsg, errflg) 
 // CHECK-NEXT:     character(len=32), intent(in) :: const_std_name
 // CHECK-NEXT:     integer, intent(in) :: num_consts
 // CHECK-NEXT:     character(len=32), target, intent(in) :: test_stdname_array(:)
@@ -110,9 +160,9 @@
 // CHECK-NEXT:     if (.not. allocated(cld_shadow_ncols)) then
 // CHECK-NEXT:       allocate(cld_shadow_ncols(ncols))
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in cld_suite_initialize"
+// CHECK-NEXT:         "' in cld_suite_init_physics"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     if (errflg .eq. 0) then
@@ -128,31 +178,9 @@
 // CHECK-NEXT:       call cld_ice_init(tfreeze=tfreeze, cld_ice_array=cld_ice_cld_ice_array, errmsg=errmsg,      &
 // CHECK-NEXT:         errflg=errflg)
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     ccpp_suite_state = const_initialized
-// CHECK-NEXT:   end subroutine cld_suite_suite_initialize 
-// CHECK-LABEL:   subroutine cld_suite_suite_finalize(errmsg, errflg) 
-// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK:     errflg = 0    
-// CHECK-NEXT:     errmsg = ''
-// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in cld_suite_finalize"
-// CHECK-NEXT:       errflg = 1      
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     if (errflg .eq. 0) then
-// CHECK-NEXT:       call cld_ice_final(errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     ccpp_suite_state = const_uninitialized
-// CHECK-NEXT: #ifdef USE_GPU
-// CHECK-NEXT:     !$acc exit data delete(cld_ice_cld_ice_array)
-// CHECK-NEXT: #endif
-// CHECK-NEXT: #ifdef USE_GPU
-// CHECK-NEXT:     !$acc exit data delete(cld_liq_array)
-// CHECK-NEXT: #endif
-// CHECK-NEXT:   end subroutine cld_suite_suite_finalize 
+// CHECK-NEXT:   end subroutine cld_suite_suite_init_physics 
 // CHECK-LABEL:   subroutine cld_suite_suite_physics(const_std_name, num_consts, test_stdname_array, const_inds,  &
-// CHECK-NEXT:     ncol, timestep, temp, qv, ps, cld_liq_tend, const_tend, const, const_index, errmsg, errflg) 
+// CHECK:     ncol, timestep, temp, qv, ps, cld_liq_tend, const_tend, const, const_index, errmsg, errflg) 
 // CHECK-NEXT:     character(len=32), intent(in) :: const_std_name
 // CHECK-NEXT:     integer, intent(in) :: num_consts
 // CHECK-NEXT:     character(len=32), target, intent(in) :: test_stdname_array(:)
@@ -206,27 +234,42 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine cld_suite_suite_physics 
 // CHECK-LABEL:   subroutine cld_suite_suite_timestep_init_physics(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:   end subroutine cld_suite_suite_timestep_init_physics 
 // CHECK-LABEL:   subroutine cld_suite_suite_timestep_final_physics(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine cld_suite_suite_timestep_final_physics 
-// CHECK-LABEL: end module cld_suite_cap
-// CHECK-LABEL: // -----
+// CHECK-LABEL:   subroutine cld_suite_suite_final_physics(errmsg, errflg) 
+// CHECK:     character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in cld_suite_final_physics"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call cld_ice_final(errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine cld_suite_suite_final_physics 
+// CHECK-NEXT: end module cld_suite_cap
 // CHECK-LABEL: // FILE: Cld_ccpp_cap.F90
 // CHECK-LABEL: module Cld_ccpp_cap
 // CHECK:   use ccpp_kinds
 // CHECK-NEXT:   use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_final_physics
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_finalize
+// CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_init_physics
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_initialize
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_physics
 // CHECK-NEXT:   use cld_suite_cap, only: cld_suite_suite_register
@@ -262,6 +305,8 @@
 // CHECK-NEXT:   public :: ccpp_physics_run
 // CHECK-NEXT:   public :: ccpp_physics_timestep_init
 // CHECK-NEXT:   public :: ccpp_physics_timestep_final
+// CHECK-NEXT:   public :: ccpp_physics_init
+// CHECK-NEXT:   public :: ccpp_physics_final
 // CHECK-NEXT:   public :: ccpp_physics_suite_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_variables
@@ -275,7 +320,7 @@
 // CHECK-NEXT:   public :: Cld_model_const_properties
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
@@ -287,25 +332,24 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_register 
 // CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'cld_suite') then
-// CHECK-NEXT:       call cld_suite_suite_initialize(const_std_name, num_consts, std_name_array, const_inds,     &
-// CHECK-NEXT:         tfreeze, const_index, errmsg, errflg)
+// CHECK-NEXT:       call cld_suite_suite_initialize(errflg, errmsg)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_init 
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'cld_suite') then
-// CHECK-NEXT:       call cld_suite_suite_finalize(errmsg, errflg)
+// CHECK-NEXT:       call cld_suite_suite_finalize(errflg, errmsg)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:       errflg = 1      
@@ -315,7 +359,7 @@
 // CHECK-NEXT: #endif
 // CHECK-NEXT:   end subroutine ccpp_final 
 // CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: col_start
 // CHECK-NEXT:     integer, intent(in) :: col_end
@@ -340,7 +384,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_run 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
-// CHECK-NEXT:     errflg) 
+// CHECK:     errflg) 
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: col_start
@@ -361,7 +405,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_init 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, suite_part, col_start, col_end, errmsg,      &
-// CHECK-NEXT:     errflg) 
+// CHECK:     errflg) 
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: col_start
@@ -381,13 +425,54 @@
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_final 
+// CHECK-LABEL:   subroutine ccpp_physics_init(suite_name, suite_part, col_start, col_end, errmsg, errflg) 
+// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     integer, intent(in) :: col_start
+// CHECK-NEXT:     integer, intent(in) :: col_end
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'cld_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:         call cld_suite_suite_init_physics(const_std_name, num_consts, std_name_array, const_inds, &
+// CHECK-NEXT:           tfreeze, const_index, errmsg, errflg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite cld_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_init 
+// CHECK-LABEL:   subroutine ccpp_physics_final(suite_name, suite_part, col_start, col_end, errmsg, errflg) 
+// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     integer, intent(in) :: col_start
+// CHECK-NEXT:     integer, intent(in) :: col_end
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'cld_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:         call cld_suite_suite_final_physics(errmsg, errflg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite cld_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_final 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites) 
-// CHECK-NEXT:     character(len=*), allocatable, intent(out) :: suites(:)
+// CHECK:     character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:     allocate(suites(1))
 // CHECK-NEXT:     suites(1) = str_cld_suite
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: part_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -401,7 +486,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_part_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
-// CHECK-NEXT:     output_vars)
+// CHECK:     output_vars)
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: var_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -472,7 +557,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_variables
 // CHECK-LABEL:     subroutine Cld_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg)
-// CHECK-NEXT:       character(len=*), intent(in) :: std_name
+// CHECK:       character(len=*), intent(in) :: std_name
 // CHECK-NEXT:       logical, intent(out) :: is_const
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -503,7 +588,7 @@
 // CHECK-NEXT:       end select
 // CHECK-NEXT:     end subroutine Cld_ccpp_is_scheme_constituent
 // CHECK-LABEL:     subroutine Cld_ccpp_deallocate_dynamic_constituents()
-// CHECK-NEXT:       if (allocated(lc_dyn_const)) deallocate(lc_dyn_const)
+// CHECK:       if (allocated(lc_dyn_const)) deallocate(lc_dyn_const)
 // CHECK-NEXT:       if (allocated(lc_dyn_const_ice)) deallocate(lc_dyn_const_ice)
 // CHECK-NEXT:       if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:       if (allocated(lc_const_props)) deallocate(lc_const_props)
@@ -512,7 +597,7 @@
 // CHECK-NEXT:       nullify(lc_cld_liq_tend)
 // CHECK-NEXT:     end subroutine Cld_ccpp_deallocate_dynamic_constituents
 // CHECK-LABEL:     subroutine Cld_ccpp_register_constituents(host_constituents, errmsg, errflg)
-// CHECK-NEXT:       use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
+// CHECK:       use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
 // CHECK-NEXT:       type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:       integer, intent(out) :: errflg
@@ -651,7 +736,7 @@
 // CHECK-NEXT:       call ccpp_scheme_utils_set_constituents(lc_all_constituents)
 // CHECK-NEXT:     end subroutine Cld_ccpp_register_constituents
 // CHECK-LABEL:     subroutine Cld_ccpp_number_constituents(num_advected, errmsg, errflg)
-// CHECK-NEXT:       integer, intent(out) :: num_advected
+// CHECK:       integer, intent(out) :: num_advected
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       errflg = 0
@@ -663,7 +748,7 @@
 // CHECK-NEXT:       end if
 // CHECK-NEXT:     end subroutine Cld_ccpp_number_constituents
 // CHECK-LABEL:     subroutine Cld_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
-// CHECK-NEXT:       integer, intent(in) :: ncols
+// CHECK:       integer, intent(in) :: ncols
 // CHECK-NEXT:       integer, intent(in) :: pver
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -698,12 +783,12 @@
 // CHECK-NEXT:         end if
 // CHECK-NEXT:       end do
 // CHECK-NEXT:     end subroutine Cld_ccpp_initialize_constituents
-// CHECK:     function Cld_constituents_array() result(ptr)
-// CHECK-NEXT:       real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK-LABEL:     function Cld_constituents_array() result(ptr)
+// CHECK:       real(kind=kind_phys), pointer :: ptr(:, :, :)
 // CHECK-NEXT:       ptr => lc_constituent_array
 // CHECK-NEXT:     end function Cld_constituents_array
 // CHECK-LABEL:     subroutine Cld_const_get_index(std_name, index, errflg, errmsg)
-// CHECK-NEXT:       character(len=*), intent(in) :: std_name
+// CHECK:       character(len=*), intent(in) :: std_name
 // CHECK-NEXT:       integer, intent(out) :: index
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -725,16 +810,15 @@
 // CHECK-NEXT:       errflg = 1
 // CHECK-NEXT:       write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:     end subroutine Cld_const_get_index
-// CHECK:     function Cld_model_const_properties() result(ptr)
-// CHECK-NEXT:       type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
+// CHECK-LABEL:     function Cld_model_const_properties() result(ptr)
+// CHECK:       type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
 // CHECK-NEXT:       ptr => lc_const_props
 // CHECK-NEXT:     end function Cld_model_const_properties
-// CHECK-LABEL: end module Cld_ccpp_cap
-// CHECK-LABEL: // -----
+// CHECK-NEXT: end module Cld_ccpp_cap
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
-// CHECK-NEXT:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
+// CHECK:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
 // CHECK:   implicit none
 // CHECK-NEXT:   private
 // CHECK:   public :: kind_phys
-// CHECK-LABEL: end module ccpp_kinds
+// CHECK-NEXT: end module ccpp_kinds

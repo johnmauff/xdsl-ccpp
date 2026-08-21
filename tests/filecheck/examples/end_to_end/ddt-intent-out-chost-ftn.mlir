@@ -12,7 +12,12 @@
 //   - NOT allocate vmr_local%vmr_array before the suite call (scheme does it).
 //   - Pass vmr_local to the suite call.
 //   - Write vmr_vmr_array back from vmr_local%vmr_array after the suite call.
-//   - Deallocate vmr_local%vmr_array.
+//   - NOT explicitly deallocate vmr_local%vmr_array -- vmr_local is a local,
+//     non-SAVE derived-type variable, so Fortran deallocates its allocatable
+//     component automatically when this subroutine returns; an explicit
+//     deallocate immediately before that already-scheduled cleanup risked a
+//     real double free (confirmed via a CI runtime failure on the capgen
+//     chost example -- see cpp_interop.py's own comment on this fix).
 //
 // Gap 4: ccpp_info_t has a character(len=512) member errmsg.  The generated code
 // must NOT expose ccpp_info_errmsg in the chost signature and must initialise
@@ -22,7 +27,11 @@
 
 // ── Gap 3 + Gap 4: initialize subroutine ────────────────────────────────────
 
-// CHECK-LABEL: subroutine DdtIn_chost_physics_initialize(
+// task #28 Stage 3: make_ddt's own _init call now happens via the
+// group-scoped chost wrapper DdtIn_chost_physics_physics_initial, not the
+// flat DdtIn_chost_physics_initialize (which no longer wraps any scheme
+// call -- see suite_cap.py's emit_scheme_calls).
+// CHECK-LABEL: subroutine DdtIn_chost_physics_physics_initial(
 
 // Gap 4: ccpp_info_errmsg must NOT appear in the signature or body.
 // (It must be absent from the whole module since ccpp_info is only used here.)
@@ -42,9 +51,8 @@
 // CHECK-NOT: allocate(vmr_local%vmr_array
 
 // Suite call must include vmr_local (the intent=out DDT local variable).
-// CHECK:     call ddt_in_suite_suite_initialize(
+// CHECK:     call ddt_in_suite_suite_init_physics(
 // CHECK:     ncols, ccpp_info_local, vmr_local, errmsg_f, errflg)
 
 // Gap 3 writeback: vmr_vmr_array must be assigned from vmr_local%vmr_array.
 // CHECK:     vmr_vmr_array = real(vmr_local%vmr_array, c_double)
-// CHECK:     deallocate(vmr_local%vmr_array)

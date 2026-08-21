@@ -21,16 +21,13 @@
 // CHECK:     bool ok() const { return code == 0; }
 // CHECK: };
 
-// Initialize args struct has scalar real fields; errmsg/errflg not present.
-// CHECK-LABEL: struct InitializeArgs {
-// CHECK:     double           lv;
-// CHECK:     double           gravit;
-
-// Initialize inline function: errmsg/errflg allocated internally.
-// CHECK-LABEL: inline Status initialize(const InitializeArgs& a) {
+// Initialize (task #28 Stage 3): scheme calls moved to the new
+// physics_initial entry point below -- initialize itself has no physics
+// args left, so (like finalize) it's a bare function, no struct.
+// CHECK-LABEL: inline Status initialize() {
 // CHECK:     char   errmsg[513]      = {};
 // CHECK:     int    errflg           = 0;
-// CHECK:     Kessler_chost_physics_initialize(
+// CHECK:     Kessler_chost_physics_initialize(errmsg, &errflg);
 // CHECK:     return {errflg, errflg ? errmsg : ""};
 
 // Finalize has no physics args — no struct, bare function signature.
@@ -60,30 +57,47 @@
 // CHECK:         a.ncol, a.nz, a.dt, a.lyr_surf,
 // CHECK:     return {errflg, errflg ? errmsg : ""};
 
+// Physics initial (task #28 Stage 3): net-new entry point, generated last
+// (after run/timestep_initial/timestep_final) -- owns the scalar physics
+// constants (and the scheme call using them) initialize used to have.
+// CHECK-LABEL: struct PhysicsInitialArgs {
+// CHECK:     double           lv;
+// CHECK:     double           gravit;
+
+// Physics initial inline function: errmsg/errflg allocated internally.
+// CHECK-LABEL: inline Status physics_initial(const PhysicsInitialArgs& a) {
+// CHECK:     char   errmsg[513]      = {};
+// CHECK:     int    errflg           = 0;
+// CHECK:     Kessler_chost_physics_physics_initial(
+// CHECK:     return {errflg, errflg ? errmsg : ""};
+
+// Physics final (task #28 Stage 3): net-new entry point; kessler_update has
+// no _finalize table, so this reduces to a bare function like finalize.
+// CHECK-LABEL: inline Status physics_final() {
+// CHECK:     Kessler_chost_physics_physics_final(errmsg, &errflg);
+// CHECK:     return {errflg, errflg ? errmsg : ""};
+
 // State struct aggregates all lifecycle fields; col_start/col_end excluded.
 // Fields appear in order of first use across lifecycles, scanned in fixed
 // canonical phase order (register, initialize, finalize, run,
-// timestep_initial, timestep_final) -- task #28 Stage 2 moved
-// timestep_final's own emission to last in that order, so a field cpair
-// shares with timestep_final (previously the first phase to introduce it)
-// now first appears via run instead, where run's own scalars-before-arrays
-// convention puts dt ahead of cpair.
+// timestep_initial, timestep_final, physics_initial, physics_final) --
+// task #28 Stage 3 added physics_initial/physics_final at the END of that
+// order (net-new entry points, not moved existing ones), so lv/gravit
+// (used only by physics_initial) now appear LAST, after every field run/
+// timestep_final already introduced -- not first, like the old flat
+// initialize used to put them.
 // All pointer fields are non-const (host owns and initialises the memory).
 // CHECK-LABEL: struct State {
-// CHECK:     double           lv = 0;
 // CHECK:     int              ncol = 0;
 // CHECK:     double           dt = 0;
 // CHECK:     double*          cpair = nullptr;
 // CHECK:     double*          theta = nullptr;
 // CHECK:     double*          precl = nullptr;
+// CHECK:     double           lv = 0;
+// CHECK:     double           gravit = 0;
 // Constructor initialises dimension scalars; remaining fields default to 0/nullptr.
 // CHECK:     State(int ncol = 0, int nz = 0)
 // CHECK:         : ncol(ncol), nz(nz) {}
-
-// State overload for initialize — no loop bounds.
-// CHECK-LABEL: inline Status initialize(const State& s) {
-// CHECK:     return initialize({
-// CHECK:         .lv=s.lv,
 
 // State overload for run — no loop bounds; ncol/nz already live on State.
 // CHECK-LABEL: inline Status run(const State& s) {
@@ -92,6 +106,12 @@
 // CHECK:         .nz=s.nz,
 // CHECK:         .dt=s.dt,
 // CHECK:         .theta=s.theta,
+
+// State overload for physics_initial — generated last (task #28 Stage 3:
+// after run/timestep_initial/timestep_final's own State overloads).
+// CHECK-LABEL: inline Status physics_initial(const State& s) {
+// CHECK:     return physics_initial({
+// CHECK:         .lv=s.lv,
 
 // Namespace close.
 // CHECK: } // namespace Kessler_chost

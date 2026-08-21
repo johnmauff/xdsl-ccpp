@@ -39,9 +39,14 @@ int main() {
     // CCPP call sequence
     check("register",         Nestedddt_chost::do_register());
     check("initialize",       Nestedddt_chost::initialize());
+    // physics_initial/physics_final (task #28, Stage 3): own the
+    // scheme-level _init/_finalize calls initialize()/finalize() no
+    // longer make themselves.
+    check("physics_initial",  Nestedddt_chost::physics_initial());
     check("timestep_initial", Nestedddt_chost::timestep_initial());
     check("run",              Nestedddt_chost::run(state, 1, NCOL));
     check("timestep_final",   Nestedddt_chost::timestep_final());
+    check("physics_final",    Nestedddt_chost::physics_final());
     check("finalize",         Nestedddt_chost::finalize());
 
     // Verify: nestedddt_run doubles temp, so every element should be 2.0.

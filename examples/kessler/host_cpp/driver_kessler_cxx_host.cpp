@@ -55,7 +55,10 @@ int main() {
     state.allocate();   // allocates and wires all array pointers
     init_data(state);   // fills scalars and array data
 
-    check("initialize",       Kessler_chost::initialize(state));
+    check("initialize",       Kessler_chost::initialize());
+    // physics_initial (task #28, Stage 3): owns the scheme-level _init
+    // calls initialize() no longer makes itself.
+    check("physics_initial",  Kessler_chost::physics_initial(state));
     check("timestep_initial", Kessler_chost::timestep_initial(state));
 
     auto t_start = std::chrono::high_resolution_clock::now();
@@ -63,6 +66,9 @@ int main() {
     auto t_end = std::chrono::high_resolution_clock::now();
 
     check("timestep_final", Kessler_chost::timestep_final(state));
+    // physics_final (task #28, Stage 3): owns the scheme-level _finalize
+    // calls finalize() no longer makes itself.
+    check("physics_final",  Kessler_chost::physics_final());
     check("finalize",       Kessler_chost::finalize());
 
     double elapsed_s = std::chrono::duration<double>(t_end - t_start).count();

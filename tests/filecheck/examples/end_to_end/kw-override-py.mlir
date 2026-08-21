@@ -12,7 +12,7 @@
 
 // CHECK-LABEL: // FILE: kw_suite_cap.F90
 // CHECK-LABEL: module kw_suite_cap
-// CHECK-NEXT:   use hello_scheme, only: hello_scheme_finalize
+// CHECK:   use hello_scheme, only: hello_scheme_finalize
 // CHECK-NEXT:   use hello_scheme, only: hello_scheme_init
 // CHECK-NEXT:   use hello_scheme, only: hello_scheme_run
 // CHECK:   implicit none
@@ -24,19 +24,21 @@
 // CHECK-NEXT:   public :: kw_suite_suite_register
 // CHECK-NEXT:   public :: kw_suite_suite_initialize
 // CHECK-NEXT:   public :: kw_suite_suite_finalize
+// CHECK-NEXT:   public :: kw_suite_suite_init_physics
 // CHECK-NEXT:   public :: kw_suite_suite_physics
 // CHECK-NEXT:   public :: kw_suite_suite_timestep_init_physics
 // CHECK-NEXT:   public :: kw_suite_suite_timestep_final_physics
+// CHECK-NEXT:   public :: kw_suite_suite_final_physics
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine kw_suite_suite_register(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:   end subroutine kw_suite_suite_register 
-// CHECK-LABEL:   subroutine kw_suite_suite_initialize(errmsg, errflg) 
+// CHECK-LABEL:   subroutine kw_suite_suite_initialize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
@@ -44,14 +46,11 @@
 // CHECK-NEXT:         "' in kw_suite_initialize"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     if (errflg .eq. 0) then
-// CHECK-NEXT:       call hello_scheme_init(errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine kw_suite_suite_initialize 
-// CHECK-LABEL:   subroutine kw_suite_suite_finalize(errmsg, errflg) 
+// CHECK-LABEL:   subroutine kw_suite_suite_finalize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
@@ -59,13 +58,24 @@
 // CHECK-NEXT:         "' in kw_suite_finalize"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     if (errflg .eq. 0) then
-// CHECK-NEXT:       call hello_scheme_finalize(errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:   end subroutine kw_suite_suite_finalize 
+// CHECK-LABEL:   subroutine kw_suite_suite_init_physics(errmsg, errflg) 
+// CHECK:     character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in kw_suite_init_physics"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call hello_scheme_init(errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine kw_suite_suite_init_physics 
 // CHECK-LABEL:   subroutine kw_suite_suite_physics(col_start, col_end, lev, errmsg, errflg) 
-// CHECK-NEXT:     integer, intent(in) :: col_start
+// CHECK:     integer, intent(in) :: col_start
 // CHECK-NEXT:     integer, intent(in) :: col_end
 // CHECK-NEXT:     integer, intent(in) :: lev
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -86,26 +96,41 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine kw_suite_suite_physics 
 // CHECK-LABEL:   subroutine kw_suite_suite_timestep_init_physics(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:   end subroutine kw_suite_suite_timestep_init_physics 
 // CHECK-LABEL:   subroutine kw_suite_suite_timestep_final_physics(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine kw_suite_suite_timestep_final_physics 
-// CHECK-LABEL: end module kw_suite_cap
-// CHECK-LABEL: // -----
+// CHECK-LABEL:   subroutine kw_suite_suite_final_physics(errmsg, errflg) 
+// CHECK:     character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in kw_suite_final_physics"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call hello_scheme_finalize(errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine kw_suite_suite_final_physics 
+// CHECK-NEXT: end module kw_suite_cap
 // CHECK-LABEL: // FILE: Kw_ccpp_cap.F90
 // CHECK-LABEL: module Kw_ccpp_cap
-// CHECK-NEXT:   use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
+// CHECK:   use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:   use kw_suite_cap, only: kw_suite_suite_final_physics
 // CHECK-NEXT:   use kw_suite_cap, only: kw_suite_suite_finalize
+// CHECK-NEXT:   use kw_suite_cap, only: kw_suite_suite_init_physics
 // CHECK-NEXT:   use kw_suite_cap, only: kw_suite_suite_initialize
 // CHECK-NEXT:   use kw_suite_cap, only: kw_suite_suite_physics
 // CHECK-NEXT:   use kw_suite_cap, only: kw_suite_suite_register
@@ -126,6 +151,8 @@
 // CHECK-NEXT:   public :: ccpp_physics_run
 // CHECK-NEXT:   public :: ccpp_physics_timestep_init
 // CHECK-NEXT:   public :: ccpp_physics_timestep_final
+// CHECK-NEXT:   public :: ccpp_physics_init
+// CHECK-NEXT:   public :: ccpp_physics_final
 // CHECK-NEXT:   public :: ccpp_physics_suite_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_variables
@@ -139,7 +166,7 @@
 // CHECK-NEXT:   public :: Kw_model_const_properties
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
@@ -151,31 +178,31 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_register 
 // CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'kw_suite') then
-// CHECK-NEXT:       call kw_suite_suite_initialize(errmsg, errflg)
+// CHECK-NEXT:       call kw_suite_suite_initialize(errflg, errmsg)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_init 
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'kw_suite') then
-// CHECK-NEXT:       call kw_suite_suite_finalize(errmsg, errflg)
+// CHECK-NEXT:       call kw_suite_suite_finalize(errflg, errmsg)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_final 
 // CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: col_start
 // CHECK-NEXT:     integer, intent(in) :: col_end
@@ -195,7 +222,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_run 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:     integer, intent(inout) :: errflg
@@ -213,7 +240,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_init 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, suite_part, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:     integer, intent(inout) :: errflg
@@ -230,13 +257,49 @@
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_final 
+// CHECK-LABEL:   subroutine ccpp_physics_init(suite_name, suite_part, errmsg, errflg) 
+// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'kw_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:         call kw_suite_suite_init_physics(errmsg, errflg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite kw_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_init 
+// CHECK-LABEL:   subroutine ccpp_physics_final(suite_name, suite_part, errmsg, errflg) 
+// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'kw_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'physics') then
+// CHECK-NEXT:         call kw_suite_suite_final_physics(errmsg, errflg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite kw_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_final 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites) 
-// CHECK-NEXT:     character(len=*), allocatable, intent(out) :: suites(:)
+// CHECK:     character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:     allocate(suites(1))
 // CHECK-NEXT:     suites(1) = str_kw_suite
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: part_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -250,7 +313,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_part_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
-// CHECK-NEXT:     output_vars)
+// CHECK:     output_vars)
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: var_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -284,7 +347,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_variables
 // CHECK-LABEL:     subroutine Kw_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg)
-// CHECK-NEXT:       character(len=*), intent(in) :: std_name
+// CHECK:       character(len=*), intent(in) :: std_name
 // CHECK-NEXT:       logical, intent(out) :: is_const
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -297,14 +360,14 @@
 // CHECK-NEXT:       end select
 // CHECK-NEXT:     end subroutine Kw_ccpp_is_scheme_constituent
 // CHECK-LABEL:     subroutine Kw_ccpp_deallocate_dynamic_constituents()
-// CHECK-NEXT:       if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
+// CHECK:       if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:       if (allocated(lc_const_props)) deallocate(lc_const_props)
 // CHECK-NEXT:       if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)
 // CHECK-NEXT:       if (allocated(lc_const_tend)) deallocate(lc_const_tend)
 // CHECK-NEXT:       if (allocated(lc_lev)) deallocate(lc_lev)
 // CHECK-NEXT:     end subroutine Kw_ccpp_deallocate_dynamic_constituents
 // CHECK-LABEL:     subroutine Kw_ccpp_register_constituents(host_constituents, errmsg, errflg)
-// CHECK-NEXT:       use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
+// CHECK:       use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
 // CHECK-NEXT:       type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:       integer, intent(out) :: errflg
@@ -351,7 +414,7 @@
 // CHECK-NEXT:       call ccpp_scheme_utils_set_constituents(lc_all_constituents)
 // CHECK-NEXT:     end subroutine Kw_ccpp_register_constituents
 // CHECK-LABEL:     subroutine Kw_ccpp_number_constituents(num_advected, errmsg, errflg)
-// CHECK-NEXT:       integer, intent(out) :: num_advected
+// CHECK:       integer, intent(out) :: num_advected
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       errflg = 0
@@ -363,7 +426,7 @@
 // CHECK-NEXT:       end if
 // CHECK-NEXT:     end subroutine Kw_ccpp_number_constituents
 // CHECK-LABEL:     subroutine Kw_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
-// CHECK-NEXT:       integer, intent(in) :: ncols
+// CHECK:       integer, intent(in) :: ncols
 // CHECK-NEXT:       integer, intent(in) :: pver
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -391,12 +454,12 @@
 // CHECK-NEXT:       allocate(lc_lev(ncols, pver))
 // CHECK-NEXT:       lc_lev = 0.0_kind_phys
 // CHECK-NEXT:     end subroutine Kw_ccpp_initialize_constituents
-// CHECK:     function Kw_constituents_array() result(ptr)
-// CHECK-NEXT:       real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK-LABEL:     function Kw_constituents_array() result(ptr)
+// CHECK:       real(kind=kind_phys), pointer :: ptr(:, :, :)
 // CHECK-NEXT:       ptr => lc_constituent_array
 // CHECK-NEXT:     end function Kw_constituents_array
 // CHECK-LABEL:     subroutine Kw_const_get_index(std_name, index, errflg, errmsg)
-// CHECK-NEXT:       character(len=*), intent(in) :: std_name
+// CHECK:       character(len=*), intent(in) :: std_name
 // CHECK-NEXT:       integer, intent(out) :: index
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -418,8 +481,8 @@
 // CHECK-NEXT:       errflg = 1
 // CHECK-NEXT:       write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:     end subroutine Kw_const_get_index
-// CHECK:     function Kw_model_const_properties() result(ptr)
-// CHECK-NEXT:       type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
+// CHECK-LABEL:     function Kw_model_const_properties() result(ptr)
+// CHECK:       type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
 // CHECK-NEXT:       ptr => lc_const_props
 // CHECK-NEXT:     end function Kw_model_const_properties
-// CHECK-LABEL: end module Kw_ccpp_cap
+// CHECK-NEXT: end module Kw_ccpp_cap
