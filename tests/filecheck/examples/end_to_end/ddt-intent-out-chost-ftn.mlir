@@ -12,7 +12,12 @@
 //   - NOT allocate vmr_local%vmr_array before the suite call (scheme does it).
 //   - Pass vmr_local to the suite call.
 //   - Write vmr_vmr_array back from vmr_local%vmr_array after the suite call.
-//   - Deallocate vmr_local%vmr_array.
+//   - NOT explicitly deallocate vmr_local%vmr_array -- vmr_local is a local,
+//     non-SAVE derived-type variable, so Fortran deallocates its allocatable
+//     component automatically when this subroutine returns; an explicit
+//     deallocate immediately before that already-scheduled cleanup risked a
+//     real double free (confirmed via a CI runtime failure on the capgen
+//     chost example -- see cpp_interop.py's own comment on this fix).
 //
 // Gap 4: ccpp_info_t has a character(len=512) member errmsg.  The generated code
 // must NOT expose ccpp_info_errmsg in the chost signature and must initialise
@@ -51,4 +56,3 @@
 
 // Gap 3 writeback: vmr_vmr_array must be assigned from vmr_local%vmr_array.
 // CHECK:     vmr_vmr_array = real(vmr_local%vmr_array, c_double)
-// CHECK:     deallocate(vmr_local%vmr_array)

@@ -6,8 +6,13 @@
 //   - Declare vmr_vmr_array as intent(in)   (read-only pointer from C++)
 //   - Allocate vmr_local%vmr_array and fill it from vmr_vmr_array (copy-in)
 //   - Call the suite timestep_final subroutine
-//   - Deallocate vmr_local%vmr_array
 //   - NOT write vmr_vmr_array back from vmr_local%vmr_array (no writeback)
+//   - NOT explicitly deallocate vmr_local%vmr_array -- vmr_local is a local,
+//     non-SAVE derived-type variable, so Fortran deallocates its allocatable
+//     component automatically when this subroutine returns; an explicit
+//     deallocate immediately before that already-scheduled cleanup risked a
+//     real double free (confirmed via a CI runtime failure on the capgen
+//     chost example -- see cpp_interop.py's own comment on this fix)
 //
 // Contrast with the run/physics subroutine where vmr has intent=inout:
 //   - vmr_vmr_array declared intent(inout)
@@ -28,7 +33,6 @@
 
 // Writeback IS present in the run subroutine.
 // CHECK:     vmr_vmr_array = real(vmr_local%vmr_array, c_double)
-// CHECK:     deallocate(vmr_local%vmr_array)
 
 // ── timestep_final: vmr is intent=in → no writeback ──────────────────────────
 
@@ -47,9 +51,6 @@
 
 // Suite call must be present.
 // CHECK:     call ddt_in_suite_suite_timestep_final_physics(
-
-// Deallocation must happen (even for intent=in).
-// CHECK:     deallocate(vmr_local%vmr_array)
 
 // Writeback must NOT be present in this subroutine.
 // The real(vmr_local%vmr_array, c_double) assignment that would copy data back

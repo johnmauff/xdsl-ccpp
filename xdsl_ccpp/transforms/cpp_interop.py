@@ -1309,7 +1309,18 @@ class CPPInteropCap(ModulePass):
                         call_exprs.append(oai["host"])
                 _emit_call(A, sfn_i, call_exprs)
 
-            # ── DDT cleanup: writeback inout arrays, deallocate all arrays ───────
+            # ── DDT cleanup: writeback inout arrays ───────────────────────────
+            # No explicit deallocate here: lname is a local, non-SAVE derived-
+            # type variable, and every ultimate allocatable component still
+            # allocated when this subroutine returns is deallocated
+            # automatically per the Fortran standard's own local-variable
+            # cleanup rules -- an explicit deallocate immediately before that
+            # already-scheduled cleanup is redundant at best, and confirmed
+            # via a real CI runtime failure (capgen_cxx_host: "double free or
+            # corruption (out)" inside CapgenChost_chost_physics_physics_initial,
+            # the first time an intent=out DDT arg -- allocated inside the
+            # callee, not by this wrapper's own copy-in -- went through this
+            # exact cleanup path) to risk a genuine double free at worst.
             for li in ddt_locals.values():
                 lname = li["local_name"]
                 for ai in li["array_ais"]:
@@ -1318,7 +1329,6 @@ class CPPInteropCap(ModulePass):
                     if ai["intent"] != "in":
                         c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
                         A(f"    {fn_} = real({lname}%{mn}, {c_real})")
-                    A(f"    deallocate({lname}%{mn})")
 
             # ── F→C string copy loops ─────────────────────────────────────────
             if has_sname:

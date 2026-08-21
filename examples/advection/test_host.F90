@@ -950,12 +950,6 @@ CONTAINS
          end if
        end do
 
-       ! Check indices
-       call check_constituent_indices(test_scalar_const_index, test_const_indices, &
-            errmsg, errflg)
-       call check_errflg(subname//" check suite indices", errflg, errmsg,          &
-            errflg_final)
-
        ! Physics initialize (task #28, Stage 3): group-scoped, matching
        ! ccpp_physics_run's own per-part call below -- owns the
        ! scheme-level _init calls ccpp_init no longer makes itself (see
@@ -975,6 +969,21 @@ CONTAINS
              end if
           end do
        end do
+
+       ! Check indices. const_indices_init (the scheme that populates
+       ! test_host_data's const_index/const_inds) now runs as part of
+       ! ccpp_physics_init above, not the flat ccpp_init above that (task
+       ! #28 Stage 3 stopped ccpp_init from making scheme calls itself) --
+       ! this check must come after ccpp_physics_init, not before it, or
+       ! it always sees const_index/const_inds still at their unset -1
+       ! default (and, since check_constituent_indices reports the
+       ! mismatch count through errflg, a failure here would also block
+       ! every errflg==0-gated call after it, including ccpp_physics_init
+       ! itself if this check were left before it).
+       call check_constituent_indices(test_scalar_const_index, test_const_indices, &
+            errmsg, errflg)
+       call check_errflg(subname//" check suite indices", errflg, errmsg,          &
+            errflg_final)
 
        ! Loop over time steps
        do time_step = 1, num_time_steps
