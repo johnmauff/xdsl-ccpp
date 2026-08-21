@@ -28,23 +28,21 @@
 // CHECK-NEXT:   public :: kessler_suite_suite_register
 // CHECK-NEXT:   public :: kessler_suite_suite_initialize
 // CHECK-NEXT:   public :: kessler_suite_suite_finalize
+// CHECK-NEXT:   public :: kessler_suite_suite_init_physics
 // CHECK-NEXT:   public :: kessler_suite_suite_physics
 // CHECK-NEXT:   public :: kessler_suite_suite_timestep_init_physics
 // CHECK-NEXT:   public :: kessler_suite_suite_timestep_final_physics
+// CHECK-NEXT:   public :: kessler_suite_suite_final_physics
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine kessler_suite_suite_register(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:   end subroutine kessler_suite_suite_register 
-// CHECK-LABEL:   subroutine kessler_suite_suite_initialize(lv_in, pref_in, rhoqr_in, gravit_in, errmsg, errflg) 
-// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: lv_in
-// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: pref_in
-// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: rhoqr_in
-// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: gravit_in
+// CHECK-LABEL:   subroutine kessler_suite_suite_initialize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
@@ -52,17 +50,10 @@
 // CHECK-NEXT:         "' in kessler_suite_initialize"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     if (errflg .eq. 0) then
-// CHECK-NEXT:       call kessler_init(lv_in=lv_in, pref_in=pref_in, rhoqr_in=rhoqr_in, errmsg=errmsg,           &
-// CHECK-NEXT:         errflg=errflg)
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     if (errflg .eq. 0) then
-// CHECK-NEXT:       call kessler_update_init(gravit_in=gravit_in, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine kessler_suite_suite_initialize 
 // CHECK-LABEL:   subroutine kessler_suite_suite_finalize(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
@@ -73,8 +64,30 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_uninitialized
 // CHECK-NEXT:   end subroutine kessler_suite_suite_finalize 
+// CHECK-LABEL:   subroutine kessler_suite_suite_init_physics(lv_in, pref_in, rhoqr_in, gravit_in, errmsg, errflg) 
+// CHECK:     real(kind=kind_phys), intent(in) :: lv_in
+// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: pref_in
+// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: rhoqr_in
+// CHECK-NEXT:     real(kind=kind_phys), intent(in) :: gravit_in
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in kessler_suite_init_physics"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call kessler_init(lv_in=lv_in, pref_in=pref_in, rhoqr_in=rhoqr_in, errmsg=errmsg,           &
+// CHECK-NEXT:         errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call kessler_update_init(gravit_in=gravit_in, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine kessler_suite_suite_init_physics 
 // CHECK-LABEL:   subroutine kessler_suite_suite_physics(ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z,    &
-// CHECK-NEXT:     pk, theta, qv, qc, qr, precl, relhum, temp_prev, ttend_t, scheme_name, errmsg, errflg) 
+// CHECK:     pk, theta, qv, qc, qr, precl, relhum, temp_prev, ttend_t, scheme_name, errmsg, errflg) 
 // CHECK-NEXT:     integer, intent(in) :: ncol
 // CHECK-NEXT:     integer, intent(in) :: nz
 // CHECK-NEXT:     real(kind=kind_phys), intent(in) :: dt
@@ -114,7 +127,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine kessler_suite_suite_physics 
 // CHECK-LABEL:   subroutine kessler_suite_suite_timestep_init_physics(ncol, nz, temp, temp_prev, ttend_t,        &
-// CHECK-NEXT:     errmsg, errflg) 
+// CHECK:     errmsg, errflg) 
 // CHECK-NEXT:     integer, intent(in) :: ncol
 // CHECK-NEXT:     integer, intent(in) :: nz
 // CHECK-NEXT:     real(kind=kind_phys), target, intent(in) :: temp(:, :)
@@ -131,7 +144,7 @@
 // CHECK-NEXT:     ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:   end subroutine kessler_suite_suite_timestep_init_physics 
 // CHECK-LABEL:   subroutine kessler_suite_suite_timestep_final_physics(nz, ncol, cpair, temp, zm, phis,          &
-// CHECK-NEXT:     st_energy, errmsg, errflg) 
+// CHECK:     st_energy, errmsg, errflg) 
 // CHECK-NEXT:     integer, intent(in) :: nz
 // CHECK-NEXT:     integer, intent(in) :: ncol
 // CHECK-NEXT:     real(kind=kind_phys), target, intent(in) :: cpair(:, :)
@@ -149,8 +162,18 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine kessler_suite_suite_timestep_final_physics 
-// CHECK-LABEL: end module kessler_suite_cap
-// CHECK-LABEL: // -----
+// CHECK-LABEL:   subroutine kessler_suite_suite_final_physics(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in kessler_suite_final_physics"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine kessler_suite_suite_final_physics 
+// CHECK-NEXT: end module kessler_suite_cap
 // CHECK-LABEL: // FILE: Kessler_ccpp_cap.F90
 // CHECK-LABEL: module Kessler_ccpp_cap
 // CHECK:   use ccpp_kinds
@@ -181,7 +204,9 @@
 // CHECK-NEXT:   use kessler_host_mod, only: theta
 // CHECK-NEXT:   use kessler_host_mod, only: ttend_t
 // CHECK-NEXT:   use kessler_host_mod, only: z
+// CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_final_physics
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_finalize
+// CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_init_physics
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_initialize
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_physics
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_register
@@ -197,12 +222,14 @@
 // CHECK-NEXT:   public :: ccpp_physics_run
 // CHECK-NEXT:   public :: ccpp_physics_timestep_init
 // CHECK-NEXT:   public :: ccpp_physics_timestep_final
+// CHECK-NEXT:   public :: ccpp_physics_init
+// CHECK-NEXT:   public :: ccpp_physics_final
 // CHECK-NEXT:   public :: ccpp_physics_suite_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_variables
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) BIND(C, name='ccpp_register') 
-// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:     integer(c_int), intent(out) :: errflg
 // CHECK-NEXT:     integer :: ccpp_c2f_i
@@ -227,7 +254,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine ccpp_register 
 // CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) BIND(C, name='ccpp_init') 
-// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:     integer(c_int), intent(out) :: errflg
 // CHECK-NEXT:     integer :: ccpp_c2f_i
@@ -241,7 +268,7 @@
 // CHECK-NEXT:     errmsg_f = ' '
 // CHECK-NEXT:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name_f) .eq. 'kessler_suite') then
-// CHECK-NEXT:       call kessler_suite_suite_initialize(lv, pref, rhoqr, gravit, errmsg_f, errflg)
+// CHECK-NEXT:       call kessler_suite_suite_initialize(errflg, errmsg_f)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg_f, '(3a)') "No suite named ", trim(suite_name_f), " found"
 // CHECK-NEXT:       errflg = 1      
@@ -252,7 +279,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine ccpp_init 
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) BIND(C, name='ccpp_final') 
-// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:     integer(c_int), intent(out) :: errflg
 // CHECK-NEXT:     integer :: ccpp_c2f_i
@@ -277,7 +304,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine ccpp_final 
 // CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, col_start, col_end, errmsg, errflg) BIND(C, &
-// CHECK-NEXT:     name='ccpp_physics_run') 
+// CHECK:     name='ccpp_physics_run') 
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_part(*)
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: col_start
@@ -330,7 +357,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine ccpp_physics_run 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
-// CHECK-NEXT:     errflg) BIND(C, name='ccpp_physics_timestep_init') 
+// CHECK:     errflg) BIND(C, name='ccpp_physics_timestep_init') 
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_part(*)
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: col_start
@@ -378,7 +405,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_init 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, suite_part, col_start, col_end, errmsg,      &
-// CHECK-NEXT:     errflg) BIND(C, name='ccpp_physics_timestep_final') 
+// CHECK:     errflg) BIND(C, name='ccpp_physics_timestep_final') 
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_part(*)
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: col_start
@@ -426,13 +453,103 @@
 // CHECK-NEXT:     end do 
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_final 
+// CHECK-LABEL:   subroutine ccpp_physics_init(suite_name, suite_part, col_start, col_end, errmsg,                &
+// CHECK:     errflg) BIND(C, name='ccpp_physics_init') 
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_part(*)
+// CHECK-NEXT:     integer(c_int), value, intent(in) :: col_start
+// CHECK-NEXT:     integer(c_int), value, intent(in) :: col_end
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(inout) :: errmsg(*)
+// CHECK-NEXT:     integer(c_int), intent(inout) :: errflg
+// CHECK-NEXT:     integer :: ccpp_c2f_i
+// CHECK-NEXT:     character(len=512) :: suite_name_f
+// CHECK-NEXT:     character(len=512) :: suite_part_f
+// CHECK-NEXT:     character(len=512) :: errmsg_f
+// CHECK:     suite_name_f = ' '
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len(suite_name_f) 
+// CHECK-NEXT:       if (suite_name(ccpp_c2f_i) == c_null_char) exit
+// CHECK-NEXT:       suite_name_f(ccpp_c2f_i:ccpp_c2f_i) = suite_name(ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     suite_part_f = ' '
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len(suite_part_f) 
+// CHECK-NEXT:       if (suite_part(ccpp_c2f_i) == c_null_char) exit
+// CHECK-NEXT:       suite_part_f(ccpp_c2f_i:ccpp_c2f_i) = suite_part(ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     errmsg_f = ' '
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len(errmsg_f) 
+// CHECK-NEXT:       if (errmsg(ccpp_c2f_i) == c_null_char) exit
+// CHECK-NEXT:       errmsg_f(ccpp_c2f_i:ccpp_c2f_i) = errmsg(ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name_f) .eq. 'kessler_suite') then
+// CHECK-NEXT:       if (trim(suite_part_f) .eq. 'physics') then
+// CHECK-NEXT:         call kessler_suite_suite_init_physics(lv, pref, rhoqr, gravit, errmsg_f, errflg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg_f, '(3a)') "No suite part named ", trim(suite_part_f),                       &
+// CHECK-NEXT:           " found in suite kessler_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg_f, '(3a)') "No suite named ", trim(suite_name_f), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len_trim(errmsg_f) 
+// CHECK-NEXT:       errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:   end subroutine ccpp_physics_init 
+// CHECK-LABEL:   subroutine ccpp_physics_final(suite_name, suite_part, col_start, col_end, errmsg,               &
+// CHECK:     errflg) BIND(C, name='ccpp_physics_final') 
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_name(*)
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(in) :: suite_part(*)
+// CHECK-NEXT:     integer(c_int), value, intent(in) :: col_start
+// CHECK-NEXT:     integer(c_int), value, intent(in) :: col_end
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(inout) :: errmsg(*)
+// CHECK-NEXT:     integer(c_int), intent(inout) :: errflg
+// CHECK-NEXT:     integer :: ccpp_c2f_i
+// CHECK-NEXT:     character(len=512) :: suite_name_f
+// CHECK-NEXT:     character(len=512) :: suite_part_f
+// CHECK-NEXT:     character(len=512) :: errmsg_f
+// CHECK:     suite_name_f = ' '
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len(suite_name_f) 
+// CHECK-NEXT:       if (suite_name(ccpp_c2f_i) == c_null_char) exit
+// CHECK-NEXT:       suite_name_f(ccpp_c2f_i:ccpp_c2f_i) = suite_name(ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     suite_part_f = ' '
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len(suite_part_f) 
+// CHECK-NEXT:       if (suite_part(ccpp_c2f_i) == c_null_char) exit
+// CHECK-NEXT:       suite_part_f(ccpp_c2f_i:ccpp_c2f_i) = suite_part(ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     errmsg_f = ' '
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len(errmsg_f) 
+// CHECK-NEXT:       if (errmsg(ccpp_c2f_i) == c_null_char) exit
+// CHECK-NEXT:       errmsg_f(ccpp_c2f_i:ccpp_c2f_i) = errmsg(ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name_f) .eq. 'kessler_suite') then
+// CHECK-NEXT:       if (trim(suite_part_f) .eq. 'physics') then
+// CHECK-NEXT:         call kessler_suite_suite_final_physics(errflg, errmsg_f)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg_f, '(3a)') "No suite part named ", trim(suite_part_f),                       &
+// CHECK-NEXT:           " found in suite kessler_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg_f, '(3a)') "No suite named ", trim(suite_name_f), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     do ccpp_c2f_i = 1, len_trim(errmsg_f) 
+// CHECK-NEXT:       errmsg(ccpp_c2f_i) = errmsg_f(ccpp_c2f_i:ccpp_c2f_i)
+// CHECK-NEXT:     end do 
+// CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:   end subroutine ccpp_physics_final 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites) 
-// CHECK-NEXT:     character(len=*), allocatable, intent(out) :: suites(:)
+// CHECK:     character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:     allocate(suites(1))
 // CHECK-NEXT:     suites(1) = str_kessler_suite
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: part_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -446,7 +563,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_part_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
-// CHECK-NEXT:     output_vars)
+// CHECK:     output_vars)
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: var_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -535,8 +652,7 @@
 // CHECK-NEXT:       errflg = 1
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_variables
-// CHECK-LABEL: end module Kessler_ccpp_cap
-// CHECK-LABEL: // -----
+// CHECK-NEXT: end module Kessler_ccpp_cap
 // CHECK-LABEL: // FILE: Kessler_ccpp_chost_cap.F90
 // CHECK-LABEL: module Kessler_ccpp_chost_cap
 // CHECK:   use ccpp_kinds, only: kind_phys
@@ -547,6 +663,8 @@
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_physics
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_timestep_init_physics
 // CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_timestep_final_physics
+// CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_init_physics
+// CHECK-NEXT:   use kessler_suite_cap, only: kessler_suite_suite_final_physics
 // CHECK:   implicit none
 // CHECK-NEXT:   private
 // CHECK:   public :: Kessler_chost_physics_register
@@ -555,9 +673,11 @@
 // CHECK-NEXT:   public :: Kessler_chost_physics_run
 // CHECK-NEXT:   public :: Kessler_chost_physics_timestep_initial
 // CHECK-NEXT:   public :: Kessler_chost_physics_timestep_final
+// CHECK-NEXT:   public :: Kessler_chost_physics_physics_initial
+// CHECK-NEXT:   public :: Kessler_chost_physics_physics_final
 // CHECK: contains
 // CHECK-LABEL:   subroutine Kessler_chost_physics_register(errmsg, errflg) &
-// CHECK-NEXT:       bind(C, name='Kessler_chost_physics_register')
+// CHECK:       bind(C, name='Kessler_chost_physics_register')
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:     integer(c_int),               intent(out) :: errflg
 // CHECK-NEXT:     integer :: i
@@ -570,28 +690,22 @@
 // CHECK-NEXT:     end do
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine Kessler_chost_physics_register
-// CHECK-LABEL:   subroutine Kessler_chost_physics_initialize(lv, pref, rhoqr, gravit, errmsg, errflg) &
-// CHECK-NEXT:       bind(C, name='Kessler_chost_physics_initialize')
-// CHECK-NEXT:     real(c_double), value, intent(in) :: lv
-// CHECK-NEXT:     real(c_double), value, intent(in) :: pref
-// CHECK-NEXT:     real(c_double), value, intent(in) :: rhoqr
-// CHECK-NEXT:     real(c_double), value, intent(in) :: gravit
+// CHECK-LABEL:   subroutine Kessler_chost_physics_initialize(errmsg, errflg) &
+// CHECK:       bind(C, name='Kessler_chost_physics_initialize')
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:     integer(c_int),               intent(out) :: errflg
 // CHECK-NEXT:     integer :: i
 // CHECK-NEXT:     character(len=512) :: errmsg_f
 // CHECK:     errmsg_f = ' '
 // CHECK-NEXT:     errflg = 0
-// CHECK-NEXT:     call kessler_suite_suite_initialize( &
-// CHECK-NEXT:         real(lv, kind_phys), real(pref, kind_phys), real(rhoqr, kind_phys),  &
-// CHECK-NEXT:         real(gravit, kind_phys), errmsg_f, errflg)
+// CHECK-NEXT:     call kessler_suite_suite_initialize(errflg, errmsg_f)
 // CHECK-NEXT:     do i = 1, len_trim(errmsg_f)
 // CHECK-NEXT:       errmsg(i) = errmsg_f(i:i)
 // CHECK-NEXT:     end do
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine Kessler_chost_physics_initialize
 // CHECK-LABEL:   subroutine Kessler_chost_physics_finalize(errmsg, errflg) &
-// CHECK-NEXT:       bind(C, name='Kessler_chost_physics_finalize')
+// CHECK:       bind(C, name='Kessler_chost_physics_finalize')
 // CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
 // CHECK-NEXT:     integer(c_int),               intent(out) :: errflg
 // CHECK-NEXT:     integer :: i
@@ -605,7 +719,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine Kessler_chost_physics_finalize
 // CHECK-LABEL:   subroutine Kessler_chost_physics_run( &
-// CHECK-NEXT:       ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, exner, theta, qv, qc, qr,  &
+// CHECK:       ncol, nz, dt, lyr_surf, lyr_toa, cpair, rair, rho, z, exner, theta, qv, qc, qr,  &
 // CHECK-NEXT:       precl, relhum, temp_prev, ttend_t, scheme_name, errmsg, errflg) &
 // CHECK-NEXT:       bind(C, name='Kessler_chost_physics_run')
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: ncol
@@ -649,7 +763,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine Kessler_chost_physics_run
 // CHECK-LABEL:   subroutine Kessler_chost_physics_timestep_initial( &
-// CHECK-NEXT:       ncol, nz, temp, temp_prev, ttend_t, errmsg, errflg) &
+// CHECK:       ncol, nz, temp, temp_prev, ttend_t, errmsg, errflg) &
 // CHECK-NEXT:       bind(C, name='Kessler_chost_physics_timestep_initial')
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: ncol
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: nz
@@ -670,7 +784,7 @@
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine Kessler_chost_physics_timestep_initial
 // CHECK-LABEL:   subroutine Kessler_chost_physics_timestep_final( &
-// CHECK-NEXT:       ncol, nz, cpair, temp, z, phis, st_energy, errmsg, errflg) &
+// CHECK:       ncol, nz, cpair, temp, z, phis, st_energy, errmsg, errflg) &
 // CHECK-NEXT:       bind(C, name='Kessler_chost_physics_timestep_final')
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: ncol
 // CHECK-NEXT:     integer(c_int), value, intent(in) :: nz
@@ -692,12 +806,46 @@
 // CHECK-NEXT:     end do
 // CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
 // CHECK-NEXT:   end subroutine Kessler_chost_physics_timestep_final
-// CHECK-LABEL: end module Kessler_ccpp_chost_cap
-// CHECK-LABEL: // -----
+// CHECK-LABEL:   subroutine Kessler_chost_physics_physics_initial( &
+// CHECK:       lv, pref, rhoqr, gravit, errmsg, errflg) &
+// CHECK-NEXT:       bind(C, name='Kessler_chost_physics_physics_initial')
+// CHECK-NEXT:     real(c_double), value, intent(in) :: lv
+// CHECK-NEXT:     real(c_double), value, intent(in) :: pref
+// CHECK-NEXT:     real(c_double), value, intent(in) :: rhoqr
+// CHECK-NEXT:     real(c_double), value, intent(in) :: gravit
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:     integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:     integer :: i
+// CHECK-NEXT:     character(len=512) :: errmsg_f
+// CHECK:     errmsg_f = ' '
+// CHECK-NEXT:     errflg = 0
+// CHECK-NEXT:     call kessler_suite_suite_init_physics( &
+// CHECK-NEXT:         real(lv, kind_phys), real(pref, kind_phys), real(rhoqr, kind_phys),  &
+// CHECK-NEXT:         real(gravit, kind_phys), errmsg_f, errflg)
+// CHECK-NEXT:     do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:       errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:     end do
+// CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:   end subroutine Kessler_chost_physics_physics_initial
+// CHECK-LABEL:   subroutine Kessler_chost_physics_physics_final(errmsg, errflg) &
+// CHECK:       bind(C, name='Kessler_chost_physics_physics_final')
+// CHECK-NEXT:     character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:     integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:     integer :: i
+// CHECK-NEXT:     character(len=512) :: errmsg_f
+// CHECK:     errmsg_f = ' '
+// CHECK-NEXT:     errflg = 0
+// CHECK-NEXT:     call kessler_suite_suite_final_physics(errflg, errmsg_f)
+// CHECK-NEXT:     do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:       errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:     end do
+// CHECK-NEXT:     errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:   end subroutine Kessler_chost_physics_physics_final
+// CHECK: end module Kessler_ccpp_chost_cap
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
-// CHECK-NEXT:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
+// CHECK:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
 // CHECK:   implicit none
 // CHECK-NEXT:   private
 // CHECK:   public :: kind_phys
-// CHECK-LABEL: end module ccpp_kinds
+// CHECK-NEXT: end module ccpp_kinds

@@ -37,9 +37,14 @@ int main() {
 
     check("register",         Tinyddt_chost::do_register());
     check("initialize",       Tinyddt_chost::initialize());
+    // physics_initial/physics_final (task #28, Stage 3): own the
+    // scheme-level _init/_finalize calls initialize()/finalize() no
+    // longer make themselves.
+    check("physics_initial",  Tinyddt_chost::physics_initial());
     check("timestep_initial", Tinyddt_chost::timestep_initial());
     check("run",              Tinyddt_chost::run(state, 1, NCOL));
     check("timestep_final",   Tinyddt_chost::timestep_final());
+    check("physics_final",    Tinyddt_chost::physics_final());
     check("finalize",         Tinyddt_chost::finalize());
 
     // tinyddt_run sets tend%dtemp = 1.0 then adds it to state%temp.

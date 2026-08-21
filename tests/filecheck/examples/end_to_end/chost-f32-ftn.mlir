@@ -7,10 +7,10 @@
 // Chost cap module starts here — anchor all subsequent checks within it.
 // CHECK-LABEL: module Kessler_ccpp_chost_cap
 
-// Scalar real args (rank 0) in initialize use real(c_float), not c_double.
-// CHECK-LABEL:   subroutine Kessler_chost_physics_initialize(lv, pref, rhoqr, gravit, errmsg, errflg) &
-// CHECK:           real(c_float), value, intent(in) :: lv
-// CHECK:           real(c_float), value, intent(in) :: gravit
+// task #28 Stage 3: initialize's own scheme calls (and their real(c_float)
+// args) moved to the new, group-scoped physics_initial entry point below --
+// initialize itself is now scheme-call-free (errmsg/errflg only).
+// CHECK-LABEL:   subroutine Kessler_chost_physics_initialize(errmsg, errflg) &
 
 // Run: scalar dt and 2-D arrays all use real(c_float).
 // CHECK-LABEL:   subroutine Kessler_chost_physics_run(
@@ -24,6 +24,14 @@
 // CHECK-LABEL:   subroutine Kessler_chost_physics_timestep_initial(
 // CHECK:           real(c_float), target, intent(in) :: temp(ncol, nz)
 // CHECK:           real(c_float), target, intent(inout) :: temp_prev(ncol, nz)
+
+// Scalar real args (rank 0) in physics_initial use real(c_float), not
+// c_double (task #28 Stage 3: generated last, after run/timestep_*/
+// timestep_final, matching lifecycle_specs' own append-only ordering).
+// CHECK-LABEL:   subroutine Kessler_chost_physics_physics_initial( &
+// CHECK:           lv, pref, rhoqr, gravit, errmsg, errflg) &
+// CHECK:           real(c_float), value, intent(in) :: lv
+// CHECK:           real(c_float), value, intent(in) :: gravit
 
 // ccpp_kinds uses REAL32 — verifies the kind map was applied end-to-end.
 // CHECK-LABEL: module ccpp_kinds

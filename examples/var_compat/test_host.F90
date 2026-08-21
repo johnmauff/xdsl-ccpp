@@ -105,9 +105,11 @@ contains
     use test_host_mod, only: ncols
     use test_host_ccpp_cap, only: ccpp_register
     use test_host_ccpp_cap, only: ccpp_init
+    use test_host_ccpp_cap, only: ccpp_physics_init
     use test_host_ccpp_cap, only: ccpp_physics_timestep_init
     use test_host_ccpp_cap, only: ccpp_physics_run
     use test_host_ccpp_cap, only: ccpp_physics_timestep_final
+    use test_host_ccpp_cap, only: ccpp_physics_final
     use test_host_ccpp_cap, only: ccpp_final
     use test_host_ccpp_cap, only: ccpp_physics_suite_list
     use test_host_mod, only: init_data, compare_data
@@ -183,6 +185,30 @@ contains
       end if
     end do
 
+    ! Physics initialize (task #28, Stage 3): group-scoped, matching
+    ! ccpp_physics_run's own per-part call below -- owns the scheme-level
+    ! _init calls ccpp_init no longer makes itself (see suite_cap.py's
+    ! emit_scheme_calls).
+    do sind = 1, num_suites
+      if (errflg /= 0) then
+        exit
+      end if
+      do index = 1, size(test_suites(sind)%suite_parts)
+        if (errflg == 0) then
+          call ccpp_physics_init( &
+              test_suites(sind)%suite_name, &
+              test_suites(sind)%suite_parts(index), &
+              1, ncols, errmsg, errflg)
+          if (errflg /= 0) then
+            write(6, '(5a)') trim(test_suites(sind)%suite_name), &
+                '/', trim(test_suites(sind)%suite_parts(index)), &
+                ': ', trim(errmsg)
+            exit
+          end if
+        end if
+      end do
+    end do
+
     ! Initialize the timestep. ccpp_physics_timestep_init is now group-scoped
     ! (task #28, Stage 1) -- called once per suite part, full column extent
     ! (no chunking needed for this phase), matching ccpp_physics_run's own
@@ -254,6 +280,29 @@ contains
                 ': ', trim(errmsg)
             write(6, '(2a)') 'An error occurred in ccpp_physics_timestep_final, ', &
                 'Exiting...'
+            exit
+          end if
+        end if
+      end do
+    end do
+
+    ! Physics finalize (task #28, Stage 3): group-scoped, matching
+    ! ccpp_physics_init's own per-part call above -- owns the scheme-level
+    ! _finalize calls ccpp_final no longer makes itself.
+    do sind = 1, num_suites
+      if (errflg /= 0) then
+        exit
+      end if
+      do index = 1, size(test_suites(sind)%suite_parts)
+        if (errflg == 0) then
+          call ccpp_physics_final( &
+              test_suites(sind)%suite_name, &
+              test_suites(sind)%suite_parts(index), &
+              1, ncols, errmsg, errflg)
+          if (errflg /= 0) then
+            write(6, '(5a)') trim(test_suites(sind)%suite_name), &
+                '/', trim(test_suites(sind)%suite_parts(index)), &
+                ': ', trim(errmsg)
             exit
           end if
         end if

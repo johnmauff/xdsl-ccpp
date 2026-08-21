@@ -2306,8 +2306,21 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def _build_arg_tables(
         self, suite_description, tgt_subroutine_postfix, physics_mode: bool = False,
+        emit_scheme_calls: bool = True,
     ) -> "_ArgTableResult":
-        """Build argument tables, overrides, and canonical arg map for all schemes."""
+        """Build argument tables, overrides, and canonical arg map for all schemes.
+
+        emit_scheme_calls -- see generateSubroutineCall's own docstring.
+        False skips ONLY the scheme-table scan/all_args-from-schemes below
+        (and the physics_mode dynamic-loop-count synthesis, which is itself
+        scheme-table-derived) -- instance_number/number_of_instances are
+        HOST-declared scalars, not scheme-table-sourced, and must still be
+        synthesized regardless: a phase's own signature needs them threaded
+        through even when it happens to have zero scheme calls (confirmed
+        via a real regression while testing this -- ccpp_init's signature
+        silently lost instance/ninstances entirely when this was gated on
+        the same condition as the scheme-table scan).
+        """
         scheme_entries = self.getSchemeNames(suite_description)
         arg_tables = {}
         scheme_overrides: dict[str, dict[str, str]] = {}
@@ -2315,33 +2328,40 @@ class GenerateSuiteSubroutine(RewritePattern):
         all_args = {}
         suite_use_stubs: list = []
         if tgt_subroutine_postfix is not None:
-            _postfix_candidates = [tgt_subroutine_postfix]
-            if tgt_subroutine_postfix in LIFECYCLE_POSTFIX_ALIASES:
-                _postfix_candidates.append(LIFECYCLE_POSTFIX_ALIASES[tgt_subroutine_postfix])
-            for scheme_name, overrides in scheme_entries:
-                for _candidate in _postfix_candidates:
-                    table = self.getArgumentTable(
-                        scheme_name, scheme_name + _candidate
+            if emit_scheme_calls:
+                _postfix_candidates = [tgt_subroutine_postfix]
+                if tgt_subroutine_postfix in LIFECYCLE_POSTFIX_ALIASES:
+                    _postfix_candidates.append(LIFECYCLE_POSTFIX_ALIASES[tgt_subroutine_postfix])
+                for scheme_name, overrides in scheme_entries:
+                    for _candidate in _postfix_candidates:
+                        table = self.getArgumentTable(
+                            scheme_name, scheme_name + _candidate
+                        )
+                        if table is not None and scheme_name not in arg_tables:
+                            arg_tables[scheme_name] = table
+                            scheme_overrides[scheme_name] = overrides
+                            actual_postfixes[scheme_name] = _candidate
+                            break
+
+                for scheme_name in arg_tables:
+                    for fn_arg in arg_tables[scheme_name].getFunctionArguments():
+                        std_key = _std_key(fn_arg)
+                        if std_key in all_args:
+                            assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
+                        else:
+                            all_args[std_key] = fn_arg
+
+                # Matches _emit_subcycle's own "_run"-only gate below: a
+                # dynamic subcycle loop-count arg is only ever printed as
+                # a do-loop bound for the run phase, so synthesizing it
+                # for _init/_finalize/_timestep_initialize/
+                # _timestep_finalize would add an unused dummy argument
+                # to those phases' signatures.
+                if physics_mode and tgt_subroutine_postfix == "_run":
+                    _synthesize_dynamic_loop_count_args(
+                        self.meta_data, self.getCallSequence(suite_description),
+                        arg_tables, all_args,
                     )
-                    if table is not None and scheme_name not in arg_tables:
-                        arg_tables[scheme_name] = table
-                        scheme_overrides[scheme_name] = overrides
-                        actual_postfixes[scheme_name] = _candidate
-                        break
-
-            for scheme_name in arg_tables:
-                for fn_arg in arg_tables[scheme_name].getFunctionArguments():
-                    std_key = _std_key(fn_arg)
-                    if std_key in all_args:
-                        assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
-                    else:
-                        all_args[std_key] = fn_arg
-
-            if physics_mode:
-                _synthesize_dynamic_loop_count_args(
-                    self.meta_data, self.getCallSequence(suite_description),
-                    arg_tables, all_args,
-                )
             _synthesize_instance_number_arg(self.meta_data, all_args)
             _synthesize_number_of_instances_arg(self.meta_data, all_args)
 
@@ -2679,7 +2699,20 @@ class GenerateSuiteSubroutine(RewritePattern):
         )
         _lc_int = (int(loop_count) if is_literal
                    else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
-        if _lc_int > 1 and ctx.physics_mode and body_ops:
+        # <subcycle> is a run-phase-only construct (real capgen-v1 never
+        # loops a scheme's _init/_finalize/_timestep_initialize/
+        # _timestep_finalize entry point by subcycle count -- each fires
+        # exactly once per group regardless of how many <subcycle> layers
+        # wrap it in the XML for _run's own purposes). Gating on
+        # ctx.physics_mode alone (task #28 Stage 3's original code) wraps
+        # group-scoped _init/_finalize calls in the same loop too, since
+        # physics_mode is True for all 5 group-scoped phases -- confirmed
+        # via a real CI runtime failure on examples/nested_suite: wrapping
+        # effr_calc_init in main_suite's 2x2 nested subcycle called it 4
+        # times instead of once, tripping its own scheme_order sequencing
+        # check ("effr_calc_init() needs to be called second").
+        if (_lc_int > 1 and ctx.physics_mode and body_ops
+                and ctx.tgt_subroutine_postfix == "_run"):
             sc_alloc = memref.AllocaOp.get(
                 TypeConversions.getBaseType("integer"), shape=[]
             )
@@ -3238,12 +3271,18 @@ class GenerateSuiteSubroutine(RewritePattern):
         group_name: str = "",
         suite_model=None,
         already_scheduled_allocs=None,
+        emit_scheme_calls: bool = True,
     ):
         """Build a single cap subroutine as a func.FuncOp.
 
         tgt_subroutine_postfix  -- suffix appended to each scheme name to form
-                                   the called function (e.g. "_init"). None
-                                   means no scheme calls are emitted.
+                                   the called function (e.g. "_init"). Also
+                                   the phase identity used by the suite
+                                   <init>/<final> XML-hook gate below and by
+                                   _record_resolved_vars_for_phase -- kept
+                                   set even when emit_scheme_calls=False, so
+                                   only scheme-call EMISSION is suppressed,
+                                   not the phase's own identity/bucketing.
         generated_subroutine_posfix -- suffix used for the generated function
                                    name (e.g. "_initialize"). Defaults to
                                    tgt_subroutine_postfix when not supplied.
@@ -3258,12 +3297,36 @@ class GenerateSuiteSubroutine(RewritePattern):
                                    gets a LazyAllocOp without duplicating one
                                    an earlier _init/_register call already
                                    made.
+        emit_scheme_calls       -- task #28 Stage 3: real capgen-v1's own
+                                   suite-level <suite>_init/<suite>_final are
+                                   framework-setup-only and never call any
+                                   scheme's own _init/_finalize directly --
+                                   that happens at group granularity, in
+                                   ccpp_physics_init/ccpp_physics_final
+                                   (mirroring ccpp_physics_run). xdsl-ccpp's
+                                   flat _init/_finalize used to conflate both
+                                   roles (framework setup AND scheme calls,
+                                   there being no group-scoped physics_init/
+                                   physics_final to own the latter). Once
+                                   those exist, the flat versions must stop
+                                   emitting scheme calls, or every scheme's
+                                   own _init/_finalize would run twice per
+                                   invocation -- once from the flat call,
+                                   once from the new group-scoped one. False
+                                   only for the still-flat _init/_finalize
+                                   rows in subroutine_specs below; every
+                                   other phase (including the new group-scoped
+                                   _init/_finalize entries in
+                                   group_phase_specs) keeps the default.
         """
         if generated_subroutine_posfix is None:
             assert tgt_subroutine_postfix is not None
             generated_subroutine_posfix = tgt_subroutine_postfix
 
-        _tables = self._build_arg_tables(suite_description, tgt_subroutine_postfix, physics_mode)
+        _tables = self._build_arg_tables(
+            suite_description, tgt_subroutine_postfix, physics_mode,
+            emit_scheme_calls=emit_scheme_calls,
+        )
         scheme_entries = _tables.scheme_entries
         arg_tables = _tables.arg_tables
         scheme_overrides = _tables.scheme_overrides
@@ -3367,13 +3430,18 @@ class GenerateSuiteSubroutine(RewritePattern):
         # upstream example (suite_lifecycle.F90 declares suite_lifecycle_init/
         # suite_lifecycle_final, matching the <init>/<final> tag names
         # themselves, not this codebase's own group-scheme "_finalize"
-        # convention).
+        # convention). "and not physics_mode" (task #28 Stage 3) -- once
+        # ccpp_physics_init/ccpp_physics_final also call generateSubroutineCall
+        # with tgt_subroutine_postfix="_init"/"_finalize" (per group), this
+        # hook would otherwise fire once per group too, duplicating the
+        # suite-level scheme hook call; it belongs solely to the flat,
+        # once-per-suite _init/_finalize.
         suite_lifecycle_call_ops = []
-        if tgt_subroutine_postfix == "_init":
+        if tgt_subroutine_postfix == "_init" and not physics_mode:
             suite_lifecycle_call_ops = self._build_suite_lifecycle_call_ops(
                 suite_description.init_scheme, "_init", data_ops, fn_sigs, suite_use_stubs,
             )
-        elif tgt_subroutine_postfix == "_finalize":
+        elif tgt_subroutine_postfix == "_finalize" and not physics_mode:
             suite_lifecycle_call_ops = self._build_suite_lifecycle_call_ops(
                 suite_description.final_scheme, "_final", data_ops, fn_sigs, suite_use_stubs,
             )
@@ -3432,10 +3500,17 @@ class GenerateSuiteSubroutine(RewritePattern):
         transitions, unchanged): the group-scoped _run FuncOp below only
         ever *checks* "in_time_step" (state_string=None there, unchanged).
         """
+        # emit_scheme_calls=False for _init/_finalize (task #28 Stage 3):
+        # real capgen-v1's own suite-level <suite>_init/<suite>_final are
+        # framework-setup-only and never call scheme _init/_finalize
+        # directly -- that now happens at group granularity, in the new
+        # ccpp_physics_init/ccpp_physics_final (see group_phase_specs
+        # below). Without this, every scheme's own _init/_finalize would
+        # run twice per invocation.
         subroutine_specs = [
-            ("_register",            "_register",         None,            None),
-            ("_init",                "_initialize",       "initialized",   "uninitialized"),
-            ("_finalize",            "_finalize",         "uninitialized", "initialized"),
+            ("_register",            "_register",         None,            None,            True),
+            ("_init",                "_initialize",       "initialized",   "uninitialized", False),
+            ("_finalize",            "_finalize",         "uninitialized", "initialized",   False),
         ]
 
         generated_fns: list = []
@@ -3455,12 +3530,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         # variable.
         scheduled_allocs: set = set()
 
-        for tgt_postfix, gen_postfix, state_string, check_string in subroutine_specs:
+        for tgt_postfix, gen_postfix, state_string, check_string, emit_scheme_calls in subroutine_specs:
             fn, sigs, stubs = self.generateSubroutineCall(
                 suite_description, tgt_postfix, gen_postfix,
                 state_string=state_string, check_string=check_string,
                 physics_mode=(tgt_postfix == "_run"), suite_model=suite_model,
                 already_scheduled_allocs=scheduled_allocs,
+                emit_scheme_calls=emit_scheme_calls,
             )
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
@@ -3489,10 +3565,23 @@ class GenerateSuiteSubroutine(RewritePattern):
         # per-group -- there is no longer any flat suite-wide
         # _timestep_finalize to fall back on (Stage 1's docstring above
         # still described one; Stage 2 removed it).
+        # "_init"/"_finalize" (task #28 Stage 3) own the scheme-level
+        # _init/_finalize calls the flat subroutine_specs rows above no
+        # longer emit (emit_scheme_calls=False there). check_string=
+        # "initialized" on both is safe (check-only, no state_string set --
+        # same pattern as _run's own check) even under multiple groups: a
+        # check-only phase can't poison a later group's own check the way a
+        # check+set phase would (see _timestep_initialize/_timestep_finalize
+        # above). Positioned first/last respectively without reshuffling
+        # the three existing entries' relative order, to avoid additional,
+        # purely-cosmetic fixture churn beyond what adding these two new
+        # phases already requires.
         group_phase_specs = [
+            ("_init",                "init_",           None,            "initialized"),
             ("_run",                 "",                None,            "in_time_step"),
             ("_timestep_initialize", "timestep_init_",  "in_time_step",  None),
             ("_timestep_finalize",   "timestep_final_",  "initialized",  None),
+            ("_finalize",            "final_",          None,            "initialized"),
         ]
 
         for group in suite_description:

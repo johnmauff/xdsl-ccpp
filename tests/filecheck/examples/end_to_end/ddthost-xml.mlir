@@ -28,18 +28,44 @@
 // CHECK-NEXT:   public :: ddt_suite_suite_register
 // CHECK-NEXT:   public :: ddt_suite_suite_initialize
 // CHECK-NEXT:   public :: ddt_suite_suite_finalize
+// CHECK-NEXT:   public :: ddt_suite_suite_init_data_prep
 // CHECK-NEXT:   public :: ddt_suite_suite_data_prep
 // CHECK-NEXT:   public :: ddt_suite_suite_timestep_init_data_prep
 // CHECK-NEXT:   public :: ddt_suite_suite_timestep_final_data_prep
+// CHECK-NEXT:   public :: ddt_suite_suite_final_data_prep
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine ddt_suite_suite_register(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:   end subroutine ddt_suite_suite_register 
-// CHECK-LABEL:   subroutine ddt_suite_suite_initialize(nbox, ccpp_info, o3, hno3, model_times, vmr, errmsg,      &
-// CHECK-NEXT:     errflg, ntimes) 
+// CHECK-LABEL:   subroutine ddt_suite_suite_initialize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in ddt_suite_initialize"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     ccpp_suite_state = const_initialized
+// CHECK-NEXT:   end subroutine ddt_suite_suite_initialize 
+// CHECK-LABEL:   subroutine ddt_suite_suite_finalize(errflg, errmsg) 
+// CHECK:     integer, intent(out) :: errflg
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in ddt_suite_finalize"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     ccpp_suite_state = const_uninitialized
+// CHECK-NEXT:   end subroutine ddt_suite_suite_finalize 
+// CHECK-LABEL:   subroutine ddt_suite_suite_init_data_prep(nbox, ccpp_info, o3, hno3, model_times, vmr, errmsg,  &
+// CHECK:     errflg, ntimes) 
 // CHECK-NEXT:     integer, intent(in) :: nbox
 // CHECK-NEXT:     type(ccpp_info_t), intent(in) :: ccpp_info
 // CHECK-NEXT:     real(kind=kind_phys), target, intent(inout) :: o3(:)
@@ -57,9 +83,9 @@
 // CHECK-NEXT:     if (.not. allocated(hno3)) then
 // CHECK-NEXT:       allocate(hno3(nbox))
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in ddt_suite_initialize"
+// CHECK-NEXT:         "' in ddt_suite_init_data_prep"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     if (errflg .eq. 0) then
@@ -69,28 +95,9 @@
 // CHECK-NEXT:       call environ_conditions_init(nbox=nbox, o3=o3, hno3=hno3, ntimes=ntimes,                    &
 // CHECK-NEXT:         model_times=model_times, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:     end if
-// CHECK-NEXT:     ccpp_suite_state = const_initialized
-// CHECK-NEXT:   end subroutine ddt_suite_suite_initialize 
-// CHECK-LABEL:   subroutine ddt_suite_suite_finalize(ntimes, model_times, errmsg, errflg) 
-// CHECK-NEXT:     integer, intent(in) :: ntimes
-// CHECK-NEXT:     integer, target, intent(in) :: model_times(:)
-// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK:     errflg = 0    
-// CHECK-NEXT:     errmsg = ''
-// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
-// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
-// CHECK-NEXT:         "' in ddt_suite_finalize"
-// CHECK-NEXT:       errflg = 1      
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     if (errflg .eq. 0) then
-// CHECK-NEXT:       call environ_conditions_finalize(ntimes=ntimes, model_times=model_times, errmsg=errmsg,     &
-// CHECK-NEXT:         errflg=errflg)
-// CHECK-NEXT:     end if
-// CHECK-NEXT:     ccpp_suite_state = const_uninitialized
-// CHECK-NEXT:   end subroutine ddt_suite_suite_finalize 
+// CHECK-NEXT:   end subroutine ddt_suite_suite_init_data_prep 
 // CHECK-LABEL:   subroutine ddt_suite_suite_data_prep(cols, cole, O3, HNO3, vmr, psurf, errmsg, errflg) 
-// CHECK-NEXT:     integer, intent(in) :: cols
+// CHECK:     integer, intent(in) :: cols
 // CHECK-NEXT:     integer, intent(in) :: cole
 // CHECK-NEXT:     real(kind=kind_phys), target, intent(in) :: O3(:)
 // CHECK-NEXT:     real(kind=kind_phys), target, intent(in) :: HNO3(:)
@@ -114,14 +121,14 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ddt_suite_suite_data_prep 
 // CHECK-LABEL:   subroutine ddt_suite_suite_timestep_init_data_prep(errflg, errmsg) 
-// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     integer, intent(out) :: errflg
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     errmsg = ''
 // CHECK-NEXT:     ccpp_suite_state = const_in_time_step
 // CHECK-NEXT:   end subroutine ddt_suite_suite_timestep_init_data_prep 
 // CHECK-LABEL:   subroutine ddt_suite_suite_timestep_final_data_prep(ncols, vmr, errmsg, errflg) 
-// CHECK-NEXT:     integer, intent(in) :: ncols
+// CHECK:     integer, intent(in) :: ncols
 // CHECK-NEXT:     type(vmr_type), intent(in) :: vmr
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -132,15 +139,33 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:     ccpp_suite_state = const_initialized
 // CHECK-NEXT:   end subroutine ddt_suite_suite_timestep_final_data_prep 
-// CHECK-LABEL: end module ddt_suite_cap
-// CHECK-LABEL: // -----
+// CHECK-LABEL:   subroutine ddt_suite_suite_final_data_prep(ntimes, model_times, errmsg, errflg) 
+// CHECK:     integer, intent(in) :: ntimes
+// CHECK-NEXT:     integer, target, intent(in) :: model_times(:)
+// CHECK-NEXT:     character(len=512), intent(out) :: errmsg
+// CHECK-NEXT:     integer, intent(out) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     errmsg = ''
+// CHECK-NEXT:     if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
+// CHECK-NEXT:       write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
+// CHECK-NEXT:         "' in ddt_suite_final_data_prep"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:     if (errflg .eq. 0) then
+// CHECK-NEXT:       call environ_conditions_finalize(ntimes=ntimes, model_times=model_times, errmsg=errmsg,     &
+// CHECK-NEXT:         errflg=errflg)
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ddt_suite_suite_final_data_prep 
+// CHECK-NEXT: end module ddt_suite_cap
 // CHECK-LABEL: // FILE: Ddt_ccpp_cap.F90
 // CHECK-LABEL: module Ddt_ccpp_cap
 // CHECK:   use ccpp_kinds
 // CHECK-NEXT:   use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:   use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
 // CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_data_prep
+// CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_final_data_prep
 // CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_finalize
+// CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_init_data_prep
 // CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_initialize
 // CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_register
 // CHECK-NEXT:   use ddt_suite_cap, only: ddt_suite_suite_timestep_final_data_prep
@@ -166,6 +191,8 @@
 // CHECK-NEXT:   public :: ccpp_physics_run
 // CHECK-NEXT:   public :: ccpp_physics_timestep_init
 // CHECK-NEXT:   public :: ccpp_physics_timestep_final
+// CHECK-NEXT:   public :: ccpp_physics_init
+// CHECK-NEXT:   public :: ccpp_physics_final
 // CHECK-NEXT:   public :: ccpp_physics_suite_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_part_list
 // CHECK-NEXT:   public :: ccpp_physics_suite_variables
@@ -179,7 +206,7 @@
 // CHECK-NEXT:   public :: Ddt_model_const_properties
 // CHECK: CONTAINS
 // CHECK-LABEL:   subroutine ccpp_register(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
 // CHECK:     errflg = 0    
@@ -191,40 +218,31 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_register 
 // CHECK-LABEL:   subroutine ccpp_init(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK-NEXT:     integer :: lc_nbox
-// CHECK-NEXT:     type(ccpp_info_t) :: lc_ccpp_info
-// CHECK-NEXT:     real(kind=kind_phys), allocatable :: lc_o3(:)
-// CHECK-NEXT:     real(kind=kind_phys), allocatable :: lc_hno3(:)
-// CHECK-NEXT:     integer, allocatable :: lc_model_times(:)
-// CHECK-NEXT:     integer :: ccpp_tmp_0
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:       call ddt_suite_suite_initialize(lc_nbox, lc_ccpp_info, lc_o3, lc_hno3, lc_model_times,      &
-// CHECK-NEXT:         lc_vmr, errmsg, errflg, ccpp_tmp_0)
+// CHECK-NEXT:       call ddt_suite_suite_initialize(errflg, errmsg)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_init 
 // CHECK-LABEL:   subroutine ccpp_final(suite_name, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
-// CHECK-NEXT:     integer :: lc_ntimes
-// CHECK-NEXT:     integer, allocatable :: lc_model_times(:)
 // CHECK:     errflg = 0    
 // CHECK-NEXT:     if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:       call ddt_suite_suite_finalize(lc_ntimes, lc_model_times, errmsg, errflg)
+// CHECK-NEXT:       call ddt_suite_suite_finalize(errflg, errmsg)
 // CHECK-NEXT:     else
 // CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_final 
 // CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:     integer, intent(inout) :: errflg
@@ -243,7 +261,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_run 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
 // CHECK-NEXT:     integer, intent(inout) :: errflg
@@ -261,7 +279,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_init 
 // CHECK-LABEL:   subroutine ccpp_physics_timestep_final(suite_name, suite_part, ncols, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:     integer, intent(in) :: ncols
 // CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
@@ -279,13 +297,58 @@
 // CHECK-NEXT:       errflg = 1      
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_timestep_final 
+// CHECK-LABEL:   subroutine ccpp_physics_init(suite_name, suite_part, nbox, ccpp_info, model_times, errmsg,      &
+// CHECK:     errflg) 
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     integer, intent(in) :: nbox
+// CHECK-NEXT:     type(ccpp_info_t), intent(in) :: ccpp_info
+// CHECK-NEXT:     integer, allocatable, intent(inout) :: model_times(:)
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK-NEXT:     type(vmr_type) :: ccpp_tmp_0
+// CHECK-NEXT:     integer :: ccpp_tmp_1
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'ddt_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'data_prep') then
+// CHECK-NEXT:         call ddt_suite_suite_init_data_prep(nbox, ccpp_info, lc_O3, lc_HNO3, model_times,         &
+// CHECK-NEXT:           ccpp_tmp_0, errmsg, errflg, ccpp_tmp_1)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite ddt_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_init 
+// CHECK-LABEL:   subroutine ccpp_physics_final(suite_name, suite_part, ntimes, model_times, errmsg, errflg) 
+// CHECK:     character(len=*), intent(in) :: suite_name
+// CHECK-NEXT:     character(len=*), intent(in) :: suite_part
+// CHECK-NEXT:     integer, intent(in) :: ntimes
+// CHECK-NEXT:     integer, target, intent(in) :: model_times(:)
+// CHECK-NEXT:     character(len=512), intent(inout) :: errmsg
+// CHECK-NEXT:     integer, intent(inout) :: errflg
+// CHECK:     errflg = 0    
+// CHECK-NEXT:     if (trim(suite_name) .eq. 'ddt_suite') then
+// CHECK-NEXT:       if (trim(suite_part) .eq. 'data_prep') then
+// CHECK-NEXT:         call ddt_suite_suite_final_data_prep(ntimes, model_times, errmsg, errflg)
+// CHECK-NEXT:       else
+// CHECK-NEXT:         write(errmsg, '(3a)') "No suite part named ", trim(suite_part), " found in suite ddt_suite"
+// CHECK-NEXT:         errflg = 1        
+// CHECK-NEXT:       end if
+// CHECK-NEXT:     else
+// CHECK-NEXT:       write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:       errflg = 1      
+// CHECK-NEXT:     end if
+// CHECK-NEXT:   end subroutine ccpp_physics_final 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_list(suites) 
-// CHECK-NEXT:     character(len=*), allocatable, intent(out) :: suites(:)
+// CHECK:     character(len=*), allocatable, intent(out) :: suites(:)
 // CHECK:     allocate(suites(1))
 // CHECK-NEXT:     suites(1) = str_ddt_suite
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_part_list(suite_name, part_list, errmsg, errflg) 
-// CHECK-NEXT:     character(len=*), intent(in) :: suite_name
+// CHECK:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: part_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:     integer, intent(out) :: errflg
@@ -299,7 +362,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_part_list 
 // CHECK-LABEL:   subroutine ccpp_physics_suite_variables(suite_name, var_list, errmsg, errflg, input_vars,       &
-// CHECK-NEXT:     output_vars)
+// CHECK:     output_vars)
 // CHECK-NEXT:     character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:     character(len=*), allocatable, intent(out) :: var_list(:)
 // CHECK-NEXT:     character(len=512), intent(out) :: errmsg
@@ -357,7 +420,7 @@
 // CHECK-NEXT:     end if
 // CHECK-NEXT:   end subroutine ccpp_physics_suite_variables
 // CHECK-LABEL:     subroutine Ddt_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg)
-// CHECK-NEXT:       character(len=*), intent(in) :: std_name
+// CHECK:       character(len=*), intent(in) :: std_name
 // CHECK-NEXT:       logical, intent(out) :: is_const
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -370,7 +433,7 @@
 // CHECK-NEXT:       end select
 // CHECK-NEXT:     end subroutine Ddt_ccpp_is_scheme_constituent
 // CHECK-LABEL:     subroutine Ddt_ccpp_deallocate_dynamic_constituents()
-// CHECK-NEXT:       if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
+// CHECK:       if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:       if (allocated(lc_const_props)) deallocate(lc_const_props)
 // CHECK-NEXT:       if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)
 // CHECK-NEXT:       if (allocated(lc_const_tend)) deallocate(lc_const_tend)
@@ -382,7 +445,7 @@
 // CHECK-NEXT:       if (allocated(lc_psurf)) deallocate(lc_psurf)
 // CHECK-NEXT:     end subroutine Ddt_ccpp_deallocate_dynamic_constituents
 // CHECK-LABEL:     subroutine Ddt_ccpp_register_constituents(host_constituents, errmsg, errflg)
-// CHECK-NEXT:       use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
+// CHECK:       use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
 // CHECK-NEXT:       type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:       integer, intent(out) :: errflg
@@ -429,7 +492,7 @@
 // CHECK-NEXT:       call ccpp_scheme_utils_set_constituents(lc_all_constituents)
 // CHECK-NEXT:     end subroutine Ddt_ccpp_register_constituents
 // CHECK-LABEL:     subroutine Ddt_ccpp_number_constituents(num_advected, errmsg, errflg)
-// CHECK-NEXT:       integer, intent(out) :: num_advected
+// CHECK:       integer, intent(out) :: num_advected
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       errflg = 0
@@ -441,7 +504,7 @@
 // CHECK-NEXT:       end if
 // CHECK-NEXT:     end subroutine Ddt_ccpp_number_constituents
 // CHECK-LABEL:     subroutine Ddt_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
-// CHECK-NEXT:       integer, intent(in) :: ncols
+// CHECK:       integer, intent(in) :: ncols
 // CHECK-NEXT:       integer, intent(in) :: pver
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -484,12 +547,12 @@
 // CHECK-NEXT:       allocate(lc_psurf(ncols))
 // CHECK-NEXT:       lc_psurf = 0.0_kind_phys
 // CHECK-NEXT:     end subroutine Ddt_ccpp_initialize_constituents
-// CHECK:     function Ddt_constituents_array() result(ptr)
-// CHECK-NEXT:       real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK-LABEL:     function Ddt_constituents_array() result(ptr)
+// CHECK:       real(kind=kind_phys), pointer :: ptr(:, :, :)
 // CHECK-NEXT:       ptr => lc_constituent_array
 // CHECK-NEXT:     end function Ddt_constituents_array
 // CHECK-LABEL:     subroutine Ddt_const_get_index(std_name, index, errflg, errmsg)
-// CHECK-NEXT:       character(len=*), intent(in) :: std_name
+// CHECK:       character(len=*), intent(in) :: std_name
 // CHECK-NEXT:       integer, intent(out) :: index
 // CHECK-NEXT:       integer, intent(out) :: errflg
 // CHECK-NEXT:       character(len=512), intent(out) :: errmsg
@@ -511,16 +574,15 @@
 // CHECK-NEXT:       errflg = 1
 // CHECK-NEXT:       write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:     end subroutine Ddt_const_get_index
-// CHECK:     function Ddt_model_const_properties() result(ptr)
-// CHECK-NEXT:       type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
+// CHECK-LABEL:     function Ddt_model_const_properties() result(ptr)
+// CHECK:       type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
 // CHECK-NEXT:       ptr => lc_const_props
 // CHECK-NEXT:     end function Ddt_model_const_properties
-// CHECK-LABEL: end module Ddt_ccpp_cap
-// CHECK-LABEL: // -----
+// CHECK-NEXT: end module Ddt_ccpp_cap
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
-// CHECK-NEXT:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
+// CHECK:   use ISO_FORTRAN_ENV, only: kind_phys => REAL64
 // CHECK:   implicit none
 // CHECK-NEXT:   private
 // CHECK:   public :: kind_phys
-// CHECK-LABEL: end module ccpp_kinds
+// CHECK-NEXT: end module ccpp_kinds

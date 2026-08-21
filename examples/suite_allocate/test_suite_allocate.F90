@@ -9,9 +9,11 @@ program test_suite_allocate
 
   use test_host_ccpp_cap, only: ccpp_register, &
       ccpp_init, &
+      ccpp_physics_init, &
       ccpp_physics_timestep_init, &
       ccpp_physics_run, &
       ccpp_physics_timestep_final, &
+      ccpp_physics_final, &
       ccpp_final
 
   implicit none
@@ -32,6 +34,12 @@ program test_suite_allocate
 
   call ccpp_init(ccpp_suite, errmsg, errflg)
   call check_err('initialize', errflg, errmsg)
+
+  ! Physics initialize (task #28, Stage 3): group-scoped, matching
+  ! ccpp_physics_run's own signature -- owns the scheme-level _init calls
+  ! ccpp_init no longer makes itself (see suite_cap.py's emit_scheme_calls).
+  call ccpp_physics_init(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
+  call check_err('physics_init', errflg, errmsg)
 
   ! ccpp_physics_timestep_init is now group-scoped (task #28, Stage 1),
   ! matching ccpp_physics_run's own signature/extent below exactly.
@@ -54,6 +62,12 @@ program test_suite_allocate
   ! matching ccpp_physics_timestep_init's own signature/extent above exactly.
   call ccpp_physics_timestep_final(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
   call check_err('timestep_final', errflg, errmsg)
+
+  ! Physics finalize (task #28, Stage 3): group-scoped, matching
+  ! ccpp_physics_init's own signature above -- owns the scheme-level
+  ! _finalize calls ccpp_final no longer makes itself.
+  call ccpp_physics_final(ccpp_suite, ccpp_group, 1, 1, errmsg, errflg)
+  call check_err('physics_final', errflg, errmsg)
 
   call ccpp_final(ccpp_suite, errmsg, errflg)
   call check_err('finalize', errflg, errmsg)

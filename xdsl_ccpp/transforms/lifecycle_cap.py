@@ -172,31 +172,39 @@ def _generate_lifecycle_fn(
     name_to_std_all: dict = {v: k for k, (v, _m) in host_var_map_all.items()}
     extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
     for _sn, _suite_callee, _ret, _scheme_names, _entry_postfix, _ri in suite_entries:
-        if _entry_postfix is None:
-            continue
         _, _, _callee_in_types, _callee_in_names = public_fns[_suite_callee]
-        _lc_candidates = [_entry_postfix]
-        if _entry_postfix in LIFECYCLE_POSTFIX_ALIASES:
-            _lc_candidates.append(LIFECYCLE_POSTFIX_ALIASES[_entry_postfix])
         _std_name_of: dict = {}
         _intent_of: dict = {}
-        for _scheme_name in _scheme_names:
-            if _scheme_name not in meta_data:
-                continue
-            for _lc_cand in _lc_candidates:
-                _entry_name = _scheme_name + _lc_cand
-                if _entry_name not in meta_data[_scheme_name].arg_tables:
+        # _entry_postfix is None for a phase with no scheme-level arg table
+        # to scan at all (task #28 Stage 3: ccpp_init/ccpp_final, once
+        # suite_cap.py stopped emitting scheme calls for them -- see
+        # emit_scheme_calls there and this file's own table_postfix=None
+        # comment in ccpp_cap.py). _std_name_of/_intent_of just stay empty
+        # in that case -- the loop below still needs to run regardless,
+        # since it's ALSO where instance_number/number_of_instances (see
+        # this function's own docstring comment above) get threaded, and
+        # those never come from a scheme table anyway.
+        if _entry_postfix is not None:
+            _lc_candidates = [_entry_postfix]
+            if _entry_postfix in LIFECYCLE_POSTFIX_ALIASES:
+                _lc_candidates.append(LIFECYCLE_POSTFIX_ALIASES[_entry_postfix])
+            for _scheme_name in _scheme_names:
+                if _scheme_name not in meta_data:
                     continue
-                for _fn_arg in (
-                    meta_data[_scheme_name].getArgTable(_entry_name).getFunctionArguments()
-                ):
-                    _bare_name = _bare(_fn_arg.name)
-                    if _bare_name not in _std_name_of and _fn_arg.hasAttr("standard_name"):
-                        _std_name_of[_bare_name] = _fn_arg.getAttr("standard_name").lower()
-                        _intent_of[_bare_name] = (
-                            _fn_arg.getAttr("intent") if _fn_arg.hasAttr("intent") else "in"
-                        )
-                break
+                for _lc_cand in _lc_candidates:
+                    _entry_name = _scheme_name + _lc_cand
+                    if _entry_name not in meta_data[_scheme_name].arg_tables:
+                        continue
+                    for _fn_arg in (
+                        meta_data[_scheme_name].getArgTable(_entry_name).getFunctionArguments()
+                    ):
+                        _bare_name = _bare(_fn_arg.name)
+                        if _bare_name not in _std_name_of and _fn_arg.hasAttr("standard_name"):
+                            _std_name_of[_bare_name] = _fn_arg.getAttr("standard_name").lower()
+                            _intent_of[_bare_name] = (
+                                _fn_arg.getAttr("intent") if _fn_arg.hasAttr("intent") else "in"
+                            )
+                    break
         for _arg_name, _arg_type in zip(_callee_in_names, _callee_in_types):
             _bare_name = _bare(_arg_name)
             _std_name = _std_name_of.get(_bare_name) or name_to_std_all.get(_bare_name)

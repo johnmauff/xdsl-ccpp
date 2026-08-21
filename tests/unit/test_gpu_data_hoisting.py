@@ -850,7 +850,11 @@ class TestFinalizeAlongsidePerTimestepHoisting:
         )
         initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
         run_fn = _fn_body(fortran, "ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "ccpp_final")
+        # task #28 Stage 3: hoist_scheme_fz's own _finalize call now happens
+        # via the group-scoped ccpp_physics_final, not the flat ccpp_final
+        # (which no longer emits any scheme calls -- see suite_cap.py's
+        # emit_scheme_calls).
+        finalize_fn = _fn_body(fortran, "ccpp_physics_final")
 
         assert "enter data" in initial_fn
         assert "fz_var" in initial_fn
@@ -872,7 +876,9 @@ class TestFinalizeAlongsidePerTimestepHoisting:
         )
         initial_fn = _fn_body(fortran, "ccpp_physics_timestep_init")
         run_fn = _fn_body(fortran, "ccpp_physics_run")
-        finalize_fn = _fn_body(fortran, "ccpp_final")
+        # task #28 Stage 3: see the copy_var test above for why this is
+        # ccpp_physics_final now, not the flat ccpp_final.
+        finalize_fn = _fn_body(fortran, "ccpp_physics_final")
 
         assert "update self(fz_upd_var" in initial_fn
         assert "update device(fz_upd_var" not in initial_fn

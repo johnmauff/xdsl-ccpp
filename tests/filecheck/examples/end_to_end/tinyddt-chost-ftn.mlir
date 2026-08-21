@@ -45,10 +45,13 @@
 // CHECK:           call tinyddt_suite_suite_physics(
 // CHECK:               col_start, col_end, state_local, tend_local,
 
-// Writeback of inout members for both DDTs.
+// Writeback of inout members for both DDTs. No explicit deallocate: both
+// locals are local, non-SAVE derived-type variables, so Fortran deallocates
+// their allocatable components automatically on return -- an explicit
+// deallocate immediately before that already-scheduled cleanup risked a
+// real double free (confirmed via a CI runtime failure on the capgen chost
+// example -- see cpp_interop.py's own comment on this fix).
 // CHECK:           state_temp = real(state_local%temp, c_double)
-// CHECK:           deallocate(state_local%temp)
 // CHECK:           tend_dtemp = real(tend_local%dtemp, c_double)
-// CHECK:           deallocate(tend_local%dtemp)
 
 // CHECK:         end subroutine Tinyddt_chost_physics_run

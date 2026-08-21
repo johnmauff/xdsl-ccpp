@@ -12,13 +12,11 @@
 // CHECK:      #pragma once
 // CHECK:      extern "C" {
 
-// Initialize: scalar physics constants by value; errmsg/errflg as pointer outputs.
+// Initialize: task #28 Stage 3 moved the scalar physics constants (and the
+// scheme call using them) to the new physics_initial entry point below --
+// initialize itself is now just errmsg/errflg pointer outputs.
 // CHECK-LABEL: void Kessler_chost_physics_initialize(
-// CHECK:           double           lv,
-// CHECK:           double           pref,
-// CHECK:           double           rhoqr,
-// CHECK:           double           gravit,
-// CHECK-NEXT:      char*            errmsg,
+// CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg
 
 // Finalize: only errmsg and errflg.
@@ -67,5 +65,22 @@
 // CHECK:           const double*    cpair,
 // CHECK:           const double*    z,
 // CHECK:           double*          st_energy,
+// CHECK:           char*            errmsg,
+// CHECK-NEXT:      int*             errflg
+
+// Physics initial (task #28 Stage 3): net-new entry point, owns the scalar
+// physics constants (and the scheme call using them) initialize used to
+// have -- generated last, after run/timestep_*/timestep_final.
+// CHECK-LABEL: void Kessler_chost_physics_physics_initial(
+// CHECK:           double           lv,
+// CHECK:           double           pref,
+// CHECK:           double           rhoqr,
+// CHECK:           double           gravit,
+// CHECK-NEXT:      char*            errmsg,
+// CHECK-NEXT:      int*             errflg
+
+// Physics final (task #28 Stage 3): net-new entry point; kessler_update has
+// no _finalize table, so this scheme call reduces to just errmsg/errflg.
+// CHECK-LABEL: void Kessler_chost_physics_physics_final(
 // CHECK:           char*            errmsg,
 // CHECK-NEXT:      int*             errflg

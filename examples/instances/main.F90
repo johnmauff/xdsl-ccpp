@@ -2,20 +2,22 @@
 ! instances/main.F90, feature/capgen-v1 branch) to xdsl-ccpp's actual
 ! generated calling convention -- see examples/instances/CMakeLists.txt's
 ! own header comment for the full port history. Two adaptations from the
-! literal upstream driver, both because xdsl-ccpp's suite-level lifecycle
-! is currently 6-phase, not real capgen-v1's own 8-phase split
-! (ccpp_cap_refactor_plan.md's "Full 6-phase to 8-phase lifecycle match"
-! backlog entry, still open) -- xdsl-ccpp's ccpp_init/ccpp_final already
-! cover what real capgen-v1 splits further into a separate per-group
-! ccpp_physics_init/ccpp_physics_final call, so those two calls are
-! dropped entirely rather than calling subroutines that don't exist:
-!   1) ccpp_physics_init/ccpp_physics_final calls removed.
+! literal upstream driver:
+!   1) ccpp_physics_init/ccpp_physics_final calls: task #28's "Full
+!      6-phase to 8-phase lifecycle match" (ccpp_cap_refactor_plan.md)
+!      originally left these out entirely, since xdsl-ccpp's own
+!      ccpp_init/ccpp_final covered everything real capgen-v1 splits into
+!      a separate per-group ccpp_physics_init/ccpp_physics_final call.
+!      Stage 3 of that same task added the real, group-scoped
+!      ccpp_physics_init/ccpp_physics_final entry points (matching
+!      upstream), so both calls are back, using the same instance=/
+!      ninstances= keyword-arg convention already used below.
 !   2) group_name/thread_num/nthreads/nphys_threads dropped from every
 !      call -- xdsl-ccpp's generated signatures don't carry them (matching
 !      examples/opt_arg's own driver, which needed the identical
 !      adaptation for the same reason). suite_part='unit_conv_group'
 !      (the physics group's real name, from suite_unit_conv_suite.xml)
-!      replaces group_name='all' on the one call that still needs a group.
+!      replaces group_name='all' on every call that needs a group.
 ! The loop-over-instances structure itself -- the actual mechanism this
 ! example exists to exercise -- is otherwise unchanged from upstream.
 program test_unit_conv
@@ -28,9 +30,11 @@ program test_unit_conv
 
   use test_host_ccpp_cap, only: ccpp_register, &
       ccpp_init, &
+      ccpp_physics_init, &
       ccpp_physics_timestep_init, &
       ccpp_physics_run, &
       ccpp_physics_timestep_final, &
+      ccpp_physics_final, &
       ccpp_final
 
   implicit none
@@ -73,6 +77,26 @@ program test_unit_conv
         ninstances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_init:"
+      write(error_unit, '(a)') trim(errmsg)
+      write(error_unit, '(a,i0)') "instance: ", ins
+      stop 1
+    end if
+  end do
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics init step                         !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  do ins=1,ninstances
+    ! Physics initialize (task #28, Stage 3): group-scoped, matching
+    ! ccpp_physics_run's own signature -- owns the scheme-level _init
+    ! calls ccpp_init no longer makes itself (see suite_cap.py's
+    ! emit_scheme_calls).
+    call ccpp_physics_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
+        lb=1, ub=ncols, instance=ins, &
+        ninstances=ninstances, errmsg=errmsg, errflg=errflg)
+    if (errflg/=0) then
+      write(error_unit, '(a)') "An error occurred in ccpp_physics_init:"
       write(error_unit, '(a)') trim(errmsg)
       write(error_unit, '(a,i0)') "instance: ", ins
       stop 1
@@ -126,6 +150,25 @@ program test_unit_conv
         ninstances=ninstances, errmsg=errmsg, errflg=errflg)
     if (errflg/=0) then
       write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_final:"
+      write(error_unit, '(a)') trim(errmsg)
+      write(error_unit, '(a,i0)') "instance: ", ins
+      stop 1
+    end if
+  end do
+
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+  ! CCPP physics final step                        !
+  !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+  do ins=1,ninstances
+    ! Physics finalize (task #28, Stage 3): group-scoped, matching
+    ! ccpp_physics_init's own signature above -- owns the scheme-level
+    ! _finalize calls ccpp_final no longer makes itself.
+    call ccpp_physics_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
+        lb=1, ub=ncols, instance=ins, &
+        ninstances=ninstances, errmsg=errmsg, errflg=errflg)
+    if (errflg/=0) then
+      write(error_unit, '(a)') "An error occurred in ccpp_physics_final:"
       write(error_unit, '(a)') trim(errmsg)
       write(error_unit, '(a,i0)') "instance: ", ins
       stop 1

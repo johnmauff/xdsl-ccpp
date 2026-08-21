@@ -151,9 +151,11 @@ CONTAINS
        use test_host_ccpp_cap, only: test_host_constituents_array
        use test_host_ccpp_cap, only: ccpp_register
        use test_host_ccpp_cap, only: ccpp_init
+       use test_host_ccpp_cap, only: ccpp_physics_init
        use test_host_ccpp_cap, only: ccpp_physics_timestep_init
        use test_host_ccpp_cap, only: ccpp_physics_run
        use test_host_ccpp_cap, only: ccpp_physics_timestep_final
+       use test_host_ccpp_cap, only: ccpp_physics_final
        use test_host_ccpp_cap, only: ccpp_final
        use test_host_ccpp_cap, only: ccpp_physics_suite_list
        use test_host_ccpp_cap, only: test_host_const_get_index
@@ -948,7 +950,36 @@ CONTAINS
          end if
        end do
 
-       ! Check indices
+       ! Physics initialize (task #28, Stage 3): group-scoped, matching
+       ! ccpp_physics_run's own per-part call below -- owns the
+       ! scheme-level _init calls ccpp_init no longer makes itself (see
+       ! suite_cap.py's emit_scheme_calls).
+       do sind = 1, num_suites
+          do index = 1, size(test_suites(sind)%suite_parts)
+             if (errflg == 0) then
+                call ccpp_physics_init(                          &
+                     test_suites(sind)%suite_name,                      &
+                     test_suites(sind)%suite_parts(index),              &
+                     1, ncols, errmsg, errflg)
+                if (errflg /= 0) then
+                   write(6, '(5a)') trim(test_suites(sind)%suite_name), &
+                        '/', trim(test_suites(sind)%suite_parts(index)),&
+                        ': ', trim(errmsg)
+                end if
+             end if
+          end do
+       end do
+
+       ! Check indices. const_indices_init (the scheme that populates
+       ! test_host_data's const_index/const_inds) now runs as part of
+       ! ccpp_physics_init above, not the flat ccpp_init above that (task
+       ! #28 Stage 3 stopped ccpp_init from making scheme calls itself) --
+       ! this check must come after ccpp_physics_init, not before it, or
+       ! it always sees const_index/const_inds still at their unset -1
+       ! default (and, since check_constituent_indices reports the
+       ! mismatch count through errflg, a failure here would also block
+       ! every errflg==0-gated call after it, including ccpp_physics_init
+       ! itself if this check were left before it).
        call check_constituent_indices(test_scalar_const_index, test_const_indices, &
             errmsg, errflg)
        call check_errflg(subname//" check suite indices", errflg, errmsg,          &
@@ -1030,6 +1061,25 @@ CONTAINS
              call advect_constituents()
           end if
        end do ! End time step loop
+
+       ! Physics finalize (task #28, Stage 3): group-scoped, matching
+       ! ccpp_physics_init's own per-part call above -- owns the
+       ! scheme-level _finalize calls ccpp_final no longer makes itself.
+       do sind = 1, num_suites
+          do index = 1, size(test_suites(sind)%suite_parts)
+             if (errflg == 0) then
+                call ccpp_physics_final(                         &
+                     test_suites(sind)%suite_name,                      &
+                     test_suites(sind)%suite_parts(index),              &
+                     1, ncols, errmsg, errflg)
+                if (errflg /= 0) then
+                   write(6, '(5a)') trim(test_suites(sind)%suite_name), &
+                        '/', trim(test_suites(sind)%suite_parts(index)),&
+                        ': ', trim(errmsg)
+                end if
+             end if
+          end do
+       end do
 
        do sind = 1, num_suites
           if (errflg == 0) then

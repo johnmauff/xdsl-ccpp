@@ -6,11 +6,15 @@
 ! (task #35) for the constituent-API instance-awareness fix this adaptation
 ! depends on. Adaptations from the literal upstream driver, matching
 ! examples/instances' own precedent for the identical reasons:
-!   1) ccpp_physics_init/ccpp_physics_final calls removed -- xdsl-ccpp's
-!      lifecycle is still 6-phase, not real capgen-v1's 8-phase split
-!      (ccpp_cap_refactor_plan.md's "Full 6-phase to 8-phase lifecycle
-!      match" backlog entry, still open); ccpp_init/ccpp_final already
-!      cover what those two calls would have done.
+!   1) ccpp_physics_init/ccpp_physics_final calls: task #28's "Full
+!      6-phase to 8-phase lifecycle match" (ccpp_cap_refactor_plan.md)
+!      originally left these out entirely, since xdsl-ccpp's own
+!      ccpp_init/ccpp_final covered everything real capgen-v1 splits into
+!      a separate per-group ccpp_physics_init/ccpp_physics_final call.
+!      Stage 3 of that same task added the real, group-scoped
+!      ccpp_physics_init/ccpp_physics_final entry points (matching
+!      upstream), so both calls are back, using the same instance=/
+!      ninstances= keyword-arg convention already used below.
 !   2) group_name/thread_num/nthreads/nphys_threads dropped from every
 !      call -- xdsl-ccpp's generated signatures don't carry them.
 !      suite_part='physics' (the physics group's real name, from
@@ -55,6 +59,7 @@ program test_instances_advection
       verify_results
 
   use test_host_ccpp_cap, only: ccpp_register, ccpp_init, ccpp_final
+  use test_host_ccpp_cap, only: ccpp_physics_init, ccpp_physics_final
   use test_host_ccpp_cap, only: ccpp_physics_run, &
       ccpp_physics_timestep_init, ccpp_physics_timestep_final
   use test_host_ccpp_cap, only: test_host_ccpp_register_constituents, &
@@ -186,6 +191,24 @@ program test_instances_advection
   end do
 
   !-----------------------------------------------------------------
+  ! 6b. Physics initialize per instance (task #28, Stage 3): group-scoped,
+  !     matching ccpp_physics_run's own signature -- owns the scheme-level
+  !     _init calls ccpp_init no longer makes itself (see suite_cap.py's
+  !     emit_scheme_calls).
+  !-----------------------------------------------------------------
+  do ins = 1, ninstances
+    call ccpp_physics_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
+        lb=1, ub=ncols, &
+        instance=ins, ninstances=ninstances, &
+        errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
+      write(error_unit, '(a,i0,2a)') 'ccpp_physics_init failed for instance ', &
+          ins, ': ', trim(errmsg)
+      stop 1
+    end if
+  end do
+
+  !-----------------------------------------------------------------
   ! 7. Timestep loop.
   !-----------------------------------------------------------------
   do tstep = 1, num_time_steps
@@ -241,6 +264,23 @@ program test_instances_advection
     write(6, '(a)') 'FAIL: per-instance + constituents test'
     stop 1
   end if
+
+  !-----------------------------------------------------------------
+  ! 8b. Physics finalize per instance (task #28, Stage 3): group-scoped,
+  !     matching ccpp_physics_init's own signature above -- owns the
+  !     scheme-level _finalize calls ccpp_final no longer makes itself.
+  !-----------------------------------------------------------------
+  do ins = 1, ninstances
+    call ccpp_physics_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
+        lb=1, ub=ncols, &
+        instance=ins, ninstances=ninstances, &
+        errmsg=errmsg, errflg=errflg)
+    if (errflg /= 0) then
+      write(error_unit, '(a,i0,2a)') 'ccpp_physics_final failed for instance ', &
+          ins, ': ', trim(errmsg)
+      stop 1
+    end if
+  end do
 
   !-----------------------------------------------------------------
   ! 9. Teardown.

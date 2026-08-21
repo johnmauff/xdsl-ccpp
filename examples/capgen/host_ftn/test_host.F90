@@ -107,12 +107,15 @@ CONTAINS
        use test_host_mod,      only: ncols, num_time_steps
        use test_host_ccpp_cap, only: ccpp_register
        use test_host_ccpp_cap, only: ccpp_init
+       use test_host_ccpp_cap, only: ccpp_physics_init
        use test_host_ccpp_cap, only: ccpp_physics_timestep_init
        use test_host_ccpp_cap, only: ccpp_physics_run
        use test_host_ccpp_cap, only: ccpp_physics_timestep_final
+       use test_host_ccpp_cap, only: ccpp_physics_final
        use test_host_ccpp_cap, only: ccpp_final
        use test_host_ccpp_cap, only: ccpp_physics_suite_list
        use test_host_mod,      only: init_data, compare_data, check_model_times
+       use test_host_mod,      only: model_times
        use test_utils,         only: check_list
 
        type(suite_info), intent(in)  :: test_suites(:)
@@ -126,6 +129,12 @@ CONTAINS
        character(len=128), allocatable :: suite_names(:)
        character(len=512)              :: errmsg
        integer                         :: errflg
+       ! random_fudge_factor has no host variable match (temp_set.meta's
+       ! own metadata documents 1.0_kind_phys as its intended default) --
+       ! ccpp_physics_init's real signature (task #28, Stage 3) surfaces it
+       ! as a genuine caller-supplied argument now, matching how
+       ! ccpp_physics_run already treats any similarly host-unmatched arg.
+       real(kind=kind_phys)            :: fudge = 1.0_kind_phys
 
        ! Initialize our 'data'
        call init_data()
@@ -175,6 +184,35 @@ CONTAINS
                   trim(test_suites(sind)%suite_name), ': ', trim(errmsg)
           end if
        end do
+
+       ! Physics initialize (task #28, Stage 3): group-scoped, matching
+       ! ccpp_physics_run's own per-part call below -- owns the
+       ! scheme-level _init calls ccpp_init no longer makes itself (see
+       ! suite_cap.py's emit_scheme_calls). Full extent (not chunked),
+       ! same convention as timestep_init below.
+       do sind = 1, num_suites
+          if (errflg /= 0) then
+             exit
+          end if
+          do index = 1, size(test_suites(sind)%suite_parts)
+             if (errflg /= 0) then
+                exit
+             end if
+             if (errflg == 0) then
+                call ccpp_physics_init(                          &
+                     test_suites(sind)%suite_name,                      &
+                     test_suites(sind)%suite_parts(index),              &
+                     1, ncols, model_times, fudge, errmsg, errflg)
+             end if
+             if (errflg /= 0) then
+                write(6, '(5a)') trim(test_suites(sind)%suite_name),    &
+                     '/', trim(test_suites(sind)%suite_parts(index)),   &
+                     ': ', trim(errmsg)
+                exit
+             end if
+          end do
+       end do
+
        ! Loop over time steps
        do time_step = 1, num_time_steps
           ! Initialize the timestep. ccpp_physics_timestep_init is now
@@ -261,6 +299,32 @@ CONTAINS
              end do
           end do
        end do ! End time step loop
+
+       ! Physics finalize (task #28, Stage 3): group-scoped, matching
+       ! ccpp_physics_init's own per-part call above -- owns the
+       ! scheme-level _finalize calls ccpp_final no longer makes itself.
+       do sind = 1, num_suites
+          if (errflg /= 0) then
+             exit
+          end if
+          do index = 1, size(test_suites(sind)%suite_parts)
+             if (errflg /= 0) then
+                exit
+             end if
+             if (errflg == 0) then
+                call ccpp_physics_final(                         &
+                     test_suites(sind)%suite_name,                      &
+                     test_suites(sind)%suite_parts(index),              &
+                     1, ncols, errmsg, errflg)
+             end if
+             if (errflg /= 0) then
+                write(6, '(5a)') trim(test_suites(sind)%suite_name),    &
+                     '/', trim(test_suites(sind)%suite_parts(index)),   &
+                     ': ', trim(errmsg)
+                exit
+             end if
+          end do
+       end do
 
        do sind = 1, num_suites
           if (errflg /= 0) then
