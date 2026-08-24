@@ -93,7 +93,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: tasks #61/#62 ✅ both fully Done (2026-08-24, #62 incl. PR #91 Copilot follow-up), tasks #70/#71 split out and still backlog | L5539 |
 | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | 📋 Backlog (M, real refactor touching 5 files' core dispatch logic) — split from task #61 | L6544 |
 | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | 📋 Backlog (S-M, needs a diff + decision, not a same-sitting deletion) — split from task #61 | L6544 |
-| Task #66: double-`"_suite"` naming convention (e.g. `kessler_suite_suite_register`) — needed for CAM-SIMA link compatibility | ✅ Stage 1 done (2026-08-24, centralize infix into `SUITE_FN_INFIX`, zero behavior change, verified incl. real regen diff); 🔲 Stage 2 (actual rename) not started, awaiting go-ahead | L6621 |
+| Task #66: double-`"_suite"` naming convention (e.g. `kessler_suite_suite_register`) — needed for CAM-SIMA link compatibility | ✅ Done (2026-08-24): Stage 1 (centralize infix) + Stage 2 (actual rename, `SUITE_FN_INFIX=""`) both landed on `double-suite-naming-stage1`; Stage 2 found and fixed a real bug (`cpp_interop.py`'s own independent, un-centralized `"_suite_"` copy) via real regen before touching goldens | L6621 |
 
 ---
 
@@ -6675,6 +6675,60 @@ Findings triaged into four tiers, each now a tracked task:
     awaiting go-ahead given its blast radius (near-universal fixture updates expected, real risk
     of a missed site surfacing only as a link failure or a silent GPU-directive mismatch, neither
     fully catchable by the local suite alone).
+  - **Stage 2 -- Done (2026-08-24).** Real CI confirmed Stage 1 green; user gave the go-ahead to
+    proceed on the same branch (`double-suite-naming-stage1`), no new branch needed. The actual
+    change: `cap_shared.py`'s `SUITE_FN_INFIX` set from `"_suite"` to `""` -- the single edit
+    Stage 1's centralization was built to make possible. Verified functionally correct via real
+    regeneration *before* touching any golden files (per an explicit ask this round: confirm the
+    generator itself is right first, since golden-file updates can't distinguish "correctly
+    updated" from "regenerated against a still-broken pipeline"): `examples/kessler` regenerated
+    cleanly with e.g. `kessler_suite_register` (was `kessler_suite_suite_register`), and as a
+    bonus the pre-existing `errmsg_fn_name` divergence Stage 1 flagged and deliberately left alone
+    resolved itself for free -- the error-message text (which never had the infix) now matches
+    the real function name exactly, since neither has it anymore.
+  - **Real bug found and fixed by this verify-before-golden-updates discipline, not by Stage 1's
+    own original audit.** A first regeneration attempt on `examples/kessler --bind-c` showed the
+    generated C++ header/wrapper output collapse from 462 lines to 109 -- the whole ergonomics
+    wrapper (`inline Status initialize() { ... }` etc.) silently disappeared. Root cause:
+    `cpp_interop.py`'s `_suite_fns_for` (6 call sites, e.g. `f"{suite_name}_suite_{grp.attributes
+    ['name']}"`) builds its own, independent, hardcoded `"_suite_"` infix to look up real suite
+    cap function names in `public_fns` -- a **sixth** site Stage 1's own audit ("~15-20 sites
+    across `suite_cap.py`/`ccpp_cap.py`/`gpu_data_pass.py`/`gpu_ccpp_cap_pass.py`") never found,
+    since it never grepped for the substring `"_suite_"` embedded inside a longer f-string, only
+    the standalone `"_suite"` token. Once `suite_cap.py`/`ccpp_cap.py` stopped emitting the infix
+    (Stage 2's real change) but `cpp_interop.py` kept looking for names that included it, every
+    lookup silently missed, and the wrapper generator quietly produced almost nothing instead of
+    erroring -- exactly the "missed literal-string site" risk flagged when this stage was
+    originally scoped, caught here specifically because verification happened before golden
+    files were touched rather than after (a stale golden would have masked this by "passing"
+    against equally-wrong regenerated content). Fixed by importing `SUITE_FN_INFIX` into
+    `cpp_interop.py` and rebuilding all 6 sites as `f"{suite_name}{SUITE_FN_INFIX}_..."`, matching
+    the other 4 files' own convention. Re-verified via the same `--bind-c` regeneration (462 lines
+    restored, `inline Status initialize()` present, correct un-doubled names throughout) plus a
+    second real suite (`examples/nested_suite`, a multi-group, non-`_suite`-suffixed suite name)
+    regenerated cleanly with no errors.
+  - **Full verification after the fix.** Confirmed a repo-wide grep for any other hardcoded
+    `"_suite_" + <phase>` construction turns up nothing beyond comments/docstrings (the
+    `cpp_interop.py` site was the only other real one). Regenerated the 25 real (non-`cpp_header`)
+    filecheck fixtures affected via `tests/filecheck/examples/update-filecheck-test.py` -- the 5
+    `cpp_header`/wrapper-format fixtures needed no golden changes at all, since their own CHECK
+    content only ever referenced the fixed generic dispatch names (`ccpp_register` etc.), never
+    the internal per-suite Fortran symbol names; regenerating them anyway would have silently
+    baked in wrong content, since that script's formatter-selection only branches on `-t ftn` vs.
+    everything else (defaulting to the MLIR-IR formatter, which mishandles blank lines in
+    C++-header text) -- confirmed by inspection before deciding not to touch them. Hand-fixed the
+    ~21 unit test files with hand-authored hardcoded `"..._suite_suite_..."`/`"..._suite_<phase>"`
+    literal name strings (a mechanical, ordered literal-substring collapse: longest/most-specific
+    phase keywords first, then a generic catch-all for the plain-run-phase, arbitrary-group-name
+    case) plus one file (`test_ccpp_cap.py`) with a hand-built `public_fns` dict keyed by the old
+    name directly (`"testsuite_suite_run"` -> `"testsuite_run"`) rather than parsed Fortran text.
+    Final state: full suite `python -m pytest tests/filecheck tests/unit -q` -> 628 passed/1
+    xfailed (identical to both the pre-Stage-1 and post-Stage-1 baselines); `ruff check .` -> 210
+    (unchanged; one transient +1 from the new `cpp_interop.py` import was itself an import-order
+    fix, not a real finding); a final real regeneration smoke test on `examples/kessler --bind-c`
+    confirming clean, single-infix names end-to-end. Files modified (uncommitted, same branch):
+    the 5 from Stage 1 plus `xdsl_ccpp/transforms/cpp_interop.py` (the real fix), 25 filecheck
+    `.mlir` fixtures, and 21 `tests/unit/*.py` files with hardcoded name literals.
 
 - **Order by risk, not just size.** Extract the most self-contained clusters first (chost/C++
   backend) and save the most interconnected, highest-blast-radius cluster (run-dispatch) for
