@@ -551,14 +551,17 @@ class GPUCcppCapPass(ModulePass):
 
     # Callee-name markers identifying a per-group suite-cap callee, checked
     # as substrings (the callee name's own trailing group-name segment
-    # varies per suite XML, so an exact suffix can't be used). "_suite_physics"
-    # is the pre-existing run marker (relies on this codebase's own example
-    # suites conventionally naming their run group "physics" -- narrow, but
-    # pre-existing and out of scope to broaden here); "_suite_timestep_init_"
-    # (task #28) is a genuinely group-name-independent marker, since it's a
-    # fixed literal segment of the callee name regardless of the group's own
-    # name (suite_cap.py's generated_subroutine_posfix always inserts it
-    # before the group name, never depending on what the group is called).
+    # varies per suite XML, so an exact suffix can't be used). Each marker is
+    # `SUITE_FN_INFIX` (task #66; currently "", previously "_suite") followed
+    # by a fixed literal segment. f"{SUITE_FN_INFIX}_physics" is the
+    # pre-existing run marker (relies on this codebase's own example suites
+    # conventionally naming their run group "physics" -- narrow, but
+    # pre-existing and out of scope to broaden here); the
+    # f"{SUITE_FN_INFIX}_timestep_init_"-style markers (task #28) are
+    # genuinely group-name-independent, since that segment is fixed
+    # regardless of the group's own name (suite_cap.py's
+    # generated_subroutine_posfix always inserts it before the group name,
+    # never depending on what the group is called).
     _SUITE_CALLEE_MARKERS = (
         f"{SUITE_FN_INFIX}_physics", f"{SUITE_FN_INFIX}_timestep_init_",
         f"{SUITE_FN_INFIX}_timestep_final_",
