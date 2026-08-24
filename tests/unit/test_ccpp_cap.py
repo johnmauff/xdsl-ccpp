@@ -89,7 +89,7 @@ class TestBuildCapVarMap:
     def _public_fns(self):
         callee_input_names = ["cnst", "scratch1", "matched1", "tend1"]
         return {
-            "testsuite_suite_run": (
+            "testsuite_run": (
                 "testsuite_cap_mod",
                 [],
                 [None] * len(callee_input_names),
@@ -164,7 +164,7 @@ class TestBuildCapVarMapFlattensSubcycles:
     def _public_fns(self):
         callee_input_names = ["scratch1"]
         return {
-            "testsuite_suite_run": (
+            "testsuite_run": (
                 "testsuite_cap_mod",
                 [],
                 [None] * len(callee_input_names),

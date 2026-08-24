@@ -180,19 +180,19 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             run_host_match, ccpp_context,
             [_LIFECYCLE_SCHEME_META, _SCHEME_A_META], _SUITE_XML_WITH_HOOKS,
         )
-        init_fn = _fn_body(fortran, "test_suite_suite_initialize")
+        init_fn = _fn_body(fortran, "test_suite_initialize")
         assert (
             "call lifecycle_scheme_init(counter=lifecycle_counter, "
             "errmsg=errmsg, errflg=errflg)"
         ) in init_fn
 
-        # Not spuriously called anywhere else. test_suite_suite_timestep_init_g1
+        # Not spuriously called anywhere else. test_suite_timestep_init_g1
         # (task #28: timestep_init is now group-scoped), not the old flat
-        # test_suite_suite_timestep_initial.
+        # test_suite_timestep_initial.
         for other_fn_name in (
-            "test_suite_suite_timestep_init_g1",
-            "test_suite_suite_timestep_final",
-            "test_suite_suite_g1",
+            "test_suite_timestep_init_g1",
+            "test_suite_timestep_final",
+            "test_suite_g1",
         ):
             assert "lifecycle_scheme_init" not in _fn_body(fortran, other_fn_name)
 
@@ -201,19 +201,19 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             run_host_match, ccpp_context,
             [_LIFECYCLE_SCHEME_META, _SCHEME_A_META], _SUITE_XML_WITH_HOOKS,
         )
-        final_fn = _fn_body(fortran, "test_suite_suite_finalize")
+        final_fn = _fn_body(fortran, "test_suite_finalize")
         assert (
             "call lifecycle_scheme_final(counter=lifecycle_counter, "
             "errmsg=errmsg, errflg=errflg)"
         ) in final_fn
 
-        # test_suite_suite_timestep_init_g1 (task #28: timestep_init is now
-        # group-scoped), not the old flat test_suite_suite_timestep_initial.
+        # test_suite_timestep_init_g1 (task #28: timestep_init is now
+        # group-scoped), not the old flat test_suite_timestep_initial.
         for other_fn_name in (
-            "test_suite_suite_initialize",
-            "test_suite_suite_timestep_init_g1",
-            "test_suite_suite_timestep_final",
-            "test_suite_suite_g1",
+            "test_suite_initialize",
+            "test_suite_timestep_init_g1",
+            "test_suite_timestep_final",
+            "test_suite_g1",
         ):
             assert "lifecycle_scheme_final" not in _fn_body(fortran, other_fn_name)
 

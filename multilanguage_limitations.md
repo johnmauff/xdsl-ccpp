@@ -172,7 +172,7 @@ real(c_double), intent(inout) :: flux(*)
 ```
 
 — and forwards it directly as the actual argument to
-`tiny_r3_suite_suite_physics`'s dummy, which is assumed-shape rank 3:
+`tiny_r3_suite_physics`'s dummy, which is assumed-shape rank 3:
 
 ```fortran
 real(kind=kind_phys), target, intent(inout) :: flux(:, :, :)

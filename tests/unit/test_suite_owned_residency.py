@@ -240,8 +240,8 @@ class TestSuiteOwnedResidency:
         fortran = _fortran_output(
             run_host_match, ccpp_context, _RESIDENT_SCHEME, "test_suite_owned_scheme"
         )
-        finalize_fn = fortran.split("subroutine test_suite_owned_suite_suite_finalize")[1]
-        finalize_fn = finalize_fn.split("end subroutine test_suite_owned_suite_suite_finalize")[0]
+        finalize_fn = fortran.split("subroutine test_suite_owned_suite_finalize")[1]
+        finalize_fn = finalize_fn.split("end subroutine test_suite_owned_suite_finalize")[0]
         assert "!$acc exit data delete(my_array)" in finalize_fn
 
     def test_non_resident_var_gets_no_acc_treatment(self, run_host_match, ccpp_context):
@@ -266,8 +266,8 @@ class TestSuiteOwnedResidency:
         alloc_block = fortran.split("if (.not. allocated(my_array3)) then")[1]
         alloc_block = alloc_block.split("end if")[0]
         assert "!$acc enter data create(my_array3)" in alloc_block
-        finalize_fn = fortran.split("subroutine test_suite_owned_suite_suite_finalize")[1]
-        finalize_fn = finalize_fn.split("end subroutine test_suite_owned_suite_suite_finalize")[0]
+        finalize_fn = fortran.split("subroutine test_suite_owned_suite_finalize")[1]
+        finalize_fn = finalize_fn.split("end subroutine test_suite_owned_suite_finalize")[0]
         assert "!$acc exit data delete(my_array3)" in finalize_fn
 
     def test_residency_uses_collision_qualified_name(self, run_host_match, ccpp_context):
@@ -296,6 +296,6 @@ class TestSuiteOwnedResidency:
         assert f"allocate({qualified}(" in alloc_block
         assert f"!$acc enter data create({qualified})" in alloc_block
 
-        finalize_fn = fortran.split("subroutine test_suite_owned_suite_suite_finalize")[1]
-        finalize_fn = finalize_fn.split("end subroutine test_suite_owned_suite_suite_finalize")[0]
+        finalize_fn = fortran.split("subroutine test_suite_owned_suite_finalize")[1]
+        finalize_fn = finalize_fn.split("end subroutine test_suite_owned_suite_finalize")[0]
         assert f"!$acc exit data delete({qualified})" in finalize_fn

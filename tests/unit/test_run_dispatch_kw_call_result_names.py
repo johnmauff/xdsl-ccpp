@@ -173,7 +173,7 @@ class TestDDTMemberInoutScalarGetsRealKeywordName:
         fortran = _fortran_output(run_host_match, ccpp_context)
         fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn.splitlines() if "call test_suite_physics" in line
         )
         keywords = [
             a.strip().split("=", 1)[0]
@@ -190,7 +190,7 @@ class TestDDTMemberInoutScalarGetsRealKeywordName:
         fortran = _fortran_output(run_host_match, ccpp_context)
         fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn.splitlines() if "call test_suite_physics" in line
         )
         args = [
             a.strip()
@@ -203,11 +203,11 @@ class TestDDTMemberInoutScalarGetsRealKeywordName:
         """Direct regression for ifx's own #6784 ("number of actual arguments
         cannot be greater than the number of dummy arguments")."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        callee_sig = fortran.split("subroutine test_suite_suite_physics(")[1].split(")")[0]
+        callee_sig = fortran.split("subroutine test_suite_physics(")[1].split(")")[0]
         n_dummy_args = len([a for a in callee_sig.split(",") if a.strip()])
         fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn.splitlines() if "call test_suite_physics" in line
         )
         n_actual_args = len(
             [a for a in call_line.split("(", 1)[1].rsplit(")", 1)[0].split(",") if a.strip()]
@@ -231,11 +231,11 @@ class TestPositionalCallGetsNoExtraArgument:
 
     def test_call_has_exactly_the_callees_own_arg_count(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _SCHEME_META_NO_OPTIONAL)
-        callee_sig = fortran.split("subroutine test_suite_suite_physics(")[1].split(")")[0]
+        callee_sig = fortran.split("subroutine test_suite_physics(")[1].split(")")[0]
         n_dummy_args = len([a for a in callee_sig.split(",") if a.strip()])
         fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn.splitlines() if "call test_suite_physics" in line
         )
         n_actual_args = len(
             [a for a in call_line.split("(", 1)[1].rsplit(")", 1)[0].split(",") if a.strip()]
@@ -250,7 +250,7 @@ class TestPositionalCallGetsNoExtraArgument:
         fortran = _fortran_output(run_host_match, ccpp_context, _SCHEME_META_NO_OPTIONAL)
         fn = _fn_body(fortran, "ccpp_physics_run")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn.splitlines() if "call test_suite_physics" in line
         )
         args = [
             a.strip()

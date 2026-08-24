@@ -524,7 +524,7 @@ def _generate_lifecycle_fn(
                         # (where lc_instances is normally lazily
                         # allocated) ever gets a chance to. Confirmed the
                         # hard way in real CI: a SIGSEGV inside
-                        # cld_suite_suite_register. Guarded exactly like
+                        # cld_suite_register. Guarded exactly like
                         # every other LazyAllocOp use, and only emitted
                         # once per function even if multiple schemes each
                         # have their own dynamic-array output (e.g.

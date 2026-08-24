@@ -292,7 +292,7 @@ Example output (OpenACC):
 ```fortran
 !$acc data copy(theta(col_start:col_end, 1:nz), qv(col_start:col_end, 1:nz)) &
 !$acc      copyin(cpair(col_start:col_end, 1:nz))
-call kessler_suite_suite_physics(...)
+call kessler_suite_physics(...)
 !$acc end data
 ```
 

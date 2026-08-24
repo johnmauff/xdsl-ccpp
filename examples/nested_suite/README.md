@@ -131,14 +131,14 @@ several). The adaptations below are the same small, mechanical category
 
 Confirmed via the real `Makefile` path
 (`make -f examples/nested_suite/Makefile caps`): generation completes cleanly, `main_suite_cap.F90` produces exactly
-the three expected group subroutines (`main_suite_suite_radiation1`,
-`main_suite_suite_rad_lw_group`, `main_suite_suite_rad_sw_group`), the
+the three expected group subroutines (`main_suite_radiation1`,
+`main_suite_rad_lw_group`, `main_suite_rad_sw_group`), the
 `col_start`/`col_end` column-chunk slicing already fixed for `var_compat`
 carries over correctly with zero extra work
 (`phys_state%effrr(col_start:col_end, 1:pver)`,
 `phys_state%fluxLW(col_start:col_end)`), and the suite-level `<init>`/
 `<final>` calls appear exactly where expected
-(`main_suite_suite_initialize`/`main_suite_suite_finalize`, each with a
+(`main_suite_initialize`/`main_suite_finalize`, each with a
 correct `use suite_lifecycle, only: ...` stub and a correctly host-matched
 `lifecycle_counter` reference). Full unit + FileCheck suite green throughout
 (525 passed, same 1 pre-existing xfail and 1 pre-existing unrelated failure

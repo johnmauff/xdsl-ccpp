@@ -136,7 +136,7 @@ class TestCollisionResolvedViaHostName:
             [_scheme_meta("scheme_a", "std_a"), _scheme_meta("scheme_b", "std_b")],
             [self._HOST_META],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         # Full signature line may wrap; just check the two host names both
         # appear as declared dummy args and never collide on "x".
         assert "host_x_a" in fortran
@@ -160,7 +160,7 @@ class TestCollisionResolvedViaHostName:
             [_scheme_meta("scheme_a", "std_a"), _scheme_meta("scheme_b", "std_b")],
             [self._HOST_META],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "host_x_a" in call_a
@@ -228,7 +228,7 @@ class TestCollisionAcrossShapeAndIntent:
             [self._SCALAR_SCHEME, self._ARRAY_SCHEME],
             [self._HOST_META],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         declared = [
             _declared_arg_name(line)
             for line in fn.splitlines()
@@ -244,7 +244,7 @@ class TestCollisionAcrossShapeAndIntent:
             [self._SCALAR_SCHEME, self._ARRAY_SCHEME],
             [self._HOST_META],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "host_x_a" in call_a

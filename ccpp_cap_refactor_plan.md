@@ -93,6 +93,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: tasks #61/#62 ✅ both fully Done (2026-08-24, #62 incl. PR #91 Copilot follow-up), tasks #70/#71 split out and still backlog | L5539 |
 | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | 📋 Backlog (M, real refactor touching 5 files' core dispatch logic) — split from task #61 | L6544 |
 | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | 📋 Backlog (S-M, needs a diff + decision, not a same-sitting deletion) — split from task #61 | L6544 |
+| Task #66: double-`"_suite"` naming convention (e.g. `kessler_suite_suite_register`) — needed for CAM-SIMA link compatibility | ✅ Done (2026-08-24): Stage 1 (centralize infix) + Stage 2 (actual rename, `SUITE_FN_INFIX=""`) both landed on `double-suite-naming-stage1`; Stage 2 found and fixed a real bug (`cpp_interop.py`'s own independent, un-centralized `"_suite_"` copy) via real regen before touching goldens | L6621 |
 
 ---
 
@@ -2490,7 +2491,7 @@ dependency is noted.
     fallback (the "untracked call result" mechanism in `print_ftn.py`'s function printer), which
     synthesized an anonymous local (`ccpp_tmp_0`) and printed it as an *extra* positional call
     argument the callee's own declared signature didn't actually have one for — an arity mismatch,
-    also invalid Fortran. Confirmed by direct inspection: `ddt_suite_suite_data_prep` declares
+    also invalid Fortran. Confirmed by direct inspection: `ddt_suite_data_prep` declares
     exactly 8 dummy arguments, but the call previously passed 9. Covered by
     `tests/unit/test_run_dispatch_inout_echo.py` (3 tests, sabotage-verified for both the
     copy-back fix and the keyword-dedup fix independently). All affected FileCheck goldens
@@ -2737,7 +2738,7 @@ dependency is noted.
       need its own real keyword name printed).
 
       Confirmed via the real `Makefile` path (not just the raw CLI):
-      `test_host_ccpp_physics_run`'s call to `var_compatibility_suite_suite_radiation` now has
+      `test_host_ccpp_physics_run`'s call to `var_compatibility_suite_radiation` now has
       exactly the right argument count, with no `_out_N`/`ccpp_tmp_N` anywhere. Both var_compat
       FileCheck goldens regenerated and passing; full suite 487 passed, 1 pre-existing xfail.
       Direct regression coverage (sabotage-verified against both the positional- and
@@ -2854,7 +2855,7 @@ dependency is noted.
       `model_var_is_ddt` (previously discarded — only `standard_name` was kept), and the
       resolution loop tries DDT-member resolution before falling back to a fresh local.
       Confirmed via the real `Makefile` path: `test_host_ccpp_physics_initialize`'s call to
-      `var_compatibility_suite_suite_initialize` now passes `phys_state%scheme_order` directly,
+      `var_compatibility_suite_initialize` now passes `phys_state%scheme_order` directly,
       with no `lc_scheme_order` anywhere. Both var_compat FileCheck goldens regenerated and
       passing; full suite 495 passed, 1 pre-existing xfail; no other example affected (this gap
       was never exercised by any other example's lifecycle dispatch). Direct regression coverage
@@ -2898,7 +2899,7 @@ dependency is noted.
       `effr_calc_run`) is pure `intent(in)`, so it has no write-back at all — nothing ever
       deallocated its conversion temp. Invisible for a subroutine called only once (Fortran
       auto-deallocates non-`SAVE` locals on return), but
-      `var_compatibility_suite_suite_radiation` calls `effr_calc_run` inside a nested 3-level
+      `var_compatibility_suite_radiation` calls `effr_calc_run` inside a nested 3-level
       subcycle loop (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
       allocated a second time within the same subroutine invocation, before Fortran ever gets a
       chance to deallocate it.
@@ -2908,7 +2909,7 @@ dependency is noted.
       `allocate(...)` statement all four of these op cases print, independent of whether a
       write-back exists — safe for pure `intent(in)` values, and a no-op on first entry so it
       doesn't change behavior for the ordinary, non-looped case either. Confirmed via the real
-      `Makefile` path: every conversion temp in `var_compatibility_suite_suite_radiation`
+      `Makefile` path: every conversion temp in `var_compatibility_suite_radiation`
       (`effrr_in_unit_conv`, `effrr_in_vert_flip`, `effrs_inout_kind_cast`, etc.) now has a guard
       immediately before its `allocate`. Generator-wide fix, not var_compat-specific:
       `examples/helloworld`'s own `ccpp_t` variant golden also legitimately changed (same guard,
@@ -2934,7 +2935,7 @@ dependency is noted.
       any `horizontal_dimension`-standard_name scalar as `col_end - col_start + 1` (e.g.
       `ncol=(col_end - col_start + 1)`), so a chunked call only ever touches its own column
       window. xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/`col_end`
-      (the fix above) but called `var_compatibility_suite_suite_radiation` with the whole,
+      (the fix above) but called `var_compatibility_suite_radiation` with the whole,
       unsliced host array and the host's raw, full column count every time — so each of
       `test_host.F90`'s 3 chunked driver calls redundantly reprocessed the entire array, and
       `effrs_inout`'s real `+=` accumulation (the only non-idempotent operation among this
@@ -3389,7 +3390,7 @@ dependency is noted.
           regenerated `examples/suite_allocate` via `xdsl_ccpp.tools.ccpp_dsl` (the tool CI's
           CMake step calls) and confirmed `use data, only: checksum` now appears, and
           `ccpp_physics_run` passes the use-associated `checksum` directly into
-          `suite_allocate_suite_suite_workspace_group`'s own `intent(out)` dummy argument --
+          `suite_allocate_suite_workspace_group`'s own `intent(out)` dummy argument --
           the `ccpp_tmp_0` throwaway local is gone entirely.
         - **Re-enabled and wired in:** `examples/suite_allocate/CMakeLists.txt`'s
           `add_test(...)` uncommented; `add_subdirectory(examples/suite_allocate)` added to the
@@ -4197,14 +4198,14 @@ dependency is noted.
             above ("only register_constituents ever needs ninstances, so
             only it needs to allocate lc_instances") was wrong for this
             specific case.** `ccpp_register`'s own call
-            (`cld_suite_suite_register(lc_instances(instance)%lc_dyn_const,
+            (`cld_suite_register(lc_instances(instance)%lc_dyn_const,
             ...)`) indexes straight into `lc_instances`, an OUTER array
             nothing has allocated yet -- the driver's own call order runs
             `ccpp_register` (the *lifecycle* register) before
             `test_host_ccpp_register_constituents` (the *constituent-API*
             register, where `lc_instances` is normally lazily allocated)
             ever gets a chance to run. Backtrace: `SIGSEGV` inside
-            `cld_suite_suite_register`, called from `MAIN__`. **Fixed**:
+            `cld_suite_register`, called from `MAIN__`. **Fixed**:
             `lifecycle_cap.py`'s own `CapVarRefOp` branch now also emits a
             guarded `LazyAllocOp` for `lc_instances` (sized by
             `ninstances`, which `ccpp_register`'s signature already
@@ -4229,7 +4230,7 @@ dependency is noted.
             something this fix introduced by regenerating the
             already-CI-green `examples/advection` (which has the identical
             `cld_liq_register`/`cld_ice_register` scheme pair) and finding
-            the exact same shape (`call cld_suite_suite_register(lc_dyn_const,
+            the exact same shape (`call cld_suite_register(lc_dyn_const,
             lc_dyn_const_ice, errmsg, errflg)`, both hoisted-and-discarded
             locals) already present there, unrelated to multi-instance.
           - **RESOLVED (2026-08-18) — Copilot review on PR #77 (3 comments) plus two
@@ -5244,11 +5245,11 @@ dependency is noted.
        ntimes))` itself, confirmed by reading `environ_conditions.F90`) -- and it's marked
        `allocatable = True`. Reproducing it directly showed the bug precisely: BOTH a
        redundant `use test_host_mod, only: num_model_times` plus two separate wrong
-       `allocate(model_times(...))` blocks -- one in `ddt_suite_suite_register` keyed to the
+       `allocate(model_times(...))` blocks -- one in `ddt_suite_register` keyed to the
        *host's* `num_model_times` (found via the sweep's own fallback to
        `_find_loop_upper_bound`'s MODULE-table path, since `environ_conditions`'s `_init`-only
        table isn't part of `_register`'s own `arg_tables`, yet the sweep runs for both `_init`
-       and `_register`), one in `ddt_suite_suite_initialize` keyed to the scheme's own `ntimes`
+       and `_register`), one in `ddt_suite_initialize` keyed to the scheme's own `ntimes`
        (found via the framework_vars loop's mechanism-2 deferral) -- confirming `model_times`
        was being independently, wrongly allocated by *both* loops at once. **Fixed** by adding
        an `allocatable: bool` field to `SuiteVarEntry` (`suite_variable_model.py`, set from the
@@ -5400,7 +5401,7 @@ dependency is noted.
     the real regenerated output: `interstitial_var` gets correct module-level allocatable
     storage, a `LazyAllocOp` guard that runs during `_register`/`_initialize` (sized from a real
     host array's shape via `_find_loop_upper_bound`, same mechanism `to_promote` already used),
-    and `temp_suite_suite_finalize` correctly references the same already-allocated module
+    and `temp_suite_finalize` correctly references the same already-allocated module
     variable with no re-allocation attempt. `temp_adjust_run`'s Fortran body sets
     `interstitial_var = 6` (ported from capgen-v1's own test logic); `temp_adjust_finalize`
     checks `interstitial_var(1) /= 6` and errors if not, proving the value survives the gap
@@ -6618,6 +6619,116 @@ Findings triaged into four tiers, each now a tracked task:
     helpers taking `ctx` as their first parameter. Verified: full suite 628 passed/1 xfailed/0
     failed (unchanged); `run_dispatch.py` itself now has zero `ruff` findings at all (was 15);
     total `ruff`: 225 -> 210.
+- **Task #66 — double-`"_suite"` naming convention (scoped 2026-08-24, Stage 1 done
+  2026-08-24).** `suite_cap.py` builds every generated Fortran dispatch function name as
+  `suite_name + "_suite" + phase` (e.g. `_register`/`_init`/`_run`/...). Real capgen-v1 never
+  inserts that infix at all -- confirmed directly against
+  `ccpp-framework-fresh/capgen/generator/suite_cap.py:1284-1290`, which builds dispatch names as
+  plain `suite_name + phase`. Because 19 of this repo's ~24 example suites already name
+  themselves ending in `_suite` (a convention this codebase itself established, not one
+  capgen-v1 requires), the result is names like `kessler_suite_suite_register` -- a real
+  double-`"suite"` artifact, not a typo, and not merely cosmetic: it means this codebase's own
+  generated symbol names don't match what a real capgen-v1-driven host (i.e. CAM-SIMA) expects
+  to link against. Initially assessed (wrongly) as low-priority/purely-cosmetic; corrected after
+  confirming with the user that CAM-SIMA compatibility is exactly why this needs fixing, not an
+  optional polish item.
+  - **Scoping.** The infix turned out to be duplicated as ~15-20 independent literal-string
+    occurrences, not a single shared helper: two construction sites in `suite_cap.py` itself
+    (the FuncOp name builder and an `endswith("_suite_finalize")` check); a separate constituent-
+    callee construction site plus all 8 entries of the `lifecycle_specs` table in `ccpp_cap.py`;
+    and `gpu_data_pass.py`/`gpu_ccpp_cap_pass.py`, each with their own independent copy of
+    suffix-matching logic for GPU-directive dispatch. 26+ existing filecheck fixtures already
+    contain the literal `"suite_suite"` string, an undercount of the true impact since it only
+    counts sites where the golden file happens to substring-match, not every generation path
+    that builds the name. Agreed 2-stage plan with the user: **Stage 1** centralizes the infix
+    into one shared constant with zero behavior change (verifiable against the existing
+    fixture/unit suite, no golden files need updating); **Stage 2** is the actual rename
+    (dropping the infix), deliberately deferred as its own, higher-risk step -- filecheck can
+    catch a *missed* literal-string site turning into a compile-time link failure, but can't by
+    itself rule out a silently-wrong GPU-directive-matching regression, so Stage 2 will need real
+    CI, not just the local suite, before being called done.
+  - **Stage 1 -- Done (2026-08-24).** Added `SUITE_FN_INFIX = "_suite"` to
+    `xdsl_ccpp/transforms/util/cap_shared.py` (alongside its existing `LIFECYCLE_POSTFIX_ALIASES`/
+    `_PHASE_SUFFIXES` naming-convention constants) as the single source of truth, then replaced
+    every one of the ~15-20 literal `"_suite"` construction/matching sites in `suite_cap.py`,
+    `ccpp_cap.py`, `gpu_data_pass.py`, and `gpu_ccpp_cap_pass.py` with references to it.
+    Deliberately left untouched: `ccpp_cap.py`'s `_derive_camel_case_name`'s own
+    `if name.endswith("_suite")` check -- a different, unrelated mechanism (stripping a suite's
+    *own declared name* for CamelCase conversion, nothing to do with the dispatch-name infix) --
+    and `suite_cap.py`'s pre-existing `errmsg_fn_name` construction, which already omits the
+    infix today (used only for error-message text, not the real function name), a pre-existing
+    inconsistency with the real function name that Stage 1 intentionally left alone since fixing
+    it would change observable error-message text -- worth revisiting once Stage 2 lands, since
+    matching capgen-v1's real convention exactly would make both names agree for free. Verified
+    zero behavior change three ways: full suite `python -m pytest tests/filecheck tests/unit -q`
+    -> 628 passed/1 xfailed (byte-identical to the pre-Stage-1 baseline, meaning every one of the
+    26+ `"suite_suite"` fixtures still matches); `ruff check .` -> 210 (unchanged); and a live
+    regeneration diff on `examples/kessler` (git-stash the Stage 1 changes, regenerate into
+    `/tmp/kessler_before`, pop the stash, regenerate again into `/tmp/kessler_after`, `diff -r`
+    the two) -- the only difference was `datatable.xml`'s own embedded absolute output paths
+    (an artifact of the two runs using different `-o` directories, not a real diff); the actual
+    generated `kessler_suite_cap.F90`/`Kessler_ccpp_cap.F90`/`ccpp_kinds.F90` were byte-identical.
+    Files modified (uncommitted, on branch `double-suite-naming-stage1`):
+    `xdsl_ccpp/transforms/util/cap_shared.py`, `xdsl_ccpp/transforms/suite_cap.py`,
+    `xdsl_ccpp/transforms/ccpp_cap.py`, `xdsl_ccpp/transforms/gpu_data_pass.py`,
+    `xdsl_ccpp/transforms/gpu_ccpp_cap_pass.py`. Stage 2 (the actual rename) not started --
+    awaiting go-ahead given its blast radius (near-universal fixture updates expected, real risk
+    of a missed site surfacing only as a link failure or a silent GPU-directive mismatch, neither
+    fully catchable by the local suite alone).
+  - **Stage 2 -- Done (2026-08-24).** Real CI confirmed Stage 1 green; user gave the go-ahead to
+    proceed on the same branch (`double-suite-naming-stage1`), no new branch needed. The actual
+    change: `cap_shared.py`'s `SUITE_FN_INFIX` set from `"_suite"` to `""` -- the single edit
+    Stage 1's centralization was built to make possible. Verified functionally correct via real
+    regeneration *before* touching any golden files (per an explicit ask this round: confirm the
+    generator itself is right first, since golden-file updates can't distinguish "correctly
+    updated" from "regenerated against a still-broken pipeline"): `examples/kessler` regenerated
+    cleanly with e.g. `kessler_suite_register` (was `kessler_suite_suite_register`), and as a
+    bonus the pre-existing `errmsg_fn_name` divergence Stage 1 flagged and deliberately left alone
+    resolved itself for free -- the error-message text (which never had the infix) now matches
+    the real function name exactly, since neither has it anymore.
+  - **Real bug found and fixed by this verify-before-golden-updates discipline, not by Stage 1's
+    own original audit.** A first regeneration attempt on `examples/kessler --bind-c` showed the
+    generated C++ header/wrapper output collapse from 462 lines to 109 -- the whole ergonomics
+    wrapper (`inline Status initialize() { ... }` etc.) silently disappeared. Root cause:
+    `cpp_interop.py`'s `_suite_fns_for` (6 call sites, e.g. `f"{suite_name}_suite_{grp.attributes
+    ['name']}"`) builds its own, independent, hardcoded `"_suite_"` infix to look up real suite
+    cap function names in `public_fns` -- a **sixth** site Stage 1's own audit ("~15-20 sites
+    across `suite_cap.py`/`ccpp_cap.py`/`gpu_data_pass.py`/`gpu_ccpp_cap_pass.py`") never found,
+    since it never grepped for the substring `"_suite_"` embedded inside a longer f-string, only
+    the standalone `"_suite"` token. Once `suite_cap.py`/`ccpp_cap.py` stopped emitting the infix
+    (Stage 2's real change) but `cpp_interop.py` kept looking for names that included it, every
+    lookup silently missed, and the wrapper generator quietly produced almost nothing instead of
+    erroring -- exactly the "missed literal-string site" risk flagged when this stage was
+    originally scoped, caught here specifically because verification happened before golden
+    files were touched rather than after (a stale golden would have masked this by "passing"
+    against equally-wrong regenerated content). Fixed by importing `SUITE_FN_INFIX` into
+    `cpp_interop.py` and rebuilding all 6 sites as `f"{suite_name}{SUITE_FN_INFIX}_..."`, matching
+    the other 4 files' own convention. Re-verified via the same `--bind-c` regeneration (462 lines
+    restored, `inline Status initialize()` present, correct un-doubled names throughout) plus a
+    second real suite (`examples/nested_suite`, a multi-group, non-`_suite`-suffixed suite name)
+    regenerated cleanly with no errors.
+  - **Full verification after the fix.** Confirmed a repo-wide grep for any other hardcoded
+    `"_suite_" + <phase>` construction turns up nothing beyond comments/docstrings (the
+    `cpp_interop.py` site was the only other real one). Regenerated the 25 real (non-`cpp_header`)
+    filecheck fixtures affected via `tests/filecheck/examples/update-filecheck-test.py` -- the 5
+    `cpp_header`/wrapper-format fixtures needed no golden changes at all, since their own CHECK
+    content only ever referenced the fixed generic dispatch names (`ccpp_register` etc.), never
+    the internal per-suite Fortran symbol names; regenerating them anyway would have silently
+    baked in wrong content, since that script's formatter-selection only branches on `-t ftn` vs.
+    everything else (defaulting to the MLIR-IR formatter, which mishandles blank lines in
+    C++-header text) -- confirmed by inspection before deciding not to touch them. Hand-fixed the
+    ~21 unit test files with hand-authored hardcoded `"..._suite_suite_..."`/`"..._suite_<phase>"`
+    literal name strings (a mechanical, ordered literal-substring collapse: longest/most-specific
+    phase keywords first, then a generic catch-all for the plain-run-phase, arbitrary-group-name
+    case) plus one file (`test_ccpp_cap.py`) with a hand-built `public_fns` dict keyed by the old
+    name directly (`"testsuite_suite_run"` -> `"testsuite_run"`) rather than parsed Fortran text.
+    Final state: full suite `python -m pytest tests/filecheck tests/unit -q` -> 628 passed/1
+    xfailed (identical to both the pre-Stage-1 and post-Stage-1 baselines); `ruff check .` -> 210
+    (unchanged; one transient +1 from the new `cpp_interop.py` import was itself an import-order
+    fix, not a real finding); a final real regeneration smoke test on `examples/kessler --bind-c`
+    confirming clean, single-infix names end-to-end. Files modified (uncommitted, same branch):
+    the 5 from Stage 1 plus `xdsl_ccpp/transforms/cpp_interop.py` (the real fix), 25 filecheck
+    `.mlir` fixtures, and 21 `tests/unit/*.py` files with hardcoded name literals.
 
 - **Order by risk, not just size.** Extract the most self-contained clusters first (chost/C++
   backend) and save the most interconnected, highest-blast-radius cluster (run-dispatch) for

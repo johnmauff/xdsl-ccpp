@@ -133,7 +133,7 @@ class TestSuiteStateIsAPerInstanceAllocatableArray:
         the exact bug the real ctest failure exposed."""
         fortran = _fortran_output(run_host_match, ccpp_context)
         init_body = _unwrapped(
-            _fn_body(fortran, "test_suite_suite_initialize")
+            _fn_body(fortran, "test_suite_initialize")
         )
         assert "ccpp_suite_state(instance)" in init_body
         assert "ccpp_suite_state)" not in init_body.replace(
@@ -154,7 +154,7 @@ class TestLifecyclePhasesThreadInstanceThroughTheWrapper:
         sig = _unwrapped(_fn_body(fortran, "ccpp_register").split("\n\n")[0])
         assert "instance" in sig and "ninstances" in sig
         call = _unwrapped(_fn_body(fortran, "ccpp_register"))
-        assert "test_suite_suite_register(instance, ninstances" in call
+        assert "test_suite_register(instance, ninstances" in call
 
     def test_all_non_run_lifecycle_wrappers_accept_instance_and_ninstances(
         self, run_host_match, ccpp_context
