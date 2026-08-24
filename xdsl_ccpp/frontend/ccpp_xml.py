@@ -1,8 +1,8 @@
 import argparse
 import sys
-from pathlib import Path
 import xml.etree.ElementTree as ET
 from enum import Enum
+from pathlib import Path
 
 from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
 

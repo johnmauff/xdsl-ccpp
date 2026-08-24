@@ -7,7 +7,6 @@ from typing import IO, cast
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
-    ArrayAttr,
     DenseIntOrFPElementsAttr,
     Float32Type,
     Float64Type,
@@ -23,55 +22,62 @@ from xdsl.dialects.builtin import (
 from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
 from xdsl.utils.hints import isa
 
+from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
+from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
+from xdsl_ccpp.dialects.ccpp_utils import AccEnterDataOp as CCPPAccEnterDataOp
+from xdsl_ccpp.dialects.ccpp_utils import AccExitDataOp as CCPPAccExitDataOp
+from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
+from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
+from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import ArraySectionOp as CCPPArraySectionOp
+from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
+from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
+from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
+from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApiOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
 from xdsl_ccpp.dialects.ccpp_utils import KindCastOp as CCPPKindCastOp
 from xdsl_ccpp.dialects.ccpp_utils import KindDefOp as CCPPKindDefOp
 from xdsl_ccpp.dialects.ccpp_utils import KindWriteBackOp as CCPPKindWriteBackOp
-from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
-from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp as CCPPLazyAllocOp
+from xdsl_ccpp.dialects.ccpp_utils import ModuleVarOp as CCPPModuleVarOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    OmpTargetDataBeginOp as CCPPOmpTargetDataBeginOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp as CCPPOmpTargetDataEndOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    OmpTargetEnterDataOp as CCPPOmpTargetEnterDataOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetExitDataOp as CCPPOmpTargetExitDataOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp as CCPPOmpTargetUpdateToOp
+from xdsl_ccpp.dialects.ccpp_utils import PresentCheckOp as CCPPPresentCheckOp
+from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp as CCPPPromotionLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp as CCPPRankReducingSliceOp
+from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
-from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipOp as CCPPVerticalFlipOp
-from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipWriteBackOp as CCPPVerticalFlipWriteBackOp
-from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
+from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
+from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp as CCPPSubcycleLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp as CCPPSuiteVariablesOp
 from xdsl_ccpp.dialects.ccpp_utils import TrimOp as CCPPTrimOp
-from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
+from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
+from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import VerticalFlipOp as CCPPVerticalFlipOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    VerticalFlipWriteBackOp as CCPPVerticalFlipWriteBackOp,
+)
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
-from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
-from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
-from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
-from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
-from xdsl_ccpp.dialects.ccpp_utils import AccEnterDataOp as CCPPAccEnterDataOp
-from xdsl_ccpp.dialects.ccpp_utils import AccExitDataOp as CCPPAccExitDataOp
-from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataBeginOp as CCPPOmpTargetDataBeginOp
-from xdsl_ccpp.dialects.ccpp_utils import OmpTargetDataEndOp    as CCPPOmpTargetDataEndOp
-from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateFromOp as CCPPOmpTargetUpdateFromOp
-from xdsl_ccpp.dialects.ccpp_utils import OmpTargetUpdateToOp   as CCPPOmpTargetUpdateToOp
-from xdsl_ccpp.dialects.ccpp_utils import OmpTargetEnterDataOp  as CCPPOmpTargetEnterDataOp
-from xdsl_ccpp.dialects.ccpp_utils import OmpTargetExitDataOp   as CCPPOmpTargetExitDataOp
-from xdsl_ccpp.dialects.ccpp_utils import ModuleVarOp           as CCPPModuleVarOp
-from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp          as CCPPLazyAllocOp
-from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp        as CCPPSafeDeallocOp
-from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp   as CCPPRankReducingSliceOp
-from xdsl_ccpp.dialects.ccpp_utils import PresentCheckOp         as CCPPPresentCheckOp
-from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp          as CCPPActiveCheckOp
-from xdsl_ccpp.dialects.ccpp_utils import PromotionLoopOp        as CCPPPromotionLoopOp
-from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp         as CCPPSubcycleLoopOp
-from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp      as CCPPSuiteVariablesOp
-from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp      as CCPPConstituentApiOp
-from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp            as CCPPCHostCapOp
-from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp           as CCPPCapVarRefOp
-
 
 _MAX_LINE_LEN = 99
 
 
-def _module_var_fortran_type(op: "CCPPModuleVarOp") -> str:
+def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
     """Reconstruct the Fortran type string from a ModuleVarOp's structured attributes."""
     base = op.base_type.data
     kind = op.kind.data if op.kind is not None else None

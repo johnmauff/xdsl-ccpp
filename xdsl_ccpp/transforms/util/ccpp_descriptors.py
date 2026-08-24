@@ -67,11 +67,6 @@ class CCPPTableProperties(CCPPItem):
         super().setAttr(key, value, ["name", "type", "dependencies",
                                      "dependencies_path", "source_path", "language"])
 
-    def setArgTable(self, k, v):
-        """Register an argument table under the given key."""
-        assert isinstance(v, CCPPArgument)
-        self.arg_tables[k] = v
-
     def getArgTable(self, v):
         """Return the argument table registered under key ``v``."""
         return self.arg_tables[v]

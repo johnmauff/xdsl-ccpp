@@ -90,7 +90,9 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Suite signature generation ignored host's own unique local name (collision) | ✅ Fixed (2026-07-23) | L3620 |
 | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | 📋 Backlog (L, deliberately deferred until after task #28) | L5135 |
 | ~~Scheme-level dynamic constituent registration output discarded~~ (corrected: not a bug) + the real multi-instance regression this investigation found in the same code path | ✅ Corrected + fixed (2026-08-18) | L5360 |
-| Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: task #62 ✅ Done (2026-08-24), task #61 still backlog | L5539 |
+| Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: tasks #61/#62 ✅ both fully Done (2026-08-24, #62 incl. PR #91 Copilot follow-up), tasks #70/#71 split out and still backlog | L5539 |
+| Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | 📋 Backlog (M, real refactor touching 5 files' core dispatch logic) — split from task #61 | L6544 |
+| Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | 📋 Backlog (S-M, needs a diff + decision, not a same-sitting deletion) — split from task #61 | L6544 |
 
 ---
 
@@ -6540,6 +6542,82 @@ Findings triaged into four tiers, each now a tracked task:
     just theoretically -- generation succeeded normally into that path and the injected command
     never executed. Full suite: 628 passed/1 xfailed/0 failed; `ruff` unchanged (276, git-stash
     baseline).
+  - **Copilot review follow-up on PR #91 (2026-08-24), fixed.** Copilot correctly flagged that
+    `run_pipeline_stage()` ignored the subprocess's own exit status entirely: a nonzero exit
+    that still wrote *some* (partial/wrong) non-empty content to `out_path` would slip past
+    `post_stage_check`'s existence/non-empty check undetected, and a missing executable would
+    surface as an uncaught `FileNotFoundError` traceback rather than a clean CLI error (genuinely
+    new relative to `os.system()`, which never raised that). Fixed: capture the
+    `CompletedProcess`, exit with a clear message + the subprocess's own exit code on nonzero
+    return, and catch `FileNotFoundError` with a message matching `flang_utils.py`'s own
+    `run_flang` style. stderr still isn't captured, so failures remain immediately visible.
+    Verified with a real malformed-but-existing suite file that crashes the frontend subprocess
+    -- confirmed the pipeline now stops immediately with a clear error instead of proceeding
+    past the failed stage -- plus a nonexistent-executable case (clean error, no traceback) and
+    a full suite re-run (628/1/0, `ruff` unchanged). Landed as a second commit on the same PR,
+    not an amend.
+- **Task #61 (2026-08-24): scoped in full, doesn't hold up as one atomic task -- split.** Read
+  all 9 items in the original 2026-08-18 audit description against the current, real code (not
+  the audit's own claims) before touching anything:
+  - **Confirmed genuinely dead/trivial, zero real risk (items 1-5 as split for execution,
+    tackled as one batch):** `AllocatableModVarOp`/`ModuleTypeVarOp` (zero callers anywhere
+    beyond their own definitions); `util/visitor.py`'s unreachable `visit_*` dispatch branch
+    (confirmed genuinely dead, not a latent bug -- zero subclasses anywhere define a `visit_*`
+    method, only `traverse_*` is ever used); `ccpp_descriptors.py`'s `setArgTable` (zero callers
+    -- its own type-contract bug, asserting the wrong class per its own docstring, never fires);
+    the stray `# end if`/`# end while` comments (`suite_cap.py`'s own instances are *already
+    gone*, cleaned up incidentally during this session's own heavy editing of that file --
+    confirmed via `grep`; only `util/ir_utils.py:64` remains); and the bulk of the pre-existing
+    `ruff` findings from the original audit's item 8 (confirmed still present: 63 of the current
+    276 total findings are in the 7 files the audit listed, mostly `--fix`-able I001/F401).
+  - **Needs care but still small (items 6-8, deferred to a later pass, not split into their own
+    tasks):** `run_dispatch.py`'s deliberately-raised-`AssertionError`-as-control-flow (confirmed
+    still present, now around line ~1170 -- line numbers drifted from this session's own
+    editing); the ~15 F841 unused-locals in `run_dispatch.py` (each needs a per-case delete-vs-
+    underscore-prefix judgment call, not a blind fix); `_result_keyword_name`'s closure (real,
+    but "hoist to module level" isn't a one-line move -- it captures `ctx` and 3 other locals,
+    so hoisting means real parameter-threading).
+  - **Bigger or less certain than the original audit assumed -- split into their own backlog
+    items rather than left under #61:** task #70 (`ArraySectionOp` vs `RankReducingSliceOp` --
+    `ArraySectionOp` is not dead, actively used across 5 files including the highest-risk
+    dispatch code in this repo, so this is a real M-sized refactor, not a minor cleanup); task
+    #71 (`ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` -- strong evidence
+    of redundancy, but needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting
+    deletion).
+  - **Items 1-5 — Done (2026-08-24).** Deleted `AllocatableModVarOp`/`ModuleTypeVarOp`
+    (`ccpp_utils.py`, re-confirmed zero callers beyond their own definitions immediately before
+    deleting); `util/visitor.py`'s unreachable `visit_*` dispatch branch (re-confirmed zero
+    subclasses anywhere define one); `ccpp_descriptors.py`'s dead `setArgTable` (re-confirmed
+    zero callers; also confirmed removing it doesn't affect `arg_tables` population elsewhere,
+    since nothing populated it through this method's own wrapper anyway); all 4 stray
+    `util/ir_utils.py` end-marker comments (a broader sweep than the original audit's own
+    two-pattern grep found all 4 -- `# end if`/`# end for` x3 -- not just the one the narrower
+    search caught). Ran `ruff check --fix` for the safe-fix portion of item 8's ruff findings.
+    **First attempt overshot scope significantly**: running `--fix` unscoped touched 51 files
+    across the whole repo, not the 7 files item 8's own audit identified -- reverted the 43
+    files outside that intended scope via `git checkout --` before proceeding, keeping only the
+    fix in the files actually in scope (6 of the original 7 -- `ccpp_validate_source.py` had
+    nothing auto-fixable, so it stayed untouched). Verified the ~15 F841 unused-locals in
+    `run_dispatch.py` (item 7, explicitly deferred) were never touched by this pass -- confirmed
+    via diff inspection, only an import-sort line changed in that file. Full suite: 628
+    passed/1 xfailed/0 failed (unchanged). `ruff`: 276 -> 225 (51 fixed, matching the scoped
+    portion of item 8 exactly).
+  - **Items 6-8 — Done (2026-08-24), all in `run_dispatch.py`.** Item 6: replaced the
+    `try/except (KeyError, AssertionError)` control-flow pattern (a deliberately-raised
+    `AssertionError` used as a goto into the "search DDT tables instead" branch) with explicit
+    `in mod_arg_table.function_arguments` membership checks -- exactly equivalent, not just
+    similar, since `getFunctionArgument`'s only possible exception is the `KeyError` from its
+    own plain dict lookup. Item 7: the ~15 F841 unused-locals from the `_maps`/`_sig`/`_pre`
+    dataclass-unpacking pattern -- each is genuinely a documentation-style "spell out every
+    field this helper returns" unpack, so `_`-prefixed rather than deleted, preserving that
+    readability rather than leaving gaps a reader might mistake for missing fields. Item 8:
+    hoisted `_result_keyword_name` out of `_build_call_and_copy_back_ops`'s own body (where it
+    was a closure rebuilt fresh on every call -- once per suite part) to module level, threading
+    `ctx`/`n_inout_ret`/`leading_inout_ret`/`run_ret_alloc` through as explicit parameters
+    instead of closure capture, matching this file's own established convention of module-level
+    helpers taking `ctx` as their first parameter. Verified: full suite 628 passed/1 xfailed/0
+    failed (unchanged); `run_dispatch.py` itself now has zero `ruff` findings at all (was 15);
+    total `ruff`: 225 -> 210.
 
 - **Order by risk, not just size.** Extract the most self-contained clusters first (chost/C++
   backend) and save the most interconnected, highest-blast-radius cluster (run-dispatch) for

@@ -52,12 +52,6 @@ from dataclasses import dataclass, field
 
 from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
 
-from xdsl_ccpp.util.ccpp_conventions import (
-    CCPP_ERROR_MESSAGE,
-    CCPP_ERROR_CODE,
-    CCPP_ERRMSG_LEN,
-    set_legacy_mode,
-)
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,
@@ -66,6 +60,9 @@ from xdsl_ccpp.dialects.ccpp import (
     SubcycleOp,
     SuiteOp,
     TablePropertiesOp,
+)
+from xdsl_ccpp.util.ccpp_conventions import (
+    set_legacy_mode,
 )
 
 # ---------------------------------------------------------------------------
@@ -191,11 +188,11 @@ class SchemeDescriptor:
     """Descriptor produced by :func:`ccpp_scheme`."""
 
     def __init__(self, name: str, entry_points: dict[str, list[Arg]],
-                 *, language: "str | None" = None,
-                 kind_specs: "list[tuple[str, str, str]] | None" = None,
-                 dependencies: "list[str] | None" = None,
-                 dependencies_path: "str | None" = None,
-                 source_path: "str | None" = None):
+                 *, language: str | None = None,
+                 kind_specs: list[tuple[str, str, str]] | None = None,
+                 dependencies: list[str] | None = None,
+                 dependencies_path: str | None = None,
+                 source_path: str | None = None):
         self.name = name
         # Maps entry-point attribute name (e.g. "run") → list of Arg objects.
         self.entry_points = entry_points
@@ -219,13 +216,13 @@ class TableDescriptor:
         self,
         name: str,
         type_str: str,
-        arg_tables: "dict[str, list[Arg]]",
+        arg_tables: dict[str, list[Arg]],
         *,
-        array_layout: "str | None" = None,
-        kind_specs: "list[tuple[str, str, str]] | None" = None,
-        dependencies: "list[str] | None" = None,
-        dependencies_path: "str | None" = None,
-        source_path: "str | None" = None,
+        array_layout: str | None = None,
+        kind_specs: list[tuple[str, str, str]] | None = None,
+        dependencies: list[str] | None = None,
+        dependencies_path: str | None = None,
+        source_path: str | None = None,
     ):
         self.name = name
         self.type_str = type_str  # "ddt", "module", or "host"
@@ -251,7 +248,7 @@ class SuiteDescriptor:
         self,
         name: str,
         version: str,
-        groups: "dict[str, list[tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor]]",
+        groups: dict[str, list[tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor]],
     ):
         self.name = name
         self.version = version
@@ -271,8 +268,8 @@ class SubcycleDescriptor:
     """
 
     def __init__(
-        self, count: "int | str",
-        schemes: "list[SchemeDescriptor | SubcycleDescriptor]",
+        self, count: int | str,
+        schemes: list[SchemeDescriptor | SubcycleDescriptor],
     ):
         # Integer → literal loop count baked in at IR-generation time.
         # String → CCPP standard name resolved at runtime (is_literal=False).
@@ -281,8 +278,8 @@ class SubcycleDescriptor:
 
 
 def forLoop(
-    count: "int | str",
-    schemes: "list[SchemeDescriptor | SubcycleDescriptor]",
+    count: int | str,
+    schemes: list[SchemeDescriptor | SubcycleDescriptor],
 ) -> SubcycleDescriptor:
     """Declare a loop block: *schemes* repeated *count* times.
 
@@ -585,7 +582,7 @@ def _parse_dims(dim_str: str) -> tuple[str, ...]:
     return tuple(d.strip() for d in s.split(",") if d.strip())
 
 
-def _ccpp_arg_to_arg(ccpp_arg) -> "Arg":
+def _ccpp_arg_to_arg(ccpp_arg) -> Arg:
     """Convert a parsed ``CCPPArgument`` object to an :class:`Arg` dataclass.
 
     Attributes explicitly modeled in :class:`Arg` are mapped directly.
@@ -629,7 +626,7 @@ def _dependencies_kwargs(table_properties) -> dict:
     )
 
 
-def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> "SchemeDescriptor":
+def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescriptor:
     """Load a CCPP scheme descriptor from a ``.meta`` file.
 
     Parses *filename* and returns a :class:`SchemeDescriptor` equivalent to
@@ -674,7 +671,9 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> "SchemeDesc
         A :class:`SchemeDescriptor` ready for use in ``@ccpp_suite`` and
         :func:`emit_ir`.
     """
-    from xdsl_ccpp.frontend.ccpp_xml import parse_meta_file  # lazy to avoid circular import
+    from xdsl_ccpp.frontend.ccpp_xml import (
+        parse_meta_file,  # lazy to avoid circular import
+    )
 
     meta_list = parse_meta_file(filename, is_scheme=True)
     if name is not None:
@@ -717,7 +716,7 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> "SchemeDesc
     )
 
 
-def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
+def ccpp_host_from_meta(filename: str) -> list[TableDescriptor]:
     """Load CCPP host metadata from a ``.meta`` file.
 
     Parses *filename* and returns one :class:`TableDescriptor` per
@@ -764,7 +763,7 @@ def ccpp_host_from_meta(filename: str) -> "list[TableDescriptor]":
     return result
 
 
-def ccpp_ddt_from_meta(filename: str) -> "TableDescriptor":
+def ccpp_ddt_from_meta(filename: str) -> TableDescriptor:
     """Load a CCPP DDT definition from a ``.meta`` file.
 
     Parses *filename* and returns the first DDT-typed
@@ -818,19 +817,19 @@ def _arg_op(arg: Arg) -> ArgumentOp:
 def _table_properties_op(
     table_name: str,
     type_str: str,
-    arg_tables: "dict[str, list[Arg]]",
-    array_layout: "str | None" = None,
-    language: "str | None" = None,
-    kind_specs: "list[tuple[str, str, str]] | None" = None,
-    dependencies: "list[str] | None" = None,
-    dependencies_path: "str | None" = None,
-    source_path: "str | None" = None,
+    arg_tables: dict[str, list[Arg]],
+    array_layout: str | None = None,
+    language: str | None = None,
+    kind_specs: list[tuple[str, str, str]] | None = None,
+    dependencies: list[str] | None = None,
+    dependencies_path: str | None = None,
+    source_path: str | None = None,
 ) -> TablePropertiesOp:
     table_ops = []
     for entry_name, args in arg_tables.items():
         arg_ops = [_arg_op(a) for a in args]
         table_ops.append(ArgumentTableOp(entry_name, type_str, arg_ops))
-    attrs: "dict | None" = None
+    attrs: dict | None = None
     if (array_layout is not None or (language is not None and language != "fortran")
             or kind_specs or dependencies or dependencies_path is not None
             or source_path is not None):
@@ -865,9 +864,9 @@ def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
 
 
 def _group_item_to_op(
-    item: "tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor",
-    seen_schemes: "dict[str, SchemeDescriptor]",
-) -> "SchemeOp | SubcycleOp":
+    item: tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor,
+    seen_schemes: dict[str, SchemeDescriptor],
+) -> SchemeOp | SubcycleOp:
     """Convert one group-list item to its MLIR op, registering schemes seen.
 
     A `SubcycleDescriptor`'s own `schemes` list may itself contain another
@@ -892,7 +891,7 @@ def _group_item_to_op(
 
 
 def build_ir(
-    suites: "SuiteDescriptor | list[SuiteDescriptor]",
+    suites: SuiteDescriptor | list[SuiteDescriptor],
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
 ) -> ModuleOp:
     """Build a :class:`~xdsl.dialects.builtin.ModuleOp` from one or more suite descriptors.
@@ -946,7 +945,7 @@ def build_ir(
 
 
 def emit_ir(
-    suites: "SuiteDescriptor | list[SuiteDescriptor]",
+    suites: SuiteDescriptor | list[SuiteDescriptor],
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
 ) -> None:
     """Build IR from one or more suites and print it to stdout.
