@@ -30,6 +30,7 @@ from xdsl_ccpp.transforms.ccpp_cap import _collect_public_suite_functions
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _CONSTITUENT_DDT_NAME,
+    SUITE_FN_INFIX,
     _bare,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -692,30 +693,30 @@ def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
     """
     if lc == "run":
         return [
-            f"{suite_name}_suite_{grp.attributes['name']}"
+            f"{suite_name}{SUITE_FN_INFIX}_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
     if lc == "timestep_initial":
         return [
-            f"{suite_name}_suite_timestep_init_{grp.attributes['name']}"
+            f"{suite_name}{SUITE_FN_INFIX}_timestep_init_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
     if lc == "timestep_final":
         return [
-            f"{suite_name}_suite_timestep_final_{grp.attributes['name']}"
+            f"{suite_name}{SUITE_FN_INFIX}_timestep_final_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
     if lc == "physics_initial":
         return [
-            f"{suite_name}_suite_init_{grp.attributes['name']}"
+            f"{suite_name}{SUITE_FN_INFIX}_init_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
     if lc == "physics_final":
         return [
-            f"{suite_name}_suite_final_{grp.attributes['name']}"
+            f"{suite_name}{SUITE_FN_INFIX}_final_{grp.attributes['name']}"
             for grp in suite_descriptions.get(suite_name, [])
         ]
-    return [f"{suite_name}_suite_{lc}"]
+    return [f"{suite_name}{SUITE_FN_INFIX}_{lc}"]
 
 
 def _chost_cpp_type(ai: dict) -> str:

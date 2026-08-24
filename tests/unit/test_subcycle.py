@@ -614,7 +614,7 @@ class TestGeneratedFortranLoops:
 """
         metas = [_scheme_meta(n) for n in ("scheme_a", "scheme_b")]
         fortran = self._fortran_output(run_host_match, ccpp_context, metas, suite_xml)
-        fn = self._fn_body(fortran, "test_suite_suite_physics")
+        fn = self._fn_body(fortran, "test_suite_physics")
 
         declared = self._declared_integers(fn)
         assert len(declared) == len(set(declared)), (
@@ -655,7 +655,7 @@ class TestGeneratedFortranLoops:
 """
         metas = [_scheme_meta(n) for n in ("outer_scheme", "inner_scheme", "scheme_b")]
         fortran = self._fortran_output(run_host_match, ccpp_context, metas, suite_xml)
-        fn = self._fn_body(fortran, "test_suite_suite_physics")
+        fn = self._fn_body(fortran, "test_suite_physics")
 
         declared = self._declared_integers(fn)
         assert len(declared) == len(set(declared)), (

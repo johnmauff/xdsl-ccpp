@@ -104,7 +104,7 @@ class TestOnlyTopAtOneDiverges:
             run_host_match, ccpp_context,
             [_scheme_meta("scheme_a"), _scheme_meta("scheme_b", top_at_one=True)],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
         assert "_vert_flip" not in call_a
 
@@ -113,7 +113,7 @@ class TestOnlyTopAtOneDiverges:
             run_host_match, ccpp_context,
             [_scheme_meta("scheme_a"), _scheme_meta("scheme_b", top_at_one=True)],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "_vert_flip" in call_b
         assert ":1:-1" in fn
@@ -123,7 +123,7 @@ class TestOnlyTopAtOneDiverges:
             run_host_match, ccpp_context,
             [_scheme_meta("scheme_a"), _scheme_meta("scheme_b", top_at_one=True)],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         assert "deallocate(" in fn
         lines = fn.splitlines()
         call_idx = next(i for i, line in enumerate(lines) if "call scheme_b_run" in line)
@@ -139,7 +139,7 @@ class TestOnlyTopAtOneDiverges:
             run_host_match, ccpp_context,
             [_scheme_meta("scheme_a"), _scheme_meta("scheme_b", top_at_one=True)],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         declared = [
             _declared_arg_name(line)
             for line in fn.splitlines()
@@ -164,7 +164,7 @@ class TestKindUnitsAndFlipChainTogether:
                 _scheme_meta("scheme_b", top_at_one=True, units="cm", kind="8"),
             ],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "_vert_flip" in call_b
         assert "real(" in fn
@@ -180,7 +180,7 @@ class TestKindUnitsAndFlipChainTogether:
                 _scheme_meta("scheme_b", top_at_one=True, units="cm", kind="8"),
             ],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         declared = [
             _declared_arg_name(line)
             for line in fn.splitlines()
@@ -211,7 +211,7 @@ class TestOptionalArgWithTopAtOneDivergence:
                 _scheme_meta("scheme_b", top_at_one=True, optional=True),
             ],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "_vert_flip" in call_b
         lines = fn.splitlines()

@@ -130,7 +130,7 @@ class TestChainedInterstitialAllocationOrdering:
 
     def test_allocation_happens_after_producer_call(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _FLAT_SUITE_XML)
-        fn = _fn_body(fortran, "test_suite_suite_register")
+        fn = _fn_body(fortran, "test_suite_register")
         lines = [l.strip() for l in fn.splitlines() if l.strip()]
         producer_idx = next(i for i, l in enumerate(lines) if "call scheme_c_register" in l)
         alloc_idx = next(i for i, l in enumerate(lines) if l.startswith("allocate(produced"))
@@ -139,7 +139,7 @@ class TestChainedInterstitialAllocationOrdering:
 
     def test_allocation_emitted_exactly_once(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, _FLAT_SUITE_XML)
-        fn = _fn_body(fortran, "test_suite_suite_register")
+        fn = _fn_body(fortran, "test_suite_register")
         alloc_lines = [l for l in fn.splitlines() if "allocate(produced" in l]
         assert len(alloc_lines) == 1
 
@@ -149,7 +149,7 @@ class TestChainedInterstitialAllocationOrdering:
         so the producer-then-consumer ordering is preserved even when the
         producer is nested one subcycle level deep."""
         fortran = _fortran_output(run_host_match, ccpp_context, _SUBCYCLE_SUITE_XML)
-        fn = _fn_body(fortran, "test_suite_suite_register")
+        fn = _fn_body(fortran, "test_suite_register")
         lines = [l.strip() for l in fn.splitlines() if l.strip()]
         producer_idx = next(i for i, l in enumerate(lines) if "call scheme_c_register" in l)
         alloc_idx = next(i for i, l in enumerate(lines) if l.startswith("allocate(produced"))
@@ -251,8 +251,8 @@ class TestSchemeSelfAllocatedPrimitiveViaSuiteOwnedVarsSweepSkipsPreamble:
         out = StringIO()
         print_to_ftn(module, out)
         fortran = out.getvalue()
-        register_body = _fn_body(fortran, "ddt_suite_suite_register")
-        initialize_body = _fn_body(fortran, "ddt_suite_suite_initialize")
+        register_body = _fn_body(fortran, "ddt_suite_register")
+        initialize_body = _fn_body(fortran, "ddt_suite_initialize")
         assert "allocate(model_times" not in register_body
         assert "allocate(model_times" not in initialize_body
         assert "num_model_times" not in register_body

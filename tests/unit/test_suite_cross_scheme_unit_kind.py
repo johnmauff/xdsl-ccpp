@@ -117,7 +117,7 @@ class TestDivergentUnitsHostMatchesOne:
             [_scheme_meta("scheme_a", "m"), _scheme_meta("scheme_b", "cm")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
         assert "_unit_conv" not in call_a
         assert "_kind_cast" not in call_a
@@ -128,7 +128,7 @@ class TestDivergentUnitsHostMatchesOne:
             [_scheme_meta("scheme_a", "m"), _scheme_meta("scheme_b", "cm")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "_unit_conv" in call_b
         # host (m) -> scheme_b (cm): multiply by 100; write-back divides by 100.
@@ -141,7 +141,7 @@ class TestDivergentUnitsHostMatchesOne:
             [_scheme_meta("scheme_a", "m"), _scheme_meta("scheme_b", "cm")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         declared = [
             _declared_arg_name(line)
             for line in fn.splitlines()
@@ -164,7 +164,7 @@ class TestDivergentUnitsHostMatchesNeither:
             [_scheme_meta("scheme_a", "cm"), _scheme_meta("scheme_b", "um")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "_unit_conv" in call_a
@@ -179,7 +179,7 @@ class TestDivergentUnitsHostMatchesNeither:
             [_scheme_meta("scheme_a", "cm"), _scheme_meta("scheme_b", "um")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         declared = [
             _declared_arg_name(line)
             for line in fn.splitlines()
@@ -204,7 +204,7 @@ class TestDivergentKindAndUnitsChain:
             [_scheme_meta("scheme_a", "m"), _scheme_meta("scheme_b", "cm", kind="8")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_b = next(line for line in fn.splitlines() if "call scheme_b_run" in line)
         assert "_kind_cast" in fn or "_unit_conv" in call_b
         assert "real(" in fn
@@ -217,7 +217,7 @@ class TestDivergentKindAndUnitsChain:
             [_scheme_meta("scheme_a", "m"), _scheme_meta("scheme_b", "cm", kind="8")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
         assert "_unit_conv" not in call_a
         assert "_kind_cast" not in call_a
@@ -228,7 +228,7 @@ class TestDivergentKindAndUnitsChain:
             [_scheme_meta("scheme_a", "m"), _scheme_meta("scheme_b", "cm", kind="8")],
             [_host_meta("m")],
         )
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         declared = [
             _declared_arg_name(line)
             for line in fn.splitlines()
