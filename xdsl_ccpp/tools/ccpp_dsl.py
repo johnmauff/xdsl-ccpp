@@ -1,5 +1,7 @@
 import argparse
 import os
+import shlex
+import subprocess
 import sys
 
 from xdsl.dialects import builtin
@@ -255,26 +257,55 @@ class ccppMain:
             if os.path.exists(path):
                 os.remove(path)
 
+    def run_pipeline_stage(self, cmd, out_path, label):
+        """Run one pipeline subprocess, redirecting its stdout to out_path.
+
+        cmd -- an argv list, never a shell string (task #62): the four
+        pipeline stages this backs (run_frontend/run_py_frontend/run_opt/
+        generate_cpp_headers) used to build an interpolated shell command
+        string for os.system(), which breaks on any path containing quotes
+        or shell metacharacters and duplicated the same "build cmd ->
+        verbose-log -> execute" shape four times. subprocess.run([...])
+        with an explicit stdout redirect closes both gaps at once, matching
+        the pattern ccpp_validate_fir.py/fir2meta.py/flang_utils.py already
+        use elsewhere in this same tools/ directory.
+
+        label -- short, human-readable stage name (e.g. "Running CCPP
+        frontend"), matching each call site's own prior print_verbose_message
+        short-form text exactly; the long (verbose=2) form is derived from it.
+
+        Only stdout is redirected to out_path (matching each stage's own
+        prior `> "{out}"` shell redirection) -- stderr is left to inherit
+        this process's own, exactly as it did under os.system(), so a
+        subprocess crash's traceback still surfaces directly to the
+        caller's terminal instead of being silently captured.
+
+        Does not itself validate the result -- callers that expect out_path
+        to always be non-empty call self.post_stage_check(out_path)
+        afterward; generate_cpp_headers deliberately doesn't, since an
+        empty header output is an expected, non-error outcome for it (no
+        BIND(C) functions found).
+        """
+        self.print_verbose_message(
+            label,
+            f'{label} with command: {shlex.join(cmd)} > "{out_path}"',
+        )
+        with open(out_path, "w") as out_f:
+            subprocess.run(cmd, stdout=out_f)
+
     def run_frontend(self, tmp_dir):
         suites_arg = ",".join(self.options_db["suites"])
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = f'python3 -m xdsl_ccpp.frontend.ccpp_xml --suites "{suites_arg}"'
+        cmd = ["python3", "-m", "xdsl_ccpp.frontend.ccpp_xml", "--suites", suites_arg]
         if self.options_db["scheme_files"]:
-            scheme_files_arg = ",".join(self.options_db["scheme_files"])
-            cmd += f' --scheme-files "{scheme_files_arg}"'
+            cmd += ["--scheme-files", ",".join(self.options_db["scheme_files"])]
         if self.options_db["host_files"]:
-            host_files_arg = ",".join(self.options_db["host_files"])
-            cmd += f' --host-files "{host_files_arg}"'
+            cmd += ["--host-files", ",".join(self.options_db["host_files"])]
         if self.options_db.get("legacy_mode"):
-            cmd += " --legacy-mode"
-        cmd += f' > "{mlir_out}"'
+            cmd.append("--legacy-mode")
 
-        self.print_verbose_message(
-            "Running CCPP frontend",
-            f"Running CCPP frontend with command: {cmd}",
-        )
-        os.system(cmd)
+        self.run_pipeline_stage(cmd, mlir_out, "Running CCPP frontend")
         self.post_stage_check(mlir_out)
         return mlir_out
 
@@ -282,19 +313,14 @@ class ccppMain:
         py_file = self.options_db["py"]
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = f'python3 "{py_file}"'
+        cmd = ["python3", py_file]
         if self.options_db.get("legacy_mode"):
             # py_api.py has no argparse of its own (it's the user's own
             # script); it scans sys.argv for this token directly, mirroring
             # ccpp_param()'s existing sys.argv-scanning convention.
-            cmd += " --legacy-mode"
-        cmd += f' > "{mlir_out}"'
+            cmd.append("--legacy-mode")
 
-        self.print_verbose_message(
-            "Running Python frontend",
-            f"Running Python frontend with command: {cmd}",
-        )
-        os.system(cmd)
+        self.run_pipeline_stage(cmd, mlir_out, "Running Python frontend")
         self.post_stage_check(mlir_out)
         return mlir_out
 
@@ -504,14 +530,21 @@ class ccppMain:
         suite_cap_pass = "generate-suite-cap"
         resolved_vars_path = self.options_db.get("emit_resolved_vars")
         if resolved_vars_path:
-            # Quoted: the pass-pipeline spec lexer doesn't accept unquoted
-            # '/' in an arg value, and paths need it. Escaped (\" not "):
-            # this whole pipeline string later gets embedded inside its own
-            # double-quoted shell argument (-p "{pipeline}") in run_opt()/
-            # generate_cpp_headers(), which shell out via os.system() --
-            # unescaped inner quotes would prematurely close that shell
-            # argument and truncate/corrupt the -p value.
-            suite_cap_pass += f'{{emit_resolved_vars=\\"{resolved_vars_path}\\"}}'
+            # Quoted: xdsl's own pass-pipeline spec lexer
+            # (xdsl.utils.parse_pipeline's STRING_LIT token) doesn't accept
+            # an unquoted '/' in an arg value, and paths need it. Plain "
+            # (not \") is correct now: task #62 moved run_opt()/
+            # generate_cpp_headers() from os.system() to subprocess.run()
+            # with an argv list, so this whole pipeline string is passed as
+            # one opaque argument with no shell re-parsing in between --
+            # previously it needed \" specifically because the pipeline
+            # string was itself embedded inside a double-quoted shell
+            # argument (-p "{pipeline}"), and the shell was relied on to
+            # unescape \" into a literal " before ccpp_opt.py's own lexer
+            # ever saw it. Passing \" straight through now (no shell to
+            # strip it) would reach that lexer as literal backslash-quote,
+            # which its own STRING_LIT regex doesn't accept as a delimiter.
+            suite_cap_pass += f'{{emit_resolved_vars="{resolved_vars_path}"}}'
 
         has_host = bool(self.options_db.get("host_files"))
         passes = ["generate-meta-cap"]
@@ -548,16 +581,11 @@ class ccppMain:
     def run_opt(self, tmp_dir, mlir_in):
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         pipeline = self._build_pipeline()
-        cmd = (
-            f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
-            f' -p "{pipeline}"'
-            f' -t ftn > "{ftn_out}"'
-        )
-        self.print_verbose_message(
-            "Running CCPP optimizer",
-            f"Running CCPP optimizer with command: {cmd}",
-        )
-        os.system(cmd)
+        cmd = [
+            "python3", "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
+            "-p", pipeline, "-t", "ftn",
+        ]
+        self.run_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer")
         self.post_stage_check(ftn_out)
         return ftn_out
 
@@ -602,16 +630,11 @@ class ccppMain:
         """
         hdr_out = os.path.join(tmp_dir, "ccpp.h")
         pipeline = self._build_pipeline()
-        cmd = (
-            f'python3 -m xdsl_ccpp.tools.ccpp_opt "{mlir_in}"'
-            f' -p "{pipeline}"'
-            f' -t cpp_header > "{hdr_out}"'
-        )
-        self.print_verbose_message(
-            "Generating C++ headers",
-            f"Generating C++ headers with command: {cmd}",
-        )
-        os.system(cmd)
+        cmd = [
+            "python3", "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
+            "-p", pipeline, "-t", "cpp_header",
+        ]
+        self.run_pipeline_stage(cmd, hdr_out, "Generating C++ headers")
         if not os.path.exists(hdr_out) or os.path.getsize(hdr_out) == 0:
             self.print_verbose_message(
                 "  -> No BIND(C) functions found; no C++ headers written",
