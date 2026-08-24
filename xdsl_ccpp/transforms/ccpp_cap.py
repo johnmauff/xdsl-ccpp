@@ -1001,7 +1001,7 @@ class CCPPCAP(ModulePass):
                 for suite_name, suite_desc in suite_descriptions.items():
                     for group in suite_desc:
                         group_name = group.attributes["name"]
-                        # Per-group callee: e.g. temp_suite_suite_physics1
+                        # Per-group callee: e.g. temp_suite_physics1
                         suite_callee = suite_name + callee_suffix + group_name
                         if suite_callee not in public_fns:
                             continue

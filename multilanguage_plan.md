@@ -147,7 +147,7 @@ real(c_double), intent(inout) :: theta_c(nlev, ncol)
 real(kind_phys) :: theta(ncol, nlev)
 
 theta = reshape(theta_c, [ncol, nlev], order=[2,1])
-call kessler_suite_suite_physics(..., theta=theta, ...)
+call kessler_suite_physics(..., theta=theta, ...)
 ! write back for intent=inout or intent=out
 theta_c = reshape(theta, [nlev, ncol], order=[2,1])
 ```

@@ -2491,7 +2491,7 @@ dependency is noted.
     fallback (the "untracked call result" mechanism in `print_ftn.py`'s function printer), which
     synthesized an anonymous local (`ccpp_tmp_0`) and printed it as an *extra* positional call
     argument the callee's own declared signature didn't actually have one for — an arity mismatch,
-    also invalid Fortran. Confirmed by direct inspection: `ddt_suite_suite_data_prep` declares
+    also invalid Fortran. Confirmed by direct inspection: `ddt_suite_data_prep` declares
     exactly 8 dummy arguments, but the call previously passed 9. Covered by
     `tests/unit/test_run_dispatch_inout_echo.py` (3 tests, sabotage-verified for both the
     copy-back fix and the keyword-dedup fix independently). All affected FileCheck goldens
@@ -2738,7 +2738,7 @@ dependency is noted.
       need its own real keyword name printed).
 
       Confirmed via the real `Makefile` path (not just the raw CLI):
-      `test_host_ccpp_physics_run`'s call to `var_compatibility_suite_suite_radiation` now has
+      `test_host_ccpp_physics_run`'s call to `var_compatibility_suite_radiation` now has
       exactly the right argument count, with no `_out_N`/`ccpp_tmp_N` anywhere. Both var_compat
       FileCheck goldens regenerated and passing; full suite 487 passed, 1 pre-existing xfail.
       Direct regression coverage (sabotage-verified against both the positional- and
@@ -2855,7 +2855,7 @@ dependency is noted.
       `model_var_is_ddt` (previously discarded — only `standard_name` was kept), and the
       resolution loop tries DDT-member resolution before falling back to a fresh local.
       Confirmed via the real `Makefile` path: `test_host_ccpp_physics_initialize`'s call to
-      `var_compatibility_suite_suite_initialize` now passes `phys_state%scheme_order` directly,
+      `var_compatibility_suite_initialize` now passes `phys_state%scheme_order` directly,
       with no `lc_scheme_order` anywhere. Both var_compat FileCheck goldens regenerated and
       passing; full suite 495 passed, 1 pre-existing xfail; no other example affected (this gap
       was never exercised by any other example's lifecycle dispatch). Direct regression coverage
@@ -2899,7 +2899,7 @@ dependency is noted.
       `effr_calc_run`) is pure `intent(in)`, so it has no write-back at all — nothing ever
       deallocated its conversion temp. Invisible for a subroutine called only once (Fortran
       auto-deallocates non-`SAVE` locals on return), but
-      `var_compatibility_suite_suite_radiation` calls `effr_calc_run` inside a nested 3-level
+      `var_compatibility_suite_radiation` calls `effr_calc_run` inside a nested 3-level
       subcycle loop (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
       allocated a second time within the same subroutine invocation, before Fortran ever gets a
       chance to deallocate it.
@@ -2909,7 +2909,7 @@ dependency is noted.
       `allocate(...)` statement all four of these op cases print, independent of whether a
       write-back exists — safe for pure `intent(in)` values, and a no-op on first entry so it
       doesn't change behavior for the ordinary, non-looped case either. Confirmed via the real
-      `Makefile` path: every conversion temp in `var_compatibility_suite_suite_radiation`
+      `Makefile` path: every conversion temp in `var_compatibility_suite_radiation`
       (`effrr_in_unit_conv`, `effrr_in_vert_flip`, `effrs_inout_kind_cast`, etc.) now has a guard
       immediately before its `allocate`. Generator-wide fix, not var_compat-specific:
       `examples/helloworld`'s own `ccpp_t` variant golden also legitimately changed (same guard,
@@ -2935,7 +2935,7 @@ dependency is noted.
       any `horizontal_dimension`-standard_name scalar as `col_end - col_start + 1` (e.g.
       `ncol=(col_end - col_start + 1)`), so a chunked call only ever touches its own column
       window. xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/`col_end`
-      (the fix above) but called `var_compatibility_suite_suite_radiation` with the whole,
+      (the fix above) but called `var_compatibility_suite_radiation` with the whole,
       unsliced host array and the host's raw, full column count every time — so each of
       `test_host.F90`'s 3 chunked driver calls redundantly reprocessed the entire array, and
       `effrs_inout`'s real `+=` accumulation (the only non-idempotent operation among this
@@ -3390,7 +3390,7 @@ dependency is noted.
           regenerated `examples/suite_allocate` via `xdsl_ccpp.tools.ccpp_dsl` (the tool CI's
           CMake step calls) and confirmed `use data, only: checksum` now appears, and
           `ccpp_physics_run` passes the use-associated `checksum` directly into
-          `suite_allocate_suite_suite_workspace_group`'s own `intent(out)` dummy argument --
+          `suite_allocate_suite_workspace_group`'s own `intent(out)` dummy argument --
           the `ccpp_tmp_0` throwaway local is gone entirely.
         - **Re-enabled and wired in:** `examples/suite_allocate/CMakeLists.txt`'s
           `add_test(...)` uncommented; `add_subdirectory(examples/suite_allocate)` added to the
@@ -4198,14 +4198,14 @@ dependency is noted.
             above ("only register_constituents ever needs ninstances, so
             only it needs to allocate lc_instances") was wrong for this
             specific case.** `ccpp_register`'s own call
-            (`cld_suite_suite_register(lc_instances(instance)%lc_dyn_const,
+            (`cld_suite_register(lc_instances(instance)%lc_dyn_const,
             ...)`) indexes straight into `lc_instances`, an OUTER array
             nothing has allocated yet -- the driver's own call order runs
             `ccpp_register` (the *lifecycle* register) before
             `test_host_ccpp_register_constituents` (the *constituent-API*
             register, where `lc_instances` is normally lazily allocated)
             ever gets a chance to run. Backtrace: `SIGSEGV` inside
-            `cld_suite_suite_register`, called from `MAIN__`. **Fixed**:
+            `cld_suite_register`, called from `MAIN__`. **Fixed**:
             `lifecycle_cap.py`'s own `CapVarRefOp` branch now also emits a
             guarded `LazyAllocOp` for `lc_instances` (sized by
             `ninstances`, which `ccpp_register`'s signature already
@@ -4230,7 +4230,7 @@ dependency is noted.
             something this fix introduced by regenerating the
             already-CI-green `examples/advection` (which has the identical
             `cld_liq_register`/`cld_ice_register` scheme pair) and finding
-            the exact same shape (`call cld_suite_suite_register(lc_dyn_const,
+            the exact same shape (`call cld_suite_register(lc_dyn_const,
             lc_dyn_const_ice, errmsg, errflg)`, both hoisted-and-discarded
             locals) already present there, unrelated to multi-instance.
           - **RESOLVED (2026-08-18) — Copilot review on PR #77 (3 comments) plus two
@@ -5245,11 +5245,11 @@ dependency is noted.
        ntimes))` itself, confirmed by reading `environ_conditions.F90`) -- and it's marked
        `allocatable = True`. Reproducing it directly showed the bug precisely: BOTH a
        redundant `use test_host_mod, only: num_model_times` plus two separate wrong
-       `allocate(model_times(...))` blocks -- one in `ddt_suite_suite_register` keyed to the
+       `allocate(model_times(...))` blocks -- one in `ddt_suite_register` keyed to the
        *host's* `num_model_times` (found via the sweep's own fallback to
        `_find_loop_upper_bound`'s MODULE-table path, since `environ_conditions`'s `_init`-only
        table isn't part of `_register`'s own `arg_tables`, yet the sweep runs for both `_init`
-       and `_register`), one in `ddt_suite_suite_initialize` keyed to the scheme's own `ntimes`
+       and `_register`), one in `ddt_suite_initialize` keyed to the scheme's own `ntimes`
        (found via the framework_vars loop's mechanism-2 deferral) -- confirming `model_times`
        was being independently, wrongly allocated by *both* loops at once. **Fixed** by adding
        an `allocatable: bool` field to `SuiteVarEntry` (`suite_variable_model.py`, set from the
@@ -5401,7 +5401,7 @@ dependency is noted.
     the real regenerated output: `interstitial_var` gets correct module-level allocatable
     storage, a `LazyAllocOp` guard that runs during `_register`/`_initialize` (sized from a real
     host array's shape via `_find_loop_upper_bound`, same mechanism `to_promote` already used),
-    and `temp_suite_suite_finalize` correctly references the same already-allocated module
+    and `temp_suite_finalize` correctly references the same already-allocated module
     variable with no re-allocation attempt. `temp_adjust_run`'s Fortran body sets
     `interstitial_var = 6` (ported from capgen-v1's own test logic); `temp_adjust_finalize`
     checks `interstitial_var(1) /= 6` and errors if not, proving the value survives the gap

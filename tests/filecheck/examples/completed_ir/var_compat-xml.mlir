@@ -1,7 +1,7 @@
 // Test the completed IR for the var_compat XML frontend -- ported from NCAR
 // ccpp-framework's feature/capgen-v1 branch, end-to-end-tests/var_compat.
 // Exercises: nested-subcycle codegen at the completed-IR level -- the
-// var_compatibility_suite_suite_radiation function below contains a
+// var_compatibility_suite_radiation function below contains a
 // 3-level-deep nested do-loop structure (an outer dynamic-count scf.for-style
 // SubcycleLoopOp around effr_pre/effr_post, with two nested loop=2
 // SubcycleLoopOps around effr_calc), plus a second sibling dynamic-count
@@ -38,7 +38,7 @@
 // ccpp_error_message/ccpp_error_code or a ccpp_t handle) -- run_dispatch.py's
 // combined ccpp_physics_run wrapper used to have no
 // copy-back at all for this case, so it always declared them intent(in)
-// even though the suite callee it calls (var_compatibility_suite_suite_
+// even though the suite callee it calls (var_compatibility_suite_
 // radiation) correctly declares them intent(inout) -- invalid Fortran.
 // Fixed by a new _get_suite_leading_inout_ret_info helper (cap_shared.py)
 // that name-resolves this leading-region case the same way the trailing

@@ -12,6 +12,7 @@ be reproduced or updated.
 ## Updated list of bugs from xdsl-ccpp bridge generation
 
 1. the cap function calls have `kessler_suite_suite_` names instead of just `kessler_suite_`
+   -- FIXED upstream, see the "Bug #1 root cause" update below
 2. didn't add in checks to switch between the OpenACC function calls and CPU function calls 
 3. xdsl-ccpp missed that `kessler_update_timestep_final` expects the `errflg` before `errmsg` but all of the other kessler & kessler_update calls expect `errmsg` before `errflg`. All of the functions in the kessler & kessler_update have argument orders that match the corresponding meta file entry.
 
@@ -126,13 +127,25 @@ bookkeeping -- this works because Kokkos CUDA-space pointers and NVHPC's OpenACC
 same GPU context, but it's a property of this specific scheme's directives, not something the
 xdsl-ccpp-generated cap itself provides or enforces.
 
-### Bug #1 root cause (`kessler_suite_suite_*` naming) -- self-inflicted via the suite XML
+### Bug #1 root cause (`kessler_suite_suite_*` naming) -- UPDATE: this was in fact a generator
+defect, now fixed upstream (task #66, `ccpp_cap_refactor_plan.md`)
 
-`xdsl-cpp/examples/kessler/scheme/kessler_suite.xml` names the suite `kessler_suite`. The generator
-(`suite_cap.py`) builds function names as `<suite_name>_suite_<lifecycle>`, so `kessler_suite` +
-`_suite_register` -> `kessler_suite_suite_register`. Not a generator defect -- naming the suite
-`kessler` instead of `kessler_suite` and regenerating would produce clean `kessler_suite_register`
-names.
+Original diagnosis (2026-07-29) read: `xdsl-cpp/examples/kessler/scheme/kessler_suite.xml` names
+the suite `kessler_suite`. The generator (`suite_cap.py`) built function names as
+`<suite_name>_suite_<lifecycle>`, so `kessler_suite` + `_suite_register` ->
+`kessler_suite_suite_register`. That diagnosis concluded this was *not* a generator defect, and
+that naming the suite `kessler` instead of `kessler_suite` and regenerating would avoid the
+double name.
+
+That conclusion was wrong. Comparing against real capgen-v1 (`ccpp-framework-fresh/capgen/
+generator/suite_cap.py:1284-1290`) confirmed capgen-v1 never inserts a `_suite` infix at all --
+it builds dispatch names as plain `suite_name + phase`, e.g. `kessler_suite_register` for a suite
+named `kessler_suite`, no workaround needed. This codebase's own generator inserting an extra
+`_suite` infix unconditionally was the real bug (task #66), now fixed: `suite_cap.py`/`ccpp_cap.py`
+(and `cpp_interop.py`'s own independent copy of the same infix, found while verifying the fix) no
+longer insert it, so a suite named `kessler_suite` now correctly generates `kessler_suite_register`
+etc. with no workaround or suite-XML rename required. Regenerating this bridge against a current
+checkout should no longer exhibit bug #1 at all.
 
 ### Bug #2 root cause (missing OpenACC/CPU signature switch) -- drifted metadata, not a generator defect
 

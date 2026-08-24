@@ -15,7 +15,7 @@ effr_calc_run) never has a write-back at all -- there's nothing to write
 back -- so its conversion temp is never deallocated, full stop, regardless
 of intent. That's invisible for a subroutine called only once (Fortran
 deallocates non-SAVE locals automatically on return), but
-var_compatibility_suite_suite_radiation's own call to effr_calc_run sits
+var_compatibility_suite_radiation's own call to effr_calc_run sits
 inside a nested `do ccpp_loop_cnt0 = 1, 2 / do ccpp_loop_cnt = 1, 2` subcycle
 loop -- the SAME temp gets allocated a second time, within the same
 subroutine invocation, before Fortran ever gets a chance to deallocate it.

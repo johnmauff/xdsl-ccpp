@@ -252,7 +252,7 @@ more known issues:
   legitimately does need its own real keyword name printed).
 
   Confirmed via the real `Makefile` path: `test_host_ccpp_physics_run`'s
-  call to `var_compatibility_suite_suite_radiation` now has exactly the
+  call to `var_compatibility_suite_radiation` now has exactly the
   right argument count with no `_out_N`/`ccpp_tmp_N` anywhere. See
   `tests/unit/test_run_dispatch_kw_call_result_names.py` for direct
   regression coverage (sabotage-verified against both the positional- and
@@ -343,7 +343,7 @@ more known issues:
   resolution `run_dispatch.py` already has, reusing `cap_shared.py`'s
   existing DDT-resolution helpers rather than duplicating them. Confirmed
   via the real `Makefile` path: `test_host_ccpp_physics_initialize`'s call
-  to `var_compatibility_suite_suite_initialize` now passes
+  to `var_compatibility_suite_initialize` now passes
   `phys_state%scheme_order` directly, with no `lc_scheme_order` anywhere.
   No other example was affected — this gap was never exercised by any other
   example's lifecycle dispatch. See
@@ -391,7 +391,7 @@ more known issues:
   (consumed by `effr_calc_run`) is pure `intent(in)`, so it has no
   write-back at all — nothing ever deallocated its conversion temp. That's
   invisible for a subroutine called only once (Fortran auto-deallocates
-  non-`SAVE` locals on return), but `var_compatibility_suite_suite_radiation`
+  non-`SAVE` locals on return), but `var_compatibility_suite_radiation`
   calls `effr_calc_run` inside a nested 3-level subcycle loop
   (`do ccpp_loop_cnt0 = 1, 2` / `do ccpp_loop_cnt = 1, 2`) — the same temp gets
   allocated a second time within the same subroutine invocation, before
@@ -404,7 +404,7 @@ more known issues:
   write-back exists — safe for pure `intent(in)` values, and a no-op on
   first entry so it doesn't change behavior for the ordinary, non-looped
   case either. Confirmed via the real `Makefile` path: every conversion
-  temp in `var_compatibility_suite_suite_radiation` (`effrr_in_unit_conv`,
+  temp in `var_compatibility_suite_radiation` (`effrr_in_unit_conv`,
   `effrr_in_vert_flip`, `effrs_inout_kind_cast`, etc.) now has a guard
   immediately before its `allocate`. This is a generator-wide fix, not
   var_compat-specific: `examples/helloworld`'s own `ccpp_t` variant golden
@@ -435,7 +435,7 @@ more known issues:
   (e.g. `ncol=(col_end - col_start + 1)`), so a chunked call only ever
   touches its own column window.
   xdsl-ccpp did neither: `test_host_ccpp_physics_run` accepted `col_start`/
-  `col_end` (the fix above) but called `var_compatibility_suite_suite_radiation`
+  `col_end` (the fix above) but called `var_compatibility_suite_radiation`
   with the whole, unsliced host array and the host's raw, full column count
   every time — so each of `test_host.F90`'s 3 chunked driver calls
   redundantly reprocessed the *entire* array, and `effrs_inout`'s real
@@ -629,7 +629,7 @@ more known issues:
   `effr_calc`'s `effrs_inout` declares `kind = 8` while every other
   occurrence of the same standard_name uses `kind_phys`. Confirmed by
   actually running generation: it's detected, warned about, and handled —
-  the generated `var_compatibility_suite_suite_radiation` allocates a
+  the generated `var_compatibility_suite_radiation` allocates a
   `real(kind=8)` cast temporary, casts in before the call sequence, and
   casts back out afterward.
 - **Unit conversion — table entries added, plus a real cross-scheme
