@@ -47,6 +47,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
+    SUITE_FN_INFIX,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _collect_ddt_use_stubs,
@@ -2498,7 +2499,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         ]
         new_fn_type = builtin.FunctionType.from_lists(input_arg_types, return_types)
         return func.FuncOp(
-            suite_description.attributes["name"] + "_suite" + generated_subroutine_posfix,
+            suite_description.attributes["name"] + SUITE_FN_INFIX + generated_subroutine_posfix,
             new_fn_type,
             body,
             visibility="public",
@@ -3798,7 +3799,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         for fn in generated_fns:
             if not isa(fn, func.FuncOp):
                 continue
-            if not fn.sym_name.data.endswith("_suite_finalize"):
+            if not fn.sym_name.data.endswith(f"{SUITE_FN_INFIX}_finalize"):
                 continue
             if not fn.body.blocks:
                 continue

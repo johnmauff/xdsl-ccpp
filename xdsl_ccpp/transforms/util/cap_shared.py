@@ -235,6 +235,23 @@ LIFECYCLE_POSTFIX_ALIASES: dict[str, str] = {
 }
 
 
+# The literal infix this codebase's own generator inserts between a suite's
+# own name and its generated dispatch-function phase suffix -- e.g. this
+# generator emits "kessler_suite_suite_register" for a suite named
+# "kessler_suite". Real capgen-v1 never inserts this infix at all: it builds
+# dispatch names as plain suite_name + phase, e.g. "kessler_suite_register"
+# (confirmed against ccpp-framework-fresh/capgen/generator/suite_cap.py:
+# 1284-1290) -- task #66 tracks bringing this codebase's own convention in
+# line with that. Single source of truth for what were previously ~15-20
+# independent, hand-maintained copies of this exact literal string across
+# suite_cap.py, ccpp_cap.py, gpu_data_pass.py, and gpu_ccpp_cap_pass.py
+# (task #66 Stage 1) -- centralized here first, with zero behavior change
+# (every one of those sites still produces byte-identical output), so
+# Stage 2's actual naming-convention change only has to happen in one place
+# instead of that many.
+SUITE_FN_INFIX = "_suite"
+
+
 def _resolve_lifecycle_table_name(scheme_name: str, meta_data, postfix: str) -> "str | None":
     """Return scheme_name's own arg-table name at lifecycle phase `postfix`
     (trying the canonical form, then LIFECYCLE_POSTFIX_ALIASES' short form),

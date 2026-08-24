@@ -24,6 +24,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     StrCmpOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
+    SUITE_FN_INFIX,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _iter_schemes,
@@ -559,8 +560,9 @@ class GPUCcppCapPass(ModulePass):
     # name (suite_cap.py's generated_subroutine_posfix always inserts it
     # before the group name, never depending on what the group is called).
     _SUITE_CALLEE_MARKERS = (
-        "_suite_physics", "_suite_timestep_init_", "_suite_timestep_final_",
-        "_suite_init_", "_suite_final_",
+        f"{SUITE_FN_INFIX}_physics", f"{SUITE_FN_INFIX}_timestep_init_",
+        f"{SUITE_FN_INFIX}_timestep_final_",
+        f"{SUITE_FN_INFIX}_init_", f"{SUITE_FN_INFIX}_final_",
     )
 
     def _find_inner_suite_part_if(self, true_block):

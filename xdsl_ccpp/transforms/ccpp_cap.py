@@ -36,6 +36,7 @@ from xdsl_ccpp.transforms.run_dispatch import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    SUITE_FN_INFIX,
     _bare,
     _build_host_var_map,
     _collect_ddt_use_stubs,
@@ -207,7 +208,7 @@ def _build_cap_var_map(
     for _sn_cv, _sd_cv in suite_descriptions.items():
         for _grp_cv in _sd_cv:
             _grp_name_cv = _grp_cv.attributes["name"]
-            _callee_cv = _sn_cv + "_suite_" + _grp_name_cv
+            _callee_cv = _sn_cv + SUITE_FN_INFIX + "_" + _grp_name_cv
             if _callee_cv not in public_fns:
                 continue
             _, _, _ci_types, _ci_names = public_fns[_callee_cv]
@@ -873,7 +874,7 @@ class CCPPCAP(ModulePass):
         # name is a naming cleanup, not a rewrite of the lifecycle model
         # itself.
         lifecycle_specs = [
-            ("ccpp_register", "_register", "_suite_register", None),
+            ("ccpp_register", "_register", f"{SUITE_FN_INFIX}_register", None),
             # ccpp_init/ccpp_final: table_postfix=None (task #28 Stage 3),
             # not "_init"/"_finalize" -- those postfixes would make the
             # branch below scan every scheme's own _init/_finalize arg
@@ -889,8 +890,8 @@ class CCPPCAP(ModulePass):
             # this same fallback in practice): read the callee's ACTUAL
             # signature straight from public_fns, which can't drift out of
             # sync with what suite_cap.py really generated.
-            ("ccpp_init", None, "_suite_initialize", None),
-            ("ccpp_final", None, "_suite_finalize", None),
+            ("ccpp_init", None, f"{SUITE_FN_INFIX}_initialize", None),
+            ("ccpp_final", None, f"{SUITE_FN_INFIX}_finalize", None),
             # Per-group dispatch — each group calls its own suite cap function.
             # ccpp_physics_run: the original, unchanged entry (table_postfix
             # None here means "_run" via _generate_run_fn's own default).
@@ -900,9 +901,9 @@ class CCPPCAP(ModulePass):
             # group-scoped entry points (a breaking signature change: both
             # now take the full physics signature, not just
             # suite_name/errmsg/errflg).
-            ("ccpp_physics_run", None, "_suite_", "__per_group__"),
-            ("ccpp_physics_timestep_init", "_timestep_initialize", "_suite_timestep_init_", "__per_group__"),
-            ("ccpp_physics_timestep_final", "_timestep_finalize", "_suite_timestep_final_", "__per_group__"),
+            ("ccpp_physics_run", None, f"{SUITE_FN_INFIX}_", "__per_group__"),
+            ("ccpp_physics_timestep_init", "_timestep_initialize", f"{SUITE_FN_INFIX}_timestep_init_", "__per_group__"),
+            ("ccpp_physics_timestep_final", "_timestep_finalize", f"{SUITE_FN_INFIX}_timestep_final_", "__per_group__"),
             # ccpp_physics_init/ccpp_physics_final (task #28 Stage 3): net
             # new entry points, not a moved/renamed existing one -- unlike
             # Stage 1/2, ccpp_init/ccpp_final above are UNCHANGED rows,
@@ -912,8 +913,8 @@ class CCPPCAP(ModulePass):
             # real capgen-v1's own group-scoped ccpp_physics_init/
             # ccpp_physics_final) -- see suite_cap.py's emit_scheme_calls
             # for why ccpp_init/ccpp_final no longer emit those calls.
-            ("ccpp_physics_init", "_init", "_suite_init_", "__per_group__"),
-            ("ccpp_physics_final", "_finalize", "_suite_final_", "__per_group__"),
+            ("ccpp_physics_init", "_init", f"{SUITE_FN_INFIX}_init_", "__per_group__"),
+            ("ccpp_physics_final", "_finalize", f"{SUITE_FN_INFIX}_final_", "__per_group__"),
         ]
 
         all_globals: list = []

@@ -93,6 +93,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: tasks #61/#62 ✅ both fully Done (2026-08-24, #62 incl. PR #91 Copilot follow-up), tasks #70/#71 split out and still backlog | L5539 |
 | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | 📋 Backlog (M, real refactor touching 5 files' core dispatch logic) — split from task #61 | L6544 |
 | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | 📋 Backlog (S-M, needs a diff + decision, not a same-sitting deletion) — split from task #61 | L6544 |
+| Task #66: double-`"_suite"` naming convention (e.g. `kessler_suite_suite_register`) — needed for CAM-SIMA link compatibility | ✅ Stage 1 done (2026-08-24, centralize infix into `SUITE_FN_INFIX`, zero behavior change, verified incl. real regen diff); 🔲 Stage 2 (actual rename) not started, awaiting go-ahead | L6621 |
 
 ---
 
@@ -6618,6 +6619,62 @@ Findings triaged into four tiers, each now a tracked task:
     helpers taking `ctx` as their first parameter. Verified: full suite 628 passed/1 xfailed/0
     failed (unchanged); `run_dispatch.py` itself now has zero `ruff` findings at all (was 15);
     total `ruff`: 225 -> 210.
+- **Task #66 — double-`"_suite"` naming convention (scoped 2026-08-24, Stage 1 done
+  2026-08-24).** `suite_cap.py` builds every generated Fortran dispatch function name as
+  `suite_name + "_suite" + phase` (e.g. `_register`/`_init`/`_run`/...). Real capgen-v1 never
+  inserts that infix at all -- confirmed directly against
+  `ccpp-framework-fresh/capgen/generator/suite_cap.py:1284-1290`, which builds dispatch names as
+  plain `suite_name + phase`. Because 19 of this repo's ~24 example suites already name
+  themselves ending in `_suite` (a convention this codebase itself established, not one
+  capgen-v1 requires), the result is names like `kessler_suite_suite_register` -- a real
+  double-`"suite"` artifact, not a typo, and not merely cosmetic: it means this codebase's own
+  generated symbol names don't match what a real capgen-v1-driven host (i.e. CAM-SIMA) expects
+  to link against. Initially assessed (wrongly) as low-priority/purely-cosmetic; corrected after
+  confirming with the user that CAM-SIMA compatibility is exactly why this needs fixing, not an
+  optional polish item.
+  - **Scoping.** The infix turned out to be duplicated as ~15-20 independent literal-string
+    occurrences, not a single shared helper: two construction sites in `suite_cap.py` itself
+    (the FuncOp name builder and an `endswith("_suite_finalize")` check); a separate constituent-
+    callee construction site plus all 8 entries of the `lifecycle_specs` table in `ccpp_cap.py`;
+    and `gpu_data_pass.py`/`gpu_ccpp_cap_pass.py`, each with their own independent copy of
+    suffix-matching logic for GPU-directive dispatch. 26+ existing filecheck fixtures already
+    contain the literal `"suite_suite"` string, an undercount of the true impact since it only
+    counts sites where the golden file happens to substring-match, not every generation path
+    that builds the name. Agreed 2-stage plan with the user: **Stage 1** centralizes the infix
+    into one shared constant with zero behavior change (verifiable against the existing
+    fixture/unit suite, no golden files need updating); **Stage 2** is the actual rename
+    (dropping the infix), deliberately deferred as its own, higher-risk step -- filecheck can
+    catch a *missed* literal-string site turning into a compile-time link failure, but can't by
+    itself rule out a silently-wrong GPU-directive-matching regression, so Stage 2 will need real
+    CI, not just the local suite, before being called done.
+  - **Stage 1 -- Done (2026-08-24).** Added `SUITE_FN_INFIX = "_suite"` to
+    `xdsl_ccpp/transforms/util/cap_shared.py` (alongside its existing `LIFECYCLE_POSTFIX_ALIASES`/
+    `_PHASE_SUFFIXES` naming-convention constants) as the single source of truth, then replaced
+    every one of the ~15-20 literal `"_suite"` construction/matching sites in `suite_cap.py`,
+    `ccpp_cap.py`, `gpu_data_pass.py`, and `gpu_ccpp_cap_pass.py` with references to it.
+    Deliberately left untouched: `ccpp_cap.py`'s `_derive_camel_case_name`'s own
+    `if name.endswith("_suite")` check -- a different, unrelated mechanism (stripping a suite's
+    *own declared name* for CamelCase conversion, nothing to do with the dispatch-name infix) --
+    and `suite_cap.py`'s pre-existing `errmsg_fn_name` construction, which already omits the
+    infix today (used only for error-message text, not the real function name), a pre-existing
+    inconsistency with the real function name that Stage 1 intentionally left alone since fixing
+    it would change observable error-message text -- worth revisiting once Stage 2 lands, since
+    matching capgen-v1's real convention exactly would make both names agree for free. Verified
+    zero behavior change three ways: full suite `python -m pytest tests/filecheck tests/unit -q`
+    -> 628 passed/1 xfailed (byte-identical to the pre-Stage-1 baseline, meaning every one of the
+    26+ `"suite_suite"` fixtures still matches); `ruff check .` -> 210 (unchanged); and a live
+    regeneration diff on `examples/kessler` (git-stash the Stage 1 changes, regenerate into
+    `/tmp/kessler_before`, pop the stash, regenerate again into `/tmp/kessler_after`, `diff -r`
+    the two) -- the only difference was `datatable.xml`'s own embedded absolute output paths
+    (an artifact of the two runs using different `-o` directories, not a real diff); the actual
+    generated `kessler_suite_cap.F90`/`Kessler_ccpp_cap.F90`/`ccpp_kinds.F90` were byte-identical.
+    Files modified (uncommitted, on branch `double-suite-naming-stage1`):
+    `xdsl_ccpp/transforms/util/cap_shared.py`, `xdsl_ccpp/transforms/suite_cap.py`,
+    `xdsl_ccpp/transforms/ccpp_cap.py`, `xdsl_ccpp/transforms/gpu_data_pass.py`,
+    `xdsl_ccpp/transforms/gpu_ccpp_cap_pass.py`. Stage 2 (the actual rename) not started --
+    awaiting go-ahead given its blast radius (near-universal fixture updates expected, real risk
+    of a missed site surfacing only as a link failure or a silent GPU-directive mismatch, neither
+    fully catchable by the local suite alone).
 
 - **Order by risk, not just size.** Extract the most self-contained clusters first (chost/C++
   backend) and save the most interconnected, highest-blast-radius cluster (run-dispatch) for
