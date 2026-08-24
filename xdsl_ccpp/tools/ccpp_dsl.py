@@ -176,6 +176,18 @@ class ccppMain:
                  "already migrated off these names; only pass this for host models "
                  "still using the deprecated convention.",
         )
+        parser.add_argument(
+            "--gfs-dim-aliases",
+            action="store_true",
+            default=False,
+            help="Treat GFS-physics vertical-axis standard names "
+                 "(adjusted_vertical_layer_dimension_for_radiation, "
+                 "vertical_composition_dimension) as equivalent to "
+                 "vertical_layer_dimension during host/scheme dimension matching "
+                 "only -- never a rename, each name still stands alone as its own "
+                 "control variable elsewhere. Off by default, matching capgen-v1's "
+                 "own --gfs-dim-aliases flag.",
+        )
 
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
@@ -504,7 +516,10 @@ class ccppMain:
         has_host = bool(self.options_db.get("host_files"))
         passes = ["generate-meta-cap"]
         if has_host:
-            passes.append("generate-host-match")
+            host_match_pass = "generate-host-match"
+            if self.options_db.get("gfs_dim_aliases"):
+                host_match_pass += "{gfs_dim_aliases=true}"
+            passes.append(host_match_pass)
         # Phase 7, Stage 2 (see ccpp_cap_refactor_plan.md): computes the
         # SuiteOwned/HostMatched/CapScratch/Block ownership classification
         # durably, before any suite's subroutine signature exists. Nothing

@@ -102,20 +102,47 @@ def is_vertical_dimension(dim_name: str) -> bool:
     return dim_name.lower() in CCPP_VERTICAL_DIMENSIONS
 
 
-def dims_compatible(dim1: str, dim2: str) -> bool:
+def dims_compatible(dim1: str, dim2: str, gfs_dim_aliases: bool = False) -> bool:
     """Return True if two CCPP dimension standard names are semantically compatible.
 
     Compatibility means both names belong to the same CCPP dimension equivalence
     class (horizontal or vertical), following capgen-ng's semantic equivalence
     model.  Exact equality is also compatible.
+
+    gfs_dim_aliases -- opt-in only (--gfs-dim-aliases), off by default, matching
+    capgen-v1's own posture: unlike the always-on classes above, collapsing
+    CCPP_GFS_DIM_ALIASES' GFS-specific names to their canonical vertical axis is
+    a lossy, physics-specific assumption real capgen-v1 also gates behind an
+    explicit flag rather than applying unconditionally. When True, each side is
+    canonicalized through CCPP_GFS_DIM_ALIASES before the exact-match/
+    equivalence-class checks below, exactly matching capgen-v1's own
+    dim_aliases.py: collapsed only for this comparison, never a rename.
     """
     d1, d2 = dim1.lower(), dim2.lower()
+    if gfs_dim_aliases:
+        d1 = CCPP_GFS_DIM_ALIASES.get(d1, d1)
+        d2 = CCPP_GFS_DIM_ALIASES.get(d2, d2)
     if d1 == d2:
         return True
     return (
         (d1 in CCPP_HORIZONTAL_DIMENSIONS and d2 in CCPP_HORIZONTAL_DIMENSIONS)
         or (d1 in CCPP_VERTICAL_DIMENSIONS and d2 in CCPP_VERTICAL_DIMENSIONS)
     )
+
+
+# ── GFS-physics vertical-axis aliases (opt-in via --gfs-dim-aliases) ────────
+# Mirrors real capgen-v1's own metadata/dim_aliases.py _DIM_ALIAS_MAP exactly
+# (confirmed against source, capgen_v1_vocabulary.md §4): a handful of GFS
+# radiation/chemistry scheme groups declare a vertical-layer-count dimension
+# under a differently-spelled standard_name for historical reasons. Unlike
+# CCPP_DEPRECATED_STD_NAMES above, this is deliberately NOT a rename -- each
+# name also carries meaning as its own standalone control variable elsewhere,
+# so dims_compatible() only consults this map at comparison time, never
+# rewrites a declaration.
+CCPP_GFS_DIM_ALIASES: dict = {
+    "adjusted_vertical_layer_dimension_for_radiation": "vertical_layer_dimension",
+    "vertical_composition_dimension": "vertical_layer_dimension",
+}
 
 
 # ── Dimension name substitutions (legacy / documentation) ───────────────────

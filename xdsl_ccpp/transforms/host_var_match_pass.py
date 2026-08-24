@@ -76,6 +76,12 @@ class HostVariableMatchPass(ModulePass):
 
     name = "generate-host-match"
 
+    # Opt-in via --gfs-dim-aliases (task #68 in ccpp_cap_refactor_plan.md),
+    # off by default matching real capgen-v1's own posture: collapses the
+    # GFS-specific vertical-axis names in CCPP_GFS_DIM_ALIASES to
+    # vertical_layer_dimension for the dims_compatible() checks below only.
+    gfs_dim_aliases: bool = False
+
     # Standard names managed by the CCPP framework — see ccpp_conventions.py.
     _CCPP_INTERNAL: ClassVar[frozenset] = CCPP_INTERNAL_STD_NAMES
 
@@ -192,7 +198,7 @@ class HostVariableMatchPass(ModulePass):
                 host_dim_names = _parse_dim_names(host_arg_op)
                 prefix_ok = True
                 for s_dim, h_dim in zip(scheme_dim_names, host_dim_names):
-                    if dims_compatible(s_dim, h_dim):
+                    if dims_compatible(s_dim, h_dim, self.gfs_dim_aliases):
                         continue
                     prefix_ok = False
                     break
@@ -226,7 +232,7 @@ class HostVariableMatchPass(ModulePass):
             for i, (s_dim, h_dim) in enumerate(
                 zip(scheme_dim_names, host_dim_names)
             ):
-                if dims_compatible(s_dim, h_dim):
+                if dims_compatible(s_dim, h_dim, self.gfs_dim_aliases):
                     continue
                 errors.append(
                     f"  {ctx}: dimension {i + 1} name mismatch — "
