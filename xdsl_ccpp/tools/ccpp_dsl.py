@@ -280,18 +280,46 @@ class ccppMain:
         subprocess crash's traceback still surfaces directly to the
         caller's terminal instead of being silently captured.
 
-        Does not itself validate the result -- callers that expect out_path
-        to always be non-empty call self.post_stage_check(out_path)
+        Exits with a clear CLI error message (no raw Python traceback) if
+        the command can't be found, or if it runs but exits non-zero --
+        found by Copilot review on PR #91: the first version of this
+        helper (from task #62's original os.system -> subprocess.run
+        migration) captured neither case, so a failing stage could leave
+        out_path holding partial/corrupted content that a downstream
+        os.path.getsize(out_path) > 0 check (post_stage_check, or
+        generate_cpp_headers' own "no BIND(C) functions found" check)
+        would wrongly treat as success, and a missing executable would
+        surface as an uncaught FileNotFoundError instead -- os.system()
+        never raised that, it always went through a shell that printed
+        its own "command not found" and returned a status this code
+        never checked either, so this failure mode is genuinely new here,
+        not merely inherited.
+
+        Does not itself validate out_path's own content beyond the
+        command's exit status -- callers that expect out_path to always
+        be non-empty on success call self.post_stage_check(out_path)
         afterward; generate_cpp_headers deliberately doesn't, since an
-        empty header output is an expected, non-error outcome for it (no
-        BIND(C) functions found).
+        empty header output on a *successful* (exit 0) run is an
+        expected, non-error outcome for it (no BIND(C) functions found)
+        -- distinct from empty output because the command failed, which
+        this method itself already catches and exits on before returning.
         """
         self.print_verbose_message(
             label,
             f'{label} with command: {shlex.join(cmd)} > "{out_path}"',
         )
-        with open(out_path, "w") as out_f:
-            subprocess.run(cmd, stdout=out_f)
+        try:
+            with open(out_path, "w") as out_f:
+                result = subprocess.run(cmd, stdout=out_f, stderr=None)
+        except FileNotFoundError:
+            print(f"Error: could not execute '{cmd[0]}'", file=sys.stderr)
+            sys.exit(1)
+        if result.returncode != 0:
+            print(
+                f"Error: {label.lower()} failed (exit code {result.returncode})",
+                file=sys.stderr,
+            )
+            sys.exit(result.returncode)
 
     def run_frontend(self, tmp_dir):
         suites_arg = ",".join(self.options_db["suites"])
