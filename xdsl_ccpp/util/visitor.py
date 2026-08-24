@@ -34,7 +34,3 @@ class Visitor:
                     for op in b.ops:
                         ret_ops.append(self.traverse(op))
             return ret_ops
-
-        visit = get_method(self, f"visit_{class_name}")
-        if visit:
-            return [visit(operation)]
