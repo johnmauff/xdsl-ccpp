@@ -70,7 +70,11 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | `examples/ddthost`'s own copies of `temp_set`/`temp_adjust`/`temp_calc_adjust` have fallen behind `examples/capgen`'s (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | 📋 Backlog (S-M, found while scoping the above) | L4176 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | ✅ Done (2026-08-18) — real silent-miswiring bug found and fixed, not just a missing check | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
+| Consolidating `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | 🔍 Investigated (2026-08-24) — 2 of 4 files already unified, nothing to fix; the other 2 are real, --legacy-mode-only code still used by real CAM-SIMA fixtures (confirmed against CAM-SIMA-fresh), not dead code. Deliberately deferred until a CAM-SIMA-backed fixture exists in this repo to test a consolidation against; stale code comment fixed in the meantime | L5698 |
 | Vocabulary-resolution redesign (match capgen-v1's use-association model) | ✅ Stages 1-5 done (2026-08-13); 6-8-phase lifecycle match logged separately | L3589 |
+| Full 6-phase to 8-phase lifecycle match with capgen-v1 — task #28 | ✅ Stages 1-4 done (2026-08-20), CI green; Stage 5 spun off as its own item below | L4759 |
+| Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | 📋 Backlog (S-M, cosmetic, blocks nothing) | L4759 |
+| Task #11: 3 remaining legacy/compat vocabulary gaps (`number_of_openmp_threads` rename, `--gfs-dim-aliases` vertical-axis shim, `registered_dimensions.py`'s `thread_number` scalar-index mechanism) | Item 2 (`--gfs-dim-aliases`) ✅ Done (2026-08-24, task #68); items 1/3 still 🔍 Scoped, not started — coupled to each other, item 3 the real one (M-L, needs its own test fixture) | L4818 |
 
 **Backlog — other flagged issues:**
 
@@ -4756,16 +4760,155 @@ dependency is noted.
       "must be part of a longer identifier" pattern didn't match.
     - **Verification:** full suite green (566 passed, 1 xfailed, 1 failed -- same pre-existing
       `test_build_integration.py` PATH issue, unrelated).
-  - **Follow-on, logged per project owner request (2026-08-13), not started: full 6-phase ->
-    8-phase lifecycle match.** Real capgen-v1 doesn't have 6 lifecycle entry points, it has
-    8 -- it splits what this codebase calls "initialize" into two distinct phases
-    (`ccpp_init` at the suite level, `ccpp_physics_init` at the per-group level) and
-    "finalize" likewise (`ccpp_physics_final` + `ccpp_final`). Stage 5 deliberately did *not*
-    attempt this: it's genuine new architecture, not a rename -- would mean adding two new
-    lifecycle phases throughout the generation pipeline (`lifecycle_cap.py`, the outer
-    `ccpp_cap.py` wrapper, `suite_cap.py`'s own register/initialize/finalize functions) and
-    updating every example's driver to call the new two-phase sequence. 📋 Backlog (size TBD,
-    likely M-L) -- a separate, bigger effort from anything Stages 1-5 delivered.
+  - **Follow-on, logged per project owner request (2026-08-13): full 6-phase -> 8-phase
+    lifecycle match with capgen-v1 — task #28. ✅ Done (2026-08-20), Stages 1-4 of the
+    dedicated 5-stage plan; Stage 5 spun off as its own backlog item below.** Real capgen-v1
+    doesn't have 6 lifecycle entry points, it has 8 -- it splits what this codebase called
+    "initialize" into two distinct phases (`ccpp_init` at the suite level, `ccpp_physics_init`
+    at the per-group level) and "finalize" likewise (`ccpp_physics_final` + `ccpp_final`).
+    Genuine new architecture, not a rename, done as its own branch
+    (`lifecycle-8phase-stage3-physics-init-final`) across 4 stages:
+    - **Stages 1-2** (mechanical): generalized the existing `run`-only per-group dispatch
+      machinery (`suite_cap.py`/`run_dispatch.py`) to a `phase`-parameterized mechanism, moving
+      `ccpp_physics_timestep_init`/`_final` to the correct group-scoped signature (they
+      pre-existed under the wrong, flat signature).
+    - **Stage 3** (the real architecture change): added net-new `ccpp_physics_init`/
+      `ccpp_physics_final`, and made the flat `ccpp_init`/`ccpp_final` stop calling schemes
+      directly (`emit_scheme_calls=False`), matching capgen-v1's actual split. Surfaced and
+      fixed several real, pre-existing-or-newly-exposed generator bugs, each confirmed via
+      direct MLIR/Fortran regeneration and/or a real CI build or runtime failure, not just
+      filecheck: an `emit_scheme_calls` over-broad suppression that also silently dropped
+      instance/ninstances threading; a stale `table_postfix` causing an arg-count mismatch; a
+      duplicate `ccpp_info` dummy argument in `examples/ddthost`; a missing
+      `_LC_TO_ENTRY_SUFFIX` entry that silently dropped a DDT arg from a chost wrapper; a
+      type-check-before-position-check ordering bug in `run_dispatch.py`'s
+      `_build_call_and_copy_back_ops` that corrupted `errflg` and lost a real scheme-arg
+      write-back (`examples/nested_suite`/`examples/var_compat`); subcycle-loop wrapping
+      applied to `_init`/`_finalize` group dispatch when real capgen-v1 only ever loops
+      subcycles for `_run` (`examples/nested_suite`'s `effr_calc_init` called 4x instead of
+      once, tripping its own ordering check); a redundant explicit `deallocate()` immediately
+      before Fortran's own automatic scope-exit deallocation in the chost DDT cleanup path
+      (`cpp_interop.py`); and, unrelated to the generator, a pre-existing driver bug in
+      `examples/capgen/host_cpp/driver_capgen_chost.cpp`'s `State` constructor call (arguments
+      passed in the wrong order relative to the generated struct, silently mis-sizing
+      `temp_interfaces` and causing a real heap buffer overflow -- "double free or corruption
+      (out)" in CI).
+    - **Stage 4** (driver rollout): happened reactively during Stage 3's CI-failure debugging
+      rather than as its own separate pass -- `examples/capgen` (both ftn and cxx),
+      `examples/kessler` (both cxx and the plain ftn+cxx driver), `examples/ddthost`,
+      `examples/tinyddt`, `examples/nestedddt`, and `examples/advection`'s `test_host.F90` (a
+      `check_constituent_indices` assertion had to move from right after `ccpp_init` to right
+      after `ccpp_physics_init`, since the scheme that populates those indices moved with it)
+      all needed real updates; verified via full CI, now green across the board.
+    - **Stage 5 deliberately not attempted as part of this effort** -- see its own backlog
+      entry immediately below.
+  - **Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly —
+    logged separately (2026-08-20), not started.** Real capgen-v1's own driver convention calls
+    each `ccpp_physics_*` entry point once per timestep with `suite_part=''`/`'all'`, letting the
+    generated dispatch fan out over every group internally, rather than the caller looping over
+    group names itself (this codebase's own convention, and functionally equivalent -- Stages
+    1-4 already achieve full behavioral parity without this). Only `examples/ddthost` and
+    `examples/capgen`'s `temp_suite.xml` have more than one `<group>`, so only those two
+    examples' drivers/fixtures could even show a difference; every other example is
+    unaffected either way. Scope: one more dispatch-generation change of the same *kind* as
+    Stage 3 (add a branch to the existing per-group dispatch that fans out over all groups when
+    `suite_part` is empty/`'all'`, instead of requiring a name match) -- smaller in file/example
+    footprint than Stage 3, but the same *class* of change (new dispatch logic, not a rename),
+    so carries the same real risk of CI-round-trip-only-discoverable bugs Stage 3 hit repeatedly.
+    📋 Backlog (size S-M, purely cosmetic call-shape parity, blocks nothing) -- build only if the
+    reviewer wants literal call-shape parity with upstream's own driver convention.
+  - **Task #11 scoping pass (2026-08-20): the three remaining lower-priority legacy/compat
+    vocabulary gaps.** None currently exercised by any end-to-end test on either side. Read
+    real capgen-v1's own upstream source (`ccpp-framework-fresh/capgen/metadata/`) for each:
+    1. **`number_of_openmp_threads` -> `number_of_threads` rename.** Real capgen-v1:
+       `metadata/legacy_compat.py`'s `_LEGACY_NAME_MAP`, one more entry gated behind the same
+       `--legacy-mode` shim as `horizontal_loop_extent`. xdsl-ccpp already has the matching
+       hook: `CCPP_DEPRECATED_STD_NAMES` (`ccpp_conventions.py:199`), consulted by
+       `deprecated_std_name_warning()` from `ArgumentOp.__init__` (`ccpp.py:452-466`) — a real
+       dict, not a single hardcoded name, so adding an entry is genuinely mechanical.
+       **But:** confirmed by reading both code paths that xdsl-ccpp's `--legacy-mode` gate only
+       *warns and accepts* a deprecated name — unlike capgen-v1's own `translate()`, it never
+       actually rewrites the name for downstream matching. `horizontal_loop_extent` still works
+       under this design only because it and `horizontal_dimension` are *also* both members of
+       `CCPP_HORIZONTAL_DIMENSIONS`, consulted separately by `dims_compatible()`
+       (`ccpp_conventions.py:105-118`) wherever host/scheme dims are matched.
+       `number_of_openmp_threads`/`number_of_threads` are scalar *count* variables, not
+       dimension names — there is no equivalent equivalence-class mechanism for them today,
+       only the instance_number-specific one item 3 below describes. **Net: adding the map
+       entry alone is S-sized but cosmetic-only (suppresses the reject error, nothing else) —
+       it isn't a meaningful fix until item 3's mechanism (or some equivalent) exists to make
+       the renamed value actually resolve anywhere.** Not independent of item 3, despite being
+       filed as a separate gap originally.
+    2. **`--gfs-dim-aliases`-style vertical-axis equivalence
+       (`adjusted_vertical_layer_dimension_for_radiation` /
+       `vertical_composition_dimension` => `vertical_layer_dimension`).** Real capgen-v1:
+       `metadata/dim_aliases.py`, an opt-in, warned, transient shim collapsing these only at
+       the point of host/scheme dim-identity comparison (deliberately *not* a rename -- each
+       name also carries meaning as its own standalone control variable elsewhere). xdsl-ccpp
+       already has the exact right-shaped mechanism for this: `dims_compatible()` +
+       `CCPP_VERTICAL_DIMENSIONS` (`ccpp_conventions.py:85-92`) is already a set-membership
+       equivalence class, not a hardcoded pairwise map -- adding these two GFS-specific names
+       to that frozenset would make `dims_compatible()` treat them as equivalent immediately,
+       no new mechanism needed. **Real divergence to weigh, not just an implementation
+       detail:** `CCPP_VERTICAL_DIMENSIONS` has no opt-in gate at all (always on for its
+       existing members) where capgen-v1 deliberately gates this exact collapsing behind
+       `--gfs-dim-aliases` (not on by default) precisely because it's a lossy, GFS-physics-
+       specific collapse that could be wrong for a hypothetical host using these names
+       non-equivalently. Adding them unconditionally would be a real, deliberate divergence
+       from capgen-v1's own posture, not a neutral port. **Net: S-sized to wire in, but the
+       first real decision is whether to add gating to `dims_compatible()` at all (new,
+       possibly reusable machinery) or accept the divergence and go always-on** -- worth a
+       one-line decision from the project owner before touching code.
+       - **Done (2026-08-24), task #68.** Project owner chose gating, matching capgen-v1's own
+         posture rather than the always-on divergence. Added `CCPP_GFS_DIM_ALIASES`
+         (`ccpp_conventions.py`) and a new `gfs_dim_aliases: bool = False` parameter on
+         `dims_compatible()` (canonicalizes both sides through the map before the existing
+         exact-match/equivalence-class checks, only when `True`). Threaded through as a new
+         `gfs_dim_aliases: bool = False` dataclass field on `HostVariableMatchPass`
+         (`host_var_match_pass.py`) rather than a process-global flag like `--legacy-mode` --
+         host-var-matching only ever runs inside the `ccpp_opt` subprocess, so there's no
+         in-process ArgumentOp-construction call site needing a global the way `--legacy-mode`
+         does. Wired to a new `--gfs-dim-aliases` CLI flag on `ccpp_dsl.py` that appends
+         `generate-host-match{gfs_dim_aliases=true}` to the pass pipeline when set, mirroring
+         the existing `--bind-c` -> `generate-ccpp-cap{bind_c=true}` pass-parameter convention
+         already used in this exact file (`_build_pipeline`), not a new global+subprocess-argv
+         scheme. Verified: 6 new unit tests in `test_host_var_match.py` (both aliases, both
+         directions, cross-alias compatibility with each other, and a negative check it doesn't
+         leak into the horizontal equivalence class); full suite 628 passed (622 + 6)/1
+         xfailed/0 failed; ruff unchanged (276, git-stash baseline); a real end-to-end CLI
+         smoke test (minimal scheme+host `.meta` pair with a GFS-alias dim mismatch) confirming
+         the flag correctly gates rejection vs. acceptance through the actual subprocess
+         pipeline and pass-parameter string parsing, not just the Python-level unit tests.
+    3. **`registered_dimensions.py`'s general scalar-index substitution
+       (`number_of_threads`/`thread_number`, e.g. `physics%Interstitial(thread_number)%alpha`).**
+       Real capgen-v1: a single table, `SCALAR_INDEX_DIMS` (`metadata/registered_dimensions.py:135`),
+       with exactly two entries -- `number_of_instances -> instance_number` (which xdsl-ccpp
+       already implements, task #4/#63) and `number_of_threads -> thread_number` (which it
+       doesn't). Confirmed by reading capgen-v1's own module docstring that both pairs are
+       meant to share *one* general mechanism by design ("Rule 1 generalization lets capgen
+       support multi-instance and per-thread container DDTs from one mechanism -- no
+       per-dimension code path"). xdsl-ccpp's own port did **not** build it that way:
+       `CCPP_INSTANCE_NUMBER_STD_NAME`/`CCPP_NUMBER_OF_INSTANCES_STD_NAME`
+       (`ccpp_conventions.py:150,159`) are two hardcoded constants, and the substitution logic
+       built around them is spread across 8 files (`print_ftn.py`, `lifecycle_cap.py`,
+       `run_dispatch.py`, `suite_cap.py`, `constituent_cap.py`, `ccpp_cap.py`,
+       `ccpp_utils.py`, `ccpp_conventions.py`) with no shared table a second pair could plug
+       into. **Net: this is the real one -- M-L, not S.** Adding `thread_number` support
+       properly means either (a) generalizing the existing instance_number machinery into a
+       real `SCALAR_INDEX_DIMS`-style registry first (a genuine refactor across 8 files, with
+       the same false-unification risk #56/#65 already flagged elsewhere in this doc if done
+       carelessly), or (b) duplicating the whole mechanism for a second pair (worse -- doubles
+       the maintenance/bug surface capgen-v1's own design explicitly avoids). Also needs a
+       brand-new test fixture/example from scratch (a per-thread container DDT), since nothing
+       in the repo exercises this today, mirroring how `examples/instances`/
+       `instances_advection` were built for the instance_number case.
+    - **Overall sizing: items 1 and 3 are coupled (1 has no real effect without 3 or an
+      equivalent); item 2 is genuinely independent and by far the cheapest of the three, with
+      one open design decision (gate or not) rather than any real implementation risk.
+      Recommended order if picked up: item 2 first (cheap, decision-then-two-line-fix), item 3
+      next only if per-thread container DDT support is actually wanted (M-L, own test fixture),
+      item 1 as a trivial follow-on once 3 lands.** Not done in this pass -- scoping only, per
+      explicit instruction; task #11 stays a backlog item, not closed.
   - Hold `suite_allocate`/`instances`+`instances_advection`/kind_spec/interstitial-variable
     backlog items (all cap-generation-adjacent) until Stage 3 lands -- building on the model
     being replaced would be redone. **Stage 3 landed 2026-08-13; `suite_allocate` (2026-08-17)
@@ -5553,6 +5696,35 @@ dependency is noted.
       semantics really are equivalent to the `horizontal_dimension` path — unverified, and blocked
       on re-validating the CAM-SIMA/loop-chunking parity work against the current capgen-v1 tip
       (tracked separately; see Index).
+    - **Task #18 investigation (2026-08-24): traced all 4 files, corrected an earlier premise.**
+      `cpp_interop.py`'s `is_ncol` and `host_var_match_pass.py`'s `dims_compatible`/
+      `CCPP_HORIZONTAL_DIMENSIONS` were already properly unified — both treat
+      `horizontal_loop_extent`/`horizontal_dimension` as one concept, no duplication there, nothing
+      to fix. `suite_cap.py`'s `ncol_meta` synthesis (`_classify_args`) and `run_dispatch.py`'s
+      array-section-slicing genuinely do have separate code paths for the two names (a narrower
+      single-dimension branch for `horizontal_loop_extent` vs. a fully general multi-dimension one,
+      `_resolve_extra_dim_bounds`, for `horizontal_dimension`) — confirmed via `grep` that **zero**
+      examples in this repo's own `examples/` directory declare `horizontal_loop_extent` anywhere
+      anymore, so these branches are only reachable under `--legacy-mode`, and the run_dispatch.py
+      comment justifying keeping them separate cited `examples/advection` specifically, which has
+      since migrated off it — that citation had gone stale. **Initially concluded this meant the
+      legacy branches were dead code, safe to consolidate — corrected by the project owner**: real
+      CAM-SIMA still uses this exact convention. Confirmed directly against the CAM-SIMA-fresh
+      checkout: `test/unit/python/sample_files/write_init_files/temp_adjust.meta` (and
+      `temp_adjust_scalar.meta`) declare `horizontal_loop_extent` both as a scalar arg
+      (`standard_name = horizontal_loop_extent`) and as an array dimension
+      (`dimensions = (horizontal_loop_extent, vertical_layer_dimension)`) — exactly the two code
+      paths in question. This repo has no vendored fixture exercising it, but CAM-SIMA's own
+      `test/unit/python/test_write_init_files.py` does (the same harness Workstream 2's DDT-
+      redefinition fix, above, was verified against) — so a real regression-test path exists, just
+      not inside this repo. **Decision: defer any actual consolidation until a CAM-SIMA-backed
+      fixture exists in this repo to test against locally** — theoretically safe (the
+      `horizontal_dimension` branch's general multi-dim logic is a strict superset of the
+      single-dim-only legacy branch), but not worth touching working code against only a synthetic
+      fixture when a real external consumer depends on it. Fixed the stale `examples/advection`
+      citation in `run_dispatch.py`'s own comment (`_build_array_section_ops`, near
+      `CCPP_LOOP_EXTENT_STD_NAME`) to record this finding directly at the code site. No functional
+      change; full suite still 628 passed/1 xfailed/0 failed.
     - **Regression scope, once the default flipped:** far larger than the 9-file grep for the
       standard-name string suggested. 103 unit tests across 18 files failed immediately — not
       incidental naming, but *deliberate* regression coverage for the legacy path itself, written

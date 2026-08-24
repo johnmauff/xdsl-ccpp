@@ -467,6 +467,71 @@ class TestDimensionCompatibility:
         scheme, host = self._make_pair("horizontal_dimension", "horizontal_dimension")
         run_host_match(scheme_metas=[scheme], host_metas=[host])
 
+    # ── GFS dim aliases (task #68) — opt-in only, off by default ────────────
+
+    def test_gfs_radiation_alias_raises_by_default(self, run_host_match):
+        """adjusted_vertical_layer_dimension_for_radiation vs
+        vertical_layer_dimension is NOT compatible without --gfs-dim-aliases
+        -- this collapse is opt-in, matching real capgen-v1's own posture."""
+        scheme, host = self._make_pair(
+            "adjusted_vertical_layer_dimension_for_radiation",
+            "vertical_layer_dimension",
+        )
+        with pytest.raises(ValueError, match="dimension.*mismatch"):
+            run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_gfs_composition_alias_raises_by_default(self, run_host_match):
+        """Same as above for vertical_composition_dimension."""
+        scheme, host = self._make_pair(
+            "vertical_composition_dimension", "vertical_layer_dimension"
+        )
+        with pytest.raises(ValueError, match="dimension.*mismatch"):
+            run_host_match(scheme_metas=[scheme], host_metas=[host])
+
+    def test_gfs_radiation_alias_compatible_when_enabled(self, run_host_match):
+        """With --gfs-dim-aliases, the radiation alias collapses to
+        vertical_layer_dimension for the comparison."""
+        scheme, host = self._make_pair(
+            "adjusted_vertical_layer_dimension_for_radiation",
+            "vertical_layer_dimension",
+        )
+        run_host_match(
+            scheme_metas=[scheme], host_metas=[host], gfs_dim_aliases=True
+        )
+
+    def test_gfs_composition_alias_compatible_when_enabled(self, run_host_match):
+        """Same as above for vertical_composition_dimension."""
+        scheme, host = self._make_pair(
+            "vertical_composition_dimension", "vertical_layer_dimension"
+        )
+        run_host_match(
+            scheme_metas=[scheme], host_metas=[host], gfs_dim_aliases=True
+        )
+
+    def test_gfs_alias_both_sides_compatible_when_enabled(self, run_host_match):
+        """Both aliases collapse to the same representative, so they're also
+        compatible with EACH OTHER when enabled (not just with the
+        canonical name)."""
+        scheme, host = self._make_pair(
+            "adjusted_vertical_layer_dimension_for_radiation",
+            "vertical_composition_dimension",
+        )
+        run_host_match(
+            scheme_metas=[scheme], host_metas=[host], gfs_dim_aliases=True
+        )
+
+    def test_gfs_alias_does_not_leak_into_horizontal_class(self, run_host_match):
+        """Enabling --gfs-dim-aliases must not make a GFS vertical alias
+        compatible with an unrelated horizontal dimension."""
+        scheme, host = self._make_pair(
+            "adjusted_vertical_layer_dimension_for_radiation",
+            "horizontal_dimension",
+        )
+        with pytest.raises(ValueError, match="dimension.*mismatch"):
+            run_host_match(
+                scheme_metas=[scheme], host_metas=[host], gfs_dim_aliases=True
+            )
+
 
 class TestMissingVariables:
 

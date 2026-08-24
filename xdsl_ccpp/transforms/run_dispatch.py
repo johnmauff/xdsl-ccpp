@@ -1098,11 +1098,25 @@ def _build_array_section_ops(
                 continue
             _cv_first_dim = _cv_dims[0].lower()
             if _cv_first_dim == CCPP_LOOP_EXTENT_STD_NAME:
-                # Original, already-working convention (advection):
-                # single-dimension slice only, behavior unchanged --
-                # do not extend to additional dimensions here, since
-                # that would change already-correct, already-verified
-                # output for every existing horizontal_loop_extent
+                # Original, already-working convention -- task #18 investigated
+                # consolidating this into the horizontal_dimension branch below
+                # (single-dim is a strict subset of that branch's own general
+                # multi-dim handling) but found no example in this repo's own
+                # examples/ still exercises this path (examples/advection, the
+                # comment's original citation, has since migrated off it) --
+                # confirmed via CAM-SIMA-fresh's own
+                # test/unit/python/sample_files/write_init_files/temp_adjust.meta
+                # that real CAM-SIMA fixtures still declare horizontal_loop_extent
+                # this way, so this is live, --legacy-mode-only code for a real
+                # external consumer, not dead code. Deliberately deferred rather
+                # than consolidated: no fixture in this repo to regression-test
+                # against locally (CAM-SIMA's own test_write_init_files.py is the
+                # only known harness that exercises it, per
+                # capgen_v1_parity_backlog.md's Workstream 2 entry) --
+                # single-dimension slice only, behavior unchanged -- do not
+                # extend to additional dimensions here, since that would change
+                # already-correct, already-verified output for every existing
+                # horizontal_loop_extent
                 # example.
                 col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
                 col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
