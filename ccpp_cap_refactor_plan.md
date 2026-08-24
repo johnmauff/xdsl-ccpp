@@ -67,7 +67,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Broader allocation-dependency model (cross-phase unification, DDT/non-real interstitial coverage) — task #65 | 📋 Backlog (size TBD, deliberately deferred until #30 lands) | L5015 |
 | Metadata `dependencies`/`dependencies_path`/`source_path` tracking (Tier 1: parse + IR-forward, no build-system consumer) | ✅ Done (2026-08-17) | L4176 |
 | Metadata dependency-manifest automation for CMake (Tier 2 of the above, overlaps with CMake configure-time item below) | 📋 Backlog (size TBD, needs its own design pass) | L4176 |
-| `examples/ddthost`'s own copies of `temp_set`/`temp_adjust`/`temp_calc_adjust` have fallen behind `examples/capgen`'s (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | 📋 Backlog (S-M, found while scoping the above) | L4176 |
+| `examples/ddthost`'s own copies of `temp_set`/`temp_adjust`/`temp_calc_adjust` have fallen behind `examples/capgen`'s (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | 📋 Backlog, detailed scoping done (2026-08-24) — upgraded S-M to M: real cross-file coupling (`temp_calc_adjust`+`temp_adjust` share a standard_name, must land together), `temp_set` has 4 undocumented new vars needing host-side additions, staged as 1 tiny prerequisite + 2 stages. Not started; not a CAM-SIMA blocker, not small cleanup | L5551 |
 | `advection`'s error-path bonus (negative test for constituent-props-outside-register) | ✅ Done (2026-08-18) — real silent-miswiring bug found and fixed, not just a missing check | L3377 |
 | Retire the legacy `horizontal_loop_extent` vocabulary | ✅ Examples migrated (2026-07-27); ✅ `--legacy-mode` gate added, default now rejects (2026-08-13); 📋 actual code-path deletion still open | L3383 |
 | Consolidating `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | 🔍 Investigated (2026-08-24) — 2 of 4 files already unified, nothing to fix; the other 2 are real, --legacy-mode-only code still used by real CAM-SIMA fixtures (confirmed against CAM-SIMA-fresh), not dead code. Deliberately deferred until a CAM-SIMA-backed fixture exists in this repo to test a consolidation against; stale code comment fixed in the meantime | L5698 |
@@ -90,7 +90,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Suite signature generation ignored host's own unique local name (collision) | ✅ Fixed (2026-07-23) | L3620 |
 | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | 📋 Backlog (L, deliberately deferred until after task #28) | L5135 |
 | ~~Scheme-level dynamic constituent registration output discarded~~ (corrected: not a bug) + the real multi-instance regression this investigation found in the same code path | ✅ Corrected + fixed (2026-08-18) | L5360 |
-| Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3+4 backlog | L5539 |
+| Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: task #62 ✅ Done (2026-08-24), task #61 still backlog | L5539 |
 
 ---
 
@@ -5551,6 +5551,53 @@ dependency is noted.
     does **not** close out the broader ddthost-sync backlog item above --
     `kind_spec`/`interstitial_var`/rank-resync/`temp_adjust_register` are
     still missing from ddthost's copies and remain deferred to that task.
+  - **Task #33 detailed scoping (2026-08-24), not started -- upgraded from S-M to M.** Read
+    real `diff`s against `examples/capgen`'s current copies (not just the summary above) and
+    found more surface area than the original one-line description captured, plus a real
+    cross-file coupling:
+    - **`temp_set`**: beyond `kind_spec`, capgen's copy also adds four variables the original
+      description never mentioned -- `temp_diag` (new 2D array), `slev_lbound` (a new scalar),
+      `soil_levs` (a new array using a *bound-expression* dimension,
+      `lower_bound_of_vertical_dimension_of_soil:upper_bound_of_vertical_dimension_of_soil`, not
+      just a plain size), and `var_array` (a new 4D array). None of `ddthost`'s host files
+      (`host_ftn/test_host_data.meta`, `host_ftn/test_host_mod.meta`) declare matching host
+      variables for any of these -- confirmed via grep -- so this needs real host-side
+      additions, not just a scheme-file copy. Independent of `temp_adjust`/`temp_calc_adjust`.
+    - **`temp_calc_adjust` + `temp_adjust` are coupled, not two separate mechanical edits.**
+      `temp_calc_adjust`'s `temp_calc` (intent=out) and `temp_adjust`'s `temp_prev` (intent=in)
+      share the exact same standard_name, `potential_temperature_at_previous_timestep` --
+      confirmed directly in both `.meta` files -- so capgen's 1D->2D rank change on this value
+      had to land in both files atomically; they can't be staged independently, or host/scheme
+      rank matching breaks mid-way. `temp_adjust` also separately adds: the new
+      `temp_adjust_register` entry point (with its own `config_var` arg, needing a host-side
+      addition `ddthost` doesn't have yet, and a module-level `module_level_config` state
+      variable gating `_run`'s own behavior); the `interstitial_var` producer/consumer chain
+      (produced in `_run`, consumed in `_finalize` -- not host-matched at all in capgen's own
+      host files, so likely no host-side addition needed for this one); and `kind_temp` on
+      `to_promote` (paired with `temp_set`'s own `kind_spec` need -- both need
+      `examples/ddthost/scheme/temp_kinds.F90`, which doesn't exist yet, ported verbatim from
+      capgen's copy, a tiny shared prerequisite for either stage's `kind_spec` piece).
+    - **Not expected to touch `xdsl_ccpp/` generator source at all.** Every construct being
+      ported -- `kind_spec`, a bound-expression-dimensioned array, a 4D array, a `_register`
+      entry point, the interstitial-variable chain, rank changes -- already works in capgen's
+      own copy of these files today, which passes real generation and `capgen_ftn_host.exe`'s
+      own ctest. This is applying already-proven patterns to a second example, not new
+      generator capability. (Caveat: this session repeatedly found real generator bugs when a
+      *specific combination* of already-working features got exercised together for the first
+      time in a new example -- e.g. the Stage 3 subcycle/init-dispatch bugs, the capgen driver
+      `State` constructor bug -- so this is the expected scope going in, not a guarantee.)
+    - **Real staging, given the coupling above: a tiny shared prerequisite plus 2 stages, not
+      3 independent per-file edits.** (1) Port `temp_kinds.F90` verbatim, wire into
+      `examples/ddthost/CMakeLists.txt`. (2) `temp_set` alone: `kind_spec` + the 4 new
+      variables + matching `ddthost` host-side additions -- independently verifiable via
+      regeneration + the real `ddthost_ftn_host.exe` ctest. (3) `temp_calc_adjust` +
+      `temp_adjust` together: the coupled rank re-sync, `temp_adjust_register`/`config_var`
+      (+ host-side addition), `interstitial_var`, `kind_temp` on `to_promote` -- also
+      independently verifiable, but must land as one unit given the shared standard_name.
+    - **Deliberately not started.** The project owner is prioritizing items that either block
+      starting CAM-SIMA testing or are small, low-risk cleanups; this is neither (real M-sized
+      scheme/host work spanning two examples, no urgency). Left as a fully-scoped backlog item
+      for whenever it's picked up.
   - **Verified:** regenerated `examples/capgen`'s frontend/completed_ir/end_to_end
     output directly -- `dependencies`/`source_path`/`dependencies_path` are
     only ever visible at the frontend (pre-pass) stage; `strip-ccpp` removes
@@ -6461,6 +6508,38 @@ Findings triaged into four tiers, each now a tracked task:
 - **Tier 4 — minor/verify-first, deliberately deferred** (tasks #61-#62): a handful of small items needing confirmation before touching (two flagged-deprecated op aliases that may be dead, a possibly-fully-subsumed `ArraySectionOp`, a possibly-superseded CLI tool, a possibly-dead-or-possibly-buggy branch in `visitor.py`, a raise-to-fall-through control-flow pattern, cosmetic nits) plus a security/robustness item (`ccpp_dsl.py`'s `os.system()` calls with interpolated paths, alongside the same duplication this whole audit is about). **Updated 2026-08-18:** task #61 also now folds in a batch of pre-existing `ruff check` findings (unsorted imports, unused imports, 15 unused locals from dataclass-unpacking in `run_dispatch.py`) noticed incidentally while verifying tasks #37-#40 -- confirmed via git-stash to predate all of them, zero-behavior-change cleanup, not fixed inline since out of scope for those specific tasks.
 
 **Execution decision (user, 2026-08-18): log everything as tracked tasks (done, tasks #37-#62 above), then execute Tier 1 + Tier 2 in this session; Tier 3 and Tier 4 stay backlog for a dedicated future session.** See each task's own description for the full finding detail — not duplicated in prose here to avoid the two ever drifting apart.
+
+- **Task #62 — Done (2026-08-24).** Replaced all four `os.system(f"...")` shell-string calls in
+  `ccpp_dsl.py` (`run_frontend`, `run_py_frontend`, `run_opt`, `generate_cpp_headers`) with a new
+  shared `run_pipeline_stage(cmd, out_path, label)` helper built on `subprocess.run(cmd,
+  stdout=out_f)`, `cmd` now an argv list rather than an interpolated string -- matching the
+  pattern `ccpp_validate_fir.py`/`fir2meta.py`/`flang_utils.py` already use elsewhere in this
+  same `tools/` directory. Only stdout is redirected to a file (matching each stage's own prior
+  `> "{out}"` shell redirection); stderr is left to inherit the parent process, unchanged from
+  `os.system()`'s own behavior, so a subprocess crash's traceback still surfaces directly rather
+  than being silently swallowed.
+  - **Found and fixed a real latent regression risk while doing this, not just the requested
+    duplication/injection fix.** `_build_pipeline`'s `--emit-resolved-vars` handling built
+    `generate-suite-cap{emit_resolved_vars=\"{path}\"}}` with backslash-escaped quotes --
+    necessary *only* because the whole pipeline string used to be re-embedded inside its own
+    double-quoted shell argument (`-p "{pipeline}"`), relying on the shell to unescape `\"` into
+    a literal `"` before `ccpp_opt.py`'s own pass-pipeline lexer
+    (`xdsl.utils.parse_pipeline`'s `STRING_LIT` token, which requires genuine unescaped `"`
+    delimiters) ever saw it. With the shell layer removed, that escaping would have reached the
+    lexer as literal backslash-quote characters, breaking `--emit-resolved-vars` outright.
+    Confirmed by reading `xdsl/utils/parse_pipeline.py`'s own `STRING_LIT` regex directly, not
+    by inference. Fixed by dropping the backslash escaping now that there's no shell to strip it.
+  - **Verified beyond the unit suite, which doesn't actually exercise this code path** (every
+    filecheck/unit test invokes `ccpp_opt`/`ccpp_xml` directly, not through `ccpp_dsl.py`'s own
+    orchestration) -- ran the real CLI end-to-end three ways: (1) a plain run (no flags), (2)
+    `--bind-c --emit-resolved-vars <path>` (the exact path the quoting fix touches, plus
+    `generate_cpp_headers`'s own separate `subprocess.run` call), confirming the emitted
+    `resolved_vars.json` parses correctly and contains real `phases`/`host_vars` content: and
+    (3) a deliberately malicious output path
+    (`tricky $(touch /tmp/PWNED)'dir`) to prove the injection surface is actually closed, not
+    just theoretically -- generation succeeded normally into that path and the injected command
+    never executed. Full suite: 628 passed/1 xfailed/0 failed; `ruff` unchanged (276, git-stash
+    baseline).
 
 - **Order by risk, not just size.** Extract the most self-contained clusters first (chost/C++
   backend) and save the most interconnected, highest-blast-radius cluster (run-dispatch) for
