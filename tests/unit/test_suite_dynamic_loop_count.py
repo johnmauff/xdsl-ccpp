@@ -138,7 +138,7 @@ def _fn_body(fortran: str, fn_name: str) -> str:
 class TestDynamicLoopCountWithHostMatch:
     def test_do_loop_uses_hosts_own_local_name(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, [_HOST_META])
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         assert any(
             "= 1, host_count" in line for line in fn.splitlines()
         ), f"expected a do-loop bound of host_count, got body:\n{fn}"
@@ -146,7 +146,7 @@ class TestDynamicLoopCountWithHostMatch:
 
     def test_declared_as_dummy_argument(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, [_HOST_META])
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         assert any(
             "intent(in)" in line and ":: host_count" in line for line in fn.splitlines()
         )
@@ -159,7 +159,7 @@ class TestDynamicLoopCountWithHostMatch:
         SubcycleLoopOp at all and must not gain host_count as an unused
         dummy argument."""
         fortran = _fortran_output(run_host_match, ccpp_context, [_HOST_META])
-        fn = _fn_body(fortran, "test_suite_suite_initialize")
+        fn = _fn_body(fortran, "test_suite_initialize")
         assert "host_count" not in fn
 
 
@@ -185,7 +185,7 @@ class TestDynamicLoopCountCaseInsensitiveMatch:
 
     def test_do_loop_resolves_despite_different_case(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context, [_HOST_META_DIFFERENT_CASE])
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         assert any(
             "= 1, host_count" in line for line in fn.splitlines()
         ), f"expected a do-loop bound of host_count, got body:\n{fn}"

@@ -177,7 +177,7 @@ class TestCCPPCapSuiteCall:
 
     def test_suite_call_uses_keyword_syntax(self, capgen_fortran):
         """The ccpp cap's call to the suite cap includes keyword=value pairs."""
-        # The suite cap subroutine for physics is temp_suite_suite_physics2
+        # The suite cap subroutine for physics is temp_suite_physics2
         # The ccpp cap calls it with keyword syntax
         assert "qv=qv" in capgen_fortran
 
@@ -687,7 +687,7 @@ class TestActiveGatedOptionalArgs:
         function or the outer ccpp_physics_run wrapper."""
         text = active_gated_fortran
         assert "use active_gated_host, only: flag_for_opt_var" in text
-        assert "subroutine active_gated_suite_suite_physics(nx, opt_var, errmsg, errflg)" in text
+        assert "subroutine active_gated_suite_physics(nx, opt_var, errmsg, errflg)" in text
         assert (
             "subroutine ccpp_physics_run(suite_name, suite_part, nx, opt_var, "
             "errmsg, errflg)" in text
@@ -821,11 +821,11 @@ class TestTimestepPhaseHostTableArgs:
         assert "lc_nx" not in timestep_host_arg_fortran
 
     def test_call_forwards_the_real_wrapper_args(self, timestep_host_arg_fortran):
-        # timestep_host_arg_suite_suite_timestep_init_physics (task #28:
+        # timestep_host_arg_suite_timestep_init_physics (task #28:
         # timestep_init is now group-scoped -- group name "physics" here),
-        # not the old flat timestep_host_arg_suite_suite_timestep_initial.
+        # not the old flat timestep_host_arg_suite_timestep_initial.
         text = timestep_host_arg_fortran
-        call_idx = text.index("call timestep_host_arg_suite_suite_timestep_init_physics(")
+        call_idx = text.index("call timestep_host_arg_suite_timestep_init_physics(")
         call_end = text.index(")", call_idx)
         call = text[call_idx:call_end]
         assert "nx" in call

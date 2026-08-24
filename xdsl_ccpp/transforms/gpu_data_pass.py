@@ -20,6 +20,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    SUITE_FN_INFIX,
     _bare,
     _iter_schemes,
     directive_op,
@@ -517,21 +518,25 @@ class GPUDataPass(ModulePass):
             )
 
     # Suffixes of the suite-level lifecycle subroutines built by
-    # suite_cap.py (suite_name + "_suite" + generated_subroutine_posfix; see
-    # ccpp_cap.py's lifecycle_specs for the matching callee_suffix values).
-    # "_suite_physics"/"_suite_timestep_init_"/"_suite_timestep_final_"/
-    # "_suite_init_"/"_suite_final_" are handled separately below via
-    # substring match, since per-group callees are suffixed with the group
-    # name (e.g. "_suite_physics1", "_suite_timestep_init_g1"), not an
-    # exact ending -- task #28 moved timestep_init (Stage 1) and
-    # timestep_final (Stage 2) from flat, exact-suffix phases to per-group,
-    # the same shape "_suite_physics" already has, and added net-new
-    # per-group ccpp_physics_init/ccpp_physics_final (Stage 3) alongside
-    # the still-flat, now scheme-call-free _suite_initialize/_suite_finalize.
+    # suite_cap.py (suite_name + SUITE_FN_INFIX + generated_subroutine_posfix
+    # -- SUITE_FN_INFIX is task #66's centralized infix constant, currently
+    # "", previously "_suite"; see ccpp_cap.py's lifecycle_specs for the
+    # matching callee_suffix values). The f"{SUITE_FN_INFIX}_physics"/
+    # f"{SUITE_FN_INFIX}_timestep_init_"/f"{SUITE_FN_INFIX}_timestep_final_"/
+    # f"{SUITE_FN_INFIX}_init_"/f"{SUITE_FN_INFIX}_final_" markers are handled
+    # separately below via substring match, since per-group callees are
+    # suffixed with the group name (e.g. f"{SUITE_FN_INFIX}_physics1",
+    # f"{SUITE_FN_INFIX}_timestep_init_g1"), not an exact ending -- task #28
+    # moved timestep_init (Stage 1) and timestep_final (Stage 2) from flat,
+    # exact-suffix phases to per-group, the same shape
+    # f"{SUITE_FN_INFIX}_physics" already has, and added net-new per-group
+    # ccpp_physics_init/ccpp_physics_final (Stage 3) alongside the still-flat,
+    # now scheme-call-free f"{SUITE_FN_INFIX}_initialize"/
+    # f"{SUITE_FN_INFIX}_finalize".
     _LIFECYCLE_SUITE_FN_SUFFIXES = (
-        "_suite_register",
-        "_suite_initialize",
-        "_suite_finalize",
+        f"{SUITE_FN_INFIX}_register",
+        f"{SUITE_FN_INFIX}_initialize",
+        f"{SUITE_FN_INFIX}_finalize",
     )
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
@@ -585,11 +590,11 @@ class GPUDataPass(ModulePass):
                     continue
                 fn_name = child.sym_name.data
                 if (
-                    "_suite_physics" in fn_name
-                    or "_suite_timestep_init_" in fn_name
-                    or "_suite_timestep_final_" in fn_name
-                    or "_suite_init_" in fn_name
-                    or "_suite_final_" in fn_name
+                    f"{SUITE_FN_INFIX}_physics" in fn_name
+                    or f"{SUITE_FN_INFIX}_timestep_init_" in fn_name
+                    or f"{SUITE_FN_INFIX}_timestep_final_" in fn_name
+                    or f"{SUITE_FN_INFIX}_init_" in fn_name
+                    or f"{SUITE_FN_INFIX}_final_" in fn_name
                     or fn_name.endswith(self._LIFECYCLE_SUITE_FN_SUFFIXES)
                 ):
                     self._process_physics_fn(

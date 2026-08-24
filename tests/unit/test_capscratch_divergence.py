@@ -140,7 +140,7 @@ class TestDirectFrameworkMappedDivergence:
             run_host_match, ccpp_context,
             [_DIRECT_PRODUCER_SCHEME, _DIRECT_CONSUMER_SCHEME], [], _DIRECT_SUITE_XML,
         )
-        suite_fn = _fn_body(fortran, "test_csdiv_direct_suite_suite_physics")
+        suite_fn = _fn_body(fortran, "test_csdiv_direct_suite_physics")
 
         assert "present(const_tend" in suite_fn
         assert "update self(const_tend" in suite_fn
@@ -212,7 +212,7 @@ class TestConstituentTendencyScratchVarDivergence:
             run_host_match, ccpp_context,
             [_TEND_PRODUCER_SCHEME, _TEND_CONSUMER_SCHEME], [], _TEND_SUITE_XML,
         )
-        suite_fn = _fn_body(fortran, "test_csdiv_tend_suite_suite_physics")
+        suite_fn = _fn_body(fortran, "test_csdiv_tend_suite_physics")
 
         # One canonical reference is used throughout for this cap var --
         # both the present() wrap around the producer's call and the
@@ -292,7 +292,7 @@ class TestNonDivergedRegression:
             run_host_match, ccpp_context,
             [_AGREE_PRODUCER_SCHEME, _AGREE_CONSUMER_SCHEME], [], _AGREE_SUITE_XML,
         )
-        suite_fn = _fn_body(fortran, "test_csdiv_agree_suite_suite_physics")
+        suite_fn = _fn_body(fortran, "test_csdiv_agree_suite_physics")
 
         assert "copyin(const_tend" in suite_fn
         assert "update self(const_tend" not in suite_fn

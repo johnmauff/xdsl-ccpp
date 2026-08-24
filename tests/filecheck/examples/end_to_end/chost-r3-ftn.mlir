@@ -34,5 +34,5 @@
 // CHECK:           integer(c_int),               intent(out) :: errflg
 
 // Suite cap call passes col_start and col_end through directly.
-// CHECK:           call tiny_r3_suite_suite_physics(
+// CHECK:           call tiny_r3_suite_physics(
 // CHECK:               col_start, col_end, nz, nbands, flux,

@@ -108,11 +108,11 @@ class TestOmpTargetDataMapClauses:
         suite_cap level, a separate case arm invocation of the same
         (now-fixed) clause-emission helper.
 
-        test_gpu_suite_suite_timestep_init_physics (task #28: timestep_init
-        is now group-scoped), not the old flat test_gpu_suite_suite_timestep_initial.
+        test_gpu_suite_timestep_init_physics (task #28: timestep_init
+        is now group-scoped), not the old flat test_gpu_suite_timestep_initial.
         """
         fortran = _omp_fortran_output(run_host_match, ccpp_context)
-        suite_fn = _fn_body(fortran, "test_gpu_suite_suite_timestep_init_physics")
+        suite_fn = _fn_body(fortran, "test_gpu_suite_timestep_init_physics")
         assert "!$omp target data" in suite_fn
         _assert_balanced_map_clause(suite_fn, "map(tofrom:scratch)")
         assert "map(tofrom:(scratch" not in suite_fn

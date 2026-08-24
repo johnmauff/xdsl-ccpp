@@ -280,8 +280,8 @@ class TestSchemeLevelDynamicRegistrationOutputIsInstanceAware:
     ):
         fortran = _fortran_output(run_host_match, ccpp_context)
         body = _unwrapped(_fn_body(fortran, "ccpp_register"))
-        assert "test_suite_suite_register(lc_instances(instance)%lc_dyn_const" in body
-        assert "test_suite_suite_register(lc_dyn_const" not in body
+        assert "test_suite_register(lc_instances(instance)%lc_dyn_const" in body
+        assert "test_suite_register(lc_dyn_const" not in body
 
     def test_ccpp_register_allocates_lc_instances_before_referencing_it(
         self, run_host_match, ccpp_context
@@ -297,7 +297,7 @@ class TestSchemeLevelDynamicRegistrationOutputIsInstanceAware:
         fortran = _fortran_output(run_host_match, ccpp_context)
         body = _unwrapped(_fn_body(fortran, "ccpp_register"))
         alloc_pos = body.index("if (.not. allocated(lc_instances)) then allocate(lc_instances(ninstances))")
-        call_pos = body.index("test_suite_suite_register(lc_instances(instance)%lc_dyn_const")
+        call_pos = body.index("test_suite_register(lc_instances(instance)%lc_dyn_const")
         assert alloc_pos < call_pos
 
 

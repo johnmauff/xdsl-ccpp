@@ -95,7 +95,7 @@ class TestNonDivergentKindAndUnitChain:
 
     def test_forward_chain_reads_kind_cast_result(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         kind_cast_line = next(l for l in fn.splitlines() if "x_kind_cast = " in l)
         unit_conv_line = next(l for l in fn.splitlines() if "x_unit_conv = " in l)
         assert "real(x, kind=8)" in kind_cast_line
@@ -105,13 +105,13 @@ class TestNonDivergentKindAndUnitChain:
 
     def test_call_uses_the_fully_converted_value(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         call_line = next(l for l in fn.splitlines() if "call scheme_a_run" in l)
         assert "x=x_unit_conv" in call_line.replace(" ", "")
 
     def test_writeback_undoes_unit_before_kind(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         lines = fn.splitlines()
         call_idx = next(i for i, l in enumerate(lines) if "call scheme_a_run" in l)
         writeback_lines = [l for l in lines[call_idx + 1:] if "x_kind_cast" in l or l.strip().startswith("x =")]

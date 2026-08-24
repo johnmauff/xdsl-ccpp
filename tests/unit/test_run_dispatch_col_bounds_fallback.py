@@ -314,7 +314,7 @@ class TestColBoundsSlicedWhenNoSchemeChunks:
         )
         assert "integer" in col_start_decl
         call_line = next(
-            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn_body.splitlines() if "call test_suite_physics" in line
         )
         # x_host is dimensioned by horizontal_dimension -- it must be sliced
         # by col_start:col_end at the call site, even though the suite
@@ -346,7 +346,7 @@ class TestHorizontalDimensionScalarRecomputedFromColBounds:
         )[0]
         assert "col_end - col_start + 1" in fn_body, fn_body
         call_line = next(
-            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn_body.splitlines() if "call test_suite_physics" in line
         )
         assert "ncols" not in call_line, call_line
 
@@ -378,7 +378,7 @@ class TestHorizontalDimensionScalarRecomputedFromColBounds:
             "end subroutine ccpp_physics_run"
         )[0]
         call_line = next(
-            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn_body.splitlines() if "call test_suite_physics" in line
         )
         assert "y_host(col_start:col_end, 1:pver)" in call_line, call_line
 
@@ -407,7 +407,7 @@ class TestNoDuplicateWhenSchemeAlreadyProvidesThem:
             "end subroutine ccpp_physics_run"
         )[0]
         call_line = next(
-            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn_body.splitlines() if "call test_suite_physics" in line
         )
         assert "col_start" in call_line
         assert "col_end" in call_line
@@ -432,12 +432,12 @@ class TestCapVarSlicedWhenRankTwo:
         # The call wraps across multiple physical (continuation) lines, so
         # search the whole call statement rather than a single splitlines()
         # entry -- z_out's own keyword arg lands on a later continuation
-        # line than "call test_suite_suite_physics" itself.
+        # line than "call test_suite_physics" itself.
         fortran = _fortran_output_capvar_scheme(run_host_match, ccpp_context)
         fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
             "end subroutine ccpp_physics_run"
         )[0]
-        call_stmt = fn_body.split("call test_suite_suite_physics", 1)[1].split(")\n")[0]
+        call_stmt = fn_body.split("call test_suite_physics", 1)[1].split(")\n")[0]
         assert "z_out=lc_z_out(col_start:col_end, 1:pver)" in call_stmt, call_stmt
 
     def test_matched_2d_host_array_still_sliced_alongside_it(
@@ -451,6 +451,6 @@ class TestCapVarSlicedWhenRankTwo:
             "end subroutine ccpp_physics_run"
         )[0]
         call_line = next(
-            line for line in fn_body.splitlines() if "call test_suite_suite_physics" in line
+            line for line in fn_body.splitlines() if "call test_suite_physics" in line
         )
         assert "y_host(col_start:col_end, 1:pver)" in call_line, call_line

@@ -245,13 +245,13 @@ class TestGPUDataSuiteCapLifecycleCoverage:
         that name -- so the old hardcoded '<scheme>_run' lookup would have
         found nothing here at all.
 
-        test_gpu_suite_suite_timestep_init_physics (task #28: timestep_init
-        is now group-scoped, like test_gpu_suite_suite_physics already was
-        for _run) -- not the old flat test_gpu_suite_suite_timestep_initial.
+        test_gpu_suite_timestep_init_physics (task #28: timestep_init
+        is now group-scoped, like test_gpu_suite_physics already was
+        for _run) -- not the old flat test_gpu_suite_timestep_initial.
         """
         fortran = _fortran_output(run_host_match, ccpp_context)
-        suite_fn = fortran.split("subroutine test_gpu_suite_suite_timestep_init_physics")[1]
-        suite_fn = suite_fn.split("end subroutine test_gpu_suite_suite_timestep_init_physics")[0]
+        suite_fn = fortran.split("subroutine test_gpu_suite_timestep_init_physics")[1]
+        suite_fn = suite_fn.split("end subroutine test_gpu_suite_timestep_init_physics")[0]
         assert "copyin(scratch" in suite_fn or "copy(scratch" in suite_fn
 
     def test_run_hostvar_gets_no_suite_cap_directive(self, run_host_match, ccpp_context):
@@ -260,15 +260,15 @@ class TestGPUDataSuiteCapLifecycleCoverage:
         at the suite_cap level, which would create a redundant nested data
         region."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        suite_fn = fortran.split("subroutine test_gpu_suite_suite_physics")[1]
-        suite_fn = suite_fn.split("end subroutine test_gpu_suite_suite_physics")[0]
+        suite_fn = fortran.split("subroutine test_gpu_suite_physics")[1]
+        suite_fn = suite_fn.split("end subroutine test_gpu_suite_physics")[0]
         assert "!$acc" not in suite_fn
 
     def test_finalize_and_register_are_untouched_noops(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
         for fn_name in (
-            "test_gpu_suite_suite_register",
-            "test_gpu_suite_suite_finalize",
+            "test_gpu_suite_register",
+            "test_gpu_suite_finalize",
         ):
             body = fortran.split(f"subroutine {fn_name}")[1]
             body = body.split(f"end subroutine {fn_name}")[0]
@@ -448,8 +448,8 @@ class TestGPUDivergedClauseRouting:
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
             run_host_match, ccpp_context,
         )
-        suite_fn = fortran.split("subroutine test_conflict_suite_suite_physics")[1]
-        suite_fn = suite_fn.split("end subroutine test_conflict_suite_suite_physics")[0]
+        suite_fn = fortran.split("subroutine test_conflict_suite_physics")[1]
+        suite_fn = suite_fn.split("end subroutine test_conflict_suite_physics")[0]
         assert "present(qv_a" in suite_fn
 
     def test_update_scheme_gets_update_clauses(self, run_host_match, ccpp_context):
@@ -457,8 +457,8 @@ class TestGPUDivergedClauseRouting:
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B], _CONFLICT_SUITE_XML,
             run_host_match, ccpp_context,
         )
-        suite_fn = fortran.split("subroutine test_conflict_suite_suite_physics")[1]
-        suite_fn = suite_fn.split("end subroutine test_conflict_suite_suite_physics")[0]
+        suite_fn = fortran.split("subroutine test_conflict_suite_physics")[1]
+        suite_fn = suite_fn.split("end subroutine test_conflict_suite_physics")[0]
         assert "update self(qv_a" in suite_fn
         assert "update device(qv_a" in suite_fn
 
@@ -468,7 +468,7 @@ class TestGPUDivergedClauseRouting:
         present()/update self/device are still entirely GPUDataPass's job
         (see test_present_scheme_gets_present_clause/
         test_update_scheme_gets_update_clauses above, both scoped to
-        test_conflict_suite_suite_physics -- the suite_cap level).
+        test_conflict_suite_physics -- the suite_cap level).
 
         It *does* now get residency established at the ccpp_cap level
         (_analyze_one_suite_residency doesn't care about divergence, only
@@ -510,8 +510,8 @@ class TestGPUDivergedClauseRouting:
             [_CONFLICT_SCHEME_A, _CONFLICT_SCHEME_B, _CONFLICT_SCHEME_C],
             _CONFLICT_SUITE_XML_3, run_host_match, ccpp_context,
         )
-        suite_fn = fortran.split("subroutine test_conflict_suite_suite_physics")[1]
-        suite_fn = suite_fn.split("end subroutine test_conflict_suite_suite_physics")[0]
+        suite_fn = fortran.split("subroutine test_conflict_suite_physics")[1]
+        suite_fn = suite_fn.split("end subroutine test_conflict_suite_physics")[0]
         assert suite_fn.count("update self(") == 1
         assert suite_fn.count("update device(") == 1
         # Exactly one present() pair too (scheme_a's own call only).
@@ -620,8 +620,8 @@ class TestGPUDivergedClauseRoutingDDTMember:
         print_to_ftn(module, out)
         fortran = out.getvalue()
 
-        suite_fn = fortran.split("subroutine test_ddt_conflict_suite_suite_physics")[1]
-        suite_fn = suite_fn.split("end subroutine test_ddt_conflict_suite_suite_physics")[0]
+        suite_fn = fortran.split("subroutine test_ddt_conflict_suite_physics")[1]
+        suite_fn = suite_fn.split("end subroutine test_ddt_conflict_suite_physics")[0]
         assert "present(qv_a" in suite_fn
         assert "update self(qv_a" in suite_fn
         assert "update device(qv_a" in suite_fn

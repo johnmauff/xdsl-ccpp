@@ -100,13 +100,13 @@ def _fn_body(fortran: str, fn_name: str) -> str:
 class TestScalarInoutWithUnitMismatchStaysInout:
     def test_declared_intent_is_inout(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         decl = next(line for line in fn.splitlines() if "intent(" in line and ":: x" in line)
         assert "intent(inout)" in decl, f"expected intent(inout), got: {decl!r}"
 
     def test_write_back_assignment_present(self, run_host_match, ccpp_context):
         fortran = _fortran_output(run_host_match, ccpp_context)
-        fn = _fn_body(fortran, "test_suite_suite_physics")
+        fn = _fn_body(fortran, "test_suite_physics")
         assert any(
             line.strip().startswith("x = ") for line in fn.splitlines()
         ), "expected a write-back assignment into x"

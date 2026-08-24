@@ -134,13 +134,13 @@ class TestLifecycleInitResolvesDDTMember:
 
     def test_init_call_uses_real_ddt_member_not_fresh_local(self, run_host_match, ccpp_context):
         # task #28 Stage 3: scheme_a's own _init call now happens via the
-        # group-scoped ccpp_physics_init/test_suite_suite_init_physics, not
-        # the flat ccpp_init/test_suite_suite_initialize (which no longer
+        # group-scoped ccpp_physics_init/test_suite_init_physics, not
+        # the flat ccpp_init/test_suite_initialize (which no longer
         # emits any scheme calls -- see suite_cap.py's emit_scheme_calls).
         fortran = _fortran_output(run_host_match, ccpp_context)
         fn = _fn_body(fortran, "ccpp_physics_init")
         call_line = next(
-            line for line in fn.splitlines() if "call test_suite_suite_init_physics" in line
+            line for line in fn.splitlines() if "call test_suite_init_physics" in line
         )
         assert "phys_state%counter" in call_line, (
             f"expected the real DDT member threaded into the call, got: {call_line!r}"
