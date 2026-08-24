@@ -676,8 +676,13 @@ class ccppMain:
 
     def _run_datatable(self, mlir_file: str, caps_dir: str, datatable_path: str) -> None:
         """Generate datatable.xml (and optionally HTML) from *mlir_file*."""
-        from xdsl_ccpp.tools.ccpp_datatable import build_datatable, write_datatable, write_html
         from pathlib import Path
+
+        from xdsl_ccpp.tools.ccpp_datatable import (
+            build_datatable,
+            write_datatable,
+            write_html,
+        )
 
         self.print_verbose_message(
             f"Generating datatable: {datatable_path}",

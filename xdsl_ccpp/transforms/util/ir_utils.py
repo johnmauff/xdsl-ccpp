@@ -61,8 +61,4 @@ def build_host_var_index(ccpp_mod):
                         arg_op.arg_name.data, table_prop_op.table_name.data,
                         is_host_table, arg_op.protected is not None,
                     )
-                # end if
-            # end for
-        # end for
-    # end for
     return index

@@ -6,8 +6,6 @@ from xdsl.dialects import builtin, func, memref
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     Float32Type,
-    Float64Type,
-    IntAttr,
     IntegerType,
     MemRefType,
     ModuleOp,
@@ -15,10 +13,7 @@ from xdsl.dialects.builtin import (
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.backend.print_ftn import classify_arg_intent
-from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp
-from xdsl_ccpp.dialects.ccpp_utils import KindDefOp
-from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
-
+from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp, KindDefOp
 
 # ISO_FORTRAN_ENV constant → C++ type
 _ISO_TO_CPP: dict[str, str] = {

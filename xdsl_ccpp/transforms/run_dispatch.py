@@ -61,9 +61,9 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERRMSG_LEN,
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
-    CCPP_ERRMSG_LEN,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_INSTANCE_NUMBER_STD_NAME,
@@ -1173,31 +1173,33 @@ def _build_array_section_ops(
         else:
             continue
 
-        # Look up the var descriptor; for DDT members, search the DDT table
+        # Look up the var descriptor; for DDT members, search the DDT table.
+        # Explicit membership checks rather than try/except(KeyError,
+        # AssertionError) as control flow (task #61 item 6) -- the only
+        # exception getFunctionArgument can actually raise is KeyError, from
+        # its own plain dict lookup, so an explicit `in` check is exactly
+        # equivalent, not just similar.
         host_var_name = lookup_var
         host_module_name = lookup_mod
-        try:
-            # Try the module table first, then DDT tables
-            if lookup_mod in ctx.meta_data and lookup_mod in ctx.meta_data[lookup_mod].arg_tables:
-                mod_arg_table = ctx.meta_data[lookup_mod].getArgTable(lookup_mod)
+        host_var_desc = None
+        if lookup_mod in ctx.meta_data and lookup_mod in ctx.meta_data[lookup_mod].arg_tables:
+            mod_arg_table = ctx.meta_data[lookup_mod].getArgTable(lookup_mod)
+            if lookup_var in mod_arg_table.function_arguments:
                 host_var_desc = mod_arg_table.getFunctionArgument(lookup_var)
-            else:
-                # DDT member: search all DDT tables for the member
-                raise AssertionError("not found in module, try DDT")
-        except (KeyError, AssertionError):
-            # Try DDT tables
+        if host_var_desc is None:
+            # Not found in the module table -- DDT member: search all DDT
+            # tables for the member.
             found = False
             for tbl_name, props in ctx.meta_data.items():
                 if props.getAttr("type") != CCPPType.DDT:
                     continue
                 if tbl_name not in props.arg_tables:
                     continue
-                try:
-                    host_var_desc = props.getArgTable(tbl_name).getFunctionArgument(lookup_var)
+                ddt_arg_table = props.getArgTable(tbl_name)
+                if lookup_var in ddt_arg_table.function_arguments:
+                    host_var_desc = ddt_arg_table.getFunctionArgument(lookup_var)
                     found = True
                     break
-                except (KeyError, AssertionError):
-                    continue
             if not found:
                 continue
 
@@ -1335,6 +1337,42 @@ def _build_call_args(ctx, info, host_var_ref_results) -> tuple:
     return call_args, call_arg_bare_names
 
 
+def _result_keyword_name(idx, ret_type, ctx, n_inout_ret, leading_inout_ret, run_ret_alloc):
+    """The real callee dummy-argument name for output position idx.
+
+    Mirrors _build_call_and_copy_back_ops's own copy-back loop's
+    idx/type-based classification exactly (errmsg/errflg by type, ccpp_t
+    by type, then the leading-inout region via leading_inout_ret, then
+    the trailing alloc region via run_ret_alloc) so a KeywordCallOp's
+    result name always matches the SAME string already used for that
+    same argument's own operand-side keyword whenever one exists --
+    needed so print_ftn.py's name-based dedup in _print_kw_call
+    recognizes an inout echo and skips re-printing it. The previous code
+    used a synthetic "_out_N" placeholder here, which the callee's own
+    signature never declares -- an invalid-Fortran arity mismatch caught
+    only by a real compiler (ifx), not by FileCheck goldens or
+    gfortran's more permissive diagnostics.
+
+    Hoisted to module level (task #61 item 8) out of
+    _build_call_and_copy_back_ops's own body, where it was a closure
+    rebuilt fresh on every call (once per suite part) purely to capture
+    ctx/n_inout_ret/leading_inout_ret/run_ret_alloc -- now threaded
+    through as explicit parameters instead.
+    """
+    if ret_type == ctx.errmsg_type:
+        return "errmsg"
+    if ret_type == ctx.errflg_type:
+        return "errflg"
+    if idx < n_inout_ret:
+        if idx < len(leading_inout_ret):
+            return leading_inout_ret[idx][0]
+        return f"_out_{idx}"
+    ri_idx = idx - n_inout_ret
+    if ri_idx < len(run_ret_alloc):
+        return run_ret_alloc[ri_idx][1]
+    return f"_out_{idx}"
+
+
 def _build_call_and_copy_back_ops(
     ctx, info, trim_suite_part, call_args, call_arg_bare_names,
     host_var_ref_results, wrapper_inout_echo_args, wrapper_inout_echo_seen,
@@ -1410,42 +1448,12 @@ def _build_call_and_copy_back_ops(
         scheme_names, ctx.meta_data, ctx.phase_postfix
     )
 
-    def _result_keyword_name(idx, ret_type):
-        """The real callee dummy-argument name for output position idx.
-
-        Mirrors the copy-back loop's own idx/type-based classification
-        below exactly (errmsg/errflg by type, ccpp_t by type, then the
-        leading-inout region via _leading_inout_ret, then the trailing
-        alloc region via _run_ret_alloc) so a KeywordCallOp's result
-        name always matches the SAME string already used for that same
-        argument's own operand-side keyword whenever one exists --
-        needed so print_ftn.py's name-based dedup in _print_kw_call
-        recognizes an inout echo and skips re-printing it. The
-        previous code used a synthetic "_out_N" placeholder here,
-        which the callee's own signature never declares -- an
-        invalid-Fortran arity mismatch caught only by a real compiler
-        (ifx), not by FileCheck goldens or gfortran's more permissive
-        diagnostics.
-        """
-        if ret_type == ctx.errmsg_type:
-            return "errmsg"
-        if ret_type == ctx.errflg_type:
-            return "errflg"
-        if idx < _n_inout_ret:
-            if idx < len(_leading_inout_ret):
-                return _leading_inout_ret[idx][0]
-            return f"_out_{idx}"
-        ri_idx = idx - _n_inout_ret
-        if ri_idx < len(_run_ret_alloc):
-            return _run_ret_alloc[ri_idx][1]
-        return f"_out_{idx}"
-
     # Use keyword-argument call when any suite cap input is optional
     # so that Fortran correctly forwards the OPTIONAL absence status.
     suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
     if suite_has_optional:
         _result_names = [
-            _result_keyword_name(_i, rt)
+            _result_keyword_name(_i, rt, ctx, _n_inout_ret, _leading_inout_ret, _run_ret_alloc)
             for _i, rt in enumerate(callee_output_types)
         ]
         call_op = KeywordCallOp(
@@ -1886,11 +1894,15 @@ def _generate_run_fn(
     # ── Build host variable maps from metadata ─────────────────────────────
     _maps = _build_run_metadata_maps(meta_data)
     host_var_map = _maps.host_var_map
-    host_block_std_names = _maps.host_block_std_names
-    constituent_std_names = _maps.constituent_std_names
-    ddt_type_names = _maps.ddt_type_names
-    ddt_instance_map = _maps.ddt_instance_map
-    ddt_parent_map = _maps.ddt_parent_map
+    # Unused here (task #61 item 7) -- kept unpacked, `_`-prefixed rather
+    # than deleted, so this block still spells out every field
+    # _build_run_metadata_maps returns, matching the fully-spelled-out
+    # unpacking style the rest of this function (and _sig/_pre below) use.
+    _host_block_std_names = _maps.host_block_std_names
+    _constituent_std_names = _maps.constituent_std_names
+    _ddt_type_names = _maps.ddt_type_names
+    _ddt_instance_map = _maps.ddt_instance_map
+    _ddt_parent_map = _maps.ddt_parent_map
 
     # ── Per-suite information ──────────────────────────────────────────────
     # Use the caller-provided seen_host_globals set so GlobalOps are deduplicated
@@ -1907,27 +1919,30 @@ def _generate_run_fn(
         per_suite, meta_data, kwargs,
         suite_name_type, suite_part_type, errmsg_type, errflg_type, int_base,
     )
-    new_block = _sig.new_block
-    all_block_types = _sig.all_block_types
+    # Same rationale as _maps above (task #61 item 7): unused fields stay
+    # unpacked and `_`-prefixed rather than deleted.
+    _new_block = _sig.new_block
+    _all_block_types = _sig.all_block_types
     block_arg_map = _sig.block_arg_map
     non_host_std_to_canonical = _sig.non_host_std_to_canonical
     suite_name_arg = _sig.suite_name_arg
     suite_part_arg = _sig.suite_part_arg
     errmsg_arg = _sig.errmsg_arg
     errflg_arg = _sig.errflg_arg
-    col_start_ref = _sig.col_start_ref
-    col_end_ref = _sig.col_end_ref
-    errmsg_alloc = _sig.errmsg_alloc
-    errflg_alloc = _sig.errflg_alloc
-    ccpp_info_block_arg = _sig.ccpp_info_block_arg
-    ccpp_info_type = _sig.ccpp_info_type
+    _col_start_ref = _sig.col_start_ref
+    _col_end_ref = _sig.col_end_ref
+    _errmsg_alloc = _sig.errmsg_alloc
+    _errflg_alloc = _sig.errflg_alloc
+    _ccpp_info_block_arg = _sig.ccpp_info_block_arg
+    _ccpp_info_type = _sig.ccpp_info_type
 
     # ── Dispatch chain preamble ────────────────────────────────────────────
     _pre = _build_run_chain_preamble(
         per_suite, suite_name_arg, errmsg_arg, errflg_arg,
     )
-    err_const = _pre.err_const
-    store_errflg = _pre.store_errflg
+    # Same rationale as _maps/_sig above (task #61 item 7).
+    _err_const = _pre.err_const
+    _store_errflg = _pre.store_errflg
     trim_suite_name = _pre.trim_suite_name
     current_false_ops = _pre.current_false_ops
     all_decls = _pre.all_decls

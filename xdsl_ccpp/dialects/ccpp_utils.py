@@ -1,7 +1,7 @@
 from xdsl.dialects.builtin import (
+    DYNAMIC_INDEX,
     ArrayAttr,
     BoolAttr,
-    DYNAMIC_INDEX,
     DictionaryAttr,
     IntegerAttr,
     IntegerType,
@@ -404,7 +404,7 @@ class KeywordCallOp(IRDLOperation):
             result_types=[out_types],
         )
 
-@irdl_op_definition 
+@irdl_op_definition
 class AccDataBeginOp(IRDLOperation):
     """Emit !$acc data copy(...) copyin(...) copyout(...) present(...) directive."""
     name = "ccpp_utils.acc_data_begin"
@@ -530,7 +530,7 @@ class OmpTargetUpdateFromOp(IRDLOperation):
 
     def __init__(self, array_refs):
         super().__init__(operands=[list(array_refs)])
-  
+
 @irdl_op_definition
 class OmpTargetUpdateToOp(IRDLOperation):
     """Emit !$omp target update to(...) — copies variables from CPU to GPU."""
@@ -600,10 +600,8 @@ class OmpTargetExitDataOp(IRDLOperation):
 
 @irdl_op_definition
 class ModuleVarOp(IRDLOperation):
-    """Unified module-level variable declaration.
-
-    Replaces the former ``AllocatableModVarOp`` (real vars) and
-    ``ModuleTypeVarOp`` (DDT vars) with a single consistent representation.
+    """Unified module-level variable declaration, covering both real vars and
+    DDT vars with a single consistent representation.
 
     Type is described by three structured attributes rather than a pre-rendered
     Fortran string, so that language backends other than Fortran can interpret
@@ -663,13 +661,6 @@ class ModuleVarOp(IRDLOperation):
         if ftn_attrs is not None:
             props["ftn_attrs"] = StringAttr(ftn_attrs)
         super().__init__(properties=props)
-
-
-# Legacy aliases — kept temporarily so external callers see a clear deprecation path.
-# Use ModuleVarOp directly for new code.
-def AllocatableModVarOp(var_name: str, kind_name: str, rank: int) -> "ModuleVarOp":  # type: ignore[misc]
-    """Deprecated: use ModuleVarOp(var_name, 'real', kind=kind_name, rank=rank) instead."""
-    return ModuleVarOp(var_name, "real", kind=kind_name, rank=rank)
 
 
 @irdl_op_definition
@@ -1044,11 +1035,6 @@ class CHostCapOp(IRDLOperation):
             "wrapper_text": StringAttr(wrapper_text),
             "mod_name":     StringAttr(mod_name),
         })
-
-
-def ModuleTypeVarOp(var_name: str, ddt_type_name: str) -> "ModuleVarOp":  # type: ignore[misc]
-    """Deprecated: use ModuleVarOp(var_name, 'type', ddt_name=ddt_type_name) instead."""
-    return ModuleVarOp(var_name, "type", ddt_name=ddt_type_name)
 
 
 @irdl_op_definition
