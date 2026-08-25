@@ -40,6 +40,52 @@ from xdsl_ccpp.dialects.ccpp import (
 from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 
 
+# ── Framework-shipped Fortran support files (task #75) ─────────────────────────
+#
+# Modeled directly on real capgen-v1's own
+# ccpp_capgen.py:_FRAMEWORK_SRC_DIR/_FRAMEWORK_F90_FILES/
+# _resolve_framework_f90_files() -- these files must live inside the
+# installed xdsl_ccpp package itself (not examples/shared/, which only ever
+# existed in this repo's own checkout and is unreachable from an installed
+# package or a real host model like CAM-SIMA), the same way capgen-v1 ships
+# its own copies under capgen/src/ rather than expecting a host to supply
+# them.
+_FRAMEWORK_SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "framework_src")
+_FRAMEWORK_F90_FILES = (
+    "ccpp_constituent_prop_mod.F90",
+    "ccpp_scheme_utils.F90",
+)
+
+
+def _resolve_framework_f90_files() -> list[str]:
+    """Return absolute paths for xdsl_ccpp's own framework F90 files.
+
+    Each name in `_FRAMEWORK_F90_FILES` is looked up under
+    `_FRAMEWORK_SRC_DIR` (`xdsl_ccpp/framework_src/`). A missing file is a
+    hard error, not a silent skip -- `_FRAMEWORK_SRC_DIR` is the canonical
+    (and only) location, and a missing file here means the installed
+    package is incomplete; surfacing that now with a precise message beats
+    letting a host build fail later with an opaque "Cannot open module
+    file" error once it tries to compile against a `<utilities>` list
+    entry that was never actually there.
+    """
+    found: list[str] = []
+    missing: list[str] = []
+    for name in _FRAMEWORK_F90_FILES:
+        path = os.path.join(_FRAMEWORK_SRC_DIR, name)
+        if os.path.isfile(path):
+            found.append(os.path.abspath(path))
+        else:
+            missing.append(path)
+    if missing:
+        raise FileNotFoundError(
+            "xdsl_ccpp installation is incomplete: required framework "
+            f"Fortran source file(s) not found under {_FRAMEWORK_SRC_DIR!r}:\n  "
+            + "\n  ".join(missing)
+        )
+    return found
+
+
 # ── IR walkers ────────────────────────────────────────────────────────────────
 
 def _get_string(attr) -> str:
@@ -53,14 +99,26 @@ def _get_int(attr) -> int:
 
 
 def _iter_schemes_in_group(group_op):
-    """Yield SchemeOp names (str) from a GroupOp body, descending into SubcycleOp."""
+    """Yield SchemeOp names (str) from a GroupOp (or SubcycleOp) body,
+    descending recursively into arbitrarily-nested SubcycleOp.
+
+    A single level of SubcycleOp descent isn't enough -- real suites nest
+    subcycles several levels deep (e.g.
+    examples/var_compat/var_compatibility_suite.xml:5-11 nests three
+    levels in one branch), and this function backs `_used_scheme_names()`
+    (capgen_v1_parity_backlog.md Stage 8b's dependency-reference filter),
+    where under-counting used schemes means silently dropping a real
+    dependency a host build needs to compile against, not just an
+    incomplete `<api>` section entry (flagged by Copilot review, PR #94).
+    GroupOp and SubcycleOp share the same `body = region_def("single_block")`
+    shape, so recursing into a SubcycleOp via this same function works
+    unchanged.
+    """
     for op in group_op.body.block.ops:
         if isa(op, SchemeOp):
             yield op.scheme_name.data
         elif isa(op, SubcycleOp):
-            for inner in op.body.block.ops:
-                if isa(inner, SchemeOp):
-                    yield inner.scheme_name.data
+            yield from _iter_schemes_in_group(op)
 
 
 def _collect_suites(ccpp_mod):
@@ -70,6 +128,89 @@ def _collect_suites(ccpp_mod):
         if isa(op, SuiteOp):
             suites.append(op)
     return suites
+
+
+def _used_scheme_names(ccpp_mod) -> set[str]:
+    """Return the set of scheme names actually referenced by some suite --
+    either via group membership (including arbitrarily-nested subcycles)
+    or the suite's own `init_scheme`/`final_scheme` (v2.0 SDF schema, see
+    `SuiteOp`'s own docstring) -- mirrors real capgen-v1's own
+    `used_scheme_names` gate in `ccpp_capgen.py` exactly (that gate adds
+    `suite_init_call`/`suite_final_call`'s own scheme name alongside every
+    group-phase call): host/DDT tables' dependencies always contribute;
+    a scheme table's own dependencies only contribute if the scheme is
+    actually referenced by a resolved suite, since an unreferenced scheme
+    passed on the CLI for build-system convenience shouldn't leak its
+    dependencies (capgen_v1_parity_backlog.md Stage 8b).
+
+    Originally missed both the arbitrary-nesting case and this
+    init_scheme/final_scheme case (Copilot review, PR #94, confirmed
+    correct against examples/var_compat/var_compatibility_suite.xml's own
+    three-level subcycle nesting) -- fixed by delegating the nesting fix to
+    `_iter_schemes_in_group` itself and adding both suite-level properties
+    here.
+    """
+    used: set[str] = set()
+    for suite_op in _collect_suites(ccpp_mod):
+        if suite_op.init_scheme is not None:
+            used.add(suite_op.init_scheme.data)
+        if suite_op.final_scheme is not None:
+            used.add(suite_op.final_scheme.data)
+        for op in suite_op.body.block.ops:
+            if isa(op, GroupOp):
+                used.update(_iter_schemes_in_group(op))
+    return used
+
+
+def _collect_dependencies(ccpp_mod, table_props) -> list[str]:
+    """Return the deduped, sorted list of dependency file paths
+    (capgen_v1_parity_backlog.md Stage 8b) -- real capgen-v1's own
+    `<dependencies>` section, sourced from each table's own
+    `dependencies`/`dependencies_path` metadata (task #6 Tier 1's already-
+    IR-forwarded attributes).
+
+    Filtering mirrors real capgen-v1's own `ccpp_capgen.py` gate: HOST-,
+    MODULE-, and DDT-type tables always contribute (approximating real
+    capgen-v1's own "DDT/host Fortran is shared across suites" rule,
+    without that tool's finer-grained "DDT co-located with a *used*
+    scheme's own .meta file" distinction -- xdsl_ccpp's IR doesn't carry
+    which .meta file a table came from, so this always-include is a
+    deliberate, safe over-inclusion rather than a fragile approximation of
+    that narrower rule); SCHEME-type tables only contribute if the scheme
+    is in `_used_scheme_names`.
+
+    Known limitation, not solved here: each dependency is joined with its
+    own table's `dependencies_path` (when set) via a plain relative
+    `os.path.join` -- real capgen-v1's own convention resolves
+    `dependencies_path` relative to the *original .meta file's own
+    directory*, but that directory isn't available at this layer
+    (`build_datatable` receives parsed MLIR text and a cap-files list, not
+    the original --scheme-files/--host-files search paths -- see
+    ccpp_dsl.py:697's own call site). Callers needing an absolute path
+    must resolve this relative path against their own known scheme/host
+    search directory; this is a real, deliberate gap, not an oversight.
+    """
+    used_schemes = _used_scheme_names(ccpp_mod)
+    deps: set[str] = set()
+    for tbl_op, _arg_tables in table_props:
+        table_type = tbl_op.table_type.data
+        if table_type == "scheme" and tbl_op.table_name.data not in used_schemes:
+            continue
+        # Plain xDSL `.attributes` dict access, not a hasAttr/getAttr
+        # convenience method -- TablePropertiesOp (unlike the descriptor-
+        # layer CCPPArgument objects elsewhere in this codebase) doesn't
+        # define those. Matches suite_kinds.py's own
+        # `table_prop_op.attributes.get("kind_specs")` precedent for
+        # reading an optional TablePropertiesOp attribute directly.
+        deps_attr = tbl_op.attributes.get("dependencies")
+        if deps_attr is None:
+            continue
+        dep_dir_attr = tbl_op.attributes.get("dependencies_path")
+        dep_dir = dep_dir_attr.data if dep_dir_attr is not None else None
+        for dep_name_attr in deps_attr.data:
+            dep_name = dep_name_attr.data
+            deps.add(os.path.join(dep_dir, dep_name) if dep_dir else dep_name)
+    return sorted(deps)
 
 
 def _collect_table_properties(ccpp_mod):
@@ -169,6 +310,40 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
         f_el = ET.SubElement(files_el, "file")
         f_el.set("path", str(cap))
 
+    # ── capgen_files (capgen_v1_parity_backlog.md Stage 8b) ───────────────────
+    # A minimal, schema-valid stand-in for real capgen-v1's own
+    # <capgen_files><utilities>/<host_files>/<suite_files></capgen_files>
+    # (ccpp-framework-fresh/capgen/generator/datatable.py:124-157) -- NOT a
+    # replacement for <ccpp_files> above, which cmake/parse_xdsl_ccpp_
+    # datatable.py still reads. Exists so real capgen-v1's own vendored
+    # ccpp_datafile.py doesn't raise CCPPDatatableError("Element type,
+    # 'capgen_files', not found in table") on a DatatableReport("utility_files")
+    # query against this file (confirmed directly: it does, with no
+    # <capgen_files> element present at all) -- cam_autogen.py makes exactly
+    # that query (cam_autogen.py:731).
+    #
+    # <utilities> (task #75, capgen_v1_parity_backlog.md): xdsl_ccpp's own
+    # generated ccpp_kinds.F90 (picked out of cap_files by name -- it's
+    # always generated, unconditionally, into the same output directory as
+    # every other cap) plus the framework-shipped support files resolved by
+    # _resolve_framework_f90_files() above (ccpp_constituent_prop_mod.F90/
+    # ccpp_scheme_utils.F90, now vendored inside the installed package at
+    # xdsl_ccpp/framework_src/ -- see that function's own docstring).
+    # <host_files>/<suite_files> stay empty-but-present: neither is actually
+    # queried by cam_autogen.py today, and categorizing cap_files by
+    # filename pattern for them isn't needed to close that specific gap.
+    capgen_files_el = ET.SubElement(root, "capgen_files")
+    utilities_el = ET.SubElement(capgen_files_el, "utilities")
+    for cap in sorted(cap_files):
+        if os.path.basename(str(cap)) == "ccpp_kinds.F90":
+            u_el = ET.SubElement(utilities_el, "file")
+            u_el.text = str(cap)
+    for framework_file in _resolve_framework_f90_files():
+        u_el = ET.SubElement(utilities_el, "file")
+        u_el.text = framework_file
+    ET.SubElement(capgen_files_el, "host_files")
+    ET.SubElement(capgen_files_el, "suite_files")
+
     # ── schemes (entry-point metadata) ────────────────────────────────────────
     schemes_el = ET.SubElement(root, "schemes")
     table_props = _collect_table_properties(ccpp_mod)
@@ -217,6 +392,22 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
                 var_el = ET.SubElement(dict_el, "variable")
                 for key, val in info.items():
                     var_el.set(key, val)
+
+    # ── dependencies (capgen_v1_parity_backlog.md Stage 8b) ───────────────────
+    # A top-level sibling of ccpp_files/schemes/api/var_dictionaries above,
+    # not nested inside any of them -- matches real capgen-v1's own
+    # <ccpp_datatable><dependencies><dependency>path</dependency>...</
+    # dependencies></ccpp_datatable> shape exactly (confirmed against
+    # ccpp-framework-fresh/capgen/generator/datatable.py:487-490), letting
+    # real capgen-v1's own vendored ccpp_datafile.py read this file's
+    # DatatableReport("dependencies") query unchanged -- ccpp_datafile.py's
+    # own readers never validate the root element's tag name, only look up
+    # direct children by tag, so this file's own <datatable> root (vs. real
+    # capgen-v1's <ccpp_datatable>) doesn't need to change for this to work.
+    deps_el = ET.SubElement(root, "dependencies")
+    for dep_path in _collect_dependencies(ccpp_mod, table_props):
+        d_el = ET.SubElement(deps_el, "dependency")
+        d_el.text = dep_path
 
     return root
 
