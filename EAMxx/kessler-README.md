@@ -378,11 +378,16 @@ OpenACC directives (useful for CPU-only builds).
 
 ### Step 4 — generated files and what they do
 
+**Updated 2026-08-25 (Phase A0 regeneration)** — the generator's lifecycle model changed from 6
+phases to 8 on 2026-08-20 (upstream task #28), landing between this doc's original write-up and
+this regeneration. The file list is unchanged, but `Kessler_ccpp_chost_cap.F90` now exports eight
+`BIND(C)` subroutines, not six -- see below.
+
 The generator writes eight files:
 
 | File | Description |
 |------|-------------|
-| `Kessler_ccpp_chost_cap.F90` | **Primary bridge.** Fortran module with six `BIND(C)` subroutines called directly from EAMxx C++: `register`, `initialize`, `finalize`, `timestep_initial`, `timestep_final`, `run` |
+| `Kessler_ccpp_chost_cap.F90` | **Primary bridge.** Fortran module with eight `BIND(C)` subroutines called directly from EAMxx C++: `register`, `initialize`, `physics_initial`, `finalize`, `physics_final`, `timestep_initial`, `timestep_final`, `run` |
 | `Kessler_ccpp_chost_cap.h` | Matching C `extern "C"` declarations; included by `eamxx_kessler_process_interface.cpp` |
 | `Kessler_chost.hpp` | Optional C++ ergonomics wrapper (struct-based, not used by EAMxx directly) |
 | `Kessler_ccpp_cap.F90` | Internal CCPP cap with OpenACC data movement directives; called by the chost cap |
@@ -394,12 +399,30 @@ The generated BIND(C) entry points and their correspondence to the handwritten b
 
 | Generated entry point | Replaces handwritten call |
 |-----------------------|--------------------------|
-| `Kessler_chost_physics_register` | (new — no handwritten equivalent) |
-| `Kessler_chost_physics_initialize(lv, pref, rhoqr, gravit, ...)` | `kessler_eamxx_bridge_init_c` + `kessler_eamxx_bridge_update_init_c` |
+| `Kessler_chost_physics_register(errmsg, errflg)` | (new — no handwritten equivalent) |
+| `Kessler_chost_physics_initialize(errmsg, errflg)` | Framework-only state transition; calls no scheme (see below) |
+| `Kessler_chost_physics_physics_initial(lv, pref, rhoqr, gravit, ...)` | `kessler_eamxx_bridge_init_c` + `kessler_eamxx_bridge_update_init_c` — the real `kessler_init`/`kessler_update_init` calls, split out of `_initialize` by the 8-phase model |
 | `Kessler_chost_physics_timestep_initial(ncol, nz, temp, temp_prev, temp_tend, ...)` | First call inside `kessler_eamxx_bridge_update_c` |
-| `Kessler_chost_physics_run(ncol, nz, col_start, col_end, dt, ...)` | `kessler_eamxx_bridge_run_c` + `kessler_update_run` call inside `kessler_eamxx_bridge_update_c` |
+| `Kessler_chost_physics_run(ncol, nz, dt, ...)` | `kessler_eamxx_bridge_run_c` + `kessler_update_run` call inside `kessler_eamxx_bridge_update_c` — no longer takes `col_start`/`col_end`; the real Fortran never used them (EAMxx always processes the full `1..ncol` range in one call anyway) |
 | `Kessler_chost_physics_timestep_final(ncol, nz, cpair, temp, z_mid, phis, st_energy, ...)` | Final call inside `kessler_eamxx_bridge_update_c` |
-| `Kessler_chost_physics_finalize` | (new — no handwritten equivalent) |
+| `Kessler_chost_physics_physics_final(errmsg, errflg)` | (new — no handwritten equivalent; the real physics-side teardown counterpart to `physics_initial`, currently a no-op for Kessler but state-checked, see below) |
+| `Kessler_chost_physics_finalize(errmsg, errflg)` | (new — no handwritten equivalent; framework-only state transition) |
+
+**Call-order requirement, found while regenerating (not documented anywhere else):**
+`kessler_suite_cap.F90`'s generated code carries its own internal state machine
+(`ccpp_suite_state`: `uninitialized` -> `initialized` -> `in_time_step` -> `initialized` ->
+`uninitialized`), and `physics_initial`/`physics_final` each check it on entry:
+- `Kessler_chost_physics_physics_initial` only actually calls `kessler_init`/`kessler_update_init`
+  if `ccpp_suite_state == 'initialized'` (set by `Kessler_chost_physics_initialize`) — **it must be
+  called after `initialize`, not before**, or it silently skips the real init calls and returns
+  `errflg=1`.
+- `Kessler_chost_physics_physics_final` requires `ccpp_suite_state` to still be `'initialized'`,
+  which `Kessler_chost_physics_finalize` then transitions away from — **it must be called before
+  `finalize`, not after**, or its own state check fails.
+
+Neither ordering constraint is stated in any generated comment; it's only visible by reading
+`kessler_suite_cap.F90`'s generated body directly. `eamxx_kessler_process_interface.cpp` follows
+both (see below).
 
 After generation, the output directory was copied into this source tree:
 
@@ -437,15 +460,17 @@ cp -r xdsl-cpp/examples/kessler/bindc_eamxx_acc \
 
 **Include:** `kessler_eamxx_bridge.hpp` replaced with `Kessler_ccpp_chost_cap.h`.
 
-**`initialize_impl`:** single `kessler_eamxx_bridge_init` call replaced with:
+**`initialize_impl`** (updated 2026-08-25 for the 8-phase lifecycle — see Step 4's call-order note):
 ```cpp
 Kessler_chost_physics_register(errmsg, &errflg);
-Kessler_chost_physics_initialize(latvap, P0, rhoqr, gravit, errmsg, &errflg);
+Kessler_chost_physics_initialize(errmsg, &errflg);
+Kessler_chost_physics_physics_initial(latvap, P0, rhoqr, gravit, errmsg, &errflg);
 ```
 
 **`run_impl`:** single `kessler_eamxx_bridge_run` call (which previously encapsulated
 both the transpose logic and the Fortran calls inside `kessler_eamxx_bridge.cpp`)
-replaced with the transpose sandwich and three generated cap calls:
+replaced with the transpose sandwich and three generated cap calls (updated 2026-08-25:
+`Kessler_chost_physics_run` no longer takes `col_start`/`col_end`):
 ```cpp
 params_helpers.transpose<c2f>(m_num_cols, nlevs);
 params_computed.transpose<c2f>(m_num_cols, nlevs);
@@ -454,7 +479,7 @@ Kokkos::fence();
 // #if GPU && !OpenACC  ->  use h_* host mirror views
 // #else                ->  use f_* Fortran-layout device views
 Kessler_chost_physics_timestep_initial(ncol, nz, f_temp, f_temp_prev, f_temp_tend, ...);
-Kessler_chost_physics_run(ncol, nz, 1, ncol, dt, lyr_surf, lyr_toa,
+Kessler_chost_physics_run(ncol, nz, dt, lyr_surf, lyr_toa,
     f_cpair, f_rair, f_rho, f_z_mid,
     f_pk,          // pk (Exner function) is passed as the "exner" argument
     f_theta, f_qv, f_qc, f_qr, f_precl, f_relhum,
@@ -468,8 +493,12 @@ params_computed.transpose<f2c>(m_num_cols, nlevs);
 The `params_helpers` and `params_computed` structs in `kessler_functions.hpp`, the
 `requested_buffer_size_in_bytes()` function, and `init_buffers()` are unchanged.
 
-**`finalize_impl`:** added `Kessler_chost_physics_finalize` call (was previously a
-no-op).
+**`finalize_impl`** (updated 2026-08-25 for the 8-phase lifecycle — `physics_final` must run
+before `finalize`, see Step 4's call-order note):
+```cpp
+Kessler_chost_physics_physics_final(errmsg, &errflg);
+Kessler_chost_physics_finalize(errmsg, &errflg);
+```
 
 ---
 
