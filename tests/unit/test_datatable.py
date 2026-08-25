@@ -67,6 +67,24 @@ def _module_to_mlir(module) -> str:
     return buf.getvalue()
 
 
+def _scheme_meta_with_dependencies(name: str, dependencies: str, phase: str = "run") -> str:
+    """A scheme .meta with a `dependencies = ...` table-properties entry
+    (task #6 Tier 1's already-IR-forwarded attribute) -- used to test
+    _collect_dependencies()'s own reference filter (capgen_v1_parity_
+    backlog.md Stage 8b/task #75), not the argument-table shape.
+    """
+    return f"""\
+[ccpp-table-properties]
+  name = {name}
+  type = scheme
+  dependencies = {dependencies}
+[ccpp-arg-table]
+  name = {name}_{phase}
+  type = scheme
+{CCPP_MANDATORY_ARGS}
+"""
+
+
 # ── Phase detection ───────────────────────────────────────────────────────────
 
 class TestPhaseDetection:
@@ -161,6 +179,116 @@ class TestBuildDatatable:
         root = build_datatable(mlir_text, [])
         scheme_names = [s.get("name") for s in root.findall("./schemes/scheme")]
         assert len(scheme_names) == len(set(scheme_names)), "Duplicate scheme entries found"
+
+
+# ── capgen_files / dependencies (task #75, capgen_v1_parity_backlog.md) ────────
+# Real capgen-v1's own vendored ccpp_datafile.py reads these two sections
+# directly, unmodified (confirmed via cam_autogen.py's DatatableReport
+# ("utility_files")/DatatableReport("dependencies") calls) -- these tests
+# assert on the exact schema real capgen-v1 expects (element names,
+# nesting), not just "something got written".
+
+class TestCapgenFilesSection:
+    def test_utilities_contains_generated_kinds_file(self, build_module):
+        module = build_module([_scheme_meta("s1")], [], None)
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(
+            mlir_text, ["caps/s1_cap.F90", "caps/ccpp_kinds.F90"]
+        )
+        utility_paths = [
+            el.text for el in root.findall("./capgen_files/utilities/file")
+        ]
+        assert "caps/ccpp_kinds.F90" in utility_paths
+        # Only the generated kinds file, not every cap -- s1_cap.F90 is a
+        # suite cap, not a utility.
+        assert "caps/s1_cap.F90" not in utility_paths
+
+    def test_utilities_contains_vendored_framework_files(self, build_module):
+        module = build_module([_scheme_meta("s1")], [], None)
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        utility_paths = [
+            el.text for el in root.findall("./capgen_files/utilities/file")
+        ]
+        basenames = {os.path.basename(p) for p in utility_paths}
+        assert "ccpp_constituent_prop_mod.F90" in basenames
+        assert "ccpp_scheme_utils.F90" in basenames
+
+    def test_host_files_and_suite_files_sections_present(self, build_module):
+        module = build_module([_scheme_meta("s1")], [], None)
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        # Empty-but-present (capgen_v1_parity_backlog.md's own rationale --
+        # real capgen-v1 always writes these, even when empty, to keep the
+        # schema stable for a reader that unconditionally looks them up).
+        assert root.find("./capgen_files/host_files") is not None
+        assert root.find("./capgen_files/suite_files") is not None
+
+
+class TestDependenciesSection:
+    def test_used_schemes_dependency_included(self, build_module):
+        suite_xml = minimal_suite_xml("scheme_used")
+        module = build_module(
+            [_scheme_meta_with_dependencies("scheme_used", "used_dep.F90")],
+            [], suite_xml,
+        )
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        deps = [el.text for el in root.findall("./dependencies/dependency")]
+        assert "used_dep.F90" in deps
+
+    def test_unreferenced_scheme_dependency_excluded(self, build_module):
+        # scheme_unused is passed as a scheme file but never referenced by
+        # the loaded suite -- mirrors real capgen-v1's own filter
+        # (ccpp_capgen.py's used_scheme_names gate): an unreferenced
+        # scheme's dependencies must not leak into the datatable.
+        suite_xml = minimal_suite_xml("scheme_used")
+        module = build_module(
+            [
+                _scheme_meta_with_dependencies("scheme_used", "used_dep.F90"),
+                _scheme_meta_with_dependencies("scheme_unused", "unused_dep.F90"),
+            ],
+            [], suite_xml,
+        )
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        deps = [el.text for el in root.findall("./dependencies/dependency")]
+        assert "used_dep.F90" in deps
+        assert "unused_dep.F90" not in deps
+
+    def test_no_dependencies_declared_yields_empty_section(self, build_module):
+        module = build_module([_scheme_meta("s1")], [], None)
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        deps_el = root.find("./dependencies")
+        assert deps_el is not None
+        assert list(deps_el) == []
+
+    def test_deduped_across_schemes(self, build_module):
+        # Two schemes, both used, both declaring the identical dependency
+        # (the same real situation Stage 8b's own verification found in
+        # examples/capgen: temp_set.meta and temp_adjust.meta both declare
+        # `dependencies = temp_kinds.F90`) -- must appear exactly once.
+        suite_xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_suite" version="1.0">
+  <group name="physics">
+    <scheme>s1</scheme>
+    <scheme>s2</scheme>
+  </group>
+</suite>
+"""
+        module = build_module(
+            [
+                _scheme_meta_with_dependencies("s1", "shared_dep.F90"),
+                _scheme_meta_with_dependencies("s2", "shared_dep.F90"),
+            ],
+            [], suite_xml,
+        )
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        deps = [el.text for el in root.findall("./dependencies/dependency")]
+        assert deps.count("shared_dep.F90") == 1
 
 
 # ── write_datatable ───────────────────────────────────────────────────────────

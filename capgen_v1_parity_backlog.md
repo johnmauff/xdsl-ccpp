@@ -893,8 +893,7 @@ extended to satisfy) capgen-v1's own stated convergence interface; or (c)
 deprioritize this entirely now that CAM-SIMA's real path is confirmed not to
 depend on it.
 
-### Decision (2026-08-24): resume as Stage 8+, scoped against the real
-### `cam_autogen.py` call sites, not just as a capability proof
+### Decision (2026-08-24): resume as Stage 8+, scoped against the real `cam_autogen.py` call sites, not just as a capability proof
 
 **Decision: pursue (a) and (b) together, not as alternatives.** Finishing
 Stage 8 (syncing the stale CAM-SIMA-side adapter) is small and already
@@ -1467,12 +1466,22 @@ for every caller to work around independently:
 - Real production physics suites from `NCAR/atmospheric_physics`.
   Everything exercised so far was either xdsl_ccpp's own demo examples
   or CAM-SIMA's synthetic unit-test fixtures.
-- The `datatable_report()`/`DatatableReport` query path itself
-  (`utility_files`, `dependencies`, as called by `cam_autogen.py`) --
-  every test so far used the vendored capgen-v1 implementation for this;
-  xdsl_ccpp's own (differently-shaped) datatable output has not been
-  checked against these same queries. This should fall out of
-  Workstream 1's native introspection design.
+- ~~The `datatable_report()`/`DatatableReport` query path itself...~~ --
+  **resolved, no longer untested (2026-08-24, Stages 8b/9/task #75).**
+  Directly verified: xdsl_ccpp's own `<capgen_files><utilities>`/
+  `<dependencies>` output, read by real capgen-v1's own unmodified
+  `ccpp_datafile.py`, returns correct `utility_files`/`dependencies`
+  results; `cam_autogen.py`'s own call sites now wired to actually invoke
+  xdsl_ccpp (Stage 9). See that section's own write-up above for the full
+  verification detail.
 - Nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
   directives in an actual CAM-SIMA context (only tested in isolation via
-  xdsl_ccpp's own examples).
+  xdsl_ccpp's own examples) -- still genuinely untested.
+- **Real production physics suites from `NCAR/atmospheric_physics`,
+  exercised through the real, now-wired-up `cam_autogen.py` pipeline.**
+  The single biggest open risk for a first real test: everything this
+  whole engagement has exercised was either xdsl_ccpp's own toy examples
+  or CAM-SIMA's synthetic unit-test fixtures, never an actual production
+  CCPP suite through the real integration path. Not a backlog item to
+  finish before testing starts -- it's the thing a first real test run
+  itself is for.
