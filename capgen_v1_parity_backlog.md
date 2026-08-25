@@ -893,6 +893,495 @@ extended to satisfy) capgen-v1's own stated convergence interface; or (c)
 deprioritize this entirely now that CAM-SIMA's real path is confirmed not to
 depend on it.
 
+### Decision (2026-08-24): resume as Stage 8+, scoped against the real `cam_autogen.py` call sites, not just as a capability proof
+
+**Decision: pursue (a) and (b) together, not as alternatives.** Finishing
+Stage 8 (syncing the stale CAM-SIMA-side adapter) is small and already
+proven; it's also a real prerequisite for (b), not a separate track --
+`cam_autogen.py` needs *both* pieces (resolved-var data and the
+`datatable_report()` query path) working before xdsl_ccpp can generate a
+single real suite cap for CAM-SIMA. This session traced `cam_autogen.py`
+itself (not just this doc's own prior notes) to pin down exactly what those
+two pieces need to do, plus a third piece neither (a) nor (b) covered:
+cap-generation invocation and backend selection, which don't exist at all
+today.
+
+**What `cam_autogen.py` actually calls, confirmed by direct read
+(`johnmauff/CAM-SIMA@xdsl-ccpp-adapter`):**
+- `generate_physics_suites()` (`cam_autogen.py:657`) unconditionally calls
+  real capgen-v1's Python API: `capgen_db = capgen(run_env,
+  return_db=True)` (imported `from ccpp_capgen import capgen` at line 48).
+  No xdsl_ccpp branch exists.
+- The same function then queries the generated `ccpp_datatable.xml`
+  (`cap_output_file`) exactly twice, both via real capgen-v1's own
+  `ccpp_datafile.py` (imported directly from the vendored
+  `ccpp_framework/capgen/` checkout, *not* through
+  `cime_config/capgen_compat/`'s shim layer -- confirming it's treated as
+  the stable, non-shimmed interface): `DatatableReport("utility_files")`
+  (`cam_autogen.py:731`) and `DatatableReport("dependencies")`
+  (`cam_autogen.py:735`). These are the *only* two `datatable_report()`
+  queries this file makes -- not the full `required_variables`/
+  `input_variables`/`suite_variables`/etc. surface `ccpp_datafile.py`
+  exposes, so the real scope here is narrower than "full datatable schema
+  parity."
+- `generate_init_routines()` (`cam_autogen.py:801`) hardcodes
+  `resolved_vars = Capgenv1ResolvedVars(cap_database)`, with its own
+  comment: "Only one such adapter exists today... this call would need to
+  become backend-selectable if a second CCPP-framework implementation is
+  ever adopted alongside it." Confirms no backend-selection mechanism
+  exists anywhere in this file.
+- `generate_registry()`/`generate_registry_data.py` (imports
+  `parse_metadata_file` from `metadata_table` at
+  `generate_registry_data.py:37`) is a **separate, orthogonal step** --
+  it parses the CAM registry's own `.meta` files to emit host-model data
+  structures, independent of which backend generates *suite* caps. It
+  already depends on real capgen-v1's metadata parser today and keeps
+  doing so regardless of this workstream; not part of this scope.
+
+**Real capgen-v1's own `ccpp_datatable.xml` schema** (confirmed directly
+from `ccpp_datafile.py`'s own doctests in the vendored
+`ccpp-framework-fresh/capgen/ccpp_datafile.py`, not guessed): root
+`<ccpp_datatable version="1.0">`; a `<capgen_files>` section containing
+typed sub-elements (`<host_files>`, `<suite_files>`, `<scheme_files>`,
+`<utility_files>`), each holding `<file>` entries as **element text**;
+a separate `<dependencies>` section holding `<dependency>` entries the
+same way. xdsl_ccpp's own `--emit-datatable` output uses a different, ad
+hoc schema (file paths as **attributes**, no `dependencies`/
+`utility_files` sections at all -- this is exactly why `ccpp_cap_refactor_
+plan.md`'s task #32/"Tier 2 of #6" was logged as not-yet-attempted).
+
+**Schema decision (2026-08-24, user confirmed): match real capgen-v1's
+schema exactly**, not a parallel xdsl_ccpp-specific reader. This lets
+`cam_autogen.py`'s existing `from ccpp_datafile import DatatableReport,
+datatable_report` calls read xdsl_ccpp's datatable.xml with **zero
+`cam_autogen.py` code changes** -- the same reader module, already
+vendored, just pointed at a different generator's output. Matches
+capgen-v1's own declared convergence goal (`doc/capgen_compat_layer.md`:
+"CAM-SIMA interacts with capgen through... `datatable.xml`" as "the
+non-negotiable cross-language contract") instead of entrenching a second,
+competing schema.
+
+**Staged plan:**
+- **Stage 8a -- Done (2026-08-24).** Pushed to
+  `johnmauff/CAM-SIMA@xdsl-ccpp-adapter`; PR #2's CI (including the
+  `pylint` gate this fix specifically targeted) is green.
+  `resolved_var_xdsl_ccpp.py` now reads
+  `import_name`/`call_expr` straight off each JSON record (suite_cap.py's
+  `_resolved_var_record` already sets both to `model_var_name` for every
+  record, and `_apply_ddt_chain` overwrites them in place for a DDT
+  member -- reading them directly, rather than re-deriving from
+  `model_var_name` in this adapter, is what makes DDT resolution flow
+  through at all) and `array_ref_dims` off the record too (was hardcoded
+  `None`); `resolve_by_standard_name` now falls back to a new
+  `self._host_vars` dict (the JSON's top-level `"host_vars"` key) for a
+  name that never appears in any phase's own call list, degrading cleanly
+  (no `host_vars` lookup, no error) when that key is absent from an older
+  JSON. Also fixed two real `pylint` findings CI caught on this file
+  independently (`W1514` unspecified-`open()`-encoding,
+  `C0116` missing docstring on `resolve_by_standard_name`) -- both real,
+  not config noise (the `test/.pylintrc` `E0015` in the same CI output is
+  a pre-existing, unrelated pylintrc-vs-installed-pylint-version mismatch,
+  not something this file's own diff caused or should fix). Local
+  `pylint --rcfile=test/.pylintrc`: 10.00/10 (was 9.17/10, CI's own
+  reported score, below the 9.5 gate).
+  - **Verified directly against real xdsl_ccpp CLI output, not by
+    inspection.** Built a minimal DDT fixture (mirroring
+    `tests/unit/test_ddt_chain_resolved_vars.py`'s own
+    `TestDdtChainModuleTableInstance` scenario: a `phys_state_t` DDT
+    instance in a MODULE table, a scheme reading/writing one of its
+    members) and ran it through the real `ccpp_dsl.py` CLI end-to-end.
+    Confirmed the emitted JSON already carries the correct chain
+    (`import_name="phys_state"`, `call_expr="phys_state%counter"`), then
+    fed that same JSON through the fixed adapter and confirmed the
+    resulting `ResolvedVar` carries them through unchanged (would have
+    read `import_name="counter"`, `call_expr="counter"` before this fix --
+    exactly the bug this stage closes). Separately built a second fixture
+    with a host variable declared but never referenced by any scheme arg
+    (mirroring the `ddt_array` fixture's `index_of_potential_temperature`
+    class of gap) and confirmed `resolve_by_standard_name` finds it via
+    the `host_vars` fallback, that a genuinely unknown standard name still
+    correctly returns `None` (not a spurious match), and that the ordinary
+    per-phase lookup still takes priority when a name is in both places.
+    Also confirmed the adapter degrades cleanly (no crash, same behavior
+    as before this fix) against a JSON with the `"host_vars"` key
+    stripped out, simulating an older xdsl_ccpp build.
+  - **Deliberately deferred, still not done: the full 13-fixture
+    `write_init_files.py` byte-identical re-verification** the original
+    Stage 8a plan called for. Attempted directly against
+    `CAM-SIMA-fresh`'s own `test/unit/python/test_write_init_files.py`
+    fixtures, but that harness needs real capgen-v1's own
+    `framework_env.py`/`ccpp_capgen.py` (via CAM-SIMA's `ccpp_framework`
+    git submodule, currently unpopulated in this checkout, and pointed at
+    the wrong fork in `.gitmodules` besides -- the user confirmed the real
+    one for this integration is `johnmauff/ccpp-framework`, not
+    `NCAR/ccpp-framework`) to run `gen_registry`/`capgen()` at all -- an
+    environment-setup gap unrelated to this fix. Deferred by explicit
+    request (2026-08-24), not attempted further. The narrower, real-CLI
+    verification above confirms the fix itself is correct; the full
+    fixture sweep should still happen once that submodule is populated
+    from the right fork.
+- **Stage 8b -- Done (2026-08-24), `dependencies` implemented and directly
+  verified against real capgen-v1's own reader; `utility_files` left
+  empty-but-schema-valid by deliberate scope decision (user-confirmed),
+  not populated with real content.**
+  - **What real capgen-v1 actually does, read directly from
+    `ccpp-framework-fresh/capgen/generator/datatable.py` (the real
+    *writer*, not just `ccpp_datafile.py`'s reader this doc originally
+    scoped against) -- corrects this entry's own earlier guess.**
+    `<capgen_files><utilities>` is **not** derived from `.meta`-declared
+    data at all -- confirmed via `ccpp_capgen.py:1065-1069`, it's a fixed
+    list the driver assembles itself: `ccpp_kinds.F90`, a generated
+    `ccpp_host_constituents.F90`, plus framework-bundled support files
+    (`_resolve_framework_f90_files()`, e.g. `ccpp_constituent_prop_mod.F90`/
+    `ccpp_scheme_utils.F90`-equivalents, resolved from the vendored
+    `ccpp_framework/` checkout itself). `<dependencies>`, by contrast, is
+    exactly what this doc originally expected: sourced from each
+    `MetadataTable.dependencies` (`ccpp_capgen.py:1121-1130`), with a real
+    filter -- host/DDT-adjacent tables' dependencies always contribute;
+    a scheme table's own dependencies only contribute if that scheme is
+    actually referenced by some resolved suite's group membership (an
+    unreferenced scheme passed on the CLI for build-system convenience
+    shouldn't leak its dependencies into the datatable).
+  - **The real, separate gap this surfaced**: xdsl_ccpp's own equivalents
+    of capgen-v1's bundled framework support files
+    (`ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90`) currently
+    live only in `examples/shared/` -- fine for this repo's own example
+    harness, but not resolvable from an installed `xdsl_ccpp` package or a
+    real host model like CAM-SIMA. Deciding where these should actually
+    live (vendored into the installed package, analogous to real
+    capgen-v1's own `_resolve_framework_f90_files()`) is a real design
+    question, not a filename-pattern-heuristic guess -- **deliberately not
+    solved here** (user-confirmed 2026-08-24: implement `dependencies` now,
+    scope `utility_files` content as its own follow-up).
+  - **Implementation** (`xdsl_ccpp/tools/ccpp_datatable.py`): `<dependencies>`
+    added as a new top-level sibling of the existing `ccpp_files`/`schemes`/
+    `api`/`var_dictionaries` sections (confirmed real capgen-v1's own
+    `ccpp_datafile.py` never validates the root element's own tag name, only
+    looks up direct children by tag -- so this file's own `<datatable>` root,
+    unlike real capgen-v1's `<ccpp_datatable>`, needed no change for this to
+    work), populated via a new `_collect_dependencies()` reading each
+    `TablePropertiesOp`'s `dependencies`/`dependencies_path` attributes
+    (task #6 Tier 1's already-IR-forwarded data) and a new
+    `_used_scheme_names()` replicating real capgen-v1's own reference
+    filter (reusing the same group-membership walk the existing `<api>`
+    section already does). Also added a minimal,
+    schema-valid (but content-empty) `<capgen_files><utilities>/<host_files>/
+    <suite_files></capgen_files>` -- **required**, not optional, once
+    real testing showed `DatatableReport("utility_files")` raises
+    `CCPPDatatableError("Element type, 'capgen_files', not found in
+    table")` with no `<capgen_files>` element present at all, which
+    `cam_autogen.py:731` calls unconditionally; this makes that query
+    return an empty list instead of crashing, without deciding what
+    should populate it.
+  - **Known limitation, documented in code, not solved here**: each
+    dependency path is joined with its own table's `dependencies_path`
+    (when set) via a plain relative `os.path.join`, not resolved to an
+    absolute path -- real capgen-v1's own convention resolves
+    `dependencies_path` relative to the *original .meta file's own
+    directory*, but `build_datatable()` only receives parsed MLIR text and
+    a cap-files list (`ccpp_dsl.py:697`), not the original
+    `--scheme-files`/`--host-files` search paths needed to do that
+    resolution. A caller needing an absolute path must resolve this
+    relative path against its own known scheme/host search directory.
+  - **Verified directly against real capgen-v1's own unmodified
+    `ccpp_datafile.py`, not by inspection of the written XML alone.**
+    Generated a real datatable.xml via `examples/capgen` (both suites, six
+    scheme files) and ran `ccpp_datafile.py <path> --dependencies
+    --separator ";"` from the real `ccpp-framework-fresh/capgen/` checkout
+    directly against it: returned `temp_kinds.F90` (deduped -- both
+    `temp_set.meta` and `temp_adjust.meta` declare the identical
+    dependency), exit 0. Ran `--utility-files` the same way: empty output,
+    exit 0 (was a hard crash before the `<capgen_files>` stub was added).
+    Separately built a minimal two-scheme fixture (one referenced by the
+    loaded suite, one not, each with its own distinct `dependencies`
+    entry) and confirmed the unreferenced scheme's dependency is correctly
+    excluded -- proving the reference filter, not just the happy path.
+    Full suite: 628 passed/1 xfailed (unchanged); `ruff` unchanged (the
+    one finding in this file, an import-sort issue, confirmed pre-existing
+    via git-stash comparison, not introduced by this change).
+  - **Copilot review follow-up on PR #94 (2026-08-24), fixed -- a real
+    correctness bug, not a style nit.** `_used_scheme_names()` reused
+    `_iter_schemes_in_group()`, which only descended one `SubcycleOp`
+    level; real suites nest deeper (confirmed against
+    `examples/var_compat/var_compatibility_suite.xml:5-11`, three levels
+    to reach `effr_calc`), and `_used_scheme_names()` also never checked
+    `SuiteOp.init_scheme`/`final_scheme` (the v2.0 SDF suite-level
+    lifecycle hook) at all. Either gap meant a real scheme's own
+    `dependencies` could be silently excluded from the datatable --
+    exactly the kind of missing-compile-dependency failure a host build
+    would only discover as an opaque link error, not something caught
+    here. Fixed: `_iter_schemes_in_group` now recurses into arbitrarily-
+    nested `SubcycleOp` (a 3-line change -- `GroupOp`/`SubcycleOp` share
+    the same body-region shape, so the function calls itself unchanged);
+    `_used_scheme_names()` now also adds `init_scheme`/`final_scheme` when
+    set, matching real capgen-v1's own `used_scheme_names` gate exactly
+    (`ccpp_capgen.py`'s own `suite_init_call`/`suite_final_call` handling).
+    Verified fail-before/pass-after, not just pass-after: two new
+    regression tests (`TestDependenciesSection::
+    test_deeply_nested_subcycle_scheme_included`, mirroring
+    `var_compatibility_suite.xml`'s own 3-level nesting exactly, and
+    `test_suite_init_scheme_dependency_included`) confirmed failing
+    against the pre-fix code via `git stash` before confirming they pass
+    against the fix. Also re-ran the real `var_compat` example end-to-end
+    and confirmed `effr_calc` (the 3-levels-deep scheme) now correctly
+    appears in the generated `<api>` section too -- a direct side-benefit
+    of fixing the shared `_iter_schemes_in_group` walker, not something
+    separately implemented. Full suite: 637 passed/1 xfailed (635 + 2
+    new); `ruff` unchanged.
+
+- **Task #75 (Stage 8b follow-up) -- Done (2026-08-24): vendor the
+  `<capgen_files><utilities>` content for real, matching real capgen-v1's
+  own pattern exactly.** Real capgen-v1's own answer (`ccpp_capgen.py:
+  110-165`, read directly, not guessed): `_FRAMEWORK_SRC_DIR =
+  os.path.join(_SCRIPT_DIR, 'src')` -- a `src/` directory shipped inside
+  the capgen-v1 package itself, not supplied by the host model at all
+  ("capgen ships self-contained -- no external src/ companion needed");
+  `_FRAMEWORK_F90_FILES`, a fixed filename list
+  (`ccpp_constituent_prop_mod.F90`, `ccpp_hashable.F90`,
+  `ccpp_hash_table.F90`, `ccpp_scheme_utils.F90`);
+  `_resolve_framework_f90_files()` joins the two, hard-erring (not silently
+  skipping) if any file is missing, with a message telling the deployer
+  exactly what to do ("Vendor the missing file(s) into capgen/src/").
+  - **Implementation, the same pattern exactly**: moved
+    `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` from
+    `examples/shared/` (a checkout-only location, unreachable from an
+    installed package or a real host model) to `xdsl_ccpp/framework_src/`
+    -- inside the installed package itself. Added `_FRAMEWORK_SRC_DIR`/
+    `_FRAMEWORK_F90_FILES`/`_resolve_framework_f90_files()` to
+    `xdsl_ccpp/tools/ccpp_datatable.py` (same names, same hard-fail-with-
+    message behavior as real capgen-v1's own). Wired into the
+    `<capgen_files><utilities>` section Stage 8b left empty: now lists
+    `ccpp_kinds.F90` (picked out of the already-generated `cap_files` list
+    by name -- it's always generated, unconditionally, same as real
+    capgen-v1's own first `utility_paths` entry) plus the two resolved
+    framework files. `pyproject.toml` gained a
+    `[tool.setuptools.package-data]` entry (`xdsl_ccpp =
+    ["framework_src/*.F90"]`) so these ship in a real wheel/install, not
+    just a dev checkout.
+  - **`examples/shared/` removed** (user-requested, once #75 landed) --
+    updated all 8 `CMakeLists.txt` files that referenced it by path
+    (`examples/advection`, `advection_flat_host`, `constadv`,
+    `constituents_dim`, `constprop`, `instances_advection`, `nested_suite`,
+    `var_compat`) plus the root `CMakeLists.txt`'s own comment, to
+    `${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/...` instead. Confirmed
+    `XDSL_CCPP_ROOT` (`set(XDSL_CCPP_ROOT "${CMAKE_SOURCE_DIR}")`, root
+    `CMakeLists.txt`) is already visible in every example's own
+    `add_subdirectory()`-inherited scope, so no new CMake variable needed.
+  - **Verified for real, not by inspection alone**: regenerated
+    `examples/var_compat`'s real datatable.xml and confirmed
+    `<capgen_files><utilities>` now lists all three real file paths;
+    ran real capgen-v1's own unmodified `ccpp_datafile.py
+    --utility-files` against it and got the same three paths back, exit
+    0 (previously: a hard `CCPPDatatableError` with no `<capgen_files>`
+    at all, then an empty-but-valid list after Stage 8b, now real
+    content). Confirmed the exact `${XDSL_CCPP_ROOT}/xdsl_ccpp/
+    framework_src/...` path CMake now substitutes resolves to real files
+    on disk. **Built a real wheel** (`python -m build --wheel`) and
+    confirmed both `.F90` files are actually present inside it
+    (`xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90`/
+    `ccpp_scheme_utils.F90`) -- proving the `package-data` declaration
+    genuinely works for a real install, not just an editable dev
+    checkout, which is the exact scenario a real host model like
+    CAM-SIMA needs. Confirmed the file move itself is a pure rename with
+    zero content changes (`git diff` on the moved files: empty). Full
+    suite 628 passed/1 xfailed (unchanged); `ruff` unchanged (same
+    pre-existing baseline finding as Stage 8b, confirmed via git-stash
+    comparison). Could not run a real Fortran compile of any affected
+    example locally (this machine has no Fortran compiler) -- the file-
+    existence-at-resolved-path check above is the practical substitute;
+    a real compile/link check should still happen on the user's own CI.
+- **Stage 9 -- Backend selection + real invocation wiring in
+  `cam_autogen.py`. Implemented (2026-08-24), matching the detailed scope
+  below exactly.** All in
+  `CAM-SIMA-fresh`, none of it in `xdsl-ccpp-fresh` -- Stages 8a/8b already
+  gave `cam_autogen.py` everything it needs to *consume*
+  (`ResolvedVar` adapter, schema-compatible `datatable_report()` queries);
+  Stage 9 is entirely about *calling* xdsl_ccpp instead of real capgen-v1
+  and picking which adapter to build from the result.
+
+  - **Real call chain, traced directly, not assumed**: `cam_config.py`'s
+    `ConfigCAM.generate_cam_src()` (the CIME buildcpp-style driver) reads
+    CIME case XML variables via `case.get_value(...)` (e.g.
+    `self.__gpu_flag = case.get_value("OPENACC_GPU_OFFLOAD")`,
+    `cam_config.py:191`, declared as an `<entry id="OPENACC_GPU_OFFLOAD">`-
+    style block -- the exact shape confirmed via `CAM_DYCORE`'s own entry,
+    `cime_config/config_component.xml:106-118`), then calls
+    `generate_registry()` -> `generate_physics_suites()` ->
+    `generate_init_routines()` in sequence (`cam_config.py:867-904`).
+
+  - **(1) New CIME xml variable.** Add an `<entry id="CCPP_GENERATOR">`
+    block to `cime_config/config_component.xml`, matching `CAM_DYCORE`'s
+    exact shape (`type=char`, `valid_values=capgen,xdsl_ccpp`,
+    `default_value=capgen` -- the default MUST stay real capgen-v1, so
+    every existing case/test keeps building exactly as it does today with
+    zero opt-in required; `group=build_component_cam`,
+    `file=env_build.xml`). Read it in `cam_config.py` alongside
+    `self.__gpu_flag` (`case.get_value("CCPP_GENERATOR")`), thread it as a
+    new parameter into the `generate_physics_suites(...)` and
+    `generate_init_routines(...)` calls.
+
+  - **(2) `generate_physics_suites()` (`cam_autogen.py:484-745`): branch
+    on the new parameter.** The `capgen` branch is the *entire existing
+    function body, byte-for-byte unchanged* -- this is the one thing Stage
+    9 must not touch, since it's CAM-SIMA's real, currently-working
+    production path. The `xdsl_ccpp` branch is genuinely new code:
+    1. Build the equivalent xdsl_ccpp CLI invocation from the same
+       `host_files`/`scheme_files`/`sdfs`/`host_name`/`genccpp_dir`
+       variables the `capgen` branch already computes earlier in the same
+       function (suite/scheme/host discovery is backend-agnostic --
+       nothing there needs duplicating).
+    2. **Invoke as a subprocess, not xdsl_ccpp's Python API in-process --
+       a specific, evidence-based choice, not a style preference.** Traced
+       `ccpp_dsl.py`'s own methods directly: several (e.g.
+       `run_pipeline_stage`'s own error path) call `sys.exit(1)` on
+       failure rather than raising a catchable exception -- confirmed via
+       this doc's own "Smaller interface-shape gaps" note below ("No
+       `CCPPError`-equivalent exception type"). Calling these Python
+       methods in-process from `cam_autogen.py` would let a cap-generation
+       failure kill CIME's *entire build process* with a bare exit code,
+       not a clean, catchable `CamAutoGenError` the way every other
+       failure path in this file works. A subprocess call isolates that:
+       `cam_autogen.py` checks `CompletedProcess.returncode` and raises
+       `CamAutoGenError` itself on nonzero, exactly like every other error
+       path in this file already does. This also matches capgen-v1's own
+       stated convergence goal (`doc/capgen_compat_layer.md`,
+       re-confirmed via the 2026-08-13 re-validation above): CLI
+       invocation is the *preferred* interface, Python API only when CLI
+       is impossible -- it isn't impossible here.
+    3. Command shape (confirmed against `ccpp_dsl.py --help` and
+       `ccpp_prebuild.py`'s own precedent for the same option set):
+       `--host-files`/`--scheme-files`/`--suites` each want one
+       comma-joined string, not a repeated flag (`ccpp_cap_refactor_plan.md`'s
+       own "Smaller interface-shape gaps" note below already flags this
+       list-vs-string mismatch -- this call site is where it has to be
+       handled, via `",".join(...)`); plus `--host-name`, `-o
+       <genccpp_dir>`, `--tempdir`, `--emit-datatable <cap_output_file>`
+       (same path the `capgen` branch already computes and later queries
+       via `datatable_report()` -- unchanged), and a **new**
+       `--emit-resolved-vars <json_path>` (e.g.
+       `os.path.join(genccpp_dir, "resolved_vars.json")`).
+    4. On nonzero exit, raise `CamAutoGenError` with the subprocess's
+       captured stderr, matching this file's own existing error-message
+       conventions elsewhere.
+    5. **The `utility_files`/`dependencies` `datatable_report()` calls
+       immediately after (`cam_autogen.py:731-745`) need zero changes for
+       either backend** -- this is Stage 8b's actual payoff: real
+       capgen-v1's own vendored `ccpp_datafile.py` reads xdsl_ccpp's
+       `datatable.xml` exactly as it reads real capgen-v1's own, so this
+       whole block (`DatatableReport("utility_files")`,
+       `DatatableReport("dependencies")`, the RRTMGP dependency-path
+       adjustment, `_update_genccpp_dir`) is genuinely backend-agnostic
+       already and needs no branch.
+    6. **Known, accepted consequence of leaving `<capgen_files><utilities>`
+       empty (Stage 8b, task #75 follow-up)**: for the `xdsl_ccpp` branch
+       specifically, the `utility_files` query will always return an empty
+       list until task #75 lands, so `_update_genccpp_dir` copies nothing
+       via that path for an xdsl_ccpp-generated build. Not a Stage 9 bug --
+       an explicit, already-tracked gap; Stage 9 should not attempt to
+       work around it by inventing a filename-pattern heuristic here
+       either (same reasoning as Stage 8b's own deferral).
+    7. **Return-value naming wart, worth fixing while touching this
+       code, not required**: `generate_physics_suites()`'s own return
+       tuple's `capgen_db` position becomes backend-dependent (a real
+       `CCPPDatabaseObj` for `capgen`, a JSON file path string for
+       `xdsl_ccpp`) -- consider renaming to something backend-neutral
+       (e.g. `resolved_vars_source`) at both this function's own return
+       and `generate_init_routines()`'s own parameter, so the dual meaning
+       is visible in the name rather than only in a comment.
+  - **(3) `generate_init_routines()` (`cam_autogen.py:754-811`): branch on
+    the same parameter.** `capgen` branch unchanged
+    (`Capgenv1ResolvedVars(cap_database)`); `xdsl_ccpp` branch imports
+    `XdslCcppResolvedVars` (`from resolved_var_xdsl_ccpp import
+    XdslCcppResolvedVars`, same `sys.path` convention the rest of this
+    file already relies on) and constructs `XdslCcppResolvedVars(cap_database)`
+    -- where, per the naming wart above, `cap_database` in this branch is
+    actually the resolved-vars JSON path, not a database object; pass the
+    backend selection explicitly as a new parameter here too rather than
+    inferring it from `cap_database`'s own type, since explicit is safer
+    than type-sniffing for a cross-backend branch like this.
+  - **Verification plan, staged**: (a) `CCPP_GENERATOR=capgen` (the
+    default) produces a byte-identical build to today's -- this is the
+    regression check that matters most, since it's the only currently
+    real production path; (b) `CCPP_GENERATOR=xdsl_ccpp` against a
+    minimal real CAM-SIMA test case, confirming cap generation succeeds,
+    `write_init_files.py` runs against `XdslCcppResolvedVars`, and the
+    build at least compiles (full run-to-completion comparison against
+    real capgen-v1's own output is a stretch goal, not a Stage 9 blocker,
+    given the still-open items below); (c) a deliberate cap-generation
+    failure (e.g. a malformed suite XML) under `CCPP_GENERATOR=xdsl_ccpp`,
+    confirming it surfaces as a clean `CamAutoGenError`, not a raw
+    subprocess traceback or a silently-succeeded partial build.
+  - **Open items this stage does not resolve, inherited from 8a/8b,
+    listed here so Stage 9 isn't blocked pretending they don't exist**:
+    the deferred 13-fixture `write_init_files.py` byte-identical sweep
+    (needs the `ccpp_framework` submodule populated from
+    `johnmauff/ccpp-framework`, not `NCAR/ccpp-framework`); task #75
+    (`utility_files` vendoring); the narrower suite-level-`<init>`/
+    `<final>`-scheme-reference gap in Stage 8b's own dependency filter.
+
+  - **Implementation, matching the scope above exactly (`CAM-SIMA-fresh`,
+    branch `xdsl-ccpp-adapter`)**: `<entry id="CCPP_GENERATOR">` added to
+    `cime_config/config_component.xml` (`valid_values=capgen,xdsl_ccpp`,
+    `default_value=capgen`); `cam_config.py` reads it via
+    `case.get_value("CCPP_GENERATOR")` alongside `self.__gpu_flag`, threads
+    it into both `generate_physics_suites(...)` and
+    `generate_init_routines(...)` calls (renaming the unpacked return value
+    at this call site from `capgen_db` to `resolved_vars_source`, per the
+    naming-wart note above -- the function-internal variable name stays
+    `capgen_db` inside `generate_physics_suites` itself, to keep the diff
+    to the untouched `capgen` branch minimal). `generate_physics_suites()`
+    and `generate_init_routines()` both gained a `ccpp_generator="capgen"`
+    parameter (default matches the CIME variable's own default, so any
+    other caller that doesn't yet pass it keeps today's behavior) and an
+    `if ccpp_generator == "xdsl_ccpp": ... else: <original code, unchanged
+    except for reindentation>` branch exactly where scoped. The
+    `XdslCcppResolvedVars` import is deliberately **not** added alongside
+    `Capgenv1ResolvedVars` at this file's own top-of-file import block --
+    it transitively imports `xdsl_ccpp` itself, and an unconditional
+    top-level import would make every `ccpp_generator=capgen` build (the
+    only real production path) fail on any system without `xdsl_ccpp`
+    installed. Deferred to a local import inside
+    `generate_init_routines()`'s own `xdsl_ccpp` branch instead, with
+    `sys.path` temporarily re-extended with `_REG_GEN_DIR` around it
+    (mirroring this file's own top-of-file append/remove pattern, since
+    that directory was already removed from `sys.path` by the time this
+    branch runs).
+  - **Verified for real, in the two ways actually available without a
+    working CIME case (the `ccpp_framework` submodule gap above blocks a
+    true end-to-end CIME run just like it blocked Stage 8a's own full
+    sweep)**: (1) `pylint --rcfile=test/.pylintrc` on both modified `.py`
+    files: 9.89/10 (baseline, confirmed via git-stash comparison: 9.88/10)
+    -- every finding present in both runs is pre-existing (same functions,
+    shifted line numbers only); the one genuinely new finding
+    (`import-outside-toplevel` on the deliberately-deferred import) is
+    suppressed with a targeted `#pylint: disable`/`#pylint: enable` pair,
+    matching this file's own existing suppression convention. (2) Built a
+    minimal real fixture (one host module, one scheme, one suite) and ran
+    the *exact* command shape `generate_physics_suites()`'s new branch
+    constructs directly against it: produced the caps, `resolved_vars.json`,
+    and `ccpp_datatable.xml` in one call, exit 0; fed the resulting JSON
+    through the real `XdslCcppResolvedVars` adapter (confirming
+    `generate_init_routines()`'s own new branch consumes it correctly) and
+    separately through real capgen-v1's own unmodified `ccpp_datafile.py`
+    (confirming the unchanged `datatable_report()` calls right after still
+    work, per Stage 8b) -- both succeeded. Also ran a deliberately broken
+    invocation (nonexistent scheme file) and confirmed a clean nonzero exit
+    (1) with an informative stderr message, exactly what the new
+    `if result.returncode != 0: raise CamAutoGenError(...)` check needs --
+    not a hang, a traceback leaking past the subprocess boundary, or a
+    silent partial success.
+  - **Not verified, and can't be without the submodule gap closing
+    first**: a true end-to-end CIME case build with
+    `CCPP_GENERATOR=xdsl_ccpp` set, and the `capgen` branch's own
+    regression check (confirming `CCPP_GENERATOR=capgen`, the default,
+    still produces byte-identical output to today) -- the code path is
+    unchanged from before this stage (verified by inspection: the only
+    difference is one extra level of `if/else` nesting, no logic edits),
+    but hasn't been re-run through a real case build this session.
+
+Stages 8a/8b can proceed independently and in parallel; Stage 9 depends on
+both landing first (it wires together exactly what they each produce).
+
 ---
 
 ## Workstream 2: Fix the DDT redefinition bug -- RESOLVED
@@ -1004,12 +1493,22 @@ for every caller to work around independently:
 - Real production physics suites from `NCAR/atmospheric_physics`.
   Everything exercised so far was either xdsl_ccpp's own demo examples
   or CAM-SIMA's synthetic unit-test fixtures.
-- The `datatable_report()`/`DatatableReport` query path itself
-  (`utility_files`, `dependencies`, as called by `cam_autogen.py`) --
-  every test so far used the vendored capgen-v1 implementation for this;
-  xdsl_ccpp's own (differently-shaped) datatable output has not been
-  checked against these same queries. This should fall out of
-  Workstream 1's native introspection design.
+- ~~The `datatable_report()`/`DatatableReport` query path itself...~~ --
+  **resolved, no longer untested (2026-08-24, Stages 8b/9/task #75).**
+  Directly verified: xdsl_ccpp's own `<capgen_files><utilities>`/
+  `<dependencies>` output, read by real capgen-v1's own unmodified
+  `ccpp_datafile.py`, returns correct `utility_files`/`dependencies`
+  results; `cam_autogen.py`'s own call sites now wired to actually invoke
+  xdsl_ccpp (Stage 9). See that section's own write-up above for the full
+  verification detail.
 - Nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
   directives in an actual CAM-SIMA context (only tested in isolation via
-  xdsl_ccpp's own examples).
+  xdsl_ccpp's own examples) -- still genuinely untested.
+- **Real production physics suites from `NCAR/atmospheric_physics`,
+  exercised through the real, now-wired-up `cam_autogen.py` pipeline.**
+  The single biggest open risk for a first real test: everything this
+  whole engagement has exercised was either xdsl_ccpp's own toy examples
+  or CAM-SIMA's synthetic unit-test fixtures, never an actual production
+  CCPP suite through the real integration path. Not a backlog item to
+  finish before testing starts -- it's the thing a first real test run
+  itself is for.

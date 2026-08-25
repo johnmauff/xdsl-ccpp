@@ -5,9 +5,10 @@
 # (explicit HOST_NAME "constprop_host_sub", matching the existing
 # Makefile's own CCPP_XDSL invocation, plus the same extra compiled source:
 # ccpp_constituent_prop_mod.F90, a stub for the CCPP framework's
-# constituent-properties module), pulled from the single-source copy in
-# examples/shared/ rather than a local duplicate -- see that directory's
-# own file for why.
+# constituent-properties module), pulled from xdsl_ccpp's own
+# installed-package copy at xdsl_ccpp/framework_src/ (task #75,
+# capgen_v1_parity_backlog.md) rather than a local duplicate -- see that
+# file's own header comment for why.
 #
 #------------------------------------------------------------------------------
 set(CCPP_CAP_FILES "${CMAKE_CURRENT_BINARY_DIR}/bindc")
@@ -30,7 +31,7 @@ endif()
 if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
   add_executable(constprop_cxx_host
     ${CCPP_CAP_FILES}/ccpp_kinds.F90
-    ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
+    ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90
     ${CMAKE_CURRENT_SOURCE_DIR}/constprop.F90
     ${CCPP_CAP_FILES}/constprop_suite_cap.F90
     ${CCPP_CAP_FILES}/constprop_host_sub_ccpp_chost_cap.F90

@@ -48,14 +48,16 @@
 #
 # ccpp_constituent_prop_mod.F90/ccpp_scheme_utils.F90 are NOT duplicated
 # locally in this directory (unlike examples/advection's own copies, at
-# least for now) -- this example's own TESTLIB below compiles the single
-# shared source in examples/shared/ directly (by path), added because this
-# directory's own former local copy turned out to be missing diag_name, a
-# real field/instantiate() argument register_consts.F90 (ported faithfully
-# from real capgen-v1 upstream) genuinely needs. See examples/shared/
-# ccpp_constituent_prop_mod.F90's own header comment for the full story and
-# ccpp_cap_refactor_plan.md's backlog for the follow-up item tracking
-# migration of every other still-duplicating example to this single source.
+# least for now) -- this example's own TESTLIB below compiles xdsl_ccpp's
+# own installed-package copy at xdsl_ccpp/framework_src/ directly (by path,
+# task #75 -- capgen_v1_parity_backlog.md), added because this directory's
+# own former local copy turned out to be missing diag_name, a real
+# field/instantiate() argument register_consts.F90 (ported faithfully from
+# real capgen-v1 upstream) genuinely needs. See
+# xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90's own header comment
+# for the full story and ccpp_cap_refactor_plan.md's backlog for the
+# follow-up item tracking migration of every other still-duplicating
+# example to this single source.
 #
 #------------------------------------------------------------------------------
 set(SCHEME_FILES "register_consts" "const_dim_producer" "const_dim_consumer")
@@ -89,9 +91,9 @@ xdsl_ccpp_capgen(HOSTFILES ${CONSTITUENTS_DIM_HOST_METADATA_FILES}
 
 if(XDSL_CCPP_HAVE_FORTRAN)
   # Constituent-registration support (ccpp_constituent_prop_mod/
-  # ccpp_scheme_utils) is compiled from the single shared source in
-  # examples/shared/ (by path, not a local copy -- see that file's own
-  # header comment) directly into this example's own TESTLIB, alongside its
+  # ccpp_scheme_utils) is compiled from xdsl_ccpp's own installed-package
+  # copy at xdsl_ccpp/framework_src/ (by path, not a local copy -- see that
+  # file's own header comment) directly into this example's own TESTLIB, alongside its
   # own ${CCPP_CAPS_LIST} (which includes this example's own generated
   # ccpp_kinds.F90, needed by ccpp_constituent_prop_mod.F90's `use
   # ccpp_kinds`). NOT a separate, pre-built shared library the way
@@ -102,8 +104,8 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # ccpp_constituent_prop_mod.F90 reference below for the full story.
   add_library(CONSTITUENTS_DIM_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                                ${CONSTITUENTS_DIM_HOST_FORTRAN_FILES}
-                                               ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
-                                               ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
+                                               ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90
+                                               ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_scheme_utils.F90
                                                ${CCPP_CAPS_LIST})
   set_target_properties(CONSTITUENTS_DIM_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(CONSTITUENTS_DIM_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)
