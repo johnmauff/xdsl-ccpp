@@ -40,6 +40,52 @@ from xdsl_ccpp.dialects.ccpp import (
 from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 
 
+# ── Framework-shipped Fortran support files (task #75) ─────────────────────────
+#
+# Modeled directly on real capgen-v1's own
+# ccpp_capgen.py:_FRAMEWORK_SRC_DIR/_FRAMEWORK_F90_FILES/
+# _resolve_framework_f90_files() -- these files must live inside the
+# installed xdsl_ccpp package itself (not examples/shared/, which only ever
+# existed in this repo's own checkout and is unreachable from an installed
+# package or a real host model like CAM-SIMA), the same way capgen-v1 ships
+# its own copies under capgen/src/ rather than expecting a host to supply
+# them.
+_FRAMEWORK_SRC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "framework_src")
+_FRAMEWORK_F90_FILES = (
+    "ccpp_constituent_prop_mod.F90",
+    "ccpp_scheme_utils.F90",
+)
+
+
+def _resolve_framework_f90_files() -> list[str]:
+    """Return absolute paths for xdsl_ccpp's own framework F90 files.
+
+    Each name in `_FRAMEWORK_F90_FILES` is looked up under
+    `_FRAMEWORK_SRC_DIR` (`xdsl_ccpp/framework_src/`). A missing file is a
+    hard error, not a silent skip -- `_FRAMEWORK_SRC_DIR` is the canonical
+    (and only) location, and a missing file here means the installed
+    package is incomplete; surfacing that now with a precise message beats
+    letting a host build fail later with an opaque "Cannot open module
+    file" error once it tries to compile against a `<utilities>` list
+    entry that was never actually there.
+    """
+    found: list[str] = []
+    missing: list[str] = []
+    for name in _FRAMEWORK_F90_FILES:
+        path = os.path.join(_FRAMEWORK_SRC_DIR, name)
+        if os.path.isfile(path):
+            found.append(os.path.abspath(path))
+        else:
+            missing.append(path)
+    if missing:
+        raise FileNotFoundError(
+            "xdsl_ccpp installation is incomplete: required framework "
+            f"Fortran source file(s) not found under {_FRAMEWORK_SRC_DIR!r}:\n  "
+            + "\n  ".join(missing)
+        )
+    return found
+
+
 # ── IR walkers ────────────────────────────────────────────────────────────────
 
 def _get_string(attr) -> str:
@@ -253,23 +299,27 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
     # 'capgen_files', not found in table") on a DatatableReport("utility_files")
     # query against this file (confirmed directly: it does, with no
     # <capgen_files> element present at all) -- cam_autogen.py makes exactly
-    # that query (cam_autogen.py:731) and needs it to return an empty list,
-    # not crash, until the real content is decided.
+    # that query (cam_autogen.py:731).
     #
-    # Deliberately left EMPTY, not populated from cap_files by categorizing
-    # filenames (e.g. "*_ccpp_cap.F90" -> host, "<suite>_cap.F90" -> suite):
-    # real capgen-v1's own utility_files list is a fixed, driver-supplied set
-    # of framework support files (ccpp_kinds.F90, ccpp_constituent_prop_mod.F90,
-    # ccpp_scheme_utils.F90, ...) that today live only in this repo's own
-    # examples/shared/, not anywhere an installed xdsl_ccpp package (or a real
-    # host model like CAM-SIMA) could resolve them from -- deciding where
-    # those files should actually live is a real, separate design question,
-    # not something to guess at via filename-pattern heuristics here. Left as
-    # its own follow-up item; host_files/suite_files are populated with the
-    # same empty-but-present convention for the same reason, since neither is
-    # actually queried by cam_autogen.py today either.
+    # <utilities> (task #75, capgen_v1_parity_backlog.md): xdsl_ccpp's own
+    # generated ccpp_kinds.F90 (picked out of cap_files by name -- it's
+    # always generated, unconditionally, into the same output directory as
+    # every other cap) plus the framework-shipped support files resolved by
+    # _resolve_framework_f90_files() above (ccpp_constituent_prop_mod.F90/
+    # ccpp_scheme_utils.F90, now vendored inside the installed package at
+    # xdsl_ccpp/framework_src/ -- see that function's own docstring).
+    # <host_files>/<suite_files> stay empty-but-present: neither is actually
+    # queried by cam_autogen.py today, and categorizing cap_files by
+    # filename pattern for them isn't needed to close that specific gap.
     capgen_files_el = ET.SubElement(root, "capgen_files")
-    ET.SubElement(capgen_files_el, "utilities")
+    utilities_el = ET.SubElement(capgen_files_el, "utilities")
+    for cap in sorted(cap_files):
+        if os.path.basename(str(cap)) == "ccpp_kinds.F90":
+            u_el = ET.SubElement(utilities_el, "file")
+            u_el.text = str(cap)
+    for framework_file in _resolve_framework_f90_files():
+        u_el = ET.SubElement(utilities_el, "file")
+        u_el.text = framework_file
     ET.SubElement(capgen_files_el, "host_files")
     ET.SubElement(capgen_files_el, "suite_files")
 

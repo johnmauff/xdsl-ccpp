@@ -154,9 +154,10 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   target_include_directories(test_utils PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/test_utils_mod)
 endif()
 
-# examples/shared/ccpp_constituent_prop_mod.F90 / ccpp_scheme_utils.F90 (see
-# that file's own header comment) are the single source for this
-# constituent-registration support stub, but are NOT built as a shared
+# xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90 / ccpp_scheme_utils.F90
+# (task #75, capgen_v1_parity_backlog.md -- see that file's own header
+# comment) are the single source for this constituent-registration support
+# stub, but are NOT built as a shared
 # library here the way test_utils is -- unlike test_utils, they `use
 # ccpp_kinds`, which is itself a per-example *generated* file (part of each
 # example's own xdsl_ccpp_capgen() output, in that example's own build

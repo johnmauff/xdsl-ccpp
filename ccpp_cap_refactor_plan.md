@@ -3282,7 +3282,9 @@ dependency is noted.
        simplified stub (not the full real library — xdsl_ccpp's own generator,
        `constituent_cap.py`, only ever targets the simplified API, never the real
        `ccpp_model_constituents_t` wrapper type real capgen-v1 actually uses) into a single
-       source, `examples/shared/ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90`, compiled
+       source, `examples/shared/ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` (moved to
+       `xdsl_ccpp/framework_src/` as of task #75, `capgen_v1_parity_backlog.md` -- `examples/shared/`
+       no longer exists), compiled
        directly into each consuming example's own TESTLIB target — not a separate pre-built
        shared library at the root `CMakeLists.txt` level, which was tried first and failed
        (`Cannot open module file 'ccpp_kinds.mod'`): `ccpp_kinds.F90` is itself per-example
@@ -3295,8 +3297,10 @@ dependency is noted.
        follow-up item below, not fixed as part of this.
 - **Follow-up backlog items spawned by the `constituents_dim` fix above:**
   - Migrate `examples/advection` (and audit every other example for similarly duplicated
-    per-example support files, not just these two) to link `examples/shared/`'s single-source
-    `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` instead of its own local copy — see
+    per-example support files, not just these two) to link the single source
+    `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` (`xdsl_ccpp/framework_src/` as of
+    task #75, `capgen_v1_parity_backlog.md` -- was `examples/shared/`) instead of its own local
+    copy — see
     item 7 above for why this matters: a duplicated stub only ever grows to cover whatever's
     already been exercised, which is exactly what caused the `diag_name` compile bug in the
     first place, and it will keep happening again for any other file duplicated the same way.
@@ -4086,8 +4090,9 @@ dependency is noted.
           - **`examples/instances_advection/CMakeLists.txt`** rewritten
             following `examples/advection`'s own template for a
             constituent-using example (adds
-            `examples/shared/ccpp_constituent_prop_mod.F90`/
-            `ccpp_scheme_utils.F90` to the TESTLIB, which
+            `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` --
+            `examples/shared/` at the time, moved to
+            `xdsl_ccpp/framework_src/` as of task #75 -- to the TESTLIB, which
             `examples/instances`' own CMakeLists.txt didn't need since it
             has no constituents at all) plus `examples/instances`' own
             template for the `test_host.meta`-is-metadata-only host split.

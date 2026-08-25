@@ -66,8 +66,8 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   # tendencies both use ccpp_constituent_properties_t/ccpp_scheme_utils.
   add_library(INSTANCES_ADVECTION_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                         ${INSTANCES_ADVECTION_HOST_FORTRAN_FILES}
-                                        ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_constituent_prop_mod.F90
-                                        ${CMAKE_SOURCE_DIR}/examples/shared/ccpp_scheme_utils.F90
+                                        ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90
+                                        ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_scheme_utils.F90
                                         ${CCPP_CAPS_LIST})
   set_target_properties(INSTANCES_ADVECTION_TESTLIB PROPERTIES Fortran_MODULE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/mod)
   target_include_directories(INSTANCES_ADVECTION_TESTLIB PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/mod)

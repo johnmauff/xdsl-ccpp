@@ -32,6 +32,18 @@ ccpp_generate_meta = "xdsl_ccpp.tools.ccpp_generate_meta:main"
 [tool.setuptools.packages.find]
 include = ["xdsl_ccpp*"]
 
+[tool.setuptools.package-data]
+# Framework-shipped Fortran support files (ccpp_constituent_prop_mod.F90,
+# ccpp_scheme_utils.F90) a generated cap may need alongside it -- task #75,
+# capgen_v1_parity_backlog.md's Stage 8b follow-up. Must ship inside the
+# installed package (not examples/shared/, which only exists in a checkout)
+# so a real host model consuming an installed xdsl_ccpp, not just this
+# repo's own example harness, can resolve them -- see
+# xdsl_ccpp/tools/ccpp_datatable.py's own _resolve_framework_f90_files(),
+# modeled directly on real capgen-v1's own ccpp_capgen.py:_resolve_
+# framework_f90_files()/_FRAMEWORK_SRC_DIR.
+xdsl_ccpp = ["framework_src/*.F90"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
