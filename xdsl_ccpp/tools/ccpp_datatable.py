@@ -99,14 +99,26 @@ def _get_int(attr) -> int:
 
 
 def _iter_schemes_in_group(group_op):
-    """Yield SchemeOp names (str) from a GroupOp body, descending into SubcycleOp."""
+    """Yield SchemeOp names (str) from a GroupOp (or SubcycleOp) body,
+    descending recursively into arbitrarily-nested SubcycleOp.
+
+    A single level of SubcycleOp descent isn't enough -- real suites nest
+    subcycles several levels deep (e.g.
+    examples/var_compat/var_compatibility_suite.xml:5-11 nests three
+    levels in one branch), and this function backs `_used_scheme_names()`
+    (capgen_v1_parity_backlog.md Stage 8b's dependency-reference filter),
+    where under-counting used schemes means silently dropping a real
+    dependency a host build needs to compile against, not just an
+    incomplete `<api>` section entry (flagged by Copilot review, PR #94).
+    GroupOp and SubcycleOp share the same `body = region_def("single_block")`
+    shape, so recursing into a SubcycleOp via this same function works
+    unchanged.
+    """
     for op in group_op.body.block.ops:
         if isa(op, SchemeOp):
             yield op.scheme_name.data
         elif isa(op, SubcycleOp):
-            for inner in op.body.block.ops:
-                if isa(inner, SchemeOp):
-                    yield inner.scheme_name.data
+            yield from _iter_schemes_in_group(op)
 
 
 def _collect_suites(ccpp_mod):
@@ -119,22 +131,31 @@ def _collect_suites(ccpp_mod):
 
 
 def _used_scheme_names(ccpp_mod) -> set[str]:
-    """Return the set of scheme names actually referenced by some suite's
-    own group membership (capgen_v1_parity_backlog.md Stage 8b) -- mirrors
-    real capgen-v1's own `used_scheme_names` gate in `ccpp_capgen.py`
-    (host/DDT tables' dependencies always contribute; a scheme table's own
-    dependencies only contribute if the scheme is actually referenced by a
-    resolved suite, since an unreferenced scheme passed on the CLI for
-    build-system convenience shouldn't leak its dependencies).
+    """Return the set of scheme names actually referenced by some suite --
+    either via group membership (including arbitrarily-nested subcycles)
+    or the suite's own `init_scheme`/`final_scheme` (v2.0 SDF schema, see
+    `SuiteOp`'s own docstring) -- mirrors real capgen-v1's own
+    `used_scheme_names` gate in `ccpp_capgen.py` exactly (that gate adds
+    `suite_init_call`/`suite_final_call`'s own scheme name alongside every
+    group-phase call): host/DDT tables' dependencies always contribute;
+    a scheme table's own dependencies only contribute if the scheme is
+    actually referenced by a resolved suite, since an unreferenced scheme
+    passed on the CLI for build-system convenience shouldn't leak its
+    dependencies (capgen_v1_parity_backlog.md Stage 8b).
 
-    Narrower than real capgen-v1's own check: only counts group-phase
-    scheme calls (reusing `_iter_schemes_in_group`, the same walk the
-    `<api>` section already does), not a suite-level `<init>`/`<final>`
-    scheme reference (a real but rarer case -- see this file's own
-    Stage 8b follow-up note in capgen_v1_parity_backlog.md).
+    Originally missed both the arbitrary-nesting case and this
+    init_scheme/final_scheme case (Copilot review, PR #94, confirmed
+    correct against examples/var_compat/var_compatibility_suite.xml's own
+    three-level subcycle nesting) -- fixed by delegating the nesting fix to
+    `_iter_schemes_in_group` itself and adding both suite-level properties
+    here.
     """
     used: set[str] = set()
     for suite_op in _collect_suites(ccpp_mod):
+        if suite_op.init_scheme is not None:
+            used.add(suite_op.init_scheme.data)
+        if suite_op.final_scheme is not None:
+            used.add(suite_op.final_scheme.data)
         for op in suite_op.body.block.ops:
             if isa(op, GroupOp):
                 used.update(_iter_schemes_in_group(op))

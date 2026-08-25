@@ -1064,9 +1064,7 @@ competing schema.
     (task #6 Tier 1's already-IR-forwarded data) and a new
     `_used_scheme_names()` replicating real capgen-v1's own reference
     filter (reusing the same group-membership walk the existing `<api>`
-    section already does) -- narrower than real capgen-v1's own check in
-    one documented way: only counts group-phase scheme calls, not a
-    suite-level `<init>`/`<final>` scheme reference. Also added a minimal,
+    section already does). Also added a minimal,
     schema-valid (but content-empty) `<capgen_files><utilities>/<host_files>/
     <suite_files></capgen_files>` -- **required**, not optional, once
     real testing showed `DatatableReport("utility_files")` raises
@@ -1101,6 +1099,35 @@ competing schema.
     Full suite: 628 passed/1 xfailed (unchanged); `ruff` unchanged (the
     one finding in this file, an import-sort issue, confirmed pre-existing
     via git-stash comparison, not introduced by this change).
+  - **Copilot review follow-up on PR #94 (2026-08-24), fixed -- a real
+    correctness bug, not a style nit.** `_used_scheme_names()` reused
+    `_iter_schemes_in_group()`, which only descended one `SubcycleOp`
+    level; real suites nest deeper (confirmed against
+    `examples/var_compat/var_compatibility_suite.xml:5-11`, three levels
+    to reach `effr_calc`), and `_used_scheme_names()` also never checked
+    `SuiteOp.init_scheme`/`final_scheme` (the v2.0 SDF suite-level
+    lifecycle hook) at all. Either gap meant a real scheme's own
+    `dependencies` could be silently excluded from the datatable --
+    exactly the kind of missing-compile-dependency failure a host build
+    would only discover as an opaque link error, not something caught
+    here. Fixed: `_iter_schemes_in_group` now recurses into arbitrarily-
+    nested `SubcycleOp` (a 3-line change -- `GroupOp`/`SubcycleOp` share
+    the same body-region shape, so the function calls itself unchanged);
+    `_used_scheme_names()` now also adds `init_scheme`/`final_scheme` when
+    set, matching real capgen-v1's own `used_scheme_names` gate exactly
+    (`ccpp_capgen.py`'s own `suite_init_call`/`suite_final_call` handling).
+    Verified fail-before/pass-after, not just pass-after: two new
+    regression tests (`TestDependenciesSection::
+    test_deeply_nested_subcycle_scheme_included`, mirroring
+    `var_compatibility_suite.xml`'s own 3-level nesting exactly, and
+    `test_suite_init_scheme_dependency_included`) confirmed failing
+    against the pre-fix code via `git stash` before confirming they pass
+    against the fix. Also re-ran the real `var_compat` example end-to-end
+    and confirmed `effr_calc` (the 3-levels-deep scheme) now correctly
+    appears in the generated `<api>` section too -- a direct side-benefit
+    of fixing the shared `_iter_schemes_in_group` walker, not something
+    separately implemented. Full suite: 637 passed/1 xfailed (635 + 2
+    new); `ruff` unchanged.
 
 - **Task #75 (Stage 8b follow-up) -- Done (2026-08-24): vendor the
   `<capgen_files><utilities>` content for real, matching real capgen-v1's

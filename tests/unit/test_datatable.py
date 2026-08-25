@@ -290,6 +290,61 @@ class TestDependenciesSection:
         deps = [el.text for el in root.findall("./dependencies/dependency")]
         assert deps.count("shared_dep.F90") == 1
 
+    def test_deeply_nested_subcycle_scheme_included(self, build_module):
+        # Mirrors examples/var_compat/var_compatibility_suite.xml:5-11 --
+        # a scheme three subcycle levels deep. Copilot review (PR #94)
+        # correctly flagged that _iter_schemes_in_group only descended one
+        # level, so a scheme at this depth was silently treated as unused
+        # and its dependency wrongly excluded.
+        suite_xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_suite" version="1.0">
+  <group name="radiation">
+    <subcycle loop="2">
+      <subcycle loop="2">
+        <scheme>deeply_nested_scheme</scheme>
+      </subcycle>
+    </subcycle>
+  </group>
+</suite>
+"""
+        module = build_module(
+            [_scheme_meta_with_dependencies("deeply_nested_scheme", "nested_dep.F90")],
+            [], suite_xml,
+        )
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        deps = [el.text for el in root.findall("./dependencies/dependency")]
+        assert "nested_dep.F90" in deps
+
+    def test_suite_init_scheme_dependency_included(self, build_module):
+        # A suite-level <init> scheme (v2.0 SDF schema, SuiteOp.init_scheme)
+        # is never a group member at all -- Copilot review (PR #94)
+        # correctly flagged that _used_scheme_names only walked group
+        # membership, so this scheme's own dependency was always excluded,
+        # matching real capgen-v1's own used_scheme_names gate (which adds
+        # suite_init_call's scheme name explicitly).
+        suite_xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_suite" version="1.0">
+  <init>init_only_scheme</init>
+  <group name="physics">
+    <scheme>run_scheme</scheme>
+  </group>
+</suite>
+"""
+        module = build_module(
+            [
+                _scheme_meta_with_dependencies("init_only_scheme", "init_dep.F90", phase="init"),
+                _scheme_meta("run_scheme"),
+            ],
+            [], suite_xml,
+        )
+        mlir_text = _module_to_mlir(module)
+        root = build_datatable(mlir_text, [])
+        deps = [el.text for el in root.findall("./dependencies/dependency")]
+        assert "init_dep.F90" in deps
+
 
 # ── write_datatable ───────────────────────────────────────────────────────────
 
