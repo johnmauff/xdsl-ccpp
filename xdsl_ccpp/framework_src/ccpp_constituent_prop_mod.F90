@@ -30,6 +30,11 @@
 ! ccpp_constituent_properties_t does NOT bind a procedure named 'long_name'
 ! (that would conflict with the 'long_name' data component); ptr methods access
 ! the field directly via this%ptr%long_name.
+!
+! errcode and errmsg are OPTIONAL throughout to match the ccpp-framework's own
+! interface (ccpp-framework/src/ccpp_constituent_prop_mod.F90 line ~731). CAM-SIMA
+! physics schemes (e.g. geopotential_temp) call these methods without error
+! arguments; they must compile against this stub in the same way.
 module ccpp_constituent_prop_mod
   use ccpp_kinds, only: kind_phys
   implicit none
@@ -84,6 +89,9 @@ module ccpp_constituent_prop_mod
     procedure :: set_water_species    => ptr_set_water_species
     procedure :: has_default          => ptr_has_default
     procedure :: default_value        => ptr_default_value
+    procedure :: is_advected          => ptr_is_advected
+    procedure :: diagnostic_name      => ptr_diagnostic_name
+    procedure :: units                => ptr_units
   end type ccpp_constituent_prop_ptr_t
 
 contains
@@ -95,11 +103,11 @@ contains
                          vertical_dim, water_species, mixing_ratio_type,    &
                          diag_name)
     class(ccpp_constituent_properties_t), intent(inout) :: this
-    character(len=*), intent(in)           :: std_name
-    character(len=*), intent(in)           :: long_name
-    character(len=*), intent(in)           :: units
-    integer,          intent(out)          :: errcode
-    character(len=*), intent(out)          :: errmsg
+    character(len=*), intent(in)                    :: std_name
+    character(len=*), intent(in)                    :: long_name
+    character(len=*), intent(in)                    :: units
+    integer,          optional, intent(out)          :: errcode
+    character(len=*), optional, intent(out)          :: errmsg
     real(kind_phys),  intent(in), optional :: default_value
     real(kind_phys),  intent(in), optional :: min_value
     real(kind_phys),  intent(in), optional :: molar_mass
@@ -122,171 +130,237 @@ contains
     if (present(water_species))    this%is_water         = water_species
     if (present(mixing_ratio_type)) this%mix_ratio_type  = mixing_ratio_type
     if (present(diag_name))        this%diag_name        = diag_name
-    errcode = 0
-    errmsg  = ''
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg  = ''
   end subroutine instantiate
 
   subroutine cp_standard_name(this, name, errcode, errmsg)
     class(ccpp_constituent_properties_t), intent(in)  :: this
-    character(len=*), intent(out) :: name
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    name = trim(this%std_name); errcode = 0; errmsg = ''
+    character(len=*), intent(out)          :: name
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    name = trim(this%std_name)
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine cp_standard_name
 
   subroutine cp_default_value(this, val, errcode, errmsg)
     class(ccpp_constituent_properties_t), intent(in)  :: this
-    real(kind_phys),  intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%default_val; errcode = 0; errmsg = ''
+    real(kind_phys),  intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%default_val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine cp_default_value
 
   subroutine cp_is_advected(this, adv, errcode, errmsg)
     class(ccpp_constituent_properties_t), intent(in)  :: this
-    logical,          intent(out) :: adv
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    adv = this%is_advected_flag; errcode = 0; errmsg = ''
+    logical,          intent(out)          :: adv
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    adv = this%is_advected_flag
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine cp_is_advected
 
   ! ── ccpp_constituent_prop_ptr_t — all methods access ptr fields directly ─────
 
   subroutine ptr_standard_name(this, name, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    character(len=*), intent(out) :: name
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    name = trim(this%ptr%std_name); errcode = 0; errmsg = ''
+    character(len=*), intent(out)          :: name
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    name = trim(this%ptr%std_name)
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_standard_name
 
   subroutine ptr_long_name(this, name, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    character(len=*), intent(out) :: name
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    name = trim(this%ptr%long_name); errcode = 0; errmsg = ''
+    character(len=*), intent(out)          :: name
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    name = trim(this%ptr%long_name)
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_long_name
 
   subroutine ptr_is_mass_mixing_ratio(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = .true.; errcode = 0; errmsg = ''
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = .true.
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_is_mass_mixing_ratio
 
   subroutine ptr_is_dry(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
     ! Explicit 'dry' type, or infer from standard name containing '_dry_'
     val = (trim(this%ptr%mix_ratio_type) == 'dry') .or. &
           (trim(this%ptr%mix_ratio_type) == '' .and. &
            index(this%ptr%std_name, '_dry_') > 0)
-    errcode = 0; errmsg = ''
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_is_dry
 
   subroutine ptr_is_wet(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = (trim(this%ptr%mix_ratio_type) == 'wet'); errcode = 0; errmsg = ''
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = (trim(this%ptr%mix_ratio_type) == 'wet')
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_is_wet
 
   subroutine ptr_is_moist(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
     ! Moist when neither dry (explicit or name-inferred) nor wet
     val = .not. ((trim(this%ptr%mix_ratio_type) == 'dry') .or. &
                  (trim(this%ptr%mix_ratio_type) == '' .and. &
                   index(this%ptr%std_name, '_dry_') > 0)) .and. &
           .not. (trim(this%ptr%mix_ratio_type) == 'wet')
-    errcode = 0; errmsg = ''
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_is_moist
 
   subroutine ptr_minimum(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    real(kind_phys),  intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%ptr%min_val; errcode = 0; errmsg = ''
+    real(kind_phys),  intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%min_val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_minimum
 
   subroutine ptr_set_minimum(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(inout) :: this
-    real(kind_phys),  intent(in)  :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    this%ptr%min_val = val; errcode = 0; errmsg = ''
+    real(kind_phys),  intent(in)           :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    this%ptr%min_val = val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_set_minimum
 
   subroutine ptr_molar_mass(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    real(kind_phys),  intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%ptr%molar_mass_val; errcode = 0; errmsg = ''
+    real(kind_phys),  intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%molar_mass_val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_molar_mass
 
   subroutine ptr_set_molar_mass(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(inout) :: this
-    real(kind_phys),  intent(in)  :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    this%ptr%molar_mass_val = val; errcode = 0; errmsg = ''
+    real(kind_phys),  intent(in)           :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    this%ptr%molar_mass_val = val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_set_molar_mass
 
   subroutine ptr_is_thermo_active(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%ptr%thermo_active; errcode = 0; errmsg = ''
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%thermo_active
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_is_thermo_active
 
   subroutine ptr_set_thermo_active(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(inout) :: this
-    logical,          intent(in)  :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    this%ptr%thermo_active = val; errcode = 0; errmsg = ''
+    logical,          intent(in)           :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    this%ptr%thermo_active = val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_set_thermo_active
 
   subroutine ptr_is_water_species(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%ptr%is_water; errcode = 0; errmsg = ''
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%is_water
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_is_water_species
 
   subroutine ptr_set_water_species(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(inout) :: this
-    logical,          intent(in)  :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    this%ptr%is_water = val; errcode = 0; errmsg = ''
+    logical,          intent(in)           :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    this%ptr%is_water = val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_set_water_species
 
   subroutine ptr_has_default(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    logical,          intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%ptr%default_val_set; errcode = 0; errmsg = ''
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%default_val_set
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_has_default
 
   subroutine ptr_default_value(this, val, errcode, errmsg)
     class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
-    real(kind_phys),  intent(out) :: val
-    integer,          intent(out) :: errcode
-    character(len=*), intent(out) :: errmsg
-    val = this%ptr%default_val; errcode = 0; errmsg = ''
+    real(kind_phys),  intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%default_val
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
   end subroutine ptr_default_value
+
+  subroutine ptr_is_advected(this, val, errcode, errmsg)
+    class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
+    logical,          intent(out)          :: val
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    val = this%ptr%is_advected_flag
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
+  end subroutine ptr_is_advected
+
+  subroutine ptr_diagnostic_name(this, name, errcode, errmsg)
+    class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
+    character(len=*), intent(out)          :: name
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    name = trim(this%ptr%diag_name)
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
+  end subroutine ptr_diagnostic_name
+
+  subroutine ptr_units(this, units, errcode, errmsg)
+    class(ccpp_constituent_prop_ptr_t), intent(in)  :: this
+    character(len=*), intent(out)          :: units
+    integer,          optional, intent(out) :: errcode
+    character(len=*), optional, intent(out) :: errmsg
+    units = trim(this%ptr%units)
+    if (present(errcode)) errcode = 0
+    if (present(errmsg))  errmsg = ''
+  end subroutine ptr_units
 
 end module ccpp_constituent_prop_mod

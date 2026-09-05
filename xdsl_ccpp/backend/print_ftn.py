@@ -34,6 +34,7 @@ from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApiOp
+from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
@@ -88,7 +89,9 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
         ftn = f"type({ddt})"
     elif kind is not None:
         if base == "character":
-            ftn = f"character(len={kind})"
+            # kind may already be "len=N" (from meta 'kind = len=64') or a bare N
+            len_spec = kind if kind.startswith("len=") else f"len={kind}"
+            ftn = f"character({len_spec})"
         else:
             ftn = f"{base}(kind={kind})"
     else:
@@ -858,6 +861,15 @@ class ftnPrintContext:
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
+            case CCPPConstituentSyncOp():
+                var = op.var_name.data
+                q = op.q_name.data
+                ncol = op.ncol_name.data
+                idx = op.constituent_idx.value.data
+                if op.direction.data == "extract":
+                    self.print(f"{var}(1:{ncol}, :) = {q}(1:{ncol}, :, {idx})")
+                else:
+                    self.print(f"{q}(1:{ncol}, :, {idx}) = {var}(1:{ncol}, :)")
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data
                 self.print(f"if (present({var_name})) then")

@@ -305,35 +305,17 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
         root.set("host_name", host_name)
 
     # ── ccpp_files ────────────────────────────────────────────────────────────
+    # Cap files are listed as <file path="..."/> for cmake/parse_xdsl_ccpp_
+    # datatable.py (which reads them for the Fortran build step).
+    # capgen-v1's ccpp_datafile.py reads the <utilities>/<host_files>/
+    # <suite_files> subcategories from this same element, so both structures
+    # coexist here. parse_xdsl_ccpp_datatable.py skips non-<file path="...">
+    # children to avoid tripping on the subcategory elements.
     files_el = ET.SubElement(root, "ccpp_files")
     for cap in sorted(cap_files):
         f_el = ET.SubElement(files_el, "file")
         f_el.set("path", str(cap))
-
-    # ── capgen_files (capgen_v1_parity_backlog.md Stage 8b) ───────────────────
-    # A minimal, schema-valid stand-in for real capgen-v1's own
-    # <capgen_files><utilities>/<host_files>/<suite_files></capgen_files>
-    # (ccpp-framework-fresh/capgen/generator/datatable.py:124-157) -- NOT a
-    # replacement for <ccpp_files> above, which cmake/parse_xdsl_ccpp_
-    # datatable.py still reads. Exists so real capgen-v1's own vendored
-    # ccpp_datafile.py doesn't raise CCPPDatatableError("Element type,
-    # 'capgen_files', not found in table") on a DatatableReport("utility_files")
-    # query against this file (confirmed directly: it does, with no
-    # <capgen_files> element present at all) -- cam_autogen.py makes exactly
-    # that query (cam_autogen.py:731).
-    #
-    # <utilities> (task #75, capgen_v1_parity_backlog.md): xdsl_ccpp's own
-    # generated ccpp_kinds.F90 (picked out of cap_files by name -- it's
-    # always generated, unconditionally, into the same output directory as
-    # every other cap) plus the framework-shipped support files resolved by
-    # _resolve_framework_f90_files() above (ccpp_constituent_prop_mod.F90/
-    # ccpp_scheme_utils.F90, now vendored inside the installed package at
-    # xdsl_ccpp/framework_src/ -- see that function's own docstring).
-    # <host_files>/<suite_files> stay empty-but-present: neither is actually
-    # queried by cam_autogen.py today, and categorizing cap_files by
-    # filename pattern for them isn't needed to close that specific gap.
-    capgen_files_el = ET.SubElement(root, "capgen_files")
-    utilities_el = ET.SubElement(capgen_files_el, "utilities")
+    utilities_el = ET.SubElement(files_el, "utilities")
     for cap in sorted(cap_files):
         if os.path.basename(str(cap)) == "ccpp_kinds.F90":
             u_el = ET.SubElement(utilities_el, "file")
@@ -341,6 +323,13 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
     for framework_file in _resolve_framework_f90_files():
         u_el = ET.SubElement(utilities_el, "file")
         u_el.text = framework_file
+    ET.SubElement(files_el, "host_files")
+    ET.SubElement(files_el, "suite_files")
+
+    # ── capgen_files ──────────────────────────────────────────────────────────
+    # Empty-but-present so ccpp_datafile.py doesn't error on other queries.
+    capgen_files_el = ET.SubElement(root, "capgen_files")
+    ET.SubElement(capgen_files_el, "utilities")
     ET.SubElement(capgen_files_el, "host_files")
     ET.SubElement(capgen_files_el, "suite_files")
 

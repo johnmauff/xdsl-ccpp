@@ -20,6 +20,7 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccExitDataOp,
+    ConstituentApiOp,
     DerivedType,
     HostVarRefOp,
     SetStringOp,
@@ -824,6 +825,300 @@ class CCPPCAP(ModulePass):
         return _render_suite_variables_subroutine(suite_vars)
 
 
+    @staticmethod
+    def _generate_cam_lifecycle_wrappers(suite_descriptions, public_fns) -> "ConstituentApiOp":
+        """Generate cam_ccpp_physics_* lifecycle wrapper subroutines for the CAM-SIMA
+        host model interface.
+
+        phys_comp.F90 (xdsl-ccpp-adapter branch) calls these with a simplified
+        signature -- just suite_name (and suite_part for _run) -- and reads
+        errmsg/errcode from physics_types module-level variables rather than
+        receiving them as dummy arguments. These wrappers bridge the gap between
+        that simplified caller interface and the richer xdsl_ccpp-generated
+        ccpp_* internal dispatchers.
+
+        The constituent minimum-value array (qmin) passed to ccpp_physics_run is
+        built here from lc_all_constituents%min_val (module-level in cam_ccpp_cap).
+        lc_const_props (also module-level) supplies cprops/qprops to the per-group
+        init/final and run dispatchers.
+
+        Only calls ccpp_physics_init / ccpp_physics_final when the corresponding
+        per-group callee exists in public_fns (i.e. at least one scheme in the
+        suite has a _init/_final entry point), mirroring the condition that gates
+        generation of those dispatchers in lifecycle_specs.
+        """
+        lines = []
+
+        # Determine which per-group lifecycle dispatchers were actually generated
+        def _has_group_lifecycle(infix):
+            return any(
+                f"{sn}_{infix}_{g.attributes['name']}" in public_fns
+                for sn, sd in suite_descriptions.items()
+                for g in sd
+            )
+
+        has_physics_init  = _has_group_lifecycle("init")
+        has_physics_final = _has_group_lifecycle("final")
+        has_tsinit  = _has_group_lifecycle("timestep_init")
+        has_tsfinal = _has_group_lifecycle("timestep_final")
+
+        # Shared USE preamble fragments reused below
+        _use_errs  = "  use physics_types, only: lc_errmsg => errmsg, lc_errcode => errcode"
+        _use_cols  = "  use physics_grid,  only: lc_col_start => col_start, lc_col_end => col_end"
+
+        # --- cam_ccpp_physics_register ---
+        lines += [
+            "subroutine cam_ccpp_physics_register(suite_name)",
+            _use_errs,
+            "  character(len=*), intent(in) :: suite_name",
+            "  call ccpp_register(suite_name, lc_errmsg, lc_errcode)",
+            "end subroutine cam_ccpp_physics_register",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_initialize ---
+        lines += [
+            "subroutine cam_ccpp_physics_initialize(suite_name)",
+            _use_errs,
+        ]
+        if has_physics_init:
+            lines.append(_use_cols)
+        lines += [
+            "  character(len=*), intent(in) :: suite_name",
+            "  call ccpp_init(suite_name, lc_errmsg, lc_errcode)",
+            "  if (lc_errcode /= 0) return",
+        ]
+        if has_physics_init:
+            first = True
+            for sn, sd in suite_descriptions.items():
+                groups = [g.attributes["name"] for g in sd
+                          if f"{sn}_init_{g.attributes['name']}" in public_fns]
+                if not groups:
+                    continue
+                kw = "if" if first else "else if"
+                first = False
+                lines.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+                for grp in groups:
+                    lines.append(
+                        f"    call ccpp_physics_init(suite_name, '{grp}', "
+                        f"lc_col_start, lc_col_end, lc_const_props, "
+                        f"lc_errmsg, lc_errcode)"
+                    )
+                    lines.append("    if (lc_errcode /= 0) return")
+            if not first:
+                lines += [
+                    "  else",
+                    "    write(lc_errmsg, '(3a)') 'cam_ccpp_physics_initialize: no suite named ', "
+                    "trim(suite_name), ' found'",
+                    "    lc_errcode = 1",
+                    "  end if",
+                ]
+        lines += [
+            "end subroutine cam_ccpp_physics_initialize",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_finalize ---
+        lines += [
+            "subroutine cam_ccpp_physics_finalize(suite_name)",
+            _use_errs,
+        ]
+        if has_physics_final:
+            lines.append(_use_cols)
+        lines.append("  character(len=*), intent(in) :: suite_name")
+        if has_physics_final:
+            first = True
+            for sn, sd in suite_descriptions.items():
+                groups = [g.attributes["name"] for g in sd
+                          if f"{sn}_final_{g.attributes['name']}" in public_fns]
+                if not groups:
+                    continue
+                kw = "if" if first else "else if"
+                first = False
+                lines.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+                for grp in groups:
+                    lines.append(
+                        f"    call ccpp_physics_final(suite_name, '{grp}', "
+                        f"lc_col_start, lc_col_end, lc_const_props, "
+                        f"lc_errmsg, lc_errcode)"
+                    )
+                    lines.append("    if (lc_errcode /= 0) return")
+            if not first:
+                lines += [
+                    "  else",
+                    "    write(lc_errmsg, '(3a)') 'cam_ccpp_physics_finalize: no suite named ', "
+                    "trim(suite_name), ' found'",
+                    "    lc_errcode = 1",
+                    "  end if",
+                    "  if (lc_errcode /= 0) return",
+                ]
+        lines += [
+            "  call ccpp_final(suite_name, lc_errmsg, lc_errcode)",
+            "end subroutine cam_ccpp_physics_finalize",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_timestep_initial ---
+        lines += [
+            "subroutine cam_ccpp_physics_timestep_initial(suite_name)",
+            _use_errs,
+            _use_cols,
+            "  character(len=*), intent(in) :: suite_name",
+        ]
+        if has_tsinit:
+            first = True
+            for sn, sd in suite_descriptions.items():
+                groups = [g.attributes["name"] for g in sd
+                          if f"{sn}_timestep_init_{g.attributes['name']}" in public_fns]
+                if not groups:
+                    continue
+                kw = "if" if first else "else if"
+                first = False
+                lines.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+                for grp in groups:
+                    lines.append(
+                        f"    call ccpp_physics_timestep_init(suite_name, '{grp}', "
+                        f"lc_col_start, lc_col_end, lc_errmsg, lc_errcode)"
+                    )
+                    lines.append("    if (lc_errcode /= 0) return")
+            if not first:
+                lines += [
+                    "  else",
+                    "    write(lc_errmsg, '(3a)') 'cam_ccpp_physics_timestep_initial: "
+                    "no suite named ', trim(suite_name), ' found'",
+                    "    lc_errcode = 1",
+                    "  end if",
+                ]
+        else:
+            lines += [
+                "  lc_errcode = 0",
+                "  lc_errmsg = ''",
+            ]
+        lines += [
+            "end subroutine cam_ccpp_physics_timestep_initial",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_run ---
+        # qmin is built by querying each constituent's minimum value through
+        # the lc_const_props%minimum() method (public API on
+        # ccpp_constituent_prop_ptr_t, works with both the xdsl_ccpp stub and
+        # the real ccpp-framework module) rather than accessing %min_val
+        # directly (a private field in the real framework).
+        lines += [
+            "subroutine cam_ccpp_physics_run(suite_name, suite_part)",
+            _use_errs,
+            _use_cols,
+            "  use ccpp_kinds, only: kind_phys",
+            "  character(len=*), intent(in) :: suite_name",
+            "  character(len=*), intent(in) :: suite_part",
+            "  integer :: lc_n, lc_i",
+            "  real(kind=kind_phys), allocatable :: lc_qmin(:)",
+            "  if (allocated(lc_const_props)) then",
+            "    lc_n = size(lc_const_props)",
+            "  else",
+            "    lc_n = 0",
+            "  end if",
+            "  allocate(lc_qmin(lc_n))",
+            "  do lc_i = 1, lc_n",
+            "    call lc_const_props(lc_i)%minimum(lc_qmin(lc_i))",
+            "  end do",
+            "  call ccpp_physics_run(suite_name, suite_part, lc_col_start, lc_col_end, "
+            "lc_qmin, lc_const_props, lc_errmsg, lc_errcode)",
+            "  deallocate(lc_qmin)",
+            "end subroutine cam_ccpp_physics_run",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_timestep_final ---
+        lines += [
+            "subroutine cam_ccpp_physics_timestep_final(suite_name)",
+            _use_errs,
+            _use_cols,
+            "  character(len=*), intent(in) :: suite_name",
+        ]
+        if has_tsfinal:
+            first = True
+            for sn, sd in suite_descriptions.items():
+                groups = [g.attributes["name"] for g in sd
+                          if f"{sn}_timestep_final_{g.attributes['name']}" in public_fns]
+                if not groups:
+                    continue
+                kw = "if" if first else "else if"
+                first = False
+                lines.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+                for grp in groups:
+                    lines.append(
+                        f"    call ccpp_physics_timestep_final(suite_name, '{grp}', "
+                        f"lc_col_start, lc_col_end, lc_const_props, "
+                        f"lc_errmsg, lc_errcode)"
+                    )
+                    lines.append("    if (lc_errcode /= 0) return")
+            if not first:
+                lines += [
+                    "  else",
+                    "    write(lc_errmsg, '(3a)') 'cam_ccpp_physics_timestep_final: "
+                    "no suite named ', trim(suite_name), ' found'",
+                    "    lc_errcode = 1",
+                    "  end if",
+                ]
+        else:
+            lines += [
+                "  lc_errcode = 0",
+                "  lc_errmsg = ''",
+            ]
+        lines += [
+            "end subroutine cam_ccpp_physics_timestep_final",
+            "",
+        ]
+
+        # --- ccpp_physics_suite_schemes ---
+        # Returns the list of scheme names (Fortran module names) for a suite.
+        # Used by runtime_opts.F90 to identify which scheme namelists to read.
+        # Scheme names are the <scheme> element names from the suite XML, in order,
+        # deduplicated while preserving first-occurrence order.
+        lines += [
+            "subroutine ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)",
+            "  character(len=*),              intent(in)    :: suite_name",
+            "  character(len=*), allocatable, intent(out)   :: scheme_list(:)",
+            "  character(len=512),            intent(out)   :: errmsg",
+            "  integer,                       intent(out)   :: errflg",
+            "  errflg = 0",
+            "  errmsg = ''",
+        ]
+        first = True
+        for sn, sd in suite_descriptions.items():
+            seen: "dict[str, None]" = {}
+            for group in sd:
+                for scheme in _iter_schemes(group):
+                    seen[scheme.attributes["name"]] = None
+            scheme_names_list = list(seen.keys())
+            kw = "if" if first else "else if"
+            first = False
+            lines.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+            lines.append(f"    allocate(scheme_list({len(scheme_names_list)}))")
+            for idx, sname in enumerate(scheme_names_list, 1):
+                lines.append(f"    scheme_list({idx}) = '{sname}'")
+        if not first:
+            lines += [
+                "  else",
+                "    write(errmsg, '(3a)') 'No suite named ', trim(suite_name), ' found'",
+                "    errflg = 1",
+                "  end if",
+            ]
+        lines.append("end subroutine ccpp_physics_suite_schemes")
+
+        public_names = [
+            "cam_ccpp_physics_register",
+            "cam_ccpp_physics_initialize",
+            "cam_ccpp_physics_finalize",
+            "cam_ccpp_physics_timestep_initial",
+            "cam_ccpp_physics_run",
+            "cam_ccpp_physics_timestep_final",
+            "ccpp_physics_suite_schemes",
+        ]
+        return ConstituentApiOp("\n".join(lines), public_names)
+
 
     def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns,
                                    ddt_source_module=None, protected_std_names=None,
@@ -1217,6 +1512,14 @@ class CCPPCAP(ModulePass):
                 if _key not in shared_seen_host_globals:
                     shared_seen_host_globals.add(_key)
                     all_globals.append(stub)
+
+        # Append CAM-SIMA-specific lifecycle wrappers (cam_ccpp_physics_*) so
+        # that phys_comp.F90's simplified call convention (suite_name only, or
+        # suite_name + suite_part for _run) is satisfied without changing the
+        # inner ccpp_* dispatchers used by xdsl_ccpp's own examples/tests.
+        all_definitions.append(
+            self._generate_cam_lifecycle_wrappers(suite_descriptions, public_fns)
+        )
 
         module_ops = all_globals + all_definitions + all_declarations
 

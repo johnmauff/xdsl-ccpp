@@ -1349,6 +1349,37 @@ class RowMajorWriteBackOp(IRDLOperation):
         )
 
 
+@irdl_op_definition
+class ConstituentSyncOp(IRDLOperation):
+    """Sync one advected constituent between its module-level array and the
+    3D constituent array passed to the suite cap run subroutine.
+
+    direction="extract":   var_name(1:ncol_name, :) = q_name(1:ncol_name, :, idx)
+    direction="writeback": q_name(1:ncol_name, :, idx) = var_name(1:ncol_name, :)
+
+    Injected by SuiteCAP around the scheme calls in a _run subroutine when
+    the suite owns module-level allocatables for advected constituents.
+    """
+
+    name = "ccpp_utils.constituent_sync"
+
+    var_name       = prop_def(StringAttr)   # module-level var, e.g. "qv"
+    q_name         = prop_def(StringAttr)   # constituent array, e.g. "q"
+    ncol_name      = prop_def(StringAttr)   # column count variable, e.g. "ncol"
+    constituent_idx = prop_def(IntegerAttr) # 1-based index in q's 3rd dimension
+    direction      = prop_def(StringAttr)   # "extract" or "writeback"
+
+    def __init__(self, var_name: str, q_name: str, ncol_name: str,
+                 constituent_idx: int, direction: str):
+        super().__init__(properties={
+            "var_name":        StringAttr(var_name),
+            "q_name":          StringAttr(q_name),
+            "ncol_name":       StringAttr(ncol_name),
+            "constituent_idx": IntegerAttr.from_int_and_width(constituent_idx, 32),
+            "direction":       StringAttr(direction),
+        })
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -1393,6 +1424,7 @@ CCPPUtils = Dialect(
         RowMajorWriteBackOp,
         VerticalFlipOp,
         VerticalFlipWriteBackOp,
+        ConstituentSyncOp,
     ],
     [RealKindType, DerivedType],
 )

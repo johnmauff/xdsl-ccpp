@@ -21,7 +21,7 @@ def _collect_constituent_info(meta_data):
     Scans all SCHEME tables to find:
       - dynamic_array_names: bare arg names in _register tables with
         allocatable=True, type=ccpp_constituent_properties_t
-      - fixed_advected: list of (std_name, units, default_val) for args
+      - fixed_advected: list of (std_name, units, default_val, local_name) for args
         with advected=.true. in non-register scheme tables
       - references_count: True if any scheme arg anywhere declares
         standard_name=number_of_ccpp_constituents. Needed as its own signal
@@ -81,9 +81,34 @@ def _collect_constituent_info(meta_data):
                         if fn_arg.hasAttr("default_value")
                         else None
                     )
+                    # Use local variable name as diagnostic name, matching
+                    # capgen-v1's local_name_to_diag_name default.
+                    local_name = _bare(fn_arg.name)
                     if std_name not in seen_fixed:
                         seen_fixed.add(std_name)
-                        fixed_advected.append((std_name, units, default_val))
+                        fixed_advected.append((std_name, units, default_val, local_name))
+
+    # Filter: drop wrt_dry_air constituents when the corresponding
+    # wrt_moist_air_and_condensed_water form is also registered.  In
+    # CAM-SIMA the dry-air form is a derived representation (produced by
+    # wet_to_dry_* converter schemes) not an independent advected tracer;
+    # keeping both would register duplicate constituent slots and pass a
+    # blank diag_name for the dry form to sima_state_diagnostics, causing
+    # a runtime crash.  This matches capgen-v1 behavior, which derives the
+    # constituent list from the host model registry (moist forms only).
+    moist_names = {
+        s for s, *_ in fixed_advected
+        if "_wrt_moist_air_and_condensed_water" in s
+    }
+    fixed_advected = [
+        entry for entry in fixed_advected
+        if not (
+            entry[0].endswith("_wrt_dry_air")
+            and entry[0].replace("_wrt_dry_air",
+                                 "_wrt_moist_air_and_condensed_water")
+            in moist_names
+        )
+    ]
 
     return dynamic_array_names, fixed_advected, references_count
 
@@ -254,7 +279,7 @@ def _generate_constituent_api(
     type_defs_text = "\n".join(type_def_lines) if type_def_lines else None
 
     # ── Helper: dedup fragment ───────────────────────────────────────────
-    def _dedup_block(src_sname, src_units, src_assign, dst_tmp, indent="    "):
+    def _dedup_block(src_sname, src_units, src_assign, dst_tmp, indent="    ", err_var="errflg"):
         lines = []
         lines.append(f"{indent}lc_found = .false.")
         lines.append(f"{indent}do lc_j = 1, lc_num")
@@ -268,7 +293,7 @@ def _generate_constituent_api(
         lines.append(
             f"{indent}        ' but an incompatible constituent with this name already exists'"
         )
-        lines.append(f"{indent}      errflg = 1")
+        lines.append(f"{indent}      {err_var} = 1")
         lines.append(f"{indent}      return")
         lines.append(f"{indent}    end if")
         lines.append(f"{indent}    exit")
@@ -314,7 +339,7 @@ def _generate_constituent_api(
         ]
 
     # ── 1. is_scheme_constituent ─────────────────────────────────────────
-    fixed_names_str = ", ".join(f"'{s}'" for s, _u, _d in fixed_advected)
+    fixed_names_str = ", ".join(f"'{s}'" for s, _u, _d, _ln in fixed_advected)
     isc_lines = [
         f"  subroutine {h}_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg{_instance_arg})",
         f"    character(len=*), intent(in) :: std_name",
@@ -382,11 +407,11 @@ def _generate_constituent_api(
     _lc_props = ref("lc_const_props")
     rc_sig_extra = f", {instance_local_name}, {ninstances_local_name}" if multi_instance else ""
     rc_lines = [
-        f"  subroutine {h}_ccpp_register_constituents(host_constituents, errmsg, errflg{rc_sig_extra})",
+        f"  subroutine {h}_ccpp_register_constituents(host_constituents, errmsg, errcode{rc_sig_extra})",
         f"    use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents",
         f"    type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)",
         f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    integer, intent(out) :: errflg",
+        f"    integer, intent(out) :: errcode",
     ]
     if multi_instance:
         rc_lines += [
@@ -397,7 +422,7 @@ def _generate_constituent_api(
         f"    integer :: lc_max, lc_num, lc_i, lc_j",
         f"    logical :: lc_found",
         f"    type(ccpp_constituent_properties_t), allocatable :: lc_tmp(:)",
-        f"    errflg = 0",
+        f"    errcode = 0",
         f"    errmsg = ''",
     ]
     if multi_instance:
@@ -428,9 +453,10 @@ def _generate_constituent_api(
             f"{dyn_ref}(lc_i)",
             "lc_tmp",
             indent="        ",
+            err_var="errcode",
         )
         rc_lines += [f"      end do", f"    end if"]
-    for std_name_f, units_f, default_val_f in fixed_advected:
+    for std_name_f, units_f, default_val_f, local_name_f in fixed_advected:
         rc_lines += [
             f"    lc_found = .false.",
             f"    do lc_j = 1, lc_num",
@@ -440,7 +466,7 @@ def _generate_constituent_api(
             f"          write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: "
             f"Trying to add constituent ', '{std_name_f}', &",
             f"            ' but an incompatible constituent with this name already exists'",
-            f"          errflg = 1",
+            f"          errcode = 1",
             f"          return",
             f"        end if",
             f"        exit",
@@ -452,13 +478,14 @@ def _generate_constituent_api(
         long_name_f = std_name_f.replace('_', ' ').capitalize()
         inst_args = (
             f"std_name='{std_name_f}', long_name='{long_name_f}', "
-            f"units='{units_f}', errcode=errflg, errmsg=errmsg, advected=.true."
+            f"units='{units_f}', diag_name='{local_name_f}', "
+            f"errcode=errcode, errmsg=errmsg, advected=.true."
         )
         if default_val_f is not None:
             inst_args += f", default_value={default_val_f}"
         rc_lines += [
             f"      call lc_tmp(lc_num)%instantiate({inst_args})",
-            f"      if (errflg /= 0) return",
+            f"      if (errcode /= 0) return",
             f"    end if",
         ]
     rc_lines += [f"    do lc_i = 1, size(host_constituents)"]
@@ -468,6 +495,7 @@ def _generate_constituent_api(
         "host_constituents(lc_i)",
         "lc_tmp",
         indent="      ",
+        err_var="errcode",
     )
     rc_lines += [
         f"    end do",
@@ -486,12 +514,13 @@ def _generate_constituent_api(
 
     # ── 4. number_constituents ───────────────────────────────────────────
     nc_lines = [
-        f"  subroutine {h}_ccpp_number_constituents(num_advected, errmsg, errflg{_instance_arg})",
+        f"  subroutine {h}_ccpp_number_constituents(num_advected, errmsg, errcode, advected{_instance_arg})",
         f"    integer, intent(out) :: num_advected",
         f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    integer, intent(out) :: errflg",
+        f"    integer, intent(out) :: errcode",
+        f"    logical, optional, intent(in) :: advected",
         *_instance_decl,
-        f"    errflg = 0",
+        f"    errcode = 0",
         f"    errmsg = ''",
     ]
     if multi_instance:

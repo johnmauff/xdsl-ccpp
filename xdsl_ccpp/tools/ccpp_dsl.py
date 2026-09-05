@@ -225,6 +225,20 @@ class ccppMain:
         else:
             options_db["host_files"] = []
 
+        # Auto-include the bundled CCPP framework constituent DDT declarations.
+        # capgen-v1 does the same in ccpp_capgen.py (line 646): it appends
+        # ccpp_constituent_prop_mod.meta from its own _SRC_ROOT so callers
+        # never have to pass it explicitly.  Mirroring that here keeps
+        # cam_autogen.py free of xdsl_ccpp-specific host-file workarounds.
+        _framework_src = os.path.join(
+            os.path.dirname(__file__), "..", "framework_src"
+        )
+        _const_meta = os.path.abspath(
+            os.path.join(_framework_src, "ccpp_constituent_prop_mod.meta")
+        )
+        if os.path.isfile(_const_meta) and _const_meta not in options_db["host_files"]:
+            options_db["host_files"].append(_const_meta)
+
         all_inputs = (
             options_db["suites"] + options_db["scheme_files"] + options_db["host_files"]
         )
@@ -325,7 +339,7 @@ class ccppMain:
         suites_arg = ",".join(self.options_db["suites"])
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = ["python3", "-m", "xdsl_ccpp.frontend.ccpp_xml", "--suites", suites_arg]
+        cmd = [sys.executable, "-m", "xdsl_ccpp.frontend.ccpp_xml", "--suites", suites_arg]
         if self.options_db["scheme_files"]:
             cmd += ["--scheme-files", ",".join(self.options_db["scheme_files"])]
         if self.options_db["host_files"]:
@@ -341,7 +355,7 @@ class ccppMain:
         py_file = self.options_db["py"]
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = ["python3", py_file]
+        cmd = [sys.executable, py_file]
         if self.options_db.get("legacy_mode"):
             # py_api.py has no argparse of its own (it's the user's own
             # script); it scans sys.argv for this token directly, mirroring
@@ -610,7 +624,7 @@ class ccppMain:
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         pipeline = self._build_pipeline()
         cmd = [
-            "python3", "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
+            sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
             "-p", pipeline, "-t", "ftn",
         ]
         self.run_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer")
@@ -659,7 +673,7 @@ class ccppMain:
         hdr_out = os.path.join(tmp_dir, "ccpp.h")
         pipeline = self._build_pipeline()
         cmd = [
-            "python3", "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
+            sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
             "-p", pipeline, "-t", "cpp_header",
         ]
         self.run_pipeline_stage(cmd, hdr_out, "Generating C++ headers")
