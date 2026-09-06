@@ -3459,13 +3459,23 @@ class GenerateSuiteSubroutine(RewritePattern):
             constituent_reextract_ops, _ = self._build_constituent_sync_ops(
                 suite_model, data_ops, input_arg_list
             )
-            call_ops = (
-                pre_q_ops
-                + list(constituent_writeback_ops)   # q[:,i]←qv before qneg
-                + mod_q_ops                          # qneg clips q in-place
-                + constituent_reextract_ops          # re-extract qv←q[:,i] after qneg
-                + ro_q_ops                           # geopotential_temp etc.
-            )
+            # Writebacks (step 3) and re-extracts (step 5) are only needed
+            # when mod_q_seq is non-empty (e.g. qneg modifying the 3D
+            # constituent array in-place).  When no scheme writes to
+            # ccpp_constituents, the writeback is a no-op and -- more
+            # importantly -- omitting it lets the printer keep carr as
+            # intent(in) rather than upgrading it to intent(inout), which
+            # would be a Fortran constraint violation.
+            if mod_q_seq:
+                call_ops = (
+                    pre_q_ops
+                    + list(constituent_writeback_ops)   # q[:,i]←qv before qneg
+                    + mod_q_ops                          # qneg clips q in-place
+                    + constituent_reextract_ops          # re-extract qv←q[:,i] after qneg
+                    + ro_q_ops                           # geopotential_temp etc.
+                )
+            else:
+                call_ops = pre_q_ops + ro_q_ops
             constituent_writeback_ops = []  # already embedded in call_ops above
         else:
             call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)

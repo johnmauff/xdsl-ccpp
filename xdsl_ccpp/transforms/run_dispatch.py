@@ -1975,7 +1975,7 @@ def _generate_run_fn(
         fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type,
         wrapper_inout_echo_args,
     )
-    return cap_fn, all_decls, all_host_global_ops
+    return cap_fn, all_decls, all_host_global_ops, non_host_std_to_canonical
 
 def _generate_suite_part_list_fn(
     suite_part_entries,
