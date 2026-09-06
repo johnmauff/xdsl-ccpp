@@ -1508,14 +1508,19 @@ class CCPPCAP(ModulePass):
         # failure whenever a suite both generates a host cap and uses
         # constituents.
         if ddt_source_module:
+            _uses_constituents = bool(
+                dyn_names or fixed_adv or scratch_var_list or references_count
+            )
             arg_tables_iterable = (
                 arg_table
                 for props in meta_data.values()
                 for arg_table in props.arg_tables.values()
             )
             for stub in _collect_ddt_use_stubs(arg_tables_iterable, ddt_source_module):
-                _key = (stub.sym_name.data,
-                        stub.attributes.get("module", StringAttr("")).data)
+                _mod = stub.attributes.get("module", StringAttr("")).data
+                if _mod == "ccpp_constituent_prop_mod" and not _uses_constituents:
+                    continue
+                _key = (stub.sym_name.data, _mod)
                 if _key not in shared_seen_host_globals:
                     shared_seen_host_globals.add(_key)
                     all_globals.append(stub)
