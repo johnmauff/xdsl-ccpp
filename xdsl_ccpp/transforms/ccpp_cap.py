@@ -765,6 +765,13 @@ class CCPPCAP(ModulePass):
     # called from C++ / Kokkos host models.
     bind_c: bool = False
 
+    # When True, generate CAM-SIMA-specific cam_ccpp_physics_* lifecycle wrapper
+    # subroutines that read errmsg/errcode from physics_types and col_start/col_end
+    # from physics_grid (CAM-SIMA module-level variables).  Off by default so
+    # non-CAM builds (examples, CI compile tests) are not required to provide
+    # those modules.
+    cam_host: bool = False
+
 
     def _derive_camel_case_name(self, suite_name: str) -> str:
         """Convert a snake_case suite name to CamelCase, stripping any '_suite' suffix."""
@@ -1517,9 +1524,12 @@ class CCPPCAP(ModulePass):
         # that phys_comp.F90's simplified call convention (suite_name only, or
         # suite_name + suite_part for _run) is satisfied without changing the
         # inner ccpp_* dispatchers used by xdsl_ccpp's own examples/tests.
-        all_definitions.append(
-            self._generate_cam_lifecycle_wrappers(suite_descriptions, public_fns)
-        )
+        # Gated on cam_host=true so non-CAM builds (examples, CI) don't need
+        # the physics_types / physics_grid modules to be present.
+        if self.cam_host:
+            all_definitions.append(
+                self._generate_cam_lifecycle_wrappers(suite_descriptions, public_fns)
+            )
 
         module_ops = all_globals + all_definitions + all_declarations
 

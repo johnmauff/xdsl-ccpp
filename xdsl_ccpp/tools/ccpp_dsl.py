@@ -169,6 +169,17 @@ class ccppMain:
                  "(<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.",
         )
         parser.add_argument(
+            "--cam-host",
+            action="store_true",
+            default=False,
+            help="Generate CAM-SIMA-specific cam_ccpp_physics_* lifecycle wrapper "
+                 "subroutines in the ccpp_cap module.  These wrappers read "
+                 "errmsg/errcode from the physics_types module and col_start/col_end "
+                 "from physics_grid (CAM-SIMA module-level variables) rather than "
+                 "receiving them as dummy arguments.  Off by default so non-CAM "
+                 "builds are not required to provide those modules.",
+        )
+        parser.add_argument(
             "--legacy-mode",
             action="store_true",
             default=False,
@@ -550,6 +561,8 @@ class ccppMain:
             cap_opts.append(f"host_name={self.options_db['host_name']}")
         if bind_c:
             cap_opts.append("bind_c=true")
+        if self.options_db.get("cam_host"):
+            cap_opts.append("cam_host=true")
         if cap_opts:
             ccpp_cap_pass += "{" + " ".join(cap_opts) + "}"
         directive = self.options_db.get("directive")
