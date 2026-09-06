@@ -304,32 +304,41 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
     if host_name:
         root.set("host_name", host_name)
 
+    # Utility files: ccpp_kinds.F90 (generated, if present) + bundled
+    # framework F90 files. Collected once and written into both <ccpp_files>
+    # and <capgen_files> because xdsl_ccpp's cmake reader uses <ccpp_files>
+    # while capgen-v1's ccpp_datafile.py DatatableReport("utility_files")
+    # reads from <capgen_files>.
+    utility_file_texts: list[str] = []
+    for cap in sorted(cap_files):
+        if os.path.basename(str(cap)) == "ccpp_kinds.F90":
+            utility_file_texts.append(str(cap))
+    for framework_file in _resolve_framework_f90_files():
+        utility_file_texts.append(framework_file)
+
     # ── ccpp_files ────────────────────────────────────────────────────────────
     # Cap files are listed as <file path="..."/> for cmake/parse_xdsl_ccpp_
     # datatable.py (which reads them for the Fortran build step).
-    # capgen-v1's ccpp_datafile.py reads the <utilities>/<host_files>/
-    # <suite_files> subcategories from this same element, so both structures
-    # coexist here. parse_xdsl_ccpp_datatable.py skips non-<file path="...">
-    # children to avoid tripping on the subcategory elements.
+    # parse_xdsl_ccpp_datatable.py skips non-<file path="..."> children to
+    # avoid tripping on the subcategory elements.
     files_el = ET.SubElement(root, "ccpp_files")
     for cap in sorted(cap_files):
         f_el = ET.SubElement(files_el, "file")
         f_el.set("path", str(cap))
     utilities_el = ET.SubElement(files_el, "utilities")
-    for cap in sorted(cap_files):
-        if os.path.basename(str(cap)) == "ccpp_kinds.F90":
-            u_el = ET.SubElement(utilities_el, "file")
-            u_el.text = str(cap)
-    for framework_file in _resolve_framework_f90_files():
+    for u_text in utility_file_texts:
         u_el = ET.SubElement(utilities_el, "file")
-        u_el.text = framework_file
+        u_el.text = u_text
     ET.SubElement(files_el, "host_files")
     ET.SubElement(files_el, "suite_files")
 
     # ── capgen_files ──────────────────────────────────────────────────────────
-    # Empty-but-present so ccpp_datafile.py doesn't error on other queries.
+    # capgen-v1's ccpp_datafile.py reads utility_files from this section.
     capgen_files_el = ET.SubElement(root, "capgen_files")
-    ET.SubElement(capgen_files_el, "utilities")
+    capgen_utilities_el = ET.SubElement(capgen_files_el, "utilities")
+    for u_text in utility_file_texts:
+        u_el = ET.SubElement(capgen_utilities_el, "file")
+        u_el.text = u_text
     ET.SubElement(capgen_files_el, "host_files")
     ET.SubElement(capgen_files_el, "suite_files")
 

@@ -2940,10 +2940,19 @@ class GenerateSuiteSubroutine(RewritePattern):
         self, fw_arg, fw_std_key, var_name, suite_entry, is_alloc_phase,
         suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+        pending_only=False,
     ) -> None:
         """Task #30's mechanism 1/2: decide whether and how fw_arg gets
         allocated during this phase. A no-op unless is_alloc_phase.
         Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
+
+        pending_only -- when True, only the deferred (pending_allocs) path
+        is active; the immediate LazyAllocOp path is skipped.  Used for
+        _register phase: variables whose dimensions are produced by a
+        same-phase scheme call must be allocated right after that scheme
+        runs, but variables with already-resolvable dimensions should be
+        deferred to _init (so _register allocates only what truly can't
+        wait).
         """
         if not is_alloc_phase:
             return
@@ -2997,7 +3006,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     producer_scheme=_pending_producer,
                 )
             )
-        elif dim_var_refs:
+        elif dim_var_refs and not pending_only:
             kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
             init_val = (
                 fw_arg.getAttr("default_value")
@@ -3143,14 +3152,20 @@ class GenerateSuiteSubroutine(RewritePattern):
                     and _fw_std_key in already_scheduled_allocs
                 )
                 _is_alloc_phase = (
-                    tgt_subroutine_postfix == "_init"
+                    tgt_subroutine_postfix in ("_init", "_register")
                     or (physics_mode and not _already_scheduled)
                 )
+                # In _register, only allow deferred (pending_allocs) path:
+                # variables whose dimensions are immediately resolvable belong
+                # in _init, not _register. Pending-producer vars must stay in
+                # _register since their dimension isn't known until the
+                # producer scheme runs.
+                _pending_only = tgt_subroutine_postfix == "_register"
                 self._maybe_schedule_framework_var_alloc(
                     fw_arg, _fw_std_key, _var_name, _suite_entry, _is_alloc_phase,
                     suite_model, all_args, data_ops, framework_ref_ops,
                     suite_use_stubs, arg_tables, already_scheduled_allocs,
-                    pending_allocs, lazy_alloc_ops,
+                    pending_allocs, lazy_alloc_ops, pending_only=_pending_only,
                 )
 
                 # Tagged (never a plain string, so it can't collide with any

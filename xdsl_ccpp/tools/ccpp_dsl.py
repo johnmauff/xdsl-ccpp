@@ -225,20 +225,6 @@ class ccppMain:
         else:
             options_db["host_files"] = []
 
-        # Auto-include the bundled CCPP framework constituent DDT declarations.
-        # capgen-v1 does the same in ccpp_capgen.py (line 646): it appends
-        # ccpp_constituent_prop_mod.meta from its own _SRC_ROOT so callers
-        # never have to pass it explicitly.  Mirroring that here keeps
-        # cam_autogen.py free of xdsl_ccpp-specific host-file workarounds.
-        _framework_src = os.path.join(
-            os.path.dirname(__file__), "..", "framework_src"
-        )
-        _const_meta = os.path.abspath(
-            os.path.join(_framework_src, "ccpp_constituent_prop_mod.meta")
-        )
-        if os.path.isfile(_const_meta) and _const_meta not in options_db["host_files"]:
-            options_db["host_files"].append(_const_meta)
-
         all_inputs = (
             options_db["suites"] + options_db["scheme_files"] + options_db["host_files"]
         )
@@ -342,8 +328,17 @@ class ccppMain:
         cmd = [sys.executable, "-m", "xdsl_ccpp.frontend.ccpp_xml", "--suites", suites_arg]
         if self.options_db["scheme_files"]:
             cmd += ["--scheme-files", ",".join(self.options_db["scheme_files"])]
-        if self.options_db["host_files"]:
-            cmd += ["--host-files", ",".join(self.options_db["host_files"])]
+        # Mirror capgen-v1 (ccpp_capgen.py:646): auto-include the bundled
+        # ccpp_constituent_prop_mod.meta so callers never have to pass it.
+        host_files = list(self.options_db["host_files"])
+        _const_meta = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "framework_src",
+                         "ccpp_constituent_prop_mod.meta")
+        )
+        if os.path.isfile(_const_meta) and _const_meta not in host_files:
+            host_files.append(_const_meta)
+        if host_files:
+            cmd += ["--host-files", ",".join(host_files)]
         if self.options_db.get("legacy_mode"):
             cmd.append("--legacy-mode")
 
