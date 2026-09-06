@@ -33,13 +33,6 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
-// CHECK-NEXT:        %ncols = "ccpp_utils.host_var_ref"() <{var_name = "ncols", module_name = "test_host_mod"}> : () -> memref<i32>
-// CHECK-NEXT:        %pver = "ccpp_utils.host_var_ref"() <{var_name = "pver", module_name = "test_host_mod"}> : () -> memref<i32>
-// CHECK-NEXT:        %pcnst = "ccpp_utils.host_var_ref"() <{var_name = "pcnst", module_name = "test_host_mod"}> : () -> memref<i32>
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "to_promote", kind_name = "kind_temp"}> : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%pcnst) <{var_name = "promote_pcnst", kind_name = "kind_phys"}> : (memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "temp_calc", kind_name = "kind_phys"}> : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols) <{var_name = "interstitial_var", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
 // CHECK-NEXT:        %2 = arith.cmpi eq, %3, %1 : i32
 // CHECK-NEXT:        %3 = memref.load %errflg[] : memref<i32>
@@ -413,9 +406,6 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
-// CHECK-NEXT:        %ncols = "ccpp_utils.host_var_ref"() <{var_name = "ncols", module_name = "test_host_mod"}> : () -> memref<i32>
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols) <{var_name = "o3", kind_name = "kind_phys"}> : (memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols) <{var_name = "hno3", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ddt_suite_initialize() -> (memref<i32>, memref<512xi8>) {

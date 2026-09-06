@@ -56,24 +56,6 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.not. allocated(cld_liq_array)) then
-// CHECK-NEXT:        allocate(cld_liq_array(ncols, pver))
-// CHECK-NEXT:  #ifdef USE_GPU
-// CHECK-NEXT:        !$acc enter data create(cld_liq_array)
-// CHECK-NEXT:  #endif
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(cld_ice_cld_ice_array)) then
-// CHECK-NEXT:        allocate(cld_ice_cld_ice_array(ncols, pver))
-// CHECK-NEXT:  #ifdef USE_GPU
-// CHECK-NEXT:        !$acc enter data create(cld_ice_cld_ice_array)
-// CHECK-NEXT:  #endif
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(cld_shadow_cld_ice_array)) then
-// CHECK-NEXT:        allocate(cld_shadow_cld_ice_array(ncols, pver))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(cld_shadow_ncols)) then
-// CHECK-NEXT:        allocate(cld_shadow_ncols(ncols))
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call cld_liq_register(dyn_const=dyn_const, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
@@ -204,6 +186,8 @@
 // CHECK-NEXT:          "' in cld_suite_physics"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
+// CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, 1)
+// CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, 2)
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call const_indices_run(const_std_name=const_std_name, num_consts=num_consts,                &
 // CHECK-NEXT:          test_stdname_array=test_stdname_array, const_index=const_index, const_inds=const_inds,    &
@@ -217,21 +201,25 @@
 // CHECK-NEXT:          ps=ps_unit_conv, cld_liq_tend=cld_liq_tend, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
-// CHECK-NEXT:          errmsg=errmsg)
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call cld_ice_run(ncol=ncol, timestep=timestep, temp=temp, qv=qv, ps=ps,                     &
 // CHECK-NEXT:          cld_ice_array=cld_ice_cld_ice_array, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
-// CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call cld_shadow_run(ncol=ncol, timestep=timestep, cld_ice_array=cld_shadow_cld_ice_array,   &
 // CHECK-NEXT:          ncols=cld_shadow_ncols, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
+// CHECK-NEXT:      const(1:ncol, :, 1) = cld_liq_array(1:ncol, :)
+// CHECK-NEXT:      const(1:ncol, :, 2) = cld_ice_cld_ice_array(1:ncol, :)
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
+// CHECK-NEXT:          errmsg=errmsg)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
+// CHECK-NEXT:          errmsg=errmsg)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, 1)
+// CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, 2)
 // CHECK-NEXT:    end subroutine cld_suite_physics
 // CHECK-LABEL:   subroutine cld_suite_timestep_init_physics(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
@@ -597,15 +585,15 @@
 // CHECK-NEXT:        if (allocated(lc_const_tend)) deallocate(lc_const_tend)
 // CHECK-NEXT:        nullify(lc_cld_liq_tend)
 // CHECK-NEXT:      end subroutine Cld_ccpp_deallocate_dynamic_constituents
-// CHECK:           subroutine Cld_ccpp_register_constituents(host_constituents, errmsg, errflg)
+// CHECK:           subroutine Cld_ccpp_register_constituents(host_constituents, errmsg, errcode)
 // CHECK-NEXT:        use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
 // CHECK-NEXT:        type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
 // CHECK-NEXT:        character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:        integer, intent(out) :: errflg
+// CHECK-NEXT:        integer, intent(out) :: errcode
 // CHECK-NEXT:        integer :: lc_max, lc_num, lc_i, lc_j
 // CHECK-NEXT:        logical :: lc_found
 // CHECK-NEXT:        type(ccpp_constituent_properties_t), allocatable :: lc_tmp(:)
-// CHECK-NEXT:        errflg = 0
+// CHECK-NEXT:        errcode = 0
 // CHECK-NEXT:        errmsg = ''
 // CHECK-NEXT:        lc_max = 0
 // CHECK-NEXT:        if (allocated(lc_dyn_const)) lc_max = lc_max + size(lc_dyn_const)
@@ -625,7 +613,7 @@
 // CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
 // CHECK-NEXT:      trim(lc_dyn_const(lc_i)%std_name), &
 // CHECK-NEXT:                    ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:                  errflg = 1
+// CHECK-NEXT:                  errcode = 1
 // CHECK-NEXT:                  return
 // CHECK-NEXT:                end if
 // CHECK-NEXT:                exit
@@ -648,7 +636,7 @@
 // CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
 // CHECK-NEXT:      trim(lc_dyn_const_ice(lc_i)%std_name), &
 // CHECK-NEXT:                    ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:                  errflg = 1
+// CHECK-NEXT:                  errcode = 1
 // CHECK-NEXT:                  return
 // CHECK-NEXT:                end if
 // CHECK-NEXT:                exit
@@ -669,7 +657,7 @@
 // CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
 // CHECK-NEXT:      'cloud_liquid_dry_mixing_ratio', &
 // CHECK-NEXT:                ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:              errflg = 1
+// CHECK-NEXT:              errcode = 1
 // CHECK-NEXT:              return
 // CHECK-NEXT:            end if
 // CHECK-NEXT:            exit
@@ -678,9 +666,9 @@
 // CHECK-NEXT:        if (.not. lc_found) then
 // CHECK-NEXT:          lc_num = lc_num + 1
 // CHECK-NEXT:          call lc_tmp(lc_num)%instantiate(std_name='cloud_liquid_dry_mixing_ratio',                 &
-// CHECK-NEXT:      long_name='Cloud liquid dry mixing ratio', units='kg kg-1', errcode=errflg, errmsg=errmsg,    &
-// CHECK-NEXT:      advected=.true.)
-// CHECK-NEXT:          if (errflg /= 0) return
+// CHECK-NEXT:      long_name='Cloud liquid dry mixing ratio', units='kg kg-1', diag_name='cld_liq_array',        &
+// CHECK-NEXT:      errcode=errcode, errmsg=errmsg, advected=.true.)
+// CHECK-NEXT:          if (errcode /= 0) return
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        lc_found = .false.
 // CHECK-NEXT:        do lc_j = 1, lc_num
@@ -691,7 +679,7 @@
 // CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
 // CHECK-NEXT:      'cloud_ice_dry_mixing_ratio', &
 // CHECK-NEXT:                ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:              errflg = 1
+// CHECK-NEXT:              errcode = 1
 // CHECK-NEXT:              return
 // CHECK-NEXT:            end if
 // CHECK-NEXT:            exit
@@ -700,9 +688,9 @@
 // CHECK-NEXT:        if (.not. lc_found) then
 // CHECK-NEXT:          lc_num = lc_num + 1
 // CHECK-NEXT:          call lc_tmp(lc_num)%instantiate(std_name='cloud_ice_dry_mixing_ratio',                    &
-// CHECK-NEXT:      long_name='Cloud ice dry mixing ratio', units='kg kg-1', errcode=errflg, errmsg=errmsg,       &
-// CHECK-NEXT:      advected=.true., default_value=0.0_kind_phys)
-// CHECK-NEXT:          if (errflg /= 0) return
+// CHECK-NEXT:      long_name='Cloud ice dry mixing ratio', units='kg kg-1', diag_name='cld_ice_array',           &
+// CHECK-NEXT:      errcode=errcode, errmsg=errmsg, advected=.true., default_value=0.0_kind_phys)
+// CHECK-NEXT:          if (errcode /= 0) return
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        do lc_i = 1, size(host_constituents)
 // CHECK-NEXT:          lc_found = .false.
@@ -714,7 +702,7 @@
 // CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
 // CHECK-NEXT:      trim(host_constituents(lc_i)%std_name), &
 // CHECK-NEXT:                  ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:                errflg = 1
+// CHECK-NEXT:                errcode = 1
 // CHECK-NEXT:                return
 // CHECK-NEXT:              end if
 // CHECK-NEXT:              exit
@@ -736,11 +724,12 @@
 // CHECK-NEXT:        end do
 // CHECK-NEXT:        call ccpp_scheme_utils_set_constituents(lc_all_constituents)
 // CHECK-NEXT:      end subroutine Cld_ccpp_register_constituents
-// CHECK:           subroutine Cld_ccpp_number_constituents(num_advected, errmsg, errflg)
+// CHECK:           subroutine Cld_ccpp_number_constituents(num_advected, errmsg, errcode, advected)
 // CHECK-NEXT:        integer, intent(out) :: num_advected
 // CHECK-NEXT:        character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:        integer, intent(out) :: errflg
-// CHECK-NEXT:        errflg = 0
+// CHECK-NEXT:        integer, intent(out) :: errcode
+// CHECK-NEXT:        logical, optional, intent(in) :: advected
+// CHECK-NEXT:        errcode = 0
 // CHECK-NEXT:        errmsg = ''
 // CHECK-NEXT:        if (allocated(lc_all_constituents)) then
 // CHECK-NEXT:          num_advected = size(lc_all_constituents)
@@ -815,7 +804,7 @@
 // CHECK-NEXT:        type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
 // CHECK-NEXT:        ptr => lc_const_props
 // CHECK-NEXT:      end function Cld_model_const_properties
-// CHECK-NEXT:  end module Cld_ccpp_cap
+// CHECK:  end module Cld_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds

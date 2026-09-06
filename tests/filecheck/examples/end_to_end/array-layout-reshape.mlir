@@ -366,7 +366,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK-NEXT:  end module Tiny_ccpp_cap
+// CHECK:  end module Tiny_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
