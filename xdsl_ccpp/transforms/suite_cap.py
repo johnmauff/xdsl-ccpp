@@ -1377,6 +1377,21 @@ class GenerateSuiteSubroutine(RewritePattern):
         already threaded into this call, not a new argument or a cross-
         module reference.
         """
+        # Exact match first: vertical_layer_dimension (pver=30) and
+        # vertical_interface_dimension (pverp=31) are both in
+        # CCPP_VERTICAL_DIMENSIONS so dims_compatible returns True for both,
+        # but they are DIFFERENT sizes — exact match prevents picking pver
+        # when allocating an array declared with vertical_interface_dimension.
+        for arg in all_args.values():
+            if (
+                arg.hasAttr("standard_name")
+                and arg.getAttr("standard_name") == promoted_dim
+                and arg.getAttr("type") == "integer"
+                and arg.name in data_ops
+            ):
+                return data_ops[arg.name]
+        # Compatible fallback: catches horizontal dim aliases (e.g.
+        # horizontal_loop_extent matching horizontal_dimension).
         for arg in all_args.values():
             if (
                 arg.hasAttr("standard_name")
@@ -1389,6 +1404,34 @@ class GenerateSuiteSubroutine(RewritePattern):
         # Not found in scheme args — try MODULE-type host tables.
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
         from xdsl_ccpp.transforms.util.typing import TypeConversions
+        # Exact match pass first (same reason as above).
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") != CCPPType.MODULE:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if (var.hasAttr("standard_name")
+                        and var.getAttr("standard_name") == promoted_dim
+                        and var.getAttr("type") == "integer"):
+                    if var.name in data_ops:
+                        return data_ops[var.name]
+                    int_type = TypeConversions.getBaseType("integer")
+                    ref = ccpp_utils.HostVarRefOp(var.name, tbl_name,
+                                                  memref.MemRefType(int_type, []))
+                    ref.res.name_hint = var.name
+                    data_ops[var.name] = ref
+                    if framework_ref_ops is not None:
+                        framework_ref_ops.append(ref)
+                    if suite_use_stubs is not None:
+                        stub = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(1, i8),
+                            var.name, "external",
+                        )
+                        stub.attributes["module"] = StringAttr(tbl_name)
+                        suite_use_stubs.append(stub)
+                    return data_ops[var.name]
+        # Compatible fallback pass for MODULE tables.
         for tbl_name, props in self.meta_data.items():
             if props.getAttr("type") != CCPPType.MODULE:
                 continue

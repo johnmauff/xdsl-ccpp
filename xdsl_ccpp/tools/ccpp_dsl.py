@@ -180,6 +180,16 @@ class ccppMain:
                  "builds are not required to provide those modules.",
         )
         parser.add_argument(
+            "--framework-src-dir",
+            default="",
+            metavar="DIR",
+            help="Path to the real ccpp_framework/src directory.  When --cam-host "
+                 "is set, the real framework F90 files (ccpp_hashable.F90, "
+                 "ccpp_hash_table.F90, ccpp_constituent_prop_mod.F90, "
+                 "ccpp_scheme_utils.F90) from this directory are listed in the "
+                 "datatable utility files instead of the bundled xdsl_ccpp stubs.",
+        )
+        parser.add_argument(
             "--legacy-mode",
             action="store_true",
             default=False,
@@ -716,7 +726,11 @@ class ccppMain:
 
         cap_files = [str(p) for p in Path(caps_dir).glob("*.F90")]
         host_name = self.options_db.get("host_name") or ""
-        root_el = build_datatable(mlir_text, cap_files, host_name=host_name)
+        root_el = build_datatable(
+            mlir_text, cap_files, host_name=host_name,
+            cam_host=bool(self.options_db.get("cam_host")),
+            framework_src_dir=self.options_db.get("framework_src_dir") or "",
+        )
         write_datatable(root_el, datatable_path)
         self.print_verbose_message(f"  -> Wrote datatable: {datatable_path}")
 

@@ -56,6 +56,16 @@ _FRAMEWORK_F90_FILES = (
     "ccpp_scheme_utils.F90",
 )
 
+# Real CCPP framework files needed when cam_host=True (in compile order so
+# ccpp_hashable is ready before ccpp_hash_table, and both before
+# ccpp_constituent_prop_mod which depends on them).
+_REAL_FRAMEWORK_F90_FILES = (
+    "ccpp_hashable.F90",
+    "ccpp_hash_table.F90",
+    "ccpp_constituent_prop_mod.F90",
+    "ccpp_scheme_utils.F90",
+)
+
 
 def _resolve_framework_f90_files() -> list[str]:
     """Return absolute paths for xdsl_ccpp's own framework F90 files.
@@ -274,13 +284,23 @@ def _phase_for_entry(entry_name: str, scheme_name: str) -> str:
 
 # ── Top-level build function ──────────────────────────────────────────────────
 
-def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -> ET.Element:
+def build_datatable(
+    mlir_text: str,
+    cap_files: list[str],
+    host_name: str = "",
+    cam_host: bool = False,
+    framework_src_dir: str = "",
+) -> ET.Element:
     """Build an ``ElementTree`` element tree representing the datatable.
 
     Args:
         mlir_text: The frontend MLIR text (before optimization passes).
         cap_files: Absolute or relative paths to the generated ``.F90`` files.
         host_name: Optional host model name written into the root element.
+        cam_host: When True, replace the bundled framework F90 stub files with
+            real ccpp_framework source files from ``framework_src_dir``.
+        framework_src_dir: Path to the real ccpp_framework/src directory.
+            Required when cam_host=True; ignored otherwise.
 
     Returns:
         An ``xml.etree.ElementTree.Element`` for the ``<datatable>`` root.
@@ -313,8 +333,19 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
     for cap in sorted(cap_files):
         if os.path.basename(str(cap)) == "ccpp_kinds.F90":
             utility_file_texts.append(str(cap))
-    for framework_file in _resolve_framework_f90_files():
-        utility_file_texts.append(framework_file)
+    if cam_host:
+        if framework_src_dir:
+            for name in _REAL_FRAMEWORK_F90_FILES:
+                path = os.path.join(framework_src_dir, name)
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(
+                        f"cam_host=True: real framework file not found: {path!r}\n"
+                        f"  (framework_src_dir={framework_src_dir!r})"
+                    )
+                utility_file_texts.append(os.path.abspath(path))
+    else:
+        for framework_file in _resolve_framework_f90_files():
+            utility_file_texts.append(framework_file)
 
     # ── ccpp_files ────────────────────────────────────────────────────────────
     # Cap files are listed as <file path="..."/> for cmake/parse_xdsl_ccpp_

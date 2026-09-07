@@ -1145,7 +1145,11 @@ class CCPPCAP(ModulePass):
                 "  end if",
                 "  allocate(lc_qmin(lc_n))",
                 "  do lc_i = 1, lc_n",
-                "    call lc_const_props(lc_i)%minimum(lc_qmin(lc_i))",
+                "    call lc_const_props(lc_i)%minimum(lc_qmin(lc_i), lc_errcode, lc_errmsg)",
+                "    if (lc_errcode /= 0) then",
+                "      deallocate(lc_qmin)",
+                "      return",
+                "    end if",
                 "  end do",
             ]
         _run_call_str = (
@@ -1598,6 +1602,7 @@ class CCPPCAP(ModulePass):
                 framework_var_residency=framework_var_residency,
                 instance_local_name=instance_local_name,
                 ninstances_local_name=ninstances_local_name,
+                cam_host=self.cam_host,
             )
             for var_op in const_var_ops:
                 _key = (var_op.var_name.data, "_cap_module_var")
