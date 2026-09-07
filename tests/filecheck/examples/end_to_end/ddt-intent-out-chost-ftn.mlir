@@ -591,15 +591,15 @@
 // CHECK-NEXT:        if (allocated(lc_O3)) deallocate(lc_O3)
 // CHECK-NEXT:        if (allocated(lc_HNO3)) deallocate(lc_HNO3)
 // CHECK-NEXT:      end subroutine DdtIn_ccpp_deallocate_dynamic_constituents
-// CHECK:           subroutine DdtIn_ccpp_register_constituents(host_constituents, errmsg, errflg)
+// CHECK:           subroutine DdtIn_ccpp_register_constituents(host_constituents, errmsg, errcode)
 // CHECK-NEXT:        use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
 // CHECK-NEXT:        type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
 // CHECK-NEXT:        character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:        integer, intent(out) :: errflg
+// CHECK-NEXT:        integer, intent(out) :: errcode
 // CHECK-NEXT:        integer :: lc_max, lc_num, lc_i, lc_j
 // CHECK-NEXT:        logical :: lc_found
 // CHECK-NEXT:        type(ccpp_constituent_properties_t), allocatable :: lc_tmp(:)
-// CHECK-NEXT:        errflg = 0
+// CHECK-NEXT:        errcode = 0
 // CHECK-NEXT:        errmsg = ''
 // CHECK-NEXT:        lc_max = 0
 // CHECK-NEXT:        lc_max = lc_max + 0
@@ -616,7 +616,7 @@
 // CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
 // CHECK-NEXT:      trim(host_constituents(lc_i)%std_name), &
 // CHECK-NEXT:                  ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:                errflg = 1
+// CHECK-NEXT:                errcode = 1
 // CHECK-NEXT:                return
 // CHECK-NEXT:              end if
 // CHECK-NEXT:              exit
@@ -638,11 +638,12 @@
 // CHECK-NEXT:        end do
 // CHECK-NEXT:        call ccpp_scheme_utils_set_constituents(lc_all_constituents)
 // CHECK-NEXT:      end subroutine DdtIn_ccpp_register_constituents
-// CHECK:           subroutine DdtIn_ccpp_number_constituents(num_advected, errmsg, errflg)
+// CHECK:           subroutine DdtIn_ccpp_number_constituents(num_advected, errmsg, errcode, advected)
 // CHECK-NEXT:        integer, intent(out) :: num_advected
 // CHECK-NEXT:        character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:        integer, intent(out) :: errflg
-// CHECK-NEXT:        errflg = 0
+// CHECK-NEXT:        integer, intent(out) :: errcode
+// CHECK-NEXT:        logical, optional, intent(in) :: advected
+// CHECK-NEXT:        errcode = 0
 // CHECK-NEXT:        errmsg = ''
 // CHECK-NEXT:        if (allocated(lc_all_constituents)) then
 // CHECK-NEXT:          num_advected = size(lc_all_constituents)
@@ -713,7 +714,7 @@
 // CHECK-NEXT:        type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
 // CHECK-NEXT:        ptr => lc_const_props
 // CHECK-NEXT:      end function DdtIn_model_const_properties
-// CHECK-NEXT:  end module DdtIn_ccpp_cap
+// CHECK:  end module DdtIn_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: DdtIn_ccpp_chost_cap.F90
 // CHECK-LABEL: module DdtIn_ccpp_chost_cap

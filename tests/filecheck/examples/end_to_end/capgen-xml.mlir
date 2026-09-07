@@ -54,18 +54,6 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.not. allocated(to_promote)) then
-// CHECK-NEXT:        allocate(to_promote(ncols, pver))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(promote_pcnst)) then
-// CHECK-NEXT:        allocate(promote_pcnst(pcnst))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(temp_calc)) then
-// CHECK-NEXT:        allocate(temp_calc(ncols, pver))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
-// CHECK-NEXT:        allocate(interstitial_var(ncols))
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call temp_adjust_register(config_var=config_var, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
@@ -332,12 +320,6 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (.not. allocated(o3)) then
-// CHECK-NEXT:        allocate(o3(ncols))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(hno3)) then
-// CHECK-NEXT:        allocate(hno3(ncols))
-// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ddt_suite_register
 // CHECK-LABEL:   subroutine ddt_suite_initialize(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
@@ -862,7 +844,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK-NEXT:  end module Ddt_ccpp_cap
+// CHECK:  end module Ddt_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds

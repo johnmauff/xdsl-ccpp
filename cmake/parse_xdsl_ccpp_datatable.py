@@ -24,8 +24,12 @@ def main():
     paths = []
     for f in ccpp_files:
         path = f.get("path")
+        if path is None:
+            # skip subcategory elements (<utilities>, <host_files>, <suite_files>)
+            # that capgen-v1's ccpp_datafile.py reads from the same element
+            continue
         if not path:
-            print(f"error: <file> element with no (or empty) path attribute in {datatable_path}",
+            print(f"error: <file> element with empty path attribute in {datatable_path}",
                   file=sys.stderr)
             sys.exit(1)
         paths.append(path)

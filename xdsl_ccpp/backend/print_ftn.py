@@ -34,6 +34,8 @@ from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApiOp
+from xdsl_ccpp.dialects.ccpp_utils import ConstituentIndexLookupOp as CCPPConstituentIndexLookupOp
+from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
@@ -88,7 +90,9 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
         ftn = f"type({ddt})"
     elif kind is not None:
         if base == "character":
-            ftn = f"character(len={kind})"
+            # kind may already be "len=N" (from meta 'kind = len=64') or a bare N
+            len_spec = kind if kind.startswith("len=") else f"len={kind}"
+            ftn = f"character({len_spec})"
         else:
             ftn = f"{base}(kind={kind})"
     else:
@@ -858,6 +862,24 @@ class ftnPrintContext:
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
+            case CCPPConstituentSyncOp():
+                var = op.var_name.data
+                q = op.q_name.data
+                ncol = op.ncol_name.data
+                idx = op.constituent_idx.value.data
+                if op.direction.data == "extract":
+                    self.print(f"{var}(1:{ncol}, :) = {q}(1:{ncol}, :, lc_const_indices({idx}))")
+                else:
+                    self.print(f"{q}(1:{ncol}, :, lc_const_indices({idx})) = {var}(1:{ncol}, :)")
+            case CCPPConstituentIndexLookupOp():
+                names_list = [s.data for s in op.std_names.data]
+                max_len = max(len(s) for s in names_list) if names_list else 1
+                quoted = ", ".join(f'"{s}"' for s in names_list)
+                self.print(f"call ccpp_constituent_indices( &")
+                self.print(f"    [character(len={max_len}) :: {quoted}], &")
+                ev = op.err_var_name.data if op.err_var_name is not None else "errflg"
+                self.print(f"    lc_const_indices, {ev}, errmsg)")
+                self.print(f"if ({ev} /= 0) return")
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data
                 self.print(f"if (present({var_name})) then")
@@ -1355,7 +1377,8 @@ class ftnPrintContext:
                     self.print(line, prefix="  ")
 
         # Emit module-level variable declarations (unified ModuleVarOp).
-        # rank=0: scalar, rank>0: allocatable array with that many deferred dimensions.
+        # rank=0: scalar, fixed_dim set: fixed-size non-allocatable array,
+        # rank>0 otherwise: allocatable array with that many deferred dimensions.
         for op in body.ops:
             if isa(op, CCPPModuleVarOp):
                 rank     = op.rank.value.data
@@ -1364,6 +1387,10 @@ class ftnPrintContext:
                 is_ptr   = op.ftn_attrs is not None and "pointer" in op.ftn_attrs.data
                 if rank == 0:
                     self.print(f"{ftn_type} :: {var_name}", prefix="  ")
+                elif op.fixed_dim is not None:
+                    dim = op.fixed_dim.value.data
+                    init_part = f" = {op.init_value.data}" if op.init_value else ""
+                    self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="  ")
                 else:
                     shape = ", ".join([":"] * rank)
                     if is_ptr:

@@ -653,7 +653,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK-NEXT:  end module Kessler_ccpp_cap
+// CHECK:  end module Kessler_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: Kessler_ccpp_chost_cap.F90
 // CHECK-LABEL: module Kessler_ccpp_chost_cap

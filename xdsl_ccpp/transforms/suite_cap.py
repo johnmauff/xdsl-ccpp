@@ -30,6 +30,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ActiveCheckOp,
     ArraySectionOp,
     ClearStringOp,
+    ConstituentIndexLookupOp,
+    ConstituentSyncOp,
     KeywordCallOp,
     KindCastOp,
     KindWriteBackOp,
@@ -45,6 +47,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     VerticalFlipOp,
     VerticalFlipWriteBackOp,
 )
+from xdsl_ccpp.transforms.constituent_cap import _collect_constituent_info
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
     SUITE_FN_INFIX,
@@ -1375,6 +1378,21 @@ class GenerateSuiteSubroutine(RewritePattern):
         already threaded into this call, not a new argument or a cross-
         module reference.
         """
+        # Exact match first: vertical_layer_dimension (pver=30) and
+        # vertical_interface_dimension (pverp=31) are both in
+        # CCPP_VERTICAL_DIMENSIONS so dims_compatible returns True for both,
+        # but they are DIFFERENT sizes — exact match prevents picking pver
+        # when allocating an array declared with vertical_interface_dimension.
+        for arg in all_args.values():
+            if (
+                arg.hasAttr("standard_name")
+                and arg.getAttr("standard_name") == promoted_dim
+                and arg.getAttr("type") == "integer"
+                and arg.name in data_ops
+            ):
+                return data_ops[arg.name]
+        # Compatible fallback: catches horizontal dim aliases (e.g.
+        # horizontal_loop_extent matching horizontal_dimension).
         for arg in all_args.values():
             if (
                 arg.hasAttr("standard_name")
@@ -1387,6 +1405,34 @@ class GenerateSuiteSubroutine(RewritePattern):
         # Not found in scheme args — try MODULE-type host tables.
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
         from xdsl_ccpp.transforms.util.typing import TypeConversions
+        # Exact match pass first (same reason as above).
+        for tbl_name, props in self.meta_data.items():
+            if props.getAttr("type") != CCPPType.MODULE:
+                continue
+            if tbl_name not in props.arg_tables:
+                continue
+            for var in props.getArgTable(tbl_name).getFunctionArguments():
+                if (var.hasAttr("standard_name")
+                        and var.getAttr("standard_name") == promoted_dim
+                        and var.getAttr("type") == "integer"):
+                    if var.name in data_ops:
+                        return data_ops[var.name]
+                    int_type = TypeConversions.getBaseType("integer")
+                    ref = ccpp_utils.HostVarRefOp(var.name, tbl_name,
+                                                  memref.MemRefType(int_type, []))
+                    ref.res.name_hint = var.name
+                    data_ops[var.name] = ref
+                    if framework_ref_ops is not None:
+                        framework_ref_ops.append(ref)
+                    if suite_use_stubs is not None:
+                        stub = llvm.GlobalOp(
+                            llvm.LLVMArrayType.from_size_and_type(1, i8),
+                            var.name, "external",
+                        )
+                        stub.attributes["module"] = StringAttr(tbl_name)
+                        suite_use_stubs.append(stub)
+                    return data_ops[var.name]
+        # Compatible fallback pass for MODULE tables.
         for tbl_name, props in self.meta_data.items():
             if props.getAttr("type") != CCPPType.MODULE:
                 continue
@@ -1469,9 +1515,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         versus "genuinely unresolvable").
 
         A dimension matching neither pattern (genuinely unresolvable by
-        any path) is silently skipped, exactly as before this fix --
-        that's a separate, narrower, pre-existing gap, not this fix's
-        concern.
+        any path) causes the whole allocation to be deferred (returns
+        empty dim_var_refs) rather than creating a partial allocation with
+        the wrong rank -- a partial allocation would produce a rank mismatch
+        at compile time for any variable whose declared rank exceeds the
+        number of resolvable dimensions.
         """
         dim_var_refs = []
         for dim_std_name in alloc_dim_names:
@@ -1504,6 +1552,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                 )
                 if ssa is not None:
                     dim_var_refs.append(ssa)
+                else:
+                    # This dimension is unresolvable at this phase; returning
+                    # an incomplete list would produce a rank mismatch, so
+                    # signal "not yet allocatable" by returning empty.
+                    return [], None
         return dim_var_refs, None
 
     def _build_promoted_call_ops(
@@ -2344,11 +2397,19 @@ class GenerateSuiteSubroutine(RewritePattern):
                             actual_postfixes[scheme_name] = _candidate
                             break
 
+                _INTENT_RANK = {"in": 0, "out": 1, "inout": 2}
                 for scheme_name in arg_tables:
                     for fn_arg in arg_tables[scheme_name].getFunctionArguments():
                         std_key = _std_key(fn_arg)
                         if std_key in all_args:
                             assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
+                            # Upgrade intent: a variable used as 'in' by one scheme
+                            # and 'inout'/'out' by another must be declared 'inout'
+                            # in the cap signature so that writeable calls compile.
+                            cur = all_args[std_key].getAttr("intent")
+                            new = fn_arg.getAttr("intent")
+                            if _INTENT_RANK.get(new, 0) > _INTENT_RANK.get(cur, 0):
+                                all_args[std_key].setAttr("intent", new)
                         else:
                             all_args[std_key] = fn_arg
 
@@ -2427,6 +2488,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         lazy_alloc_ops,
         suite_lifecycle_call_ops=(),
         instance_local_name: str | None = None,
+        constituent_extract_ops=(),
+        constituent_writeback_ops=(),
     ):
         """Assemble all op lists into the body block and return the FuncOp.
 
@@ -2483,7 +2546,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             + kind_cast_ops
             + unit_convert_ops
             + check_ops
+            + list(constituent_extract_ops)
             + call_ops
+            + list(constituent_writeback_ops)
             + writeback_ops
             + list(suite_lifecycle_call_ops)
             + state_ops
@@ -2764,6 +2829,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         divergent_std_keys: frozenset = frozenset(),
         pending_allocs: dict = None,
         already_scheduled_allocs=None,
+        call_sequence_items=None,
     ):
         """Build scheme call ops and collect fn_sigs for all items in the call sequence.
 
@@ -2788,7 +2854,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         if tgt_subroutine_postfix is None:
             return call_ops, fn_sigs
 
-        call_sequence = self.getCallSequence(suite_description)
+        call_sequence = (
+            call_sequence_items
+            if call_sequence_items is not None
+            else self.getCallSequence(suite_description)
+        )
         ctx = _CallSeqContext(
             all_args=all_args,
             data_ops=data_ops,
@@ -2921,10 +2991,19 @@ class GenerateSuiteSubroutine(RewritePattern):
         self, fw_arg, fw_std_key, var_name, suite_entry, is_alloc_phase,
         suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+        pending_only=False,
     ) -> None:
         """Task #30's mechanism 1/2: decide whether and how fw_arg gets
         allocated during this phase. A no-op unless is_alloc_phase.
         Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
+
+        pending_only -- when True, only the deferred (pending_allocs) path
+        is active; the immediate LazyAllocOp path is skipped.  Used for
+        _register phase: variables whose dimensions are produced by a
+        same-phase scheme call must be allocated right after that scheme
+        runs, but variables with already-resolvable dimensions should be
+        deferred to _init (so _register allocates only what truly can't
+        wait).
         """
         if not is_alloc_phase:
             return
@@ -2978,7 +3057,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     producer_scheme=_pending_producer,
                 )
             )
-        elif dim_var_refs:
+        elif dim_var_refs and not pending_only:
             kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
             init_val = (
                 fw_arg.getAttr("default_value")
@@ -3127,11 +3206,17 @@ class GenerateSuiteSubroutine(RewritePattern):
                     tgt_subroutine_postfix in ("_init", "_register")
                     or (physics_mode and not _already_scheduled)
                 )
+                # In _register, only allow deferred (pending_allocs) path:
+                # variables whose dimensions are immediately resolvable belong
+                # in _init, not _register. Pending-producer vars must stay in
+                # _register since their dimension isn't known until the
+                # producer scheme runs.
+                _pending_only = tgt_subroutine_postfix == "_register"
                 self._maybe_schedule_framework_var_alloc(
                     fw_arg, _fw_std_key, _var_name, _suite_entry, _is_alloc_phase,
                     suite_model, all_args, data_ops, framework_ref_ops,
                     suite_use_stubs, arg_tables, already_scheduled_allocs,
-                    pending_allocs, lazy_alloc_ops,
+                    pending_allocs, lazy_alloc_ops, pending_only=_pending_only,
                 )
 
                 # Tagged (never a plain string, so it can't collide with any
@@ -3149,7 +3234,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # own standard_name is never ambiguous.
                 data_ops[("std_name", _fw_std_key)] = data_ops[fw_arg.name]
 
-        if suite_model is not None and tgt_subroutine_postfix in ("_init", "_register"):
+        if suite_model is not None and tgt_subroutine_postfix == "_init":
             self._sweep_suite_owned_var_allocations(
                 suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
                 arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
@@ -3374,7 +3459,29 @@ class GenerateSuiteSubroutine(RewritePattern):
             already_scheduled_allocs=already_scheduled_allocs,
         )
 
-        call_ops, fn_sigs = self._build_call_ops(
+        # Extract/writeback ops for advected module-level constituent arrays.
+        # Only injected for the _run group phase (physics_mode=True,
+        # tgt_subroutine_postfix="_run"): that is the subroutine where
+        # wet_to_dry/dry_to_wet converters and the physics scheme itself
+        # consume and produce qv/qc/qr from module-level storage.  The 3D
+        # constituent array q is a host-provided dummy argument, while the
+        # module-level qv/qc/qr are suite-owned and unconnected from q
+        # without these explicit assignments.
+        #
+        # Constituent sync ordering (matching capgen-v1 pointer-alias semantics):
+        #   1. extract_ops   -- qv/qc/qr ← q[:,i] before any scheme reads them
+        #   2. pre_q schemes -- calc_exner, kessler, etc. (don't use q directly)
+        #   3. writeback_ops -- q[:,i] ← qv/qc/qr so qneg clips kessler-updated values
+        #   4. modify_q      -- qneg_run (clips q in-place via ccpp_constituents inout)
+        #   5. re-extract    -- qv/qc/qr ← q[:,i] so individual vars reflect qneg clips
+        #   6. readonly_q    -- geopotential_temp etc. (read both q and individual vars)
+        constituent_extract_ops = []
+        constituent_writeback_ops = []
+        if physics_mode and tgt_subroutine_postfix == "_run" and suite_model is not None:
+            constituent_extract_ops, constituent_writeback_ops = \
+                self._build_constituent_sync_ops(suite_model, data_ops, input_arg_list)
+
+        _bco_kwargs = dict(
             suite_description=suite_description,
             tgt_subroutine_postfix=tgt_subroutine_postfix,
             physics_mode=physics_mode,
@@ -3389,6 +3496,40 @@ class GenerateSuiteSubroutine(RewritePattern):
             pending_allocs=pending_allocs,
             already_scheduled_allocs=already_scheduled_allocs,
         )
+        if constituent_extract_ops:
+            raw_call_seq = self.getCallSequence(suite_description)
+            pre_q_seq, mod_q_seq, ro_q_seq = self._classify_call_sequence_by_q(
+                raw_call_seq, arg_tables
+            )
+            pre_q_ops, pre_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=pre_q_seq)
+            mod_q_ops, mod_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=mod_q_seq)
+            ro_q_ops, ro_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=ro_q_seq)
+            fn_sigs = {**pre_fn, **mod_fn, **ro_fn}
+            # Build fresh re-extract ops: MLIR ops can only belong to one block, so we
+            # cannot reuse the same constituent_extract_ops objects a second time.
+            constituent_reextract_ops, _ = self._build_constituent_sync_ops(
+                suite_model, data_ops, input_arg_list
+            )
+            # Writebacks (step 3) and re-extracts (step 5) are only needed
+            # when mod_q_seq is non-empty (e.g. qneg modifying the 3D
+            # constituent array in-place).  When no scheme writes to
+            # ccpp_constituents, the writeback is a no-op and -- more
+            # importantly -- omitting it lets the printer keep carr as
+            # intent(in) rather than upgrading it to intent(inout), which
+            # would be a Fortran constraint violation.
+            if mod_q_seq:
+                call_ops = (
+                    pre_q_ops
+                    + list(constituent_writeback_ops)   # q[:,i]←qv before qneg
+                    + mod_q_ops                          # qneg clips q in-place
+                    + constituent_reextract_ops          # re-extract qv←q[:,i] after qneg
+                    + ro_q_ops                           # geopotential_temp etc.
+                )
+            else:
+                call_ops = pre_q_ops + ro_q_ops
+            constituent_writeback_ops = []  # already embedded in call_ops above
+        else:
+            call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
 
         # Multi-instance suite (real capgen-v1's model, ccpp_cap_refactor_
         # plan.md's "instances/instances_advection" entry): this call's own
@@ -3467,6 +3608,8 @@ class GenerateSuiteSubroutine(RewritePattern):
             lazy_alloc_ops=lazy_alloc_ops,
             suite_lifecycle_call_ops=suite_lifecycle_call_ops,
             instance_local_name=instance_local_name,
+            constituent_extract_ops=constituent_extract_ops,
+            constituent_writeback_ops=constituent_writeback_ops,
         )
         return new_func, list(fn_sigs.values()), suite_use_stubs
 
@@ -3628,10 +3771,19 @@ class GenerateSuiteSubroutine(RewritePattern):
         sub_to_module: dict[str, str] = {}
         all_scheme_names = [s for s, _ in scheme_entries] + list(extra_scheme_names or [])
         for scheme_name in all_scheme_names:
+            # Use the Fortran module name recorded by the frontend (stem of the
+            # .meta file) when the scheme shares a module with other schemes.
+            # Falls back to scheme_name for the common one-scheme-per-module case.
+            meta = self.meta_data.get(scheme_name)
+            actual_module = (
+                meta.getAttr("source_module")
+                if meta is not None and meta.hasAttr("source_module")
+                else scheme_name
+            )
             for postfix in ("_run", "_init", "_finalize", "_final", "_register",
                             "_timestep_initialize", "_timestep_finalize",
                             "_timestep_init", "_timestep_final"):
-                sub_to_module[scheme_name + postfix] = scheme_name
+                sub_to_module[scheme_name + postfix] = actual_module
 
         fn_sigs = []
         for fd in fn_sigs_by_name.values():
@@ -3703,6 +3855,103 @@ class GenerateSuiteSubroutine(RewritePattern):
             self.generateStringConstantGlobal(s) for s in sorted(all_strings_used)
         ]
         return ccpp_suite_state_global, string_const_globals
+
+    @staticmethod
+    def _classify_call_sequence_by_q(call_sequence, arg_tables):
+        """Split call_sequence items into three groups by ccpp_constituents usage.
+
+        Returns (pre_q, modify_q, readonly_q) where:
+          pre_q      -- schemes that don't use ccpp_constituents
+          modify_q   -- schemes with ccpp_constituents intent=inout/out (e.g. qneg)
+          readonly_q -- schemes with ccpp_constituents intent=in (e.g. geopotential_temp)
+
+        Subcycle items are placed in pre_q (conservative).
+        """
+        Q_STD = "ccpp_constituents"
+        pre_q = []
+        modify_q = []
+        readonly_q = []
+        for item in call_sequence:
+            if item[0] != "scheme":
+                pre_q.append(item)
+                continue
+            _, scheme_name, _ = item
+            if scheme_name not in arg_tables:
+                pre_q.append(item)
+                continue
+            uses_q = False
+            modifies_q = False
+            for arg in arg_tables[scheme_name].getFunctionArguments():
+                if arg.hasAttr("standard_name") and arg.getAttr("standard_name") == Q_STD:
+                    uses_q = True
+                    intent = arg.getAttr("intent") if arg.hasAttr("intent") else "in"
+                    if intent in ("inout", "out"):
+                        modifies_q = True
+            if modifies_q:
+                modify_q.append(item)
+            elif uses_q:
+                readonly_q.append(item)
+            else:
+                pre_q.append(item)
+        return pre_q, modify_q, readonly_q
+
+    def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
+        """Build ConstituentSyncOp lists for advected module-level constituent vars.
+
+        Returns (extract_ops, writeback_ops).  extract_ops must be placed before
+        the first scheme call in a _run subroutine so the module-level qv/qc/qr
+        arrays are populated from the 3D constituent array q before any
+        wet_to_dry converter or physics scheme reads them.  writeback_ops must
+        be placed after the last scheme call so any modifications made by physics
+        schemes are reflected back into q before qneg and diagnostic schemes
+        operate on the full constituent array.
+
+        Returns ([], []) when the subroutine has no constituent array argument
+        or when no advected constituent is suite-owned for this group.
+        """
+        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
+        if not fixed_adv:
+            return [], []
+
+        # Find the Fortran dummy-argument name of the 3D constituent array.
+        # The SSA value tagged under ("std_name", "ccpp_constituents") in
+        # data_ops carries a name_hint that matches what print_ftn.py emits.
+        q_ref = data_ops.get(("std_name", "ccpp_constituents"))
+        if q_ref is None:
+            return [], []
+        q_local = getattr(q_ref, "name_hint", None) or ""
+        # Strip __in/__alloc/__opt suffixes (see _hint_for / _printed_name).
+        for sfx in ("__alloc", "__opt", "__in"):
+            if q_local.endswith(sfx):
+                q_local = q_local[: -len(sfx)]
+                break
+        if not q_local:
+            return [], []
+
+        extract_ops = []
+        writeback_ops = []
+        for const_idx, (std_name, _units, _default_val, _local_name) in enumerate(
+            fixed_adv, start=1
+        ):
+            entry = suite_model.get(std_name)
+            if entry is None:
+                continue  # not suite-owned for this group; skip
+            var_local = entry.local_name
+            extract_ops.append(ConstituentSyncOp(
+                var_name=var_local,
+                q_name=q_local,
+                ncol_name="ncol",
+                constituent_idx=const_idx,
+                direction="extract",
+            ))
+            writeback_ops.append(ConstituentSyncOp(
+                var_name=var_local,
+                q_name=q_local,
+                ncol_name="ncol",
+                constituent_idx=const_idx,
+                direction="writeback",
+            ))
+        return extract_ops, writeback_ops
 
     def _build_module_vars(self, suite_model):
         """Return (allocatable_mod_vars, interstitial_var_names) for suite-owned variables."""
@@ -3821,6 +4070,41 @@ class GenerateSuiteSubroutine(RewritePattern):
                     InsertPoint.before(ret_op),
                 )
 
+    @staticmethod
+    def _inject_constituent_index_lookup(generated_fns, std_name_attrs):
+        """Inject ConstituentIndexLookupOp at the top of each group-phase _init_ FuncOp.
+
+        This populates lc_const_indices at runtime so that ConstituentSyncOp's
+        q(:,:,lc_const_indices(k)) references resolve to the correct constituent
+        slot regardless of the order in which constituents were registered.
+        """
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp) or fn.is_declaration:
+                continue
+            if "_init_" not in fn.sym_name.data:
+                continue
+            if not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            first_op = next(iter(block.ops), None)
+            if first_op is None:
+                continue
+            # Find the error-code variable name (may be "errflg", "errcode", etc.).
+            # intent(out) args are represented as AllocaOp results in the block body,
+            # not as block arguments, so scan the block's ops.
+            err_var = "errflg"
+            for bop in block.ops:
+                if not isa(bop, memref.AllocaOp):
+                    break
+                hint = bop.memref.name_hint or ""
+                if "err" in hint.lower() and "msg" not in hint.lower() and hint:
+                    err_var = hint
+                    break
+            Rewriter.insert_op(
+                ConstituentIndexLookupOp(std_names=std_name_attrs, err_var_name=err_var),
+                InsertPoint.before(first_op),
+            )
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ccpp.SuiteOp, rewriter: PatternRewriter):
         """Generate the complete cap module for one ccpp.SuiteOp."""
@@ -3855,6 +4139,29 @@ class GenerateSuiteSubroutine(RewritePattern):
             if key not in seen_stubs:
                 seen_stubs.add(key)
                 deduped_stubs.append(stub)
+
+        # If the suite has fixed advected constituents, add:
+        #   - integer :: lc_const_indices(N) module var (initialized to [1,2,...,N])
+        #   - use ccpp_scheme_utils, only: ccpp_constituent_indices USE stub
+        #   - ConstituentIndexLookupOp injected at the top of each _init_ FuncOp
+        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
+        if fixed_adv:
+            n = len(fixed_adv)
+            init_vals = ", ".join(str(i) for i in range(1, n + 1))
+            allocatable_mod_vars.append(ModuleVarOp(
+                "lc_const_indices", "integer",
+                fixed_dim=n,
+                init_value=f"[{init_vals}]",
+                rank=1,
+            ))
+            ci_stub_key = ("ccpp_constituent_indices", "ccpp_scheme_utils")
+            if ci_stub_key not in seen_stubs:
+                seen_stubs.add(ci_stub_key)
+                ci_stub = func.FuncOp.external("ccpp_constituent_indices", [], [])
+                ci_stub.attributes["module"] = StringAttr("ccpp_scheme_utils")
+                deduped_stubs.append(ci_stub)
+            std_name_attrs = ArrayAttr([StringAttr(sn) for sn, *_ in fixed_adv])
+            self._inject_constituent_index_lookup(generated_fns, std_name_attrs)
 
         scheme_mod = builtin.ModuleOp(
             [ccpp_suite_state_global] + string_const_globals

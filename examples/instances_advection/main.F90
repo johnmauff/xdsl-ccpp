@@ -119,7 +119,7 @@ program test_instances_advection
     end if
     call test_host_ccpp_register_constituents(host_constituents=host_consts, &
         instance=ins, ninstances=ninstances, &
-        errmsg=errmsg, errflg=errflg)
+        errmsg=errmsg, errcode=errflg)
     if (errflg /= 0) then
       write(error_unit, '(a,i0,2a)') &
           'ccpp_register_constituents failed for instance ', ins, &
@@ -158,7 +158,7 @@ program test_instances_advection
   call set_index_qv(idx)
 
   call test_host_ccpp_number_constituents(num_advected=num_consts, &
-      instance=1, errmsg=errmsg, errflg=errflg)
+      instance=1, errmsg=errmsg, errcode=errflg)
   if (errflg /= 0) then
     write(error_unit, '(2a)') 'ccpp_number_constituents failed: ', &
         trim(errmsg)

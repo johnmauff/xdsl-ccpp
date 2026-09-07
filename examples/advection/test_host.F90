@@ -280,7 +280,7 @@ CONTAINS
       call check_errflg(subname//'.initialize', errflg, errmsg, errflg_final)
       if (errflg == 0) then
          call test_host_ccpp_register_constituents(host_constituents,         &
-                 errmsg=errmsg, errflg=errflg)
+                 errmsg=errmsg, errcode=errflg)
       end if
       ! Check the error
       if (errflg == 0) then
@@ -323,7 +323,7 @@ CONTAINS
       call check_errflg(subname//'.initialize', errflg, errmsg, errflg_final)
       if (errflg == 0) then
          call test_host_ccpp_register_constituents(host_constituents,         &
-                 errmsg=errmsg, errflg=errflg)
+                 errmsg=errmsg, errcode=errflg)
       end if
       if (errflg /= 0) then
          write(6, '(2a)') 'ERROR register_constituents: ', trim(errmsg)
@@ -333,7 +333,7 @@ CONTAINS
       ! Check number of advected constituents
       if (errflg == 0) then
          call test_host_ccpp_number_constituents(num_advected, errmsg=errmsg, &
-              errflg=errflg)
+              errcode=errflg)
          call check_errflg(subname//".num_advected", errflg, errmsg, errflg_final)
       end if
       if (num_advected /= 6) then

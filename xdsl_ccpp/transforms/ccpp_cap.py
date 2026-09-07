@@ -20,6 +20,7 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccExitDataOp,
+    ConstituentApiOp,
     DerivedType,
     HostVarRefOp,
     SetStringOp,
@@ -57,9 +58,15 @@ from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
+    CCPP_ERRMSG_LOCAL,
+    CCPP_ERRFLG_LOCAL,
+    CCPP_ERROR_CODE,
+    CCPP_ERROR_MESSAGE,
     CCPP_ERROR_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
     CCPP_INSTANCE_NUMBER_STD_NAME,
+    CCPP_LOOP_BEGIN_STD_NAME,
+    CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
@@ -764,6 +771,13 @@ class CCPPCAP(ModulePass):
     # called from C++ / Kokkos host models.
     bind_c: bool = False
 
+    # When True, generate CAM-SIMA-specific cam_ccpp_physics_* lifecycle wrapper
+    # subroutines that read errmsg/errcode from physics_types and col_start/col_end
+    # from physics_grid (CAM-SIMA module-level variables).  Off by default so
+    # non-CAM builds (examples, CI compile tests) are not required to provide
+    # those modules.
+    cam_host: bool = False
+
 
     def _derive_camel_case_name(self, suite_name: str) -> str:
         """Convert a snake_case suite name to CamelCase, stripping any '_suite' suffix."""
@@ -823,6 +837,399 @@ class CCPPCAP(ModulePass):
 
         return _render_suite_variables_subroutine(suite_vars)
 
+
+    @staticmethod
+    def _generate_cam_lifecycle_wrappers(suite_descriptions, public_fns, meta_data, lifecycle_fns=None) -> "ConstituentApiOp":
+        """Generate cam_ccpp_physics_* lifecycle wrapper subroutines for the CAM-SIMA
+        host model interface.
+
+        phys_comp.F90 (xdsl-ccpp-adapter branch) calls these with a simplified
+        signature -- just suite_name (and suite_part for _run) -- and reads
+        errmsg/errcode from physics_types module-level variables rather than
+        receiving them as dummy arguments. These wrappers bridge the gap between
+        that simplified caller interface and the richer xdsl_ccpp-generated
+        ccpp_* internal dispatchers.
+
+        Arg resolution is metadata-driven: lifecycle_fns carries the
+        canonical_arg_name → standard_name mapping produced by _generate_run_fn's
+        own non_host_std_to_canonical.  Each block arg's standard_name is looked
+        up in _CAM_STD_EXPRS (keyed by CCPP standard names from .meta files) to
+        obtain the Fortran expression and USE association needed in the wrapper.
+        No local variable names from scheme or host tables are hard-coded here.
+        """
+        from xdsl_ccpp.transforms.util.cap_shared import FRAMEWORK_STD_NAME_TO_CAP_VAR
+
+        # Maps CCPP standard_name → (fortran_expr, use_entry, qmin_preamble_needed).
+        # use_entry is (module_name, local_name, renamed_as) or None.
+        # Keys are semantic identifiers from .meta files; the Fortran expressions
+        # and module names on the right are CAM-host conventions.
+        _CAM_STD_EXPRS = {
+            CCPP_LOOP_BEGIN_STD_NAME: (
+                "lc_col_start", ("physics_grid", "col_start", "lc_col_start"), False),
+            CCPP_LOOP_END_STD_NAME: (
+                "lc_col_end",   ("physics_grid", "col_end",   "lc_col_end"),   False),
+            CCPP_ERROR_MESSAGE: (
+                "lc_errmsg",   ("physics_types", "errmsg",   "lc_errmsg"),    False),
+            CCPP_ERROR_CODE: (
+                "lc_errcode",  ("physics_types", "errcode",  "lc_errcode"),   False),
+            # Constituent metadata array: module-level cap var, no USE needed.
+            "ccpp_constituent_properties": (
+                "lc_const_props", None, False),
+            # Constituent minimum values: computed from lc_const_props%minimum()
+            # in a preamble block (lc_qmin); no USE needed for the variable itself.
+            "ccpp_constituent_minimum_values": (
+                "lc_qmin", None, True),
+        }
+        # Absorb FRAMEWORK_STD_NAME_TO_CAP_VAR entries (number_of_ccpp_constituents,
+        # ccpp_constituents, ccpp_constituent_tendencies) that may appear in dispatchers.
+        for _std, _expr in FRAMEWORK_STD_NAME_TO_CAP_VAR.items():
+            _CAM_STD_EXPRS.setdefault(_std, (_expr, None, False))
+
+        # Always-present USE for error variables: every wrapper references
+        # lc_errcode / lc_errmsg directly (in if-checks and else branches).
+        _base_use_entries = {
+            ("physics_types", "errmsg"):  "lc_errmsg",
+            ("physics_types", "errcode"): "lc_errcode",
+        }
+
+        def _strip_suffix(name):
+            for sfx in ("__inout", "__in", "__alloc"):
+                if name.endswith(sfx):
+                    return name[:-len(sfx)]
+            return name
+
+        def _format_use_stmts(use_entries):
+            """Format 'use mod, only: renamed => local' lines from {(mod,local): renamed}."""
+            by_mod = {}
+            for (mod, local), renamed in use_entries.items():
+                by_mod.setdefault(mod, []).append((local, renamed))
+            result = []
+            for mod in sorted(by_mod):
+                items = ", ".join(
+                    f"{renamed} => {local}" for local, renamed in sorted(by_mod[mod])
+                )
+                result.append(f"  use {mod}, only: {items}")
+            return result
+
+        def _build_dispatcher_call(fn_suffix, suite_part_expr):
+            """Return (call_arg_list, use_entries, qmin_needed) for one dispatcher.
+
+            Iterates the dispatcher FuncOp's block args in order.  For each arg,
+            looks up its standard_name in the stored canonical_to_std map (built
+            from non_host_std_to_canonical in _generate_run_fn), then maps that
+            standard_name to a CAM Fortran expression via _CAM_STD_EXPRS.
+
+            Returns (None, {}, False) when the dispatcher is not in lifecycle_fns.
+
+            NOTE: arg_to_std keys are the RAW name_hints (which may carry __in /
+            __inout / __alloc suffixes) because non_host_std_to_canonical in
+            _build_run_block_signature stores the raw callee_input_names as its
+            values. We strip the suffix only for suite_name / suite_part
+            identification; all other lookups use the raw hint.
+            """
+            if lifecycle_fns is None:
+                return None, {}, False
+            entry = lifecycle_fns.get(fn_suffix)
+            if entry is None:
+                return None, {}, False
+            fn, arg_to_std = entry
+
+            use_entries = {}
+            call_args = []
+            qmin_needed = False
+
+            for a in fn.args:
+                raw_hint = a.name_hint or ""
+                base = _strip_suffix(raw_hint)
+                if base == "suite_name":
+                    call_args.append("suite_name")
+                    continue
+                if base == "suite_part":
+                    call_args.append(suite_part_expr)
+                    continue
+
+                # arg_to_std is keyed by raw name_hints (possibly suffixed).
+                std_name = arg_to_std.get(raw_hint)
+                if std_name is None:
+                    raise ValueError(
+                        f"_generate_cam_lifecycle_wrappers: no standard_name for "
+                        f"dispatcher '{fn_suffix}' block arg '{raw_hint}'. "
+                        f"Ensure _generate_run_fn returns non_host_std_to_canonical "
+                        f"and ccpp_cap.py stores it in lifecycle_fns."
+                    )
+                cam_entry = _CAM_STD_EXPRS.get(std_name)
+                if cam_entry is None:
+                    raise ValueError(
+                        f"_generate_cam_lifecycle_wrappers: no CAM expression for "
+                        f"standard_name '{std_name}' (dispatcher '{fn_suffix}', "
+                        f"arg '{raw_hint}'). Add it to _CAM_STD_EXPRS."
+                    )
+                expr, use_entry, qmin = cam_entry
+                call_args.append(expr)
+                if use_entry:
+                    mod, local, renamed = use_entry
+                    use_entries[(mod, local)] = renamed
+                if qmin:
+                    qmin_needed = True
+
+            return call_args, use_entries, qmin_needed
+
+        lines = []
+
+        # Determine which per-group lifecycle dispatchers were actually generated
+        def _has_group_lifecycle(infix):
+            return any(
+                f"{sn}_{infix}_{g.attributes['name']}" in public_fns
+                for sn, sd in suite_descriptions.items()
+                for g in sd
+            )
+
+        has_physics_init  = _has_group_lifecycle("init")
+        has_physics_final = _has_group_lifecycle("final")
+        has_tsinit  = _has_group_lifecycle("timestep_init")
+        has_tsfinal = _has_group_lifecycle("timestep_final")
+
+        # Helper: build the per-suite if/else dispatch block for a per-group dispatcher.
+        def _group_dispatch_block(fn_suffix, callee_name, infix, wrapper_name,
+                                  suite_part_fn=None):
+            """Return (block_lines, use_entries, qmin_needed) for one per-group dispatch.
+
+            suite_part_fn: callable(grp) → suite_part expression string.
+            Defaults to f"'{grp}'" (literal group name).
+            """
+            if suite_part_fn is None:
+                def suite_part_fn(grp): return f"'{grp}'"
+            # Use first group to get the dispatcher call template — all groups
+            # use the same dispatcher, so arg list is the same for every group.
+            # We'll substitute suite_part per group inside the loop.
+            _sample_grp = None
+            for _sn, _sd in suite_descriptions.items():
+                for _g in _sd:
+                    _gname = _g.attributes["name"]
+                    if f"{_sn}_{infix}_{_gname}" in public_fns:
+                        _sample_grp = _gname
+                        break
+                if _sample_grp:
+                    break
+
+            call_args, use_entries, qmin = _build_dispatcher_call(
+                fn_suffix, suite_part_fn(_sample_grp) if _sample_grp else "''"
+            )
+
+            block = []
+            first = True
+            for sn, sd in suite_descriptions.items():
+                groups = [g.attributes["name"] for g in sd
+                          if f"{sn}_{infix}_{g.attributes['name']}" in public_fns]
+                if not groups:
+                    continue
+                kw = "if" if first else "else if"
+                first = False
+                block.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+                for grp in groups:
+                    # Rebuild call with this group's suite_part (only suite_part differs).
+                    grp_args, _, _ = _build_dispatcher_call(fn_suffix, suite_part_fn(grp))
+                    block.append(
+                        f"    call {callee_name}({', '.join(grp_args)})"
+                    )
+                    block.append("    if (lc_errcode /= 0) return")
+            if not first:
+                block += [
+                    "  else",
+                    f"    write(lc_errmsg, '(3a)') '{wrapper_name}: no suite named ', "
+                    "trim(suite_name), ' found'",
+                    "    lc_errcode = 1",
+                    "  end if",
+                ]
+            return block, use_entries, qmin
+
+        # --- cam_ccpp_physics_register ---
+        lines += [
+            "subroutine cam_ccpp_physics_register(suite_name)",
+            *_format_use_stmts(_base_use_entries),
+            "  character(len=*), intent(in) :: suite_name",
+            "  call ccpp_register(suite_name, lc_errmsg, lc_errcode)",
+            "end subroutine cam_ccpp_physics_register",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_initialize ---
+        _init_use = dict(_base_use_entries)
+        _init_block = []
+        if has_physics_init:
+            _init_block, _init_disp_use, _ = _group_dispatch_block(
+                "ccpp_physics_init", "ccpp_physics_init", "init",
+                "cam_ccpp_physics_initialize",
+            )
+            _init_use.update(_init_disp_use)
+        lines += [
+            "subroutine cam_ccpp_physics_initialize(suite_name)",
+            *_format_use_stmts(_init_use),
+            "  character(len=*), intent(in) :: suite_name",
+            "  call ccpp_init(suite_name, lc_errmsg, lc_errcode)",
+            "  if (lc_errcode /= 0) return",
+            *_init_block,
+            "end subroutine cam_ccpp_physics_initialize",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_finalize ---
+        _final_use = dict(_base_use_entries)
+        _final_block = []
+        if has_physics_final:
+            _final_block, _final_disp_use, _ = _group_dispatch_block(
+                "ccpp_physics_final", "ccpp_physics_final", "final",
+                "cam_ccpp_physics_finalize",
+            )
+            _final_use.update(_final_disp_use)
+            _final_block.append("  if (lc_errcode /= 0) return")
+        lines += [
+            "subroutine cam_ccpp_physics_finalize(suite_name)",
+            *_format_use_stmts(_final_use),
+            "  character(len=*), intent(in) :: suite_name",
+            *_final_block,
+            "  call ccpp_final(suite_name, lc_errmsg, lc_errcode)",
+            "end subroutine cam_ccpp_physics_finalize",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_timestep_initial ---
+        _tsinit_use = dict(_base_use_entries)
+        _tsinit_body = []
+        if has_tsinit:
+            _tsinit_block, _tsinit_disp_use, _ = _group_dispatch_block(
+                "ccpp_physics_timestep_init", "ccpp_physics_timestep_init",
+                "timestep_init", "cam_ccpp_physics_timestep_initial",
+            )
+            _tsinit_use.update(_tsinit_disp_use)
+            _tsinit_body = _tsinit_block
+        else:
+            _tsinit_body = ["  lc_errcode = 0", "  lc_errmsg = ''"]
+        lines += [
+            "subroutine cam_ccpp_physics_timestep_initial(suite_name)",
+            *_format_use_stmts(_tsinit_use),
+            "  character(len=*), intent(in) :: suite_name",
+            *_tsinit_body,
+            "end subroutine cam_ccpp_physics_timestep_initial",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_run ---
+        # qmin (ccpp_constituent_minimum_values) is built from lc_const_props%minimum()
+        # when the run dispatcher takes it as a block arg (i.e. some run-phase scheme
+        # modifies constituents intent=inout/out).  Detection is via the standard_name
+        # ccpp_constituent_minimum_values appearing in the dispatcher's arg_to_std map,
+        # not by checking local variable names.
+        _run_call_args, _run_use, _run_has_qmin = _build_dispatcher_call(
+            "ccpp_physics_run", "suite_part"
+        )
+        _run_use_full = {**_base_use_entries, **_run_use}
+        _run_preamble = [
+            "subroutine cam_ccpp_physics_run(suite_name, suite_part)",
+            *_format_use_stmts(_run_use_full),
+        ]
+        if _run_has_qmin:
+            _run_preamble.append("  use ccpp_kinds, only: kind_phys")
+        _run_preamble += [
+            "  character(len=*), intent(in) :: suite_name",
+            "  character(len=*), intent(in) :: suite_part",
+        ]
+        if _run_has_qmin:
+            _run_preamble += [
+                "  integer :: lc_n, lc_i",
+                "  real(kind=kind_phys), allocatable :: lc_qmin(:)",
+                "  if (allocated(lc_const_props)) then",
+                "    lc_n = size(lc_const_props)",
+                "  else",
+                "    lc_n = 0",
+                "  end if",
+                "  allocate(lc_qmin(lc_n))",
+                "  do lc_i = 1, lc_n",
+                "    call lc_const_props(lc_i)%minimum(lc_qmin(lc_i), lc_errcode, lc_errmsg)",
+                "    if (lc_errcode /= 0) then",
+                "      deallocate(lc_qmin)",
+                "      return",
+                "    end if",
+                "  end do",
+            ]
+        _run_call_str = (
+            f"  call ccpp_physics_run({', '.join(_run_call_args)})"
+            if _run_call_args else
+            "  call ccpp_physics_run(suite_name, suite_part, lc_errmsg, lc_errcode)"
+        )
+        _run_postamble = ["  deallocate(lc_qmin)"] if _run_has_qmin else []
+        lines += _run_preamble + [_run_call_str] + _run_postamble + [
+            "end subroutine cam_ccpp_physics_run",
+            "",
+        ]
+
+        # --- cam_ccpp_physics_timestep_final ---
+        _tsfinal_use = dict(_base_use_entries)
+        _tsfinal_body = []
+        if has_tsfinal:
+            _tsfinal_block, _tsfinal_disp_use, _ = _group_dispatch_block(
+                "ccpp_physics_timestep_final", "ccpp_physics_timestep_final",
+                "timestep_final", "cam_ccpp_physics_timestep_final",
+            )
+            _tsfinal_use.update(_tsfinal_disp_use)
+            _tsfinal_body = _tsfinal_block
+        else:
+            _tsfinal_body = ["  lc_errcode = 0", "  lc_errmsg = ''"]
+        lines += [
+            "subroutine cam_ccpp_physics_timestep_final(suite_name)",
+            *_format_use_stmts(_tsfinal_use),
+            "  character(len=*), intent(in) :: suite_name",
+            *_tsfinal_body,
+            "end subroutine cam_ccpp_physics_timestep_final",
+            "",
+        ]
+
+        # --- ccpp_physics_suite_schemes ---
+        # Returns the list of scheme names (Fortran module names) for a suite.
+        # Used by runtime_opts.F90 to identify which scheme namelists to read.
+        # Scheme names are the <scheme> element names from the suite XML, in order,
+        # deduplicated while preserving first-occurrence order.
+        lines += [
+            "subroutine ccpp_physics_suite_schemes(suite_name, scheme_list, errmsg, errflg)",
+            "  character(len=*),              intent(in)    :: suite_name",
+            "  character(len=*), allocatable, intent(out)   :: scheme_list(:)",
+            "  character(len=512),            intent(out)   :: errmsg",
+            "  integer,                       intent(out)   :: errflg",
+            "  errflg = 0",
+            "  errmsg = ''",
+        ]
+        first = True
+        for sn, sd in suite_descriptions.items():
+            seen: "dict[str, None]" = {}
+            for group in sd:
+                for scheme in _iter_schemes(group):
+                    seen[scheme.attributes["name"]] = None
+            scheme_names_list = list(seen.keys())
+            kw = "if" if first else "else if"
+            first = False
+            lines.append(f"  {kw} (trim(suite_name) == '{sn}') then")
+            lines.append(f"    allocate(scheme_list({len(scheme_names_list)}))")
+            for idx, sname in enumerate(scheme_names_list, 1):
+                lines.append(f"    scheme_list({idx}) = '{sname}'")
+        if not first:
+            lines += [
+                "  else",
+                "    write(errmsg, '(3a)') 'No suite named ', trim(suite_name), ' found'",
+                "    errflg = 1",
+                "  end if",
+            ]
+        lines.append("end subroutine ccpp_physics_suite_schemes")
+
+        public_names = [
+            "cam_ccpp_physics_register",
+            "cam_ccpp_physics_initialize",
+            "cam_ccpp_physics_finalize",
+            "cam_ccpp_physics_timestep_initial",
+            "cam_ccpp_physics_run",
+            "cam_ccpp_physics_timestep_final",
+            "ccpp_physics_suite_schemes",
+        ]
+        return ConstituentApiOp("\n".join(lines), public_names)
 
 
     def _generate_ccpp_cap_module(self, suite_descriptions, meta_data, public_fns,
@@ -920,6 +1327,12 @@ class CCPPCAP(ModulePass):
         all_globals: list = []
         all_definitions: list = []
         all_declarations: list = []
+        # Maps fn_suffix → (FuncOp, canonical_to_std) so the CAM wrapper builder
+        # can resolve each dispatcher block arg to its standard_name (from metadata)
+        # and map that to the appropriate CAM Fortran expression — without hardcoding
+        # local variable names.  canonical_to_std is {} for flat lifecycle fns whose
+        # args are always the fixed CCPP protocol set (suite_name, errmsg, errflg).
+        lifecycle_fns: dict = {}
         # Shared across ALL function calls (lifecycle AND run) to avoid duplicate GlobalOps.
         # Both lifecycle and run functions can reference the same host variables (e.g.
         # a DDT instance used in the run function may also appear in lifecycle functions).
@@ -1016,7 +1429,7 @@ class CCPPCAP(ModulePass):
                 if not suite_run_entries:
                     continue
 
-                cap_fn, decls, host_global_ops = _generate_run_fn(
+                cap_fn, decls, host_global_ops, non_host_std_to_canonical = _generate_run_fn(
                     fn_name=fn_suffix,
                     suite_run_entries=suite_run_entries,
                     meta_data=meta_data,
@@ -1029,6 +1442,13 @@ class CCPPCAP(ModulePass):
                 )
                 all_globals.extend(host_global_ops)
                 all_declarations.extend(decls)
+                # Invert to canonical_arg_name → std_name for the CAM wrapper.
+                # Add errmsg/errflg: they are always the last block args of run-style
+                # fns but not tracked in non_host_std_to_canonical.
+                _canonical_to_std = {v: k for k, v in non_host_std_to_canonical.items()}
+                _canonical_to_std[CCPP_ERRMSG_LOCAL] = CCPP_ERROR_MESSAGE
+                _canonical_to_std[CCPP_ERRFLG_LOCAL] = CCPP_ERROR_CODE
+                _lc_fn_std_map = _canonical_to_std
             else:
                 # Lifecycle function: collect per-suite callee info
                 suite_entries = []
@@ -1082,8 +1502,13 @@ class CCPPCAP(ModulePass):
                 )
                 all_globals.extend(lc_host_ops)
                 all_declarations.extend(decls)
+                # Flat lifecycle fns (ccpp_register, ccpp_init, ccpp_final) always
+                # take (suite_name) and return (errmsg, errflg) — structurally fixed
+                # by the CCPP protocol, no std_name mapping needed for CAM calls.
+                _lc_fn_std_map = {}
 
             all_definitions.append(cap_fn)
+            lifecycle_fns[fn_suffix] = (cap_fn, _lc_fn_std_map)
             if self.bind_c:
                 cap_fn.attributes["bind_c"] = UnitAttr()
 
@@ -1166,13 +1591,20 @@ class CCPPCAP(ModulePass):
         # (FRAMEWORK_STD_NAME_TO_CAP_VAR, cap_shared.py), so lc_all_constituents
         # must exist whenever it could be referenced, even for a suite with no
         # dynamic registration or fixed-advected constituent of its own.
+        # SHORT-TERM HACK (TDB-001, technical_debt.md): cam_host builds always
+        # generate the constituent API so write_init_files.py can unconditionally
+        # import cam_constituents_array / cam_model_const_properties from cam_ccpp_cap.
+        # The right fix is to make write_init_files.py constituent-aware instead.
         dyn_names, fixed_adv, references_count = _collect_constituent_info(meta_data)
-        if dyn_names or fixed_adv or scratch_var_list or references_count:
+        needs_const_tend = "ccpp_constituent_tendencies" in cap_var_map
+        if dyn_names or fixed_adv or scratch_var_list or references_count or self.cam_host:
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
                 camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,
                 framework_var_residency=framework_var_residency,
                 instance_local_name=instance_local_name,
                 ninstances_local_name=ninstances_local_name,
+                cam_host=self.cam_host,
+                needs_const_tend=needs_const_tend,
             )
             for var_op in const_var_ops:
                 _key = (var_op.var_name.data, "_cap_module_var")
@@ -1206,17 +1638,35 @@ class CCPPCAP(ModulePass):
         # failure whenever a suite both generates a host cap and uses
         # constituents.
         if ddt_source_module:
+            _uses_constituents = bool(
+                dyn_names or fixed_adv or scratch_var_list or references_count
+            )
             arg_tables_iterable = (
                 arg_table
                 for props in meta_data.values()
                 for arg_table in props.arg_tables.values()
             )
             for stub in _collect_ddt_use_stubs(arg_tables_iterable, ddt_source_module):
-                _key = (stub.sym_name.data,
-                        stub.attributes.get("module", StringAttr("")).data)
+                _mod = stub.attributes.get("module", StringAttr("")).data
+                if _mod == "ccpp_constituent_prop_mod" and not _uses_constituents:
+                    continue
+                _key = (stub.sym_name.data, _mod)
                 if _key not in shared_seen_host_globals:
                     shared_seen_host_globals.add(_key)
                     all_globals.append(stub)
+
+        # Append CAM-SIMA-specific lifecycle wrappers (cam_ccpp_physics_*) so
+        # that phys_comp.F90's simplified call convention (suite_name only, or
+        # suite_name + suite_part for _run) is satisfied without changing the
+        # inner ccpp_* dispatchers used by xdsl_ccpp's own examples/tests.
+        # Gated on cam_host=true so non-CAM builds (examples, CI) don't need
+        # the physics_types / physics_grid modules to be present.
+        if self.cam_host:
+            all_definitions.append(
+                self._generate_cam_lifecycle_wrappers(
+                    suite_descriptions, public_fns, meta_data, lifecycle_fns
+                )
+            )
 
         module_ops = all_globals + all_definitions + all_declarations
 

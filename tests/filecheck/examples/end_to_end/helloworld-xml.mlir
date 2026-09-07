@@ -95,6 +95,7 @@
 // CHECK-NEXT:      temp_level_kind_cast = real(temp_level, kind=kind_dyn)
 // CHECK-NEXT:      if (allocated(temp_layer_unit_conv)) deallocate(temp_layer_unit_conv)
 // CHECK-NEXT:      allocate(temp_layer_unit_conv(size(temp_layer, 1), size(temp_layer, 2)))
+// CHECK-NEXT:      temp_layer_unit_conv = temp_layer + 273.15_kind_phys
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in hello_world_suite_physics"
@@ -392,7 +393,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK-NEXT:  end module HelloWorld_ccpp_cap
+// CHECK:  end module HelloWorld_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds

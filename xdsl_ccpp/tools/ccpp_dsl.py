@@ -169,6 +169,27 @@ class ccppMain:
                  "(<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.",
         )
         parser.add_argument(
+            "--cam-host",
+            action="store_true",
+            default=False,
+            help="Generate CAM-SIMA-specific cam_ccpp_physics_* lifecycle wrapper "
+                 "subroutines in the ccpp_cap module.  These wrappers read "
+                 "errmsg/errcode from the physics_types module and col_start/col_end "
+                 "from physics_grid (CAM-SIMA module-level variables) rather than "
+                 "receiving them as dummy arguments.  Off by default so non-CAM "
+                 "builds are not required to provide those modules.",
+        )
+        parser.add_argument(
+            "--framework-src-dir",
+            default="",
+            metavar="DIR",
+            help="Path to the real ccpp_framework/src directory.  When --cam-host "
+                 "is set, the real framework F90 files (ccpp_hashable.F90, "
+                 "ccpp_hash_table.F90, ccpp_constituent_prop_mod.F90, "
+                 "ccpp_scheme_utils.F90) from this directory are listed in the "
+                 "datatable utility files instead of the bundled xdsl_ccpp stubs.",
+        )
+        parser.add_argument(
             "--legacy-mode",
             action="store_true",
             default=False,
@@ -325,11 +346,20 @@ class ccppMain:
         suites_arg = ",".join(self.options_db["suites"])
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = ["python3", "-m", "xdsl_ccpp.frontend.ccpp_xml", "--suites", suites_arg]
+        cmd = [sys.executable, "-m", "xdsl_ccpp.frontend.ccpp_xml", "--suites", suites_arg]
         if self.options_db["scheme_files"]:
             cmd += ["--scheme-files", ",".join(self.options_db["scheme_files"])]
-        if self.options_db["host_files"]:
-            cmd += ["--host-files", ",".join(self.options_db["host_files"])]
+        # Mirror capgen-v1 (ccpp_capgen.py:646): auto-include the bundled
+        # ccpp_constituent_prop_mod.meta so callers never have to pass it.
+        host_files = list(self.options_db["host_files"])
+        _const_meta = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "framework_src",
+                         "ccpp_constituent_prop_mod.meta")
+        )
+        if os.path.isfile(_const_meta) and _const_meta not in host_files:
+            host_files.append(_const_meta)
+        if host_files:
+            cmd += ["--host-files", ",".join(host_files)]
         if self.options_db.get("legacy_mode"):
             cmd.append("--legacy-mode")
 
@@ -341,7 +371,7 @@ class ccppMain:
         py_file = self.options_db["py"]
         mlir_out = os.path.join(tmp_dir, "ccpp.mlir")
 
-        cmd = ["python3", py_file]
+        cmd = [sys.executable, py_file]
         if self.options_db.get("legacy_mode"):
             # py_api.py has no argparse of its own (it's the user's own
             # script); it scans sys.argv for this token directly, mirroring
@@ -541,6 +571,8 @@ class ccppMain:
             cap_opts.append(f"host_name={self.options_db['host_name']}")
         if bind_c:
             cap_opts.append("bind_c=true")
+        if self.options_db.get("cam_host"):
+            cap_opts.append("cam_host=true")
         if cap_opts:
             ccpp_cap_pass += "{" + " ".join(cap_opts) + "}"
         directive = self.options_db.get("directive")
@@ -610,7 +642,7 @@ class ccppMain:
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         pipeline = self._build_pipeline()
         cmd = [
-            "python3", "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
+            sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
             "-p", pipeline, "-t", "ftn",
         ]
         self.run_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer")
@@ -659,7 +691,7 @@ class ccppMain:
         hdr_out = os.path.join(tmp_dir, "ccpp.h")
         pipeline = self._build_pipeline()
         cmd = [
-            "python3", "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
+            sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
             "-p", pipeline, "-t", "cpp_header",
         ]
         self.run_pipeline_stage(cmd, hdr_out, "Generating C++ headers")
@@ -694,7 +726,11 @@ class ccppMain:
 
         cap_files = [str(p) for p in Path(caps_dir).glob("*.F90")]
         host_name = self.options_db.get("host_name") or ""
-        root_el = build_datatable(mlir_text, cap_files, host_name=host_name)
+        root_el = build_datatable(
+            mlir_text, cap_files, host_name=host_name,
+            cam_host=bool(self.options_db.get("cam_host")),
+            framework_src_dir=self.options_db.get("framework_src_dir") or "",
+        )
         write_datatable(root_el, datatable_path)
         self.print_verbose_message(f"  -> Wrote datatable: {datatable_path}")
 

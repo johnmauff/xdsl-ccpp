@@ -56,6 +56,16 @@ _FRAMEWORK_F90_FILES = (
     "ccpp_scheme_utils.F90",
 )
 
+# Real CCPP framework files needed when cam_host=True (in compile order so
+# ccpp_hashable is ready before ccpp_hash_table, and both before
+# ccpp_constituent_prop_mod which depends on them).
+_REAL_FRAMEWORK_F90_FILES = (
+    "ccpp_hashable.F90",
+    "ccpp_hash_table.F90",
+    "ccpp_constituent_prop_mod.F90",
+    "ccpp_scheme_utils.F90",
+)
+
 
 def _resolve_framework_f90_files() -> list[str]:
     """Return absolute paths for xdsl_ccpp's own framework F90 files.
@@ -274,13 +284,23 @@ def _phase_for_entry(entry_name: str, scheme_name: str) -> str:
 
 # ── Top-level build function ──────────────────────────────────────────────────
 
-def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -> ET.Element:
+def build_datatable(
+    mlir_text: str,
+    cap_files: list[str],
+    host_name: str = "",
+    cam_host: bool = False,
+    framework_src_dir: str = "",
+) -> ET.Element:
     """Build an ``ElementTree`` element tree representing the datatable.
 
     Args:
         mlir_text: The frontend MLIR text (before optimization passes).
         cap_files: Absolute or relative paths to the generated ``.F90`` files.
         host_name: Optional host model name written into the root element.
+        cam_host: When True, replace the bundled framework F90 stub files with
+            real ccpp_framework source files from ``framework_src_dir``.
+        framework_src_dir: Path to the real ccpp_framework/src directory.
+            Required when cam_host=True; ignored otherwise.
 
     Returns:
         An ``xml.etree.ElementTree.Element`` for the ``<datatable>`` root.
@@ -304,43 +324,52 @@ def build_datatable(mlir_text: str, cap_files: list[str], host_name: str = "") -
     if host_name:
         root.set("host_name", host_name)
 
+    # Utility files: ccpp_kinds.F90 (generated, if present) + bundled
+    # framework F90 files. Collected once and written into both <ccpp_files>
+    # and <capgen_files> because xdsl_ccpp's cmake reader uses <ccpp_files>
+    # while capgen-v1's ccpp_datafile.py DatatableReport("utility_files")
+    # reads from <capgen_files>.
+    utility_file_texts: list[str] = []
+    for cap in sorted(cap_files):
+        if os.path.basename(str(cap)) == "ccpp_kinds.F90":
+            utility_file_texts.append(str(cap))
+    if cam_host:
+        if framework_src_dir:
+            for name in _REAL_FRAMEWORK_F90_FILES:
+                path = os.path.join(framework_src_dir, name)
+                if not os.path.isfile(path):
+                    raise FileNotFoundError(
+                        f"cam_host=True: real framework file not found: {path!r}\n"
+                        f"  (framework_src_dir={framework_src_dir!r})"
+                    )
+                utility_file_texts.append(os.path.abspath(path))
+    else:
+        for framework_file in _resolve_framework_f90_files():
+            utility_file_texts.append(framework_file)
+
     # ── ccpp_files ────────────────────────────────────────────────────────────
+    # Cap files are listed as <file path="..."/> for cmake/parse_xdsl_ccpp_
+    # datatable.py (which reads them for the Fortran build step).
+    # parse_xdsl_ccpp_datatable.py skips non-<file path="..."> children to
+    # avoid tripping on the subcategory elements.
     files_el = ET.SubElement(root, "ccpp_files")
     for cap in sorted(cap_files):
         f_el = ET.SubElement(files_el, "file")
         f_el.set("path", str(cap))
-
-    # ── capgen_files (capgen_v1_parity_backlog.md Stage 8b) ───────────────────
-    # A minimal, schema-valid stand-in for real capgen-v1's own
-    # <capgen_files><utilities>/<host_files>/<suite_files></capgen_files>
-    # (ccpp-framework-fresh/capgen/generator/datatable.py:124-157) -- NOT a
-    # replacement for <ccpp_files> above, which cmake/parse_xdsl_ccpp_
-    # datatable.py still reads. Exists so real capgen-v1's own vendored
-    # ccpp_datafile.py doesn't raise CCPPDatatableError("Element type,
-    # 'capgen_files', not found in table") on a DatatableReport("utility_files")
-    # query against this file (confirmed directly: it does, with no
-    # <capgen_files> element present at all) -- cam_autogen.py makes exactly
-    # that query (cam_autogen.py:731).
-    #
-    # <utilities> (task #75, capgen_v1_parity_backlog.md): xdsl_ccpp's own
-    # generated ccpp_kinds.F90 (picked out of cap_files by name -- it's
-    # always generated, unconditionally, into the same output directory as
-    # every other cap) plus the framework-shipped support files resolved by
-    # _resolve_framework_f90_files() above (ccpp_constituent_prop_mod.F90/
-    # ccpp_scheme_utils.F90, now vendored inside the installed package at
-    # xdsl_ccpp/framework_src/ -- see that function's own docstring).
-    # <host_files>/<suite_files> stay empty-but-present: neither is actually
-    # queried by cam_autogen.py today, and categorizing cap_files by
-    # filename pattern for them isn't needed to close that specific gap.
-    capgen_files_el = ET.SubElement(root, "capgen_files")
-    utilities_el = ET.SubElement(capgen_files_el, "utilities")
-    for cap in sorted(cap_files):
-        if os.path.basename(str(cap)) == "ccpp_kinds.F90":
-            u_el = ET.SubElement(utilities_el, "file")
-            u_el.text = str(cap)
-    for framework_file in _resolve_framework_f90_files():
+    utilities_el = ET.SubElement(files_el, "utilities")
+    for u_text in utility_file_texts:
         u_el = ET.SubElement(utilities_el, "file")
-        u_el.text = framework_file
+        u_el.text = u_text
+    ET.SubElement(files_el, "host_files")
+    ET.SubElement(files_el, "suite_files")
+
+    # ── capgen_files ──────────────────────────────────────────────────────────
+    # capgen-v1's ccpp_datafile.py reads utility_files from this section.
+    capgen_files_el = ET.SubElement(root, "capgen_files")
+    capgen_utilities_el = ET.SubElement(capgen_files_el, "utilities")
+    for u_text in utility_file_texts:
+        u_el = ET.SubElement(capgen_utilities_el, "file")
+        u_el.text = u_text
     ET.SubElement(capgen_files_el, "host_files")
     ET.SubElement(capgen_files_el, "suite_files")
 

@@ -508,7 +508,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK-NEXT:  end module Tinyddt_ccpp_cap
+// CHECK:  end module Tinyddt_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: Tinyddt_ccpp_chost_cap.F90
 // CHECK-LABEL: module Tinyddt_ccpp_chost_cap
