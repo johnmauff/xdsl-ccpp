@@ -19,12 +19,12 @@ contains
     errflg = 0
     errmsg = ''
     allocate(dyn_const(1))
-    dyn_const(1)%std_name         = 'water_vapor_specific_humidity'
-    dyn_const(1)%long_name        = 'Water vapour specific humidity'
-    dyn_const(1)%units            = 'kg kg-1'
-    dyn_const(1)%default_val      = 0.0_kind_phys
-    dyn_const(1)%min_val          = 0.0_kind_phys
-    dyn_const(1)%is_advected_flag = .true.
+    call dyn_const(1)%instantiate(                                           &
+        std_name='water_vapor_specific_humidity',                            &
+        long_name='Water vapour specific humidity', diag_name='QV',         &
+        units='kg kg-1', vertical_dim='vertical_layer_dimension',           &
+        advected=.true., default_value=0.0_kind_phys, min_value=0.0_kind_phys, &
+        errcode=errflg, errmsg=errmsg)
   end subroutine constprop_register
 
   ! Scale temperatures in the active chunk by 2x so the driver can verify.

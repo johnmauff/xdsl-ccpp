@@ -24,19 +24,19 @@ contains
       return
     end if
 
-    dyn_const(1)%std_name         = 'water_vapor_specific_humidity'
-    dyn_const(1)%long_name        = 'Water vapor specific humidity'
-    dyn_const(1)%units            = 'kg kg-1'
-    dyn_const(1)%default_val      = 0.0_kind_phys
-    dyn_const(1)%min_val          = 0.0_kind_phys
-    dyn_const(1)%is_advected_flag = .true.
-
-    dyn_const(2)%std_name         = 'cloud_ice_dry_mixing_ratio'
-    dyn_const(2)%long_name        = 'Cloud ice dry mixing ratio'
-    dyn_const(2)%units            = 'kg kg-1'
-    dyn_const(2)%default_val      = 0.0_kind_phys
-    dyn_const(2)%min_val          = 0.0_kind_phys
-    dyn_const(2)%is_advected_flag = .true.
+    call dyn_const(1)%instantiate(                                          &
+        std_name='water_vapor_specific_humidity',                           &
+        long_name='Water vapor specific humidity', diag_name='QV',         &
+        units='kg kg-1', vertical_dim='vertical_layer_dimension',          &
+        advected=.true., default_value=0.0_kind_phys, min_value=0.0_kind_phys, &
+        errcode=errflg, errmsg=errmsg)
+    if (errflg /= 0) return
+    call dyn_const(2)%instantiate(                                          &
+        std_name='cloud_ice_dry_mixing_ratio',                              &
+        long_name='Cloud ice dry mixing ratio', diag_name='CLDICE',        &
+        units='kg kg-1', vertical_dim='vertical_layer_dimension',          &
+        advected=.true., default_value=0.0_kind_phys, min_value=0.0_kind_phys, &
+        errcode=errflg, errmsg=errmsg)
 
   end subroutine constadv_register
 

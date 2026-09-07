@@ -31,7 +31,7 @@ contains
     errmsg  = ''
     if (.not. allocated(lc_constituents)) return
     do i = 1, size(lc_constituents)
-      if (trim(lc_constituents(i)%std_name) == trim(std_name)) then
+      if (trim(lc_constituents(i)%standard_name()) == trim(std_name)) then
         cindex = i
         return
       end if
@@ -50,7 +50,7 @@ contains
     if (.not. allocated(lc_constituents)) return
     do k = 1, size(std_names)
       do i = 1, size(lc_constituents)
-        if (trim(lc_constituents(i)%std_name) == trim(std_names(k))) then
+        if (trim(lc_constituents(i)%standard_name()) == trim(std_names(k))) then
           cindices(k) = i
           exit
         end if
