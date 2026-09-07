@@ -117,6 +117,8 @@ def _generate_constituent_api_cam_host(
     camel_name: str,
     dynamic_array_names: list,
     fixed_advected: list,
+    scratch_vars: "list | None" = None,
+    needs_const_tend: bool = False,
 ):
     """Generate constituent API using the real ccpp_model_constituents_t container.
 
@@ -125,6 +127,14 @@ def _generate_constituent_api_cam_host(
     lock_data, field_data_ptr, constituent_props_ptr, num_constituents,
     const_index, copy_in, copy_out) instead of the raw-array approach used for
     non-CAM builds.
+
+    scratch_vars: list of (lc_name, rank, alloc_dims_str, const_std_name, needs_gpu)
+        tuples for CapScratch variables that are not framework-managed (e.g. lc_qtnd).
+        These are declared as module-level allocatable arrays and allocated in
+        initialize_constituents.  const_std_name is non-None only for constituent-
+        tendency pointer slices (which resolve into lc_const_tend, not a separate array).
+    needs_const_tend: True when the suite uses ccpp_constituent_tendencies (lc_const_tend);
+        declares and allocates the 3-D tendency array alongside lc_constituent_array.
     """
     h = camel_name
     n_fixed = len(fixed_advected)
@@ -165,6 +175,21 @@ def _generate_constituent_api_cam_host(
         "  integer, allocatable :: lc_all_constituents(:)",
         "  real(kind=kind_phys), pointer :: lc_constituent_array(:,:,:) => null()",
     ]
+    if needs_const_tend:
+        type_defs_lines.append(
+            "  real(kind=kind_phys), allocatable :: lc_const_tend(:, :, :)"
+        )
+    for lc_name, rank, _alloc_dims, const_std_name, _needs_gpu in (scratch_vars or []):
+        if const_std_name is None:  # non-constituent scratch vars: declare allocatable
+            colons = ", ".join([":"] * rank)
+            type_defs_lines.append(
+                f"  real(kind=kind_phys), allocatable :: {lc_name}({colons})"
+            )
+        else:  # constituent-tendency scratch vars: pointer slice into lc_const_tend
+            colons = ", ".join([":"] * rank)
+            type_defs_lines.append(
+                f"  real(kind=kind_phys), pointer :: {lc_name}({colons}) => null()"
+            )
     if n_fixed > 0:
         max_std_len = max(len(s) for s, *_ in fixed_advected)
         names_parts = [f"'{s}'" for s, *_ in fixed_advected]
@@ -201,6 +226,13 @@ def _generate_constituent_api_cam_host(
     da_lines = [f"  subroutine {h}_ccpp_deallocate_dynamic_constituents()"]
     for n in dynamic_array_names:
         da_lines.append(f"    if (allocated(lc_{n})) deallocate(lc_{n})")
+    if needs_const_tend:
+        da_lines.append(f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)")
+    for lc_name, _, _, const_std_name, _ in (scratch_vars or []):
+        if const_std_name is None:
+            da_lines.append(f"    if (allocated({lc_name})) deallocate({lc_name})")
+        else:  # constituent-tendency pointer: just nullify
+            da_lines.append(f"    nullify({lc_name})")
     da_lines += [
         f"    call cam_constituents_obj%reset()",
         f"  end subroutine {h}_ccpp_deallocate_dynamic_constituents",
@@ -310,8 +342,41 @@ def _generate_constituent_api_cam_host(
         f"    lc_const_props = cam_constituents_obj%constituent_props_ptr()",
         f"    if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
         f"    allocate(lc_all_constituents(size(lc_const_props)))",
-        f"  end subroutine {h}_ccpp_initialize_constituents",
     ]
+    if needs_const_tend:
+        ic_lines += [
+            f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
+            f"    allocate(lc_const_tend(ncols, pver, size(lc_const_props)))",
+            f"    lc_const_tend = 0.0_kind_phys",
+        ]
+    for lc_name, rank, alloc_dims_str, const_std_name, _ in (scratch_vars or []):
+        if const_std_name is None:
+            # Non-constituent scratch: allocate as a module-level array.
+            # alloc_dims_str uses "ncols"/"pver" (available as args) and "lc_num".
+            alloc_str = alloc_dims_str.replace("lc_num", "size(lc_const_props)")
+            ic_lines += [
+                f"    if (allocated({lc_name})) deallocate({lc_name})",
+                f"    allocate({lc_name}({alloc_str}))",
+            ]
+        else:
+            # Constituent-tendency scratch: pointer slice into lc_const_tend.
+            # Use cam_constituents_obj%const_index to find the slice index, then
+            # associate the pointer.  lc_const_tend must already be allocated above.
+            ic_lines += [
+                f"    block",
+                f"      integer :: lc_tend_idx",
+                f"      character(len=512) :: lc_tend_errmsg",
+                f"      nullify({lc_name})",
+                f"      call cam_constituents_obj%const_index(lc_tend_idx, '{const_std_name}',",
+                f"          errcode=errflg, errmsg=lc_tend_errmsg)",
+                f"      if (errflg == 0 .and. lc_tend_idx > 0) then",
+                f"        {lc_name} => lc_const_tend(:, :, lc_tend_idx)",
+                f"      else",
+                f"        errflg = 0",
+                f"      end if",
+                f"    end block",
+            ]
+    ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")
 
     # ── 6. constituents_array ────────────────────────────────────────────
     ca_lines = [
@@ -419,6 +484,7 @@ def _generate_constituent_api(
     instance_local_name: "str | None" = None,
     ninstances_local_name: "str | None" = None,
     cam_host: bool = False,
+    needs_const_tend: bool = False,
 ):
     """Generate constituent registration API as raw Fortran text.
 
@@ -481,7 +547,9 @@ def _generate_constituent_api(
 
     if cam_host:
         return _generate_constituent_api_cam_host(
-            camel_name, dynamic_array_names, fixed_advected
+            camel_name, dynamic_array_names, fixed_advected,
+            scratch_vars=scratch_vars,
+            needs_const_tend=needs_const_tend,
         )
 
     h = camel_name

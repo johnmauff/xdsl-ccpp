@@ -30,6 +30,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ActiveCheckOp,
     ArraySectionOp,
     ClearStringOp,
+    ConstituentIndexLookupOp,
     ConstituentSyncOp,
     KeywordCallOp,
     KindCastOp,
@@ -1514,9 +1515,11 @@ class GenerateSuiteSubroutine(RewritePattern):
         versus "genuinely unresolvable").
 
         A dimension matching neither pattern (genuinely unresolvable by
-        any path) is silently skipped, exactly as before this fix --
-        that's a separate, narrower, pre-existing gap, not this fix's
-        concern.
+        any path) causes the whole allocation to be deferred (returns
+        empty dim_var_refs) rather than creating a partial allocation with
+        the wrong rank -- a partial allocation would produce a rank mismatch
+        at compile time for any variable whose declared rank exceeds the
+        number of resolvable dimensions.
         """
         dim_var_refs = []
         for dim_std_name in alloc_dim_names:
@@ -1549,6 +1552,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                 )
                 if ssa is not None:
                     dim_var_refs.append(ssa)
+                else:
+                    # This dimension is unresolvable at this phase; returning
+                    # an incomplete list would produce a rank mismatch, so
+                    # signal "not yet allocatable" by returning empty.
+                    return [], None
         return dim_var_refs, None
 
     def _build_promoted_call_ops(
@@ -4062,6 +4070,41 @@ class GenerateSuiteSubroutine(RewritePattern):
                     InsertPoint.before(ret_op),
                 )
 
+    @staticmethod
+    def _inject_constituent_index_lookup(generated_fns, std_name_attrs):
+        """Inject ConstituentIndexLookupOp at the top of each group-phase _init_ FuncOp.
+
+        This populates lc_const_indices at runtime so that ConstituentSyncOp's
+        q(:,:,lc_const_indices(k)) references resolve to the correct constituent
+        slot regardless of the order in which constituents were registered.
+        """
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp) or fn.is_declaration:
+                continue
+            if "_init_" not in fn.sym_name.data:
+                continue
+            if not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            first_op = next(iter(block.ops), None)
+            if first_op is None:
+                continue
+            # Find the error-code variable name (may be "errflg", "errcode", etc.).
+            # intent(out) args are represented as AllocaOp results in the block body,
+            # not as block arguments, so scan the block's ops.
+            err_var = "errflg"
+            for bop in block.ops:
+                if not isa(bop, memref.AllocaOp):
+                    break
+                hint = bop.memref.name_hint or ""
+                if "err" in hint.lower() and "msg" not in hint.lower() and hint:
+                    err_var = hint
+                    break
+            Rewriter.insert_op(
+                ConstituentIndexLookupOp(std_names=std_name_attrs, err_var_name=err_var),
+                InsertPoint.before(first_op),
+            )
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ccpp.SuiteOp, rewriter: PatternRewriter):
         """Generate the complete cap module for one ccpp.SuiteOp."""
@@ -4096,6 +4139,29 @@ class GenerateSuiteSubroutine(RewritePattern):
             if key not in seen_stubs:
                 seen_stubs.add(key)
                 deduped_stubs.append(stub)
+
+        # If the suite has fixed advected constituents, add:
+        #   - integer :: lc_const_indices(N) module var (initialized to [1,2,...,N])
+        #   - use ccpp_scheme_utils, only: ccpp_constituent_indices USE stub
+        #   - ConstituentIndexLookupOp injected at the top of each _init_ FuncOp
+        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
+        if fixed_adv:
+            n = len(fixed_adv)
+            init_vals = ", ".join(str(i) for i in range(1, n + 1))
+            allocatable_mod_vars.append(ModuleVarOp(
+                "lc_const_indices", "integer",
+                fixed_dim=n,
+                init_value=f"[{init_vals}]",
+                rank=1,
+            ))
+            ci_stub_key = ("ccpp_constituent_indices", "ccpp_scheme_utils")
+            if ci_stub_key not in seen_stubs:
+                seen_stubs.add(ci_stub_key)
+                ci_stub = func.FuncOp.external("ccpp_constituent_indices", [], [])
+                ci_stub.attributes["module"] = StringAttr("ccpp_scheme_utils")
+                deduped_stubs.append(ci_stub)
+            std_name_attrs = ArrayAttr([StringAttr(sn) for sn, *_ in fixed_adv])
+            self._inject_constituent_index_lookup(generated_fns, std_name_attrs)
 
         scheme_mod = builtin.ModuleOp(
             [ccpp_suite_state_global] + string_const_globals

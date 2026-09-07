@@ -638,6 +638,8 @@ class ModuleVarOp(IRDLOperation):
     ddt_name  = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
     ftn_attrs = opt_prop_def(StringAttr)    # Fortran attributes: "target", "pointer", etc.
     rank      = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
+    fixed_dim = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
+    init_value = opt_prop_def(StringAttr)   # optional Fortran initializer (for fixed_dim vars)
 
     def __init__(
         self,
@@ -648,6 +650,8 @@ class ModuleVarOp(IRDLOperation):
         ddt_name: str | None = None,
         ftn_attrs: str | None = None,
         rank: int = 0,
+        fixed_dim: int | None = None,
+        init_value: str | None = None,
     ):
         props: dict = {
             "var_name":  StringAttr(var_name),
@@ -660,6 +664,10 @@ class ModuleVarOp(IRDLOperation):
             props["ddt_name"] = StringAttr(ddt_name)
         if ftn_attrs is not None:
             props["ftn_attrs"] = StringAttr(ftn_attrs)
+        if fixed_dim is not None:
+            props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
+        if init_value is not None:
+            props["init_value"] = StringAttr(init_value)
         super().__init__(properties=props)
 
 
@@ -1354,8 +1362,15 @@ class ConstituentSyncOp(IRDLOperation):
     """Sync one advected constituent between its module-level array and the
     3D constituent array passed to the suite cap run subroutine.
 
-    direction="extract":   var_name(1:ncol_name, :) = q_name(1:ncol_name, :, idx)
-    direction="writeback": q_name(1:ncol_name, :, idx) = var_name(1:ncol_name, :)
+    direction="extract":   var_name(1:ncol_name, :) = q_name(1:ncol_name, :, lc_const_indices(idx))
+    direction="writeback": q_name(1:ncol_name, :, lc_const_indices(idx)) = var_name(1:ncol_name, :)
+
+    constituent_idx is the 1-based position of the constituent in the suite's
+    cam_model_const_stdnames list.  lc_const_indices (a module-level array in
+    the suite cap, populated at init time via ccpp_constituent_indices) maps
+    that position to the actual runtime index in the 3D constituent array q,
+    which may differ from the position when host constituents are registered
+    before scheme constituents (cam_host=True path).
 
     Injected by SuiteCAP around the scheme calls in a _run subroutine when
     the suite owns module-level allocatables for advected constituents.
@@ -1378,6 +1393,38 @@ class ConstituentSyncOp(IRDLOperation):
             "constituent_idx": IntegerAttr.from_int_and_width(constituent_idx, 32),
             "direction":       StringAttr(direction),
         })
+
+
+@irdl_op_definition
+class ConstituentIndexLookupOp(IRDLOperation):
+    """Call ccpp_constituent_indices at suite init time to populate lc_const_indices.
+
+    Emitted at the top of each group-phase _init_ FuncOp when the suite owns
+    fixed advected constituents.  Prints as::
+
+        call ccpp_constituent_indices( &
+            [character(len=N) :: "std_name_1", "std_name_2", ...], &
+            lc_const_indices, errflg, errmsg)
+        if (errflg /= 0) return
+
+    where N is the length of the longest standard name and the array order
+    matches the 1-based constituent_idx values in ConstituentSyncOp.
+    lc_const_indices is then populated with the runtime indices so that
+    ConstituentSyncOp's q(:,:,lc_const_indices(k)) references are correct
+    regardless of constituent registration order.
+    """
+
+    name = "ccpp_utils.constituent_index_lookup"
+    std_names = prop_def(ArrayAttr)          # ArrayAttr of StringAttr, in constituent_idx order
+    err_var_name = opt_prop_def(StringAttr)  # name of the integer error-code arg (e.g. "errflg" or "errcode")
+
+    def __init__(self, std_names: "ArrayAttr | list[str]", err_var_name: "str | None" = None):
+        if isinstance(std_names, list):
+            std_names = ArrayAttr([StringAttr(s) for s in std_names])
+        props: dict = {"std_names": std_names}
+        if err_var_name is not None:
+            props["err_var_name"] = StringAttr(err_var_name)
+        super().__init__(properties=props)
 
 
 CCPPUtils = Dialect(
@@ -1425,6 +1472,7 @@ CCPPUtils = Dialect(
         VerticalFlipOp,
         VerticalFlipWriteBackOp,
         ConstituentSyncOp,
+        ConstituentIndexLookupOp,
     ],
     [RealKindType, DerivedType],
 )

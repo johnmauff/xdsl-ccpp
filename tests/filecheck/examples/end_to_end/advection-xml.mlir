@@ -17,6 +17,7 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use apply_constituent_tendencies, only: apply_constituent_tendencies_run
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:    use ccpp_scheme_utils, only: ccpp_constituent_indices
 // CHECK-NEXT:    use cld_ice, only: cld_ice_final
 // CHECK-NEXT:    use cld_ice, only: cld_ice_init
 // CHECK-NEXT:    use cld_ice, only: cld_ice_register
@@ -40,6 +41,7 @@
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_ice_cld_ice_array(:, :)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_shadow_cld_ice_array(:, :)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_shadow_ncols(:)
+// CHECK-NEXT:    integer :: lc_const_indices(2) = [1, 2]
 // CHECK-NEXT:    public :: cld_suite_register
 // CHECK-NEXT:    public :: cld_suite_initialize
 // CHECK-NEXT:    public :: cld_suite_finalize
@@ -186,8 +188,8 @@
 // CHECK-NEXT:          "' in cld_suite_physics"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, 1)
-// CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, 2)
+// CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, lc_const_indices(1))
+// CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, lc_const_indices(2))
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call const_indices_run(const_std_name=const_std_name, num_consts=num_consts,                &
 // CHECK-NEXT:          test_stdname_array=test_stdname_array, const_index=const_index, const_inds=const_inds,    &
@@ -208,8 +210,8 @@
 // CHECK-NEXT:        call cld_shadow_run(ncol=ncol, timestep=timestep, cld_ice_array=cld_shadow_cld_ice_array,   &
 // CHECK-NEXT:          ncols=cld_shadow_ncols, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      const(1:ncol, :, 1) = cld_liq_array(1:ncol, :)
-// CHECK-NEXT:      const(1:ncol, :, 2) = cld_ice_cld_ice_array(1:ncol, :)
+// CHECK-NEXT:      const(1:ncol, :, lc_const_indices(1)) = cld_liq_array(1:ncol, :)
+// CHECK-NEXT:      const(1:ncol, :, lc_const_indices(2)) = cld_ice_cld_ice_array(1:ncol, :)
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
 // CHECK-NEXT:          errmsg=errmsg)
@@ -218,8 +220,8 @@
 // CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
 // CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, 1)
-// CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, 2)
+// CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, lc_const_indices(1))
+// CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, lc_const_indices(2))
 // CHECK-NEXT:    end subroutine cld_suite_physics
 // CHECK-LABEL:   subroutine cld_suite_timestep_init_physics(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
