@@ -177,7 +177,7 @@ def _generate_constituent_api_cam_host(
     ]
     if needs_const_tend:
         type_defs_lines.append(
-            "  real(kind=kind_phys), allocatable :: lc_const_tend(:, :, :)"
+            "  real(kind=kind_phys), allocatable, target :: lc_const_tend(:, :, :)"
         )
     for lc_name, rank, _alloc_dims, const_std_name, _needs_gpu in (scratch_vars or []):
         if const_std_name is None:  # non-constituent scratch vars: declare allocatable
@@ -367,7 +367,7 @@ def _generate_constituent_api_cam_host(
                 f"      integer :: lc_tend_idx",
                 f"      character(len=512) :: lc_tend_errmsg",
                 f"      nullify({lc_name})",
-                f"      call cam_constituents_obj%const_index(lc_tend_idx, '{const_std_name}',",
+                f"      call cam_constituents_obj%const_index(lc_tend_idx, '{const_std_name}',       &",
                 f"          errcode=errflg, errmsg=lc_tend_errmsg)",
                 f"      if (errflg == 0 .and. lc_tend_idx > 0) then",
                 f"        {lc_name} => lc_const_tend(:, :, lc_tend_idx)",
