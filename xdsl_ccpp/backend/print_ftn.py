@@ -1073,10 +1073,7 @@ class ftnPrintContext:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
             case CCPPSuiteVariablesOp():
-                # The body text is the complete pre-built Fortran subroutine.
-                # Emit each line with the current indentation prefix.
-                for line in op.body.data.splitlines():
-                    self.print(line)
+                self.print_block(op.body.block)
             case CCPPConstituentApiOp():
                 # Preprocessor directives (CapScratch GPU residency's
                 # `#ifdef USE_GPU`/`#endif`, string-templated directly into

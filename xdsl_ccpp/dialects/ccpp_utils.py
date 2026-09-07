@@ -1209,18 +1209,20 @@ class NonCamHostConstituentApiOp(IRDLOperation):
 
 @irdl_op_definition
 class SuiteVariablesOp(IRDLOperation):
-    """Carries the generated ccpp_physics_suite_variables Fortran text.
+    """Carries the generated ccpp_physics_suite_variables subroutine as IR.
 
-    The `body` attribute holds the complete pre-built Fortran subroutine as a
-    string; the printer emits it verbatim inside the module's CONTAINS section.
+    The `body` region holds a single ConstituentFunctionOp representing the
+    ccpp_physics_suite_variables subroutine; the printer delegates to it.
     """
 
     name = "ccpp_utils.suite_variables"
 
-    body = prop_def(StringAttr, prop_name="body")
+    body   = region_def("single_block")
+    traits = traits_def(NoTerminator())
 
-    def __init__(self, body: str):
-        super().__init__(properties={"body": StringAttr(body)})
+    def __init__(self, fn_op):
+        from xdsl.ir import Block, Region
+        super().__init__(regions=[Region([Block([fn_op])])])
 
 
 @irdl_op_definition

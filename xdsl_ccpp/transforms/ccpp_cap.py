@@ -28,9 +28,11 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CamSuiteSchemeListOp,
     ClearStringOp,
     ConstituentApiOp,
+    ConstituentFunctionOp,
     DerivedType,
     ErrorPropagateOp,
     HostVarRefOp,
+    RawFortranLinesOp,
     SetStringOp,
     SuiteVariablesOp,
 )
@@ -698,60 +700,66 @@ def _add_dimension_only_names(
 
 def _render_suite_variables_subroutine(suite_vars) -> "SuiteVariablesOp":
     """Render the per-suite (input, output, required) variable-name lists
-    computed by _build_suite_variables_fn's passes into the complete
-    ``ccpp_physics_suite_variables`` Fortran subroutine text."""
+    computed by _build_suite_variables_fn's passes into a SuiteVariablesOp
+    holding a ConstituentFunctionOp for ccpp_physics_suite_variables."""
     suite_var_name_len = 36  # character length matching cm=36 in test driver
 
-    lines: list[str] = []
-    lines.append(
-        "subroutine ccpp_physics_suite_variables"
-        "(suite_name, var_list, errmsg, errflg, input_vars, output_vars)"
-    )
-    lines.append("  character(len=*), intent(in) :: suite_name")
-    lines.append("  character(len=*), allocatable, intent(out) :: var_list(:)")
-    lines.append(f"  character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg")
-    lines.append("  integer, intent(out) :: errflg")
-    lines.append("  logical, optional, intent(in) :: input_vars")
-    lines.append("  logical, optional, intent(in) :: output_vars")
-    lines.append("  logical :: do_input, do_output")
-    lines.append("  errmsg = ''")
-    lines.append("  errflg = 0")
-    lines.append("  do_input = .true.")
-    lines.append("  do_output = .true.")
-    lines.append("  if (present(input_vars)) do_input = input_vars")
-    lines.append("  if (present(output_vars)) do_output = output_vars")
+    body_lines: list[str] = []
+    body_lines.append("errmsg = ''")
+    body_lines.append("errflg = 0")
+    body_lines.append("do_input = .true.")
+    body_lines.append("do_output = .true.")
+    body_lines.append("if (present(input_vars)) do_input = input_vars")
+    body_lines.append("if (present(output_vars)) do_output = output_vars")
 
     for idx, (suite_name, (in_v, out_v, req_v)) in enumerate(suite_vars.items()):
         kw = "if" if idx == 0 else "else if"
-        lines.append(f"  {kw} (trim(suite_name) .eq. '{suite_name}') then")
+        body_lines.append(f"{kw} (trim(suite_name) .eq. '{suite_name}') then")
         for branch_name, cond in (
             ("input only",  "do_input .and. .not. do_output"),
             ("output only", ".not. do_input .and. do_output"),
             ("required",    None),
         ):
             if branch_name == "input only":
-                lines.append(f"    if ({cond}) then")
+                body_lines.append(f"  if ({cond}) then")
                 vlist = in_v
             elif branch_name == "output only":
-                lines.append(f"    else if ({cond}) then")
+                body_lines.append(f"  else if ({cond}) then")
                 vlist = out_v
             else:
-                lines.append("    else")
+                body_lines.append("  else")
                 vlist = req_v
-            lines.append(f"      allocate(var_list({len(vlist)}))")
+            body_lines.append(f"    allocate(var_list({len(vlist)}))")
             for j, v in enumerate(vlist):
-                lines.append(f"      var_list({j + 1}) = '{v:<{suite_var_name_len}}'")
-        lines.append("    end if")
+                body_lines.append(f"    var_list({j + 1}) = '{v:<{suite_var_name_len}}'")
+        body_lines.append("  end if")
 
-    lines.append("  else")
-    lines.append(
-        '    write(errmsg, \'(3a)\') "No suite named ", trim(suite_name), " found"'
+    body_lines.append("else")
+    body_lines.append(
+        '  write(errmsg, \'(3a)\') "No suite named ", trim(suite_name), " found"'
     )
-    lines.append("    errflg = 1")
-    lines.append("  end if")
-    lines.append("end subroutine ccpp_physics_suite_variables")
+    body_lines.append("  errflg = 1")
+    body_lines.append("end if")
 
-    return SuiteVariablesOp("\n".join(lines))
+    fn_op = ConstituentFunctionOp(
+        fn_name="ccpp_physics_suite_variables",
+        is_function=False,
+        args=["suite_name", "var_list", "errmsg", "errflg", "input_vars", "output_vars"],
+        use_stmts=[],
+        arg_decls=[
+            "character(len=*), intent(in) :: suite_name",
+            "character(len=*), allocatable, intent(out) :: var_list(:)",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+            "integer, intent(out) :: errflg",
+            "logical, optional, intent(in) :: input_vars",
+            "logical, optional, intent(in) :: output_vars",
+        ],
+        local_decls=["logical :: do_input, do_output"],
+        body_ops=[RawFortranLinesOp("\n".join(body_lines))],
+        result_name=None,
+        result_decl=None,
+    )
+    return SuiteVariablesOp(fn_op)
 
 
 @dataclass(frozen=True)
