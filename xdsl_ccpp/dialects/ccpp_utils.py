@@ -1173,6 +1173,41 @@ class CamHostConstituentApiOp(IRDLOperation):
 
 
 @irdl_op_definition
+class NonCamHostConstituentApiOp(IRDLOperation):
+    """Container for the non-cam_host constituent registration API.
+
+    ``public_names`` — names to export with ``public ::`` in the module preamble.
+    ``type_defs``    — optional raw Fortran type-definition block (printed in the
+                       module's specification section before CONTAINS); used for
+                       the multi-instance per-instance bundle type.
+    ``body``         — single-block Region of ``ConstituentFunctionOp`` children.
+    """
+
+    name = "ccpp_utils.non_cam_host_constituent_api"
+
+    public_names = prop_def(ArrayAttr)          # ArrayAttr[StringAttr]
+    type_defs    = opt_prop_def(StringAttr)     # raw DDT text for multi-instance
+    body         = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        public_names_list: "list[str]",
+        type_defs: "str | None",
+        fn_ops: list,
+    ):
+        from xdsl.ir import Block, Region
+        body = Region([Block(fn_ops)])
+        props: dict = {
+            "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
+        }
+        if type_defs is not None:
+            props["type_defs"] = StringAttr(type_defs)
+        super().__init__(properties=props, regions=[body])
+
+
+@irdl_op_definition
 class SuiteVariablesOp(IRDLOperation):
     """Carries the generated ccpp_physics_suite_variables Fortran text.
 
@@ -1944,6 +1979,7 @@ CCPPUtils = Dialect(
         RawFortranLinesOp,
         ConstituentFunctionOp,
         CamHostConstituentApiOp,
+        NonCamHostConstituentApiOp,
         SuiteVariablesOp,
         ConstituentApiOp,
         CHostCapOp,

@@ -79,6 +79,9 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CamHostConstituentApiOp as CCPPCamHostConstituentApiOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
+    NonCamHostConstituentApiOp as CCPPNonCamHostConstituentApiOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
     ConstituentFunctionOp as CCPPConstituentFunctionOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import RawFortranLinesOp as CCPPRawFortranLinesOp
@@ -929,6 +932,8 @@ class ftnPrintContext:
                 self.print(f"end {kw} {fn_name}")
             case CCPPCamHostConstituentApiOp():
                 self.print_block(op.body.block)
+            case CCPPNonCamHostConstituentApiOp():
+                self.print_block(op.body.block)
             case CCPPConstituentSyncOp():
                 var = op.var_name.data
                 q = op.q_name.data
@@ -1531,6 +1536,10 @@ class ftnPrintContext:
             if isa(op, CCPPConstituentApiOp) and op.type_defs is not None:
                 for line in op.type_defs.data.splitlines():
                     self.print(line, prefix="  ")
+        for op in body.ops:
+            if isa(op, CCPPNonCamHostConstituentApiOp) and op.type_defs is not None:
+                for line in op.type_defs.data.splitlines():
+                    self.print(line, prefix="  ")
 
         # Emit module-level variable declarations (unified ModuleVarOp).
         # rank=0: scalar, fixed_dim set: fixed-size non-allocatable array,
@@ -1541,12 +1550,12 @@ class ftnPrintContext:
                 ftn_type = _module_var_fortran_type(op)
                 var_name = op.var_name.data
                 is_ptr   = op.is_pointer is not None and op.is_pointer.value.data
-                if rank == 0:
-                    self.print(f"{ftn_type} :: {var_name}", prefix="  ")
-                elif op.fixed_dim is not None:
+                if op.fixed_dim is not None:
                     dim = op.fixed_dim.value.data
                     init_part = f" = {op.init_value.data}" if op.init_value else ""
                     self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="  ")
+                elif rank == 0:
+                    self.print(f"{ftn_type} :: {var_name}", prefix="  ")
                 else:
                     shape = ", ".join([":"] * rank)
                     if is_ptr:
@@ -1584,6 +1593,11 @@ class ftnPrintContext:
             for op in body.ops
             if isa(op, CCPPCamHostConstituentApiOp)
             for name in op.public_names.data
+        ] + [
+            name.data
+            for op in body.ops
+            if isa(op, CCPPNonCamHostConstituentApiOp)
+            for name in op.public_names.data
         ]
         for proc in public_procs:
             self.print(f"public :: {proc}", prefix="  ")
@@ -1594,6 +1608,7 @@ class ftnPrintContext:
             or isa(op, CCPPSuiteVariablesOp)
             or isa(op, CCPPConstituentApiOp)
             or isa(op, CCPPCamHostConstituentApiOp)
+            or isa(op, CCPPNonCamHostConstituentApiOp)
             for op in body.ops
         )
         if has_func_defs:

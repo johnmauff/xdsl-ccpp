@@ -14,6 +14,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ConstituentApiOp,
     ConstituentFunctionOp,
     ModuleVarOp,
+    NonCamHostConstituentApiOp,
     RawFortranLinesOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import _CCPP_CONSTITUENT_MOD, _bare
@@ -1105,17 +1106,63 @@ def _generate_constituent_api(
         f"  end function {h}_model_const_properties",
     ]
 
-    all_lines = (
-        isc_lines + [""]
-        + da_lines + [""]
-        + rc_lines + [""]
-        + nc_lines + [""]
-        + ic_lines + [""]
-        + ca_lines + [""]
-        + ci_lines + [""]
-        + mp_lines
-    )
-    body_text = "\n".join(all_lines)
+    import re as _re
+
+    def _lines_to_fn_op(lines):
+        """Convert a full subroutine/function line list into a ConstituentFunctionOp."""
+        header = lines[0].strip()
+        is_function = header.startswith("function ")
+        m = _re.match(r"(?:function|subroutine)\s+(\w+)\s*\(([^)]*)\)", header)
+        fn_name = m.group(1)
+        args_str = m.group(2).strip()
+        args = [a.strip() for a in args_str.split(",")] if args_str else []
+        result_name = None
+        rm = _re.search(r"result\((\w+)\)", header)
+        if rm:
+            result_name = rm.group(1)
+
+        use_stmts: list = []
+        arg_decls: list = []
+        local_decls: list = []
+        body_lines: list = []
+        result_decl = None
+        in_decls = True
+
+        for line in lines[1:-1]:
+            stripped = line.strip()
+            if in_decls:
+                if stripped.startswith("use "):
+                    use_stmts.append(stripped)
+                elif "::" in stripped:
+                    if "intent(" in stripped:
+                        arg_decls.append(stripped)
+                    elif result_name and f":: {result_name}" in stripped:
+                        result_decl = stripped
+                    else:
+                        local_decls.append(stripped)
+                else:
+                    in_decls = False
+                    body_lines.append(line.rstrip())
+            else:
+                body_lines.append(line.rstrip())
+
+        # Strip 4-space subroutine indent from each body line.
+        # Lines starting with '#' (preprocessor) have no leading spaces — keep as-is.
+        body_text_inner = "\n".join(
+            (l[4:] if len(l) >= 4 and l[:4] == "    " else l) for l in body_lines
+        )
+        body_ops = [RawFortranLinesOp(body_text_inner)] if body_text_inner.strip() else []
+        return ConstituentFunctionOp(
+            fn_name=fn_name,
+            is_function=is_function,
+            args=args,
+            use_stmts=use_stmts,
+            arg_decls=arg_decls,
+            local_decls=local_decls,
+            body_ops=body_ops,
+            result_name=result_name,
+            result_decl=result_decl,
+        )
 
     public_names_list = [
         f"{h}_ccpp_is_scheme_constituent",
@@ -1128,7 +1175,20 @@ def _generate_constituent_api(
         f"{h}_model_const_properties",
     ]
 
-    api_op = ConstituentApiOp(body_text, public_names_list, type_defs=type_defs_text)
+    api_op = NonCamHostConstituentApiOp(
+        public_names_list,
+        type_defs_text,
+        [
+            _lines_to_fn_op(isc_lines),
+            _lines_to_fn_op(da_lines),
+            _lines_to_fn_op(rc_lines),
+            _lines_to_fn_op(nc_lines),
+            _lines_to_fn_op(ic_lines),
+            _lines_to_fn_op(ca_lines),
+            _lines_to_fn_op(ci_lines),
+            _lines_to_fn_op(mp_lines),
+        ],
+    )
 
     # ── USE stubs for ccpp_constituent_prop_mod ──────────────────────────
     global_stubs: list = []

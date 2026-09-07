@@ -611,8 +611,8 @@
 // CHECK-NEXT:              if (trim(lc_tmp(lc_j)%std_name) == trim(lc_dyn_const(lc_i)%std_name)) then
 // CHECK-NEXT:                lc_found = .true.
 // CHECK-NEXT:                if (trim(lc_tmp(lc_j)%units) /= trim(lc_dyn_const(lc_i)%units)) then
-// CHECK-NEXT:                  write(errmsg,                                                                     &
-// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
+// CHECK-NEXT:              write(errmsg,                                                                       &
+// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                   &
 // CHECK-NEXT:      trim(lc_dyn_const(lc_i)%std_name), &
 // CHECK-NEXT:                    ' but an incompatible constituent with this name already exists'
 // CHECK-NEXT:                  errcode = 1
@@ -634,8 +634,8 @@
 // CHECK-NEXT:              if (trim(lc_tmp(lc_j)%std_name) == trim(lc_dyn_const_ice(lc_i)%std_name)) then
 // CHECK-NEXT:                lc_found = .true.
 // CHECK-NEXT:                if (trim(lc_tmp(lc_j)%units) /= trim(lc_dyn_const_ice(lc_i)%units)) then
-// CHECK-NEXT:                  write(errmsg,                                                                     &
-// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
+// CHECK-NEXT:              write(errmsg,                                                                       &
+// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                   &
 // CHECK-NEXT:      trim(lc_dyn_const_ice(lc_i)%std_name), &
 // CHECK-NEXT:                    ' but an incompatible constituent with this name already exists'
 // CHECK-NEXT:                  errcode = 1
@@ -655,10 +655,9 @@
 // CHECK-NEXT:          if (trim(lc_tmp(lc_j)%std_name) == 'cloud_liquid_dry_mixing_ratio') then
 // CHECK-NEXT:            lc_found = .true.
 // CHECK-NEXT:            if (trim(lc_tmp(lc_j)%units) /= 'kg kg-1') then
-// CHECK-NEXT:              write(errmsg,                                                                         &
-// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
+// CHECK-NEXT:          write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ', &
 // CHECK-NEXT:      'cloud_liquid_dry_mixing_ratio', &
-// CHECK-NEXT:                ' but an incompatible constituent with this name already exists'
+// CHECK-NEXT:            ' but an incompatible constituent with this name already exists'
 // CHECK-NEXT:              errcode = 1
 // CHECK-NEXT:              return
 // CHECK-NEXT:            end if
@@ -667,8 +666,8 @@
 // CHECK-NEXT:        end do
 // CHECK-NEXT:        if (.not. lc_found) then
 // CHECK-NEXT:          lc_num = lc_num + 1
-// CHECK-NEXT:          call lc_tmp(lc_num)%instantiate(std_name='cloud_liquid_dry_mixing_ratio',                 &
-// CHECK-NEXT:      long_name='Cloud liquid dry mixing ratio', units='kg kg-1', diag_name='cld_liq_array',        &
+// CHECK-NEXT:      call lc_tmp(lc_num)%instantiate(std_name='cloud_liquid_dry_mixing_ratio',                   &
+// CHECK-NEXT:      long_name='Cloud liquid dry mixing ratio', units='kg kg-1', diag_name='cld_liq_array',      &
 // CHECK-NEXT:      errcode=errcode, errmsg=errmsg, advected=.true.)
 // CHECK-NEXT:          if (errcode /= 0) return
 // CHECK-NEXT:        end if
@@ -677,10 +676,9 @@
 // CHECK-NEXT:          if (trim(lc_tmp(lc_j)%std_name) == 'cloud_ice_dry_mixing_ratio') then
 // CHECK-NEXT:            lc_found = .true.
 // CHECK-NEXT:            if (trim(lc_tmp(lc_j)%units) /= 'kg kg-1') then
-// CHECK-NEXT:              write(errmsg,                                                                         &
-// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
+// CHECK-NEXT:          write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ', &
 // CHECK-NEXT:      'cloud_ice_dry_mixing_ratio', &
-// CHECK-NEXT:                ' but an incompatible constituent with this name already exists'
+// CHECK-NEXT:            ' but an incompatible constituent with this name already exists'
 // CHECK-NEXT:              errcode = 1
 // CHECK-NEXT:              return
 // CHECK-NEXT:            end if
@@ -689,8 +687,8 @@
 // CHECK-NEXT:        end do
 // CHECK-NEXT:        if (.not. lc_found) then
 // CHECK-NEXT:          lc_num = lc_num + 1
-// CHECK-NEXT:          call lc_tmp(lc_num)%instantiate(std_name='cloud_ice_dry_mixing_ratio',                    &
-// CHECK-NEXT:      long_name='Cloud ice dry mixing ratio', units='kg kg-1', diag_name='cld_ice_array',           &
+// CHECK-NEXT:      call lc_tmp(lc_num)%instantiate(std_name='cloud_ice_dry_mixing_ratio',                      &
+// CHECK-NEXT:      long_name='Cloud ice dry mixing ratio', units='kg kg-1', diag_name='cld_ice_array',         &
 // CHECK-NEXT:      errcode=errcode, errmsg=errmsg, advected=.true., default_value=0.0_kind_phys)
 // CHECK-NEXT:          if (errcode /= 0) return
 // CHECK-NEXT:        end if
@@ -700,8 +698,8 @@
 // CHECK-NEXT:            if (trim(lc_tmp(lc_j)%std_name) == trim(host_constituents(lc_i)%std_name)) then
 // CHECK-NEXT:              lc_found = .true.
 // CHECK-NEXT:              if (trim(lc_tmp(lc_j)%units) /= trim(host_constituents(lc_i)%units)) then
-// CHECK-NEXT:                write(errmsg,                                                                       &
-// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                     &
+// CHECK-NEXT:            write(errmsg,                                                                         &
+// CHECK-NEXT:      '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                   &
 // CHECK-NEXT:      trim(host_constituents(lc_i)%std_name), &
 // CHECK-NEXT:                  ' but an incompatible constituent with this name already exists'
 // CHECK-NEXT:                errcode = 1
