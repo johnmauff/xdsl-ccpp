@@ -967,13 +967,15 @@ class ftnPrintContext:
                         for idx, sname in enumerate(schemes, 1):
                             blk.print(f"scheme_list({idx}) = '{sname}'")
                 if not first:
+                    em = op.errmsg_var.data
+                    ef = op.errflg_var.data
                     self.print("else")
                     with self.descend() as blk:
                         blk.print(
-                            "write(errmsg, '(3a)') 'No suite named ', "
+                            f"write({em}, '(3a)') 'No suite named ', "
                             "trim(suite_name), ' found'"
                         )
-                        blk.print("errflg = 1")
+                        blk.print(f"{ef} = 1")
                     self.print("end if")
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data

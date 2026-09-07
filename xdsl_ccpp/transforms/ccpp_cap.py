@@ -1151,6 +1151,8 @@ class CCPPCAP(ModulePass):
 
         errmsg_alloc = memref.AllocaOp.get(char_base, shape=[CCPP_ERRMSG_LEN])
         errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
+        errmsg_alloc.memref.name_hint = "errmsg"
+        errflg_alloc.memref.name_hint = "errflg"
         zero_const   = arith.ConstantOp.from_int_and_width(0, 32)
         store_zero   = memref.StoreOp.get(zero_const, errflg_alloc, [])
         clear_errmsg = ClearStringOp(errmsg_alloc.memref)
@@ -1169,7 +1171,7 @@ class CCPPCAP(ModulePass):
             zero_const,
             store_zero,
             clear_errmsg,
-            CamSuiteSchemeListOp(_suite_schemes),
+            CamSuiteSchemeListOp(_suite_schemes, errmsg_var="errmsg", errflg_var="errflg"),
             func.ReturnOp(errmsg_alloc, errflg_alloc),
         ])
         schemes_body = Region()
