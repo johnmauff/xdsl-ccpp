@@ -26,6 +26,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
+    _CCPP_DDT_MODS,
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     LIFECYCLE_POSTFIX_ALIASES,
     _assert_call_arg_count_matches_signature,
@@ -567,9 +568,6 @@ def _generate_lifecycle_fn(
                     alloc_op.memref.name_hint = f"lc_{bare}__alloc"
                     hoisted_alloc_ops.append(zero_idx)
                     # Ensure the DDT type's module appears in the USE list.
-                    _CCPP_DDT_MODS = {
-                        "ccpp_constituent_properties_t": _CCPP_CONSTITUENT_MOD,
-                    }
                     if isinstance(elem_type, DerivedType):
                         _ddt_mod = _CCPP_DDT_MODS.get(elem_type.type_name.data)
                         if _ddt_mod:

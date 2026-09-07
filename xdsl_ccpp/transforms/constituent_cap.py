@@ -144,14 +144,14 @@ def _generate_constituent_api_cam_host(
     module_var_ops.append(
         ModuleVarOp(
             "cam_constituents_obj", "type",
-            ddt_name="ccpp_model_constituents_t", ftn_attrs="target", rank=0
+            ddt_name="ccpp_model_constituents_t", is_target=True, rank=0
         )
     )
     for n in dynamic_array_names:
         module_var_ops.append(
             ModuleVarOp(
                 f"lc_{n}", "type",
-                ddt_name="ccpp_constituent_properties_t", ftn_attrs="target", rank=1
+                ddt_name="ccpp_constituent_properties_t", is_target=True, rank=1
             )
         )
     # lc_const_props is referenced by the lifecycle wrappers (ccpp_physics_run,
@@ -160,7 +160,7 @@ def _generate_constituent_api_cam_host(
     module_var_ops.append(
         ModuleVarOp(
             "lc_const_props", "type",
-            ddt_name="ccpp_constituent_prop_ptr_t", ftn_attrs="target", rank=1
+            ddt_name="ccpp_constituent_prop_ptr_t", is_target=True, rank=1
         )
     )
 
@@ -584,23 +584,23 @@ def _generate_constituent_api(
                 "lc_all_constituents",
                 "type",
                 ddt_name="ccpp_constituent_properties_t",
-                ftn_attrs="target",
+                is_target=True,
                 rank=1,
             )
         )
         module_var_ops.append(
-            ModuleVarOp("lc_constituent_array", "real", kind="kind_phys", ftn_attrs="target", rank=3)
+            ModuleVarOp("lc_constituent_array", "real", kind="kind_phys", is_target=True, rank=3)
         )
         module_var_ops.append(
-            ModuleVarOp("lc_const_tend", "real", kind="kind_phys", ftn_attrs="target", rank=3)
+            ModuleVarOp("lc_const_tend", "real", kind="kind_phys", is_target=True, rank=3)
         )
         module_var_ops.append(
-            ModuleVarOp("lc_const_props", "type", ddt_name="ccpp_constituent_prop_ptr_t", ftn_attrs="target", rank=1)
+            ModuleVarOp("lc_const_props", "type", ddt_name="ccpp_constituent_prop_ptr_t", is_target=True, rank=1)
         )
         for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
             module_var_ops.append(
                 ModuleVarOp(lc_name, "real", kind="kind_phys",
-                            ftn_attrs="pointer" if _cst_std else None, rank=rank)
+                            is_pointer=bool(_cst_std), rank=rank)
             )
     else:
         type_def_lines.append(f"type :: {instance_type_name}")
@@ -645,7 +645,7 @@ def _generate_constituent_api(
         type_def_lines.append(f"end type {instance_type_name}")
         module_var_ops.append(
             ModuleVarOp("lc_instances", "type", ddt_name=instance_type_name,
-                        ftn_attrs="target", rank=1)
+                        is_target=True, rank=1)
         )
     type_defs_text = "\n".join(type_def_lines) if type_def_lines else None
 

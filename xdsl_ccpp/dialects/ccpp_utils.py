@@ -603,21 +603,20 @@ class ModuleVarOp(IRDLOperation):
     """Unified module-level variable declaration, covering both real vars and
     DDT vars with a single consistent representation.
 
-    Type is described by three structured attributes rather than a pre-rendered
-    Fortran string, so that language backends other than Fortran can interpret
-    the type without parsing:
+    Type is described by structured attributes so that language backends other
+    than Fortran can interpret the type without parsing:
 
         base_type  — CCPP base type: "real", "integer", "character",
                      "logical", or "type" (for DDTs)
         kind       — optional kind name ("kind_phys") or character length ("512")
         ddt_name   — DDT type name when base_type == "type" (e.g. "vmr_type")
-        ftn_attrs  — optional Fortran attributes appended after the type,
-                     e.g. "target" or "pointer"
+        is_pointer — True when the variable carries the Fortran POINTER attribute
+        is_target  — True when the variable carries the Fortran TARGET attribute
 
     Printer emits in the module spec section before CONTAINS:
         rank=0: ``{type} :: {var_name}``
         rank>0: ``{type}, allocatable :: {var_name}(:, :, ...)``
-        (pointer rank>0): ``{type}, pointer :: {var_name}(:) => null()``
+        (is_pointer rank>0): ``{type}, pointer :: {var_name}(:) => null()``
 
     Examples::
 
@@ -627,19 +626,20 @@ class ModuleVarOp(IRDLOperation):
         ModuleVarOp("vmr_cap_ddt_suite", "type", ddt_name="vmr_type")
         → type(vmr_type) :: vmr_cap_ddt_suite
 
-        ModuleVarOp("lc_arr", "real", kind="kind_phys", ftn_attrs="target", rank=3)
+        ModuleVarOp("lc_arr", "real", kind="kind_phys", is_target=True, rank=3)
         → real(kind=kind_phys), target, allocatable :: lc_arr(:, :, :)
     """
 
     name = "ccpp_utils.module_var"
-    var_name  = prop_def(StringAttr)
-    base_type = prop_def(StringAttr)        # "real"|"integer"|"character"|"logical"|"type"
-    kind      = opt_prop_def(StringAttr)    # kind name or char length; None if not applicable
-    ddt_name  = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
-    ftn_attrs = opt_prop_def(StringAttr)    # Fortran attributes: "target", "pointer", etc.
-    rank      = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
-    fixed_dim = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
-    init_value = opt_prop_def(StringAttr)   # optional Fortran initializer (for fixed_dim vars)
+    var_name   = prop_def(StringAttr)
+    base_type  = prop_def(StringAttr)        # "real"|"integer"|"character"|"logical"|"type"
+    kind       = opt_prop_def(StringAttr)    # kind name or char length; None if not applicable
+    ddt_name   = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
+    is_pointer = opt_prop_def(BoolAttr)      # True → Fortran POINTER attribute
+    is_target  = opt_prop_def(BoolAttr)      # True → Fortran TARGET attribute
+    rank       = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
+    fixed_dim  = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
+    init_value = opt_prop_def(StringAttr)    # optional Fortran initializer (for fixed_dim vars)
 
     def __init__(
         self,
@@ -648,7 +648,8 @@ class ModuleVarOp(IRDLOperation):
         *,
         kind: str | None = None,
         ddt_name: str | None = None,
-        ftn_attrs: str | None = None,
+        is_pointer: bool = False,
+        is_target: bool = False,
         rank: int = 0,
         fixed_dim: int | None = None,
         init_value: str | None = None,
@@ -662,8 +663,10 @@ class ModuleVarOp(IRDLOperation):
             props["kind"] = StringAttr(kind)
         if ddt_name is not None:
             props["ddt_name"] = StringAttr(ddt_name)
-        if ftn_attrs is not None:
-            props["ftn_attrs"] = StringAttr(ftn_attrs)
+        if is_pointer:
+            props["is_pointer"] = BoolAttr.from_bool(True)
+        if is_target:
+            props["is_target"] = BoolAttr.from_bool(True)
         if fixed_dim is not None:
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
         if init_value is not None:

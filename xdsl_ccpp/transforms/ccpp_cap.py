@@ -882,7 +882,14 @@ class CCPPCAP(ModulePass):
         }
         # Absorb FRAMEWORK_STD_NAME_TO_CAP_VAR entries (number_of_ccpp_constituents,
         # ccpp_constituents, ccpp_constituent_tendencies) that may appear in dispatchers.
+        # Invariant: none of these keys should already be in _CAM_STD_EXPRS with a
+        # different expression — that would indicate a silent override or collision.
         for _std, _expr in FRAMEWORK_STD_NAME_TO_CAP_VAR.items():
+            _existing = _CAM_STD_EXPRS.get(_std)
+            assert _existing is None or _existing[0] == _expr, (
+                f"_CAM_STD_EXPRS collision for '{_std}': "
+                f"existing expr '{_existing[0]}' != FRAMEWORK expr '{_expr}'"
+            )
             _CAM_STD_EXPRS.setdefault(_std, (_expr, None, False))
 
         # Always-present USE for error variables: every wrapper references
@@ -976,18 +983,15 @@ class CCPPCAP(ModulePass):
 
         lines = []
 
-        # Determine which per-group lifecycle dispatchers were actually generated
-        def _has_group_lifecycle(infix):
-            return any(
-                f"{sn}_{infix}_{g.attributes['name']}" in public_fns
-                for sn, sd in suite_descriptions.items()
-                for g in sd
-            )
-
-        has_physics_init  = _has_group_lifecycle("init")
-        has_physics_final = _has_group_lifecycle("final")
-        has_tsinit  = _has_group_lifecycle("timestep_init")
-        has_tsfinal = _has_group_lifecycle("timestep_final")
+        # Determine which per-group lifecycle dispatchers were generated.
+        # lifecycle_fns is the authoritative record — keyed by fn_suffix, populated
+        # by the same generation pass that created public_fns. Avoids maintaining a
+        # parallel infix table that diverges when new lifecycle phases are added.
+        _lf = lifecycle_fns or {}
+        has_physics_init  = "ccpp_physics_init"          in _lf
+        has_physics_final = "ccpp_physics_final"         in _lf
+        has_tsinit        = "ccpp_physics_timestep_init"  in _lf
+        has_tsfinal       = "ccpp_physics_timestep_final" in _lf
 
         # Helper: build the per-suite if/else dispatch block for a per-group dispatcher.
         def _group_dispatch_block(fn_suffix, callee_name, infix, wrapper_name,

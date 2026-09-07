@@ -84,7 +84,6 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
     base = op.base_type.data
     kind = op.kind.data if op.kind is not None else None
     ddt  = op.ddt_name.data if op.ddt_name is not None else None
-    attrs = op.ftn_attrs.data if op.ftn_attrs is not None else None
 
     if base == "type":
         ftn = f"type({ddt})"
@@ -98,8 +97,10 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
     else:
         ftn = base
 
-    if attrs:
-        ftn += f", {attrs}"
+    if op.is_target is not None and op.is_target.value.data:
+        ftn += ", target"
+    if op.is_pointer is not None and op.is_pointer.value.data:
+        ftn += ", pointer"
     return ftn
 
 
@@ -1384,7 +1385,7 @@ class ftnPrintContext:
                 rank     = op.rank.value.data
                 ftn_type = _module_var_fortran_type(op)
                 var_name = op.var_name.data
-                is_ptr   = op.ftn_attrs is not None and "pointer" in op.ftn_attrs.data
+                is_ptr   = op.is_pointer is not None and op.is_pointer.value.data
                 if rank == 0:
                     self.print(f"{ftn_type} :: {var_name}", prefix="  ")
                 elif op.fixed_dim is not None:
