@@ -30,6 +30,12 @@ from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDevi
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import ArraySectionOp as CCPPArraySectionOp
+from xdsl_ccpp.dialects.ccpp_utils import CamClearErrStateOp as CCPPCamClearErrStateOp
+from xdsl_ccpp.dialects.ccpp_utils import CamDirectCallOp as CCPPCamDirectCallOp
+from xdsl_ccpp.dialects.ccpp_utils import CamQminPostambleOp as CCPPCamQminPostambleOp
+from xdsl_ccpp.dialects.ccpp_utils import CamQminPreambleOp as CCPPCamQminPreambleOp
+from xdsl_ccpp.dialects.ccpp_utils import CamSuiteDispatchOp as CCPPCamSuiteDispatchOp
+from xdsl_ccpp.dialects.ccpp_utils import CamSuiteSchemeListOp as CCPPCamSuiteSchemeListOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
@@ -37,6 +43,7 @@ from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApi
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentIndexLookupOp as CCPPConstituentIndexLookupOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
+from xdsl_ccpp.dialects.ccpp_utils import ErrorPropagateOp as CCPPErrorPropagateOp
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
 from xdsl_ccpp.dialects.ccpp_utils import KindCastOp as CCPPKindCastOp
@@ -881,6 +888,93 @@ class ftnPrintContext:
                 ev = op.err_var_name.data if op.err_var_name is not None else "errflg"
                 self.print(f"    lc_const_indices, {ev}, errmsg)")
                 self.print(f"if ({ev} /= 0) return")
+            case CCPPCamDirectCallOp():
+                args = ", ".join(a.data for a in op.call_args.data)
+                self.print(f"call {op.callee.data}({args})")
+            case CCPPCamClearErrStateOp():
+                self.print(f"{op.errcode_var.data} = 0")
+                self.print(f"{op.errmsg_var.data} = ''")
+            case CCPPCamQminPreambleOp():
+                ev = op.errcode_var.data
+                em = op.errmsg_var.data
+                self.print("integer :: lc_n, lc_i")
+                self.print("real(kind=kind_phys), allocatable :: lc_qmin(:)")
+                self.print("if (allocated(lc_const_props)) then")
+                with self.descend() as blk:
+                    blk.print("lc_n = size(lc_const_props)")
+                self.print("else")
+                with self.descend() as blk:
+                    blk.print("lc_n = 0")
+                self.print("end if")
+                self.print("allocate(lc_qmin(lc_n))")
+                self.print("do lc_i = 1, lc_n")
+                with self.descend() as blk:
+                    blk.print(
+                        f"call lc_const_props(lc_i)%minimum("
+                        f"lc_qmin(lc_i), {ev}, {em})"
+                    )
+                    blk.print(f"if ({ev} /= 0) then")
+                    with blk.descend() as inner:
+                        inner.print("deallocate(lc_qmin)")
+                        inner.print("return")
+                    blk.print("end if")
+                self.print("end do")
+            case CCPPCamQminPostambleOp():
+                self.print("deallocate(lc_qmin)")
+            case CCPPErrorPropagateOp():
+                ev = op.errcode_var.data
+                self.print(f"if ({ev} /= 0) return")
+            case CCPPCamSuiteDispatchOp():
+                dispatcher = op.dispatcher_fn.data
+                wrapper    = op.wrapper_fn.data
+                ev         = op.errcode_var.data
+                em         = op.errmsg_var.data
+                template   = [a.data for a in op.call_args_template.data]
+                first = True
+                for inner in op.suite_groups.data:
+                    attrs    = inner.data
+                    sn       = attrs[0].data
+                    groups   = [a.data for a in attrs[1:]]
+                    kw = "if" if first else "else if"
+                    first = False
+                    self.print(f"{kw} (trim(suite_name) == '{sn}') then")
+                    with self.descend() as blk:
+                        for grp in groups:
+                            args = [f"'{grp}'" if a == "__suite_part__" else a
+                                    for a in template]
+                            blk.print(f"call {dispatcher}({', '.join(args)})")
+                            blk.print(f"if ({ev} /= 0) return")
+                if not first:
+                    self.print("else")
+                    with self.descend() as blk:
+                        blk.print(
+                            f"write({em}, '(3a)') '{wrapper}: no suite named ', "
+                            f"trim(suite_name), ' found'"
+                        )
+                        blk.print(f"{ev} = 1")
+                    self.print("end if")
+            case CCPPCamSuiteSchemeListOp():
+                first = True
+                for inner in op.suite_schemes.data:
+                    attrs   = inner.data
+                    sn      = attrs[0].data
+                    schemes = [a.data for a in attrs[1:]]
+                    kw = "if" if first else "else if"
+                    first = False
+                    self.print(f"{kw} (trim(suite_name) == '{sn}') then")
+                    with self.descend() as blk:
+                        blk.print(f"allocate(scheme_list({len(schemes)}))")
+                        for idx, sname in enumerate(schemes, 1):
+                            blk.print(f"scheme_list({idx}) = '{sname}'")
+                if not first:
+                    self.print("else")
+                    with self.descend() as blk:
+                        blk.print(
+                            "write(errmsg, '(3a)') 'No suite named ', "
+                            "trim(suite_name), ' found'"
+                        )
+                        blk.print("errflg = 1")
+                    self.print("end if")
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data
                 self.print(f"if (present({var_name})) then")

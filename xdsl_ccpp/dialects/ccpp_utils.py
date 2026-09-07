@@ -1430,6 +1430,253 @@ class ConstituentIndexLookupOp(IRDLOperation):
         super().__init__(properties=props)
 
 
+@irdl_op_definition
+class CamDirectCallOp(IRDLOperation):
+    """Emit a direct Fortran subroutine call with positional string arguments.
+
+    Prints as::
+
+        call {callee}(arg0, arg1, ...)
+
+    Unlike ``func.CallOp``, arguments are stored as Fortran expression strings
+    rather than SSA values — suitable for calls where the arguments are
+    module-scope variables accessed by name (e.g. ``errmsg``, ``errcode``).
+    """
+
+    name = "ccpp_utils.cam_direct_call"
+
+    callee    = prop_def(StringAttr)
+    call_args = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, callee: str, call_args: "list[str]"):
+        super().__init__(properties={
+            "callee":    StringAttr(callee),
+            "call_args": ArrayAttr([StringAttr(a) for a in call_args]),
+        })
+
+
+@irdl_op_definition
+class CamClearErrStateOp(IRDLOperation):
+    """Emit the no-dispatch error-state reset for timestep lifecycle wrappers.
+
+    Prints as::
+
+        {errcode_var} = 0
+        {errmsg_var} = ''
+
+    Used when a timestep-init or timestep-final wrapper has no per-group
+    dispatcher (no scheme registered a timestep-init/final hook), so the
+    wrapper must still zero out the error state before returning.
+    """
+
+    name = "ccpp_utils.cam_clear_err_state"
+
+    errcode_var = prop_def(StringAttr)
+    errmsg_var  = prop_def(StringAttr)
+
+    def __init__(self, errcode_var: str, errmsg_var: str):
+        super().__init__(properties={
+            "errcode_var": StringAttr(errcode_var),
+            "errmsg_var":  StringAttr(errmsg_var),
+        })
+
+
+@irdl_op_definition
+class CamQminPreambleOp(IRDLOperation):
+    """Emit the constituent-minimum (lc_qmin) preamble in cam_ccpp_physics_run.
+
+    Emitted when the run dispatcher takes ``ccpp_constituent_minimum_values``
+    as a block argument (i.e. at least one run-phase scheme reads qmin).
+    Prints as::
+
+        integer :: lc_n, lc_i
+        real(kind=kind_phys), allocatable :: lc_qmin(:)
+        if (allocated(lc_const_props)) then
+          lc_n = size(lc_const_props)
+        else
+          lc_n = 0
+        end if
+        allocate(lc_qmin(lc_n))
+        do lc_i = 1, lc_n
+          call lc_const_props(lc_i)%minimum(lc_qmin(lc_i), {errcode_var}, {errmsg_var})
+          if ({errcode_var} /= 0) then
+            deallocate(lc_qmin)
+            return
+          end if
+        end do
+
+    The declarations (``integer :: lc_n``, etc.) appear inline in the
+    subroutine body — valid in Fortran 2003+ and accepted by gfortran/nvhpc.
+    ``kind_phys`` is imported from ``ccpp_kinds`` at module scope and is
+    therefore available without a redundant subroutine-scope USE.
+    """
+
+    name = "ccpp_utils.cam_qmin_preamble"
+
+    errcode_var = prop_def(StringAttr)
+    errmsg_var  = prop_def(StringAttr)
+
+    def __init__(self, errcode_var: str, errmsg_var: str):
+        super().__init__(properties={
+            "errcode_var": StringAttr(errcode_var),
+            "errmsg_var":  StringAttr(errmsg_var),
+        })
+
+
+@irdl_op_definition
+class CamQminPostambleOp(IRDLOperation):
+    """Emit ``deallocate(lc_qmin)`` after the run dispatcher call.
+
+    Paired with ``CamQminPreambleOp`` to clean up the constituent-minimum
+    temporary array after ``ccpp_physics_run`` has used it.
+    """
+
+    name = "ccpp_utils.cam_qmin_postamble"
+
+    def __init__(self):
+        super().__init__()
+
+
+@irdl_op_definition
+class ErrorPropagateOp(IRDLOperation):
+    """Emit an early-return guard on an integer error-code variable.
+
+    Prints as::
+
+        if ({errcode_var} /= 0) return
+    """
+
+    name = "ccpp_utils.error_propagate"
+    errcode_var = prop_def(StringAttr)
+
+    def __init__(self, errcode_var: str):
+        super().__init__(properties={"errcode_var": StringAttr(errcode_var)})
+
+
+@irdl_op_definition
+class CamSuiteDispatchOp(IRDLOperation):
+    """Emit the if/else suite-group dispatch chain in a CAM lifecycle wrapper.
+
+    Represents the per-group dispatch pattern::
+
+        if (trim(suite_name) == 'suite1') then
+          call {dispatcher_fn}(arg1, 'group1', arg3, ...)
+          if ({errcode_var} /= 0) return
+          call {dispatcher_fn}(arg1, 'group2', arg3, ...)
+          if ({errcode_var} /= 0) return
+        else if (trim(suite_name) == 'suite2') then
+          ...
+        else
+          write({errmsg_var}, '(3a)') '{wrapper_fn}: no suite named ', &
+              trim(suite_name), ' found'
+          {errcode_var} = 1
+        end if
+
+    Properties
+    ----------
+    dispatcher_fn : StringAttr
+        Name of the internal dispatcher function (e.g. ``ccpp_physics_init``).
+    wrapper_fn : StringAttr
+        Name of the outer wrapper subroutine; used in the else-branch error message.
+    errcode_var : StringAttr
+        Fortran variable name for the integer error code (e.g. ``lc_errcode``).
+    errmsg_var : StringAttr
+        Fortran variable name for the error message string (e.g. ``lc_errmsg``).
+    suite_groups : ArrayAttr[ArrayAttr[StringAttr]]
+        Outer array has one inner ArrayAttr per suite.  In each inner array,
+        element [0] is the suite name and elements [1:] are the group names
+        that have a generated dispatcher for this lifecycle phase.
+    call_args_template : ArrayAttr[StringAttr]
+        Fortran expressions for the dispatcher call arguments, in order.
+        The element whose value is the sentinel ``"__suite_part__"`` is
+        replaced by the quoted group name literal for each call in the chain.
+    """
+
+    name = "ccpp_utils.cam_suite_dispatch"
+
+    dispatcher_fn      = prop_def(StringAttr)
+    wrapper_fn         = prop_def(StringAttr)
+    errcode_var        = prop_def(StringAttr)
+    errmsg_var         = prop_def(StringAttr)
+    suite_groups       = prop_def(ArrayAttr)   # ArrayAttr[ArrayAttr[StringAttr]]
+    call_args_template = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(
+        self,
+        dispatcher_fn: str,
+        wrapper_fn: str,
+        errcode_var: str,
+        errmsg_var: str,
+        suite_groups: "list[tuple[str, list[str]]]",
+        call_args_template: "list[str]",
+    ):
+        """
+        Parameters
+        ----------
+        suite_groups
+            List of (suite_name, [group1, group2, ...]) tuples.
+        call_args_template
+            Fortran arg expressions; use ``"__suite_part__"`` where the quoted
+            group name should be substituted.
+        """
+        groups_attr = ArrayAttr([
+            ArrayAttr([StringAttr(sn)] + [StringAttr(g) for g in groups])
+            for sn, groups in suite_groups
+        ])
+        super().__init__(properties={
+            "dispatcher_fn":      StringAttr(dispatcher_fn),
+            "wrapper_fn":         StringAttr(wrapper_fn),
+            "errcode_var":        StringAttr(errcode_var),
+            "errmsg_var":         StringAttr(errmsg_var),
+            "suite_groups":       groups_attr,
+            "call_args_template": ArrayAttr([StringAttr(a) for a in call_args_template]),
+        })
+
+
+@irdl_op_definition
+class CamSuiteSchemeListOp(IRDLOperation):
+    """Emit the suite-keyed scheme-list assignment block in ccpp_physics_suite_schemes.
+
+    Represents the body of the ``ccpp_physics_suite_schemes`` subroutine::
+
+        if (trim(suite_name) == 'suite1') then
+          allocate(scheme_list(N))
+          scheme_list(1) = 'scheme_a'
+          scheme_list(2) = 'scheme_b'
+          ...
+        else if (trim(suite_name) == 'suite2') then
+          ...
+        else
+          write(errmsg, '(3a)') 'No suite named ', trim(suite_name), ' found'
+          errflg = 1
+        end if
+
+    Properties
+    ----------
+    suite_schemes : ArrayAttr[ArrayAttr[StringAttr]]
+        Outer array has one inner ArrayAttr per suite.  In each inner array,
+        element [0] is the suite name and elements [1:] are the scheme names
+        in first-occurrence order (duplicates already removed by the caller).
+    """
+
+    name = "ccpp_utils.cam_suite_scheme_list"
+
+    suite_schemes = prop_def(ArrayAttr)   # ArrayAttr[ArrayAttr[StringAttr]]
+
+    def __init__(self, suite_schemes: "list[tuple[str, list[str]]]"):
+        """
+        Parameters
+        ----------
+        suite_schemes
+            List of (suite_name, [scheme1, scheme2, ...]) tuples.
+        """
+        attr = ArrayAttr([
+            ArrayAttr([StringAttr(sn)] + [StringAttr(s) for s in schemes])
+            for sn, schemes in suite_schemes
+        ])
+        super().__init__(properties={"suite_schemes": attr})
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -1476,6 +1723,13 @@ CCPPUtils = Dialect(
         VerticalFlipWriteBackOp,
         ConstituentSyncOp,
         ConstituentIndexLookupOp,
+        CamDirectCallOp,
+        CamClearErrStateOp,
+        CamQminPreambleOp,
+        CamQminPostambleOp,
+        ErrorPropagateOp,
+        CamSuiteDispatchOp,
+        CamSuiteSchemeListOp,
     ],
     [RealKindType, DerivedType],
 )
