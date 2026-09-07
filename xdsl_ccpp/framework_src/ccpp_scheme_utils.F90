@@ -26,12 +26,14 @@ contains
     integer,          intent(out) :: errcode
     character(len=*), intent(out) :: errmsg
     integer :: i
+    character(len=256) :: lc_std_name
     cindex  = int_unassigned
     errcode = 0
     errmsg  = ''
     if (.not. allocated(lc_constituents)) return
     do i = 1, size(lc_constituents)
-      if (trim(lc_constituents(i)%standard_name()) == trim(std_name)) then
+      call lc_constituents(i)%standard_name(lc_std_name)
+      if (trim(lc_std_name) == trim(std_name)) then
         cindex = i
         return
       end if
@@ -44,13 +46,15 @@ contains
     integer,          intent(out) :: errcode
     character(len=*), intent(out) :: errmsg
     integer :: k, i
+    character(len=256) :: lc_std_name
     cindices = int_unassigned
     errcode  = 0
     errmsg   = ''
     if (.not. allocated(lc_constituents)) return
     do k = 1, size(std_names)
       do i = 1, size(lc_constituents)
-        if (trim(lc_constituents(i)%standard_name()) == trim(std_names(k))) then
+        call lc_constituents(i)%standard_name(lc_std_name)
+        if (trim(lc_std_name) == trim(std_names(k))) then
           cindices(k) = i
           exit
         end if

@@ -709,16 +709,23 @@ def _generate_constituent_api(
     type_defs_text = "\n".join(type_def_lines) if type_def_lines else None
 
     # ── Helper: dedup fragment ───────────────────────────────────────────
-    def _dedup_block(src_sname, src_units, src_assign, dst_tmp, indent="    ", err_var="errflg"):
+    # src_obj: a Fortran expression for the source element (e.g. "lc_dyn(lc_i)").
+    # Callers must have declared lc_src_std_name, lc_dst_std_name,
+    # lc_src_units, lc_dst_units (all character(len=256)) as local variables.
+    def _dedup_block(src_obj, dst_tmp, indent="    ", err_var="errflg"):
         lines = []
+        lines.append(f"{indent}call {src_obj}%standard_name(lc_src_std_name)")
+        lines.append(f"{indent}call {src_obj}%units(lc_src_units)")
         lines.append(f"{indent}lc_found = .false.")
         lines.append(f"{indent}do lc_j = 1, lc_num")
-        lines.append(f"{indent}  if (trim({dst_tmp}(lc_j)%std_name) == trim({src_sname})) then")
+        lines.append(f"{indent}  call {dst_tmp}(lc_j)%standard_name(lc_dst_std_name)")
+        lines.append(f"{indent}  if (trim(lc_dst_std_name) == trim(lc_src_std_name)) then")
         lines.append(f"{indent}    lc_found = .true.")
-        lines.append(f"{indent}    if (trim({dst_tmp}(lc_j)%units) /= trim({src_units})) then")
+        lines.append(f"{indent}    call {dst_tmp}(lc_j)%units(lc_dst_units)")
+        lines.append(f"{indent}    if (trim(lc_dst_units) /= trim(lc_src_units)) then")
         lines.append(
             f"{indent}      write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: "
-            f"Trying to add constituent ', trim({src_sname}), &"
+            f"Trying to add constituent ', trim(lc_src_std_name), &"
         )
         lines.append(
             f"{indent}        ' but an incompatible constituent with this name already exists'"
@@ -731,7 +738,7 @@ def _generate_constituent_api(
         lines.append(f"{indent}end do")
         lines.append(f"{indent}if (.not. lc_found) then")
         lines.append(f"{indent}  lc_num = lc_num + 1")
-        lines.append(f"{indent}  {dst_tmp}(lc_num) = {src_assign}")
+        lines.append(f"{indent}  {dst_tmp}(lc_num) = {src_obj}")
         lines.append(f"{indent}end if")
         return lines
 
@@ -778,6 +785,7 @@ def _generate_constituent_api(
         f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
         *_instance_decl,
         f"    integer :: lc_idx",
+        f"    character(len=256) :: lc_std_name",
         f"    errflg = 0",
         f"    errmsg = ''",
         f"    is_const = .false.",
@@ -797,7 +805,8 @@ def _generate_constituent_api(
         isc_lines += guard_open + [
             f"{indent}if (allocated({dyn_ref})) then",
             f"{indent}  do lc_idx = 1, size({dyn_ref})",
-            f"{indent}    if (trim({dyn_ref}(lc_idx)%std_name) == trim(std_name)) then",
+            f"{indent}    call {dyn_ref}(lc_idx)%standard_name(lc_std_name)",
+            f"{indent}    if (trim(lc_std_name) == trim(std_name)) then",
             f"{indent}      is_const = .true.",
             f"{indent}      return",
             f"{indent}    end if",
@@ -852,6 +861,11 @@ def _generate_constituent_api(
         f"    integer :: lc_max, lc_num, lc_i, lc_j",
         f"    logical :: lc_found",
         f"    type(ccpp_constituent_properties_t), allocatable :: lc_tmp(:)",
+        f"    character(len=256) :: lc_src_std_name",
+        f"    character(len=256) :: lc_dst_std_name",
+        f"    character(len=256) :: lc_src_units",
+        f"    character(len=256) :: lc_dst_units",
+        f"    type(ccpp_constituent_properties_t), pointer :: lc_tmp_ptr",
         f"    errcode = 0",
         f"    errmsg = ''",
     ]
@@ -878,8 +892,6 @@ def _generate_constituent_api(
             f"      do lc_i = 1, size({dyn_ref})",
         ]
         rc_lines += _dedup_block(
-            f"{dyn_ref}(lc_i)%std_name",
-            f"{dyn_ref}(lc_i)%units",
             f"{dyn_ref}(lc_i)",
             "lc_tmp",
             indent="        ",
@@ -890,9 +902,11 @@ def _generate_constituent_api(
         rc_lines += [
             f"    lc_found = .false.",
             f"    do lc_j = 1, lc_num",
-            f"      if (trim(lc_tmp(lc_j)%std_name) == '{std_name_f}') then",
+            f"      call lc_tmp(lc_j)%standard_name(lc_dst_std_name)",
+            f"      if (trim(lc_dst_std_name) == '{std_name_f}') then",
             f"        lc_found = .true.",
-            f"        if (trim(lc_tmp(lc_j)%units) /= '{units_f}') then",
+            f"        call lc_tmp(lc_j)%units(lc_dst_units)",
+            f"        if (trim(lc_dst_units) /= '{units_f}') then",
             f"          write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: "
             f"Trying to add constituent ', '{std_name_f}', &",
             f"            ' but an incompatible constituent with this name already exists'",
@@ -920,8 +934,6 @@ def _generate_constituent_api(
         ]
     rc_lines += [f"    do lc_i = 1, size(host_constituents)"]
     rc_lines += _dedup_block(
-        "host_constituents(lc_i)%std_name",
-        "host_constituents(lc_i)%units",
         "host_constituents(lc_i)",
         "lc_tmp",
         indent="      ",
@@ -936,7 +948,8 @@ def _generate_constituent_api(
         f"    if (allocated({_lc_props})) deallocate({_lc_props})",
         f"    allocate({_lc_props}(lc_num))",
         f"    do lc_i = 1, lc_num",
-        f"      {_lc_props}(lc_i)%ptr => {_lc_all}(lc_i)",
+        f"      lc_tmp_ptr => {_lc_all}(lc_i)",
+        f"      call {_lc_props}(lc_i)%set(lc_tmp_ptr)",
         f"    end do",
         f"    call ccpp_scheme_utils_set_constituents({_lc_all})",
         f"  end subroutine {h}_ccpp_register_constituents",
@@ -984,6 +997,9 @@ def _generate_constituent_api(
         f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
         *_instance_decl,
         f"    integer :: lc_num, lc_i",
+        f"    logical :: lc_has_def",
+        f"    real(kind=kind_phys) :: lc_def_val",
+        f"    character(len=256) :: lc_std_name",
         f"    errflg = 0",
         f"    errmsg = ''",
     ]
@@ -1002,8 +1018,10 @@ def _generate_constituent_api(
         f"    allocate({ref('lc_constituent_array')}(ncols, pver, lc_num))",
         f"    {ref('lc_constituent_array')} = 0.0_kind_phys",
         f"    do lc_i = 1, lc_num",
-        f"      if ({ref('lc_all_constituents')}(lc_i)%default_val_set) then",
-        f"        {ref('lc_constituent_array')}(:, :, lc_i) = {ref('lc_all_constituents')}(lc_i)%default_val",
+        f"      call {ref('lc_all_constituents')}(lc_i)%has_default(lc_has_def, errflg, errmsg)",
+        f"      if (lc_has_def) then",
+        f"        call {ref('lc_all_constituents')}(lc_i)%default_value(lc_def_val, errflg, errmsg)",
+        f"        {ref('lc_constituent_array')}(:, :, lc_i) = lc_def_val",
         f"      end if",
         f"    end do",
     ]
@@ -1030,7 +1048,8 @@ def _generate_constituent_api(
             ic_lines += [
                 f"    nullify({lc_ref})",
                 f"    do lc_i = 1, lc_num",
-                f"      if (trim({ref('lc_all_constituents')}(lc_i)%std_name) == '{_cst_std}') then",
+                f"      call {ref('lc_all_constituents')}(lc_i)%standard_name(lc_std_name)",
+                f"      if (trim(lc_std_name) == '{_cst_std}') then",
                 f"        {lc_ref} => {ref('lc_const_tend')}(:, :, lc_i)",
                 f"        exit",
                 f"      end if",
@@ -1072,6 +1091,7 @@ def _generate_constituent_api(
         f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
         *_instance_decl,
         f"    integer :: lc_i",
+        f"    character(len=256) :: lc_std_name",
         f"    errflg = 0",
         f"    errmsg = ''",
         f"    index = -1",
@@ -1087,7 +1107,8 @@ def _generate_constituent_api(
     )
     ci_lines += [
         f"    do lc_i = 1, size({ref('lc_all_constituents')})",
-        f"      if (trim({ref('lc_all_constituents')}(lc_i)%std_name) == trim(std_name)) then",
+        f"      call {ref('lc_all_constituents')}(lc_i)%standard_name(lc_std_name)",
+        f"      if (trim(lc_std_name) == trim(std_name)) then",
         f"        index = lc_i",
         f"        return",
         f"      end if",
