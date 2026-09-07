@@ -961,6 +961,218 @@ class ActiveCheckOp(IRDLOperation):
 
 
 @irdl_op_definition
+class NullifyPointerOp(IRDLOperation):
+    """Null-initialise a Fortran POINTER variable.
+
+    Emits::
+
+        nullify({ptr_name})
+    """
+
+    name = "ccpp_utils.nullify_pointer"
+    ptr_name = prop_def(StringAttr)
+
+    def __init__(self, ptr_name: str):
+        super().__init__(properties={"ptr_name": StringAttr(ptr_name)})
+
+
+@irdl_op_definition
+class AllocateOp(IRDLOperation):
+    """Allocate a Fortran allocatable or pointer variable to a given shape.
+
+    Emits::
+
+        allocate({var_name}({dims[0]}, {dims[1]}, ...))
+
+    ``dims`` is an ArrayAttr of StringAttr Fortran expressions (e.g.
+    ``"ncols"``, ``"size(lc_const_props)"``).
+    """
+
+    name = "ccpp_utils.allocate"
+    var_name = prop_def(StringAttr)
+    dims     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, var_name: str, dims: "list[str]"):
+        super().__init__(properties={
+            "var_name": StringAttr(var_name),
+            "dims":     ArrayAttr([StringAttr(d) for d in dims]),
+        })
+
+
+@irdl_op_definition
+class ZeroFillOp(IRDLOperation):
+    """Assign 0.0_kind_phys to a real array variable.
+
+    Emits::
+
+        {var_name} = 0.0_kind_phys
+    """
+
+    name = "ccpp_utils.zero_fill"
+    var_name = prop_def(StringAttr)
+
+    def __init__(self, var_name: str):
+        super().__init__(properties={"var_name": StringAttr(var_name)})
+
+
+@irdl_op_definition
+class PointerSliceAssignOp(IRDLOperation):
+    """Associate a pointer with a trailing-index slice of a 3-D array.
+
+    Emits::
+
+        {ptr_name} => {array_name}(:, :, {index_var})
+
+    Used to assign constituent-tendency pointer slices into ``lc_const_tend``.
+    """
+
+    name = "ccpp_utils.pointer_slice_assign"
+    ptr_name   = prop_def(StringAttr)
+    array_name = prop_def(StringAttr)
+    index_var  = prop_def(StringAttr)
+
+    def __init__(self, ptr_name: str, array_name: str, index_var: str):
+        super().__init__(properties={
+            "ptr_name":   StringAttr(ptr_name),
+            "array_name": StringAttr(array_name),
+            "index_var":  StringAttr(index_var),
+        })
+
+
+@irdl_op_definition
+class ScopedBlockOp(IRDLOperation):
+    """Fortran BLOCK construct introducing a local scope with declarations.
+
+    Emits::
+
+        block
+          {local_decls[0]}
+          {local_decls[1]}
+          ...
+          {body ops}
+        end block
+
+    ``local_decls`` is an ArrayAttr of StringAttr complete Fortran declaration
+    lines (e.g. ``"integer :: lc_tend_idx"``).  Body ops are emitted at +1
+    indent after the declarations.
+    """
+
+    name = "ccpp_utils.scoped_block"
+
+    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    body        = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, local_decls: "list[str]", body_ops: list):
+        from xdsl.ir import Block, Region
+        body = Region([Block(body_ops)])
+        super().__init__(
+            properties={"local_decls": ArrayAttr([StringAttr(d) for d in local_decls])},
+            regions=[body],
+        )
+
+
+@irdl_op_definition
+class RawFortranLinesOp(IRDLOperation):
+    """Escape hatch for Fortran content not yet converted to structured ops.
+
+    The ``lines`` property holds raw Fortran text (one or more lines, newline-
+    separated).  The printer emits each line at the current indentation level;
+    preprocessor directives (starting with ``#``) are emitted at column 0.
+    """
+
+    name = "ccpp_utils.raw_fortran_lines"
+
+    lines = prop_def(StringAttr)
+
+    def __init__(self, text: str):
+        super().__init__(properties={"lines": StringAttr(text)})
+
+
+@irdl_op_definition
+class ConstituentFunctionOp(IRDLOperation):
+    """One subroutine or function in the constituent registration API.
+
+    ``fn_name``     — Fortran identifier of the subroutine/function.
+    ``is_function`` — True for FUNCTION, False for SUBROUTINE.
+    ``args``        — argument names for the signature line.
+    ``use_stmts``   — complete USE statement lines (no trailing newline).
+    ``arg_decls``   — argument declaration lines (no leading/trailing whitespace).
+    ``local_decls`` — local variable declaration lines.
+    ``result_name`` — (functions only) name of the RESULT variable.
+    ``result_decl`` — (functions only) type declaration for the result variable.
+    ``body``        — single-block Region of statement ops.
+    """
+
+    name = "ccpp_utils.constituent_function"
+
+    fn_name     = prop_def(StringAttr)
+    is_function = prop_def(BoolAttr)
+    args        = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — arg name list
+    use_stmts   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — USE statement lines
+    arg_decls   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — argument declaration lines
+    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — local variable declarations
+    result_name = opt_prop_def(StringAttr)  # for functions: result variable name
+    result_decl = opt_prop_def(StringAttr)  # for functions: result variable type declaration
+    body        = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        fn_name: str,
+        is_function: bool,
+        args: "list[str]",
+        use_stmts: "list[str]",
+        arg_decls: "list[str]",
+        local_decls: "list[str]",
+        body_ops: list,
+        result_name: "str | None" = None,
+        result_decl: "str | None" = None,
+    ):
+        from xdsl.ir import Block, Region
+        body = Region([Block(body_ops)])
+        props: dict = {
+            "fn_name":     StringAttr(fn_name),
+            "is_function": BoolAttr.from_bool(is_function),
+            "args":        ArrayAttr([StringAttr(a) for a in args]),
+            "use_stmts":   ArrayAttr([StringAttr(u) for u in use_stmts]),
+            "arg_decls":   ArrayAttr([StringAttr(d) for d in arg_decls]),
+            "local_decls": ArrayAttr([StringAttr(d) for d in local_decls]),
+        }
+        if result_name is not None:
+            props["result_name"] = StringAttr(result_name)
+        if result_decl is not None:
+            props["result_decl"] = StringAttr(result_decl)
+        super().__init__(properties=props, regions=[body])
+
+
+@irdl_op_definition
+class CamHostConstituentApiOp(IRDLOperation):
+    """Container for the cam_host=True constituent registration API.
+
+    ``public_names`` — names to export with ``public ::`` in the module preamble.
+    ``body``         — single-block Region of ``ConstituentFunctionOp`` children.
+    """
+
+    name = "ccpp_utils.cam_host_constituent_api"
+
+    public_names = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    body         = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, public_names_list: "list[str]", fn_ops: list):
+        from xdsl.ir import Block, Region
+        body = Region([Block(fn_ops)])
+        super().__init__(
+            properties={"public_names": ArrayAttr([StringAttr(n) for n in public_names_list])},
+            regions=[body],
+        )
+
+
+@irdl_op_definition
 class SuiteVariablesOp(IRDLOperation):
     """Carries the generated ccpp_physics_suite_variables Fortran text.
 
@@ -1724,6 +1936,14 @@ CCPPUtils = Dialect(
         SubcycleLoopOp,
         PresentCheckOp,
         ActiveCheckOp,
+        NullifyPointerOp,
+        AllocateOp,
+        ZeroFillOp,
+        PointerSliceAssignOp,
+        ScopedBlockOp,
+        RawFortranLinesOp,
+        ConstituentFunctionOp,
+        CamHostConstituentApiOp,
         SuiteVariablesOp,
         ConstituentApiOp,
         CHostCapOp,

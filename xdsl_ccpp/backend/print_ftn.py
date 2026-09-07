@@ -69,7 +69,19 @@ from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp as CCPPRankReducin
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import AllocateOp as CCPPAllocateOp
+from xdsl_ccpp.dialects.ccpp_utils import NullifyPointerOp as CCPPNullifyPointerOp
+from xdsl_ccpp.dialects.ccpp_utils import PointerSliceAssignOp as CCPPPointerSliceAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
+from xdsl_ccpp.dialects.ccpp_utils import ScopedBlockOp as CCPPScopedBlockOp
+from xdsl_ccpp.dialects.ccpp_utils import ZeroFillOp as CCPPZeroFillOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    CamHostConstituentApiOp as CCPPCamHostConstituentApiOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
+    ConstituentFunctionOp as CCPPConstituentFunctionOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import RawFortranLinesOp as CCPPRawFortranLinesOp
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
 from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp as CCPPSubcycleLoopOp
@@ -870,6 +882,53 @@ class ftnPrintContext:
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
+            case CCPPNullifyPointerOp():
+                self.print(f"nullify({op.ptr_name.data})")
+            case CCPPAllocateOp():
+                dims = ", ".join(d.data for d in op.dims.data)
+                self.print(f"allocate({op.var_name.data}({dims}))")
+            case CCPPZeroFillOp():
+                self.print(f"{op.var_name.data} = 0.0_kind_phys")
+            case CCPPPointerSliceAssignOp():
+                self.print(
+                    f"{op.ptr_name.data} => "
+                    f"{op.array_name.data}(:, :, {op.index_var.data})"
+                )
+            case CCPPScopedBlockOp():
+                self.print("block")
+                with self.descend() as blk:
+                    for decl in op.local_decls.data:
+                        blk.print(decl.data)
+                    blk.print_block(op.body.block)
+                self.print("end block")
+            case CCPPRawFortranLinesOp():
+                for line in op.lines.data.splitlines():
+                    if line.lstrip().startswith("#"):
+                        self.print(line.lstrip(), use_prefix=False)
+                    else:
+                        self.print(line)
+            case CCPPConstituentFunctionOp():
+                fn_name = op.fn_name.data
+                is_func = op.is_function.value.data
+                kw = "function" if is_func else "subroutine"
+                args_str = ", ".join(a.data for a in op.args.data)
+                result_part = (
+                    f" result({op.result_name.data})" if op.result_name is not None else ""
+                )
+                self.print(f"{kw} {fn_name}({args_str}){result_part}")
+                with self.descend() as fn_inner:
+                    for use in op.use_stmts.data:
+                        fn_inner.print(use.data)
+                    if op.result_decl is not None:
+                        fn_inner.print(op.result_decl.data)
+                    for decl in op.arg_decls.data:
+                        fn_inner.print(decl.data)
+                    for decl in op.local_decls.data:
+                        fn_inner.print(decl.data)
+                    fn_inner.print_block(op.body.block)
+                self.print(f"end {kw} {fn_name}")
+            case CCPPCamHostConstituentApiOp():
+                self.print_block(op.body.block)
             case CCPPConstituentSyncOp():
                 var = op.var_name.data
                 q = op.q_name.data
@@ -1520,6 +1579,11 @@ class ftnPrintContext:
             for op in body.ops
             if isa(op, CCPPConstituentApiOp)
             for name in op.public_names.data
+        ] + [
+            name.data
+            for op in body.ops
+            if isa(op, CCPPCamHostConstituentApiOp)
+            for name in op.public_names.data
         ]
         for proc in public_procs:
             self.print(f"public :: {proc}", prefix="  ")
@@ -1529,6 +1593,7 @@ class ftnPrintContext:
             (isa(op, func.FuncOp) and not op.is_declaration)
             or isa(op, CCPPSuiteVariablesOp)
             or isa(op, CCPPConstituentApiOp)
+            or isa(op, CCPPCamHostConstituentApiOp)
             for op in body.ops
         )
         if has_func_defs:

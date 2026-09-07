@@ -9,7 +9,13 @@ directly from generate-ccpp-cap's final module assembly.
 from xdsl.dialects import llvm
 from xdsl.dialects.builtin import StringAttr, i8
 
-from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp, ModuleVarOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    CamHostConstituentApiOp,
+    ConstituentApiOp,
+    ConstituentFunctionOp,
+    ModuleVarOp,
+    RawFortranLinesOp,
+)
 from xdsl_ccpp.transforms.util.cap_shared import _CCPP_CONSTITUENT_MOD, _bare
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN
@@ -171,276 +177,325 @@ def _generate_constituent_api_cam_host(
     # lc_constituent_array is referenced by the ccpp_physics_run dispatcher as the
     # constituent data slice; must be a pointer into cam_constituents_obj storage.
     # Also emit the fixed constituent name/index arrays when present.
-    type_defs_lines = [
-        "  integer, allocatable :: lc_all_constituents(:)",
-        "  real(kind=kind_phys), pointer :: lc_constituent_array(:,:,:) => null()",
-    ]
+    module_var_ops.append(ModuleVarOp("lc_all_constituents", "integer", rank=1))
+    module_var_ops.append(
+        ModuleVarOp("lc_constituent_array", "real", kind="kind_phys", is_pointer=True, rank=3)
+    )
     if needs_const_tend:
-        type_defs_lines.append(
-            "  real(kind=kind_phys), allocatable, target :: lc_const_tend(:, :, :)"
+        module_var_ops.append(
+            ModuleVarOp("lc_const_tend", "real", kind="kind_phys", is_target=True, rank=3)
         )
     for lc_name, rank, _alloc_dims, const_std_name, _needs_gpu in (scratch_vars or []):
-        if const_std_name is None:  # non-constituent scratch vars: declare allocatable
-            colons = ", ".join([":"] * rank)
-            type_defs_lines.append(
-                f"  real(kind=kind_phys), allocatable :: {lc_name}({colons})"
-            )
-        else:  # constituent-tendency scratch vars: pointer slice into lc_const_tend
-            colons = ", ".join([":"] * rank)
-            type_defs_lines.append(
-                f"  real(kind=kind_phys), pointer :: {lc_name}({colons}) => null()"
+        if const_std_name is None:  # non-constituent scratch: allocatable
+            module_var_ops.append(ModuleVarOp(lc_name, "real", kind="kind_phys", rank=rank))
+        else:  # constituent-tendency scratch: pointer slice into lc_const_tend
+            module_var_ops.append(
+                ModuleVarOp(lc_name, "real", kind="kind_phys", is_pointer=True, rank=rank)
             )
     if n_fixed > 0:
         max_std_len = max(len(s) for s, *_ in fixed_advected)
         names_parts = [f"'{s}'" for s, *_ in fixed_advected]
-        if n_fixed == 1:
-            names_str = names_parts[0]
-        else:
-            names_str = ", &\n      ".join(names_parts)
-        type_defs_lines += [
-            f"  character(len={max_std_len}) :: cam_model_const_stdnames({n_fixed}) = [ character(len={max_std_len}) :: {names_str} ]",
-            f"  integer :: cam_model_const_indices({n_fixed}) = -1",
-        ]
-    type_defs_text = "\n".join(type_defs_lines)
+        names_str = (names_parts[0] if n_fixed == 1
+                     else ", &\n      ".join(names_parts))
+        module_var_ops.append(ModuleVarOp(
+            "cam_model_const_stdnames", "character",
+            kind=str(max_std_len),
+            fixed_dim=n_fixed,
+            init_value=f"[ character(len={max_std_len}) :: {names_str} ]",
+        ))
+        module_var_ops.append(ModuleVarOp(
+            "cam_model_const_indices", "integer",
+            fixed_dim=n_fixed,
+            init_value="-1",
+        ))
 
     # ── 1. is_scheme_constituent ─────────────────────────────────────────
-    isc_lines = [
-        f"  subroutine {h}_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg)",
-        f"    character(len=*), intent(in) :: std_name",
-        f"    logical, intent(out) :: is_const",
-        f"    integer, intent(out) :: errflg",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    errflg = 0",
-        f"    errmsg = ''",
-        f"    is_const = .false.",
+    isc_body = [
+        "errflg = 0",
+        "errmsg = ''",
+        "is_const = .false.",
     ]
     if n_fixed > 0:
-        isc_lines += [
-            f"    if (any(cam_model_const_stdnames == std_name)) then",
-            f"      is_const = .true.",
-            f"    end if",
+        isc_body += [
+            "if (any(cam_model_const_stdnames == std_name)) then",
+            "  is_const = .true.",
+            "end if",
         ]
-    isc_lines.append(f"  end subroutine {h}_ccpp_is_scheme_constituent")
+    isc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_is_scheme_constituent",
+        is_function=False,
+        args=["std_name", "is_const", "errflg", "errmsg"],
+        use_stmts=[],
+        arg_decls=[
+            "character(len=*), intent(in) :: std_name",
+            "logical, intent(out) :: is_const",
+            "integer, intent(out) :: errflg",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        ],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(isc_body))],
+    )
 
     # ── 2. deallocate_dynamic_constituents ───────────────────────────────
-    da_lines = [f"  subroutine {h}_ccpp_deallocate_dynamic_constituents()"]
+    da_body = []
     for n in dynamic_array_names:
-        da_lines.append(f"    if (allocated(lc_{n})) deallocate(lc_{n})")
+        da_body.append(f"if (allocated(lc_{n})) deallocate(lc_{n})")
     if needs_const_tend:
-        da_lines.append(f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)")
+        da_body.append("if (allocated(lc_const_tend)) deallocate(lc_const_tend)")
     for lc_name, _, _, const_std_name, _ in (scratch_vars or []):
         if const_std_name is None:
-            da_lines.append(f"    if (allocated({lc_name})) deallocate({lc_name})")
-        else:  # constituent-tendency pointer: just nullify
-            da_lines.append(f"    nullify({lc_name})")
-    da_lines += [
-        f"    call cam_constituents_obj%reset()",
-        f"  end subroutine {h}_ccpp_deallocate_dynamic_constituents",
-    ]
+            da_body.append(f"if (allocated({lc_name})) deallocate({lc_name})")
+        else:
+            da_body.append(f"nullify({lc_name})")
+    da_body.append("call cam_constituents_obj%reset()")
+    da_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_deallocate_dynamic_constituents",
+        is_function=False,
+        args=[],
+        use_stmts=[],
+        arg_decls=[],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(da_body))] if da_body else [],
+    )
 
     # ── 3. register_constituents ─────────────────────────────────────────
-    rc_lines = [
-        f"  subroutine {h}_ccpp_register_constituents(host_constituents, errcode, errmsg)",
-        f"    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t",
-        f"    type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
-        f"    integer, intent(out) :: errcode",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    integer :: lc_i, lc_num_consts, field_ind",
-        f"    type(ccpp_constituent_properties_t), pointer :: const_prop",
-        f"    errcode = 0",
-        f"    errmsg = ''",
-        f"    lc_num_consts = size(host_constituents, 1)",
+    rc_body = [
+        "errcode = 0",
+        "errmsg = ''",
+        "lc_num_consts = size(host_constituents, 1)",
     ]
     for n in dynamic_array_names:
-        rc_lines.append(f"    if (allocated(lc_{n})) lc_num_consts = lc_num_consts + size(lc_{n})")
-    rc_lines += [
-        f"    lc_num_consts = lc_num_consts + {n_fixed}",
-        f"    call cam_constituents_obj%initialize_table(lc_num_consts)",
-        f"    do lc_i = 1, size(host_constituents, 1)",
-        f"      const_prop => host_constituents(lc_i)",
-        f"      call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
-        f"      nullify(const_prop)",
-        f"      if (errcode /= 0) return",
-        f"    end do",
+        rc_body.append(
+            f"if (allocated(lc_{n})) lc_num_consts = lc_num_consts + size(lc_{n})"
+        )
+    rc_body += [
+        f"lc_num_consts = lc_num_consts + {n_fixed}",
+        "call cam_constituents_obj%initialize_table(lc_num_consts)",
+        "do lc_i = 1, size(host_constituents, 1)",
+        "  const_prop => host_constituents(lc_i)",
+        "  call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
+        "  nullify(const_prop)",
+        "  if (errcode /= 0) return",
+        "end do",
     ]
     for n in dynamic_array_names:
-        rc_lines += [
-            f"    if (allocated(lc_{n})) then",
-            f"      do lc_i = 1, size(lc_{n})",
-            f"        const_prop => lc_{n}(lc_i)",
-            f"        call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
-            f"        nullify(const_prop)",
-            f"        if (errcode /= 0) return",
-            f"      end do",
-            f"    end if",
+        rc_body += [
+            f"if (allocated(lc_{n})) then",
+            f"  do lc_i = 1, size(lc_{n})",
+            f"    const_prop => lc_{n}(lc_i)",
+            f"    call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
+            f"    nullify(const_prop)",
+            f"    if (errcode /= 0) return",
+            f"  end do",
+            f"end if",
         ]
     for std_name_f, units_f, default_val_f, local_name_f in fixed_advected:
         long_name_f = std_name_f.replace('_', ' ').capitalize()
         extra = f", default_value={default_val_f}" if default_val_f is not None else ""
-        rc_lines += [
-            f"    allocate(const_prop, stat=errcode)",
-            f"    if (errcode /= 0) then",
-            f"      errmsg = 'ERROR allocating const_prop'",
-            f"      return",
-            f"    end if",
-            f"    call const_prop%instantiate( &",
-            f"        std_name='{std_name_f}', &",
-            f"        long_name='{long_name_f}', &",
-            f"        diag_name='{local_name_f}', units='{units_f}', &",
-            f"        vertical_dim='vertical_layer_dimension', &",
-            f"        advected=.true.{extra}, errcode=errcode, errmsg=errmsg)",
-            f"    if (errcode /= 0) return",
-            f"    call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
-            f"    nullify(const_prop)",
-            f"    if (errcode /= 0) return",
+        rc_body += [
+            "allocate(const_prop, stat=errcode)",
+            "if (errcode /= 0) then",
+            "  errmsg = 'ERROR allocating const_prop'",
+            "  return",
+            "end if",
+            f"call const_prop%instantiate( &",
+            f"    std_name='{std_name_f}', &",
+            f"    long_name='{long_name_f}', &",
+            f"    diag_name='{local_name_f}', units='{units_f}', &",
+            f"    vertical_dim='vertical_layer_dimension', &",
+            f"    advected=.true.{extra}, errcode=errcode, errmsg=errmsg)",
+            "if (errcode /= 0) return",
+            "call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
+            "nullify(const_prop)",
+            "if (errcode /= 0) return",
         ]
-    rc_lines += [
-        f"    call cam_constituents_obj%lock_table(errcode=errcode, errmsg=errmsg)",
-        f"    if (errcode /= 0) return",
+    rc_body += [
+        "call cam_constituents_obj%lock_table(errcode=errcode, errmsg=errmsg)",
+        "if (errcode /= 0) return",
     ]
     if n_fixed > 0:
-        rc_lines += [
-            f"    do lc_i = 1, size(cam_model_const_indices)",
-            f"      call cam_constituents_obj%const_index(field_ind, cam_model_const_stdnames(lc_i), &",
-            f"          errcode=errcode, errmsg=errmsg)",
-            f"      if (errcode /= 0) return",
-            f"      if (field_ind > 0) then",
-            f"        cam_model_const_indices(lc_i) = field_ind",
-            f"      else",
-            f"        errcode = 1",
-            f"        errmsg = 'No field index for '//trim(cam_model_const_stdnames(lc_i))",
-            f"        return",
-            f"      end if",
-            f"    end do",
+        rc_body += [
+            "do lc_i = 1, size(cam_model_const_indices)",
+            "  call cam_constituents_obj%const_index(field_ind, cam_model_const_stdnames(lc_i), &",
+            "      errcode=errcode, errmsg=errmsg)",
+            "  if (errcode /= 0) return",
+            "  if (field_ind > 0) then",
+            "    cam_model_const_indices(lc_i) = field_ind",
+            "  else",
+            "    errcode = 1",
+            "    errmsg = 'No field index for '//trim(cam_model_const_stdnames(lc_i))",
+            "    return",
+            "  end if",
+            "end do",
         ]
-    rc_lines.append(f"  end subroutine {h}_ccpp_register_constituents")
+    rc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_register_constituents",
+        is_function=False,
+        args=["host_constituents", "errcode", "errmsg"],
+        use_stmts=["use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t"],
+        arg_decls=[
+            "type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
+            "integer, intent(out) :: errcode",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        ],
+        local_decls=[
+            "integer :: lc_i, lc_num_consts, field_ind",
+            "type(ccpp_constituent_properties_t), pointer :: const_prop",
+        ],
+        body_ops=[RawFortranLinesOp("\n".join(rc_body))],
+    )
 
     # ── 4. number_constituents ───────────────────────────────────────────
-    nc_lines = [
-        f"  subroutine {h}_ccpp_number_constituents(num_advected, errmsg, errcode, advected)",
-        f"    integer, intent(out) :: num_advected",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    integer, intent(out) :: errcode",
-        f"    logical, optional, intent(in) :: advected",
-        f"    call cam_constituents_obj%num_constituents(num_advected, advected=advected, &",
-        f"        errcode=errcode, errmsg=errmsg)",
-        f"  end subroutine {h}_ccpp_number_constituents",
-    ]
+    nc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_number_constituents",
+        is_function=False,
+        args=["num_advected", "errmsg", "errcode", "advected"],
+        use_stmts=[],
+        arg_decls=[
+            "integer, intent(out) :: num_advected",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+            "integer, intent(out) :: errcode",
+            "logical, optional, intent(in) :: advected",
+        ],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp(
+            "call cam_constituents_obj%num_constituents(num_advected, advected=advected, &\n"
+            "    errcode=errcode, errmsg=errmsg)"
+        )],
+    )
 
     # ── 5. initialize_constituents ───────────────────────────────────────
-    ic_lines = [
-        f"  subroutine {h}_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)",
-        f"    use ccpp_scheme_utils, only: ccpp_initialize_constituent_ptr",
-        f"    integer, intent(in) :: ncols",
-        f"    integer, intent(in) :: pver",
-        f"    integer, intent(out) :: errflg",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    call cam_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)",
-        f"    if (errflg /= 0) return",
-        f"    call ccpp_initialize_constituent_ptr(cam_constituents_obj)",
-        f"    lc_constituent_array => cam_constituents_obj%field_data_ptr()",
-        f"    lc_const_props = cam_constituents_obj%constituent_props_ptr()",
-        f"    if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
-        f"    allocate(lc_all_constituents(size(lc_const_props)))",
+    ic_body = [
+        "call cam_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)",
+        "if (errflg /= 0) return",
+        "call ccpp_initialize_constituent_ptr(cam_constituents_obj)",
+        "lc_constituent_array => cam_constituents_obj%field_data_ptr()",
+        "lc_const_props = cam_constituents_obj%constituent_props_ptr()",
+        "if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
+        "allocate(lc_all_constituents(size(lc_const_props)))",
     ]
     if needs_const_tend:
-        ic_lines += [
-            f"    if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
-            f"    allocate(lc_const_tend(ncols, pver, size(lc_const_props)))",
-            f"    lc_const_tend = 0.0_kind_phys",
+        ic_body += [
+            "if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
+            "allocate(lc_const_tend(ncols, pver, size(lc_const_props)))",
+            "lc_const_tend = 0.0_kind_phys",
         ]
     for lc_name, rank, alloc_dims_str, const_std_name, _ in (scratch_vars or []):
         if const_std_name is None:
-            # Non-constituent scratch: allocate as a module-level array.
-            # alloc_dims_str uses "ncols"/"pver" (available as args) and "lc_num".
             alloc_str = alloc_dims_str.replace("lc_num", "size(lc_const_props)")
-            ic_lines += [
-                f"    if (allocated({lc_name})) deallocate({lc_name})",
-                f"    allocate({lc_name}({alloc_str}))",
+            ic_body += [
+                f"if (allocated({lc_name})) deallocate({lc_name})",
+                f"allocate({lc_name}({alloc_str}))",
             ]
         else:
             # Constituent-tendency scratch: pointer slice into lc_const_tend.
-            # Use cam_constituents_obj%const_index to find the slice index, then
-            # associate the pointer.  lc_const_tend must already be allocated above.
-            ic_lines += [
-                f"    block",
-                f"      integer :: lc_tend_idx",
-                f"      character(len=512) :: lc_tend_errmsg",
-                f"      nullify({lc_name})",
-                f"      call cam_constituents_obj%const_index(lc_tend_idx, '{const_std_name}',       &",
-                f"          errcode=errflg, errmsg=lc_tend_errmsg)",
-                f"      if (errflg == 0 .and. lc_tend_idx > 0) then",
-                f"        {lc_name} => lc_const_tend(:, :, lc_tend_idx)",
-                f"      else",
-                f"        errflg = 0",
-                f"      end if",
-                f"    end block",
+            ic_body += [
+                "block",
+                "  integer :: lc_tend_idx",
+                "  character(len=512) :: lc_tend_errmsg",
+                f"  nullify({lc_name})",
+                f"  call cam_constituents_obj%const_index(lc_tend_idx, '{const_std_name}', &",
+                "      errcode=errflg, errmsg=lc_tend_errmsg)",
+                "  if (errflg == 0 .and. lc_tend_idx > 0) then",
+                f"    {lc_name} => lc_const_tend(:, :, lc_tend_idx)",
+                "  else",
+                "    errflg = 0",
+                "  end if",
+                "end block",
             ]
-    ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")
+    ic_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_initialize_constituents",
+        is_function=False,
+        args=["ncols", "pver", "errflg", "errmsg"],
+        use_stmts=["use ccpp_scheme_utils, only: ccpp_initialize_constituent_ptr"],
+        arg_decls=[
+            "integer, intent(in) :: ncols",
+            "integer, intent(in) :: pver",
+            "integer, intent(out) :: errflg",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        ],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(ic_body))],
+    )
 
     # ── 6. constituents_array ────────────────────────────────────────────
-    ca_lines = [
-        f"  function {h}_constituents_array() result(ptr)",
-        f"    real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        f"    ptr => cam_constituents_obj%field_data_ptr()",
-        f"  end function {h}_constituents_array",
-    ]
+    ca_op = ConstituentFunctionOp(
+        fn_name=f"{h}_constituents_array",
+        is_function=True,
+        args=[],
+        use_stmts=[],
+        arg_decls=[],
+        local_decls=[],
+        result_name="ptr",
+        result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
+        body_ops=[RawFortranLinesOp("ptr => cam_constituents_obj%field_data_ptr()")],
+    )
 
     # ── 7. const_get_index ───────────────────────────────────────────────
-    ci_lines = [
-        f"  subroutine {h}_const_get_index(std_name, index, errflg, errmsg)",
-        f"    use ccpp_constituent_prop_mod, only: to_lower",
-        f"    character(len=*), intent(in) :: std_name",
-        f"    integer, intent(out) :: index",
-        f"    integer, intent(out) :: errflg",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    call cam_constituents_obj%const_index(index, to_lower(std_name), &",
-        f"        errcode=errflg, errmsg=errmsg)",
-        f"  end subroutine {h}_const_get_index",
-    ]
+    ci_op = ConstituentFunctionOp(
+        fn_name=f"{h}_const_get_index",
+        is_function=False,
+        args=["std_name", "index", "errflg", "errmsg"],
+        use_stmts=["use ccpp_constituent_prop_mod, only: to_lower"],
+        arg_decls=[
+            "character(len=*), intent(in) :: std_name",
+            "integer, intent(out) :: index",
+            "integer, intent(out) :: errflg",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        ],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp(
+            "call cam_constituents_obj%const_index(index, to_lower(std_name), &\n"
+            "    errcode=errflg, errmsg=errmsg)"
+        )],
+    )
 
     # ── 8. model_const_properties ────────────────────────────────────────
-    mp_lines = [
-        f"  function {h}_model_const_properties() result(ptr)",
-        f"    use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t",
-        f"    type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
-        f"    ptr => cam_constituents_obj%constituent_props_ptr()",
-        f"  end function {h}_model_const_properties",
-    ]
+    mp_op = ConstituentFunctionOp(
+        fn_name=f"{h}_model_const_properties",
+        is_function=True,
+        args=[],
+        use_stmts=["use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t"],
+        arg_decls=[],
+        local_decls=[],
+        result_name="ptr",
+        result_decl="type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
+        body_ops=[RawFortranLinesOp("ptr => cam_constituents_obj%constituent_props_ptr()")],
+    )
 
     # ── 9. gather_constituents ───────────────────────────────────────────
-    gc_lines = [
-        f"  subroutine {h}_ccpp_gather_constituents(const_array, errcode, errmsg)",
-        f"    real(kind=kind_phys), intent(out) :: const_array(:, :, :)",
-        f"    integer, intent(out) :: errcode",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    call cam_constituents_obj%copy_in(const_array, errcode=errcode, errmsg=errmsg)",
-        f"  end subroutine {h}_ccpp_gather_constituents",
-    ]
+    gc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_gather_constituents",
+        is_function=False,
+        args=["const_array", "errcode", "errmsg"],
+        use_stmts=[],
+        arg_decls=[
+            "real(kind=kind_phys), intent(out) :: const_array(:, :, :)",
+            "integer, intent(out) :: errcode",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        ],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp(
+            "call cam_constituents_obj%copy_in(const_array, errcode=errcode, errmsg=errmsg)"
+        )],
+    )
 
     # ── 10. update_constituents ──────────────────────────────────────────
-    uc_lines = [
-        f"  subroutine {h}_ccpp_update_constituents(const_array, errcode, errmsg)",
-        f"    real(kind=kind_phys), intent(in) :: const_array(:, :, :)",
-        f"    integer, intent(out) :: errcode",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    call cam_constituents_obj%copy_out(const_array, errcode=errcode, errmsg=errmsg)",
-        f"  end subroutine {h}_ccpp_update_constituents",
-    ]
-
-    all_lines = (
-        isc_lines + [""]
-        + da_lines + [""]
-        + rc_lines + [""]
-        + nc_lines + [""]
-        + ic_lines + [""]
-        + ca_lines + [""]
-        + ci_lines + [""]
-        + mp_lines + [""]
-        + gc_lines + [""]
-        + uc_lines
+    uc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_update_constituents",
+        is_function=False,
+        args=["const_array", "errcode", "errmsg"],
+        use_stmts=[],
+        arg_decls=[
+            "real(kind=kind_phys), intent(in) :: const_array(:, :, :)",
+            "integer, intent(out) :: errcode",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        ],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp(
+            "call cam_constituents_obj%copy_out(const_array, errcode=errcode, errmsg=errmsg)"
+        )],
     )
-    body_text = "\n".join(all_lines)
 
     public_names_list = [
         f"{h}_ccpp_is_scheme_constituent",
@@ -455,7 +510,10 @@ def _generate_constituent_api_cam_host(
         f"{h}_ccpp_update_constituents",
     ]
 
-    api_op = ConstituentApiOp(body_text, public_names_list, type_defs=type_defs_text)
+    api_op = CamHostConstituentApiOp(
+        public_names_list,
+        [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, ci_op, mp_op, gc_op, uc_op],
+    )
 
     # Global USE stubs — need all three types from ccpp_constituent_prop_mod.
     global_stubs: list = []
