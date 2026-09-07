@@ -32,6 +32,8 @@ if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
   add_executable(constadv_cxx_host
     ${CCPP_CAP_FILES}/ccpp_kinds.F90
     ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90
+    ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_hashable.F90
+    ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_hash_table.F90
     ${CMAKE_CURRENT_SOURCE_DIR}/constadv.F90
     ${CCPP_CAP_FILES}/constadv_suite_cap.F90
     ${CCPP_CAP_FILES}/constadv_host_sub_ccpp_chost_cap.F90
