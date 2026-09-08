@@ -120,12 +120,24 @@ def _collect_constituent_info(meta_data):
     return dynamic_array_names, fixed_advected, references_count
 
 
+def _error_guard(condition: str, errmsg_text: str) -> list:
+    """Return a 5-line 'if not <condition>, set errflg/errmsg and return' guard block."""
+    return [
+        f"if (.not. {condition}) then",
+        f"  errflg = 1",
+        f"  errmsg = '{errmsg_text}'",
+        f"  return",
+        f"end if",
+    ]
+
+
 def _generate_constituent_api_cam_host(
     camel_name: str,
     dynamic_array_names: list,
     fixed_advected: list,
     scratch_vars: "list | None" = None,
     needs_const_tend: bool = False,
+    framework_var_residency: "dict | None" = None,
 ):
     """Generate constituent API using the real ccpp_model_constituents_t container.
 
@@ -220,8 +232,22 @@ def _generate_constituent_api_cam_host(
         isc_body += [
             "if (any(cam_model_const_stdnames == std_name)) then",
             "  is_const = .true.",
+            "  return",
             "end if",
         ]
+    for n in dynamic_array_names:
+        isc_body += [
+            f"do lc_idx = 1, size(lc_{n})",
+            f"  call lc_{n}(lc_idx)%standard_name(lc_std_name)",
+            "  if (trim(lc_std_name) == trim(std_name)) then",
+            "    is_const = .true.",
+            "    return",
+            "  end if",
+            "end do",
+        ]
+    isc_local_decls = []
+    if dynamic_array_names:
+        isc_local_decls = ["integer :: lc_idx", "character(len=256) :: lc_std_name"]
     isc_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_is_scheme_constituent",
         is_function=False,
@@ -233,7 +259,7 @@ def _generate_constituent_api_cam_host(
             "integer, intent(out) :: errflg",
             f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
         ],
-        local_decls=[],
+        local_decls=isc_local_decls,
         body_ops=[RawFortranLinesOp("\n".join(isc_body))],
     )
 
@@ -248,6 +274,11 @@ def _generate_constituent_api_cam_host(
             da_body.append(f"if (allocated({lc_name})) deallocate({lc_name})")
         else:
             da_body.append(f"nullify({lc_name})")
+    da_body += [
+        "if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
+        "if (allocated(lc_const_props)) deallocate(lc_const_props)",
+        "if (associated(lc_constituent_array)) nullify(lc_constituent_array)",
+    ]
     da_body.append("call cam_constituents_obj%reset()")
     da_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_deallocate_dynamic_constituents",
@@ -339,11 +370,32 @@ def _generate_constituent_api_cam_host(
             "  end if",
             "end do",
         ]
+    # 3b-i: populate lc_all_constituents at register time (not initialize time)
+    rc_body += [
+        "call cam_constituents_obj%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)",
+        "if (errcode /= 0) return",
+        "if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
+        "allocate(lc_all_constituents(lc_num_consts))",
+    ]
+    # 3b-ii: populate lc_const_props at register time (not initialize time);
+    # initialize scheme_utils constituent pointer (CAM uses ccpp_initialize_constituent_ptr
+    # instead of the non-CAM ccpp_scheme_utils_set_constituents)
+    rc_body += [
+        "lc_props_ptr => cam_constituents_obj%constituent_props_ptr()",
+        "if (allocated(lc_const_props)) deallocate(lc_const_props)",
+        "allocate(lc_const_props(size(lc_props_ptr)))",
+        "lc_const_props = lc_props_ptr",
+        "nullify(lc_props_ptr)",
+        "call ccpp_initialize_constituent_ptr(cam_constituents_obj)",
+    ]
     rc_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_register_constituents",
         is_function=False,
         args=["host_constituents", "errcode", "errmsg"],
-        use_stmts=["use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t"],
+        use_stmts=[
+            "use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t",
+            "use ccpp_scheme_utils, only: ccpp_initialize_constituent_ptr",
+        ],
         arg_decls=[
             "type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
             "integer, intent(out) :: errcode",
@@ -352,6 +404,7 @@ def _generate_constituent_api_cam_host(
         local_decls=[
             "integer :: lc_i, lc_num_consts, field_ind",
             "type(ccpp_constituent_properties_t), pointer :: const_prop",
+            "type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)",
         ],
         body_ops=[RawFortranLinesOp("\n".join(rc_body))],
     )
@@ -369,31 +422,53 @@ def _generate_constituent_api_cam_host(
             "logical, optional, intent(in) :: advected",
         ],
         local_decls=[],
-        body_ops=[RawFortranLinesOp(
-            "call cam_constituents_obj%num_constituents(num_advected, advected=advected, &\n"
-            "    errcode=errcode, errmsg=errmsg)"
-        )],
+        body_ops=[RawFortranLinesOp("\n".join([
+            "errcode = 0",
+            "errmsg = ''",
+            "if (allocated(lc_all_constituents)) then",
+            "  num_advected = size(lc_all_constituents)",
+            "else",
+            "  num_advected = 0",
+            "end if",
+        ]))],
     )
 
     # ── 5. initialize_constituents ───────────────────────────────────────
+    _fvr = framework_var_residency or {}
     ic_body = [
         "call cam_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)",
         "if (errflg /= 0) return",
-        "call ccpp_initialize_constituent_ptr(cam_constituents_obj)",
-        "lc_constituent_array => cam_constituents_obj%field_data_ptr()",
-        "lc_const_props = cam_constituents_obj%constituent_props_ptr()",
-        "if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)",
-        "allocate(lc_all_constituents(size(lc_const_props)))",
     ]
+    # 3b-iii: guard requires register_constituents to have been called first
+    ic_body += _error_guard(
+        "allocated(lc_all_constituents)",
+        "ccpp_initialize_constituents: register_constituents not called",
+    )
+    ic_body += [
+        "lc_constituent_array => cam_constituents_obj%field_data_ptr()",
+    ]
+    if _fvr.get("lc_constituent_array"):
+        ic_body += [
+            "#ifdef USE_GPU",
+            "!$acc enter data copyin(lc_constituent_array)",
+            "#endif",
+        ]
     if needs_const_tend:
+        # 3b-iv: size from lc_all_constituents (populated in register_constituents)
         ic_body += [
             "if (allocated(lc_const_tend)) deallocate(lc_const_tend)",
-            "allocate(lc_const_tend(ncols, pver, size(lc_const_props)))",
+            "allocate(lc_const_tend(ncols, pver, size(lc_all_constituents)))",
             "lc_const_tend = 0.0_kind_phys",
         ]
+        if _fvr.get("lc_const_tend"):
+            ic_body += [
+                "#ifdef USE_GPU",
+                "!$acc enter data copyin(lc_const_tend)",
+                "#endif",
+            ]
     for lc_name, rank, alloc_dims_str, const_std_name, _ in (scratch_vars or []):
         if const_std_name is None:
-            alloc_str = alloc_dims_str.replace("lc_num", "size(lc_const_props)")
+            alloc_str = alloc_dims_str.replace("lc_num", "size(lc_all_constituents)")
             ic_body += [
                 f"if (allocated({lc_name})) deallocate({lc_name})",
                 f"allocate({lc_name}({alloc_str}))",
@@ -418,7 +493,7 @@ def _generate_constituent_api_cam_host(
         fn_name=f"{h}_ccpp_initialize_constituents",
         is_function=False,
         args=["ncols", "pver", "errflg", "errmsg"],
-        use_stmts=["use ccpp_scheme_utils, only: ccpp_initialize_constituent_ptr"],
+        use_stmts=[],
         arg_decls=[
             "integer, intent(in) :: ncols",
             "integer, intent(in) :: pver",
@@ -439,7 +514,7 @@ def _generate_constituent_api_cam_host(
         local_decls=[],
         result_name="ptr",
         result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        body_ops=[RawFortranLinesOp("ptr => cam_constituents_obj%field_data_ptr()")],
+        body_ops=[RawFortranLinesOp("ptr => lc_constituent_array")],
     )
 
     # ── 7. const_get_index ───────────────────────────────────────────────
@@ -455,10 +530,14 @@ def _generate_constituent_api_cam_host(
             f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
         ],
         local_decls=[],
-        body_ops=[RawFortranLinesOp(
-            "call cam_constituents_obj%const_index(index, to_lower(std_name), &\n"
-            "    errcode=errflg, errmsg=errmsg)"
-        )],
+        body_ops=[RawFortranLinesOp("\n".join(
+            _error_guard("allocated(lc_all_constituents)",
+                         "const_get_index: constituents not registered")
+            + [
+                "call cam_constituents_obj%const_index(index, to_lower(std_name), &",
+                "    errcode=errflg, errmsg=errmsg)",
+            ]
+        ))],
     )
 
     # ── 8. model_const_properties ────────────────────────────────────────
@@ -471,7 +550,7 @@ def _generate_constituent_api_cam_host(
         local_decls=[],
         result_name="ptr",
         result_decl="type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
-        body_ops=[RawFortranLinesOp("ptr => cam_constituents_obj%constituent_props_ptr()")],
+        body_ops=[RawFortranLinesOp("ptr => lc_const_props")],
     )
 
     # ── 9. gather_constituents ───────────────────────────────────────────
@@ -619,9 +698,11 @@ def _generate_constituent_api(
             camel_name, dynamic_array_names, fixed_advected,
             scratch_vars=scratch_vars,
             needs_const_tend=needs_const_tend,
+            framework_var_residency=framework_var_residency,
         )
 
     h = camel_name
+    n_fixed = len(fixed_advected)
     framework_var_residency = framework_var_residency or {}
     scratch_vars = scratch_vars or []
     dyn_lc = [f"lc_{n}" for n in dynamic_array_names]
@@ -680,6 +761,22 @@ def _generate_constituent_api(
                 ModuleVarOp(lc_name, "real", kind="kind_phys",
                             is_pointer=bool(_cst_std), rank=rank)
             )
+        if n_fixed > 0:
+            _max_std_len = max(len(s) for s, *_ in fixed_advected)
+            _names_parts = [f"'{s}'" for s, *_ in fixed_advected]
+            _names_str = (_names_parts[0] if n_fixed == 1
+                          else ", &\n      ".join(_names_parts))
+            module_var_ops.append(ModuleVarOp(
+                "cam_model_const_stdnames", "character",
+                kind=str(_max_std_len),
+                fixed_dim=n_fixed,
+                init_value=f"[ character(len={_max_std_len}) :: {_names_str} ]",
+            ))
+            module_var_ops.append(ModuleVarOp(
+                "cam_model_const_indices", "integer",
+                fixed_dim=n_fixed,
+                init_value="-1",
+            ))
     else:
         type_def_lines.append(f"type :: {instance_type_name}")
         # cam_constituents_obj as a non-pointer, non-target DDT component.
@@ -721,6 +818,19 @@ def _generate_constituent_api(
                 type_def_lines.append(
                     f"  real(kind=kind_phys), allocatable :: {lc_name}({shape})"
                 )
+        if n_fixed > 0:
+            _max_std_len = max(len(s) for s, *_ in fixed_advected)
+            _names_parts = [f"'{s}'" for s, *_ in fixed_advected]
+            _names_str = (_names_parts[0] if n_fixed == 1
+                          else ", &\n      ".join(_names_parts))
+            type_def_lines.append(
+                f"  character(len={_max_std_len}) :: "
+                f"cam_model_const_stdnames({n_fixed}) = "
+                f"[ character(len={_max_std_len}) :: {_names_str} ]"
+            )
+            type_def_lines.append(
+                f"  integer :: cam_model_const_indices({n_fixed}) = -1"
+            )
         type_def_lines.append(f"end type {instance_type_name}")
         module_var_ops.append(
             ModuleVarOp("lc_instances", "type", ddt_name=instance_type_name,
@@ -738,57 +848,27 @@ def _generate_constituent_api(
     # after -- everything else uses _instance_arg's comma-prefixed form.
     _instance_sole_arg = instance_local_name if multi_instance else ""
 
-    def _error_guard(condition: str, errmsg_text: str) -> list:
-        """Return a 5-line 'if not <condition>, set errflg/errmsg and
-        return' guard block.
-
-        Shared by the 4 identically-shaped full-error-return sites in
-        ic_lines/ci_lines below (complexity-audit Tier 2 finding, task #49)
-        -- confirmed byte-for-byte identical apart from condition/message
-        text. Do NOT reuse this for this file's other 3 precondition-guard
-        shapes (a silent-skip with no errflg/errmsg touched, in isc_lines/
-        nc_lines; a bare `return` with no message, in da_lines; and rc_lines'
-        own lazy-*allocate* guard, which has the opposite polarity -- it
-        creates lc_instances rather than rejecting the call) -- collapsing
-        those into this same helper would paper over a real semantic
-        difference, the same bug class Copilot's PR #77 review caught.
-        """
-        return [
-            f"    if (.not. {condition}) then",
-            f"      errflg = 1",
-            f"      errmsg = '{errmsg_text}'",
-            f"      return",
-            f"    end if",
-        ]
-
     # ── 1. is_scheme_constituent ─────────────────────────────────────────
-    fixed_names_str = ", ".join(f"'{s}'" for s, _u, _d, _ln in fixed_advected)
-    isc_lines = [
-        f"  subroutine {h}_ccpp_is_scheme_constituent(std_name, is_const, errflg, errmsg{_instance_arg})",
-        f"    character(len=*), intent(in) :: std_name",
-        f"    logical, intent(out) :: is_const",
-        f"    integer, intent(out) :: errflg",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        *_instance_decl,
-        f"    integer :: lc_idx",
-        f"    character(len=256) :: lc_std_name",
-        f"    errflg = 0",
-        f"    errmsg = ''",
-        f"    is_const = .false.",
-        f"    select case (trim(std_name))",
-    ]
-    if fixed_names_str:
-        isc_lines += [
-            f"    case ({fixed_names_str})",
-            f"      is_const = .true.",
+    isc_arg_decls = [
+        "character(len=*), intent(in) :: std_name",
+        "logical, intent(out) :: is_const",
+        "integer, intent(out) :: errflg",
+        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
+    isc_body = ["errflg = 0", "errmsg = ''", "is_const = .false."]
+    if n_fixed > 0:
+        isc_body += [
+            f"if (any({ref('cam_model_const_stdnames')} == std_name)) then",
+            "  is_const = .true.",
+            "  return",
+            "end if",
         ]
-    isc_lines.append(f"    case default")
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
-        guard_open = ["      if (allocated(lc_instances)) then"] if multi_instance else []
-        indent = "        " if multi_instance else "      "
-        guard_close = ["      end if"] if multi_instance else []
-        isc_lines += guard_open + [
+        guard_open = ["if (allocated(lc_instances)) then"] if multi_instance else []
+        indent = "  " if multi_instance else ""
+        guard_close = ["end if"] if multi_instance else []
+        isc_body += guard_open + [
             f"{indent}if (allocated({dyn_ref})) then",
             f"{indent}  do lc_idx = 1, size({dyn_ref})",
             f"{indent}    call {dyn_ref}(lc_idx)%standard_name(lc_std_name)",
@@ -799,248 +879,287 @@ def _generate_constituent_api(
             f"{indent}  end do",
             f"{indent}end if",
         ] + guard_close
-    isc_lines += [
-        f"    end select",
-        f"  end subroutine {h}_ccpp_is_scheme_constituent",
-    ]
+    isc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_is_scheme_constituent",
+        is_function=False,
+        args=["std_name", "is_const", "errflg", "errmsg"]
+            + ([instance_local_name] if multi_instance else []),
+        use_stmts=[],
+        arg_decls=isc_arg_decls,
+        local_decls=["integer :: lc_idx", "character(len=256) :: lc_std_name"],
+        body_ops=[RawFortranLinesOp("\n".join(isc_body))],
+    )
 
     # ── 2. deallocate_dynamic_constituents ───────────────────────────────
-    da_lines = [f"  subroutine {h}_ccpp_deallocate_dynamic_constituents{'(' + instance_local_name + ')' if multi_instance else '()'}"]
-    da_lines += _instance_decl
+    da_body = []
     if multi_instance:
-        da_lines.append(f"    if (.not. allocated(lc_instances)) return")
+        da_body.append("if (.not. allocated(lc_instances)) return")
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
-        da_lines.append(f"    if (allocated({dyn_ref})) deallocate({dyn_ref})")
-    da_lines += [
-        f"    if (allocated({ref('lc_all_constituents')})) deallocate({ref('lc_all_constituents')})",
-        f"    if (allocated({ref('lc_const_props')})) deallocate({ref('lc_const_props')})",
+        da_body.append(f"if (allocated({dyn_ref})) deallocate({dyn_ref})")
+    da_body += [
+        f"if (allocated({ref('lc_all_constituents')})) deallocate({ref('lc_all_constituents')})",
+        f"if (allocated({ref('lc_const_props')})) deallocate({ref('lc_const_props')})",
         # lc_constituent_array is a pointer into cam_constituents_obj storage;
         # nullify it before reset() to avoid a dangling pointer.
-        f"    if (associated({ref('lc_constituent_array')})) nullify({ref('lc_constituent_array')})",
+        f"if (associated({ref('lc_constituent_array')})) nullify({ref('lc_constituent_array')})",
     ]
     if needs_const_tend:
-        da_lines.append(
-            f"    if (allocated({ref('lc_const_tend')})) deallocate({ref('lc_const_tend')})"
+        da_body.append(
+            f"if (allocated({ref('lc_const_tend')})) deallocate({ref('lc_const_tend')})"
         )
     for lc_name, _rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
         lc_ref = ref(lc_name)
         if _cst_std:
-            da_lines.append(f"    nullify({lc_ref})")
+            da_body.append(f"nullify({lc_ref})")
         else:
-            da_lines.append(f"    if (allocated({lc_ref})) deallocate({lc_ref})")
-    da_lines.append(f"    call {ref('cam_constituents_obj')}%reset()")
-    da_lines.append(f"  end subroutine {h}_ccpp_deallocate_dynamic_constituents")
+            da_body.append(f"if (allocated({lc_ref})) deallocate({lc_ref})")
+    da_body.append(f"call {ref('cam_constituents_obj')}%reset()")
+    da_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_deallocate_dynamic_constituents",
+        is_function=False,
+        args=[instance_local_name] if multi_instance else [],
+        use_stmts=[],
+        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(da_body))] if da_body else [],
+    )
 
     # ── 3. register_constituents ─────────────────────────────────────────
     # Uses ccpp_model_constituents_t (new_field handles dedup internally).
-    n_fixed = len(fixed_advected)
     _lc_all = ref("lc_all_constituents")
     _lc_props = ref("lc_const_props")
     _cam_obj = ref("cam_constituents_obj")
-    rc_sig_extra = f", {instance_local_name}, {ninstances_local_name}" if multi_instance else ""
-    rc_lines = [
-        f"  subroutine {h}_ccpp_register_constituents(host_constituents, errmsg, errcode{rc_sig_extra})",
-        f"    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t",
-        f"    use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents",
-        f"    type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    integer, intent(out) :: errcode",
+    rc_arg_decls = [
+        f"type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
+        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        "integer, intent(out) :: errcode",
     ]
     if multi_instance:
-        rc_lines += [
-            f"    integer, intent(in) :: {instance_local_name}",
-            f"    integer, intent(in) :: {ninstances_local_name}",
+        rc_arg_decls += [
+            f"integer, intent(in) :: {instance_local_name}",
+            f"integer, intent(in) :: {ninstances_local_name}",
         ]
-    rc_lines += [
-        f"    integer :: lc_i, lc_num_consts",
-        f"    type(ccpp_constituent_properties_t), pointer :: const_prop",
-        f"    type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)",
-        f"    errcode = 0",
-        f"    errmsg = ''",
-    ]
+    rc_body = ["errcode = 0", "errmsg = ''"]
     if multi_instance:
-        rc_lines += [
-            f"    if (.not. allocated(lc_instances)) then",
-            f"      allocate(lc_instances({ninstances_local_name}))",
-            f"    end if",
+        rc_body += [
+            "if (.not. allocated(lc_instances)) then",
+            f"  allocate(lc_instances({ninstances_local_name}))",
+            "end if",
         ]
     # Count total constituents (upper bound for initialize_table)
-    rc_lines.append(f"    lc_num_consts = size(host_constituents)")
+    rc_body.append("lc_num_consts = size(host_constituents)")
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
-        rc_lines.append(f"    if (allocated({dyn_ref})) lc_num_consts = lc_num_consts + size({dyn_ref})")
-    rc_lines.append(f"    lc_num_consts = lc_num_consts + {n_fixed}")
-    rc_lines.append(f"    call {_cam_obj}%initialize_table(lc_num_consts)")
+        rc_body.append(f"if (allocated({dyn_ref})) lc_num_consts = lc_num_consts + size({dyn_ref})")
+    rc_body.append(f"lc_num_consts = lc_num_consts + {n_fixed}")
+    rc_body.append(f"call {_cam_obj}%initialize_table(lc_num_consts)")
     # Host constituents
-    rc_lines += [
-        f"    do lc_i = 1, size(host_constituents)",
-        f"      allocate(const_prop, stat=errcode)",
-        f"      if (errcode /= 0) then",
-        f"        errmsg = 'ERROR allocating const_prop'",
-        f"        return",
-        f"      end if",
-        f"      const_prop = host_constituents(lc_i)",
-        f"      call {_cam_obj}%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
-        f"      nullify(const_prop)",
-        f"      if (errcode /= 0) return",
-        f"    end do",
+    rc_body += [
+        "do lc_i = 1, size(host_constituents)",
+        "  allocate(const_prop, stat=errcode)",
+        "  if (errcode /= 0) then",
+        "    errmsg = 'ERROR allocating const_prop'",
+        "    return",
+        "  end if",
+        "  const_prop = host_constituents(lc_i)",
+        f"  call {_cam_obj}%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
+        "  nullify(const_prop)",
+        "  if (errcode /= 0) return",
+        "end do",
     ]
     # Dynamic scheme arrays
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
-        rc_lines += [
-            f"    if (allocated({dyn_ref})) then",
-            f"      do lc_i = 1, size({dyn_ref})",
-            f"        allocate(const_prop, stat=errcode)",
-            f"        if (errcode /= 0) then",
-            f"          errmsg = 'ERROR allocating const_prop'",
-            f"          return",
-            f"        end if",
-            f"        const_prop = {dyn_ref}(lc_i)",
-            f"        call {_cam_obj}%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
-            f"        nullify(const_prop)",
-            f"        if (errcode /= 0) return",
-            f"      end do",
-            f"    end if",
-        ]
-    # Fixed advected constituents
-    for std_name_f, units_f, default_val_f, local_name_f in fixed_advected:
-        long_name_f = std_name_f.replace('_', ' ').capitalize()
-        extra = f", default_value={default_val_f}" if default_val_f is not None else ""
-        rc_lines += [
+        rc_body += [
+            f"if (allocated({dyn_ref})) then",
+            f"  do lc_i = 1, size({dyn_ref})",
             f"    allocate(const_prop, stat=errcode)",
             f"    if (errcode /= 0) then",
             f"      errmsg = 'ERROR allocating const_prop'",
             f"      return",
             f"    end if",
-            f"    call const_prop%instantiate( &",
-            f"        std_name='{std_name_f}', &",
-            f"        long_name='{long_name_f}', &",
-            f"        diag_name='{local_name_f}', units='{units_f}', &",
-            f"        vertical_dim='vertical_layer_dimension', &",
-            f"        advected=.true.{extra}, errcode=errcode, errmsg=errmsg)",
-            f"    if (errcode /= 0) return",
+            f"    const_prop = {dyn_ref}(lc_i)",
             f"    call {_cam_obj}%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
             f"    nullify(const_prop)",
             f"    if (errcode /= 0) return",
+            f"  end do",
+            f"end if",
         ]
-    rc_lines += [
-        f"    call {_cam_obj}%lock_table(errcode=errcode, errmsg=errmsg)",
-        f"    if (errcode /= 0) return",
+    # Fixed advected constituents
+    for std_name_f, units_f, default_val_f, local_name_f in fixed_advected:
+        long_name_f = std_name_f.replace('_', ' ').capitalize()
+        extra = f", default_value={default_val_f}" if default_val_f is not None else ""
+        rc_body += [
+            "allocate(const_prop, stat=errcode)",
+            "if (errcode /= 0) then",
+            "  errmsg = 'ERROR allocating const_prop'",
+            "  return",
+            "end if",
+            f"call const_prop%instantiate( &",
+            f"    std_name='{std_name_f}', &",
+            f"    long_name='{long_name_f}', &",
+            f"    diag_name='{local_name_f}', units='{units_f}', &",
+            f"    vertical_dim='vertical_layer_dimension', &",
+            f"    advected=.true.{extra}, errcode=errcode, errmsg=errmsg)",
+            "if (errcode /= 0) return",
+            f"call {_cam_obj}%new_field(const_prop, errcode=errcode, errmsg=errmsg)",
+            "nullify(const_prop)",
+            "if (errcode /= 0) return",
+        ]
+    rc_body += [
+        f"call {_cam_obj}%lock_table(errcode=errcode, errmsg=errmsg)",
+        "if (errcode /= 0) return",
         # Populate lc_const_props (value copy) and pass to scheme_utils
-        f"    lc_props_ptr => {_cam_obj}%constituent_props_ptr()",
-        f"    if (allocated({_lc_props})) deallocate({_lc_props})",
-        f"    allocate({_lc_props}(size(lc_props_ptr)))",
-        f"    {_lc_props} = lc_props_ptr",
-        f"    nullify(lc_props_ptr)",
-        f"    call ccpp_scheme_utils_set_constituents({_lc_props})",
+        f"lc_props_ptr => {_cam_obj}%constituent_props_ptr()",
+        f"if (allocated({_lc_props})) deallocate({_lc_props})",
+        f"allocate({_lc_props}(size(lc_props_ptr)))",
+        f"{_lc_props} = lc_props_ptr",
+        "nullify(lc_props_ptr)",
+        f"call ccpp_scheme_utils_set_constituents({_lc_props})",
         # Size-proxy marker: integer array sized to constituent count
-        f"    call {_cam_obj}%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)",
-        f"    if (errcode /= 0) return",
-        f"    if (allocated({_lc_all})) deallocate({_lc_all})",
-        f"    allocate({_lc_all}(lc_num_consts))",
-        f"  end subroutine {h}_ccpp_register_constituents",
+        f"call {_cam_obj}%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)",
+        "if (errcode /= 0) return",
+        f"if (allocated({_lc_all})) deallocate({_lc_all})",
+        f"allocate({_lc_all}(lc_num_consts))",
     ]
+    if n_fixed > 0:
+        _cmi = ref("cam_model_const_indices")
+        _cms = ref("cam_model_const_stdnames")
+        rc_body += [
+            f"do lc_i = 1, size({_cmi})",
+            f"  call {_cam_obj}%const_index(field_ind, {_cms}(lc_i), &",
+            "      errcode=errcode, errmsg=errmsg)",
+            "  if (errcode /= 0) return",
+            "  if (field_ind > 0) then",
+            f"    {_cmi}(lc_i) = field_ind",
+            "  else",
+            "    errcode = 1",
+            f"    errmsg = 'No field index for '//trim({_cms}(lc_i))",
+            "    return",
+            "  end if",
+            "end do",
+        ]
+    rc_local_decls = [
+        "integer :: lc_i, lc_num_consts" + (", field_ind" if n_fixed > 0 else ""),
+        "type(ccpp_constituent_properties_t), pointer :: const_prop",
+        "type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)",
+    ]
+    rc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_register_constituents",
+        is_function=False,
+        args=["host_constituents", "errmsg", "errcode"]
+            + ([instance_local_name, ninstances_local_name] if multi_instance else []),
+        use_stmts=[
+            "use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t",
+            "use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents",
+        ],
+        arg_decls=rc_arg_decls,
+        local_decls=rc_local_decls,
+        body_ops=[RawFortranLinesOp("\n".join(rc_body))],
+    )
 
     # ── 4. number_constituents ───────────────────────────────────────────
-    nc_lines = [
-        f"  subroutine {h}_ccpp_number_constituents(num_advected, errmsg, errcode, advected{_instance_arg})",
-        f"    integer, intent(out) :: num_advected",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        f"    integer, intent(out) :: errcode",
-        f"    logical, optional, intent(in) :: advected",
-        *_instance_decl,
-        f"    errcode = 0",
-        f"    errmsg = ''",
-    ]
+    nc_arg_decls = [
+        "integer, intent(out) :: num_advected",
+        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+        "integer, intent(out) :: errcode",
+        "logical, optional, intent(in) :: advected",
+    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
+    nc_body = ["errcode = 0", "errmsg = ''"]
     if multi_instance:
-        nc_lines += [
-            f"    if (allocated(lc_instances)) then",
-            f"      if (allocated({ref('lc_all_constituents')})) then",
-            f"        num_advected = size({ref('lc_all_constituents')})",
-            f"      else",
-            f"        num_advected = 0",
-            f"      end if",
-            f"    else",
-            f"      num_advected = 0",
-            f"    end if",
+        nc_body += [
+            "if (allocated(lc_instances)) then",
+            f"  if (allocated({ref('lc_all_constituents')})) then",
+            f"    num_advected = size({ref('lc_all_constituents')})",
+            "  else",
+            "    num_advected = 0",
+            "  end if",
+            "else",
+            "  num_advected = 0",
+            "end if",
         ]
     else:
-        nc_lines += [
-            f"    if (allocated(lc_all_constituents)) then",
-            f"      num_advected = size(lc_all_constituents)",
-            f"    else",
-            f"      num_advected = 0",
-            f"    end if",
+        nc_body += [
+            "if (allocated(lc_all_constituents)) then",
+            "  num_advected = size(lc_all_constituents)",
+            "else",
+            "  num_advected = 0",
+            "end if",
         ]
-    nc_lines.append(f"  end subroutine {h}_ccpp_number_constituents")
+    nc_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_number_constituents",
+        is_function=False,
+        args=["num_advected", "errmsg", "errcode", "advected"]
+            + ([instance_local_name] if multi_instance else []),
+        use_stmts=[],
+        arg_decls=nc_arg_decls,
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(nc_body))],
+    )
 
     # ── 5. initialize_constituents ───────────────────────────────────────
     _cam_obj = ref("cam_constituents_obj")
     _lc_all = ref("lc_all_constituents")
     _lc_props = ref("lc_const_props")
-    ic_lines = [
-        f"  subroutine {h}_ccpp_initialize_constituents(ncols, pver, errflg, errmsg{_instance_arg})",
-        f"    integer, intent(in) :: ncols",
-        f"    integer, intent(in) :: pver",
-        f"    integer, intent(out) :: errflg",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        *_instance_decl,
-        f"    errflg = 0",
-        f"    errmsg = ''",
-    ]
+    ic_arg_decls = [
+        "integer, intent(in) :: ncols",
+        "integer, intent(in) :: pver",
+        "integer, intent(out) :: errflg",
+        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
+    ic_body = ["errflg = 0", "errmsg = ''"]
     if multi_instance:
-        ic_lines += _error_guard(
+        ic_body += _error_guard(
             "allocated(lc_instances)",
             "ccpp_initialize_constituents: register_constituents not called",
         )
-    ic_lines += _error_guard(
+    ic_body += _error_guard(
         f"allocated({_lc_all})",
         "ccpp_initialize_constituents: register_constituents not called",
     )
     # lock_data allocates the internal data array and applies defaults.
-    ic_lines += [
-        f"    call {_cam_obj}%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)",
-        f"    if (errflg /= 0) return",
-        f"    {ref('lc_constituent_array')} => {_cam_obj}%field_data_ptr()",
+    ic_body += [
+        f"call {_cam_obj}%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)",
+        "if (errflg /= 0) return",
+        f"{ref('lc_constituent_array')} => {_cam_obj}%field_data_ptr()",
     ]
     if framework_var_residency.get("lc_constituent_array"):
-        ic_lines += [
-            f"#ifdef USE_GPU",
-            f"    !$acc enter data copyin({ref('lc_constituent_array')})",
-            f"#endif",
+        ic_body += [
+            "#ifdef USE_GPU",
+            f"!$acc enter data copyin({ref('lc_constituent_array')})",
+            "#endif",
         ]
     if needs_const_tend:
-        ic_lines += [
-            f"    if (allocated({ref('lc_const_tend')})) deallocate({ref('lc_const_tend')})",
-            f"    allocate({ref('lc_const_tend')}(ncols, pver, size({_lc_all})))",
-            f"    {ref('lc_const_tend')} = 0.0_kind_phys",
+        ic_body += [
+            f"if (allocated({ref('lc_const_tend')})) deallocate({ref('lc_const_tend')})",
+            f"allocate({ref('lc_const_tend')}(ncols, pver, size({_lc_all})))",
+            f"{ref('lc_const_tend')} = 0.0_kind_phys",
         ]
         if framework_var_residency.get("lc_const_tend"):
-            ic_lines += [
-                f"#ifdef USE_GPU",
-                f"    !$acc enter data copyin({ref('lc_const_tend')})",
-                f"#endif",
+            ic_body += [
+                "#ifdef USE_GPU",
+                f"!$acc enter data copyin({ref('lc_const_tend')})",
+                "#endif",
             ]
     for lc_name, _rank, alloc_dims, _cst_std, needs_gpu in scratch_vars:
         lc_ref = ref(lc_name)
         if _cst_std:
             # Use cam_constituents_obj%const_index for hash lookup instead of
             # linear scan; block construct avoids polluting outer scope.
-            ic_lines += [
-                f"    block",
-                f"      integer :: lc_tend_idx",
-                f"      character(len=512) :: lc_tend_errmsg",
-                f"      nullify({lc_ref})",
-                f"      call {_cam_obj}%const_index(lc_tend_idx, '{_cst_std}', &",
-                f"          errcode=errflg, errmsg=lc_tend_errmsg)",
-                f"      if (errflg == 0 .and. lc_tend_idx > 0) then",
-                f"        {lc_ref} => {ref('lc_const_tend')}(:, :, lc_tend_idx)",
-                f"      else",
-                f"        errflg = 0",
-                f"      end if",
-                f"    end block",
+            ic_body += [
+                "block",
+                "  integer :: lc_tend_idx",
+                "  character(len=512) :: lc_tend_errmsg",
+                f"  nullify({lc_ref})",
+                f"  call {_cam_obj}%const_index(lc_tend_idx, '{_cst_std}', &",
+                f"      errcode=errflg, errmsg=lc_tend_errmsg)",
+                f"  if (errflg == 0 .and. lc_tend_idx > 0) then",
+                f"    {lc_ref} => {ref('lc_const_tend')}(:, :, lc_tend_idx)",
+                "  else",
+                "    errflg = 0",
+                "  end if",
+                "end block",
             ]
             # No separate enter-data here: lc_name is a pointer slice into
             # lc_const_tend, already made resident above -- OpenACC tracks
@@ -1049,128 +1168,91 @@ def _generate_constituent_api(
         else:
             # alloc_dims may reference lc_num; replace with size(lc_all_constituents)
             alloc_str = alloc_dims.replace("lc_num", f"size({_lc_all})")
-            ic_lines += [
-                f"    if (allocated({lc_ref})) deallocate({lc_ref})",
-                f"    allocate({lc_ref}({alloc_str}))",
-                f"    {lc_ref} = 0.0_kind_phys",
+            ic_body += [
+                f"if (allocated({lc_ref})) deallocate({lc_ref})",
+                f"allocate({lc_ref}({alloc_str}))",
+                f"{lc_ref} = 0.0_kind_phys",
             ]
             if needs_gpu:
-                ic_lines += [
-                    f"#ifdef USE_GPU",
-                    f"    !$acc enter data copyin({lc_ref})",
-                    f"#endif",
+                ic_body += [
+                    "#ifdef USE_GPU",
+                    f"!$acc enter data copyin({lc_ref})",
+                    "#endif",
                 ]
-    ic_lines.append(f"  end subroutine {h}_ccpp_initialize_constituents")
+    ic_op = ConstituentFunctionOp(
+        fn_name=f"{h}_ccpp_initialize_constituents",
+        is_function=False,
+        args=["ncols", "pver", "errflg", "errmsg"]
+            + ([instance_local_name] if multi_instance else []),
+        use_stmts=[],
+        arg_decls=ic_arg_decls,
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(ic_body))],
+    )
 
     # ── 6. constituents_array ────────────────────────────────────────────
-    ca_lines = [
-        f"  function {h}_constituents_array({_instance_sole_arg}) result(ptr)",
-        *_instance_decl,
-        f"    real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        f"    ptr => {ref('lc_constituent_array')}",
-        f"  end function {h}_constituents_array",
-    ]
+    ca_op = ConstituentFunctionOp(
+        fn_name=f"{h}_constituents_array",
+        is_function=True,
+        args=[instance_local_name] if multi_instance else [],
+        use_stmts=[],
+        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
+        local_decls=[],
+        result_name="ptr",
+        result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
+        body_ops=[RawFortranLinesOp(f"ptr => {ref('lc_constituent_array')}")],
+    )
 
     # ── 7. const_get_index ───────────────────────────────────────────────
     # Delegate to cam_constituents_obj%const_index (hash lookup) instead of
     # linear scan.  Hash keys are stored lowercase, so pass to_lower(std_name).
-    ci_lines = [
-        f"  subroutine {h}_const_get_index(std_name, index, errflg, errmsg{_instance_arg})",
-        f"    use ccpp_constituent_prop_mod, only: to_lower",
-        f"    character(len=*), intent(in) :: std_name",
-        f"    integer, intent(out) :: index",
-        f"    integer, intent(out) :: errflg",
-        f"    character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        *_instance_decl,
-        f"    errflg = 0",
-        f"    errmsg = ''",
-        f"    index = -1",
-    ]
+    ci_arg_decls = [
+        "character(len=*), intent(in) :: std_name",
+        "integer, intent(out) :: index",
+        "integer, intent(out) :: errflg",
+        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
+    ci_body = ["errflg = 0", "errmsg = ''", "index = -1"]
     if multi_instance:
-        ci_lines += _error_guard(
+        ci_body += _error_guard(
             "allocated(lc_instances)",
             "const_get_index: constituents not registered",
         )
-    ci_lines += _error_guard(
+    ci_body += _error_guard(
         f"allocated({ref('lc_all_constituents')})",
         "const_get_index: constituents not registered",
     )
-    ci_lines += [
-        f"    call {ref('cam_constituents_obj')}%const_index(index, to_lower(std_name), &",
-        f"        errcode=errflg, errmsg=errmsg)",
-        f"    if (errflg /= 0 .or. index <= 0) then",
-        f"      errflg = 1",
-        f"      write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'",
-        f"    end if",
-        f"  end subroutine {h}_const_get_index",
+    ci_body += [
+        f"call {ref('cam_constituents_obj')}%const_index(index, to_lower(std_name), &",
+        f"    errcode=errflg, errmsg=errmsg)",
+        "if (errflg /= 0 .or. index <= 0) then",
+        "  errflg = 1",
+        "  write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'",
+        "end if",
     ]
+    ci_op = ConstituentFunctionOp(
+        fn_name=f"{h}_const_get_index",
+        is_function=False,
+        args=["std_name", "index", "errflg", "errmsg"]
+            + ([instance_local_name] if multi_instance else []),
+        use_stmts=["use ccpp_constituent_prop_mod, only: to_lower"],
+        arg_decls=ci_arg_decls,
+        local_decls=[],
+        body_ops=[RawFortranLinesOp("\n".join(ci_body))],
+    )
 
     # ── 8. model_const_properties ────────────────────────────────────────
-    mp_lines = [
-        f"  function {h}_model_const_properties({_instance_sole_arg}) result(ptr)",
-        *_instance_decl,
-        f"    type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
-        f"    ptr => {ref('lc_const_props')}",
-        f"  end function {h}_model_const_properties",
-    ]
-
-    import re as _re
-
-    def _lines_to_fn_op(lines):
-        """Convert a full subroutine/function line list into a ConstituentFunctionOp."""
-        header = lines[0].strip()
-        is_function = header.startswith("function ")
-        m = _re.match(r"(?:function|subroutine)\s+(\w+)\s*\(([^)]*)\)", header)
-        fn_name = m.group(1)
-        args_str = m.group(2).strip()
-        args = [a.strip() for a in args_str.split(",")] if args_str else []
-        result_name = None
-        rm = _re.search(r"result\((\w+)\)", header)
-        if rm:
-            result_name = rm.group(1)
-
-        use_stmts: list = []
-        arg_decls: list = []
-        local_decls: list = []
-        body_lines: list = []
-        result_decl = None
-        in_decls = True
-
-        for line in lines[1:-1]:
-            stripped = line.strip()
-            if in_decls:
-                if stripped.startswith("use "):
-                    use_stmts.append(stripped)
-                elif "::" in stripped:
-                    if "intent(" in stripped:
-                        arg_decls.append(stripped)
-                    elif result_name and f":: {result_name}" in stripped:
-                        result_decl = stripped
-                    else:
-                        local_decls.append(stripped)
-                else:
-                    in_decls = False
-                    body_lines.append(line.rstrip())
-            else:
-                body_lines.append(line.rstrip())
-
-        # Strip 4-space subroutine indent from each body line.
-        # Lines starting with '#' (preprocessor) have no leading spaces — keep as-is.
-        body_text_inner = "\n".join(
-            (l[4:] if len(l) >= 4 and l[:4] == "    " else l) for l in body_lines
-        )
-        body_ops = [RawFortranLinesOp(body_text_inner)] if body_text_inner.strip() else []
-        return ConstituentFunctionOp(
-            fn_name=fn_name,
-            is_function=is_function,
-            args=args,
-            use_stmts=use_stmts,
-            arg_decls=arg_decls,
-            local_decls=local_decls,
-            body_ops=body_ops,
-            result_name=result_name,
-            result_decl=result_decl,
-        )
+    mp_op = ConstituentFunctionOp(
+        fn_name=f"{h}_model_const_properties",
+        is_function=True,
+        args=[instance_local_name] if multi_instance else [],
+        use_stmts=[],
+        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
+        local_decls=[],
+        result_name="ptr",
+        result_decl="type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
+        body_ops=[RawFortranLinesOp(f"ptr => {ref('lc_const_props')}")],
+    )
 
     public_names_list = [
         f"{h}_ccpp_is_scheme_constituent",
@@ -1187,14 +1269,14 @@ def _generate_constituent_api(
         public_names_list,
         type_defs_text,
         [
-            _lines_to_fn_op(isc_lines),
-            _lines_to_fn_op(da_lines),
-            _lines_to_fn_op(rc_lines),
-            _lines_to_fn_op(nc_lines),
-            _lines_to_fn_op(ic_lines),
-            _lines_to_fn_op(ca_lines),
-            _lines_to_fn_op(ci_lines),
-            _lines_to_fn_op(mp_lines),
+            isc_op,
+            da_op,
+            rc_op,
+            nc_op,
+            ic_op,
+            ca_op,
+            ci_op,
+            mp_op,
         ],
     )
 
