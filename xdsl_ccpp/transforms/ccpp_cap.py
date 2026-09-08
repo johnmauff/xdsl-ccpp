@@ -1563,7 +1563,10 @@ class CCPPCAP(ModulePass):
         # import cam_constituents_array / cam_model_const_properties from cam_ccpp_cap.
         # The right fix is to make write_init_files.py constituent-aware instead.
         dyn_names, fixed_adv, references_count = _collect_constituent_info(meta_data)
-        needs_const_tend = "ccpp_constituent_tendencies" in cap_var_map
+        needs_const_tend = (
+            "ccpp_constituent_tendencies" in cap_var_map
+            or any(sv[3] is not None for sv in scratch_var_list)
+        )
         if dyn_names or fixed_adv or scratch_var_list or references_count or self.cam_host:
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
                 camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,

@@ -266,6 +266,7 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+// CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_model_constituents_t
 // CHECK-NEXT:    use cld_suite_cap, only: cld_suite_final_physics
 // CHECK-NEXT:    use cld_suite_cap, only: cld_suite_finalize
 // CHECK-NEXT:    use cld_suite_cap, only: cld_suite_init_physics
@@ -291,10 +292,11 @@
 // CHECK-NEXT:    private
 // CHECK:         character(len=9), parameter :: str_cld_suite = 'cld_suite'
 // CHECK-NEXT:    character(len=7), parameter :: str_physics = 'physics'
-// CHECK-NEXT:    type(ccpp_constituent_properties_t), allocatable :: lc_dyn_const(:)
-// CHECK-NEXT:    type(ccpp_constituent_properties_t), allocatable :: lc_dyn_const_ice(:)
-// CHECK-NEXT:    type(ccpp_constituent_properties_t), target, allocatable :: lc_all_constituents(:)
-// CHECK-NEXT:    real(kind=kind_phys), target, allocatable :: lc_constituent_array(:, :, :)
+// CHECK-NEXT:    type(ccpp_model_constituents_t), target :: cam_constituents_obj
+// CHECK-NEXT:    type(ccpp_constituent_properties_t), target, allocatable :: lc_dyn_const(:)
+// CHECK-NEXT:    type(ccpp_constituent_properties_t), target, allocatable :: lc_dyn_const_ice(:)
+// CHECK-NEXT:    integer, allocatable :: lc_all_constituents(:)
+// CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_constituent_array(:, :, :) => null()
 // CHECK-NEXT:    real(kind=kind_phys), target, allocatable :: lc_const_tend(:, :, :)
 // CHECK-NEXT:    type(ccpp_constituent_prop_ptr_t), target, allocatable :: lc_const_props(:)
 // CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_cld_liq_tend(:, :) => null()
@@ -594,169 +596,91 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) deallocate(lc_dyn_const_ice)
 // CHECK-NEXT:      if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:      if (allocated(lc_const_props)) deallocate(lc_const_props)
-// CHECK-NEXT:      if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)
+// CHECK-NEXT:      if (associated(lc_constituent_array)) nullify(lc_constituent_array)
 // CHECK-NEXT:      if (allocated(lc_const_tend)) deallocate(lc_const_tend)
 // CHECK-NEXT:      nullify(lc_cld_liq_tend)
+// CHECK-NEXT:      call cam_constituents_obj%reset()
 // CHECK-NEXT:    end subroutine Cld_ccpp_deallocate_dynamic_constituents
 // CHECK-LABEL:   subroutine Cld_ccpp_register_constituents(host_constituents, errmsg, errcode)
-// CHECK:           use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
-// CHECK-NEXT:      type(ccpp_constituent_properties_t), intent(in) :: host_constituents(:)
+// CHECK:           use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t
+// CHECK-NEXT:      use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents
+// CHECK-NEXT:      type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
-// CHECK-NEXT:      integer :: lc_max, lc_num, lc_i, lc_j
-// CHECK-NEXT:      logical :: lc_found
-// CHECK-NEXT:      type(ccpp_constituent_properties_t), allocatable :: lc_tmp(:)
-// CHECK-NEXT:      character(len=256) :: lc_src_std_name
-// CHECK-NEXT:      character(len=256) :: lc_dst_std_name
-// CHECK-NEXT:      character(len=256) :: lc_src_units
-// CHECK-NEXT:      character(len=256) :: lc_dst_units
-// CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: lc_tmp_ptr
+// CHECK-NEXT:      integer :: lc_i, lc_num_consts
+// CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: const_prop
+// CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)
 // CHECK-NEXT:      errcode = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      lc_max = 0
-// CHECK-NEXT:      if (allocated(lc_dyn_const)) lc_max = lc_max + size(lc_dyn_const)
-// CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) lc_max = lc_max + size(lc_dyn_const_ice)
-// CHECK-NEXT:      lc_max = lc_max + 2
-// CHECK-NEXT:      lc_max = lc_max + size(host_constituents)
-// CHECK-NEXT:      allocate(lc_tmp(lc_max))
-// CHECK-NEXT:      lc_num = 0
+// CHECK-NEXT:      lc_num_consts = size(host_constituents)
+// CHECK-NEXT:      if (allocated(lc_dyn_const)) lc_num_consts = lc_num_consts + size(lc_dyn_const)
+// CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) lc_num_consts = lc_num_consts + size(lc_dyn_const_ice)
+// CHECK-NEXT:      lc_num_consts = lc_num_consts + 2
+// CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
+// CHECK-NEXT:      do lc_i = 1, size(host_constituents)
+// CHECK-NEXT:        const_prop => host_constituents(lc_i)
+// CHECK-NEXT:        call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:        nullify(const_prop)
+// CHECK-NEXT:        if (errcode /= 0) return
+// CHECK-NEXT:      end do
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const)
-// CHECK-NEXT:          call lc_dyn_const(lc_i)%standard_name(lc_src_std_name)
-// CHECK-NEXT:          call lc_dyn_const(lc_i)%units(lc_src_units)
-// CHECK-NEXT:          lc_found = .false.
-// CHECK-NEXT:          do lc_j = 1, lc_num
-// CHECK-NEXT:            call lc_tmp(lc_j)%standard_name(lc_dst_std_name)
-// CHECK-NEXT:            if (trim(lc_dst_std_name) == trim(lc_src_std_name)) then
-// CHECK-NEXT:              lc_found = .true.
-// CHECK-NEXT:              call lc_tmp(lc_j)%units(lc_dst_units)
-// CHECK-NEXT:              if (trim(lc_dst_units) /= trim(lc_src_units)) then
-// CHECK-NEXT:                write(errmsg,                                                                       &
-// CHECK-NEXT:        '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                   &
-// CHECK-NEXT:        trim(lc_src_std_name), &
-// CHECK-NEXT:                  ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:                errcode = 1
-// CHECK-NEXT:                return
-// CHECK-NEXT:              end if
-// CHECK-NEXT:              exit
-// CHECK-NEXT:            end if
-// CHECK-NEXT:          end do
-// CHECK-NEXT:          if (.not. lc_found) then
-// CHECK-NEXT:            lc_num = lc_num + 1
-// CHECK-NEXT:            lc_tmp(lc_num) = lc_dyn_const(lc_i)
-// CHECK-NEXT:          end if
+// CHECK-NEXT:          const_prop => lc_dyn_const(lc_i)
+// CHECK-NEXT:          call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:          nullify(const_prop)
+// CHECK-NEXT:          if (errcode /= 0) return
 // CHECK-NEXT:        end do
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const_ice)
-// CHECK-NEXT:          call lc_dyn_const_ice(lc_i)%standard_name(lc_src_std_name)
-// CHECK-NEXT:          call lc_dyn_const_ice(lc_i)%units(lc_src_units)
-// CHECK-NEXT:          lc_found = .false.
-// CHECK-NEXT:          do lc_j = 1, lc_num
-// CHECK-NEXT:            call lc_tmp(lc_j)%standard_name(lc_dst_std_name)
-// CHECK-NEXT:            if (trim(lc_dst_std_name) == trim(lc_src_std_name)) then
-// CHECK-NEXT:              lc_found = .true.
-// CHECK-NEXT:              call lc_tmp(lc_j)%units(lc_dst_units)
-// CHECK-NEXT:              if (trim(lc_dst_units) /= trim(lc_src_units)) then
-// CHECK-NEXT:                write(errmsg,                                                                       &
-// CHECK-NEXT:        '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                   &
-// CHECK-NEXT:        trim(lc_src_std_name), &
-// CHECK-NEXT:                  ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:                errcode = 1
-// CHECK-NEXT:                return
-// CHECK-NEXT:              end if
-// CHECK-NEXT:              exit
-// CHECK-NEXT:            end if
-// CHECK-NEXT:          end do
-// CHECK-NEXT:          if (.not. lc_found) then
-// CHECK-NEXT:            lc_num = lc_num + 1
-// CHECK-NEXT:            lc_tmp(lc_num) = lc_dyn_const_ice(lc_i)
-// CHECK-NEXT:          end if
+// CHECK-NEXT:          const_prop => lc_dyn_const_ice(lc_i)
+// CHECK-NEXT:          call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:          nullify(const_prop)
+// CHECK-NEXT:          if (errcode /= 0) return
 // CHECK-NEXT:        end do
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      lc_found = .false.
-// CHECK-NEXT:      do lc_j = 1, lc_num
-// CHECK-NEXT:        call lc_tmp(lc_j)%standard_name(lc_dst_std_name)
-// CHECK-NEXT:        if (trim(lc_dst_std_name) == 'cloud_liquid_dry_mixing_ratio') then
-// CHECK-NEXT:          lc_found = .true.
-// CHECK-NEXT:          call lc_tmp(lc_j)%units(lc_dst_units)
-// CHECK-NEXT:          if (trim(lc_dst_units) /= 'kg kg-1') then
-// CHECK-NEXT:            write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ', &
-// CHECK-NEXT:        'cloud_liquid_dry_mixing_ratio', &
-// CHECK-NEXT:              ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:            errcode = 1
-// CHECK-NEXT:            return
-// CHECK-NEXT:          end if
-// CHECK-NEXT:          exit
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      if (.not. lc_found) then
-// CHECK-NEXT:        lc_num = lc_num + 1
-// CHECK-NEXT:        call lc_tmp(lc_num)%instantiate(std_name='cloud_liquid_dry_mixing_ratio',                   &
-// CHECK-NEXT:        long_name='Cloud liquid dry mixing ratio', units='kg kg-1', diag_name='cld_liq_array',      &
-// CHECK-NEXT:        vertical_dim='vertical_layer_dimension', errcode=errcode, errmsg=errmsg, advected=.true.)
-// CHECK-NEXT:        if (errcode /= 0) return
+// CHECK-NEXT:      allocate(const_prop, stat=errcode)
+// CHECK-NEXT:      if (errcode /= 0) then
+// CHECK-NEXT:        errmsg = 'ERROR allocating const_prop'
+// CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      lc_found = .false.
-// CHECK-NEXT:      do lc_j = 1, lc_num
-// CHECK-NEXT:        call lc_tmp(lc_j)%standard_name(lc_dst_std_name)
-// CHECK-NEXT:        if (trim(lc_dst_std_name) == 'cloud_ice_dry_mixing_ratio') then
-// CHECK-NEXT:          lc_found = .true.
-// CHECK-NEXT:          call lc_tmp(lc_j)%units(lc_dst_units)
-// CHECK-NEXT:          if (trim(lc_dst_units) /= 'kg kg-1') then
-// CHECK-NEXT:            write(errmsg, '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ', &
-// CHECK-NEXT:        'cloud_ice_dry_mixing_ratio', &
-// CHECK-NEXT:              ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:            errcode = 1
-// CHECK-NEXT:            return
-// CHECK-NEXT:          end if
-// CHECK-NEXT:          exit
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      if (.not. lc_found) then
-// CHECK-NEXT:        lc_num = lc_num + 1
-// CHECK-NEXT:        call lc_tmp(lc_num)%instantiate(std_name='cloud_ice_dry_mixing_ratio',                      &
-// CHECK-NEXT:        long_name='Cloud ice dry mixing ratio', units='kg kg-1', diag_name='cld_ice_array',         &
-// CHECK-NEXT:        vertical_dim='vertical_layer_dimension', errcode=errcode, errmsg=errmsg, advected=.true.,   &
-// CHECK-NEXT:        default_value=0.0_kind_phys)
-// CHECK-NEXT:        if (errcode /= 0) return
+// CHECK-NEXT:      call const_prop%instantiate( &
+// CHECK-NEXT:          std_name='cloud_liquid_dry_mixing_ratio', &
+// CHECK-NEXT:          long_name='Cloud liquid dry mixing ratio', &
+// CHECK-NEXT:          diag_name='cld_liq_array', units='kg kg-1', &
+// CHECK-NEXT:          vertical_dim='vertical_layer_dimension', &
+// CHECK-NEXT:          advected=.true., errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      if (errcode /= 0) return
+// CHECK-NEXT:      call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      nullify(const_prop)
+// CHECK-NEXT:      if (errcode /= 0) return
+// CHECK-NEXT:      allocate(const_prop, stat=errcode)
+// CHECK-NEXT:      if (errcode /= 0) then
+// CHECK-NEXT:        errmsg = 'ERROR allocating const_prop'
+// CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      do lc_i = 1, size(host_constituents)
-// CHECK-NEXT:        call host_constituents(lc_i)%standard_name(lc_src_std_name)
-// CHECK-NEXT:        call host_constituents(lc_i)%units(lc_src_units)
-// CHECK-NEXT:        lc_found = .false.
-// CHECK-NEXT:        do lc_j = 1, lc_num
-// CHECK-NEXT:          call lc_tmp(lc_j)%standard_name(lc_dst_std_name)
-// CHECK-NEXT:          if (trim(lc_dst_std_name) == trim(lc_src_std_name)) then
-// CHECK-NEXT:            lc_found = .true.
-// CHECK-NEXT:            call lc_tmp(lc_j)%units(lc_dst_units)
-// CHECK-NEXT:            if (trim(lc_dst_units) /= trim(lc_src_units)) then
-// CHECK-NEXT:              write(errmsg,                                                                         &
-// CHECK-NEXT:        '(3a)') 'ccp_model_const_add_metadata ERROR: Trying to add constituent ',                   &
-// CHECK-NEXT:        trim(lc_src_std_name), &
-// CHECK-NEXT:                ' but an incompatible constituent with this name already exists'
-// CHECK-NEXT:              errcode = 1
-// CHECK-NEXT:              return
-// CHECK-NEXT:            end if
-// CHECK-NEXT:            exit
-// CHECK-NEXT:          end if
-// CHECK-NEXT:        end do
-// CHECK-NEXT:        if (.not. lc_found) then
-// CHECK-NEXT:          lc_num = lc_num + 1
-// CHECK-NEXT:          lc_tmp(lc_num) = host_constituents(lc_i)
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
-// CHECK-NEXT:      allocate(lc_all_constituents(lc_num))
-// CHECK-NEXT:      lc_all_constituents(1:lc_num) = lc_tmp(1:lc_num)
-// CHECK-NEXT:      deallocate(lc_tmp)
+// CHECK-NEXT:      call const_prop%instantiate( &
+// CHECK-NEXT:          std_name='cloud_ice_dry_mixing_ratio', &
+// CHECK-NEXT:          long_name='Cloud ice dry mixing ratio', &
+// CHECK-NEXT:          diag_name='cld_ice_array', units='kg kg-1', &
+// CHECK-NEXT:          vertical_dim='vertical_layer_dimension', &
+// CHECK-NEXT:          advected=.true., default_value=0.0_kind_phys, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      if (errcode /= 0) return
+// CHECK-NEXT:      call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      nullify(const_prop)
+// CHECK-NEXT:      if (errcode /= 0) return
+// CHECK-NEXT:      call cam_constituents_obj%lock_table(errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      if (errcode /= 0) return
+// CHECK-NEXT:      lc_props_ptr => cam_constituents_obj%constituent_props_ptr()
 // CHECK-NEXT:      if (allocated(lc_const_props)) deallocate(lc_const_props)
-// CHECK-NEXT:      allocate(lc_const_props(lc_num))
-// CHECK-NEXT:      do lc_i = 1, lc_num
-// CHECK-NEXT:        lc_tmp_ptr => lc_all_constituents(lc_i)
-// CHECK-NEXT:        call lc_const_props(lc_i)%set(lc_tmp_ptr)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      call ccpp_scheme_utils_set_constituents(lc_all_constituents)
+// CHECK-NEXT:      allocate(lc_const_props(size(lc_props_ptr)))
+// CHECK-NEXT:      lc_const_props = lc_props_ptr
+// CHECK-NEXT:      nullify(lc_props_ptr)
+// CHECK-NEXT:      call ccpp_scheme_utils_set_constituents(lc_const_props)
+// CHECK-NEXT:      call cam_constituents_obj%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      if (errcode /= 0) return
+// CHECK-NEXT:      if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
+// CHECK-NEXT:      allocate(lc_all_constituents(lc_num_consts))
 // CHECK-NEXT:    end subroutine Cld_ccpp_register_constituents
 // CHECK-LABEL:   subroutine Cld_ccpp_number_constituents(num_advected, errmsg, errcode, advected)
 // CHECK:           integer, intent(out) :: num_advected
@@ -776,10 +700,6 @@
 // CHECK-NEXT:      integer, intent(in) :: pver
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      integer :: lc_num, lc_i
-// CHECK-NEXT:      logical :: lc_has_def
-// CHECK-NEXT:      real(kind=kind_phys) :: lc_def_val
-// CHECK-NEXT:      character(len=256) :: lc_std_name
 // CHECK-NEXT:      errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(lc_all_constituents)) then
@@ -787,43 +707,38 @@
 // CHECK-NEXT:        errmsg = 'ccpp_initialize_constituents: register_constituents not called'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      lc_num = size(lc_all_constituents)
-// CHECK-NEXT:      if (allocated(lc_constituent_array)) deallocate(lc_constituent_array)
-// CHECK-NEXT:      allocate(lc_constituent_array(ncols, pver, lc_num))
-// CHECK-NEXT:      lc_constituent_array = 0.0_kind_phys
-// CHECK-NEXT:      do lc_i = 1, lc_num
-// CHECK-NEXT:        call lc_all_constituents(lc_i)%has_default(lc_has_def, errflg, errmsg)
-// CHECK-NEXT:        if (lc_has_def) then
-// CHECK-NEXT:          call lc_all_constituents(lc_i)%default_value(lc_def_val, errflg, errmsg)
-// CHECK-NEXT:          lc_constituent_array(:, :, lc_i) = lc_def_val
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
+// CHECK-NEXT:      call cam_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)
+// CHECK-NEXT:      if (errflg /= 0) return
+// CHECK-NEXT:      lc_constituent_array => cam_constituents_obj%field_data_ptr()
 // CHECK-NEXT:      if (allocated(lc_const_tend)) deallocate(lc_const_tend)
-// CHECK-NEXT:      allocate(lc_const_tend(ncols, pver, lc_num))
+// CHECK-NEXT:      allocate(lc_const_tend(ncols, pver, size(lc_all_constituents)))
 // CHECK-NEXT:      lc_const_tend = 0.0_kind_phys
 // CHECK-NEXT:  #ifdef USE_GPU
 // CHECK-NEXT:      !$acc enter data copyin(lc_const_tend)
 // CHECK-NEXT:  #endif
-// CHECK-NEXT:      nullify(lc_cld_liq_tend)
-// CHECK-NEXT:      do lc_i = 1, lc_num
-// CHECK-NEXT:        call lc_all_constituents(lc_i)%standard_name(lc_std_name)
-// CHECK-NEXT:        if (trim(lc_std_name) == 'cloud_liquid_dry_mixing_ratio') then
-// CHECK-NEXT:          lc_cld_liq_tend => lc_const_tend(:, :, lc_i)
-// CHECK-NEXT:          exit
+// CHECK-NEXT:      block
+// CHECK-NEXT:        integer :: lc_tend_idx
+// CHECK-NEXT:        character(len=512) :: lc_tend_errmsg
+// CHECK-NEXT:        nullify(lc_cld_liq_tend)
+// CHECK-NEXT:        call cam_constituents_obj%const_index(lc_tend_idx, 'cloud_liquid_dry_mixing_ratio', &
+// CHECK-NEXT:            errcode=errflg, errmsg=lc_tend_errmsg)
+// CHECK-NEXT:        if (errflg == 0 .and. lc_tend_idx > 0) then
+// CHECK-NEXT:          lc_cld_liq_tend => lc_const_tend(:, :, lc_tend_idx)
+// CHECK-NEXT:        else
+// CHECK-NEXT:          errflg = 0
 // CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
+// CHECK-NEXT:      end block
 // CHECK-NEXT:    end subroutine Cld_ccpp_initialize_constituents
 // CHECK-NEXT:    function Cld_constituents_array() result(ptr)
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
 // CHECK-NEXT:      ptr => lc_constituent_array
 // CHECK-NEXT:    end function Cld_constituents_array
 // CHECK-LABEL:   subroutine Cld_const_get_index(std_name, index, errflg, errmsg)
-// CHECK:           character(len=*), intent(in) :: std_name
+// CHECK:           use ccpp_constituent_prop_mod, only: to_lower
+// CHECK-NEXT:      character(len=*), intent(in) :: std_name
 // CHECK-NEXT:      integer, intent(out) :: index
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      integer :: lc_i
-// CHECK-NEXT:      character(len=256) :: lc_std_name
 // CHECK-NEXT:      errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      index = -1
@@ -832,15 +747,12 @@
 // CHECK-NEXT:        errmsg = 'const_get_index: constituents not registered'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      do lc_i = 1, size(lc_all_constituents)
-// CHECK-NEXT:        call lc_all_constituents(lc_i)%standard_name(lc_std_name)
-// CHECK-NEXT:        if (trim(lc_std_name) == trim(std_name)) then
-// CHECK-NEXT:          index = lc_i
-// CHECK-NEXT:          return
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errflg = 1
-// CHECK-NEXT:      write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
+// CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), &
+// CHECK-NEXT:          errcode=errflg, errmsg=errmsg)
+// CHECK-NEXT:      if (errflg /= 0 .or. index <= 0) then
+// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_const_get_index
 // CHECK-NEXT:    function Cld_model_const_properties() result(ptr)
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)

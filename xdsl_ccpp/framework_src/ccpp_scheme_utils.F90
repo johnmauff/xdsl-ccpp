@@ -3,18 +3,18 @@
 ! this directory exists. Content unchanged from the copy previously
 ! duplicated in examples/advection and examples/constituents_dim.
 module ccpp_scheme_utils
-  use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, int_unassigned
+  use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t, int_unassigned
   implicit none
   private
   public :: ccpp_constituent_index, ccpp_constituent_indices
   public :: ccpp_scheme_utils_set_constituents
 
-  type(ccpp_constituent_properties_t), allocatable :: lc_constituents(:)
+  type(ccpp_constituent_prop_ptr_t), allocatable :: lc_constituents(:)
 
 contains
 
   subroutine ccpp_scheme_utils_set_constituents(all_consts)
-    type(ccpp_constituent_properties_t), intent(in) :: all_consts(:)
+    type(ccpp_constituent_prop_ptr_t), intent(in) :: all_consts(:)
     if (allocated(lc_constituents)) deallocate(lc_constituents)
     allocate(lc_constituents(size(all_consts)))
     lc_constituents = all_consts
