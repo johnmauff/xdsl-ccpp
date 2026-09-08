@@ -618,14 +618,24 @@
 // CHECK-NEXT:      lc_num_consts = lc_num_consts + 2
 // CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
-// CHECK-NEXT:        const_prop => host_constituents(lc_i)
+// CHECK-NEXT:        allocate(const_prop, stat=errcode)
+// CHECK-NEXT:        if (errcode /= 0) then
+// CHECK-NEXT:          errmsg = 'ERROR allocating const_prop'
+// CHECK-NEXT:          return
+// CHECK-NEXT:        end if
+// CHECK-NEXT:        const_prop = host_constituents(lc_i)
 // CHECK-NEXT:        call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:        nullify(const_prop)
 // CHECK-NEXT:        if (errcode /= 0) return
 // CHECK-NEXT:      end do
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const)
-// CHECK-NEXT:          const_prop => lc_dyn_const(lc_i)
+// CHECK-NEXT:          allocate(const_prop, stat=errcode)
+// CHECK-NEXT:          if (errcode /= 0) then
+// CHECK-NEXT:            errmsg = 'ERROR allocating const_prop'
+// CHECK-NEXT:            return
+// CHECK-NEXT:          end if
+// CHECK-NEXT:          const_prop = lc_dyn_const(lc_i)
 // CHECK-NEXT:          call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:          nullify(const_prop)
 // CHECK-NEXT:          if (errcode /= 0) return
@@ -633,7 +643,12 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const_ice)
-// CHECK-NEXT:          const_prop => lc_dyn_const_ice(lc_i)
+// CHECK-NEXT:          allocate(const_prop, stat=errcode)
+// CHECK-NEXT:          if (errcode /= 0) then
+// CHECK-NEXT:            errmsg = 'ERROR allocating const_prop'
+// CHECK-NEXT:            return
+// CHECK-NEXT:          end if
+// CHECK-NEXT:          const_prop = lc_dyn_const_ice(lc_i)
 // CHECK-NEXT:          call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:          nullify(const_prop)
 // CHECK-NEXT:          if (errcode /= 0) return
