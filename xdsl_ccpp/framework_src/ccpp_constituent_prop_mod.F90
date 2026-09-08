@@ -1507,6 +1507,7 @@ contains
     integer :: astat, index, errcode_local
     real(kind=kind_phys) :: default_value
     real(kind=kind_phys) :: minvalue
+    logical :: has_default
     character(len=*), parameter :: subname = 'ccp_model_const_data_lock'
 
     errcode_local = 0
@@ -1545,10 +1546,20 @@ contains
       if (errcode_local == 0) then
         this%num_layers = num_layers
         do index = 1, this%hash_table%num_values()
-          !Set all constituents to their default values:
-          call this%const_metadata(index)%default_value(default_value, &
+          ! Zero-initialize first; only overwrite when an explicit default
+          ! is set.  Constituents registered without a default_value have
+          ! const_default_value == kphys_unassigned (huge), so calling
+          ! default_value() unconditionally would fill the array with huge
+          ! instead of the correct zero initial state.
+          call this%const_metadata(index)%has_default(has_default, &
               errcode, errmsg)
-          this%vars_layer(:, :, index) = default_value
+          if (has_default) then
+            call this%const_metadata(index)%default_value(default_value, &
+                errcode, errmsg)
+            this%vars_layer(:, :, index) = default_value
+          else
+            this%vars_layer(:, :, index) = 0._kind_phys
+          end if
 
           ! Also set the minimum allowed value array
           call this%const_metadata(index)%minimum(minvalue, errcode, &
