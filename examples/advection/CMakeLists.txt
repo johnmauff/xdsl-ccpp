@@ -77,6 +77,8 @@ if(XDSL_CCPP_HAVE_FORTRAN)
   add_library(ADVECTION_TESTLIB OBJECT ${SCHEME_FORTRAN_FILES}
                                         ${ADVECTION_HOST_FORTRAN_FILES}
                                         ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90
+                                        ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_hashable.F90
+                                        ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_hash_table.F90
                                         ${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_scheme_utils.F90
                                         dlc_liq.F90
                                         ${CCPP_CAPS_LIST})

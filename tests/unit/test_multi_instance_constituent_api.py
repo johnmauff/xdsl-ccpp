@@ -184,10 +184,12 @@ class TestConstituentApiHasAPerInstanceBundleType:
         variable (checked above) carries it, and that propagates to every
         subobject including this one."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        assert "\n  type(ccpp_constituent_properties_t), allocatable, target :: lc_all_constituents(:)\n" \
+        # lc_all_constituents is now an integer size-proxy (Stage 2 change).
+        # The old module-level ccpp_constituent_properties_t form must not appear.
+        assert "type(ccpp_constituent_properties_t), allocatable, target :: lc_all_constituents(:)" \
             not in fortran
-        assert "\n    type(ccpp_constituent_properties_t), allocatable :: lc_all_constituents(:)\n" \
-            in fortran
+        # The DDT component must be the new integer allocatable form.
+        assert "integer, allocatable :: lc_all_constituents(:)" in fortran
         assert "lc_instances(instance)%lc_all_constituents" in fortran
 
 
@@ -371,8 +373,8 @@ class TestPartialMultiInstanceMetadataStaysSingleInstance:
         assert "lc_instances" not in fortran
         assert "None" not in fortran
         # Falls back to the plain, non-multi-instance constituent API shape.
-        assert "type(ccpp_constituent_properties_t), target, allocatable :: lc_all_constituents(:)" \
-            in fortran
+        # lc_all_constituents is now an integer size-proxy (Stage 2 change).
+        assert "integer, allocatable :: lc_all_constituents(:)" in fortran
 
     def test_instance_number_alone_does_not_index_ccpp_suite_state(
         self, run_host_match, ccpp_context
@@ -401,5 +403,5 @@ class TestPartialMultiInstanceMetadataStaysSingleInstance:
         )
         assert "lc_instances" not in fortran
         assert "None" not in fortran
-        assert "type(ccpp_constituent_properties_t), target, allocatable :: lc_all_constituents(:)" \
-            in fortran
+        # lc_all_constituents is now an integer size-proxy (Stage 2 change).
+        assert "integer, allocatable :: lc_all_constituents(:)" in fortran

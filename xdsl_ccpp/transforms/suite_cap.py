@@ -406,15 +406,33 @@ def _is_multi_instance_host(meta_data) -> bool:
     )
 
 
+def _synthesize_host_scalar_arg(meta_data, all_args, std_name_const: str) -> None:
+    """Mutate all_args in place: synthesize a HostMatched CCPPArgument for a
+    host-declared scalar identified by std_name_const, if not already present.
+
+    A no-op unless the host declares BOTH instance_number and number_of_instances
+    (see _is_multi_instance_host), so ordinary (non-multi-instance) suites are
+    entirely unaffected.
+    """
+    std_key = std_name_const.lower()
+    if std_key in all_args:
+        return
+    if not _is_multi_instance_host(meta_data):
+        return
+    host_var = _resolve_host_only_std_name(meta_data, std_name_const)
+    new_arg = CCPPArgument(host_var.name)
+    new_arg.setAttr("standard_name", std_name_const)
+    new_arg.setAttr("type", host_var.getAttr("type"))
+    new_arg.setAttr("intent", "in")
+    if host_var.hasAttr("kind"):
+        new_arg.setAttr("kind", host_var.getAttr("kind"))
+    new_arg.setAttr("dimensions", 0)
+    new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
+    all_args[std_key] = new_arg
+
+
 def _synthesize_instance_number_arg(meta_data, all_args) -> None:
-    """Mutate all_args in place: if the host declares an
-    instance_number-standard-name scalar (real capgen-v1's multi-instance
-    model, ccpp_cap_refactor_plan.md's "instances/instances_advection"
-    entry) and no scheme's own entry point for this phase already provides
-    one, synthesize a fresh HostMatched CCPPArgument for it -- named after
-    the host's own local variable -- exactly as
-    _synthesize_dynamic_loop_count_args already does for a subcycle's
-    dynamic loop count.
+    """Mutate all_args in place: synthesize the instance_number dummy arg.
 
     Real capgen-v1 treats instance_number as a fixed CCPP-protocol argument
     present on *every* lifecycle call (register/init/finalize/
@@ -434,31 +452,14 @@ def _synthesize_instance_number_arg(meta_data, all_args) -> None:
     instance 1's own already-'initialized' state and errored.
 
     Called for every phase, not just physics_mode (unlike
-    _synthesize_dynamic_loop_count_args) -- and is a no-op unless the host
-    declares BOTH instance_number and number_of_instances (see
-    _is_multi_instance_host), so ordinary (non-multi-instance) suites, and
-    hosts declaring only one of the pair, are entirely unaffected.
+    _synthesize_dynamic_loop_count_args).
     """
-    std_key = CCPP_INSTANCE_NUMBER_STD_NAME.lower()
-    if std_key in all_args:
-        return
-    if not _is_multi_instance_host(meta_data):
-        return
-    host_var = _resolve_host_only_std_name(meta_data, CCPP_INSTANCE_NUMBER_STD_NAME)
-    new_arg = CCPPArgument(host_var.name)
-    new_arg.setAttr("standard_name", CCPP_INSTANCE_NUMBER_STD_NAME)
-    new_arg.setAttr("type", host_var.getAttr("type"))
-    new_arg.setAttr("intent", "in")
-    if host_var.hasAttr("kind"):
-        new_arg.setAttr("kind", host_var.getAttr("kind"))
-    new_arg.setAttr("dimensions", 0)
-    new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
-    all_args[std_key] = new_arg
+    _synthesize_host_scalar_arg(meta_data, all_args, CCPP_INSTANCE_NUMBER_STD_NAME)
 
 
 def _synthesize_number_of_instances_arg(meta_data, all_args) -> None:
-    """Mutate all_args in place: companion to
-    _synthesize_instance_number_arg, for number_of_instances.
+    """Mutate all_args in place: companion to _synthesize_instance_number_arg,
+    for number_of_instances.
 
     Threaded the same way real capgen-v1 threads it: as an ordinary
     caller-supplied dummy argument, never use-associated -- confirmed
@@ -468,25 +469,8 @@ def _synthesize_number_of_instances_arg(meta_data, all_args) -> None:
     value sizes ccpp_suite_state's allocation -- see
     generateSubroutineCall's own instance_local_name/
     _build_suite_state_lazy_alloc wiring.
-
-    A no-op unless the host declares BOTH names (see _is_multi_instance_host),
-    exactly like _synthesize_instance_number_arg.
     """
-    std_key = CCPP_NUMBER_OF_INSTANCES_STD_NAME.lower()
-    if std_key in all_args:
-        return
-    if not _is_multi_instance_host(meta_data):
-        return
-    host_var = _resolve_host_only_std_name(meta_data, CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-    new_arg = CCPPArgument(host_var.name)
-    new_arg.setAttr("standard_name", CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-    new_arg.setAttr("type", host_var.getAttr("type"))
-    new_arg.setAttr("intent", "in")
-    if host_var.hasAttr("kind"):
-        new_arg.setAttr("kind", host_var.getAttr("kind"))
-    new_arg.setAttr("dimensions", 0)
-    new_arg.setAttr("ownership_kind", ArgOwnershipKind.HostMatched)
-    all_args[std_key] = new_arg
+    _synthesize_host_scalar_arg(meta_data, all_args, CCPP_NUMBER_OF_INSTANCES_STD_NAME)
 
 
 def _instance_arg_local_name(input_arg_list) -> "str | None":

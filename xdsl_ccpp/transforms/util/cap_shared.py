@@ -90,6 +90,12 @@ _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
 _CONSTITUENT_DDT_NAME = "ccpp_constituent_properties_t"
 
+# Maps DDT type names to the Fortran module that defines them.
+# Used by lifecycle_cap.py to emit USE stubs for DDT types found in allocations.
+_CCPP_DDT_MODS: dict[str, str] = {
+    "ccpp_constituent_properties_t": _CCPP_CONSTITUENT_MOD,
+}
+
 _DDT_PRIMITIVE_TYPES = frozenset({"real", "integer", "character", "logical", "complex"})
 
 

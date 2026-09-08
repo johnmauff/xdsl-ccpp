@@ -30,6 +30,12 @@ from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDevi
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import ArraySectionOp as CCPPArraySectionOp
+from xdsl_ccpp.dialects.ccpp_utils import CamClearErrStateOp as CCPPCamClearErrStateOp
+from xdsl_ccpp.dialects.ccpp_utils import CamDirectCallOp as CCPPCamDirectCallOp
+from xdsl_ccpp.dialects.ccpp_utils import CamQminPostambleOp as CCPPCamQminPostambleOp
+from xdsl_ccpp.dialects.ccpp_utils import CamQminPreambleOp as CCPPCamQminPreambleOp
+from xdsl_ccpp.dialects.ccpp_utils import CamSuiteDispatchOp as CCPPCamSuiteDispatchOp
+from xdsl_ccpp.dialects.ccpp_utils import CamSuiteSchemeListOp as CCPPCamSuiteSchemeListOp
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
@@ -37,6 +43,7 @@ from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApi
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentIndexLookupOp as CCPPConstituentIndexLookupOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
+from xdsl_ccpp.dialects.ccpp_utils import ErrorPropagateOp as CCPPErrorPropagateOp
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
 from xdsl_ccpp.dialects.ccpp_utils import KindCastOp as CCPPKindCastOp
@@ -62,7 +69,22 @@ from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp as CCPPRankReducin
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import AllocateOp as CCPPAllocateOp
+from xdsl_ccpp.dialects.ccpp_utils import NullifyPointerOp as CCPPNullifyPointerOp
+from xdsl_ccpp.dialects.ccpp_utils import PointerSliceAssignOp as CCPPPointerSliceAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
+from xdsl_ccpp.dialects.ccpp_utils import ScopedBlockOp as CCPPScopedBlockOp
+from xdsl_ccpp.dialects.ccpp_utils import ZeroFillOp as CCPPZeroFillOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    CamHostConstituentApiOp as CCPPCamHostConstituentApiOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
+    NonCamHostConstituentApiOp as CCPPNonCamHostConstituentApiOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
+    ConstituentFunctionOp as CCPPConstituentFunctionOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import RawFortranLinesOp as CCPPRawFortranLinesOp
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
 from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp as CCPPSubcycleLoopOp
@@ -84,7 +106,6 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
     base = op.base_type.data
     kind = op.kind.data if op.kind is not None else None
     ddt  = op.ddt_name.data if op.ddt_name is not None else None
-    attrs = op.ftn_attrs.data if op.ftn_attrs is not None else None
 
     if base == "type":
         ftn = f"type({ddt})"
@@ -98,8 +119,10 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
     else:
         ftn = base
 
-    if attrs:
-        ftn += f", {attrs}"
+    if op.is_target is not None and op.is_target.value.data:
+        ftn += ", target"
+    if op.is_pointer is not None and op.is_pointer.value.data:
+        ftn += ", pointer"
     return ftn
 
 
@@ -862,6 +885,55 @@ class ftnPrintContext:
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
+            case CCPPNullifyPointerOp():
+                self.print(f"nullify({op.ptr_name.data})")
+            case CCPPAllocateOp():
+                dims = ", ".join(d.data for d in op.dims.data)
+                self.print(f"allocate({op.var_name.data}({dims}))")
+            case CCPPZeroFillOp():
+                self.print(f"{op.var_name.data} = 0.0_kind_phys")
+            case CCPPPointerSliceAssignOp():
+                self.print(
+                    f"{op.ptr_name.data} => "
+                    f"{op.array_name.data}(:, :, {op.index_var.data})"
+                )
+            case CCPPScopedBlockOp():
+                self.print("block")
+                with self.descend() as blk:
+                    for decl in op.local_decls.data:
+                        blk.print(decl.data)
+                    blk.print_block(op.body.block)
+                self.print("end block")
+            case CCPPRawFortranLinesOp():
+                for line in op.lines.data.splitlines():
+                    if line.lstrip().startswith("#"):
+                        self.print(line.lstrip(), use_prefix=False)
+                    else:
+                        self.print(line)
+            case CCPPConstituentFunctionOp():
+                fn_name = op.fn_name.data
+                is_func = op.is_function.value.data
+                kw = "function" if is_func else "subroutine"
+                args_str = ", ".join(a.data for a in op.args.data)
+                result_part = (
+                    f" result({op.result_name.data})" if op.result_name is not None else ""
+                )
+                self.print(f"{kw} {fn_name}({args_str}){result_part}")
+                with self.descend() as fn_inner:
+                    for use in op.use_stmts.data:
+                        fn_inner.print(use.data)
+                    if op.result_decl is not None:
+                        fn_inner.print(op.result_decl.data)
+                    for decl in op.arg_decls.data:
+                        fn_inner.print(decl.data)
+                    for decl in op.local_decls.data:
+                        fn_inner.print(decl.data)
+                    fn_inner.print_block(op.body.block)
+                self.print(f"end {kw} {fn_name}")
+            case CCPPCamHostConstituentApiOp():
+                self.print_block(op.body.block)
+            case CCPPNonCamHostConstituentApiOp():
+                self.print_block(op.body.block)
             case CCPPConstituentSyncOp():
                 var = op.var_name.data
                 q = op.q_name.data
@@ -880,6 +952,95 @@ class ftnPrintContext:
                 ev = op.err_var_name.data if op.err_var_name is not None else "errflg"
                 self.print(f"    lc_const_indices, {ev}, errmsg)")
                 self.print(f"if ({ev} /= 0) return")
+            case CCPPCamDirectCallOp():
+                args = ", ".join(a.data for a in op.call_args.data)
+                self.print(f"call {op.callee.data}({args})")
+            case CCPPCamClearErrStateOp():
+                self.print(f"{op.errcode_var.data} = 0")
+                self.print(f"{op.errmsg_var.data} = ''")
+            case CCPPCamQminPreambleOp():
+                ev = op.errcode_var.data
+                em = op.errmsg_var.data
+                self.print("integer :: lc_n, lc_i")
+                self.print("real(kind=kind_phys), allocatable :: lc_qmin(:)")
+                self.print("if (allocated(lc_const_props)) then")
+                with self.descend() as blk:
+                    blk.print("lc_n = size(lc_const_props)")
+                self.print("else")
+                with self.descend() as blk:
+                    blk.print("lc_n = 0")
+                self.print("end if")
+                self.print("allocate(lc_qmin(lc_n))")
+                self.print("do lc_i = 1, lc_n")
+                with self.descend() as blk:
+                    blk.print(
+                        f"call lc_const_props(lc_i)%minimum("
+                        f"lc_qmin(lc_i), {ev}, {em})"
+                    )
+                    blk.print(f"if ({ev} /= 0) then")
+                    with blk.descend() as inner:
+                        inner.print("deallocate(lc_qmin)")
+                        inner.print("return")
+                    blk.print("end if")
+                self.print("end do")
+            case CCPPCamQminPostambleOp():
+                self.print("deallocate(lc_qmin)")
+            case CCPPErrorPropagateOp():
+                ev = op.errcode_var.data
+                self.print(f"if ({ev} /= 0) return")
+            case CCPPCamSuiteDispatchOp():
+                dispatcher = op.dispatcher_fn.data
+                wrapper    = op.wrapper_fn.data
+                ev         = op.errcode_var.data
+                em         = op.errmsg_var.data
+                template   = [a.data for a in op.call_args_template.data]
+                first = True
+                for inner in op.suite_groups.data:
+                    attrs    = inner.data
+                    sn       = attrs[0].data
+                    groups   = [a.data for a in attrs[1:]]
+                    kw = "if" if first else "else if"
+                    first = False
+                    self.print(f"{kw} (trim(suite_name) == '{sn}') then")
+                    with self.descend() as blk:
+                        for grp in groups:
+                            args = [f"'{grp}'" if a == "__suite_part__" else a
+                                    for a in template]
+                            blk.print(f"call {dispatcher}({', '.join(args)})")
+                            blk.print(f"if ({ev} /= 0) return")
+                if not first:
+                    self.print("else")
+                    with self.descend() as blk:
+                        blk.print(
+                            f"write({em}, '(3a)') '{wrapper}: no suite named ', "
+                            f"trim(suite_name), ' found'"
+                        )
+                        blk.print(f"{ev} = 1")
+                    self.print("end if")
+            case CCPPCamSuiteSchemeListOp():
+                first = True
+                for inner in op.suite_schemes.data:
+                    attrs   = inner.data
+                    sn      = attrs[0].data
+                    schemes = [a.data for a in attrs[1:]]
+                    kw = "if" if first else "else if"
+                    first = False
+                    self.print(f"{kw} (trim(suite_name) == '{sn}') then")
+                    with self.descend() as blk:
+                        blk.print(f"allocate(scheme_list({len(schemes)}))")
+                        for idx, sname in enumerate(schemes, 1):
+                            blk.print(f"scheme_list({idx}) = '{sname}'")
+                if not first:
+                    em = op.errmsg_var.data
+                    ef = op.errflg_var.data
+                    self.print("else")
+                    with self.descend() as blk:
+                        blk.print(
+                            f"write({em}, '(3a)') 'No suite named ', "
+                            "trim(suite_name), ' found'"
+                        )
+                        blk.print(f"{ef} = 1")
+                    self.print("end if")
             case CCPPPresentCheckOp():
                 var_name = op.var_name.data
                 self.print(f"if (present({var_name})) then")
@@ -912,10 +1073,7 @@ class ftnPrintContext:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
             case CCPPSuiteVariablesOp():
-                # The body text is the complete pre-built Fortran subroutine.
-                # Emit each line with the current indentation prefix.
-                for line in op.body.data.splitlines():
-                    self.print(line)
+                self.print_block(op.body.block)
             case CCPPConstituentApiOp():
                 # Preprocessor directives (CapScratch GPU residency's
                 # `#ifdef USE_GPU`/`#endif`, string-templated directly into
@@ -1375,6 +1533,10 @@ class ftnPrintContext:
             if isa(op, CCPPConstituentApiOp) and op.type_defs is not None:
                 for line in op.type_defs.data.splitlines():
                     self.print(line, prefix="  ")
+        for op in body.ops:
+            if isa(op, CCPPNonCamHostConstituentApiOp) and op.type_defs is not None:
+                for line in op.type_defs.data.splitlines():
+                    self.print(line, prefix="  ")
 
         # Emit module-level variable declarations (unified ModuleVarOp).
         # rank=0: scalar, fixed_dim set: fixed-size non-allocatable array,
@@ -1384,13 +1546,13 @@ class ftnPrintContext:
                 rank     = op.rank.value.data
                 ftn_type = _module_var_fortran_type(op)
                 var_name = op.var_name.data
-                is_ptr   = op.ftn_attrs is not None and "pointer" in op.ftn_attrs.data
-                if rank == 0:
-                    self.print(f"{ftn_type} :: {var_name}", prefix="  ")
-                elif op.fixed_dim is not None:
+                is_ptr   = op.is_pointer is not None and op.is_pointer.value.data
+                if op.fixed_dim is not None:
                     dim = op.fixed_dim.value.data
                     init_part = f" = {op.init_value.data}" if op.init_value else ""
                     self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="  ")
+                elif rank == 0:
+                    self.print(f"{ftn_type} :: {var_name}", prefix="  ")
                 else:
                     shape = ", ".join([":"] * rank)
                     if is_ptr:
@@ -1423,6 +1585,16 @@ class ftnPrintContext:
             for op in body.ops
             if isa(op, CCPPConstituentApiOp)
             for name in op.public_names.data
+        ] + [
+            name.data
+            for op in body.ops
+            if isa(op, CCPPCamHostConstituentApiOp)
+            for name in op.public_names.data
+        ] + [
+            name.data
+            for op in body.ops
+            if isa(op, CCPPNonCamHostConstituentApiOp)
+            for name in op.public_names.data
         ]
         for proc in public_procs:
             self.print(f"public :: {proc}", prefix="  ")
@@ -1432,6 +1604,8 @@ class ftnPrintContext:
             (isa(op, func.FuncOp) and not op.is_declaration)
             or isa(op, CCPPSuiteVariablesOp)
             or isa(op, CCPPConstituentApiOp)
+            or isa(op, CCPPCamHostConstituentApiOp)
+            or isa(op, CCPPNonCamHostConstituentApiOp)
             for op in body.ops
         )
         if has_func_defs:

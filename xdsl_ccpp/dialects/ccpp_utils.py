@@ -603,21 +603,20 @@ class ModuleVarOp(IRDLOperation):
     """Unified module-level variable declaration, covering both real vars and
     DDT vars with a single consistent representation.
 
-    Type is described by three structured attributes rather than a pre-rendered
-    Fortran string, so that language backends other than Fortran can interpret
-    the type without parsing:
+    Type is described by structured attributes so that language backends other
+    than Fortran can interpret the type without parsing:
 
         base_type  — CCPP base type: "real", "integer", "character",
                      "logical", or "type" (for DDTs)
         kind       — optional kind name ("kind_phys") or character length ("512")
         ddt_name   — DDT type name when base_type == "type" (e.g. "vmr_type")
-        ftn_attrs  — optional Fortran attributes appended after the type,
-                     e.g. "target" or "pointer"
+        is_pointer — True when the variable carries the Fortran POINTER attribute
+        is_target  — True when the variable carries the Fortran TARGET attribute
 
     Printer emits in the module spec section before CONTAINS:
         rank=0: ``{type} :: {var_name}``
         rank>0: ``{type}, allocatable :: {var_name}(:, :, ...)``
-        (pointer rank>0): ``{type}, pointer :: {var_name}(:) => null()``
+        (is_pointer rank>0): ``{type}, pointer :: {var_name}(:) => null()``
 
     Examples::
 
@@ -627,19 +626,20 @@ class ModuleVarOp(IRDLOperation):
         ModuleVarOp("vmr_cap_ddt_suite", "type", ddt_name="vmr_type")
         → type(vmr_type) :: vmr_cap_ddt_suite
 
-        ModuleVarOp("lc_arr", "real", kind="kind_phys", ftn_attrs="target", rank=3)
+        ModuleVarOp("lc_arr", "real", kind="kind_phys", is_target=True, rank=3)
         → real(kind=kind_phys), target, allocatable :: lc_arr(:, :, :)
     """
 
     name = "ccpp_utils.module_var"
-    var_name  = prop_def(StringAttr)
-    base_type = prop_def(StringAttr)        # "real"|"integer"|"character"|"logical"|"type"
-    kind      = opt_prop_def(StringAttr)    # kind name or char length; None if not applicable
-    ddt_name  = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
-    ftn_attrs = opt_prop_def(StringAttr)    # Fortran attributes: "target", "pointer", etc.
-    rank      = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
-    fixed_dim = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
-    init_value = opt_prop_def(StringAttr)   # optional Fortran initializer (for fixed_dim vars)
+    var_name   = prop_def(StringAttr)
+    base_type  = prop_def(StringAttr)        # "real"|"integer"|"character"|"logical"|"type"
+    kind       = opt_prop_def(StringAttr)    # kind name or char length; None if not applicable
+    ddt_name   = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
+    is_pointer = opt_prop_def(BoolAttr)      # True → Fortran POINTER attribute
+    is_target  = opt_prop_def(BoolAttr)      # True → Fortran TARGET attribute
+    rank       = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
+    fixed_dim  = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
+    init_value = opt_prop_def(StringAttr)    # optional Fortran initializer (for fixed_dim vars)
 
     def __init__(
         self,
@@ -648,7 +648,8 @@ class ModuleVarOp(IRDLOperation):
         *,
         kind: str | None = None,
         ddt_name: str | None = None,
-        ftn_attrs: str | None = None,
+        is_pointer: bool = False,
+        is_target: bool = False,
         rank: int = 0,
         fixed_dim: int | None = None,
         init_value: str | None = None,
@@ -662,8 +663,10 @@ class ModuleVarOp(IRDLOperation):
             props["kind"] = StringAttr(kind)
         if ddt_name is not None:
             props["ddt_name"] = StringAttr(ddt_name)
-        if ftn_attrs is not None:
-            props["ftn_attrs"] = StringAttr(ftn_attrs)
+        if is_pointer:
+            props["is_pointer"] = BoolAttr.from_bool(True)
+        if is_target:
+            props["is_target"] = BoolAttr.from_bool(True)
         if fixed_dim is not None:
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
         if init_value is not None:
@@ -958,19 +961,268 @@ class ActiveCheckOp(IRDLOperation):
 
 
 @irdl_op_definition
-class SuiteVariablesOp(IRDLOperation):
-    """Carries the generated ccpp_physics_suite_variables Fortran text.
+class NullifyPointerOp(IRDLOperation):
+    """Null-initialise a Fortran POINTER variable.
 
-    The `body` attribute holds the complete pre-built Fortran subroutine as a
-    string; the printer emits it verbatim inside the module's CONTAINS section.
+    Emits::
+
+        nullify({ptr_name})
+    """
+
+    name = "ccpp_utils.nullify_pointer"
+    ptr_name = prop_def(StringAttr)
+
+    def __init__(self, ptr_name: str):
+        super().__init__(properties={"ptr_name": StringAttr(ptr_name)})
+
+
+@irdl_op_definition
+class AllocateOp(IRDLOperation):
+    """Allocate a Fortran allocatable or pointer variable to a given shape.
+
+    Emits::
+
+        allocate({var_name}({dims[0]}, {dims[1]}, ...))
+
+    ``dims`` is an ArrayAttr of StringAttr Fortran expressions (e.g.
+    ``"ncols"``, ``"size(lc_const_props)"``).
+    """
+
+    name = "ccpp_utils.allocate"
+    var_name = prop_def(StringAttr)
+    dims     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, var_name: str, dims: "list[str]"):
+        super().__init__(properties={
+            "var_name": StringAttr(var_name),
+            "dims":     ArrayAttr([StringAttr(d) for d in dims]),
+        })
+
+
+@irdl_op_definition
+class ZeroFillOp(IRDLOperation):
+    """Assign 0.0_kind_phys to a real array variable.
+
+    Emits::
+
+        {var_name} = 0.0_kind_phys
+    """
+
+    name = "ccpp_utils.zero_fill"
+    var_name = prop_def(StringAttr)
+
+    def __init__(self, var_name: str):
+        super().__init__(properties={"var_name": StringAttr(var_name)})
+
+
+@irdl_op_definition
+class PointerSliceAssignOp(IRDLOperation):
+    """Associate a pointer with a trailing-index slice of a 3-D array.
+
+    Emits::
+
+        {ptr_name} => {array_name}(:, :, {index_var})
+
+    Used to assign constituent-tendency pointer slices into ``lc_const_tend``.
+    """
+
+    name = "ccpp_utils.pointer_slice_assign"
+    ptr_name   = prop_def(StringAttr)
+    array_name = prop_def(StringAttr)
+    index_var  = prop_def(StringAttr)
+
+    def __init__(self, ptr_name: str, array_name: str, index_var: str):
+        super().__init__(properties={
+            "ptr_name":   StringAttr(ptr_name),
+            "array_name": StringAttr(array_name),
+            "index_var":  StringAttr(index_var),
+        })
+
+
+@irdl_op_definition
+class ScopedBlockOp(IRDLOperation):
+    """Fortran BLOCK construct introducing a local scope with declarations.
+
+    Emits::
+
+        block
+          {local_decls[0]}
+          {local_decls[1]}
+          ...
+          {body ops}
+        end block
+
+    ``local_decls`` is an ArrayAttr of StringAttr complete Fortran declaration
+    lines (e.g. ``"integer :: lc_tend_idx"``).  Body ops are emitted at +1
+    indent after the declarations.
+    """
+
+    name = "ccpp_utils.scoped_block"
+
+    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    body        = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, local_decls: "list[str]", body_ops: list):
+        from xdsl.ir import Block, Region
+        body = Region([Block(body_ops)])
+        super().__init__(
+            properties={"local_decls": ArrayAttr([StringAttr(d) for d in local_decls])},
+            regions=[body],
+        )
+
+
+@irdl_op_definition
+class RawFortranLinesOp(IRDLOperation):
+    """Escape hatch for Fortran content not yet converted to structured ops.
+
+    The ``lines`` property holds raw Fortran text (one or more lines, newline-
+    separated).  The printer emits each line at the current indentation level;
+    preprocessor directives (starting with ``#``) are emitted at column 0.
+    """
+
+    name = "ccpp_utils.raw_fortran_lines"
+
+    lines = prop_def(StringAttr)
+
+    def __init__(self, text: str):
+        super().__init__(properties={"lines": StringAttr(text)})
+
+
+@irdl_op_definition
+class ConstituentFunctionOp(IRDLOperation):
+    """One subroutine or function in the constituent registration API.
+
+    ``fn_name``     — Fortran identifier of the subroutine/function.
+    ``is_function`` — True for FUNCTION, False for SUBROUTINE.
+    ``args``        — argument names for the signature line.
+    ``use_stmts``   — complete USE statement lines (no trailing newline).
+    ``arg_decls``   — argument declaration lines (no leading/trailing whitespace).
+    ``local_decls`` — local variable declaration lines.
+    ``result_name`` — (functions only) name of the RESULT variable.
+    ``result_decl`` — (functions only) type declaration for the result variable.
+    ``body``        — single-block Region of statement ops.
+    """
+
+    name = "ccpp_utils.constituent_function"
+
+    fn_name     = prop_def(StringAttr)
+    is_function = prop_def(BoolAttr)
+    args        = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — arg name list
+    use_stmts   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — USE statement lines
+    arg_decls   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — argument declaration lines
+    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — local variable declarations
+    result_name = opt_prop_def(StringAttr)  # for functions: result variable name
+    result_decl = opt_prop_def(StringAttr)  # for functions: result variable type declaration
+    body        = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        fn_name: str,
+        is_function: bool,
+        args: "list[str]",
+        use_stmts: "list[str]",
+        arg_decls: "list[str]",
+        local_decls: "list[str]",
+        body_ops: list,
+        result_name: "str | None" = None,
+        result_decl: "str | None" = None,
+    ):
+        from xdsl.ir import Block, Region
+        body = Region([Block(body_ops)])
+        props: dict = {
+            "fn_name":     StringAttr(fn_name),
+            "is_function": BoolAttr.from_bool(is_function),
+            "args":        ArrayAttr([StringAttr(a) for a in args]),
+            "use_stmts":   ArrayAttr([StringAttr(u) for u in use_stmts]),
+            "arg_decls":   ArrayAttr([StringAttr(d) for d in arg_decls]),
+            "local_decls": ArrayAttr([StringAttr(d) for d in local_decls]),
+        }
+        if result_name is not None:
+            props["result_name"] = StringAttr(result_name)
+        if result_decl is not None:
+            props["result_decl"] = StringAttr(result_decl)
+        super().__init__(properties=props, regions=[body])
+
+
+@irdl_op_definition
+class CamHostConstituentApiOp(IRDLOperation):
+    """Container for the cam_host=True constituent registration API.
+
+    ``public_names`` — names to export with ``public ::`` in the module preamble.
+    ``body``         — single-block Region of ``ConstituentFunctionOp`` children.
+    """
+
+    name = "ccpp_utils.cam_host_constituent_api"
+
+    public_names = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    body         = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, public_names_list: "list[str]", fn_ops: list):
+        from xdsl.ir import Block, Region
+        body = Region([Block(fn_ops)])
+        super().__init__(
+            properties={"public_names": ArrayAttr([StringAttr(n) for n in public_names_list])},
+            regions=[body],
+        )
+
+
+@irdl_op_definition
+class NonCamHostConstituentApiOp(IRDLOperation):
+    """Container for the non-cam_host constituent registration API.
+
+    ``public_names`` — names to export with ``public ::`` in the module preamble.
+    ``type_defs``    — optional raw Fortran type-definition block (printed in the
+                       module's specification section before CONTAINS); used for
+                       the multi-instance per-instance bundle type.
+    ``body``         — single-block Region of ``ConstituentFunctionOp`` children.
+    """
+
+    name = "ccpp_utils.non_cam_host_constituent_api"
+
+    public_names = prop_def(ArrayAttr)          # ArrayAttr[StringAttr]
+    type_defs    = opt_prop_def(StringAttr)     # raw DDT text for multi-instance
+    body         = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        public_names_list: "list[str]",
+        type_defs: "str | None",
+        fn_ops: list,
+    ):
+        from xdsl.ir import Block, Region
+        body = Region([Block(fn_ops)])
+        props: dict = {
+            "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
+        }
+        if type_defs is not None:
+            props["type_defs"] = StringAttr(type_defs)
+        super().__init__(properties=props, regions=[body])
+
+
+@irdl_op_definition
+class SuiteVariablesOp(IRDLOperation):
+    """Carries the generated ccpp_physics_suite_variables subroutine as IR.
+
+    The `body` region holds a single ConstituentFunctionOp representing the
+    ccpp_physics_suite_variables subroutine; the printer delegates to it.
     """
 
     name = "ccpp_utils.suite_variables"
 
-    body = prop_def(StringAttr, prop_name="body")
+    body   = region_def("single_block")
+    traits = traits_def(NoTerminator())
 
-    def __init__(self, body: str):
-        super().__init__(properties={"body": StringAttr(body)})
+    def __init__(self, fn_op):
+        from xdsl.ir import Block, Region
+        super().__init__(regions=[Region([Block([fn_op])])])
 
 
 @irdl_op_definition
@@ -1427,6 +1679,268 @@ class ConstituentIndexLookupOp(IRDLOperation):
         super().__init__(properties=props)
 
 
+@irdl_op_definition
+class CamDirectCallOp(IRDLOperation):
+    """Emit a direct Fortran subroutine call with positional string arguments.
+
+    Prints as::
+
+        call {callee}(arg0, arg1, ...)
+
+    Unlike ``func.CallOp``, arguments are stored as Fortran expression strings
+    rather than SSA values — suitable for calls where the arguments are
+    module-scope variables accessed by name (e.g. ``errmsg``, ``errcode``).
+    """
+
+    name = "ccpp_utils.cam_direct_call"
+
+    callee    = prop_def(StringAttr)
+    call_args = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, callee: str, call_args: "list[str]"):
+        super().__init__(properties={
+            "callee":    StringAttr(callee),
+            "call_args": ArrayAttr([StringAttr(a) for a in call_args]),
+        })
+
+
+@irdl_op_definition
+class CamClearErrStateOp(IRDLOperation):
+    """Emit the no-dispatch error-state reset for timestep lifecycle wrappers.
+
+    Prints as::
+
+        {errcode_var} = 0
+        {errmsg_var} = ''
+
+    Used when a timestep-init or timestep-final wrapper has no per-group
+    dispatcher (no scheme registered a timestep-init/final hook), so the
+    wrapper must still zero out the error state before returning.
+    """
+
+    name = "ccpp_utils.cam_clear_err_state"
+
+    errcode_var = prop_def(StringAttr)
+    errmsg_var  = prop_def(StringAttr)
+
+    def __init__(self, errcode_var: str, errmsg_var: str):
+        super().__init__(properties={
+            "errcode_var": StringAttr(errcode_var),
+            "errmsg_var":  StringAttr(errmsg_var),
+        })
+
+
+@irdl_op_definition
+class CamQminPreambleOp(IRDLOperation):
+    """Emit the constituent-minimum (lc_qmin) preamble in cam_ccpp_physics_run.
+
+    Emitted when the run dispatcher takes ``ccpp_constituent_minimum_values``
+    as a block argument (i.e. at least one run-phase scheme reads qmin).
+    Prints as::
+
+        integer :: lc_n, lc_i
+        real(kind=kind_phys), allocatable :: lc_qmin(:)
+        if (allocated(lc_const_props)) then
+          lc_n = size(lc_const_props)
+        else
+          lc_n = 0
+        end if
+        allocate(lc_qmin(lc_n))
+        do lc_i = 1, lc_n
+          call lc_const_props(lc_i)%minimum(lc_qmin(lc_i), {errcode_var}, {errmsg_var})
+          if ({errcode_var} /= 0) then
+            deallocate(lc_qmin)
+            return
+          end if
+        end do
+
+    The declarations (``integer :: lc_n``, etc.) appear inline in the
+    subroutine body — valid in Fortran 2003+ and accepted by gfortran/nvhpc.
+    ``kind_phys`` is imported from ``ccpp_kinds`` at module scope and is
+    therefore available without a redundant subroutine-scope USE.
+    """
+
+    name = "ccpp_utils.cam_qmin_preamble"
+
+    errcode_var = prop_def(StringAttr)
+    errmsg_var  = prop_def(StringAttr)
+
+    def __init__(self, errcode_var: str, errmsg_var: str):
+        super().__init__(properties={
+            "errcode_var": StringAttr(errcode_var),
+            "errmsg_var":  StringAttr(errmsg_var),
+        })
+
+
+@irdl_op_definition
+class CamQminPostambleOp(IRDLOperation):
+    """Emit ``deallocate(lc_qmin)`` after the run dispatcher call.
+
+    Paired with ``CamQminPreambleOp`` to clean up the constituent-minimum
+    temporary array after ``ccpp_physics_run`` has used it.
+    """
+
+    name = "ccpp_utils.cam_qmin_postamble"
+
+    def __init__(self):
+        super().__init__()
+
+
+@irdl_op_definition
+class ErrorPropagateOp(IRDLOperation):
+    """Emit an early-return guard on an integer error-code variable.
+
+    Prints as::
+
+        if ({errcode_var} /= 0) return
+    """
+
+    name = "ccpp_utils.error_propagate"
+    errcode_var = prop_def(StringAttr)
+
+    def __init__(self, errcode_var: str):
+        super().__init__(properties={"errcode_var": StringAttr(errcode_var)})
+
+
+@irdl_op_definition
+class CamSuiteDispatchOp(IRDLOperation):
+    """Emit the if/else suite-group dispatch chain in a CAM lifecycle wrapper.
+
+    Represents the per-group dispatch pattern::
+
+        if (trim(suite_name) == 'suite1') then
+          call {dispatcher_fn}(arg1, 'group1', arg3, ...)
+          if ({errcode_var} /= 0) return
+          call {dispatcher_fn}(arg1, 'group2', arg3, ...)
+          if ({errcode_var} /= 0) return
+        else if (trim(suite_name) == 'suite2') then
+          ...
+        else
+          write({errmsg_var}, '(3a)') '{wrapper_fn}: no suite named ', &
+              trim(suite_name), ' found'
+          {errcode_var} = 1
+        end if
+
+    Properties
+    ----------
+    dispatcher_fn : StringAttr
+        Name of the internal dispatcher function (e.g. ``ccpp_physics_init``).
+    wrapper_fn : StringAttr
+        Name of the outer wrapper subroutine; used in the else-branch error message.
+    errcode_var : StringAttr
+        Fortran variable name for the integer error code (e.g. ``lc_errcode``).
+    errmsg_var : StringAttr
+        Fortran variable name for the error message string (e.g. ``lc_errmsg``).
+    suite_groups : ArrayAttr[ArrayAttr[StringAttr]]
+        Outer array has one inner ArrayAttr per suite.  In each inner array,
+        element [0] is the suite name and elements [1:] are the group names
+        that have a generated dispatcher for this lifecycle phase.
+    call_args_template : ArrayAttr[StringAttr]
+        Fortran expressions for the dispatcher call arguments, in order.
+        The element whose value is the sentinel ``"__suite_part__"`` is
+        replaced by the quoted group name literal for each call in the chain.
+    """
+
+    name = "ccpp_utils.cam_suite_dispatch"
+
+    dispatcher_fn      = prop_def(StringAttr)
+    wrapper_fn         = prop_def(StringAttr)
+    errcode_var        = prop_def(StringAttr)
+    errmsg_var         = prop_def(StringAttr)
+    suite_groups       = prop_def(ArrayAttr)   # ArrayAttr[ArrayAttr[StringAttr]]
+    call_args_template = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(
+        self,
+        dispatcher_fn: str,
+        wrapper_fn: str,
+        errcode_var: str,
+        errmsg_var: str,
+        suite_groups: "list[tuple[str, list[str]]]",
+        call_args_template: "list[str]",
+    ):
+        """
+        Parameters
+        ----------
+        suite_groups
+            List of (suite_name, [group1, group2, ...]) tuples.
+        call_args_template
+            Fortran arg expressions; use ``"__suite_part__"`` where the quoted
+            group name should be substituted.
+        """
+        groups_attr = ArrayAttr([
+            ArrayAttr([StringAttr(sn)] + [StringAttr(g) for g in groups])
+            for sn, groups in suite_groups
+        ])
+        super().__init__(properties={
+            "dispatcher_fn":      StringAttr(dispatcher_fn),
+            "wrapper_fn":         StringAttr(wrapper_fn),
+            "errcode_var":        StringAttr(errcode_var),
+            "errmsg_var":         StringAttr(errmsg_var),
+            "suite_groups":       groups_attr,
+            "call_args_template": ArrayAttr([StringAttr(a) for a in call_args_template]),
+        })
+
+
+@irdl_op_definition
+class CamSuiteSchemeListOp(IRDLOperation):
+    """Emit the suite-keyed scheme-list assignment block in ccpp_physics_suite_schemes.
+
+    Represents the body of the ``ccpp_physics_suite_schemes`` subroutine::
+
+        if (trim(suite_name) == 'suite1') then
+          allocate(scheme_list(N))
+          scheme_list(1) = 'scheme_a'
+          scheme_list(2) = 'scheme_b'
+          ...
+        else if (trim(suite_name) == 'suite2') then
+          ...
+        else
+          write({errmsg_var}, '(3a)') 'No suite named ', trim(suite_name), ' found'
+          {errflg_var} = 1
+        end if
+
+    Properties
+    ----------
+    suite_schemes : ArrayAttr[ArrayAttr[StringAttr]]
+        Outer array has one inner ArrayAttr per suite.  In each inner array,
+        element [0] is the suite name and elements [1:] are the scheme names
+        in first-occurrence order (duplicates already removed by the caller).
+    errmsg_var : StringAttr
+        Name of the character variable to write the error message into.
+    errflg_var : StringAttr
+        Name of the integer variable to set to 1 on error.
+    """
+
+    name = "ccpp_utils.cam_suite_scheme_list"
+
+    suite_schemes = prop_def(ArrayAttr)   # ArrayAttr[ArrayAttr[StringAttr]]
+    errmsg_var    = prop_def(StringAttr)
+    errflg_var    = prop_def(StringAttr)
+
+    def __init__(self, suite_schemes: "list[tuple[str, list[str]]]",
+                 errmsg_var: str = "errmsg", errflg_var: str = "errflg"):
+        """
+        Parameters
+        ----------
+        suite_schemes
+            List of (suite_name, [scheme1, scheme2, ...]) tuples.
+        errmsg_var
+            Fortran variable name for the error message output.
+        errflg_var
+            Fortran variable name for the error flag output.
+        """
+        attr = ArrayAttr([
+            ArrayAttr([StringAttr(sn)] + [StringAttr(s) for s in schemes])
+            for sn, schemes in suite_schemes
+        ])
+        super().__init__(properties={
+            "suite_schemes": attr,
+            "errmsg_var":    StringAttr(errmsg_var),
+            "errflg_var":    StringAttr(errflg_var),
+        })
+
+
 CCPPUtils = Dialect(
     "ccpp_utils",
     [
@@ -1459,6 +1973,15 @@ CCPPUtils = Dialect(
         SubcycleLoopOp,
         PresentCheckOp,
         ActiveCheckOp,
+        NullifyPointerOp,
+        AllocateOp,
+        ZeroFillOp,
+        PointerSliceAssignOp,
+        ScopedBlockOp,
+        RawFortranLinesOp,
+        ConstituentFunctionOp,
+        CamHostConstituentApiOp,
+        NonCamHostConstituentApiOp,
         SuiteVariablesOp,
         ConstituentApiOp,
         CHostCapOp,
@@ -1473,6 +1996,13 @@ CCPPUtils = Dialect(
         VerticalFlipWriteBackOp,
         ConstituentSyncOp,
         ConstituentIndexLookupOp,
+        CamDirectCallOp,
+        CamClearErrStateOp,
+        CamQminPreambleOp,
+        CamQminPostambleOp,
+        ErrorPropagateOp,
+        CamSuiteDispatchOp,
+        CamSuiteSchemeListOp,
     ],
     [RealKindType, DerivedType],
 )
