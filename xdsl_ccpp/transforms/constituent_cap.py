@@ -201,6 +201,12 @@ def _generate_constituent_api(
         f"ninstances_local_name={ninstances_local_name!r}"
     )
 
+    if cam_host and instance_local_name is not None:
+        raise ValueError(
+            "cam_host=True with multi-instance metadata is not supported; "
+            "CAM does not use per-instance constituent containers"
+        )
+
     h = camel_name
     n_fixed = len(fixed_advected)
     framework_var_residency = framework_var_residency or {}
@@ -357,12 +363,24 @@ def _generate_constituent_api(
     ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
     isc_body = ["errflg = 0", "errmsg = ''", "is_const = .false."]
     if n_fixed > 0:
-        isc_body += [
-            f"if (any({ref('cam_model_const_stdnames')} == std_name)) then",
-            "  is_const = .true.",
-            "  return",
-            "end if",
-        ]
+        if multi_instance:
+            # ref() expands to lc_instances(instance)%... — guard allocated(lc_instances)
+            # before dereferencing, matching the same guard the dynamic-name loops use.
+            isc_body += [
+                "if (allocated(lc_instances)) then",
+                f"  if (any({ref('cam_model_const_stdnames')} == std_name)) then",
+                "    is_const = .true.",
+                "    return",
+                "  end if",
+                "end if",
+            ]
+        else:
+            isc_body += [
+                f"if (any({ref('cam_model_const_stdnames')} == std_name)) then",
+                "  is_const = .true.",
+                "  return",
+                "end if",
+            ]
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
         guard_open = ["if (allocated(lc_instances)) then"] if multi_instance else []
@@ -430,16 +448,25 @@ def _generate_constituent_api(
     _lc_all = ref("lc_all_constituents")
     _lc_props = ref("lc_const_props")
     _cam_obj = ref("cam_constituents_obj")
-    rc_arg_decls = [
-        f"type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
-        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        "integer, intent(out) :: errcode",
-    ]
-    if multi_instance:
-        rc_arg_decls += [
-            f"integer, intent(in) :: {instance_local_name}",
-            f"integer, intent(in) :: {ninstances_local_name}",
+    if cam_host:
+        # CAM callers use (host_constituents, errcode, errmsg) positional order;
+        # preserve it so existing callers that don't use keyword args still compile.
+        rc_arg_decls = [
+            f"type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
+            "integer, intent(out) :: errcode",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
         ]
+    else:
+        rc_arg_decls = [
+            f"type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
+            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
+            "integer, intent(out) :: errcode",
+        ]
+        if multi_instance:
+            rc_arg_decls += [
+                f"integer, intent(in) :: {instance_local_name}",
+                f"integer, intent(in) :: {ninstances_local_name}",
+            ]
     rc_body = ["errcode = 0", "errmsg = ''"]
     if multi_instance:
         rc_body += [
@@ -551,8 +578,9 @@ def _generate_constituent_api(
     rc_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_register_constituents",
         is_function=False,
-        args=["host_constituents", "errmsg", "errcode"]
-            + ([instance_local_name, ninstances_local_name] if multi_instance else []),
+        args=(["host_constituents", "errcode", "errmsg"] if cam_host
+              else ["host_constituents", "errmsg", "errcode"]
+                   + ([instance_local_name, ninstances_local_name] if multi_instance else [])),
         use_stmts=[
             "use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t",
             "use ccpp_scheme_utils, only: ccpp_initialize_constituent_ptr" if cam_host
@@ -564,6 +592,11 @@ def _generate_constituent_api(
     )
 
     # ── 4. number_constituents ───────────────────────────────────────────
+    # The optional `advected` arg is declared for API compatibility but is not used
+    # to filter the count: every constituent registered through this API is advected
+    # (fixed_advected contains only advected=.true. entries; host_constituents and
+    # dynamic scheme arrays are required to be advected by the CAM-SIMA contract).
+    # size(lc_all_constituents) therefore equals the advected-only count.
     nc_arg_decls = [
         "integer, intent(out) :: num_advected",
         f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
@@ -760,7 +793,10 @@ def _generate_constituent_api(
 
     # ── 9. gather_constituents / 10. update_constituents (cam_host only) ──
     if cam_host:
-        _cam_obj_ref = ref("cam_constituents_obj")
+        # cam_host never supports multi-instance (asserted above), so bypass ref()
+        # to avoid a latent reference to lc_instances(instance)%cam_constituents_obj
+        # in a subroutine that has no instance argument.
+        _cam_obj_ref = "cam_constituents_obj"
         gc_op = ConstituentFunctionOp(
             fn_name=f"{h}_ccpp_gather_constituents",
             is_function=False,
