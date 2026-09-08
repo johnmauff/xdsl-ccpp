@@ -300,6 +300,9 @@
 // CHECK-NEXT:    real(kind=kind_phys), target, allocatable :: lc_const_tend(:, :, :)
 // CHECK-NEXT:    type(ccpp_constituent_prop_ptr_t), target, allocatable :: lc_const_props(:)
 // CHECK-NEXT:    real(kind=kind_phys), pointer :: lc_cld_liq_tend(:, :) => null()
+// CHECK-NEXT:    character(len=29) :: cam_model_const_stdnames(2) = [ character(len=29) :: 'cloud_liquid_dry_mixing_ratio', &
+// CHECK-NEXT:          'cloud_ice_dry_mixing_ratio' ]
+// CHECK-NEXT:    integer :: cam_model_const_indices(2) = -1
 // CHECK-NEXT:    public :: ccpp_register
 // CHECK-NEXT:    public :: ccpp_init
 // CHECK-NEXT:    public :: ccpp_final
@@ -567,29 +570,28 @@
 // CHECK-NEXT:      errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
-// CHECK-NEXT:      select case (trim(std_name))
-// CHECK-NEXT:      case ('cloud_liquid_dry_mixing_ratio', 'cloud_ice_dry_mixing_ratio')
+// CHECK-NEXT:      if (any(cam_model_const_stdnames == std_name)) then
 // CHECK-NEXT:        is_const = .true.
-// CHECK-NEXT:      case default
-// CHECK-NEXT:        if (allocated(lc_dyn_const)) then
-// CHECK-NEXT:          do lc_idx = 1, size(lc_dyn_const)
-// CHECK-NEXT:            call lc_dyn_const(lc_idx)%standard_name(lc_std_name)
-// CHECK-NEXT:            if (trim(lc_std_name) == trim(std_name)) then
-// CHECK-NEXT:              is_const = .true.
-// CHECK-NEXT:              return
-// CHECK-NEXT:            end if
-// CHECK-NEXT:          end do
-// CHECK-NEXT:        end if
-// CHECK-NEXT:        if (allocated(lc_dyn_const_ice)) then
-// CHECK-NEXT:          do lc_idx = 1, size(lc_dyn_const_ice)
-// CHECK-NEXT:            call lc_dyn_const_ice(lc_idx)%standard_name(lc_std_name)
-// CHECK-NEXT:            if (trim(lc_std_name) == trim(std_name)) then
-// CHECK-NEXT:              is_const = .true.
-// CHECK-NEXT:              return
-// CHECK-NEXT:            end if
-// CHECK-NEXT:          end do
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      end select
+// CHECK-NEXT:        return
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (allocated(lc_dyn_const)) then
+// CHECK-NEXT:        do lc_idx = 1, size(lc_dyn_const)
+// CHECK-NEXT:          call lc_dyn_const(lc_idx)%standard_name(lc_std_name)
+// CHECK-NEXT:          if (trim(lc_std_name) == trim(std_name)) then
+// CHECK-NEXT:            is_const = .true.
+// CHECK-NEXT:            return
+// CHECK-NEXT:          end if
+// CHECK-NEXT:        end do
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
+// CHECK-NEXT:        do lc_idx = 1, size(lc_dyn_const_ice)
+// CHECK-NEXT:          call lc_dyn_const_ice(lc_idx)%standard_name(lc_std_name)
+// CHECK-NEXT:          if (trim(lc_std_name) == trim(std_name)) then
+// CHECK-NEXT:            is_const = .true.
+// CHECK-NEXT:            return
+// CHECK-NEXT:          end if
+// CHECK-NEXT:        end do
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_ccpp_is_scheme_constituent
 // CHECK-LABEL:   subroutine Cld_ccpp_deallocate_dynamic_constituents()
 // CHECK:           if (allocated(lc_dyn_const)) deallocate(lc_dyn_const)
@@ -607,7 +609,7 @@
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
-// CHECK-NEXT:      integer :: lc_i, lc_num_consts
+// CHECK-NEXT:      integer :: lc_i, lc_num_consts, field_ind
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: const_prop
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)
 // CHECK-NEXT:      errcode = 0
@@ -696,6 +698,18 @@
 // CHECK-NEXT:      if (errcode /= 0) return
 // CHECK-NEXT:      if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
 // CHECK-NEXT:      allocate(lc_all_constituents(lc_num_consts))
+// CHECK-NEXT:      do lc_i = 1, size(cam_model_const_indices)
+// CHECK-NEXT:        call cam_constituents_obj%const_index(field_ind, cam_model_const_stdnames(lc_i), &
+// CHECK-NEXT:            errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:        if (errcode /= 0) return
+// CHECK-NEXT:        if (field_ind > 0) then
+// CHECK-NEXT:          cam_model_const_indices(lc_i) = field_ind
+// CHECK-NEXT:        else
+// CHECK-NEXT:          errcode = 1
+// CHECK-NEXT:          errmsg = 'No field index for '//trim(cam_model_const_stdnames(lc_i))
+// CHECK-NEXT:          return
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      end do
 // CHECK-NEXT:    end subroutine Cld_ccpp_register_constituents
 // CHECK-LABEL:   subroutine Cld_ccpp_number_constituents(num_advected, errmsg, errcode, advected)
 // CHECK:           integer, intent(out) :: num_advected

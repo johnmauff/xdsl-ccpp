@@ -1,0 +1,9 @@
+  Proposed sub-steps:
+  1. 3a — Convert non-CAM to ConstituentFunctionOp directly; delete _lines_to_fn_op. No semantic change.
+  2. 3b — Align CAM register_constituents/initialize_constituents to match non-CAM structure (move size-proxy alloc, add guards, remove
+     orphaned ccpp_initialize_constituent_ptr call).
+  3. 3c — Wire GPU residency (framework_var_residency) into the CAM path.
+  4. 3d — Fix remaining per-subroutine gaps in the CAM path (dynamic-array scan in is_scheme_constituent, dealloc completeness, etc.).
+  5. 3e — Add index arrays to non-CAM path so is_scheme_constituent uses the same array-comparison style as CAM.
+  6. 3f — Delete _generate_constituent_api_cam_host, gate gather_constituents/update_constituents on cam_host, unify to single function.
+  7. 3g — Full verification: pytest + Fortran build + regression.

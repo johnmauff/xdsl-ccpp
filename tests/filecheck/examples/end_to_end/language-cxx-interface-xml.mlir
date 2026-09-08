@@ -366,9 +366,6 @@
 // CHECK-NEXT:      errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
-// CHECK-NEXT:      select case (trim(std_name))
-// CHECK-NEXT:      case default
-// CHECK-NEXT:      end select
 // CHECK-NEXT:    end subroutine Tiny_ccpp_is_scheme_constituent
 // CHECK-LABEL:   subroutine Tiny_ccpp_deallocate_dynamic_constituents()
 // CHECK:           if (allocated(lc_all_constituents)) deallocate(lc_all_constituents)
@@ -386,7 +383,7 @@
 // CHECK-NEXT:      integer, intent(out) :: errcode
 // CHECK-NEXT:      integer :: lc_i, lc_num_consts
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: const_prop
-// CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr
+// CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)
 // CHECK-NEXT:      errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      lc_num_consts = size(host_constituents)
