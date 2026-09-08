@@ -3482,35 +3482,74 @@ class GenerateSuiteSubroutine(RewritePattern):
         )
         if constituent_extract_ops:
             raw_call_seq = self.getCallSequence(suite_description)
-            pre_q_seq, mod_q_seq, ro_q_seq = self._classify_call_sequence_by_q(
-                raw_call_seq, arg_tables
-            )
-            pre_q_ops, pre_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=pre_q_seq)
-            mod_q_ops, mod_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=mod_q_seq)
-            ro_q_ops, ro_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=ro_q_seq)
-            fn_sigs = {**pre_fn, **mod_fn, **ro_fn}
-            # Build fresh re-extract ops: MLIR ops can only belong to one block, so we
-            # cannot reuse the same constituent_extract_ops objects a second time.
-            constituent_reextract_ops, _ = self._build_constituent_sync_ops(
-                suite_model, data_ops, input_arg_list
-            )
-            # Writebacks (step 3) and re-extracts (step 5) are only needed
-            # when mod_q_seq is non-empty (e.g. qneg modifying the 3D
-            # constituent array in-place).  When no scheme writes to
-            # ccpp_constituents, the writeback is a no-op and -- more
-            # importantly -- omitting it lets the printer keep carr as
-            # intent(in) rather than upgrading it to intent(inout), which
-            # would be a Fortran constraint violation.
-            if mod_q_seq:
+            # Identify schemes that modify ccpp_constituents in-place (mod_q).
+            # We preserve full SDF ordering and splice the writeback/reextract
+            # ops at the exact boundary points, rather than bucketing all
+            # schemes by q-usage and reassembling — the bucket approach violated
+            # SDF ordering in suites like vdiff_bretherton_park where pre_q
+            # schemes (apply_heating_rate, etc.) must follow ro_q schemes
+            # (vertical_diffusion_tendencies) per the SDF.
+            Q_STD = "ccpp_constituents"
+            mod_q_schemes: set = set()
+            for item in raw_call_seq:
+                if item[0] != "scheme":
+                    continue
+                sn = item[1]
+                if sn not in arg_tables:
+                    continue
+                for fn_arg in arg_tables[sn].getFunctionArguments():
+                    if (fn_arg.hasAttr("standard_name")
+                            and fn_arg.getAttr("standard_name") == Q_STD):
+                        intent = (fn_arg.getAttr("intent")
+                                  if fn_arg.hasAttr("intent") else "in")
+                        if intent in ("inout", "out"):
+                            mod_q_schemes.add(sn)
+                            break
+
+            # Writebacks and re-extracts are only needed when at least one
+            # scheme modifies ccpp_constituents in-place (e.g. qneg). Omitting
+            # them when no scheme does keeps carr intent(in), avoiding a Fortran
+            # constraint violation.
+            if mod_q_schemes:
+                # Locate the first and last mod_q scheme in SDF order.
+                first_mod_q_idx = None
+                last_mod_q_idx = None
+                for i, item in enumerate(raw_call_seq):
+                    if item[0] == "scheme" and item[1] in mod_q_schemes:
+                        if first_mod_q_idx is None:
+                            first_mod_q_idx = i
+                        last_mod_q_idx = i
+
+                # Split the sequence at those boundaries; all three slices
+                # retain their original SDF ordering.
+                pre_mod_seq  = raw_call_seq[:first_mod_q_idx]
+                mid_seq      = raw_call_seq[first_mod_q_idx : last_mod_q_idx + 1]
+                post_seq     = raw_call_seq[last_mod_q_idx + 1:]
+
+                pre_ops,  pre_fn  = self._build_call_ops(
+                    **_bco_kwargs, call_sequence_items=pre_mod_seq)
+                mid_ops,  mid_fn  = self._build_call_ops(
+                    **_bco_kwargs, call_sequence_items=mid_seq)
+                post_ops, post_fn = self._build_call_ops(
+                    **_bco_kwargs, call_sequence_items=post_seq)
+                fn_sigs = {**pre_fn, **mid_fn, **post_fn}
+
+                # Build fresh re-extract ops (each MLIR op may only belong to
+                # one block; we cannot reuse the extract_ops objects).
+                constituent_reextract_ops, _ = self._build_constituent_sync_ops(
+                    suite_model, data_ops, input_arg_list
+                )
                 call_ops = (
-                    pre_q_ops
-                    + list(constituent_writeback_ops)   # q[:,i]←qv before qneg
-                    + mod_q_ops                          # qneg clips q in-place
-                    + constituent_reextract_ops          # re-extract qv←q[:,i] after qneg
-                    + ro_q_ops                           # geopotential_temp etc.
+                    pre_ops
+                    + list(constituent_writeback_ops)   # q[:,i] ← qv/ql/qi before first mod_q
+                    + mid_ops                            # first..last mod_q, SDF order preserved
+                    + constituent_reextract_ops          # qv/ql/qi ← q[:,i] after last mod_q
+                    + post_ops                           # remainder in SDF order
                 )
             else:
-                call_ops = pre_q_ops + ro_q_ops
+                # No in-place modifier of ccpp_constituents: run everything in
+                # SDF order with no writeback/reextract needed.
+                call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
             constituent_writeback_ops = []  # already embedded in call_ops above
         else:
             call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
