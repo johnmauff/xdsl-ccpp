@@ -694,7 +694,7 @@
 // CHECK-NEXT:        lc_num = lc_num + 1
 // CHECK-NEXT:        call lc_tmp(lc_num)%instantiate(std_name='cloud_liquid_dry_mixing_ratio',                   &
 // CHECK-NEXT:        long_name='Cloud liquid dry mixing ratio', units='kg kg-1', diag_name='cld_liq_array',      &
-// CHECK-NEXT:        errcode=errcode, errmsg=errmsg, advected=.true.)
+// CHECK-NEXT:        vertical_dim='vertical_layer_dimension', errcode=errcode, errmsg=errmsg, advected=.true.)
 // CHECK-NEXT:        if (errcode /= 0) return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      lc_found = .false.
@@ -717,7 +717,8 @@
 // CHECK-NEXT:        lc_num = lc_num + 1
 // CHECK-NEXT:        call lc_tmp(lc_num)%instantiate(std_name='cloud_ice_dry_mixing_ratio',                      &
 // CHECK-NEXT:        long_name='Cloud ice dry mixing ratio', units='kg kg-1', diag_name='cld_ice_array',         &
-// CHECK-NEXT:        errcode=errcode, errmsg=errmsg, advected=.true., default_value=0.0_kind_phys)
+// CHECK-NEXT:        vertical_dim='vertical_layer_dimension', errcode=errcode, errmsg=errmsg, advected=.true.,   &
+// CHECK-NEXT:        default_value=0.0_kind_phys)
 // CHECK-NEXT:        if (errcode /= 0) return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)

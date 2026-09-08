@@ -923,6 +923,7 @@ def _generate_constituent_api(
         inst_args = (
             f"std_name='{std_name_f}', long_name='{long_name_f}', "
             f"units='{units_f}', diag_name='{local_name_f}', "
+            f"vertical_dim='vertical_layer_dimension', "
             f"errcode=errcode, errmsg=errmsg, advected=.true."
         )
         if default_val_f is not None:
