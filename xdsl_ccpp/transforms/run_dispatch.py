@@ -1112,22 +1112,26 @@ def _build_array_section_ops(
                 # than consolidated: no fixture in this repo to regression-test
                 # against locally (CAM-SIMA's own test_write_init_files.py is the
                 # only known harness that exercises it, per
-                # capgen_v1_parity_backlog.md's Workstream 2 entry) --
-                # single-dimension slice only, behavior unchanged -- do not
-                # extend to additional dimensions here, since that would change
-                # already-correct, already-verified output for every existing
-                # horizontal_loop_extent
-                # example.
+                # capgen_v1_parity_backlog.md's Workstream 2 entry).
+                # Additional dimensions (e.g. pver for rank-2 CapScratch arrays)
+                # are now resolved via _resolve_extra_dim_bounds so that 2-D+
+                # scratch arrays receive the correct (col_start:col_end, 1:pver)
+                # section rather than the bare array. For 1-D arrays _cv_dims[1:]
+                # is empty so the call is a no-op and existing behaviour is
+                # unchanged.
                 col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
                 col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
                 if not col_begin_key or not col_end_key:
                     continue
                 if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
                     continue
+                lowers = [ctx.block_arg_map[col_begin_key]]
+                uppers = [ctx.block_arg_map[col_end_key]]
+                _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers)
                 section = ArraySectionOp(
                     host_var_ref_results[arg_name],
-                    [ctx.block_arg_map[col_begin_key]],
-                    [ctx.block_arg_map[col_end_key]],
+                    lowers,
+                    uppers,
                 )
                 array_section_main_ops.append(section)
                 host_var_ref_results[arg_name] = section.res
