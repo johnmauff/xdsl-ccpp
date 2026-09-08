@@ -157,8 +157,10 @@ class TestCamHostGatherUpdateRoutines:
         assert "cam_constituents_obj%copy_out" in body
 
     def test_gather_update_in_public_names(self, run_host_match, ccpp_context):
-        """Both gather and update routine names must appear in the module's
-        public statement so they are accessible to CAM callers."""
+        """Both gather and update routine names must appear in explicit
+        ``public ::`` declarations so the stated invariant fails if they are
+        dropped from public_names_list (not just present in the subroutine
+        definition lines, which would also contain the names)."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        assert _GATHER_FN in fortran
-        assert _UPDATE_FN in fortran
+        assert f"public :: {_GATHER_FN}" in fortran
+        assert f"public :: {_UPDATE_FN}" in fortran
