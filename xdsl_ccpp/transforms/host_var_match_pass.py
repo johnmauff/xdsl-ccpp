@@ -277,6 +277,38 @@ class HostVariableMatchPass(ModulePass):
 
         return errors, warnings
 
+    def _collect_sdf_scheme_names(self, ccpp_mod) -> set:
+        """Return the set of scheme names referenced in any SuiteOp in ccpp_mod.
+
+        Handles nested SubcycleOp children within GroupOp bodies.  Only schemes
+        actually listed in the SDF are included; schemes whose meta files are
+        loaded but that are not used in any suite are excluded.  This set is
+        passed to iter_arg_tables as table_name_in so that _match_and_validate
+        only validates args for schemes that are actually in the SDF.
+        """
+        scheme_names: set = set()
+
+        def _collect_from_block(ops):
+            for op in ops:
+                if isa(op, ccpp.SchemeOp):
+                    scheme_names.add(op.scheme_name.data)
+                elif isa(op, ccpp.GroupOp):
+                    _collect_from_block(op.body.ops)
+                elif hasattr(op, "body"):
+                    _collect_from_block(op.body.ops)
+
+        for op in ccpp_mod.body.ops:
+            if isa(op, ccpp.SuiteOp):
+                _collect_from_block(op.body.ops)
+                # Also include lifecycle hook schemes (init_scheme / final_scheme
+                # attributes on the SuiteOp itself, not nested SchemeOps).
+                if op.init_scheme is not None:
+                    scheme_names.add(op.init_scheme.data)
+                if op.final_scheme is not None:
+                    scheme_names.add(op.final_scheme.data)
+
+        return scheme_names
+
     def _build_model_var_index(self, ccpp_mod):
         """Walk HOST/MODULE/DDT tables and return (model_var_index, produced_in_init).
 
@@ -348,17 +380,26 @@ class HostVariableMatchPass(ModulePass):
 
         return model_var_index, produced_in_init
 
-    def _match_and_validate(self, ccpp_mod, model_var_index, produced_in_init):
+    def _match_and_validate(self, ccpp_mod, model_var_index, produced_in_init,
+                            sdf_scheme_names=None):
         """Annotate scheme args with host matches and collect compatibility errors.
 
-        Walks all SCHEME argument tables, sets model_var_name/model_module_name/
+        Walks SCHEME argument tables, sets model_var_name/model_module_name/
         model_var_memory_space/model_var_is_ddt on matched args, runs
         _check_compatibility on each matched pair, and marks unmatched non-optional
         args as interstitial or raises a ValueError listing all errors.
+
+        sdf_scheme_names: if provided, only scheme arg tables whose table_name is
+            in this set are validated.  Schemes whose meta files are loaded but
+            that are not referenced in any SuiteOp (not in the SDF) are skipped.
+            This prevents false-positive "no matching host model variable" errors
+            for args in shared meta files that define multiple schemes.
         """
         all_errors: list[str] = []
 
-        for table_prop_op, arg_table_op in iter_arg_tables(ccpp_mod, table_type=TableTypeKind.Scheme):
+        for table_prop_op, arg_table_op in iter_arg_tables(
+            ccpp_mod, table_type=TableTypeKind.Scheme, table_name_in=sdf_scheme_names
+        ):
             scheme_name = table_prop_op.table_name.data
             for arg_op in arg_table_op.body.ops:
                 if not isa(arg_op, ccpp.ArgumentOp):
@@ -475,5 +516,9 @@ class HostVariableMatchPass(ModulePass):
         if ccpp_mod is None:
             return
 
+        sdf_scheme_names = self._collect_sdf_scheme_names(ccpp_mod)
         model_var_index, produced_in_init = self._build_model_var_index(ccpp_mod)
-        self._match_and_validate(ccpp_mod, model_var_index, produced_in_init)
+        self._match_and_validate(
+            ccpp_mod, model_var_index, produced_in_init,
+            sdf_scheme_names=sdf_scheme_names or None,
+        )

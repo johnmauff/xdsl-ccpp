@@ -1210,7 +1210,9 @@ def _build_array_section_ops(
         if not host_var_desc.hasAttr("dim_names"):
             continue
         dim_names_list = host_var_desc.getAttr("dim_names")
-        if not dim_names_list or dim_names_list[0].lower() != CCPP_HORIZ_DIM_STD_NAME:
+        if not dim_names_list or dim_names_list[0].lower() not in (
+            CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME
+        ):
             continue
 
         # Find the canonical block arg names for loop begin/end via

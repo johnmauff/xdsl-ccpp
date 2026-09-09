@@ -2938,6 +2938,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME,
         }
         _has_horiz_first_dim = False
+        _sentry = None
         if suite_model is not None:
             _sentry = suite_model.get(fw_std_key)
             if _sentry is not None and _sentry.alloc_dim_std_names:
@@ -2945,7 +2946,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
                 )
         _dims = _rank
-        if physics_mode and _dims == 1 and _has_horiz_first_dim:
+        if physics_mode and _dims >= 1 and _has_horiz_first_dim:
             _col_begin_ssa = next(
                 (data_ops[a.name] for a in all_args.values()
                  if a.hasAttr("standard_name")
@@ -2961,13 +2962,37 @@ class GenerateSuiteSubroutine(RewritePattern):
                 data_ops.get("col_end"),
             )
             if _col_begin_ssa is not None and _col_end_ssa is not None:
-                section = ArraySectionOp(
-                    ref_op.res,
-                    [_col_begin_ssa],
-                    [_col_end_ssa],
+                lowers = [_col_begin_ssa]
+                uppers = [_col_end_ssa]
+                # For rank>1: resolve extra dims (e.g. vertical_layer_dimension → pver)
+                # via standard_name lookup in all_args. Lower bound is always 1.
+                _extra_std_names = (
+                    _sentry.alloc_dim_std_names[1:]
+                    if _sentry is not None and _sentry.alloc_dim_std_names
+                    else []
                 )
-                framework_ref_ops.append(section)
-                data_ops[fw_arg.name] = section
+                _extra_ok = True
+                _one_const = None
+                for _extra_std in _extra_std_names:
+                    _dim_ssa = next(
+                        (data_ops[a.name] for a in all_args.values()
+                         if a.hasAttr("standard_name")
+                         and a.getAttr("standard_name").lower() == _extra_std.lower()
+                         and a.name in data_ops),
+                        None,
+                    )
+                    if _dim_ssa is None:
+                        _extra_ok = False
+                        break
+                    if _one_const is None:
+                        _one_const = arith.ConstantOp.from_int_and_width(1, 32)
+                        framework_ref_ops.append(_one_const)
+                    lowers.append(_one_const.result)
+                    uppers.append(_dim_ssa)
+                if _extra_ok:
+                    section = ArraySectionOp(ref_op.res, lowers, uppers)
+                    framework_ref_ops.append(section)
+                    data_ops[fw_arg.name] = section
 
         return _var_name, _suite_entry
 
