@@ -4189,18 +4189,30 @@ class GenerateSuiteSubroutine(RewritePattern):
             interstitial_var_names.add(entry.local_name.lower())
         return allocatable_mod_vars, interstitial_var_names, run_local_entries
 
+    # Suffixes and substrings that identify non-run lifecycle FuncOps from their
+    # full sym_name (which is the Fortran subroutine name, e.g.
+    # "rrtmgp_init_physics_after_coupler" or "suite_allocate_suite_register").
+    # The run subroutine has no phase word: "{suite_name}_{group_name}".
+    _NON_RUN_SYM_SUBSTRINGS = ("_init_", "_final_")  # covers timestep_* too
+    _NON_RUN_SYM_SUFFIXES = ("_register", "_initialize", "_finalize")
+
     @staticmethod
     def _inject_run_local_var_handling(generated_fns, run_local_entries):
         """Inject local allocatable decls and end-of-run SafeDeallocOps for run-local vars.
 
-        Run-local vars (those whose allocation dimension is a _run-produced scalar,
-        e.g. t_day dimensioned by nday from rrtmgp_pre._run) must be declared as
+        Run-local vars (those whose allocation dimension is a repeating-phase scalar,
+        e.g. t_day dimensioned by nday from rrtmgp_pre._timestep_init, or work
+        dimensioned by nw from use_workspace._timestep_init) must be declared as
         local allocatables inside the run subroutine, not at module scope, so that
-        each call gets a fresh allocation with the current value of that dimension.
-        The LazyAllocOp for these vars already carries is_run_local=True (so the
-        printer emits plain allocate() instead of if (.not. allocated)); this function
-        adds the matching local-declaration AllocaOp (picked up by the printer's
-        local_allocas scan) and SafeDeallocOp at the end of the subroutine.
+        each call sees the current dimension value.
+
+        The run subroutine FuncOp is identified two ways (OR):
+          1. It contains a LazyAllocOp with is_run_local=True (cap-allocated vars
+             such as t_day / pint_day — the printer emits plain allocate() for these).
+          2. Its sym_name has the pattern "_{group_name}" with no phase prefix (covers
+             scheme-allocated run-local vars like work/scratch_workspace, where the
+             scheme itself does the allocation via allocatable intent=out and the cap
+             only needs the local declaration).
         """
         for fn in generated_fns:
             if not isa(fn, func.FuncOp):
@@ -4208,17 +4220,30 @@ class GenerateSuiteSubroutine(RewritePattern):
             if not fn.body.blocks:
                 continue
             block = fn.body.blocks[0]
-            # Identify the run subroutine by the presence of run-local LazyAllocOps
-            # (is_run_local=True). The subroutine name does not contain "_run" — it
-            # is "_<group_name>" (e.g. "_physics_after_coupler"), so a name-based
-            # check would incorrectly skip it.
+            # Primary: cap-allocated run-local vars leave a LazyAllocOp(is_run_local=True).
             has_run_local_alloc = any(
                 isa(bop, LazyAllocOp)
                 and bop.is_run_local is not None
                 and bool(bop.is_run_local.value.data)
                 for bop in block.ops
             )
-            if not has_run_local_alloc:
+            # Fallback: scheme-allocated vars (allocatable intent=out) have no
+            # LazyAllocOp, so identify the run subroutine by its full sym_name.
+            # The sym_name is the Fortran subroutine name, e.g.:
+            #   run:             "rrtmgp_physics_after_coupler"
+            #   init:            "rrtmgp_init_physics_after_coupler"  (has "_init_")
+            #   timestep_init:   "rrtmgp_timestep_init_physics_after_coupler"
+            #   final:           "rrtmgp_final_physics_after_coupler" (has "_final_")
+            #   timestep_final:  "rrtmgp_timestep_final_physics_after_coupler"
+            #   suite-register:  "rrtmgp_register"  (ends "_register")
+            #   suite-initialize:"rrtmgp_initialize" (ends "_initialize")
+            #   suite-finalize:  "rrtmgp_finalize"   (ends "_finalize")
+            sym = fn.sym_name.data
+            is_run_by_name = (
+                not any(sub in sym for sub in GenerateSuiteSubroutine._NON_RUN_SYM_SUBSTRINGS)
+                and not sym.endswith(GenerateSuiteSubroutine._NON_RUN_SYM_SUFFIXES)
+            )
+            if not (has_run_local_alloc or is_run_by_name):
                 continue
             ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
             if ret_op is None:
