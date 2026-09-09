@@ -91,6 +91,7 @@ source of truth for *why* and *how* — this table only tracks *what* and *wheth
 | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | 📋 Backlog (L, deliberately deferred until after task #28) | L5135 |
 | ~~Scheme-level dynamic constituent registration output discarded~~ (corrected: not a bug) + the real multi-instance regression this investigation found in the same code path | ✅ Corrected + fixed (2026-08-18) | L5360 |
 | Codebase-wide complexity/duplication audit (tasks #37-#62) | 🔄 Tier 1+2 executing (2026-08-18); Tier 3 backlog; Tier 4: tasks #61/#62 ✅ both fully Done (2026-08-24, #62 incl. PR #91 Copilot follow-up), tasks #70/#71 split out and still backlog | L5539 |
+| Task #72: SuiteOwned dimension var from prior phase missing from allocation (`pint_day` not allocated in rrtmgp cap) | ✅ Fixed (2026-09-09): `_resolve_alloc_dim_var_refs` fallback to `data_ops` | L6752 |
 | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | 📋 Backlog (M, real refactor touching 5 files' core dispatch logic) — split from task #61 | L6544 |
 | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | 📋 Backlog (S-M, needs a diff + decision, not a same-sitting deletion) — split from task #61 | L6544 |
 | Task #66: double-`"_suite"` naming convention (e.g. `kessler_suite_suite_register`) — needed for CAM-SIMA link compatibility | ✅ Done (2026-08-24): Stage 1 (centralize infix) + Stage 2 (actual rename, `SUITE_FN_INFIX=""`) both landed on `double-suite-naming-stage1`; Stage 2 found and fixed a real bug (`cpp_interop.py`'s own independent, un-centralized `"_suite_"` copy) via real regen before touching goldens | L6621 |
@@ -6748,3 +6749,21 @@ Findings triaged into four tiers, each now a tracked task:
   `_classify_args` and the run-dispatch cluster's own argument-resolution logic solve the same
   kind of problem at adjacent pipeline layers without a shared abstraction — now tracked as its
   own step, Phase 4, sequenced after Phase 3b and before the slim-down/docs phase.
+
+- **Task #72 — SuiteOwned dimension var from prior phase silently dropped from allocation —
+  RESOLVED (2026-09-09).** Found during xdsl23 rrtmgp debug run: `Fortran runtime error:
+  Array bound mismatch for dimension 2 of array 'pint_day' (1/60)` at
+  `rrtmgp_inputs.F90:197`. Root cause: `_resolve_alloc_dim_var_refs` only searches
+  `all_args` for the **current phase**. `nlayp` (`number_of_vertical_interfaces_in_RRTMGP`)
+  is produced as `intent=out` in `rrtmgp_inputs_setup._init` and never re-declared in any
+  `_run` arg table, so it is absent from `all_args` during run-phase allocation. All three
+  fallback paths (`dims_compatible` with `pverp`, `_find_loop_upper_bound`, MODULE-table
+  scan) also failed. The allocator silently returned `([], None)` and skipped
+  `allocate(pint_day(nday, nlayp))` entirely. `nlayp` IS in `data_ops` as a SuiteOwned
+  `HostVarRefOp` (placed there by `_build_framework_refs`), but was never consulted.
+  Fix: added a final fallback in `_resolve_alloc_dim_var_refs` (after all three existing
+  paths fail) that looks up `data_ops.get(("std_name", alloc_dim.lower()))`. If found, the
+  SuiteOwned scalar from a prior phase is used as the allocation bound. 8-line addition,
+  no behavior change for any variable whose dimension is already resolvable by the existing
+  paths. Full suite 644 passed/1 xfailed (up from 628 — 16 new tests landed between
+  #66 and this fix). No scheme source files changed.

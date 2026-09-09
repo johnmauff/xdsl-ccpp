@@ -206,14 +206,6 @@
 // CHECK-NEXT:        call cld_liq_run(ncol=ncol, timestep=timestep, tcld=tcld, temp=temp, qv=qv,                 &
 // CHECK-NEXT:          ps=ps_unit_conv, cld_liq_tend=cld_liq_tend, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_ice_run(ncol=ncol, timestep=timestep, temp=temp, qv=qv, ps=ps,                     &
-// CHECK-NEXT:          cld_ice_array=cld_ice_cld_ice_array, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (errflg .eq. 0) then
-// CHECK-NEXT:        call cld_shadow_run(ncol=ncol, timestep=timestep, cld_ice_array=cld_shadow_cld_ice_array,   &
-// CHECK-NEXT:          ncols=cld_shadow_ncols, errmsg=errmsg, errflg=errflg)
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      const(1:ncol, :, lc_const_indices(1)) = cld_liq_array(1:ncol, :)
 // CHECK-NEXT:      const(1:ncol, :, lc_const_indices(2)) = cld_ice_cld_ice_array(1:ncol, :)
 // CHECK-NEXT:      if (errflg .eq. 0) then
@@ -221,11 +213,19 @@
 // CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call cld_ice_run(ncol=ncol, timestep=timestep, temp=temp, qv=qv, ps=ps,                     &
+// CHECK-NEXT:          cld_ice_array=cld_ice_cld_ice_array, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
 // CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      cld_liq_array(1:ncol, :) = const(1:ncol, :, lc_const_indices(1))
 // CHECK-NEXT:      cld_ice_cld_ice_array(1:ncol, :) = const(1:ncol, :, lc_const_indices(2))
+// CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call cld_shadow_run(ncol=ncol, timestep=timestep, cld_ice_array=cld_shadow_cld_ice_array,   &
+// CHECK-NEXT:          ncols=cld_shadow_ncols, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine cld_suite_physics
 // CHECK-LABEL:   subroutine cld_suite_timestep_init_physics(errflg, errmsg)
 // CHECK:           integer, intent(out) :: errflg
