@@ -1177,6 +1177,7 @@ class _PendingAlloc:
     init_value: object
     needs_device_residency: bool
     producer_scheme: str
+    is_run_local: bool = False
 
 
 @dataclass
@@ -1537,10 +1538,20 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if ssa is not None:
                     dim_var_refs.append(ssa)
                 else:
-                    # This dimension is unresolvable at this phase; returning
-                    # an incomplete list would produce a rank mismatch, so
-                    # signal "not yet allocatable" by returning empty.
-                    return [], None
+                    # Fallback: dimension var produced in a prior phase (e.g.
+                    # _init) is absent from the current phase's all_args but
+                    # lives in data_ops as a SuiteOwned HostVarRefOp.
+                    # Example: number_of_vertical_interfaces_in_RRTMGP (nlayp)
+                    # is produced in rrtmgp_inputs_setup._init and never
+                    # re-declared in any _run table.
+                    fw_ref = data_ops.get(("std_name", alloc_dim.lower()))
+                    if fw_ref is not None:
+                        dim_var_refs.append(fw_ref)
+                    else:
+                        # Genuinely unresolvable: returning an incomplete list
+                        # would produce a rank mismatch, so signal "not yet
+                        # allocatable" by returning empty.
+                        return [], None
         return dim_var_refs, None
 
     def _build_promoted_call_ops(
@@ -2637,15 +2648,26 @@ class GenerateSuiteSubroutine(RewritePattern):
                         dim_var_refs=_dim_var_refs,
                         init_value=_pending.init_value,
                         needs_device_residency=_pending.needs_device_residency,
+                        is_run_local=_pending.is_run_local,
                     )
                 )
                 if already_scheduled_allocs is not None:
                     already_scheduled_allocs.add(_pending.std_key)
-            # else: a genuinely unresolvable OTHER dimension
-            # on this same var -- silently skipped, matching
-            # the pre-existing narrow gap this fix doesn't
-            # change (not the "producer never ran" case the
-            # validation below exists to catch).
+            else:
+                # Genuinely unresolvable OTHER dimension on this
+                # var -- warn so the developer sees this at
+                # code-generation time rather than encountering a
+                # Fortran runtime error from an unallocated array.
+                import warnings
+                _dim_desc = ", ".join(str(d) for d in _pending.alloc_dim_names)
+                warnings.warn(
+                    f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                    f" '{_pending.var_name}'"
+                    f" (std_name='{_pending.std_key}', dims=({_dim_desc}))"
+                    f" after scheme '{scheme_name}' ran"
+                    f" -- no allocate() will be generated.",
+                    stacklevel=2,
+                )
         return ops
 
     def _emit_ordered_list(
@@ -2996,6 +3018,37 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         return _var_name, _suite_entry
 
+    # Phases that run repeatedly (per-timestep or per-call). A SuiteOwned
+    # scalar produced in any of these phases can change between calls to the
+    # run subroutine, so arrays dimensioned by it must be locally allocated
+    # on each call rather than lazily at module scope.
+    _REPEATING_PHASES = frozenset({"_run", "_timestep_init", "_timestep_final"})
+
+    @staticmethod
+    def _is_run_local_var(entry, suite_model):
+        """True when a SuiteOwned array should be a LOCAL allocatable in _run.
+
+        A var is run-local when any of its allocation dimensions is a SuiteOwned
+        scalar that is itself produced in a repeating phase (_run,
+        _timestep_init, or _timestep_final). nday / daytime_columns_dimension
+        is produced in rrtmgp_pre_timestep_init (not _run), so the check
+        must cover _timestep_init. Such a dimension changes on every call; a
+        module-level lazy-alloc (if .not. allocated) would lock the size to the
+        first-call value permanently. The correct behaviour -- matching
+        capgen-v1 -- is to declare the var as a local allocatable inside the
+        run subroutine, allocate unconditionally with the current dimension
+        value on every call, and deallocate at subroutine end so storage is
+        released.
+        """
+        for dim_std_name in entry.alloc_dim_std_names:
+            dim_entry = suite_model.get(dim_std_name.lower())
+            if (dim_entry is not None
+                    and dim_entry.producing_phase in
+                        GenerateSuiteSubroutine._REPEATING_PHASES
+                    and dim_entry.rank == 0):
+                return True
+        return False
+
     def _maybe_schedule_framework_var_alloc(
         self, fw_arg, fw_std_key, var_name, suite_entry, is_alloc_phase,
         suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
@@ -3017,9 +3070,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         if not is_alloc_phase:
             return
         if fw_arg.hasAttr("allocatable"):
-            # Task #30, mechanism 1: this array is scheme-self-
-            # allocated -- its own producing scheme declares it
-            # `allocatable, intent(out)` and performs the
+            # Task #30, mechanism 1: when the scheme's dummy is truly
+            # `allocatable, intent(out)` the scheme performs the
             # allocate() itself in real Fortran (see
             # examples/advection/dlc_liq.F90, examples/
             # suite_allocate/make_workspace.F90 -- both already do
@@ -3032,13 +3084,40 @@ class GenerateSuiteSubroutine(RewritePattern):
             # ordering bug this whole fix exists for. Module-level
             # storage is still declared above unconditionally;
             # only the allocation itself is skipped here.
-            return
+            #
+            # Exception: a variable whose dimensions include
+            # horizontal_loop_extent cannot have an allocatable
+            # Fortran dummy, because the cap passes it as an array
+            # section (lw_Ds(col_start:col_end, ...)).  Fortran
+            # prohibits passing a section to an allocatable dummy.
+            # Such variables carry allocatable=True in their CCPP
+            # metadata to indicate they are declared allocatable in
+            # the CAP module -- the cap is responsible for
+            # allocating them.  Do NOT early-return in that case;
+            # fall through to generate the LazyAllocOp below.
+            _dim_names = (fw_arg.getAttr("dim_names")
+                          if fw_arg.hasAttr("dim_names") else [])
+            # dim_names on Block args are raw (not normalized via
+            # _normalize_std_name), so horizontal_loop_extent is still
+            # "horizontal_loop_extent" here, not "horizontal_dimension".
+            # Check for both forms to be safe.
+            _has_horiz_dim = any(
+                d.lower() in (CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME)
+                for d in _dim_names
+            )
+            if not _has_horiz_dim:
+                return
 
         _alloc_dim_names = (
             suite_model.alloc_dims(fw_std_key)
             if suite_model is not None
             else (fw_arg.getAttr("dim_names")
                   if fw_arg.hasAttr("dim_names") else [])
+        )
+        _is_run_local = (
+            suite_entry is not None
+            and suite_model is not None
+            and self._is_run_local_var(suite_entry, suite_model)
         )
         dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
             _alloc_dim_names, all_args, data_ops, framework_ref_ops,
@@ -3064,6 +3143,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if suite_entry is not None else False
                     ),
                     producer_scheme=_pending_producer,
+                    is_run_local=_is_run_local,
                 )
             )
         elif dim_var_refs and not pending_only:
@@ -3084,10 +3164,25 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if suite_entry is not None
                         else False
                     ),
+                    is_run_local=_is_run_local,
                 )
             )
             if already_scheduled_allocs is not None:
                 already_scheduled_allocs.add(fw_std_key)
+        else:
+            # _pending_producer is None but dim_var_refs is empty: genuinely
+            # unresolvable dimensions.  Warn so the developer sees this at
+            # code-generation time rather than encountering a Fortran runtime
+            # error from an unallocated array.
+            _alloc_dim_desc = ", ".join(str(d) for d in _alloc_dim_names)
+            import warnings
+            warnings.warn(
+                f"xdsl_ccpp: cannot resolve allocation dimensions for "
+                f"'{var_name}' (std_name='{fw_std_key}', dims=({_alloc_dim_desc}))"
+                f" -- no allocate() will be generated; this will likely cause a"
+                f" Fortran runtime error.",
+                stacklevel=2,
+            )
 
     def _sweep_suite_owned_var_allocations(
         self, suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
@@ -3160,6 +3255,19 @@ class GenerateSuiteSubroutine(RewritePattern):
                 )
                 if already_scheduled_allocs is not None:
                     already_scheduled_allocs.add(entry.standard_name)
+            else:
+                # _pending_producer is None but dim_var_refs is empty:
+                # genuinely unresolvable dimensions during the sweep pass.
+                import warnings
+                _dim_desc = ", ".join(str(d) for d in entry.alloc_dim_std_names)
+                warnings.warn(
+                    f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                    f" '{entry.local_name}'"
+                    f" (std_name='{entry.standard_name}', dims=({_dim_desc}))"
+                    f" during suite-owned var sweep"
+                    f" -- no allocate() will be generated.",
+                    stacklevel=2,
+                )
 
     def _build_framework_refs(
         self,
@@ -3199,6 +3307,46 @@ class GenerateSuiteSubroutine(RewritePattern):
         framework_ref_ops = []
         lazy_alloc_ops = []
         pending_allocs: dict = {}
+        # Pre-populate data_ops with HostVarRefOps for SuiteOwned scalars that
+        # were produced in a prior phase (e.g. _init) and are therefore absent
+        # from the current phase's all_args, but are module-level variables
+        # that can always be referenced by name.  Without this,
+        # _resolve_alloc_dim_var_refs cannot find them as dimension bounds for
+        # a LazyAllocOp (e.g. nlayp for pint_day in the rrtmgp suite, produced
+        # only by rrtmgp_inputs_setup._init and never re-declared in any _run).
+        #
+        # Guarded to _run (and _run-like) phases only:
+        # - In _init, all init-phase scalars are already in all_args so they
+        #   don't need pre-population.  Future-phase scalars (e.g. nday from
+        #   rrtmgp_pre._run) must NOT be added: doing so lets
+        #   _sweep_suite_owned_var_allocations resolve them as 0-valued module
+        #   variables, producing allocate(t_day(0, nlay)) in the init body.
+        # - Scalars already in all_args for the current phase must not be
+        #   bypassed either (e.g. nday is a _run-phase output; pre-populating
+        #   it in _run would let allocation fire before rrtmgp_pre_run runs).
+        if suite_model is not None and tgt_subroutine_postfix not in (
+            "_init", "_register", None
+        ):
+            _current_std_names = {
+                a.getAttr("standard_name").lower()
+                for a in all_args.values()
+                if a.hasAttr("standard_name")
+            }
+            for _so_entry in suite_model.suite_owned_vars():
+                if _so_entry.rank != 0:
+                    continue  # only scalar dimension bounds needed here
+                _so_key = _so_entry.standard_name.lower()
+                if _so_key in _current_std_names:
+                    continue  # in the current phase's all_args; don't bypass
+                if _so_entry.local_name in data_ops:
+                    continue  # already in scope (e.g. a block argument)
+                _so_type = TypeConversions.convert(_so_entry.fortran_type,
+                                                   _so_entry.kind, 0)
+                _so_ref = ccpp_utils.HostVarRefOp(_so_entry.local_name, "", _so_type)
+                _so_ref.res.name_hint = _so_entry.local_name
+                framework_ref_ops.append(_so_ref)
+                data_ops[_so_entry.local_name] = _so_ref
+                data_ops[("std_name", _so_key)] = _so_ref
         if framework_vars:
             for fw_arg in framework_vars.values():
                 _fw_std_key = _std_key(fw_arg)
@@ -4002,10 +4150,20 @@ class GenerateSuiteSubroutine(RewritePattern):
         return extract_ops, writeback_ops
 
     def _build_module_vars(self, suite_model):
-        """Return (allocatable_mod_vars, interstitial_var_names) for suite-owned variables."""
+        """Return (allocatable_mod_vars, interstitial_var_names, run_local_entries).
+
+        run_local_entries -- SuiteVarEntry objects that should be declared as
+        LOCAL allocatables inside the _run subroutine rather than at module scope.
+        These are excluded from allocatable_mod_vars and interstitial_var_names.
+        """
         interstitial_var_names: set[str] = set()
         allocatable_mod_vars = []
+        run_local_entries = []
         for entry in suite_model.suite_owned_vars():
+            if (entry.rank > 0 and not entry.is_ddt
+                    and self._is_run_local_var(entry, suite_model)):
+                run_local_entries.append(entry)
+                continue
             if entry.is_ddt:
                 # DDT interstitials are module-scope non-allocatable scalars; require
                 # type(...) syntax in Fortran.
@@ -4029,7 +4187,54 @@ class GenerateSuiteSubroutine(RewritePattern):
                                 kind=entry.kind if entry.kind else None, rank=entry.rank)
                 )
             interstitial_var_names.add(entry.local_name.lower())
-        return allocatable_mod_vars, interstitial_var_names
+        return allocatable_mod_vars, interstitial_var_names, run_local_entries
+
+    @staticmethod
+    def _inject_run_local_var_handling(generated_fns, run_local_entries):
+        """Inject local allocatable decls and end-of-run SafeDeallocOps for run-local vars.
+
+        Run-local vars (those whose allocation dimension is a _run-produced scalar,
+        e.g. t_day dimensioned by nday from rrtmgp_pre._run) must be declared as
+        local allocatables inside the run subroutine, not at module scope, so that
+        each call gets a fresh allocation with the current value of that dimension.
+        The LazyAllocOp for these vars already carries is_run_local=True (so the
+        printer emits plain allocate() instead of if (.not. allocated)); this function
+        adds the matching local-declaration AllocaOp (picked up by the printer's
+        local_allocas scan) and SafeDeallocOp at the end of the subroutine.
+        """
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp):
+                continue
+            if not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            # Identify the run subroutine by the presence of run-local LazyAllocOps
+            # (is_run_local=True). The subroutine name does not contain "_run" — it
+            # is "_<group_name>" (e.g. "_physics_after_coupler"), so a name-based
+            # check would incorrectly skip it.
+            has_run_local_alloc = any(
+                isa(bop, LazyAllocOp)
+                and bop.is_run_local is not None
+                and bool(bop.is_run_local.value.data)
+                for bop in block.ops
+            )
+            if not has_run_local_alloc:
+                continue
+            ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
+            if ret_op is None:
+                continue
+            for entry in run_local_entries:
+                full_type = TypeConversions.convert(
+                    entry.fortran_type, entry.kind if entry.kind else None, entry.rank
+                )
+                alloca = memref.AllocaOp.get(
+                    full_type.element_type, shape=[0] * entry.rank
+                )
+                alloca.memref.name_hint = entry.local_name + "__alloc"
+                Rewriter.insert_op(alloca, InsertPoint.at_start(block))
+                Rewriter.insert_op(
+                    SafeDeallocOp(entry.local_name), InsertPoint.before(ret_op)
+                )
 
     @staticmethod
     def _inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names):
@@ -4174,9 +4379,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         all_strings_used = _lc.check_strings_used | _lc.state_strings_used
         ccpp_suite_state_global, string_const_globals = self._build_state_globals(all_strings_used)
 
-        allocatable_mod_vars, interstitial_var_names = self._build_module_vars(suite_model)
+        allocatable_mod_vars, interstitial_var_names, run_local_entries = (
+            self._build_module_vars(suite_model)
+        )
         if allocatable_mod_vars:
             self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
+        if run_local_entries:
+            self._inject_run_local_var_handling(generated_fns, run_local_entries)
         self._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
         seen_stubs: set = set()

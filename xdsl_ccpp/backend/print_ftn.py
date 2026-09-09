@@ -870,18 +870,30 @@ class ftnPrintContext:
                 vname = op.var_name.data
                 dim_names = [self._get_variable_name_for(v) for v in op.dim_vars]
                 dim_str = ", ".join(dim_names)
-                self.print(f"if (.not. allocated({vname})) then")
-                with self.descend() as inner:
-                    inner.print(f"allocate({vname}({dim_str}))")
+                _is_run_local = (
+                    op.is_run_local is not None
+                    and bool(op.is_run_local.value.data)
+                )
+                if _is_run_local:
+                    # Run-local var: unconditional allocate each call (no lazy guard).
+                    # Declared as a local allocatable in the subroutine spec section;
+                    # a matching SafeDeallocOp is injected at end of the subroutine.
+                    self.print(f"allocate({vname}({dim_str}))")
                     if op.init_value is not None:
-                        inner.print(
-                            f"{vname} = {op.init_value.data}"
-                        )
-                    if op.needs_device_residency is not None and bool(op.needs_device_residency.value.data):
-                        inner.print("#ifdef USE_GPU", use_prefix=False)
-                        inner.print(f"!$acc enter data create({vname})")
-                        inner.print("#endif", use_prefix=False)
-                self.print("end if")
+                        self.print(f"{vname} = {op.init_value.data}")
+                else:
+                    self.print(f"if (.not. allocated({vname})) then")
+                    with self.descend() as inner:
+                        inner.print(f"allocate({vname}({dim_str}))")
+                        if op.init_value is not None:
+                            inner.print(
+                                f"{vname} = {op.init_value.data}"
+                            )
+                        if op.needs_device_residency is not None and bool(op.needs_device_residency.value.data):
+                            inner.print("#ifdef USE_GPU", use_prefix=False)
+                            inner.print(f"!$acc enter data create({vname})")
+                            inner.print("#endif", use_prefix=False)
+                    self.print("end if")
             case CCPPSafeDeallocOp():
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
@@ -2048,12 +2060,17 @@ class ftnPrintContext:
             is_alloc = var_name.endswith("__alloc")
             hint = var_name[: -len("__alloc")] if is_alloc else var_name
             ftn_name = inner._get_variable_name_for(alloca_op.memref, hint=hint)
-            type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
             if is_alloc:
+                # For local allocatable declarations the memref shape encodes
+                # only rank (via [0]*rank static zeros to satisfy MLIR
+                # verification); use element_type for the base Fortran type so
+                # no shape literal leaks into the type string.
                 rank = len(alloca_op.memref.type.shape.data)
+                type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type.element_type)
                 dim_suffix = "(" + ", ".join(":" for _ in range(rank)) + ")"
                 inner.print(f"{type_str}, allocatable :: {ftn_name}{dim_suffix}")
             else:
+                type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
                 inner.print(f"{type_str} :: {ftn_name}")
 
         # Declare kind-cast and unit-convert temporaries. These are usually
