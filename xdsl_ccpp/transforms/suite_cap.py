@@ -51,6 +51,7 @@ from xdsl_ccpp.transforms.constituent_cap import _collect_constituent_info
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
     SUITE_FN_INFIX,
+    _bare,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _collect_ddt_use_stubs,
@@ -144,6 +145,17 @@ def _resolved_var_record(arg) -> "dict | None":
         "is_protected": arg.hasAttr("protected") or arg.hasAttr("model_var_is_protected"),
         "is_optional": arg.hasAttr("optional"),
         "is_host_table_var": arg.hasAttr("model_var_is_host_table"),
+        # The scheme's own declared argument name -- always present,
+        # regardless of host-match status. Needed as a local_name fallback
+        # for args with no host match at all (e.g. a constituent-flagged
+        # arg, which is never host-matched since it's accessed via
+        # q(:,:,cidx) rather than a 1:1 host variable): real capgen-v1's own
+        # adapter (resolved_var_capgen_v1.py) always reports the scheme's
+        # own local_name here regardless of host match, but this record's
+        # model_var_name is only ever set when HostVariableMatchPass found
+        # a real host match -- see resolved_var_xdsl_ccpp.py's local_name
+        # field, which falls back to this when model_var_name is None.
+        "arg_name": _bare(arg.name),
         "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
         "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
         # Default to model_var_name/None, matching the plain (non-DDT)
@@ -2392,7 +2404,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                             actual_postfixes[scheme_name] = _candidate
                             break
 
-                _INTENT_RANK = {"in": 0, "out": 1, "inout": 2}
                 for scheme_name in arg_tables:
                     for fn_arg in arg_tables[scheme_name].getFunctionArguments():
                         std_key = _std_key(fn_arg)
@@ -2401,10 +2412,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                             # Upgrade intent: a variable used as 'in' by one scheme
                             # and 'inout'/'out' by another must be declared 'inout'
                             # in the cap signature so that writeable calls compile.
+                            # Any two *different* intents combine to 'inout'
+                            # (in+out, in+inout, out+inout all -> inout);
+                            # identical intents leave the entry unchanged.
                             cur = all_args[std_key].getAttr("intent")
                             new = fn_arg.getAttr("intent")
-                            if _INTENT_RANK.get(new, 0) > _INTENT_RANK.get(cur, 0):
-                                all_args[std_key].setAttr("intent", new)
+                            if new != cur:
+                                all_args[std_key].setAttr("intent", "inout")
                         else:
                             all_args[std_key] = fn_arg
 
@@ -3114,6 +3128,12 @@ class GenerateSuiteSubroutine(RewritePattern):
             else (fw_arg.getAttr("dim_names")
                   if fw_arg.hasAttr("dim_names") else [])
         )
+        if not _alloc_dim_names:
+            # Scalar or DDT with no allocation dimensions (rank=0 or is_ddt).
+            # _resolve_alloc_dim_var_refs([], ...) would always return ([], None),
+            # falling to the else-warn branch -- but these vars genuinely need no
+            # allocate() call, so the warning is a false alarm.  Return silently.
+            return
         _is_run_local = (
             suite_entry is not None
             and suite_model is not None

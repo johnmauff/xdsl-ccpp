@@ -411,7 +411,7 @@ def _build_per_suite_run_info(
                             )
                     else:
                         print(
-                            f"Warning: '{suite_callee}' arg '{arg_name}' "
+                            f"Info: '{suite_callee}' arg '{arg_name}' "
                             f"(standard_name='{std_name}') matched DDT type "
                             f"'{ddt_type_name}' but no module-level instance was "
                             f"found — treating as a host-caller block argument.",
@@ -438,7 +438,7 @@ def _build_per_suite_run_info(
                         and std_name not in constituent_std_names \
                         and not arg_name.endswith("__opt"):
                     print(
-                        f"Warning: '{suite_callee}' arg '{arg_name}' "
+                        f"Info: '{suite_callee}' arg '{arg_name}' "
                         f"(standard_name='{std_name}') has no host variable "
                         f"match — treating as a host-caller block argument. "
                         f"Check that the host metadata provides this variable.",
