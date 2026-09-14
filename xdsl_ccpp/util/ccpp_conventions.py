@@ -260,7 +260,6 @@ def deprecated_std_name_warning(std_name: str) -> str | None:
         return None
     return (
         f"standard_name '{std_name}' is deprecated -- use '{replacement}' instead "
-        f"(every example in this repo has already migrated)"
     )
 
 # ── Unit conversion table ────────────────────────────────────────────────────

@@ -3187,6 +3187,7 @@ class GenerateSuiteSubroutine(RewritePattern):
     def _sweep_suite_owned_var_allocations(
         self, suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+        deferred_warnings=None,
     ) -> None:
         """Lets a var whose allocation dimension can ONLY be resolved once
         physics_mode's own _run-phase args are in scope -- e.g.
@@ -3197,6 +3198,14 @@ class GenerateSuiteSubroutine(RewritePattern):
         during _run where n_const is one of the phase's own scheme args --
         still get allocated, without _run also emitting a second, redundant
         LazyAllocOp for a var _init/_register already successfully covered.
+
+        deferred_warnings -- optional list; when provided, unresolvable-dim
+        entries are appended as (local_name, standard_name, dim_desc) tuples
+        rather than emitting a warning immediately.  The caller is responsible
+        for emitting any remaining entries once all phases have been processed
+        (so warnings for vars that a later phase successfully allocates are
+        silenced automatically).  When None, warnings are emitted immediately
+        (legacy behaviour, preserved for callers that do not thread this list).
 
         Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
         """
@@ -3258,16 +3267,25 @@ class GenerateSuiteSubroutine(RewritePattern):
             else:
                 # _pending_producer is None but dim_var_refs is empty:
                 # genuinely unresolvable dimensions during the sweep pass.
-                import warnings
+                # A later phase (e.g. _init_physics_after_coupler) may still
+                # allocate the var via the framework_vars loop -- so defer the
+                # warning when the caller supplies a list, and emit only after
+                # all phases have been processed.
                 _dim_desc = ", ".join(str(d) for d in entry.alloc_dim_std_names)
-                warnings.warn(
-                    f"xdsl_ccpp: cannot resolve allocation dimensions for"
-                    f" '{entry.local_name}'"
-                    f" (std_name='{entry.standard_name}', dims=({_dim_desc}))"
-                    f" during suite-owned var sweep"
-                    f" -- no allocate() will be generated.",
-                    stacklevel=2,
-                )
+                if deferred_warnings is not None:
+                    deferred_warnings.append(
+                        (entry.local_name, entry.standard_name, _dim_desc)
+                    )
+                else:
+                    import warnings
+                    warnings.warn(
+                        f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                        f" '{entry.local_name}'"
+                        f" (std_name='{entry.standard_name}', dims=({_dim_desc}))"
+                        f" during suite-owned var sweep"
+                        f" -- no allocate() will be generated.",
+                        stacklevel=2,
+                    )
 
     def _build_framework_refs(
         self,
@@ -3280,6 +3298,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         physics_mode,
         arg_tables,
         already_scheduled_allocs=None,
+        deferred_warnings=None,
     ):
         """Build HostVarRefOps and LazyAllocOps for framework-managed vars.
 
@@ -3293,6 +3312,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         promote_pcnst/temp_calc are only ever reached via the suite_model
         sweep, never via framework_vars, since no _init/_register table of
         their own producing scheme declares them).
+
+        deferred_warnings -- forwarded to _sweep_suite_owned_var_allocations;
+        see that method's docstring for semantics.
 
         Mutates data_ops, suite_use_stubs, and already_scheduled_allocs as
         side effects. Returns (framework_ref_ops, lazy_alloc_ops,
@@ -3395,6 +3417,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             self._sweep_suite_owned_var_allocations(
                 suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
                 arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+                deferred_warnings=deferred_warnings,
             )
 
         if tgt_subroutine_postfix is not None:
@@ -3514,6 +3537,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         group_name: str = "",
         suite_model=None,
         already_scheduled_allocs=None,
+        deferred_warnings=None,
         emit_scheme_calls: bool = True,
     ):
         """Build a single cap subroutine as a func.FuncOp.
@@ -3614,6 +3638,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             physics_mode=physics_mode,
             arg_tables=arg_tables,
             already_scheduled_allocs=already_scheduled_allocs,
+            deferred_warnings=deferred_warnings,
         )
 
         # Extract/writeback ops for advected module-level constituent arrays.
@@ -3869,6 +3894,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         # standard_name in a different suite is a different module-scoped
         # variable.
         scheduled_allocs: set = set()
+        # Sweep warnings that could not be resolved during the flat _init
+        # phase are deferred here.  After all phases have been processed we
+        # emit only those whose standard_name is still absent from
+        # scheduled_allocs -- vars that a later phase (e.g. a per-group
+        # _init_physics_after_coupler) successfully allocated are silenced.
+        sweep_deferred_warnings: list = []
 
         for tgt_postfix, gen_postfix, state_string, check_string, emit_scheme_calls in subroutine_specs:
             fn, sigs, stubs = self.generateSubroutineCall(
@@ -3876,6 +3907,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 state_string=state_string, check_string=check_string,
                 physics_mode=(tgt_postfix == "_run"), suite_model=suite_model,
                 already_scheduled_allocs=scheduled_allocs,
+                deferred_warnings=sweep_deferred_warnings,
                 emit_scheme_calls=emit_scheme_calls,
             )
             generated_fns.append(fn)
@@ -3937,6 +3969,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     state_string=state_string, check_string=check_string,
                     physics_mode=True, group_name=group_name, suite_model=suite_model,
                     already_scheduled_allocs=scheduled_allocs,
+                    deferred_warnings=sweep_deferred_warnings,
                 )
                 generated_fns.append(fn)
                 suite_host_use_stubs.extend(stubs)
@@ -3946,6 +3979,23 @@ class GenerateSuiteSubroutine(RewritePattern):
                     check_strings_used.add(check_string)
                 if state_string is not None:
                     state_strings_used.add(state_string)
+
+        # Emit deferred sweep warnings for vars that were never successfully
+        # allocated across any phase.  Vars that a later phase (e.g. a
+        # per-group _init_physics_after_coupler) did allocate are now in
+        # scheduled_allocs, so they are silenced here.
+        if sweep_deferred_warnings:
+            import warnings
+            for _local_name, _std_name, _dim_desc in sweep_deferred_warnings:
+                if _std_name not in scheduled_allocs:
+                    warnings.warn(
+                        f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                        f" '{_local_name}'"
+                        f" (std_name='{_std_name}', dims=({_dim_desc}))"
+                        f" during suite-owned var sweep"
+                        f" -- no allocate() will be generated.",
+                        stacklevel=2,
+                    )
 
         return _LifecycleFnsResult(
             generated_fns=generated_fns,
