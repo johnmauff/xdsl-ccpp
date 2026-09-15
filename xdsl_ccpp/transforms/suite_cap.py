@@ -31,12 +31,13 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     ClearStringOp,
     ConstituentIndexLookupOp,
-    ConstituentSyncOp,
     KeywordCallOp,
     KindCastOp,
     KindWriteBackOp,
     LazyAllocOp,
     ModuleVarOp,
+    NullifyPointerOp,
+    PointerSliceAssignOp,
     PresentCheckOp,
     PromotionLoopOp,
     RankReducingSliceOp,
@@ -3083,6 +3084,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         """
         if not is_alloc_phase:
             return
+        if fw_std_key in self._fixed_advected_std_names(self.meta_data):
+            # Fixed-advected constituent local (q_wv/cldliq/cldice-like):
+            # pointer-aliased into the shared constituent array by
+            # _build_constituent_sync_ops (see _build_module_vars) --
+            # never allocate()'d here, only pointer-associated in _run.
+            return
         if fw_arg.hasAttr("allocatable"):
             # Task #30, mechanism 1: when the scheme's dummy is truly
             # `allocatable, intent(out)` the scheme performs the
@@ -3241,7 +3248,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         already_allocated |= {
             p.var_name for _plist in pending_allocs.values() for p in _plist
         }
+        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
         for entry in suite_model.suite_owned_vars():
+            if entry.standard_name in fixed_adv_names:
+                # Pointer-aliased into the shared constituent array by
+                # _build_constituent_sync_ops (see _build_module_vars) --
+                # never allocate()'d, only pointer-associated.
+                continue
             if not suite_model.needs_allocation(entry.standard_name):
                 continue
             if entry.local_name in already_allocated:
@@ -3661,22 +3674,23 @@ class GenerateSuiteSubroutine(RewritePattern):
             deferred_warnings=deferred_warnings,
         )
 
-        # Extract/writeback ops for advected module-level constituent arrays.
+        # Pointer-association ops for advected module-level constituent arrays.
         # Only injected for the _run group phase (physics_mode=True,
         # tgt_subroutine_postfix="_run"): that is the subroutine where
         # wet_to_dry/dry_to_wet converters and the physics scheme itself
         # consume and produce qv/qc/qr from module-level storage.  The 3D
         # constituent array q is a host-provided dummy argument, while the
         # module-level qv/qc/qr are suite-owned and unconnected from q
-        # without these explicit assignments.
+        # without these explicit pointer associations.
         #
-        # Constituent sync ordering (matching capgen-v1 pointer-alias semantics):
-        #   1. extract_ops   -- qv/qc/qr ← q[:,i] before any scheme reads them
-        #   2. pre_q schemes -- calc_exner, kessler, etc. (don't use q directly)
-        #   3. writeback_ops -- q[:,i] ← qv/qc/qr so qneg clips kessler-updated values
-        #   4. modify_q      -- qneg_run (clips q in-place via ccpp_constituents inout)
-        #   5. re-extract    -- qv/qc/qr ← q[:,i] so individual vars reflect qneg clips
-        #   6. readonly_q    -- geopotential_temp etc. (read both q and individual vars)
+        # constituent_extract_ops (PointerSliceAssignOp) associate each var
+        # to const(:,:,idx) once, before any scheme call; constituent_
+        # writeback_ops (NullifyPointerOp) null them once, after all scheme
+        # calls. No re-sync is needed in between -- every scheme call in the
+        # SDF, regardless of how many times it reads/writes the shared
+        # constituent array, sees the same live memory through the pointer
+        # (matching capgen-v1's own compile-time array-section aliasing;
+        # see _build_constituent_sync_ops).
         constituent_extract_ops = []
         constituent_writeback_ops = []
         if physics_mode and tgt_subroutine_postfix == "_run" and suite_model is not None:
@@ -3698,79 +3712,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             pending_allocs=pending_allocs,
             already_scheduled_allocs=already_scheduled_allocs,
         )
-        if constituent_extract_ops:
-            raw_call_seq = self.getCallSequence(suite_description)
-            # Identify schemes that modify ccpp_constituents in-place (mod_q).
-            # We preserve full SDF ordering and splice the writeback/reextract
-            # ops at the exact boundary points, rather than bucketing all
-            # schemes by q-usage and reassembling — the bucket approach violated
-            # SDF ordering in suites like vdiff_bretherton_park where pre_q
-            # schemes (apply_heating_rate, etc.) must follow ro_q schemes
-            # (vertical_diffusion_tendencies) per the SDF.
-            Q_STD = "ccpp_constituents"
-            mod_q_schemes: set = set()
-            for item in raw_call_seq:
-                if item[0] != "scheme":
-                    continue
-                sn = item[1]
-                if sn not in arg_tables:
-                    continue
-                for fn_arg in arg_tables[sn].getFunctionArguments():
-                    if (fn_arg.hasAttr("standard_name")
-                            and fn_arg.getAttr("standard_name") == Q_STD):
-                        intent = (fn_arg.getAttr("intent")
-                                  if fn_arg.hasAttr("intent") else "in")
-                        if intent in ("inout", "out"):
-                            mod_q_schemes.add(sn)
-                            break
-
-            # Writebacks and re-extracts are only needed when at least one
-            # scheme modifies ccpp_constituents in-place (e.g. qneg). Omitting
-            # them when no scheme does keeps carr intent(in), avoiding a Fortran
-            # constraint violation.
-            if mod_q_schemes:
-                # Locate the first and last mod_q scheme in SDF order.
-                first_mod_q_idx = None
-                last_mod_q_idx = None
-                for i, item in enumerate(raw_call_seq):
-                    if item[0] == "scheme" and item[1] in mod_q_schemes:
-                        if first_mod_q_idx is None:
-                            first_mod_q_idx = i
-                        last_mod_q_idx = i
-
-                # Split the sequence at those boundaries; all three slices
-                # retain their original SDF ordering.
-                pre_mod_seq  = raw_call_seq[:first_mod_q_idx]
-                mid_seq      = raw_call_seq[first_mod_q_idx : last_mod_q_idx + 1]
-                post_seq     = raw_call_seq[last_mod_q_idx + 1:]
-
-                pre_ops,  pre_fn  = self._build_call_ops(
-                    **_bco_kwargs, call_sequence_items=pre_mod_seq)
-                mid_ops,  mid_fn  = self._build_call_ops(
-                    **_bco_kwargs, call_sequence_items=mid_seq)
-                post_ops, post_fn = self._build_call_ops(
-                    **_bco_kwargs, call_sequence_items=post_seq)
-                fn_sigs = {**pre_fn, **mid_fn, **post_fn}
-
-                # Build fresh re-extract ops (each MLIR op may only belong to
-                # one block; we cannot reuse the extract_ops objects).
-                constituent_reextract_ops, _ = self._build_constituent_sync_ops(
-                    suite_model, data_ops, input_arg_list
-                )
-                call_ops = (
-                    pre_ops
-                    + list(constituent_writeback_ops)   # q[:,i] ← qv/ql/qi before first mod_q
-                    + mid_ops                            # first..last mod_q, SDF order preserved
-                    + constituent_reextract_ops          # qv/ql/qi ← q[:,i] after last mod_q
-                    + post_ops                           # remainder in SDF order
-                )
-            else:
-                # No in-place modifier of ccpp_constituents: run everything in
-                # SDF order with no writeback/reextract needed.
-                call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
-            constituent_writeback_ops = []  # already embedded in call_ops above
-        else:
-            call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
+        call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
 
         # Multi-instance suite (real capgen-v1's model, ccpp_cap_refactor_
         # plan.md's "instances/instances_advection" entry): this call's own
@@ -4161,23 +4103,76 @@ class GenerateSuiteSubroutine(RewritePattern):
                 pre_q.append(item)
         return pre_q, modify_q, readonly_q
 
-    def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
-        """Build ConstituentSyncOp lists for advected module-level constituent vars.
+    @staticmethod
+    def _fixed_advected_std_names(meta_data) -> set:
+        """Standard names of this suite's fixed-advected constituents that
+        are actually pointer-synced against a real ccpp_constituents array.
 
-        Returns (extract_ops, writeback_ops).  extract_ops must be placed before
-        the first scheme call in a _run subroutine so the module-level qv/qc/qr
-        arrays are populated from the 3D constituent array q before any
-        wet_to_dry converter or physics scheme reads them.  writeback_ops must
-        be placed after the last scheme call so any modifications made by physics
-        schemes are reflected back into q before qneg and diagnostic schemes
-        operate on the full constituent array.
+        Shared predicate used to identify the module-level per-species
+        vars (q_wv/cldliq/cldice-like) that get pointer-aliased into the
+        shared constituent array by _build_constituent_sync_ops, so their
+        declaration/allocation/deallocation can be special-cased identically
+        everywhere else in the cap (see _build_module_vars,
+        _sweep_suite_owned_var_allocations, _inject_safe_deallocs).
+
+        `advected=.true.` alone is NOT sufficient: it's a generic CCPP
+        metadata flag also used by suites/tests that have no actual 3D
+        ccpp_constituents array at all (e.g. tests/unit/
+        test_suite_owned_residency.py's synthetic schemes use it purely to
+        opt a var into suite-owned/residency handling). Only when some
+        scheme in this suite also declares a standard_name=ccpp_constituents
+        argument does _build_constituent_sync_ops ever emit a
+        PointerSliceAssignOp for these vars (it no-ops via its own q_ref is
+        None guard otherwise) -- so this predicate must agree, or an
+        ordinary advected SuiteOwned var would wrongly end up declared
+        POINTER with no allocation and never get associated to anything.
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+        _, fixed_adv, _ = _collect_constituent_info(meta_data)
+        if not fixed_adv:
+            return set()
+        has_const_array = any(
+            props.getAttr("type") == CCPPType.SCHEME
+            and any(
+                fn_arg.hasAttr("standard_name")
+                and fn_arg.getAttr("standard_name").lower() == "ccpp_constituents"
+                for arg_table in props.arg_tables.values()
+                for fn_arg in arg_table.getFunctionArguments()
+            )
+            for props in meta_data.values()
+        )
+        if not has_const_array:
+            return set()
+        return {std_name for std_name, *_ in fixed_adv}
+
+    def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
+        """Build pointer-association ops for advected module-level constituent vars.
+
+        Returns (assign_ops, nullify_ops).  assign_ops pointer-associate each
+        module-level qv/qc/qr-like var to const(:,:,lc_const_indices(idx))
+        once, before the first scheme call in a _run subroutine -- mirroring
+        capgen-v1's own compile-time array-section aliasing (see
+        host_cap.py::add_constituent_vars): every scheme call site
+        thereafter reads/writes the SAME memory as the shared 3D constituent
+        array, so there is nothing to go stale no matter how many times that
+        array is modified by intervening schemes. This replaces an earlier
+        value-copy design (ConstituentSyncOp extract/writeback) that only
+        re-synced around a single contiguous bracket of in-place-modifying
+        schemes (e.g. qneg_run) and silently went stale on suites whose SDF
+        has more than one such bracket (rasch_kristjansson, zhang_mcfarlane).
+
+        nullify_ops null the pointers at the end of the _run body -- not
+        required for correctness (every call re-associates before use) but
+        keeps the module var in a clean, defined state between calls.
 
         Returns ([], []) when the subroutine has no constituent array argument
         or when no advected constituent is suite-owned for this group.
         """
-        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
-        if not fixed_adv:
+        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
+        if not fixed_adv_names:
             return [], []
+        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
 
         # Find the Fortran dummy-argument name of the 3D constituent array.
         # The SSA value tagged under ("std_name", "ccpp_constituents") in
@@ -4194,8 +4189,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         if not q_local:
             return [], []
 
-        extract_ops = []
-        writeback_ops = []
+        assign_ops = []
+        nullify_ops = []
         for const_idx, (std_name, _units, _default_val, _local_name) in enumerate(
             fixed_adv, start=1
         ):
@@ -4203,21 +4198,13 @@ class GenerateSuiteSubroutine(RewritePattern):
             if entry is None:
                 continue  # not suite-owned for this group; skip
             var_local = entry.local_name
-            extract_ops.append(ConstituentSyncOp(
-                var_name=var_local,
-                q_name=q_local,
-                ncol_name="ncol",
-                constituent_idx=const_idx,
-                direction="extract",
+            assign_ops.append(PointerSliceAssignOp(
+                ptr_name=var_local,
+                array_name=q_local,
+                index_var=f"lc_const_indices({const_idx})",
             ))
-            writeback_ops.append(ConstituentSyncOp(
-                var_name=var_local,
-                q_name=q_local,
-                ncol_name="ncol",
-                constituent_idx=const_idx,
-                direction="writeback",
-            ))
-        return extract_ops, writeback_ops
+            nullify_ops.append(NullifyPointerOp(var_local))
+        return assign_ops, nullify_ops
 
     def _build_module_vars(self, suite_model):
         """Return (allocatable_mod_vars, interstitial_var_names, run_local_entries).
@@ -4226,6 +4213,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         LOCAL allocatables inside the _run subroutine rather than at module scope.
         These are excluded from allocatable_mod_vars and interstitial_var_names.
         """
+        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
         interstitial_var_names: set[str] = set()
         allocatable_mod_vars = []
         run_local_entries = []
@@ -4239,6 +4227,20 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # type(...) syntax in Fortran.
                 allocatable_mod_vars.append(
                     ModuleVarOp(entry.local_name, "type", ddt_name=entry.fortran_type, rank=0)
+                )
+                interstitial_var_names.add(entry.local_name.lower())
+                continue
+            if entry.standard_name in fixed_adv_names:
+                # Fixed-advected constituent local (q_wv/cldliq/cldice-like):
+                # pointer-aliased into the shared constituent array by
+                # _build_constituent_sync_ops, not populated by value-copy.
+                # Declared POINTER (never allocated/deallocated by this cap --
+                # see _sweep_suite_owned_var_allocations and
+                # _inject_safe_deallocs, which both skip these entries too).
+                kind = entry.kind if entry.kind else CCPP_KIND_PHYS
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, "real", kind=kind,
+                                is_pointer=True, rank=entry.rank)
                 )
                 interstitial_var_names.add(entry.local_name.lower())
                 continue
@@ -4346,8 +4348,16 @@ class GenerateSuiteSubroutine(RewritePattern):
             if ret_op is None:
                 continue
             for var_decl in allocatable_mod_vars:
-                # Only arrays (rank > 0); skip interstitials that persist until _finalize.
-                if var_decl.rank.value.data > 0 and \
+                # Only arrays (rank > 0); skip interstitials that persist until
+                # _finalize, and skip POINTER vars (e.g. fixed-advected
+                # constituent locals pointer-aliased by
+                # _build_constituent_sync_ops) -- deallocate() on a pointer
+                # that doesn't own its target memory is invalid; nullify()
+                # (emitted once per _run call, see _build_constituent_sync_ops)
+                # is the correct cleanup for those instead.
+                _is_ptr = bool(var_decl.is_pointer is not None
+                               and var_decl.is_pointer.value.data)
+                if var_decl.rank.value.data > 0 and not _is_ptr and \
                         var_decl.var_name.data.lower() not in interstitial_var_names:
                     Rewriter.insert_op(SafeDeallocOp(var_decl.var_name.data),
                                        InsertPoint.before(ret_op))
@@ -4422,9 +4432,10 @@ class GenerateSuiteSubroutine(RewritePattern):
     def _inject_constituent_index_lookup(generated_fns, std_name_attrs):
         """Inject ConstituentIndexLookupOp at the top of each group-phase _init_ FuncOp.
 
-        This populates lc_const_indices at runtime so that ConstituentSyncOp's
-        q(:,:,lc_const_indices(k)) references resolve to the correct constituent
-        slot regardless of the order in which constituents were registered.
+        This populates lc_const_indices at runtime so that
+        PointerSliceAssignOp's q(:,:,lc_const_indices(k)) pointer-association
+        targets resolve to the correct constituent slot regardless of the
+        order in which constituents were registered.
         """
         for fn in generated_fns:
             if not isa(fn, func.FuncOp) or fn.is_declaration:
