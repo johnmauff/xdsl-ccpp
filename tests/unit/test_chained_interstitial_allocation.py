@@ -197,7 +197,16 @@ class TestSchemeSelfAllocatedPrimitiveNoLongerDoubleAllocates:
         out = StringIO()
         print_to_ftn(module, out)
         fortran = out.getvalue()
-        assert "allocated(work)" not in fortran
+        # No redundant preamble allocate -- make_workspace_run's own
+        # `allocatable, intent(out)` dummy already self-allocates `work`.
+        # (Not a blanket "allocated(work)" absence: `work`'s own sizing
+        # scalar `nw` is produced in use_workspace's _timestep_init, a
+        # repeating phase, so _is_run_local_var correctly declares `work`
+        # as a local allocatable and emits `if (allocated(work))
+        # deallocate(work)` at the end of the _run subroutine -- matching
+        # capgen-v1's own local-allocatable lifecycle. That deallocate is
+        # intentional, not a redundant allocation, and must stay.)
+        assert "allocate(work(" not in fortran
         assert "call make_workspace_run" in fortran
 
 
