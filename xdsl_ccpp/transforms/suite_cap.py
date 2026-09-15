@@ -31,6 +31,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ArraySectionOp,
     ClearStringOp,
     ConstituentIndexLookupOp,
+    ConstituentSyncOp,
     KeywordCallOp,
     KindCastOp,
     KindWriteBackOp,
@@ -4106,44 +4107,78 @@ class GenerateSuiteSubroutine(RewritePattern):
     @staticmethod
     def _fixed_advected_std_names(meta_data) -> set:
         """Standard names of this suite's fixed-advected constituents that
-        are actually pointer-synced against a real ccpp_constituents array.
+        are pointer-aliased into the shared ccpp_constituents array.
 
         Shared predicate used to identify the module-level per-species
-        vars (q_wv/cldliq/cldice-like) that get pointer-aliased into the
-        shared constituent array by _build_constituent_sync_ops, so their
-        declaration/allocation/deallocation can be special-cased identically
-        everywhere else in the cap (see _build_module_vars,
-        _sweep_suite_owned_var_allocations, _inject_safe_deallocs).
+        vars (q_wv/cldliq/cldice-like) that get a PointerSliceAssignOp from
+        _build_constituent_sync_ops, so their declaration/allocation/
+        deallocation can be special-cased identically everywhere else in
+        the cap (see _build_module_vars, _sweep_suite_owned_var_allocations,
+        _maybe_schedule_framework_var_alloc, _inject_safe_deallocs).
 
-        `advected=.true.` alone is NOT sufficient: it's a generic CCPP
-        metadata flag also used by suites/tests that have no actual 3D
-        ccpp_constituents array at all (e.g. tests/unit/
+        This is just the "pointer" half of
+        _classify_fixed_advected_std_names -- see that method's docstring
+        for the full reasoning (in particular why a var referenced by both
+        _run AND some other phase, e.g. examples/advection's cld_ice_array,
+        is deliberately excluded here even though it IS referenced by
+        _run).
+        """
+        pointer_names, _value_copy_names = (
+            GenerateSuiteSubroutine._classify_fixed_advected_std_names(meta_data)
+        )
+        return pointer_names
+
+    @staticmethod
+    def _classify_fixed_advected_std_names(meta_data) -> tuple:
+        """Partition this suite's fixed-advected constituent std_names into
+        (pointer_names, value_copy_names).
+
+        `advected=.true.` alone is NOT sufficient to treat a name specially:
+        it's a generic CCPP metadata flag also used by suites/tests that
+        have no actual 3D ccpp_constituents array at all (e.g. tests/unit/
         test_suite_owned_residency.py's synthetic schemes use it purely to
         opt a var into suite-owned/residency handling). Only when some
         scheme in this suite also declares a standard_name=ccpp_constituents
-        argument does _build_constituent_sync_ops ever emit a
-        PointerSliceAssignOp for these vars (it no-ops via its own q_ref is
-        None guard otherwise) -- so this predicate must agree, or an
-        ordinary advected SuiteOwned var would wrongly end up declared
-        POINTER with no allocation and never get associated to anything.
+        argument does _build_constituent_sync_ops do anything with these
+        names at all -- so both returned sets are empty otherwise.
 
-        A fixed-advected name is ALSO excluded unless some scheme's own
-        "_run" entry point actually references it: _build_constituent_sync_ops
-        only ever runs for tgt_subroutine_postfix == "_run", so a var
-        referenced solely from _init/_register/_finalize (e.g. examples/
-        advection's cld_liq_array -- cld_liq_init's own advected=.true.
-        intent(out) placeholder, never read by any _run scheme) would be
-        declared POINTER but never pointer-associated anywhere, and the
-        first _init-phase write through it SIGSEGVs on a null pointer
-        (confirmed: ctest_advection_host_integration crashing inside
-        cld_liq_init). Such _init-only vars keep the old plain allocatable
-        declaration/allocation instead, matching pre-fix behavior.
+        pointer_names -- referenced by some scheme's own "_run" entry point
+        AND by no other phase. _build_constituent_sync_ops pointer-aliases
+        these directly into const(:,:,idx); there is no separate backing
+        memory, which is only safe because nothing ever references them
+        outside a phase where that array is actually available as an
+        argument (data_ops.get(("std_name", "ccpp_constituents")) is None
+        outside _run -- see _build_constituent_sync_ops's own q_ref guard).
+
+        value_copy_names -- referenced by some scheme's own "_run" entry
+        point AND by some OTHER phase too (confirmed real case: examples/
+        advection's cld_ice_array is an intent(inout) arg of BOTH
+        cld_ice_init AND cld_ice_run). Those other phases have no
+        ccpp_constituents argument to alias against at all, so a var like
+        this needs its own real backing memory regardless -- it keeps the
+        plain allocatable declaration/allocation it always had, and
+        _build_constituent_sync_ops instead wraps the _run body in a plain
+        value-copy extract/writeback (the pre-pointer-alias ConstituentSyncOp
+        mechanism), which is sufficient here since nothing else in the SDF
+        touches this species' state between the extract and the writeback
+        (confirmed for cld_ice_array: only one _run-phase scheme reads/
+        writes it, and unlike rk_stratiform/zhang_mcfarlane's multi-bracket
+        case that motivated pointer-aliasing in the first place, this name
+        is never read again after a later in-place ccpp_constituents
+        modification within the same _run call).
+
+        A name referenced by some OTHER phase but never by any "_run" table
+        at all (examples/advection's cld_liq_array -- an _init-only
+        placeholder cld_liq_init never actually populates meaningfully) is
+        in neither set: no _run scheme touches it, so no _run-phase sync of
+        any kind is needed; it's a plain allocatable with no special
+        handling, exactly like before the pointer-alias fix existed.
         """
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 
         _, fixed_adv, _ = _collect_constituent_info(meta_data)
         if not fixed_adv:
-            return set()
+            return set(), set()
         has_const_array = any(
             props.getAttr("type") == CCPPType.SCHEME
             and any(
@@ -4155,43 +4190,59 @@ class GenerateSuiteSubroutine(RewritePattern):
             for props in meta_data.values()
         )
         if not has_const_array:
-            return set()
-        run_referenced = {
-            fn_arg.getAttr("standard_name").lower()
-            for props in meta_data.values()
-            if props.getAttr("type") == CCPPType.SCHEME
-            for table_name, arg_table in props.arg_tables.items()
-            if table_name.endswith("_run")
-            for fn_arg in arg_table.getFunctionArguments()
-            if fn_arg.hasAttr("standard_name")
-        }
-        return {std_name for std_name, *_ in fixed_adv} & run_referenced
+            return set(), set()
+        run_referenced = set()
+        other_referenced = set()
+        for props in meta_data.values():
+            if props.getAttr("type") != CCPPType.SCHEME:
+                continue
+            for table_name, arg_table in props.arg_tables.items():
+                target = run_referenced if table_name.endswith("_run") else other_referenced
+                for fn_arg in arg_table.getFunctionArguments():
+                    if fn_arg.hasAttr("standard_name"):
+                        target.add(fn_arg.getAttr("standard_name").lower())
+        all_fixed = {std_name for std_name, *_ in fixed_adv}
+        pointer_names = (all_fixed & run_referenced) - other_referenced
+        value_copy_names = all_fixed & run_referenced & other_referenced
+        return pointer_names, value_copy_names
 
     def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
         """Build pointer-association ops for advected module-level constituent vars.
 
-        Returns (assign_ops, nullify_ops).  assign_ops pointer-associate each
-        module-level qv/qc/qr-like var to const(:,:,lc_const_indices(idx))
+        Returns (assign_ops, nullify_ops).  For a "pointer_names" entry (see
+        _classify_fixed_advected_std_names), assign_ops pointer-associate
+        the module-level qv/qc/qr-like var to const(:,:,lc_const_indices(idx))
         once, before the first scheme call in a _run subroutine -- mirroring
         capgen-v1's own compile-time array-section aliasing (see
         host_cap.py::add_constituent_vars): every scheme call site
         thereafter reads/writes the SAME memory as the shared 3D constituent
         array, so there is nothing to go stale no matter how many times that
         array is modified by intervening schemes. This replaces an earlier
-        value-copy design (ConstituentSyncOp extract/writeback) that only
-        re-synced around a single contiguous bracket of in-place-modifying
-        schemes (e.g. qneg_run) and silently went stale on suites whose SDF
-        has more than one such bracket (rasch_kristjansson, zhang_mcfarlane).
-
-        nullify_ops null the pointers at the end of the _run body -- not
+        value-copy design (ConstituentSyncOp extract/writeback for every
+        such var, unconditionally) that only re-synced around a single
+        contiguous bracket of in-place-modifying schemes (e.g. qneg_run) and
+        silently went stale on suites whose SDF has more than one such
+        bracket (rasch_kristjansson, zhang_mcfarlane). nullify_ops null the
+        pointer at the end of the _run body for these entries -- not
         required for correctness (every call re-associates before use) but
         keeps the module var in a clean, defined state between calls.
+
+        For a "value_copy_names" entry (referenced by some OTHER phase too,
+        so it keeps real backing memory -- e.g. examples/advection's
+        cld_ice_array), assign_ops/nullify_ops instead hold a plain
+        ConstituentSyncOp extract (start of _run)/writeback (end of _run)
+        pair -- the original mechanism, still correct here since nothing
+        else in the SDF re-modifies this species between the extract and
+        the writeback (unlike the multi-bracket suites pointer-aliasing was
+        introduced for).
 
         Returns ([], []) when the subroutine has no constituent array argument
         or when no advected constituent is suite-owned for this group.
         """
-        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
-        if not fixed_adv_names:
+        pointer_names, value_copy_names = self._classify_fixed_advected_std_names(
+            self.meta_data
+        )
+        if not pointer_names and not value_copy_names:
             return [], []
         _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
 
@@ -4218,22 +4269,36 @@ class GenerateSuiteSubroutine(RewritePattern):
             # const_idx must stay 1-based against the FULL fixed_adv list
             # (matching cam_model_const_stdnames/lc_const_indices, built
             # from this same list in constituent_cap.py) even though only
-            # a subset of entries get a pointer-assign emitted below.
-            if std_name not in fixed_adv_names:
-                continue  # not pointer-aliased for this suite -- see
-                # _fixed_advected_std_names (e.g. an _init-only advected
-                # var with no _run-phase reference, like examples/
-                # advection's cld_liq_array: stays a plain allocatable).
+            # a subset of entries get an op emitted below.
             entry = suite_model.get(std_name)
             if entry is None:
                 continue  # not suite-owned for this group; skip
             var_local = entry.local_name
-            assign_ops.append(PointerSliceAssignOp(
-                ptr_name=var_local,
-                array_name=q_local,
-                index_var=f"lc_const_indices({const_idx})",
-            ))
-            nullify_ops.append(NullifyPointerOp(var_local))
+            if std_name in pointer_names:
+                assign_ops.append(PointerSliceAssignOp(
+                    ptr_name=var_local,
+                    array_name=q_local,
+                    index_var=f"lc_const_indices({const_idx})",
+                ))
+                nullify_ops.append(NullifyPointerOp(var_local))
+            elif std_name in value_copy_names:
+                assign_ops.append(ConstituentSyncOp(
+                    var_name=var_local,
+                    q_name=q_local,
+                    ncol_name="ncol",
+                    constituent_idx=const_idx,
+                    direction="extract",
+                ))
+                nullify_ops.append(ConstituentSyncOp(
+                    var_name=var_local,
+                    q_name=q_local,
+                    ncol_name="ncol",
+                    constituent_idx=const_idx,
+                    direction="writeback",
+                ))
+            # else: referenced by some other phase but never by _run --
+            # no _run-phase sync needed at all (see _classify_fixed_
+            # advected_std_names), skip.
         return assign_ops, nullify_ops
 
     def _build_module_vars(self, suite_model):
