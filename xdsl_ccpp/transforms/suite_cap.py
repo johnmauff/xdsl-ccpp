@@ -4126,6 +4126,18 @@ class GenerateSuiteSubroutine(RewritePattern):
         None guard otherwise) -- so this predicate must agree, or an
         ordinary advected SuiteOwned var would wrongly end up declared
         POINTER with no allocation and never get associated to anything.
+
+        A fixed-advected name is ALSO excluded unless some scheme's own
+        "_run" entry point actually references it: _build_constituent_sync_ops
+        only ever runs for tgt_subroutine_postfix == "_run", so a var
+        referenced solely from _init/_register/_finalize (e.g. examples/
+        advection's cld_liq_array -- cld_liq_init's own advected=.true.
+        intent(out) placeholder, never read by any _run scheme) would be
+        declared POINTER but never pointer-associated anywhere, and the
+        first _init-phase write through it SIGSEGVs on a null pointer
+        (confirmed: ctest_advection_host_integration crashing inside
+        cld_liq_init). Such _init-only vars keep the old plain allocatable
+        declaration/allocation instead, matching pre-fix behavior.
         """
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 
@@ -4144,7 +4156,16 @@ class GenerateSuiteSubroutine(RewritePattern):
         )
         if not has_const_array:
             return set()
-        return {std_name for std_name, *_ in fixed_adv}
+        run_referenced = {
+            fn_arg.getAttr("standard_name").lower()
+            for props in meta_data.values()
+            if props.getAttr("type") == CCPPType.SCHEME
+            for table_name, arg_table in props.arg_tables.items()
+            if table_name.endswith("_run")
+            for fn_arg in arg_table.getFunctionArguments()
+            if fn_arg.hasAttr("standard_name")
+        }
+        return {std_name for std_name, *_ in fixed_adv} & run_referenced
 
     def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
         """Build pointer-association ops for advected module-level constituent vars.
@@ -4194,6 +4215,15 @@ class GenerateSuiteSubroutine(RewritePattern):
         for const_idx, (std_name, _units, _default_val, _local_name) in enumerate(
             fixed_adv, start=1
         ):
+            # const_idx must stay 1-based against the FULL fixed_adv list
+            # (matching cam_model_const_stdnames/lc_const_indices, built
+            # from this same list in constituent_cap.py) even though only
+            # a subset of entries get a pointer-assign emitted below.
+            if std_name not in fixed_adv_names:
+                continue  # not pointer-aliased for this suite -- see
+                # _fixed_advected_std_names (e.g. an _init-only advected
+                # var with no _run-phase reference, like examples/
+                # advection's cld_liq_array: stays a plain allocatable).
             entry = suite_model.get(std_name)
             if entry is None:
                 continue  # not suite-owned for this group; skip
