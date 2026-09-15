@@ -708,11 +708,13 @@ class LazyAllocOp(IRDLOperation):
     kind_name  = prop_def(StringAttr)
     init_value = opt_prop_def(StringAttr)  # Fortran literal, e.g. "0.0_kind_phys"
     needs_device_residency = opt_prop_def(BoolAttr)
+    is_run_local = opt_prop_def(BoolAttr)  # when True: plain allocate(), no lazy guard
     dim_vars   = var_operand_def()          # SSA values giving dimension sizes
 
     def __init__(self, var_name: str, kind_name: str, dim_var_refs: list,
                  init_value: str | None = None,
-                 needs_device_residency: bool = False):
+                 needs_device_residency: bool = False,
+                 is_run_local: bool = False):
         props: dict = {
             "var_name":  StringAttr(var_name),
             "kind_name": StringAttr(kind_name),
@@ -721,6 +723,8 @@ class LazyAllocOp(IRDLOperation):
             props["init_value"] = StringAttr(init_value)
         if needs_device_residency:
             props["needs_device_residency"] = BoolAttr.from_bool(needs_device_residency)
+        if is_run_local:
+            props["is_run_local"] = BoolAttr.from_bool(True)
         super().__init__(operands=[dim_var_refs], properties=props)
 
 

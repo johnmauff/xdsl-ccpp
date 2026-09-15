@@ -454,8 +454,7 @@ class ArgumentOp(IRDLOperation):
             if _warning is not None:
                 if is_legacy_mode():
                     print(
-                        f"Warning: arg '{arg_name.data}': {_warning} "
-                        f"(allowed via --legacy-mode)",
+                        f"Warning(LEGACY): arg '{arg_name.data}': {_warning} ",
                         file=sys.stderr,
                     )
                 else:

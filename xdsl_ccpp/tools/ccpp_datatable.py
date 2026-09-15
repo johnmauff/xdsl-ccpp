@@ -189,16 +189,12 @@ def _collect_dependencies(ccpp_mod, table_props) -> list[str]:
     that narrower rule); SCHEME-type tables only contribute if the scheme
     is in `_used_scheme_names`.
 
-    Known limitation, not solved here: each dependency is joined with its
-    own table's `dependencies_path` (when set) via a plain relative
-    `os.path.join` -- real capgen-v1's own convention resolves
-    `dependencies_path` relative to the *original .meta file's own
-    directory*, but that directory isn't available at this layer
-    (`build_datatable` receives parsed MLIR text and a cap-files list, not
-    the original --scheme-files/--host-files search paths -- see
-    ccpp_dsl.py:697's own call site). Callers needing an absolute path
-    must resolve this relative path against their own known scheme/host
-    search directory; this is a real, deliberate gap, not an oversight.
+    Each dependency is joined with its table's `dependencies_path` via
+    `os.path.join`.  `build_meta_ir` in ccpp_xml.py now auto-populates
+    `dependencies_path` with the absolute directory of the originating
+    ``.meta`` file whenever no explicit ``dependencies_path`` is declared,
+    so bare filenames (e.g. ``eddy_diff.F90``) resolve to absolute paths
+    here -- matching capgen-v1's own output format.
     """
     used_schemes = _used_scheme_names(ccpp_mod)
     deps: set[str] = set()

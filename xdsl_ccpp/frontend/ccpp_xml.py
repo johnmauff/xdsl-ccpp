@@ -635,11 +635,18 @@ class ccppXML:
             final_scheme=suite.final_scheme,
         )
 
-    def build_meta_ir(self, meta, source_module: str = ""):
+    def build_meta_ir(self, meta, source_module: str = "", meta_file_path: str = ""):
         """Convert parsed `MetaData` into CCPP dialect IR ops.
 
         Walks the arg-tables and their arguments, creating `ArgumentOp`s inside
         `ArgumentTableOp`s, all wrapped in a `TablePropertiesOp`.
+
+        When ``meta_file_path`` is supplied and the table declares ``dependencies``
+        without an explicit ``dependencies_path``, ``dependencies_path`` is
+        automatically set to the absolute directory of the ``.meta`` file.  This
+        mirrors capgen-v1, which resolves bare dependency filenames relative to
+        the ``.meta`` file's own directory, producing absolute paths in the
+        datatable that ``cam_autogen.py`` can copy without further resolution.
 
         Returns:
             A `TablePropertiesOp` representing the complete metadata for one scheme.
@@ -688,6 +695,14 @@ class ccppXML:
                 meta.table_properties.getAttr("dependencies_path")
             )
         if meta.table_properties.dependencies:
+            # Mirror capgen-v1: when no explicit dependencies_path is declared,
+            # set it to the .meta file's own directory so bare dependency
+            # filenames (e.g. eddy_diff.F90) resolve to absolute paths in the
+            # datatable, exactly as capgen-v1 produces.
+            if "dependencies_path" not in attrs and meta_file_path:
+                attrs["dependencies_path"] = StringAttr(
+                    str(Path(meta_file_path).parent.resolve())
+                )
             attrs["dependencies"] = ArrayAttr([
                 StringAttr(dep) for dep in meta.table_properties.dependencies
             ])
@@ -724,7 +739,8 @@ class ccppXML:
             stem = Path(scheme_file).stem
             for c in parse_meta_file(scheme_file, True):
                 schemes[c.table_properties.getAttr("name")] = c
-                ir_ops.append(self.build_meta_ir(c, source_module=stem))
+                ir_ops.append(self.build_meta_ir(c, source_module=stem,
+                                                 meta_file_path=scheme_file))
 
         # Parse each host metadata file and emit a TablePropertiesOp.
         hosts = {}
@@ -732,7 +748,8 @@ class ccppXML:
             stem = Path(host_file).stem
             for c in parse_meta_file(host_file, False):
                 hosts[c.table_properties.getAttr("name")] = c
-                ir_ops.append(self.build_meta_ir(c, source_module=stem))
+                ir_ops.append(self.build_meta_ir(c, source_module=stem,
+                                                 meta_file_path=host_file))
 
         module = ModuleOp(ir_ops)
 

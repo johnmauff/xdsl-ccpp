@@ -406,12 +406,12 @@ class ccppMain:
         count = 0
         for scheme_file in scheme_files:
             for meta in parse_meta_file(scheme_file, True):
-                prop = frontend.build_meta_ir(meta)
+                prop = frontend.build_meta_ir(meta, meta_file_path=scheme_file)
                 ccpp_module.body.block.add_op(prop)
                 count += 1
         for host_file in host_files:
             for meta in parse_meta_file(host_file, False):
-                prop = frontend.build_meta_ir(meta)
+                prop = frontend.build_meta_ir(meta, meta_file_path=host_file)
                 ccpp_module.body.block.add_op(prop)
                 count += 1
 

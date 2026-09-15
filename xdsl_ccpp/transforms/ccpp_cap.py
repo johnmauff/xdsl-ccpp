@@ -855,7 +855,7 @@ class CCPPCAP(ModulePass):
 
 
     @staticmethod
-    def _generate_cam_lifecycle_wrappers(suite_descriptions, public_fns, meta_data, lifecycle_fns=None):
+    def _generate_cam_lifecycle_wrappers(suite_descriptions, public_fns, meta_data, lifecycle_fns=None, host_var_map_lc=None):
         """Generate cam_ccpp_physics_* lifecycle wrapper FuncOps for the CAM-SIMA host.
 
         phys_comp.F90 calls these with a simplified signature -- just suite_name
@@ -970,11 +970,18 @@ class CCPPCAP(ModulePass):
                         f"and ccpp_cap.py stores it in lifecycle_fns."
                     )
                 cam_entry = _CAM_STD_EXPRS.get(std_name)
+                if cam_entry is None and host_var_map_lc is not None:
+                    hv = host_var_map_lc.get(std_name.lower())
+                    if hv is not None:
+                        var_name, module_name = hv
+                        cam_entry = (var_name, module_name, False)
                 if cam_entry is None:
                     raise ValueError(
                         f"_generate_cam_lifecycle_wrappers: no CAM expression for "
                         f"standard_name '{std_name}' (dispatcher '{fn_suffix}', "
-                        f"arg '{raw_hint}'). Add it to _CAM_STD_EXPRS."
+                        f"arg '{raw_hint}'). Either add it to _CAM_STD_EXPRS (for "
+                        f"cap-local framework variables) or declare it in a MODULE-type "
+                        f"host metadata table (for host-model variables)."
                     )
                 expr, mod, qmin = cam_entry
                 call_args.append(expr)
@@ -1633,7 +1640,8 @@ class CCPPCAP(ModulePass):
         # the physics_types / physics_grid modules to be present.
         if self.cam_host:
             _wrappers, _wrapper_globals = self._generate_cam_lifecycle_wrappers(
-                suite_descriptions, public_fns, meta_data, lifecycle_fns
+                suite_descriptions, public_fns, meta_data, lifecycle_fns,
+                host_var_map_lc=host_var_map_lc,
             )
             for _g in _wrapper_globals:
                 _key = (_g.sym_name.data,

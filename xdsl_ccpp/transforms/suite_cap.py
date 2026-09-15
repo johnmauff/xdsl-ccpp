@@ -37,6 +37,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     KindWriteBackOp,
     LazyAllocOp,
     ModuleVarOp,
+    NullifyPointerOp,
+    PointerSliceAssignOp,
     PresentCheckOp,
     PromotionLoopOp,
     RankReducingSliceOp,
@@ -51,6 +53,7 @@ from xdsl_ccpp.transforms.constituent_cap import _collect_constituent_info
 from xdsl_ccpp.transforms.util.cap_shared import (
     LIFECYCLE_POSTFIX_ALIASES,
     SUITE_FN_INFIX,
+    _bare,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _collect_ddt_use_stubs,
@@ -144,6 +147,17 @@ def _resolved_var_record(arg) -> "dict | None":
         "is_protected": arg.hasAttr("protected") or arg.hasAttr("model_var_is_protected"),
         "is_optional": arg.hasAttr("optional"),
         "is_host_table_var": arg.hasAttr("model_var_is_host_table"),
+        # The scheme's own declared argument name -- always present,
+        # regardless of host-match status. Needed as a local_name fallback
+        # for args with no host match at all (e.g. a constituent-flagged
+        # arg, which is never host-matched since it's accessed via
+        # q(:,:,cidx) rather than a 1:1 host variable): real capgen-v1's own
+        # adapter (resolved_var_capgen_v1.py) always reports the scheme's
+        # own local_name here regardless of host match, but this record's
+        # model_var_name is only ever set when HostVariableMatchPass found
+        # a real host match -- see resolved_var_xdsl_ccpp.py's local_name
+        # field, which falls back to this when model_var_name is None.
+        "arg_name": _bare(arg.name),
         "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
         "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
         # Default to model_var_name/None, matching the plain (non-DDT)
@@ -1177,6 +1191,7 @@ class _PendingAlloc:
     init_value: object
     needs_device_residency: bool
     producer_scheme: str
+    is_run_local: bool = False
 
 
 @dataclass
@@ -1537,10 +1552,20 @@ class GenerateSuiteSubroutine(RewritePattern):
                 if ssa is not None:
                     dim_var_refs.append(ssa)
                 else:
-                    # This dimension is unresolvable at this phase; returning
-                    # an incomplete list would produce a rank mismatch, so
-                    # signal "not yet allocatable" by returning empty.
-                    return [], None
+                    # Fallback: dimension var produced in a prior phase (e.g.
+                    # _init) is absent from the current phase's all_args but
+                    # lives in data_ops as a SuiteOwned HostVarRefOp.
+                    # Example: number_of_vertical_interfaces_in_RRTMGP (nlayp)
+                    # is produced in rrtmgp_inputs_setup._init and never
+                    # re-declared in any _run table.
+                    fw_ref = data_ops.get(("std_name", alloc_dim.lower()))
+                    if fw_ref is not None:
+                        dim_var_refs.append(fw_ref)
+                    else:
+                        # Genuinely unresolvable: returning an incomplete list
+                        # would produce a rank mismatch, so signal "not yet
+                        # allocatable" by returning empty.
+                        return [], None
         return dim_var_refs, None
 
     def _build_promoted_call_ops(
@@ -2381,7 +2406,6 @@ class GenerateSuiteSubroutine(RewritePattern):
                             actual_postfixes[scheme_name] = _candidate
                             break
 
-                _INTENT_RANK = {"in": 0, "out": 1, "inout": 2}
                 for scheme_name in arg_tables:
                     for fn_arg in arg_tables[scheme_name].getFunctionArguments():
                         std_key = _std_key(fn_arg)
@@ -2390,10 +2414,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                             # Upgrade intent: a variable used as 'in' by one scheme
                             # and 'inout'/'out' by another must be declared 'inout'
                             # in the cap signature so that writeable calls compile.
+                            # Any two *different* intents combine to 'inout'
+                            # (in+out, in+inout, out+inout all -> inout);
+                            # identical intents leave the entry unchanged.
                             cur = all_args[std_key].getAttr("intent")
                             new = fn_arg.getAttr("intent")
-                            if _INTENT_RANK.get(new, 0) > _INTENT_RANK.get(cur, 0):
-                                all_args[std_key].setAttr("intent", new)
+                            if new != cur:
+                                all_args[std_key].setAttr("intent", "inout")
                         else:
                             all_args[std_key] = fn_arg
 
@@ -2637,15 +2664,26 @@ class GenerateSuiteSubroutine(RewritePattern):
                         dim_var_refs=_dim_var_refs,
                         init_value=_pending.init_value,
                         needs_device_residency=_pending.needs_device_residency,
+                        is_run_local=_pending.is_run_local,
                     )
                 )
                 if already_scheduled_allocs is not None:
                     already_scheduled_allocs.add(_pending.std_key)
-            # else: a genuinely unresolvable OTHER dimension
-            # on this same var -- silently skipped, matching
-            # the pre-existing narrow gap this fix doesn't
-            # change (not the "producer never ran" case the
-            # validation below exists to catch).
+            else:
+                # Genuinely unresolvable OTHER dimension on this
+                # var -- warn so the developer sees this at
+                # code-generation time rather than encountering a
+                # Fortran runtime error from an unallocated array.
+                import warnings
+                _dim_desc = ", ".join(str(d) for d in _pending.alloc_dim_names)
+                warnings.warn(
+                    f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                    f" '{_pending.var_name}'"
+                    f" (std_name='{_pending.std_key}', dims=({_dim_desc}))"
+                    f" after scheme '{scheme_name}' ran"
+                    f" -- no allocate() will be generated.",
+                    stacklevel=2,
+                )
         return ops
 
     def _emit_ordered_list(
@@ -2938,6 +2976,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME,
         }
         _has_horiz_first_dim = False
+        _sentry = None
         if suite_model is not None:
             _sentry = suite_model.get(fw_std_key)
             if _sentry is not None and _sentry.alloc_dim_std_names:
@@ -2945,7 +2984,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
                 )
         _dims = _rank
-        if physics_mode and _dims == 1 and _has_horiz_first_dim:
+        if physics_mode and _dims >= 1 and _has_horiz_first_dim:
             _col_begin_ssa = next(
                 (data_ops[a.name] for a in all_args.values()
                  if a.hasAttr("standard_name")
@@ -2961,15 +3000,70 @@ class GenerateSuiteSubroutine(RewritePattern):
                 data_ops.get("col_end"),
             )
             if _col_begin_ssa is not None and _col_end_ssa is not None:
-                section = ArraySectionOp(
-                    ref_op.res,
-                    [_col_begin_ssa],
-                    [_col_end_ssa],
+                lowers = [_col_begin_ssa]
+                uppers = [_col_end_ssa]
+                # For rank>1: resolve extra dims (e.g. vertical_layer_dimension → pver)
+                # via standard_name lookup in all_args. Lower bound is always 1.
+                _extra_std_names = (
+                    _sentry.alloc_dim_std_names[1:]
+                    if _sentry is not None and _sentry.alloc_dim_std_names
+                    else []
                 )
-                framework_ref_ops.append(section)
-                data_ops[fw_arg.name] = section
+                _extra_ok = True
+                _one_const = None
+                for _extra_std in _extra_std_names:
+                    _dim_ssa = next(
+                        (data_ops[a.name] for a in all_args.values()
+                         if a.hasAttr("standard_name")
+                         and a.getAttr("standard_name").lower() == _extra_std.lower()
+                         and a.name in data_ops),
+                        None,
+                    )
+                    if _dim_ssa is None:
+                        _extra_ok = False
+                        break
+                    if _one_const is None:
+                        _one_const = arith.ConstantOp.from_int_and_width(1, 32)
+                        framework_ref_ops.append(_one_const)
+                    lowers.append(_one_const.result)
+                    uppers.append(_dim_ssa)
+                if _extra_ok:
+                    section = ArraySectionOp(ref_op.res, lowers, uppers)
+                    framework_ref_ops.append(section)
+                    data_ops[fw_arg.name] = section
 
         return _var_name, _suite_entry
+
+    # Phases that run repeatedly (per-timestep or per-call). A SuiteOwned
+    # scalar produced in any of these phases can change between calls to the
+    # run subroutine, so arrays dimensioned by it must be locally allocated
+    # on each call rather than lazily at module scope.
+    _REPEATING_PHASES = frozenset({"_run", "_timestep_init", "_timestep_final"})
+
+    @staticmethod
+    def _is_run_local_var(entry, suite_model):
+        """True when a SuiteOwned array should be a LOCAL allocatable in _run.
+
+        A var is run-local when any of its allocation dimensions is a SuiteOwned
+        scalar that is itself produced in a repeating phase (_run,
+        _timestep_init, or _timestep_final). nday / daytime_columns_dimension
+        is produced in rrtmgp_pre_timestep_init (not _run), so the check
+        must cover _timestep_init. Such a dimension changes on every call; a
+        module-level lazy-alloc (if .not. allocated) would lock the size to the
+        first-call value permanently. The correct behaviour -- matching
+        capgen-v1 -- is to declare the var as a local allocatable inside the
+        run subroutine, allocate unconditionally with the current dimension
+        value on every call, and deallocate at subroutine end so storage is
+        released.
+        """
+        for dim_std_name in entry.alloc_dim_std_names:
+            dim_entry = suite_model.get(dim_std_name.lower())
+            if (dim_entry is not None
+                    and dim_entry.producing_phase in
+                        GenerateSuiteSubroutine._REPEATING_PHASES
+                    and dim_entry.rank == 0):
+                return True
+        return False
 
     def _maybe_schedule_framework_var_alloc(
         self, fw_arg, fw_std_key, var_name, suite_entry, is_alloc_phase,
@@ -2991,10 +3085,15 @@ class GenerateSuiteSubroutine(RewritePattern):
         """
         if not is_alloc_phase:
             return
+        if fw_std_key in self._fixed_advected_std_names(self.meta_data):
+            # Fixed-advected constituent local (q_wv/cldliq/cldice-like):
+            # pointer-aliased into the shared constituent array by
+            # _build_constituent_sync_ops (see _build_module_vars) --
+            # never allocate()'d here, only pointer-associated in _run.
+            return
         if fw_arg.hasAttr("allocatable"):
-            # Task #30, mechanism 1: this array is scheme-self-
-            # allocated -- its own producing scheme declares it
-            # `allocatable, intent(out)` and performs the
+            # Task #30, mechanism 1: when the scheme's dummy is truly
+            # `allocatable, intent(out)` the scheme performs the
             # allocate() itself in real Fortran (see
             # examples/advection/dlc_liq.F90, examples/
             # suite_allocate/make_workspace.F90 -- both already do
@@ -3007,13 +3106,46 @@ class GenerateSuiteSubroutine(RewritePattern):
             # ordering bug this whole fix exists for. Module-level
             # storage is still declared above unconditionally;
             # only the allocation itself is skipped here.
-            return
+            #
+            # Exception: a variable whose dimensions include
+            # horizontal_loop_extent cannot have an allocatable
+            # Fortran dummy, because the cap passes it as an array
+            # section (lw_Ds(col_start:col_end, ...)).  Fortran
+            # prohibits passing a section to an allocatable dummy.
+            # Such variables carry allocatable=True in their CCPP
+            # metadata to indicate they are declared allocatable in
+            # the CAP module -- the cap is responsible for
+            # allocating them.  Do NOT early-return in that case;
+            # fall through to generate the LazyAllocOp below.
+            _dim_names = (fw_arg.getAttr("dim_names")
+                          if fw_arg.hasAttr("dim_names") else [])
+            # dim_names on Block args are raw (not normalized via
+            # _normalize_std_name), so horizontal_loop_extent is still
+            # "horizontal_loop_extent" here, not "horizontal_dimension".
+            # Check for both forms to be safe.
+            _has_horiz_dim = any(
+                d.lower() in (CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME)
+                for d in _dim_names
+            )
+            if not _has_horiz_dim:
+                return
 
         _alloc_dim_names = (
             suite_model.alloc_dims(fw_std_key)
             if suite_model is not None
             else (fw_arg.getAttr("dim_names")
                   if fw_arg.hasAttr("dim_names") else [])
+        )
+        if not _alloc_dim_names:
+            # Scalar or DDT with no allocation dimensions (rank=0 or is_ddt).
+            # _resolve_alloc_dim_var_refs([], ...) would always return ([], None),
+            # falling to the else-warn branch -- but these vars genuinely need no
+            # allocate() call, so the warning is a false alarm.  Return silently.
+            return
+        _is_run_local = (
+            suite_entry is not None
+            and suite_model is not None
+            and self._is_run_local_var(suite_entry, suite_model)
         )
         dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
             _alloc_dim_names, all_args, data_ops, framework_ref_ops,
@@ -3039,6 +3171,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if suite_entry is not None else False
                     ),
                     producer_scheme=_pending_producer,
+                    is_run_local=_is_run_local,
                 )
             )
         elif dim_var_refs and not pending_only:
@@ -3059,14 +3192,30 @@ class GenerateSuiteSubroutine(RewritePattern):
                         if suite_entry is not None
                         else False
                     ),
+                    is_run_local=_is_run_local,
                 )
             )
             if already_scheduled_allocs is not None:
                 already_scheduled_allocs.add(fw_std_key)
+        else:
+            # _pending_producer is None but dim_var_refs is empty: genuinely
+            # unresolvable dimensions.  Warn so the developer sees this at
+            # code-generation time rather than encountering a Fortran runtime
+            # error from an unallocated array.
+            _alloc_dim_desc = ", ".join(str(d) for d in _alloc_dim_names)
+            import warnings
+            warnings.warn(
+                f"xdsl_ccpp: cannot resolve allocation dimensions for "
+                f"'{var_name}' (std_name='{fw_std_key}', dims=({_alloc_dim_desc}))"
+                f" -- no allocate() will be generated; this will likely cause a"
+                f" Fortran runtime error.",
+                stacklevel=2,
+            )
 
     def _sweep_suite_owned_var_allocations(
         self, suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+        deferred_warnings=None,
     ) -> None:
         """Lets a var whose allocation dimension can ONLY be resolved once
         physics_mode's own _run-phase args are in scope -- e.g.
@@ -3077,6 +3226,14 @@ class GenerateSuiteSubroutine(RewritePattern):
         during _run where n_const is one of the phase's own scheme args --
         still get allocated, without _run also emitting a second, redundant
         LazyAllocOp for a var _init/_register already successfully covered.
+
+        deferred_warnings -- optional list; when provided, unresolvable-dim
+        entries are appended as (local_name, standard_name, dim_desc) tuples
+        rather than emitting a warning immediately.  The caller is responsible
+        for emitting any remaining entries once all phases have been processed
+        (so warnings for vars that a later phase successfully allocates are
+        silenced automatically).  When None, warnings are emitted immediately
+        (legacy behaviour, preserved for callers that do not thread this list).
 
         Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
         """
@@ -3092,7 +3249,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         already_allocated |= {
             p.var_name for _plist in pending_allocs.values() for p in _plist
         }
+        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
         for entry in suite_model.suite_owned_vars():
+            if entry.standard_name in fixed_adv_names:
+                # Pointer-aliased into the shared constituent array by
+                # _build_constituent_sync_ops (see _build_module_vars) --
+                # never allocate()'d, only pointer-associated.
+                continue
             if not suite_model.needs_allocation(entry.standard_name):
                 continue
             if entry.local_name in already_allocated:
@@ -3135,6 +3298,28 @@ class GenerateSuiteSubroutine(RewritePattern):
                 )
                 if already_scheduled_allocs is not None:
                     already_scheduled_allocs.add(entry.standard_name)
+            else:
+                # _pending_producer is None but dim_var_refs is empty:
+                # genuinely unresolvable dimensions during the sweep pass.
+                # A later phase (e.g. _init_physics_after_coupler) may still
+                # allocate the var via the framework_vars loop -- so defer the
+                # warning when the caller supplies a list, and emit only after
+                # all phases have been processed.
+                _dim_desc = ", ".join(str(d) for d in entry.alloc_dim_std_names)
+                if deferred_warnings is not None:
+                    deferred_warnings.append(
+                        (entry.local_name, entry.standard_name, _dim_desc)
+                    )
+                else:
+                    import warnings
+                    warnings.warn(
+                        f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                        f" '{entry.local_name}'"
+                        f" (std_name='{entry.standard_name}', dims=({_dim_desc}))"
+                        f" during suite-owned var sweep"
+                        f" -- no allocate() will be generated.",
+                        stacklevel=2,
+                    )
 
     def _build_framework_refs(
         self,
@@ -3147,6 +3332,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         physics_mode,
         arg_tables,
         already_scheduled_allocs=None,
+        deferred_warnings=None,
     ):
         """Build HostVarRefOps and LazyAllocOps for framework-managed vars.
 
@@ -3161,6 +3347,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         sweep, never via framework_vars, since no _init/_register table of
         their own producing scheme declares them).
 
+        deferred_warnings -- forwarded to _sweep_suite_owned_var_allocations;
+        see that method's docstring for semantics.
+
         Mutates data_ops, suite_use_stubs, and already_scheduled_allocs as
         side effects. Returns (framework_ref_ops, lazy_alloc_ops,
         pending_allocs) -- pending_allocs (task #30) is a dict of
@@ -3174,6 +3363,46 @@ class GenerateSuiteSubroutine(RewritePattern):
         framework_ref_ops = []
         lazy_alloc_ops = []
         pending_allocs: dict = {}
+        # Pre-populate data_ops with HostVarRefOps for SuiteOwned scalars that
+        # were produced in a prior phase (e.g. _init) and are therefore absent
+        # from the current phase's all_args, but are module-level variables
+        # that can always be referenced by name.  Without this,
+        # _resolve_alloc_dim_var_refs cannot find them as dimension bounds for
+        # a LazyAllocOp (e.g. nlayp for pint_day in the rrtmgp suite, produced
+        # only by rrtmgp_inputs_setup._init and never re-declared in any _run).
+        #
+        # Guarded to _run (and _run-like) phases only:
+        # - In _init, all init-phase scalars are already in all_args so they
+        #   don't need pre-population.  Future-phase scalars (e.g. nday from
+        #   rrtmgp_pre._run) must NOT be added: doing so lets
+        #   _sweep_suite_owned_var_allocations resolve them as 0-valued module
+        #   variables, producing allocate(t_day(0, nlay)) in the init body.
+        # - Scalars already in all_args for the current phase must not be
+        #   bypassed either (e.g. nday is a _run-phase output; pre-populating
+        #   it in _run would let allocation fire before rrtmgp_pre_run runs).
+        if suite_model is not None and tgt_subroutine_postfix not in (
+            "_init", "_register", None
+        ):
+            _current_std_names = {
+                a.getAttr("standard_name").lower()
+                for a in all_args.values()
+                if a.hasAttr("standard_name")
+            }
+            for _so_entry in suite_model.suite_owned_vars():
+                if _so_entry.rank != 0:
+                    continue  # only scalar dimension bounds needed here
+                _so_key = _so_entry.standard_name.lower()
+                if _so_key in _current_std_names:
+                    continue  # in the current phase's all_args; don't bypass
+                if _so_entry.local_name in data_ops:
+                    continue  # already in scope (e.g. a block argument)
+                _so_type = TypeConversions.convert(_so_entry.fortran_type,
+                                                   _so_entry.kind, 0)
+                _so_ref = ccpp_utils.HostVarRefOp(_so_entry.local_name, "", _so_type)
+                _so_ref.res.name_hint = _so_entry.local_name
+                framework_ref_ops.append(_so_ref)
+                data_ops[_so_entry.local_name] = _so_ref
+                data_ops[("std_name", _so_key)] = _so_ref
         if framework_vars:
             for fw_arg in framework_vars.values():
                 _fw_std_key = _std_key(fw_arg)
@@ -3222,6 +3451,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             self._sweep_suite_owned_var_allocations(
                 suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
                 arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
+                deferred_warnings=deferred_warnings,
             )
 
         if tgt_subroutine_postfix is not None:
@@ -3341,6 +3571,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         group_name: str = "",
         suite_model=None,
         already_scheduled_allocs=None,
+        deferred_warnings=None,
         emit_scheme_calls: bool = True,
     ):
         """Build a single cap subroutine as a func.FuncOp.
@@ -3441,24 +3672,26 @@ class GenerateSuiteSubroutine(RewritePattern):
             physics_mode=physics_mode,
             arg_tables=arg_tables,
             already_scheduled_allocs=already_scheduled_allocs,
+            deferred_warnings=deferred_warnings,
         )
 
-        # Extract/writeback ops for advected module-level constituent arrays.
+        # Pointer-association ops for advected module-level constituent arrays.
         # Only injected for the _run group phase (physics_mode=True,
         # tgt_subroutine_postfix="_run"): that is the subroutine where
         # wet_to_dry/dry_to_wet converters and the physics scheme itself
         # consume and produce qv/qc/qr from module-level storage.  The 3D
         # constituent array q is a host-provided dummy argument, while the
         # module-level qv/qc/qr are suite-owned and unconnected from q
-        # without these explicit assignments.
+        # without these explicit pointer associations.
         #
-        # Constituent sync ordering (matching capgen-v1 pointer-alias semantics):
-        #   1. extract_ops   -- qv/qc/qr ← q[:,i] before any scheme reads them
-        #   2. pre_q schemes -- calc_exner, kessler, etc. (don't use q directly)
-        #   3. writeback_ops -- q[:,i] ← qv/qc/qr so qneg clips kessler-updated values
-        #   4. modify_q      -- qneg_run (clips q in-place via ccpp_constituents inout)
-        #   5. re-extract    -- qv/qc/qr ← q[:,i] so individual vars reflect qneg clips
-        #   6. readonly_q    -- geopotential_temp etc. (read both q and individual vars)
+        # constituent_extract_ops (PointerSliceAssignOp) associate each var
+        # to const(:,:,idx) once, before any scheme call; constituent_
+        # writeback_ops (NullifyPointerOp) null them once, after all scheme
+        # calls. No re-sync is needed in between -- every scheme call in the
+        # SDF, regardless of how many times it reads/writes the shared
+        # constituent array, sees the same live memory through the pointer
+        # (matching capgen-v1's own compile-time array-section aliasing;
+        # see _build_constituent_sync_ops).
         constituent_extract_ops = []
         constituent_writeback_ops = []
         if physics_mode and tgt_subroutine_postfix == "_run" and suite_model is not None:
@@ -3480,40 +3713,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             pending_allocs=pending_allocs,
             already_scheduled_allocs=already_scheduled_allocs,
         )
-        if constituent_extract_ops:
-            raw_call_seq = self.getCallSequence(suite_description)
-            pre_q_seq, mod_q_seq, ro_q_seq = self._classify_call_sequence_by_q(
-                raw_call_seq, arg_tables
-            )
-            pre_q_ops, pre_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=pre_q_seq)
-            mod_q_ops, mod_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=mod_q_seq)
-            ro_q_ops, ro_fn = self._build_call_ops(**_bco_kwargs, call_sequence_items=ro_q_seq)
-            fn_sigs = {**pre_fn, **mod_fn, **ro_fn}
-            # Build fresh re-extract ops: MLIR ops can only belong to one block, so we
-            # cannot reuse the same constituent_extract_ops objects a second time.
-            constituent_reextract_ops, _ = self._build_constituent_sync_ops(
-                suite_model, data_ops, input_arg_list
-            )
-            # Writebacks (step 3) and re-extracts (step 5) are only needed
-            # when mod_q_seq is non-empty (e.g. qneg modifying the 3D
-            # constituent array in-place).  When no scheme writes to
-            # ccpp_constituents, the writeback is a no-op and -- more
-            # importantly -- omitting it lets the printer keep carr as
-            # intent(in) rather than upgrading it to intent(inout), which
-            # would be a Fortran constraint violation.
-            if mod_q_seq:
-                call_ops = (
-                    pre_q_ops
-                    + list(constituent_writeback_ops)   # q[:,i]←qv before qneg
-                    + mod_q_ops                          # qneg clips q in-place
-                    + constituent_reextract_ops          # re-extract qv←q[:,i] after qneg
-                    + ro_q_ops                           # geopotential_temp etc.
-                )
-            else:
-                call_ops = pre_q_ops + ro_q_ops
-            constituent_writeback_ops = []  # already embedded in call_ops above
-        else:
-            call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
+        call_ops, fn_sigs = self._build_call_ops(**_bco_kwargs)
 
         # Multi-instance suite (real capgen-v1's model, ccpp_cap_refactor_
         # plan.md's "instances/instances_advection" entry): this call's own
@@ -3657,6 +3857,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         # standard_name in a different suite is a different module-scoped
         # variable.
         scheduled_allocs: set = set()
+        # Sweep warnings that could not be resolved during the flat _init
+        # phase are deferred here.  After all phases have been processed we
+        # emit only those whose standard_name is still absent from
+        # scheduled_allocs -- vars that a later phase (e.g. a per-group
+        # _init_physics_after_coupler) successfully allocated are silenced.
+        sweep_deferred_warnings: list = []
 
         for tgt_postfix, gen_postfix, state_string, check_string, emit_scheme_calls in subroutine_specs:
             fn, sigs, stubs = self.generateSubroutineCall(
@@ -3664,6 +3870,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 state_string=state_string, check_string=check_string,
                 physics_mode=(tgt_postfix == "_run"), suite_model=suite_model,
                 already_scheduled_allocs=scheduled_allocs,
+                deferred_warnings=sweep_deferred_warnings,
                 emit_scheme_calls=emit_scheme_calls,
             )
             generated_fns.append(fn)
@@ -3725,6 +3932,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                     state_string=state_string, check_string=check_string,
                     physics_mode=True, group_name=group_name, suite_model=suite_model,
                     already_scheduled_allocs=scheduled_allocs,
+                    deferred_warnings=sweep_deferred_warnings,
                 )
                 generated_fns.append(fn)
                 suite_host_use_stubs.extend(stubs)
@@ -3734,6 +3942,23 @@ class GenerateSuiteSubroutine(RewritePattern):
                     check_strings_used.add(check_string)
                 if state_string is not None:
                     state_strings_used.add(state_string)
+
+        # Emit deferred sweep warnings for vars that were never successfully
+        # allocated across any phase.  Vars that a later phase (e.g. a
+        # per-group _init_physics_after_coupler) did allocate are now in
+        # scheduled_allocs, so they are silenced here.
+        if sweep_deferred_warnings:
+            import warnings
+            for _local_name, _std_name, _dim_desc in sweep_deferred_warnings:
+                if _std_name not in scheduled_allocs:
+                    warnings.warn(
+                        f"xdsl_ccpp: cannot resolve allocation dimensions for"
+                        f" '{_local_name}'"
+                        f" (std_name='{_std_name}', dims=({_dim_desc}))"
+                        f" during suite-owned var sweep"
+                        f" -- no allocate() will be generated.",
+                        stacklevel=2,
+                    )
 
         return _LifecycleFnsResult(
             generated_fns=generated_fns,
@@ -3879,23 +4104,147 @@ class GenerateSuiteSubroutine(RewritePattern):
                 pre_q.append(item)
         return pre_q, modify_q, readonly_q
 
-    def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
-        """Build ConstituentSyncOp lists for advected module-level constituent vars.
+    @staticmethod
+    def _fixed_advected_std_names(meta_data) -> set:
+        """Standard names of this suite's fixed-advected constituents that
+        are pointer-aliased into the shared ccpp_constituents array.
 
-        Returns (extract_ops, writeback_ops).  extract_ops must be placed before
-        the first scheme call in a _run subroutine so the module-level qv/qc/qr
-        arrays are populated from the 3D constituent array q before any
-        wet_to_dry converter or physics scheme reads them.  writeback_ops must
-        be placed after the last scheme call so any modifications made by physics
-        schemes are reflected back into q before qneg and diagnostic schemes
-        operate on the full constituent array.
+        Shared predicate used to identify the module-level per-species
+        vars (q_wv/cldliq/cldice-like) that get a PointerSliceAssignOp from
+        _build_constituent_sync_ops, so their declaration/allocation/
+        deallocation can be special-cased identically everywhere else in
+        the cap (see _build_module_vars, _sweep_suite_owned_var_allocations,
+        _maybe_schedule_framework_var_alloc, _inject_safe_deallocs).
+
+        This is just the "pointer" half of
+        _classify_fixed_advected_std_names -- see that method's docstring
+        for the full reasoning (in particular why a var referenced by both
+        _run AND some other phase, e.g. examples/advection's cld_ice_array,
+        is deliberately excluded here even though it IS referenced by
+        _run).
+        """
+        pointer_names, _value_copy_names = (
+            GenerateSuiteSubroutine._classify_fixed_advected_std_names(meta_data)
+        )
+        return pointer_names
+
+    @staticmethod
+    def _classify_fixed_advected_std_names(meta_data) -> tuple:
+        """Partition this suite's fixed-advected constituent std_names into
+        (pointer_names, value_copy_names).
+
+        `advected=.true.` alone is NOT sufficient to treat a name specially:
+        it's a generic CCPP metadata flag also used by suites/tests that
+        have no actual 3D ccpp_constituents array at all (e.g. tests/unit/
+        test_suite_owned_residency.py's synthetic schemes use it purely to
+        opt a var into suite-owned/residency handling). Only when some
+        scheme in this suite also declares a standard_name=ccpp_constituents
+        argument does _build_constituent_sync_ops do anything with these
+        names at all -- so both returned sets are empty otherwise.
+
+        pointer_names -- referenced by some scheme's own "_run" entry point
+        AND by no other phase. _build_constituent_sync_ops pointer-aliases
+        these directly into const(:,:,idx); there is no separate backing
+        memory, which is only safe because nothing ever references them
+        outside a phase where that array is actually available as an
+        argument (data_ops.get(("std_name", "ccpp_constituents")) is None
+        outside _run -- see _build_constituent_sync_ops's own q_ref guard).
+
+        value_copy_names -- referenced by some scheme's own "_run" entry
+        point AND by some OTHER phase too (confirmed real case: examples/
+        advection's cld_ice_array is an intent(inout) arg of BOTH
+        cld_ice_init AND cld_ice_run). Those other phases have no
+        ccpp_constituents argument to alias against at all, so a var like
+        this needs its own real backing memory regardless -- it keeps the
+        plain allocatable declaration/allocation it always had, and
+        _build_constituent_sync_ops instead wraps the _run body in a plain
+        value-copy extract/writeback (the pre-pointer-alias ConstituentSyncOp
+        mechanism), which is sufficient here since nothing else in the SDF
+        touches this species' state between the extract and the writeback
+        (confirmed for cld_ice_array: only one _run-phase scheme reads/
+        writes it, and unlike rk_stratiform/zhang_mcfarlane's multi-bracket
+        case that motivated pointer-aliasing in the first place, this name
+        is never read again after a later in-place ccpp_constituents
+        modification within the same _run call).
+
+        A name referenced by some OTHER phase but never by any "_run" table
+        at all (examples/advection's cld_liq_array -- an _init-only
+        placeholder cld_liq_init never actually populates meaningfully) is
+        in neither set: no _run scheme touches it, so no _run-phase sync of
+        any kind is needed; it's a plain allocatable with no special
+        handling, exactly like before the pointer-alias fix existed.
+        """
+        from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+
+        _, fixed_adv, _ = _collect_constituent_info(meta_data)
+        if not fixed_adv:
+            return set(), set()
+        has_const_array = any(
+            props.getAttr("type") == CCPPType.SCHEME
+            and any(
+                fn_arg.hasAttr("standard_name")
+                and fn_arg.getAttr("standard_name").lower() == "ccpp_constituents"
+                for arg_table in props.arg_tables.values()
+                for fn_arg in arg_table.getFunctionArguments()
+            )
+            for props in meta_data.values()
+        )
+        if not has_const_array:
+            return set(), set()
+        run_referenced = set()
+        other_referenced = set()
+        for props in meta_data.values():
+            if props.getAttr("type") != CCPPType.SCHEME:
+                continue
+            for table_name, arg_table in props.arg_tables.items():
+                target = run_referenced if table_name.endswith("_run") else other_referenced
+                for fn_arg in arg_table.getFunctionArguments():
+                    if fn_arg.hasAttr("standard_name"):
+                        target.add(fn_arg.getAttr("standard_name").lower())
+        all_fixed = {std_name for std_name, *_ in fixed_adv}
+        pointer_names = (all_fixed & run_referenced) - other_referenced
+        value_copy_names = all_fixed & run_referenced & other_referenced
+        return pointer_names, value_copy_names
+
+    def _build_constituent_sync_ops(self, suite_model, data_ops, input_arg_list):
+        """Build pointer-association ops for advected module-level constituent vars.
+
+        Returns (assign_ops, nullify_ops).  For a "pointer_names" entry (see
+        _classify_fixed_advected_std_names), assign_ops pointer-associate
+        the module-level qv/qc/qr-like var to const(:,:,lc_const_indices(idx))
+        once, before the first scheme call in a _run subroutine -- mirroring
+        capgen-v1's own compile-time array-section aliasing (see
+        host_cap.py::add_constituent_vars): every scheme call site
+        thereafter reads/writes the SAME memory as the shared 3D constituent
+        array, so there is nothing to go stale no matter how many times that
+        array is modified by intervening schemes. This replaces an earlier
+        value-copy design (ConstituentSyncOp extract/writeback for every
+        such var, unconditionally) that only re-synced around a single
+        contiguous bracket of in-place-modifying schemes (e.g. qneg_run) and
+        silently went stale on suites whose SDF has more than one such
+        bracket (rasch_kristjansson, zhang_mcfarlane). nullify_ops null the
+        pointer at the end of the _run body for these entries -- not
+        required for correctness (every call re-associates before use) but
+        keeps the module var in a clean, defined state between calls.
+
+        For a "value_copy_names" entry (referenced by some OTHER phase too,
+        so it keeps real backing memory -- e.g. examples/advection's
+        cld_ice_array), assign_ops/nullify_ops instead hold a plain
+        ConstituentSyncOp extract (start of _run)/writeback (end of _run)
+        pair -- the original mechanism, still correct here since nothing
+        else in the SDF re-modifies this species between the extract and
+        the writeback (unlike the multi-bracket suites pointer-aliasing was
+        introduced for).
 
         Returns ([], []) when the subroutine has no constituent array argument
         or when no advected constituent is suite-owned for this group.
         """
-        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
-        if not fixed_adv:
+        pointer_names, value_copy_names = self._classify_fixed_advected_std_names(
+            self.meta_data
+        )
+        if not pointer_names and not value_copy_names:
             return [], []
+        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
 
         # Find the Fortran dummy-argument name of the 3D constituent array.
         # The SSA value tagged under ("std_name", "ccpp_constituents") in
@@ -3912,41 +4261,81 @@ class GenerateSuiteSubroutine(RewritePattern):
         if not q_local:
             return [], []
 
-        extract_ops = []
-        writeback_ops = []
+        assign_ops = []
+        nullify_ops = []
         for const_idx, (std_name, _units, _default_val, _local_name) in enumerate(
             fixed_adv, start=1
         ):
+            # const_idx must stay 1-based against the FULL fixed_adv list
+            # (matching cam_model_const_stdnames/lc_const_indices, built
+            # from this same list in constituent_cap.py) even though only
+            # a subset of entries get an op emitted below.
             entry = suite_model.get(std_name)
             if entry is None:
                 continue  # not suite-owned for this group; skip
             var_local = entry.local_name
-            extract_ops.append(ConstituentSyncOp(
-                var_name=var_local,
-                q_name=q_local,
-                ncol_name="ncol",
-                constituent_idx=const_idx,
-                direction="extract",
-            ))
-            writeback_ops.append(ConstituentSyncOp(
-                var_name=var_local,
-                q_name=q_local,
-                ncol_name="ncol",
-                constituent_idx=const_idx,
-                direction="writeback",
-            ))
-        return extract_ops, writeback_ops
+            if std_name in pointer_names:
+                assign_ops.append(PointerSliceAssignOp(
+                    ptr_name=var_local,
+                    array_name=q_local,
+                    index_var=f"lc_const_indices({const_idx})",
+                ))
+                nullify_ops.append(NullifyPointerOp(var_local))
+            elif std_name in value_copy_names:
+                assign_ops.append(ConstituentSyncOp(
+                    var_name=var_local,
+                    q_name=q_local,
+                    ncol_name="ncol",
+                    constituent_idx=const_idx,
+                    direction="extract",
+                ))
+                nullify_ops.append(ConstituentSyncOp(
+                    var_name=var_local,
+                    q_name=q_local,
+                    ncol_name="ncol",
+                    constituent_idx=const_idx,
+                    direction="writeback",
+                ))
+            # else: referenced by some other phase but never by _run --
+            # no _run-phase sync needed at all (see _classify_fixed_
+            # advected_std_names), skip.
+        return assign_ops, nullify_ops
 
     def _build_module_vars(self, suite_model):
-        """Return (allocatable_mod_vars, interstitial_var_names) for suite-owned variables."""
+        """Return (allocatable_mod_vars, interstitial_var_names, run_local_entries).
+
+        run_local_entries -- SuiteVarEntry objects that should be declared as
+        LOCAL allocatables inside the _run subroutine rather than at module scope.
+        These are excluded from allocatable_mod_vars and interstitial_var_names.
+        """
+        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
         interstitial_var_names: set[str] = set()
         allocatable_mod_vars = []
+        run_local_entries = []
         for entry in suite_model.suite_owned_vars():
+            if (entry.rank > 0 and not entry.is_ddt
+                    and self._is_run_local_var(entry, suite_model)):
+                run_local_entries.append(entry)
+                continue
             if entry.is_ddt:
                 # DDT interstitials are module-scope non-allocatable scalars; require
                 # type(...) syntax in Fortran.
                 allocatable_mod_vars.append(
                     ModuleVarOp(entry.local_name, "type", ddt_name=entry.fortran_type, rank=0)
+                )
+                interstitial_var_names.add(entry.local_name.lower())
+                continue
+            if entry.standard_name in fixed_adv_names:
+                # Fixed-advected constituent local (q_wv/cldliq/cldice-like):
+                # pointer-aliased into the shared constituent array by
+                # _build_constituent_sync_ops, not populated by value-copy.
+                # Declared POINTER (never allocated/deallocated by this cap --
+                # see _sweep_suite_owned_var_allocations and
+                # _inject_safe_deallocs, which both skip these entries too).
+                kind = entry.kind if entry.kind else CCPP_KIND_PHYS
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, "real", kind=kind,
+                                is_pointer=True, rank=entry.rank)
                 )
                 interstitial_var_names.add(entry.local_name.lower())
                 continue
@@ -3965,7 +4354,79 @@ class GenerateSuiteSubroutine(RewritePattern):
                                 kind=entry.kind if entry.kind else None, rank=entry.rank)
                 )
             interstitial_var_names.add(entry.local_name.lower())
-        return allocatable_mod_vars, interstitial_var_names
+        return allocatable_mod_vars, interstitial_var_names, run_local_entries
+
+    # Suffixes and substrings that identify non-run lifecycle FuncOps from their
+    # full sym_name (which is the Fortran subroutine name, e.g.
+    # "rrtmgp_init_physics_after_coupler" or "suite_allocate_suite_register").
+    # The run subroutine has no phase word: "{suite_name}_{group_name}".
+    _NON_RUN_SYM_SUBSTRINGS = ("_init_", "_final_")  # covers timestep_* too
+    _NON_RUN_SYM_SUFFIXES = ("_register", "_initialize", "_finalize")
+
+    @staticmethod
+    def _inject_run_local_var_handling(generated_fns, run_local_entries):
+        """Inject local allocatable decls and end-of-run SafeDeallocOps for run-local vars.
+
+        Run-local vars (those whose allocation dimension is a repeating-phase scalar,
+        e.g. t_day dimensioned by nday from rrtmgp_pre._timestep_init, or work
+        dimensioned by nw from use_workspace._timestep_init) must be declared as
+        local allocatables inside the run subroutine, not at module scope, so that
+        each call sees the current dimension value.
+
+        The run subroutine FuncOp is identified two ways (OR):
+          1. It contains a LazyAllocOp with is_run_local=True (cap-allocated vars
+             such as t_day / pint_day — the printer emits plain allocate() for these).
+          2. Its sym_name has the pattern "_{group_name}" with no phase prefix (covers
+             scheme-allocated run-local vars like work/scratch_workspace, where the
+             scheme itself does the allocation via allocatable intent=out and the cap
+             only needs the local declaration).
+        """
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp):
+                continue
+            if not fn.body.blocks:
+                continue
+            block = fn.body.blocks[0]
+            # Primary: cap-allocated run-local vars leave a LazyAllocOp(is_run_local=True).
+            has_run_local_alloc = any(
+                isa(bop, LazyAllocOp)
+                and bop.is_run_local is not None
+                and bool(bop.is_run_local.value.data)
+                for bop in block.ops
+            )
+            # Fallback: scheme-allocated vars (allocatable intent=out) have no
+            # LazyAllocOp, so identify the run subroutine by its full sym_name.
+            # The sym_name is the Fortran subroutine name, e.g.:
+            #   run:             "rrtmgp_physics_after_coupler"
+            #   init:            "rrtmgp_init_physics_after_coupler"  (has "_init_")
+            #   timestep_init:   "rrtmgp_timestep_init_physics_after_coupler"
+            #   final:           "rrtmgp_final_physics_after_coupler" (has "_final_")
+            #   timestep_final:  "rrtmgp_timestep_final_physics_after_coupler"
+            #   suite-register:  "rrtmgp_register"  (ends "_register")
+            #   suite-initialize:"rrtmgp_initialize" (ends "_initialize")
+            #   suite-finalize:  "rrtmgp_finalize"   (ends "_finalize")
+            sym = fn.sym_name.data
+            is_run_by_name = (
+                not any(sub in sym for sub in GenerateSuiteSubroutine._NON_RUN_SYM_SUBSTRINGS)
+                and not sym.endswith(GenerateSuiteSubroutine._NON_RUN_SYM_SUFFIXES)
+            )
+            if not (has_run_local_alloc or is_run_by_name):
+                continue
+            ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
+            if ret_op is None:
+                continue
+            for entry in run_local_entries:
+                full_type = TypeConversions.convert(
+                    entry.fortran_type, entry.kind if entry.kind else None, entry.rank
+                )
+                alloca = memref.AllocaOp.get(
+                    full_type.element_type, shape=[0] * entry.rank
+                )
+                alloca.memref.name_hint = entry.local_name + "__alloc"
+                Rewriter.insert_op(alloca, InsertPoint.at_start(block))
+                Rewriter.insert_op(
+                    SafeDeallocOp(entry.local_name), InsertPoint.before(ret_op)
+                )
 
     @staticmethod
     def _inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names):
@@ -3982,8 +4443,16 @@ class GenerateSuiteSubroutine(RewritePattern):
             if ret_op is None:
                 continue
             for var_decl in allocatable_mod_vars:
-                # Only arrays (rank > 0); skip interstitials that persist until _finalize.
-                if var_decl.rank.value.data > 0 and \
+                # Only arrays (rank > 0); skip interstitials that persist until
+                # _finalize, and skip POINTER vars (e.g. fixed-advected
+                # constituent locals pointer-aliased by
+                # _build_constituent_sync_ops) -- deallocate() on a pointer
+                # that doesn't own its target memory is invalid; nullify()
+                # (emitted once per _run call, see _build_constituent_sync_ops)
+                # is the correct cleanup for those instead.
+                _is_ptr = bool(var_decl.is_pointer is not None
+                               and var_decl.is_pointer.value.data)
+                if var_decl.rank.value.data > 0 and not _is_ptr and \
                         var_decl.var_name.data.lower() not in interstitial_var_names:
                     Rewriter.insert_op(SafeDeallocOp(var_decl.var_name.data),
                                        InsertPoint.before(ret_op))
@@ -4058,9 +4527,10 @@ class GenerateSuiteSubroutine(RewritePattern):
     def _inject_constituent_index_lookup(generated_fns, std_name_attrs):
         """Inject ConstituentIndexLookupOp at the top of each group-phase _init_ FuncOp.
 
-        This populates lc_const_indices at runtime so that ConstituentSyncOp's
-        q(:,:,lc_const_indices(k)) references resolve to the correct constituent
-        slot regardless of the order in which constituents were registered.
+        This populates lc_const_indices at runtime so that
+        PointerSliceAssignOp's q(:,:,lc_const_indices(k)) pointer-association
+        targets resolve to the correct constituent slot regardless of the
+        order in which constituents were registered.
         """
         for fn in generated_fns:
             if not isa(fn, func.FuncOp) or fn.is_declaration:
@@ -4110,9 +4580,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         all_strings_used = _lc.check_strings_used | _lc.state_strings_used
         ccpp_suite_state_global, string_const_globals = self._build_state_globals(all_strings_used)
 
-        allocatable_mod_vars, interstitial_var_names = self._build_module_vars(suite_model)
+        allocatable_mod_vars, interstitial_var_names, run_local_entries = (
+            self._build_module_vars(suite_model)
+        )
         if allocatable_mod_vars:
             self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
+        if run_local_entries:
+            self._inject_run_local_var_handling(generated_fns, run_local_entries)
         self._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
         seen_stubs: set = set()
