@@ -200,6 +200,19 @@ class ccppMain:
                  "still using the deprecated convention.",
         )
         parser.add_argument(
+            "--preproc-defs",
+            default=None,
+            help="Comma-separated list of C-preprocessor defines (e.g. "
+                 "'SPMD,NP=4,_MPI', each entry optionally '-D'-prefixed), "
+                 "matching CAM_CONFIG_OPTS-style tokens. Applied only to the "
+                 "Fortran-vs-.meta cross-validation phase (see "
+                 "validate_fortran_sources): resolves #ifdef/#if conditional "
+                 "compilation in each scheme's paired .F90 before comparing "
+                 "its real signature against the .meta file, mirroring "
+                 "capgen-v1's own check_fortran_against_metadata. Currently "
+                 "warn-only -- mismatches are reported, never fatal.",
+        )
+        parser.add_argument(
             "--gfs-dim-aliases",
             action="store_true",
             default=False,
@@ -245,6 +258,12 @@ class ccppMain:
             ]
         else:
             options_db["host_files"] = []
+        if options_db.get("preproc_defs"):
+            options_db["preproc_defs"] = [
+                p.strip() for p in options_db["preproc_defs"].split(",") if p.strip()
+            ]
+        else:
+            options_db["preproc_defs"] = []
 
         all_inputs = (
             options_db["suites"] + options_db["scheme_files"] + options_db["host_files"]
@@ -473,6 +492,62 @@ class ccppMain:
         self.print_verbose_message(
             f"  -> Merged {len(table_props)} table_properties block(s)",
         )
+
+    def validate_fortran_sources(self) -> None:
+        """Cross-validate each scheme's .meta file against its real Fortran
+        signature, mirroring capgen-v1's own check_fortran_against_metadata.
+
+        For every --scheme-files entry, look for a paired .F90 (same stem,
+        same directory -- the same convention xdsl_ccpp/tools/
+        ccpp_validate_source.py already uses), extract its real subroutine
+        signatures via fparser2 (fparser2_to_meta.py), applying --preproc-defs
+        first (fortran_preprocess.py -- fparser itself has no CPP-evaluation
+        capability), and compare against the .meta-declared signature via
+        validate_fir.compare_modules.
+
+        Diagnostic only, currently warn-only (see this repo's
+        capgen_v1_parity_backlog.md / the plan that introduced this method):
+        mismatches are printed to stderr, never raised, and any failure to
+        load or parse a given pair is itself just a printed warning. This
+        phase is not required for cap generation to succeed, and silently
+        does nothing if fparser is not installed.
+        """
+        try:
+            import fparser.two.Fortran2003  # noqa: F401
+        except ImportError:
+            return
+
+        from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
+        from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_file
+        from xdsl_ccpp.transforms.validate_fir import compare_modules
+        from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
+
+        preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
+
+        for meta_path in self.options_db.get("scheme_files") or []:
+            stem = os.path.splitext(os.path.basename(meta_path))[0]
+            f90_path = os.path.join(
+                os.path.dirname(os.path.abspath(meta_path)), f"{stem}.F90"
+            )
+            if not os.path.isfile(f90_path):
+                continue
+
+            meta_module = _load_meta_file(meta_path)
+            if meta_module is None:
+                continue  # host/module-type .meta, or failed to load (already warned)
+
+            try:
+                source_module = build_meta_module_from_file(f90_path, preproc_defs)
+            except Exception as exc:
+                print(
+                    f"Warning: fparser2 failed to parse '{f90_path}' for "
+                    f"Fortran-vs-.meta validation: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+
+            for mismatch in compare_modules(meta_module, source_module):
+                print(f"Warning: {mismatch}", file=sys.stderr)
 
     def _check_memory_space_mismatch(self, mlir_file: str) -> None:
         """Warn when memory_space annotations exist but --directive is not set.
@@ -767,6 +842,7 @@ class ccppMain:
             mlir_file = self.run_frontend(tmp_dir)
         if self.options_db.get("meta_file"):
             self.merge_meta(mlir_file)
+        self.validate_fortran_sources()
         self._check_memory_space_mismatch(mlir_file)
         ftn_file = self.run_opt(tmp_dir, mlir_file)
         self.split_fortran_output(ftn_file, out_dir)

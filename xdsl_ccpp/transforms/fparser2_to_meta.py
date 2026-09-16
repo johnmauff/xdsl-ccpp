@@ -45,17 +45,29 @@ def _fparser_available() -> bool:
 
 def _extract_subroutines(
     f90_source: str,
+    filename: str = "<source>",
+    preproc_defs: dict | None = None,
 ) -> list[tuple[str, str, list[dict]]]:
     """Parse *f90_source* and return a list of (module_name, proc_name, args).
 
     Each element of *args* is a dict with keys:
     ``name``, ``type``, ``rank``, ``intent`` (or None), ``optional`` (bool),
     ``kind`` (str or None, for CHARACTER only: the length string).
+
+    ``preproc_defs``, when truthy, is applied to *f90_source* via
+    ``fortran_preprocess.preprocess_fortran_source`` before fparser2 ever
+    sees it -- fparser has no CPP-evaluation capability of its own (it only
+    tokenizes ``#if``/``#ifdef``/etc. as opaque directive nodes), so
+    conditional-compilation regions must already be resolved by this point.
     """
     import fparser.two.Fortran2003 as f03
     from fparser.two.parser import ParserFactory
     from fparser.two.utils import walk
     from fparser.common.readfortran import FortranStringReader
+
+    if preproc_defs:
+        from xdsl_ccpp.transforms.fortran_preprocess import preprocess_fortran_source
+        f90_source = preprocess_fortran_source(f90_source, filename, preproc_defs)
 
     ParserFactory().create(std="f2003")
     reader = FortranStringReader(f90_source)
@@ -160,13 +172,20 @@ def _extract_subroutines(
     return results
 
 
-def build_meta_module_from_source(f90_source: str) -> builtin.ModuleOp:
+def build_meta_module_from_source(
+    f90_source: str,
+    filename: str = "<source>",
+    preproc_defs: dict | None = None,
+) -> builtin.ModuleOp:
     """Parse *f90_source* and return a ``builtin.ModuleOp`` containing
     ``ccpp.table_properties`` / ``ccpp.arg_table`` / ``ccpp.arg`` ops.
 
+    ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
+    compilation in *f90_source* before parsing -- see ``_extract_subroutines``.
+
     Raises ``ImportError`` if fparser is not installed.
     """
-    subroutines = _extract_subroutines(f90_source)
+    subroutines = _extract_subroutines(f90_source, filename, preproc_defs)
 
     # Group by module name → one TablePropertiesOp per module
     by_module: dict[str, list[tuple[str, list[dict]]]] = defaultdict(list)
@@ -196,8 +215,14 @@ def build_meta_module_from_source(f90_source: str) -> builtin.ModuleOp:
     return builtin.ModuleOp(table_props)
 
 
-def build_meta_module_from_file(f90_path: str) -> builtin.ModuleOp:
-    """Read *f90_path* and return CCPP metadata IR extracted via fparser2."""
+def build_meta_module_from_file(
+    f90_path: str, preproc_defs: dict | None = None
+) -> builtin.ModuleOp:
+    """Read *f90_path* and return CCPP metadata IR extracted via fparser2.
+
+    ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
+    compilation before parsing -- see ``build_meta_module_from_source``.
+    """
     with open(f90_path) as f:
         source = f.read()
-    return build_meta_module_from_source(source)
+    return build_meta_module_from_source(source, f90_path, preproc_defs)
