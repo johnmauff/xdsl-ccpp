@@ -502,6 +502,7 @@
 // CHECK-NEXT:    public :: VarCompatibility_ccpp_number_constituents
 // CHECK-NEXT:    public :: VarCompatibility_ccpp_initialize_constituents
 // CHECK-NEXT:    public :: VarCompatibility_constituents_array
+// CHECK-NEXT:    public :: VarCompatibility_advected_constituents_array
 // CHECK-NEXT:    public :: VarCompatibility_const_get_index
 // CHECK-NEXT:    public :: VarCompatibility_model_const_properties
 // CHECK:       CONTAINS
@@ -814,11 +815,8 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: advected
 // CHECK-NEXT:      errcode = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      if (allocated(lc_all_constituents)) then
-// CHECK-NEXT:        num_advected = size(lc_all_constituents)
-// CHECK-NEXT:      else
-// CHECK-NEXT:        num_advected = 0
-// CHECK-NEXT:      end if
+// CHECK-NEXT:      call cam_constituents_obj%num_constituents(num_advected, advected=advected, &
+// CHECK-NEXT:          errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:    end subroutine VarCompatibility_ccpp_number_constituents
 // CHECK-LABEL:   subroutine VarCompatibility_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
 // CHECK:           integer, intent(in) :: ncols
@@ -843,6 +841,10 @@
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
 // CHECK-NEXT:      ptr => lc_constituent_array
 // CHECK-NEXT:    end function VarCompatibility_constituents_array
+// CHECK-NEXT:    function VarCompatibility_advected_constituents_array() result(ptr)
+// CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK-NEXT:      ptr => cam_constituents_obj%advected_constituents_ptr()
+// CHECK-NEXT:    end function VarCompatibility_advected_constituents_array
 // CHECK-LABEL:   subroutine VarCompatibility_const_get_index(std_name, index, errflg, errmsg)
 // CHECK:           use ccpp_constituent_prop_mod, only: to_lower
 // CHECK-NEXT:      character(len=*), intent(in) :: std_name
