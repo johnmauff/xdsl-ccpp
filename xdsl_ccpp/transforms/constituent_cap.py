@@ -592,11 +592,23 @@ def _generate_constituent_api(
     )
 
     # ── 4. number_constituents ───────────────────────────────────────────
-    # The optional `advected` arg is declared for API compatibility but is not used
-    # to filter the count: every constituent registered through this API is advected
-    # (fixed_advected contains only advected=.true. entries; host_constituents and
-    # dynamic scheme arrays are required to be advected by the CAM-SIMA contract).
-    # size(lc_all_constituents) therefore equals the advected-only count.
+    # Mirrors capgen-v1's own num_const_funcname body exactly
+    # (ccpp_framework/scripts/constituents.py: "call {const_obj_name}%
+    # num_constituents(num_flds, advected=advected, ...)") -- delegate the
+    # `advected` filter to ccpp_model_constituents_t%num_constituents
+    # (ccp_model_const_num_match in ccpp_constituent_prop_mod.F90), which
+    # already filters correctly on each constituent's real is_advected()
+    # property. A prior version of this function instead assumed every
+    # registered constituent is advected and returned size(lc_all_constituents)
+    # unconditionally -- false whenever a scheme registers non-advected
+    # constituents through the dynamic-array path (e.g. RRTMGP's
+    # rrtmgp_constituents.F90 registers 'N'/'Z' rad_climate gases with
+    # advected=.false.). That mismatch produced a too-large num_advected,
+    # which downstream (MPAS's dyn_comp_impl.F90::dyn_inquire_advected_
+    # constituent_index) over-allocated advected_constituent_index(:) and
+    # left its tail uninitialized, crashing with a garbage out-of-bounds
+    # index -- confirmed on a real QPC4 (RRTMGP + non-advected rad_climate
+    # gases) MPAS case.
     nc_arg_decls = [
         "integer, intent(out) :: num_advected",
         f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
@@ -607,22 +619,16 @@ def _generate_constituent_api(
     if multi_instance:
         nc_body += [
             "if (allocated(lc_instances)) then",
-            f"  if (allocated({ref('lc_all_constituents')})) then",
-            f"    num_advected = size({ref('lc_all_constituents')})",
-            "  else",
-            "    num_advected = 0",
-            "  end if",
+            f"  call {_cam_obj}%num_constituents(num_advected, advected=advected, &",
+            "      errcode=errcode, errmsg=errmsg)",
             "else",
             "  num_advected = 0",
             "end if",
         ]
     else:
         nc_body += [
-            "if (allocated(lc_all_constituents)) then",
-            "  num_advected = size(lc_all_constituents)",
-            "else",
-            "  num_advected = 0",
-            "end if",
+            f"call {_cam_obj}%num_constituents(num_advected, advected=advected, &",
+            "    errcode=errcode, errmsg=errmsg)",
         ]
     nc_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_number_constituents",
@@ -740,6 +746,42 @@ def _generate_constituent_api(
         body_ops=[RawFortranLinesOp(f"ptr => {ref('lc_constituent_array')}")],
     )
 
+    # ── 6b. advected_constituents_array ──────────────────────────────────
+    # Mirrors capgen-v1's own constituent_model_advected_consts accessor
+    # (ccpp_framework/scripts/constituents.py: "function {advect_array_func}()
+    # result(const_ptr) ... const_ptr => {const_obj_name}%advected_constituents_ptr()").
+    # Needed by MPAS's dyn_coupling_impl.F90 ("use cam_ccpp_cap, only:
+    # cam_advected_constituents_array"), which xdsl_ccpp never generated --
+    # confirmed missing by a MODEL_BUILD failure on real MPAS aux_sima cases
+    # (SHAREDLIB_BUILD/cap generation itself already passes). The underlying
+    # capability already exists (ccpp_constituent_prop_mod.F90's
+    # ccpp_model_constituents_t already has advected_constituents_ptr, bound
+    # as ccp_advected_data_ptr) -- only this thin public wrapper was absent.
+    #
+    # Deliberately a direct call in the function body (no pre-cached
+    # module-level pointer, unlike ca_op/lc_constituent_array) -- matches
+    # capgen-v1's own simpler direct-call shape, and nothing else in this
+    # generator currently needs an advected-only view cached anywhere else.
+    #
+    # Raw-string body (RawFortranLinesOp), matching every other function in
+    # this file -- a deliberate, documented kludge (TDB-002 in
+    # technical_debt.md: constituent_cap.py's IR-ification is a separate,
+    # dedicated refactor task, not something to do incrementally alongside
+    # feature work).
+    aca_op = ConstituentFunctionOp(
+        fn_name=f"{h}_advected_constituents_array",
+        is_function=True,
+        args=[instance_local_name] if multi_instance else [],
+        use_stmts=[],
+        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
+        local_decls=[],
+        result_name="ptr",
+        result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
+        body_ops=[RawFortranLinesOp(
+            f"ptr => {ref('cam_constituents_obj')}%advected_constituents_ptr()"
+        )],
+    )
+
     # ── 7. const_get_index ───────────────────────────────────────────────
     # Delegate to cam_constituents_obj%const_index (hash lookup) instead of
     # linear scan.  Hash keys are stored lowercase, so pass to_lower(std_name).
@@ -835,6 +877,7 @@ def _generate_constituent_api(
         f"{h}_ccpp_number_constituents",
         f"{h}_ccpp_initialize_constituents",
         f"{h}_constituents_array",
+        f"{h}_advected_constituents_array",
         f"{h}_const_get_index",
         f"{h}_model_const_properties",
     ]
@@ -847,13 +890,13 @@ def _generate_constituent_api(
     if cam_host:
         api_op = CamHostConstituentApiOp(
             public_names_list,
-            [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, ci_op, mp_op, gc_op, uc_op],
+            [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op, gc_op, uc_op],
         )
     else:
         api_op = NonCamHostConstituentApiOp(
             public_names_list,
             type_defs_text,
-            [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, ci_op, mp_op],
+            [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op],
         )
 
     # ── USE stubs for ccpp_constituent_prop_mod ──────────────────────────
