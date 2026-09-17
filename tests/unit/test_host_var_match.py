@@ -15,7 +15,13 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, TablePropertiesOp, TableTypeKind
 from xdsl.dialects.builtin import ModuleOp
 
-from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
+from tests.unit.helpers import (
+    CCPP_MANDATORY_ARGS,
+    minimal_suite_xml,
+    two_scheme_subcycle_xml,
+)
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
+from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 
 pytestmark = pytest.mark.usefixtures("legacy_mode")
 
@@ -736,3 +742,219 @@ class TestConstituentPropertiesOutsideRegisterPhase:
             host_metas=[],
             suite_xml=minimal_suite_xml("cld_liq"),
         )
+
+
+# ── advected consistency / auto-correct ────────────────────────────────────
+#
+# Real capgen-v1 resolves every scheme's reference to a given standard_name
+# through a single shared Var object (VarDictionary.add_variable/
+# ConstituentVarDict.find_variable in ccpp_framework/scripts/{metavar,
+# constituents}.py) -- decided once, by whichever scheme first registers it,
+# and used identically by every later reference. "advected" and
+# "interstitial/host-visible" are mutually exclusive, suite-wide categories
+# there; there is no per-occurrence local check, and no opt-in toggle for
+# this inheritance -- it is simply how capgen-v1 always behaves.
+#
+# xdsl_ccpp instead classifies each argument purely from its own local
+# advected flag, so a scheme that omits it can silently fall through to
+# host-matching OR to the produced_in_init/is_interstitial path -- discovered
+# as the root cause of a real bug (compute_cloud_fraction.meta's water-vapor
+# argument was missing advected = true; several sibling schemes in the same
+# suite already declared it correctly, yet marking just this one occurrence
+# is_interstitial suite-wide-poisoned ccpp_cap.py's interstitial_std_names,
+# hiding water_vapor/cloud_ice/cloud_liquid_water entirely from the suite's
+# generated input/output variable list -- confirmed by diffing real
+# generated Fortran with and without the hand-applied .meta fix, and
+# confirmed the fix here reproduces that same generated output exactly).
+# The correction is unconditional (no flag), matching capgen-v1's own
+# posture, across both the model_var_index and the produced_in_init/
+# is_interstitial paths -- including examples/constituents_dim's rule-(b)
+# consumer pattern, which turns out to have the exact same shape as the
+# real bug (not a case to exempt from the check, as an earlier, narrower
+# version of this fix assumed -- see test_rule_b_consumer_pattern_* below).
+
+_ADVECTED_PRODUCER_META = f"""\
+[ccpp-table-properties]
+  name = advected_producer
+  type = scheme
+[ccpp-arg-table]
+  name = advected_producer_init
+  type = scheme
+[ pvar ]
+  standard_name = test_shared_advected_var
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = out
+{CCPP_MANDATORY_ARGS}
+"""
+
+_ADVECTED_CONSUMER_META = f"""\
+[ccpp-table-properties]
+  name = advected_consumer
+  type = scheme
+[ccpp-arg-table]
+  name = advected_consumer_run
+  type = scheme
+[ cvar ]
+  standard_name = test_shared_advected_var
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+_ADVECTED_CONSUMER_META_WITH_FLAG = f"""\
+[ccpp-table-properties]
+  name = advected_consumer
+  type = scheme
+[ccpp-arg-table]
+  name = advected_consumer_run
+  type = scheme
+[ cvar ]
+  standard_name = test_shared_advected_var
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+_ADVECTED_HOST_META = """\
+[ccpp-table-properties]
+  name = advected_host_mod
+  type = module
+[ccpp-arg-table]
+  name = advected_host_mod
+  type = module
+[ hvar ]
+  standard_name = test_shared_advected_var
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real
+  kind = kind_phys
+"""
+
+_RULE_B_PRODUCER_META = f"""\
+[ccpp-table-properties]
+  name = rule_b_producer
+  type = scheme
+[ccpp-arg-table]
+  name = rule_b_producer_run
+  type = scheme
+[ pvar ]
+  standard_name = test_rule_b_var
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_RULE_B_CONSUMER_META = f"""\
+[ccpp-table-properties]
+  name = rule_b_consumer
+  type = scheme
+[ccpp-arg-table]
+  name = rule_b_consumer_run
+  type = scheme
+[ cvar ]
+  standard_name = test_rule_b_var
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+
+class TestAdvectedConsistency:
+
+    def test_missing_flag_warns(self, run_host_match, capsys):
+        run_host_match(
+            scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META],
+            host_metas=[_ADVECTED_HOST_META],
+            suite_xml=two_scheme_subcycle_xml("advected_producer", "advected_consumer"),
+        )
+        captured = capsys.readouterr()
+        assert "missing advected" in captured.err.lower()
+        assert "advected_producer" in captured.err
+
+    def test_missing_flag_reclassifies_arg(self, run_host_match, capsys):
+        """Unconditional: IR is corrected, arg is no longer host-matched."""
+        module = run_host_match(
+            scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META],
+            host_metas=[_ADVECTED_HOST_META],
+            suite_xml=two_scheme_subcycle_xml("advected_producer", "advected_consumer"),
+        )
+        captured = capsys.readouterr()
+        assert "reclassifying" in captured.err.lower()
+        arg = _get_scheme_arg(module, "advected_consumer", "test_shared_advected_var")
+        assert arg is not None
+        assert arg.advected is not None
+        assert arg.model_var_name is None
+
+    def test_reclassified_as_suite_owned(self, run_host_match, ccpp_context):
+        module = run_host_match(
+            scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META],
+            host_metas=[_ADVECTED_HOST_META],
+            suite_xml=two_scheme_subcycle_xml("advected_producer", "advected_consumer"),
+        )
+        ArgOwnershipPass().apply(ccpp_context, module)
+        arg = _get_scheme_arg(module, "advected_consumer", "test_shared_advected_var")
+        assert arg is not None
+        assert arg.ownership_kind is not None
+        assert arg.ownership_kind.data == ArgOwnershipKind.SuiteOwned
+
+    def test_all_schemes_agree_no_warning(self, run_host_match, capsys):
+        run_host_match(
+            scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META_WITH_FLAG],
+            host_metas=[_ADVECTED_HOST_META],
+            suite_xml=two_scheme_subcycle_xml("advected_producer", "advected_consumer"),
+        )
+        captured = capsys.readouterr()
+        assert "advected" not in captured.err.lower()
+
+    def test_no_shared_std_name_no_warning(self, run_host_match, capsys):
+        """Disjoint standard_names across schemes -- no false positive."""
+        run_host_match(
+            scheme_metas=[scheme_meta("solo_scheme", SCHEME_REAL_VAR)],
+            host_metas=[host_meta("solo_mod", HOST_REAL_VAR)],
+            suite_xml=minimal_suite_xml("solo_scheme"),
+        )
+        captured = capsys.readouterr()
+        assert "advected" not in captured.err.lower()
+
+    def test_rule_b_consumer_pattern_reclassified(self, run_host_match, capsys):
+        """examples/constituents_dim's rule-(b) consumer pattern -- a scheme
+        references a standard_name that's advected=true elsewhere in the
+        suite, with no local advected/constituent flag AND no host .meta
+        providing it, so it never enters model_var_index and would
+        (pre-fix) resolve via produced_in_init/is_interstitial with no
+        warning at all. Real capgen-v1 cannot represent this inconsistency
+        in the first place (a single shared Var per standard_name, decided
+        once) -- this shape IS the same shape as the real production bug
+        this whole check exists for (compute_cloud_fraction.meta's water
+        vapor argument), so it must be corrected here too, by design: the
+        consumer's arg is reclassified as advected instead of interstitial,
+        matching capgen-v1's single-shared-Var semantics, where this
+        constituent would be visible in the suite's own input/output
+        variable list from every reference, not hidden as suite-internal
+        just because one consuming scheme omitted the flag."""
+        module = run_host_match(
+            scheme_metas=[_RULE_B_PRODUCER_META, _RULE_B_CONSUMER_META],
+            host_metas=[],
+            suite_xml=two_scheme_subcycle_xml("rule_b_producer", "rule_b_consumer"),
+        )
+        captured = capsys.readouterr()
+        assert "missing advected" in captured.err.lower()
+        assert "reclassifying" in captured.err.lower()
+        arg = _get_scheme_arg(module, "rule_b_consumer", "test_rule_b_var")
+        assert arg is not None
+        assert arg.advected is not None
+        assert arg.is_interstitial is None
+        assert arg.model_var_name is None

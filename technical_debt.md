@@ -46,6 +46,30 @@ Low short-term. The raw strings produce correct Fortran and pass all tests. The 
 accumulates as the constituent API grows — each new subroutine or argument is more
 raw-string bookkeeping.
 
+### 2026-09-15 addition: `cam_advected_constituents_array`
+
+While unblocking CPP-preprocessing support for CAM-SIMA cases whose
+`CAM_CONFIG_OPTS` contains preprocessor defines, MPAS's `dyn_coupling_impl.F90`
+was found to require `cam_ccpp_cap::cam_advected_constituents_array`, which
+xdsl_ccpp never generated (a MODEL_BUILD-only failure — cap generation itself
+already succeeded). Capgen-v1 generates this as a thin wrapper around
+`ccpp_model_constituents_t%advected_constituents_ptr()`
+(`ccpp_framework/scripts/constituents.py`), and the underlying capability
+already existed on the CAM-SIMA side
+(`ccpp_constituent_prop_mod.F90::ccp_advected_data_ptr`) — only the public
+wrapper was missing.
+
+Confirmed, before adding it, that this file still uses the raw-string-body
+pattern this debt item describes (no structured IR alternative exists
+anywhere in `constituent_cap.py`). Per explicit user decision, the new
+`{h}_advected_constituents_array` function (the `aca_op` `ConstituentFunctionOp`,
+added immediately after `ca_op` in `_generate_constituent_api`) was added
+using the same `RawFortranLinesOp`-body pattern as every other function in
+this file, deliberately matching existing practice rather than partially
+refactoring one function in isolation. This is one more function that the
+eventual IR-ification (see "What the right fix looks like" above) will need
+to cover — it does not change the scope or urgency of that refactor.
+
 ---
 
 

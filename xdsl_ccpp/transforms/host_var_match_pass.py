@@ -309,6 +309,61 @@ class HostVariableMatchPass(ModulePass):
 
         return scheme_names
 
+    def _collect_scheme_names_by_suite(self, ccpp_mod) -> dict:
+        """Like _collect_sdf_scheme_names, but keyed per-suite instead of
+        flattened into one set -- needed so the advected-inheritance check
+        below (_collect_advected_declaring_schemes) can be scoped per-suite,
+        matching real capgen-v1's own suite-scoped ConstituentVarDict rather
+        than risking false positives/negatives across unrelated suites that
+        happen to share a standard_name.
+        """
+        by_suite: dict = {}
+
+        def _collect_from_block(ops, into):
+            for op in ops:
+                if isa(op, ccpp.SchemeOp):
+                    into.add(op.scheme_name.data)
+                elif isa(op, ccpp.GroupOp):
+                    _collect_from_block(op.body.ops, into)
+                elif hasattr(op, "body"):
+                    _collect_from_block(op.body.ops, into)
+
+        for op in ccpp_mod.body.ops:
+            if isa(op, ccpp.SuiteOp):
+                names: set = set()
+                _collect_from_block(op.body.ops, names)
+                if op.init_scheme is not None:
+                    names.add(op.init_scheme.data)
+                if op.final_scheme is not None:
+                    names.add(op.final_scheme.data)
+                by_suite[op.suite_name.data] = names
+
+        return by_suite
+
+    def _collect_advected_declaring_schemes(self, ccpp_mod, scheme_names) -> dict:
+        """Return standard_name (lowercased) -> set of scheme names (drawn
+        from scheme_names) that declare advected on any of their own entry
+        points. Used to detect when a scheme argument is missing its own
+        local advected=true even though another scheme in the same suite
+        declares it -- mirroring how constituent_cap.py's own
+        _collect_constituent_info dedups fixed-advected constituents by
+        std_name across all scheme tables, but against the IR directly.
+        """
+        declaring: dict = {}
+        for table_prop_op, arg_table_op in iter_arg_tables(
+            ccpp_mod, table_type=TableTypeKind.Scheme, table_name_in=scheme_names
+        ):
+            scheme_name = table_prop_op.table_name.data
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
+                    continue
+                if arg_op.advected is None or arg_op.standard_name is None:
+                    continue
+                declaring.setdefault(arg_op.standard_name.data.lower(), set()).add(
+                    scheme_name
+                )
+        return declaring
+
     def _build_model_var_index(self, ccpp_mod):
         """Walk HOST/MODULE/DDT tables and return (model_var_index, produced_in_init).
 
@@ -381,7 +436,8 @@ class HostVariableMatchPass(ModulePass):
         return model_var_index, produced_in_init
 
     def _match_and_validate(self, ccpp_mod, model_var_index, produced_in_init,
-                            sdf_scheme_names=None):
+                            sdf_scheme_names=None, scheme_to_suites=None,
+                            advected_declaring_by_suite=None):
         """Annotate scheme args with host matches and collect compatibility errors.
 
         Walks SCHEME argument tables, sets model_var_name/model_module_name/
@@ -394,7 +450,16 @@ class HostVariableMatchPass(ModulePass):
             that are not referenced in any SuiteOp (not in the SDF) are skipped.
             This prevents false-positive "no matching host model variable" errors
             for args in shared meta files that define multiple schemes.
+
+        scheme_to_suites, advected_declaring_by_suite: used together to detect
+            when a scheme argument that resolves to a host model variable is
+            missing its own local advected=true even though another scheme in
+            the same suite declares the same standard_name advected -- see
+            _collect_scheme_names_by_suite / _collect_advected_declaring_schemes.
+            Both default to empty so this check is a no-op if omitted.
         """
+        scheme_to_suites = scheme_to_suites or {}
+        advected_declaring_by_suite = advected_declaring_by_suite or {}
         all_errors: list[str] = []
 
         for table_prop_op, arg_table_op in iter_arg_tables(
@@ -446,6 +511,57 @@ class HostVariableMatchPass(ModulePass):
                 if arg_op.advected is not None:
                     continue
                 if arg_op.constituent is not None:
+                    continue
+
+                # capgen-v1 parity gap: real capgen-v1 resolves every scheme's
+                # reference to a given standard_name through a single shared
+                # Var object (VarDictionary.add_variable/ConstituentVarDict.
+                # find_variable in ccpp_framework/scripts/{metavar,constituents}.py)
+                # -- decided once, by whichever scheme first registers it, and
+                # used identically by every later reference. "advected" and
+                # "interstitial/host-visible" are mutually exclusive, suite-wide
+                # categories there; there is no per-occurrence local check.
+                # xdsl_ccpp instead classifies each argument purely from its
+                # own local advected flag (the `continue` above), so a scheme
+                # that omits it can fall through to host-matching OR to the
+                # produced_in_init/is_interstitial path below -- and, critically,
+                # marking even ONE occurrence is_interstitial poisons every
+                # OTHER scheme's occurrence of the same standard_name too (see
+                # ccpp_cap.py's interstitial_std_names: suite-wide, checked
+                # before that file's own advected branch), hiding a genuinely
+                # advected constituent from the suite's whole input/output
+                # variable list even where other schemes correctly declare it.
+                # Confirmed as the real mechanism behind a production bug
+                # (compute_cloud_fraction.meta's water-vapor argument was
+                # missing advected=true; several sibling schemes in the same
+                # suite -- dadadj, holtslag_boville_diff, geopotential_temp,
+                # zm_convr, zm_conv_evap -- already declare it correctly, yet
+                # the suite's generated variable list silently dropped
+                # water_vapor/cloud_ice/cloud_liquid_water entirely until the
+                # flag was added by hand). Detect and correct this
+                # inconsistency BEFORE branching into either the
+                # model_var_index or the produced_in_init path, so both are
+                # covered. Unconditional, matching real capgen-v1's own
+                # unconditional inheritance -- no opt-in toggle, since a
+                # genuinely-advected constituent should never depend on
+                # which scheme happens to be read first.
+                other_declaring: set = set()
+                for suite in scheme_to_suites.get(scheme_name, ()):
+                    other_declaring |= advected_declaring_by_suite.get(
+                        suite, {}
+                    ).get(std_name, set())
+                other_declaring.discard(scheme_name)
+                if other_declaring:
+                    print(
+                        f"Warning:   Scheme '{scheme_name}' argument "
+                        f"'{arg_op.arg_name.data}' (standard_name="
+                        f"'{std_name}') is missing advected = true, but "
+                        f"scheme(s) {', '.join(sorted(other_declaring))} "
+                        f"declare it advected in this suite. Reclassifying "
+                        f"as suite-owned.",
+                        file=sys.stderr,
+                    )
+                    arg_op.properties["advected"] = UnitAttr()
                     continue
 
                 if std_name in model_var_index:
@@ -518,7 +634,20 @@ class HostVariableMatchPass(ModulePass):
 
         sdf_scheme_names = self._collect_sdf_scheme_names(ccpp_mod)
         model_var_index, produced_in_init = self._build_model_var_index(ccpp_mod)
+
+        scheme_names_by_suite = self._collect_scheme_names_by_suite(ccpp_mod)
+        advected_declaring_by_suite = {
+            suite: self._collect_advected_declaring_schemes(ccpp_mod, schemes)
+            for suite, schemes in scheme_names_by_suite.items()
+        }
+        scheme_to_suites: dict = {}
+        for suite, schemes in scheme_names_by_suite.items():
+            for s in schemes:
+                scheme_to_suites.setdefault(s, set()).add(suite)
+
         self._match_and_validate(
             ccpp_mod, model_var_index, produced_in_init,
             sdf_scheme_names=sdf_scheme_names or None,
+            scheme_to_suites=scheme_to_suites,
+            advected_declaring_by_suite=advected_declaring_by_suite,
         )

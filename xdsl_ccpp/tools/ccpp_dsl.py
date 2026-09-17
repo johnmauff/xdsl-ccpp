@@ -224,7 +224,6 @@ class ccppMain:
                  "control variable elsewhere. Off by default, matching capgen-v1's "
                  "own --gfs-dim-aliases flag.",
         )
-
     def build_options_db_from_args(self, args):
         options_db = args.__dict__
 
