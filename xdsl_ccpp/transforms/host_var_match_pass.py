@@ -85,6 +85,12 @@ class HostVariableMatchPass(ModulePass):
     # Standard names managed by the CCPP framework — see ccpp_conventions.py.
     _CCPP_INTERNAL: ClassVar[frozenset] = CCPP_INTERNAL_STD_NAMES
 
+    # Entry-point name suffixes treated as "lifecycle" entries whose intent=out/inout
+    # args can produce a value consumed later in the same suite (see
+    # _build_model_var_index's produced_in_init and
+    # _collect_non_advected_producing_schemes below).
+    _LIFECYCLE_ENTRY_SUFFIXES: ClassVar[tuple] = ("_init", "_timestep_init", "_register", "_run")
+
     def _check_compatibility(
         self,
         scheme_arg_op: ccpp.ArgumentOp,
@@ -364,6 +370,59 @@ class HostVariableMatchPass(ModulePass):
                 )
         return declaring
 
+    def _collect_non_advected_producing_schemes(self, ccpp_mod, scheme_names) -> dict:
+        """Return standard_name (lowercased) -> set of scheme names (drawn
+        from scheme_names) that PRODUCE that standard_name (intent=out/inout
+        on a lifecycle entry point -- see _LIFECYCLE_ENTRY_SUFFIXES) WITHOUT
+        declaring it advected.
+
+        Used to guard the advected-inheritance reclassification below: a
+        standard_name with a genuine non-advected in-suite producer is a
+        legitimate suite-local producer/consumer (interstitial) value, even
+        if it happens to share its standard_name with an unrelated,
+        genuinely-advected occurrence elsewhere in the same suite -- it must
+        NOT be forced into advected/suite-owned classification just because
+        of that name collision.
+
+        Confirmed as the real mechanism behind a production regression:
+        kessler's suite runs water_vapor/cloud_liquid_water/rain
+        mixing-ratio-wrt-dry-air values through
+        state_converters.meta's wet_to_dry_water_vapor_run /
+        dry_to_wet_water_vapor_run as pure intra-suite producer/consumer
+        interstitials (produced via intent=out, no advected flag -- there is
+        no registry.xml entry for any "*_wrt_dry_air" standard name, only the
+        "*_wrt_moist_air_and_condensed_water" forms are real registered
+        constituents), while kessler_run itself genuinely declares
+        advected=true for the very same standard_name on its own
+        "_wrt_dry_air" argument. Without this guard, the unconditional
+        advected-inheritance check below force-reclassified the conversion
+        helpers' interstitial values as advected too, purely for sharing a
+        standard_name with kessler_run in the same suite -- routing them
+        into host-constituent registration instead of interstitial matching,
+        and since no such constituent is registered, they ended up in
+        missing_required_vars -> endrun at runtime.
+        """
+        producing: dict = {}
+        for table_prop_op, arg_table_op in iter_arg_tables(
+            ccpp_mod, table_type=TableTypeKind.Scheme, table_name_in=scheme_names
+        ):
+            ep_name = arg_table_op.table_name.data
+            if not any(ep_name.endswith(s) for s in self._LIFECYCLE_ENTRY_SUFFIXES):
+                continue
+            scheme_name = table_prop_op.table_name.data
+            for arg_op in arg_table_op.body.ops:
+                if not isa(arg_op, ccpp.ArgumentOp):
+                    continue
+                if arg_op.standard_name is None or arg_op.advected is not None:
+                    continue
+                intent = arg_op.intent.data if arg_op.intent is not None else None
+                if intent not in ("out", "inout"):
+                    continue
+                producing.setdefault(arg_op.standard_name.data.lower(), set()).add(
+                    scheme_name
+                )
+        return producing
+
     def _build_model_var_index(self, ccpp_mod):
         """Walk HOST/MODULE/DDT tables and return (model_var_index, produced_in_init).
 
@@ -414,12 +473,11 @@ class HostVariableMatchPass(ModulePass):
         # entry point with no host match are interstitial — they flow between
         # lifecycle phases inside the suite cap.
         produced_in_init: dict = {}
-        _INIT_SUFFIXES = ("_init", "_timestep_init", "_register", "_run")
 
         for table_prop_op, arg_table_op in iter_arg_tables(ccpp_mod, table_type=TableTypeKind.Scheme):
             scheme_nm = table_prop_op.table_name.data
             ep_name = arg_table_op.table_name.data
-            if not any(ep_name.endswith(s) for s in _INIT_SUFFIXES):
+            if not any(ep_name.endswith(s) for s in self._LIFECYCLE_ENTRY_SUFFIXES):
                 continue
             for arg_op in arg_table_op.body.ops:
                 if not isa(arg_op, ccpp.ArgumentOp):
@@ -437,7 +495,8 @@ class HostVariableMatchPass(ModulePass):
 
     def _match_and_validate(self, ccpp_mod, model_var_index, produced_in_init,
                             sdf_scheme_names=None, scheme_to_suites=None,
-                            advected_declaring_by_suite=None):
+                            advected_declaring_by_suite=None,
+                            non_advected_producers_by_suite=None):
         """Annotate scheme args with host matches and collect compatibility errors.
 
         Walks SCHEME argument tables, sets model_var_name/model_module_name/
@@ -457,9 +516,18 @@ class HostVariableMatchPass(ModulePass):
             the same suite declares the same standard_name advected -- see
             _collect_scheme_names_by_suite / _collect_advected_declaring_schemes.
             Both default to empty so this check is a no-op if omitted.
+
+        non_advected_producers_by_suite: guards the same check -- if the
+            standard_name already has a genuine non-advected in-suite producer
+            (see _collect_non_advected_producing_schemes), it's a legitimate
+            producer/consumer interstitial value and must NOT be forced into
+            advected/suite-owned classification just because it shares a
+            standard_name with an unrelated advected occurrence elsewhere in
+            the suite. Defaults to empty so this guard is a no-op if omitted.
         """
         scheme_to_suites = scheme_to_suites or {}
         advected_declaring_by_suite = advected_declaring_by_suite or {}
+        non_advected_producers_by_suite = non_advected_producers_by_suite or {}
         all_errors: list[str] = []
 
         for table_prop_op, arg_table_op in iter_arg_tables(
@@ -545,12 +613,36 @@ class HostVariableMatchPass(ModulePass):
                 # unconditional inheritance -- no opt-in toggle, since a
                 # genuinely-advected constituent should never depend on
                 # which scheme happens to be read first.
+                #
+                # EXCEPT: skip this reclassification entirely when the
+                # standard_name already has a genuine non-advected in-suite
+                # producer (_collect_non_advected_producing_schemes) -- that
+                # is a legitimate, pre-existing producer/consumer
+                # (interstitial) relationship, not a scheme that merely
+                # forgot its own advected flag. Confirmed as the fix for a
+                # real regression: kessler's suite runs water_vapor/
+                # cloud_liquid_water/rain mixing-ratio-wrt-dry-air values
+                # through state_converters.meta's wet_to_dry_water_vapor_run
+                # (a genuine non-advected producer, intent=out) /
+                # dry_to_wet_water_vapor_run as pure intra-suite
+                # interstitials, while kessler_run itself genuinely declares
+                # the same standard_name advected for its own argument --
+                # without this guard, the conversion helpers' values were
+                # wrongly force-reclassified as advected too, routing them
+                # into host-constituent registration (where no such
+                # constituent is registered) instead of interstitial
+                # matching, ending in a runtime missing_required_vars endrun.
+                has_non_advected_producer = any(
+                    std_name in non_advected_producers_by_suite.get(suite, {})
+                    for suite in scheme_to_suites.get(scheme_name, ())
+                )
                 other_declaring: set = set()
-                for suite in scheme_to_suites.get(scheme_name, ()):
-                    other_declaring |= advected_declaring_by_suite.get(
-                        suite, {}
-                    ).get(std_name, set())
-                other_declaring.discard(scheme_name)
+                if not has_non_advected_producer:
+                    for suite in scheme_to_suites.get(scheme_name, ()):
+                        other_declaring |= advected_declaring_by_suite.get(
+                            suite, {}
+                        ).get(std_name, set())
+                    other_declaring.discard(scheme_name)
                 if other_declaring:
                     print(
                         f"Warning:   Scheme '{scheme_name}' argument "
@@ -640,6 +732,10 @@ class HostVariableMatchPass(ModulePass):
             suite: self._collect_advected_declaring_schemes(ccpp_mod, schemes)
             for suite, schemes in scheme_names_by_suite.items()
         }
+        non_advected_producers_by_suite = {
+            suite: self._collect_non_advected_producing_schemes(ccpp_mod, schemes)
+            for suite, schemes in scheme_names_by_suite.items()
+        }
         scheme_to_suites: dict = {}
         for suite, schemes in scheme_names_by_suite.items():
             for s in schemes:
@@ -650,4 +746,5 @@ class HostVariableMatchPass(ModulePass):
             sdf_scheme_names=sdf_scheme_names or None,
             scheme_to_suites=scheme_to_suites,
             advected_declaring_by_suite=advected_declaring_by_suite,
+            non_advected_producers_by_suite=non_advected_producers_by_suite,
         )
