@@ -142,6 +142,8 @@ def run_host_match(tmp_path, ccpp_context):
     ) -> ModuleOp:
         module = _build_module(scheme_metas, host_metas, suite_xml, tmp_path)
         MetaCAP().apply(ccpp_context, module)
-        HostVariableMatchPass(gfs_dim_aliases=gfs_dim_aliases).apply(ccpp_context, module)
+        HostVariableMatchPass(
+            gfs_dim_aliases=gfs_dim_aliases,
+        ).apply(ccpp_context, module)
         return module
     return _run
