@@ -27,8 +27,6 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
-    AccUpdateDeviceOp,
-    AccUpdateSelfOp,
     ActiveCheckOp,
     ArraySectionOp,
     ClearStringOp,
@@ -64,6 +62,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
     classify_host_table_vars,
+    emit_coalesced_updates,
     find_diverged_suite_owned_vars,
     split_scheme_table_name,
 )
@@ -4559,14 +4558,27 @@ class GenerateSuiteSubroutine(RewritePattern):
         this is the mid-suite counterpart to _inject_suite_owned_gpu_exit's
         end-of-simulation cleanup.
 
-        Mirrors GPUDataPass._process_diverged_host_vars/
-        _process_diverged_capscratch_vars' run-coalescing shape, but
+        Emission itself is delegated to cap_shared.emit_coalesced_updates
+        -- the same run-coalescing-and-cross-variable-grouping core
+        GPUDataPass uses for HostMatched/CapScratch vars -- so several
+        SuiteOwned vars whose update runs share the exact same call
+        boundary (e.g. exner and theta, both written by the same
+        host-only derivation call before a device-only consumer) end up
+        in a single `update self(...)`/`update device(...)` call instead
+        of one each.
+
         SuiteOwned vars are module-scope, never a block argument of any
-        generated function (unlike HostMatched/CapScratch args) -- so
-        GPUDataPass's arg_by_name (built from block.args) can't resolve
-        them. Following _inject_suite_owned_gpu_exit's own precedent, a
-        fresh HostVarRefOp(local_name, "", var_type) is constructed at each
-        insertion point instead of resolving an existing SSA value.
+        generated function (unlike HostMatched/CapScratch args) -- so a
+        fresh HostVarRefOp(local_name, "", var_type) is constructed once
+        per var, per function, and inserted immediately before that var's
+        own first touching call -- early enough to dominate every later
+        touch in this same flat block (see _inject_suite_owned_gpu_exit's
+        own single-insertion-point precedent for the underlying op).
+        Unlike the two-separate-refs pattern that used to exist here, one
+        ref is reused for both the "update self" and "update device"
+        sides: it is a pure reference with no side effects, and a single
+        early insertion point already dominates every later one in this
+        block.
         """
         diverged_std_names = find_diverged_suite_owned_vars(suite_model)
         if not diverged_std_names:
@@ -4633,58 +4645,18 @@ class GenerateSuiteSubroutine(RewritePattern):
                     category = "present" if scheme_space == "device" else "update"
                     touches.setdefault(std_name, []).append((call_op, category))
 
+            resolved: dict = {}
             for std_name, touch_list in touches.items():
                 entry = entries_by_std[std_name]
                 var_type = TypeConversions.convert(
                     entry.fortran_type, entry.kind if entry.kind else None, entry.rank
                 )
+                ref_op = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
+                Rewriter.insert_op(ref_op, InsertPoint.before(touch_list[0][0]))
+                resolved[std_name] = (ref_op.res, touch_list)
 
-                update_run: list = []
-                for call_op, category in touch_list:
-                    if category == "present":
-                        if update_run:
-                            GenerateSuiteSubroutine._emit_suite_owned_update_run(
-                                entry, var_type, update_run
-                            )
-                            update_run = []
-                    else:  # update
-                        update_run.append(call_op)
-                if update_run:
-                    GenerateSuiteSubroutine._emit_suite_owned_update_run(
-                        entry, var_type, update_run
-                    )
-
-    @staticmethod
-    def _emit_suite_owned_update_run(entry, var_type, update_run):
-        """Sync once before/after a whole run of consecutive host-only
-        touches for one SuiteOwned var: `update self` before the run (so
-        any earlier device write is visible to this host code) and
-        `update device` after it (so the next device-needing call sees
-        this run's host writes) -- same coalescing shape as
-        GPUDataPass._emit_update, one sync pair per run rather than per
-        call.
-
-        Uses two independently-constructed HostVarRefOps (one per
-        insertion point) rather than reusing a single SSA value across
-        both -- see _inject_suite_owned_gpu_exit's identical pattern; the
-        op is a pure reference with no side effects, so there is no reason
-        to make one insertion point dominate the other.
-        """
-        first_op, last_op = update_run[0], update_run[-1]
-
-        before_ref = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
-        Rewriter.insert_op(before_ref, InsertPoint.before(first_op))
-        Rewriter.insert_op(
-            AccUpdateSelfOp(array_refs=[before_ref.res]),
-            InsertPoint.after(before_ref),
-        )
-
-        after_ref = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
-        Rewriter.insert_op(after_ref, InsertPoint.after(last_op))
-        Rewriter.insert_op(
-            AccUpdateDeviceOp(array_refs=[after_ref.res]),
-            InsertPoint.after(after_ref),
-        )
+            if resolved:
+                emit_coalesced_updates("acc", resolved, lambda ref, call_op: None)
 
     @staticmethod
     def _inject_constituent_index_lookup(generated_fns, std_name_attrs):

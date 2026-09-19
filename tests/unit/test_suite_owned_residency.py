@@ -300,6 +300,61 @@ def _fortran_output_multi_group(run_host_match, ccpp_context, scheme_metas, grou
 # otherwise the generated allocate/enter-data reference a Fortran identifier
 # that was never actually declared, and _inject_suite_owned_gpu_exit's
 # entries_by_name lookup (keyed by the resolved name) would never find it.
+# Same producer/consumer shape as _PRODUCER_HOST_SCHEME/_CONSUMER_DEVICE_SCHEME
+# above, but each scheme's own _run table ALSO carries a second SuiteOwned
+# var (test_suite_owned_var7) touched by the exact same two calls -- proving
+# cap_shared.emit_coalesced_updates groups both vars' update-device syncs
+# into a single call, rather than two separate calls with the same boundary.
+_PRODUCER_HOST_SCHEME_MULTI = f"""\
+[ccpp-table-properties]
+  name = test_producer_host_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = test_producer_host_scheme_run
+  type = scheme
+[ my_array5 ]
+  standard_name = test_suite_owned_var5
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = out
+[ my_array7 ]
+  standard_name = test_suite_owned_var7
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = out
+{CCPP_MANDATORY_ARGS}
+"""
+
+_CONSUMER_DEVICE_SCHEME_MULTI = f"""\
+[ccpp-table-properties]
+  name = test_consumer_device_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = test_consumer_device_scheme_run
+  type = scheme
+[ my_array5_b ]
+  standard_name = test_suite_owned_var5
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  memory_space = device
+  intent = in
+[ my_array7_b ]
+  standard_name = test_suite_owned_var7
+  advected = .true.
+  units = kg kg-1
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  memory_space = device
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
 _COLLISION_SCHEME_A = f"""\
 [ccpp-table-properties]
   name = test_collision_scheme_a
@@ -495,6 +550,32 @@ class TestSuiteOwnedResidency:
         consumer_pos = physics_fn.index("call test_consumer_host_scheme_run(")
         assert producer_pos < consumer_pos
         assert "!$acc update self(my_array6)" in physics_fn[producer_pos:consumer_pos]
+
+    def test_two_vars_sharing_a_boundary_get_coalesced_into_one_update(
+        self, run_host_match, ccpp_context
+    ):
+        """Two different SuiteOwned vars (my_array5, my_array7), both
+        touched by the exact same producer call and the exact same
+        consumer call, must be grouped into a single `update
+        device(my_array5, my_array7)` call rather than two separate
+        single-var calls -- cap_shared.emit_coalesced_updates' cross-
+        variable grouping, applied consistently with GPUDataPass's own
+        HostMatched/CapScratch grouping."""
+        fortran = _fortran_output_multi(
+            run_host_match, ccpp_context,
+            [_PRODUCER_HOST_SCHEME_MULTI, _CONSUMER_DEVICE_SCHEME_MULTI],
+            ["test_producer_host_scheme", "test_consumer_device_scheme"],
+        )
+        physics_fn = fortran.split("subroutine test_suite_owned_suite_physics")[1]
+        physics_fn = physics_fn.split("end subroutine test_suite_owned_suite_physics")[0]
+        producer_pos = physics_fn.index("call test_producer_host_scheme_run(")
+        consumer_pos = physics_fn.index("call test_consumer_device_scheme_run(")
+        assert producer_pos < consumer_pos
+        between = physics_fn[producer_pos:consumer_pos]
+        assert "!$acc update device(my_array5, my_array7)" in between
+        # Not two separate single-var calls.
+        assert "!$acc update device(my_array5)" not in between
+        assert "!$acc update device(my_array7)" not in between
 
     def test_update_directives_fire_independently_in_every_group(
         self, run_host_match, ccpp_context
