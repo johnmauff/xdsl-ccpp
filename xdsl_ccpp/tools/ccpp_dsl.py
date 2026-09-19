@@ -121,6 +121,17 @@ class ccppMain:
                  "are generated regardless of memory_space attributes.",
         )
         parser.add_argument(
+            "--gpu-debug-prints",
+            action="store_true",
+            default=False,
+            help="Instrument every generated GPU data-movement operation "
+                 "(update self/device, copyin, copyout) and every module-scope "
+                 "scalar with a host-vs-device diagnostic print, to debug "
+                 "OpenACC PRESENT/residency failures directly from a run "
+                 "instead of reasoning from source alone. Debug-only; has no "
+                 "effect unless --directive is also set.",
+        )
+        parser.add_argument(
             "--kind-map",
             action="append",
             default=[],
@@ -709,6 +720,12 @@ class ccppMain:
             passes.append("generate-cpp-cap")
             if directive:
                 passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
+        if self.options_db.get("gpu_debug_prints"):
+            # Must run after generate-gpu-data/generate-gpu-ccpp-cap above
+            # (and generate-suite-cap earlier): it walks the final,
+            # fully-resolved set of data-movement ops and module-var
+            # declarations, not an intermediate state.
+            passes.append("generate-gpu-debug-prints")
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
 

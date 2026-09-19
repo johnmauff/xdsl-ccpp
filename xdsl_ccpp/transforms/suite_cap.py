@@ -27,6 +27,8 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AccUpdateDeviceOp,
+    AccUpdateSelfOp,
     ActiveCheckOp,
     ArraySectionOp,
     ClearStringOp,
@@ -62,6 +64,8 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
     classify_host_table_vars,
+    find_diverged_suite_owned_vars,
+    split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -4342,16 +4346,19 @@ class GenerateSuiteSubroutine(RewritePattern):
             if entry.fortran_type == "real":
                 kind = entry.kind if entry.kind else CCPP_KIND_PHYS
                 allocatable_mod_vars.append(
-                    ModuleVarOp(entry.local_name, "real", kind=kind, rank=entry.rank)
+                    ModuleVarOp(entry.local_name, "real", kind=kind, rank=entry.rank,
+                                needs_device_residency=entry.needs_device_residency)
                 )
             elif entry.fortran_type == "integer":
                 allocatable_mod_vars.append(
-                    ModuleVarOp(entry.local_name, "integer", rank=entry.rank)
+                    ModuleVarOp(entry.local_name, "integer", rank=entry.rank,
+                                needs_device_residency=entry.needs_device_residency)
                 )
             else:
                 allocatable_mod_vars.append(
                     ModuleVarOp(entry.local_name, entry.fortran_type,
-                                kind=entry.kind if entry.kind else None, rank=entry.rank)
+                                kind=entry.kind if entry.kind else None, rank=entry.rank,
+                                needs_device_residency=entry.needs_device_residency)
                 )
             interstitial_var_names.add(entry.local_name.lower())
         return allocatable_mod_vars, interstitial_var_names, run_local_entries
@@ -4523,6 +4530,162 @@ class GenerateSuiteSubroutine(RewritePattern):
                     InsertPoint.before(ret_op),
                 )
 
+    # Function-name markers identifying the lifecycle/physics subroutines
+    # that actually contain error-guarded scheme calls -- the same set
+    # GPUDataPass.apply() scans for HostMatched/CapScratch divergence
+    # handling (gpu_data_pass.py), reused here so a SuiteOwned var's
+    # residency flips get detected inside the exact same functions.
+    _GPU_CALL_BEARING_FN_MARKERS = (
+        f"{SUITE_FN_INFIX}_physics",
+        f"{SUITE_FN_INFIX}_timestep_init_",
+        f"{SUITE_FN_INFIX}_timestep_final_",
+        f"{SUITE_FN_INFIX}_init_",
+        f"{SUITE_FN_INFIX}_final_",
+    )
+
+    @staticmethod
+    def _inject_suite_owned_gpu_update(generated_fns, suite_model, meta_data):
+        """Emit `!$acc update self/device(...)` for SuiteOwned vars whose
+        residency need genuinely flips within the suite's own call sequence
+        (see cap_shared.find_diverged_suite_owned_vars) -- e.g. a host-only
+        "derivation" scheme writes a scratch array (exner, theta, ...) that
+        a later memory_space=device scheme (kessler_run) consumes, or the
+        reverse.
+
+        The one-time `!$acc enter data create(...)` already emitted for
+        these vars (LazyAllocOp/print_ftn.py) only allocates device memory;
+        it never moves data, so a diverging var needs an update sync at the
+        exact point its residency need flips, every time the suite runs --
+        this is the mid-suite counterpart to _inject_suite_owned_gpu_exit's
+        end-of-simulation cleanup.
+
+        Mirrors GPUDataPass._process_diverged_host_vars/
+        _process_diverged_capscratch_vars' run-coalescing shape, but
+        SuiteOwned vars are module-scope, never a block argument of any
+        generated function (unlike HostMatched/CapScratch args) -- so
+        GPUDataPass's arg_by_name (built from block.args) can't resolve
+        them. Following _inject_suite_owned_gpu_exit's own precedent, a
+        fresh HostVarRefOp(local_name, "", var_type) is constructed at each
+        insertion point instead of resolving an existing SSA value.
+        """
+        diverged_std_names = find_diverged_suite_owned_vars(suite_model)
+        if not diverged_std_names:
+            return
+
+        entries_by_std = {
+            e.standard_name: e
+            for e in suite_model.suite_owned_vars()
+            if e.standard_name in diverged_std_names
+        }
+
+        for fn in generated_fns:
+            if not isa(fn, func.FuncOp) or fn.is_declaration or not fn.body.blocks:
+                continue
+            fn_name = fn.sym_name.data
+            if not any(marker in fn_name for marker in GenerateSuiteSubroutine._GPU_CALL_BEARING_FN_MARKERS):
+                continue
+
+            block = fn.body.blocks[0]
+            calls = []  # ordered (scf.IfOp, scheme_name, table_name)
+            for op in block.ops:
+                if not isa(op, scf.IfOp) or not op.true_region.blocks:
+                    continue
+                call_op = next(
+                    (
+                        o for o in op.true_region.blocks[0].ops
+                        if isa(o, func.CallOp) or isa(o, KeywordCallOp)
+                    ),
+                    None,
+                )
+                if call_op is None:
+                    continue
+                callee_name = (
+                    call_op.callee.data if isa(call_op, KeywordCallOp)
+                    else call_op.callee.root_reference.data
+                )
+                split = split_scheme_table_name(callee_name)
+                if split is None:
+                    continue
+                calls.append((op, split[0], callee_name))
+
+            if not calls:
+                continue
+
+            # touches: standard_name -> ordered [(scf.IfOp, category), ...],
+            # category "present" (this call's own scheme declares
+            # memory_space=device -- data assumed already on-device) or
+            # "update" (this call's own scheme does not -- a plain host
+            # read/write), mirroring _get_diverged_args's per-arg
+            # classification.
+            touches: dict = {}
+            for call_op, scheme_name, table_name in calls:
+                if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+                    continue
+                for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments():
+                    if not arg.hasAttr("standard_name"):
+                        continue
+                    std_name = arg.getAttr("standard_name").lower()
+                    if std_name not in entries_by_std:
+                        continue
+                    scheme_space = (
+                        arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
+                    )
+                    category = "present" if scheme_space == "device" else "update"
+                    touches.setdefault(std_name, []).append((call_op, category))
+
+            for std_name, touch_list in touches.items():
+                entry = entries_by_std[std_name]
+                var_type = TypeConversions.convert(
+                    entry.fortran_type, entry.kind if entry.kind else None, entry.rank
+                )
+
+                update_run: list = []
+                for call_op, category in touch_list:
+                    if category == "present":
+                        if update_run:
+                            GenerateSuiteSubroutine._emit_suite_owned_update_run(
+                                entry, var_type, update_run
+                            )
+                            update_run = []
+                    else:  # update
+                        update_run.append(call_op)
+                if update_run:
+                    GenerateSuiteSubroutine._emit_suite_owned_update_run(
+                        entry, var_type, update_run
+                    )
+
+    @staticmethod
+    def _emit_suite_owned_update_run(entry, var_type, update_run):
+        """Sync once before/after a whole run of consecutive host-only
+        touches for one SuiteOwned var: `update self` before the run (so
+        any earlier device write is visible to this host code) and
+        `update device` after it (so the next device-needing call sees
+        this run's host writes) -- same coalescing shape as
+        GPUDataPass._emit_update, one sync pair per run rather than per
+        call.
+
+        Uses two independently-constructed HostVarRefOps (one per
+        insertion point) rather than reusing a single SSA value across
+        both -- see _inject_suite_owned_gpu_exit's identical pattern; the
+        op is a pure reference with no side effects, so there is no reason
+        to make one insertion point dominate the other.
+        """
+        first_op, last_op = update_run[0], update_run[-1]
+
+        before_ref = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
+        Rewriter.insert_op(before_ref, InsertPoint.before(first_op))
+        Rewriter.insert_op(
+            AccUpdateSelfOp(array_refs=[before_ref.res]),
+            InsertPoint.after(before_ref),
+        )
+
+        after_ref = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
+        Rewriter.insert_op(after_ref, InsertPoint.after(last_op))
+        Rewriter.insert_op(
+            AccUpdateDeviceOp(array_refs=[after_ref.res]),
+            InsertPoint.after(after_ref),
+        )
+
     @staticmethod
     def _inject_constituent_index_lookup(generated_fns, std_name_attrs):
         """Inject ConstituentIndexLookupOp at the top of each group-phase _init_ FuncOp.
@@ -4587,6 +4750,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
         if run_local_entries:
             self._inject_run_local_var_handling(generated_fns, run_local_entries)
+        self._inject_suite_owned_gpu_update(generated_fns, suite_model, self.meta_data)
         self._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
         seen_stubs: set = set()

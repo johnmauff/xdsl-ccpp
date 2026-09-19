@@ -469,6 +469,42 @@ def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
     )
 
 
+def find_diverged_suite_owned_vars(suite_model) -> frozenset:
+    """Return the set of SuiteOwned standard_names for which different
+    occurrences (across the suite's own call sequence) genuinely disagree
+    about GPU residency treatment -- one occurrence's own scheme declares
+    memory_space=device (wants present -- data already resident), another
+    leaves it unset (wants update -- a plain host read/write), for the same
+    suite-owned variable.
+
+    Mirrors find_diverged_suite_vars/find_diverged_capscratch_vars, but
+    takes the already-built SuiteVariableModel and reads its per-entry
+    `occurrences` list (see suite_variable_model.py's SuiteVarOccurrence)
+    instead of re-scanning raw scheme metadata directly -- unlike the other
+    two ownership kinds, "is this std_name suite-owned at all" is a property
+    of the whole suite's four-case classification (SuiteVariableModel's own
+    job), not something visible from a single scheme's arg table in
+    isolation, so re-scanning meta_data here would just reimplement that
+    classification a second time.
+
+    Only entries with needs_device_residency=True are even considered (an
+    always-host var needs no GPU treatment at all), and among those, only
+    ones whose occurrences actually mix "host" and "device" categories --
+    an always-device var is already fully covered by the existing one-time
+    `!$acc enter data create(...)` (see LazyAllocOp/print_ftn.py): every
+    occurrence assumes the data is already on the device, so there's never
+    a host-side write to sync from.
+    """
+    diverged = set()
+    for entry in suite_model.suite_owned_vars():
+        if not entry.needs_device_residency:
+            continue
+        categories = {occ.memory_space for occ in entry.occurrences}
+        if len(categories) > 1:
+            diverged.add(entry.standard_name)
+    return frozenset(diverged)
+
+
 def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
     """Build a standard_name → (var_name, table_name) map from host metadata.
 
