@@ -21,6 +21,26 @@ class SuiteVarScope(Enum):
 
 
 @dataclass
+class SuiteVarOccurrence:
+    """One scheme's touch of a suite-owned variable, in true call order.
+
+    Unlike SuiteVarEntry's own top-level fields (which pin to the *first*
+    writer only), this records every occurrence -- across every phase and
+    group -- so downstream GPU data-movement logic can tell whether *this
+    specific* scheme call declared memory_space=device, independent of
+    whether some other, unrelated occurrence also did. See
+    find_diverged_suite_owned_vars in cap_shared.py, the first consumer of
+    this list.
+    """
+
+    scheme_name: str
+    phase: str
+    group: str
+    intent: str            # "in" | "out" | "inout"
+    memory_space: str      # "host" | "device" (device only if declared)
+
+
+@dataclass
 class SuiteVarEntry:
     """Describes one suite-owned framework variable.
 
@@ -49,6 +69,10 @@ class SuiteVarEntry:
                                 # SuiteOwned var's residency need can't
                                 # conflict across schemes, only be requested
                                 # or not. See _process_table's Case 4 handling.
+                                # Kept as a convenience aggregate so existing
+                                # call sites reading it don't need to change --
+                                # `occurrences` below is the source of truth
+                                # for anything that needs per-scheme detail.
     allocatable: bool = False  # True if the first-writer's own arg declares
                                 # `allocatable` -- the scheme itself performs
                                 # the allocate() in its own Fortran body (see
@@ -59,6 +83,20 @@ class SuiteVarEntry:
                                 # var, whichever of its two allocation sites
                                 # would otherwise reach it (task #30, Copilot
                                 # review PR #83).
+    occurrences: list = None   # list[SuiteVarOccurrence], in true call order
+                                # (every phase/group, not just the first
+                                # writer) -- see SuiteVarOccurrence. Populated
+                                # by _make_entry (first occurrence) and
+                                # _process_table's Case 4 (later ones).
+                                # Defaults to None (not []) in the dataclass
+                                # signature purely so existing positional/
+                                # keyword construction call sites that predate
+                                # this field keep working unchanged; __post_init__
+                                # below normalizes it to a fresh empty list.
+
+    def __post_init__(self):
+        if self.occurrences is None:
+            self.occurrences = []
 
 
 # ---------------------------------------------------------------------------
@@ -342,13 +380,32 @@ class SuiteVariableModel:
             # attributes stay pinned to the first writer, but a *later*
             # occurrence declaring memory_space=device should still be
             # enough to request GPU residency -- OR it into the existing
-            # entry rather than silently dropping it (unlike a full
-            # divergence check, there's nothing to reconcile: residency is
-            # a simple "does anything ask for it", not a per-scheme clause
-            # that could conflict).
+            # entry's aggregate flag rather than silently dropping it.
+            # Also record this occurrence in full (scheme/phase/group/intent/
+            # memory_space): GPUDataPass needs to know *which* scheme wrote
+            # or read this var at *this* point in the call sequence, and
+            # whether *that* occurrence itself was host- or device-resident
+            # -- the aggregate needs_device_residency flag alone can't answer
+            # "was the producer that just ran host-only, while a later
+            # consumer in this same call sequence needs it on-device" (see
+            # find_diverged_suite_owned_vars in cap_shared.py).
             if std_name in self._suite_owned:
-                if arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device":
+                this_memory_space = (
+                    "device"
+                    if arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"
+                    else "host"
+                )
+                if this_memory_space == "device":
                     self._suite_owned[std_name].needs_device_residency = True
+                self._suite_owned[std_name].occurrences.append(
+                    SuiteVarOccurrence(
+                        scheme_name=scheme_name,
+                        phase=phase,
+                        group=group_name,
+                        intent=intent,
+                        memory_space=this_memory_space,
+                    )
+                )
                 continue
 
             # DDT allocatable arrays (e.g. ccpp_constituent_properties_t from
@@ -418,8 +475,13 @@ class SuiteVariableModel:
         # Primitive types vs DDTs.
         is_ddt = arg_type.lower() not in CCPP_PRIMITIVE_TYPES
 
-        needs_device_residency = (
-            arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"
+        this_memory_space = (
+            "device"
+            if arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"
+            else "host"
+        )
+        first_intent = (
+            arg.getAttr("intent").lower() if arg.hasAttr("intent") else "out"
         )
 
         return SuiteVarEntry(
@@ -433,6 +495,15 @@ class SuiteVariableModel:
             producing_phase=phase,
             producing_group=group_name,
             producing_scheme=scheme_name,
-            needs_device_residency=needs_device_residency,
+            needs_device_residency=(this_memory_space == "device"),
             allocatable=arg.hasAttr("allocatable"),
+            occurrences=[
+                SuiteVarOccurrence(
+                    scheme_name=scheme_name,
+                    phase=phase,
+                    group=group_name,
+                    intent=first_intent,
+                    memory_space=this_memory_space,
+                )
+            ],
         )

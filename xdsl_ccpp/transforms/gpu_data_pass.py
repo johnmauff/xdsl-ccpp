@@ -10,13 +10,9 @@ from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccDataBeginOp,
     AccDataEndOp,
-    AccUpdateDeviceOp,
-    AccUpdateSelfOp,
     KeywordCallOp,
     OmpTargetDataBeginOp,
     OmpTargetDataEndOp,
-    OmpTargetUpdateFromOp,
-    OmpTargetUpdateToOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
@@ -24,6 +20,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _bare,
     _iter_schemes,
     directive_op,
+    emit_coalesced_updates,
     find_diverged_capscratch_vars,
     find_diverged_suite_vars,
     resolve_capscratch_cap_var_name,
@@ -236,8 +233,9 @@ class GPUDataPass(ModulePass):
 
         present() is a pure runtime assertion, no data movement -- emitted
         individually per touching call rather than coalesced across a run
-        (unlike _emit_update below): repeating it is free, and coalescing
-        it across multiple calls would risk producing improperly-nested
+        (unlike the update self/device runs cap_shared.emit_coalesced_updates
+        emits): repeating it is free, and coalescing it across multiple
+        calls would risk producing improperly-nested
         (criss-crossing) !$acc data regions if another diverged var's own
         present run happens to overlap without nesting inside this one.
         """
@@ -248,18 +246,6 @@ class GPUDataPass(ModulePass):
         Rewriter.insert_op(
             directive_op(self.directive, AccDataEndOp, {}, OmpTargetDataEndOp, {}),
             InsertPoint.after(call_op),
-        )
-
-    def _emit_update(self, ref, first_op, last_op):
-        """Sync once before/after a whole run of consecutive update-only
-        touches for one host var, instead of once per call."""
-        Rewriter.insert_op(
-            directive_op(self.directive, AccUpdateSelfOp, {"array_refs": [ref]}, OmpTargetUpdateFromOp, {"array_refs": [ref]}),
-            InsertPoint.before(first_op),
-        )
-        Rewriter.insert_op(
-            directive_op(self.directive, AccUpdateDeviceOp, {"array_refs": [ref]}, OmpTargetUpdateToOp, {"array_refs": [ref]}),
-            InsertPoint.after(last_op),
         )
 
     def _process_diverged_host_vars(self, calls, meta_data, diverged_vars, arg_by_name):
@@ -279,7 +265,19 @@ class GPUDataPass(ModulePass):
         stale device copy. present touches are still emitted individually
         within a "run" (see _emit_present) since coalescing them has no
         correctness or performance upside; only update runs are actually
-        coalesced into one sync pair (see _emit_update).
+        coalesced -- and, across every diverged host/CapScratch var in
+        this function, grouped into a shared call whenever their run
+        boundaries coincide (see cap_shared.emit_coalesced_updates, called
+        once per function from _process_physics_fn with both this
+        method's and _process_diverged_capscratch_vars' resolved touches
+        merged together).
+
+        Returns the resolved touches dict (not yet emitted) -- see
+        _process_physics_fn for why: this is merged with
+        _process_diverged_capscratch_vars' own resolved dict before a
+        single emit_coalesced_updates call, so a host var and a
+        CapScratch var sharing a run boundary end up in the same
+        update self/device call.
 
         suite_cap.py unifies same-standard_name args from different
         schemes into a single shared function parameter, named after
@@ -308,35 +306,7 @@ class GPUDataPass(ModulePass):
                 None,
             )
             resolved[host_var] = (ref, [(call_op, category) for call_op, category, _ in touch_list])
-        self._emit_diverged_touches(resolved)
-
-    def _emit_diverged_touches(self, resolved_touches):
-        """Shared run-coalescing core for _process_diverged_host_vars and
-        _process_diverged_capscratch_vars: given {identity: (ref, ordered
-        [(call_op, category), ...])} with ref already resolved by the
-        caller (each caller has its own rules for picking the right SSA
-        reference -- see their docstrings), split each identity's touches
-        into maximal runs of consecutive equal classification (see
-        _process_diverged_host_vars's docstring for why: an interleaved
-        present-classified touch genuinely needs the device copy synced
-        before it executes, so it breaks an update run rather than being
-        absorbed into it).
-        """
-        for ref, touch_list in resolved_touches.values():
-            if ref is None:
-                continue
-
-            update_run: list = []
-            for call_op, category in touch_list:
-                if category == "present":
-                    self._emit_present(ref, call_op)
-                    if update_run:
-                        self._emit_update(ref, first_op=update_run[0], last_op=update_run[-1])
-                        update_run = []
-                else:  # update
-                    update_run.append(call_op)
-            if update_run:
-                self._emit_update(ref, first_op=update_run[0], last_op=update_run[-1])
+        return resolved
 
     def _process_diverged_capscratch_vars(self, calls, meta_data, diverged_capscratch_vars, arg_by_name):
         """Route present/update clauses per individual scheme call for
@@ -365,6 +335,11 @@ class GPUDataPass(ModulePass):
         see _get_diverged_capscratch_args's is_direct) when picking which
         local name's SSA value to sync, falling back to any touch only if
         no direct one exists for this cap var.
+
+        Returns the resolved touches dict (not yet emitted) -- see
+        _process_diverged_host_vars' docstring and _process_physics_fn for
+        why emission is deferred to a single, merged
+        cap_shared.emit_coalesced_updates call.
         """
         touches: dict = {}  # cap_var_name -> ordered [(op, category, local_name, is_direct), ...]
         for call_op, scheme_name, table_name in calls:
@@ -391,7 +366,7 @@ class GPUDataPass(ModulePass):
             resolved[cap_var] = (
                 ref, [(call_op, category) for call_op, category, _, _ in touch_list]
             )
-        self._emit_diverged_touches(resolved)
+        return resolved
 
     def _process_physics_fn(
         self, fn_op, meta_data, diverged_vars=frozenset(), diverged_capscratch_vars=frozenset()
@@ -507,15 +482,25 @@ class GPUDataPass(ModulePass):
                             InsertPoint.after(last_if),
                         )
 
-        # --- diverged host vars: per-scheme-call routing (backlog item (b)) ---
+        # --- diverged host vars + CapScratch cap vars: per-scheme-call
+        # routing, merged into one resolved-touches dict so a host var and
+        # a CapScratch var sharing the same run boundary are coalesced
+        # into a single update self/device call (see
+        # cap_shared.emit_coalesced_updates). Keys are namespaced by kind
+        # since a host_var name and a cap_var name could otherwise collide.
+        merged_touches: dict = {}
         if diverged_vars:
-            self._process_diverged_host_vars(calls, meta_data, diverged_vars, arg_by_name)
-
-        # --- diverged CapScratch cap vars: per-scheme-call routing ---
+            for host_var, entry in self._process_diverged_host_vars(
+                calls, meta_data, diverged_vars, arg_by_name
+            ).items():
+                merged_touches[("host", host_var)] = entry
         if diverged_capscratch_vars:
-            self._process_diverged_capscratch_vars(
+            for cap_var, entry in self._process_diverged_capscratch_vars(
                 calls, meta_data, diverged_capscratch_vars, arg_by_name
-            )
+            ).items():
+                merged_touches[("capscratch", cap_var)] = entry
+        if merged_touches:
+            emit_coalesced_updates(self.directive, merged_touches, self._emit_present)
 
     # Suffixes of the suite-level lifecycle subroutines built by
     # suite_cap.py (suite_name + SUITE_FN_INFIX + generated_subroutine_posfix

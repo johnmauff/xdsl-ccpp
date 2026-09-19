@@ -10,11 +10,18 @@ ccpp_cap.py itself).
 
 from xdsl.dialects import arith, llvm, memref, scf
 from xdsl.dialects.builtin import StringAttr, i8
+from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, ArgOwnershipOp
-from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp
+from xdsl_ccpp.dialects.ccpp_utils import (
+    AccUpdateDeviceOp,
+    AccUpdateSelfOp,
+    OmpTargetUpdateFromOp,
+    OmpTargetUpdateToOp,
+    WriteErrMsgOp,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
@@ -467,6 +474,42 @@ def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
     return frozenset(
         cap_var for cap_var, categories in by_cap_var.items() if len(categories) > 1
     )
+
+
+def find_diverged_suite_owned_vars(suite_model) -> frozenset:
+    """Return the set of SuiteOwned standard_names for which different
+    occurrences (across the suite's own call sequence) genuinely disagree
+    about GPU residency treatment -- one occurrence's own scheme declares
+    memory_space=device (wants present -- data already resident), another
+    leaves it unset (wants update -- a plain host read/write), for the same
+    suite-owned variable.
+
+    Mirrors find_diverged_suite_vars/find_diverged_capscratch_vars, but
+    takes the already-built SuiteVariableModel and reads its per-entry
+    `occurrences` list (see suite_variable_model.py's SuiteVarOccurrence)
+    instead of re-scanning raw scheme metadata directly -- unlike the other
+    two ownership kinds, "is this std_name suite-owned at all" is a property
+    of the whole suite's four-case classification (SuiteVariableModel's own
+    job), not something visible from a single scheme's arg table in
+    isolation, so re-scanning meta_data here would just reimplement that
+    classification a second time.
+
+    Only entries with needs_device_residency=True are even considered (an
+    always-host var needs no GPU treatment at all), and among those, only
+    ones whose occurrences actually mix "host" and "device" categories --
+    an always-device var is already fully covered by the existing one-time
+    `!$acc enter data create(...)` (see LazyAllocOp/print_ftn.py): every
+    occurrence assumes the data is already on the device, so there's never
+    a host-side write to sync from.
+    """
+    diverged = set()
+    for entry in suite_model.suite_owned_vars():
+        if not entry.needs_device_residency:
+            continue
+        categories = {occ.memory_space for occ in entry.occurrences}
+        if len(categories) > 1:
+            diverged.add(entry.standard_name)
+    return frozenset(diverged)
 
 
 def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
@@ -945,6 +988,86 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
         return _make(ArgOwnershipKind.Block)
 
     return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
+
+
+def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present) -> None:
+    """Shared run-coalescing + cross-variable grouping core for
+    `update self`/`update device` synchronization, used consistently by
+    every GPU-residency ownership kind (HostMatched, CapScratch, and
+    SuiteOwned -- see gpu_data_pass.py and suite_cap.py's own callers).
+
+    resolved_touches: {identity: (ref, ordered [(call_op, category), ...])}.
+    `ref` must already be an SSA value valid at every point between the
+    first and last op in touch_list -- a resolved block arg for
+    HostMatched/CapScratch, or (for SuiteOwned, which has no block arg at
+    all) a HostVarRefOp the caller has already inserted early enough in
+    the function to dominate every touch. A None ref skips that identity
+    entirely (mirrors the previous per-caller "if ref is None: continue").
+
+    For each identity, splits its own touches into maximal runs of
+    consecutive equal classification -- an interleaved present-classified
+    touch genuinely needs the device copy synced before it executes, so it
+    breaks an update run rather than being absorbed into it (unchanged
+    from the prior _emit_diverged_touches/_inject_suite_owned_gpu_update
+    logic). "present" touches are still emitted individually via
+    `emit_present(ref, call_op)` -- a pure runtime assertion, cheap to
+    repeat per call, and coalescing it across calls risks producing
+    improperly-nested (criss-crossing) data regions if another identity's
+    own present run overlaps without nesting inside it (see
+    gpu_data_pass.py's _emit_present docstring).
+
+    Update-runs are collected across ALL identities first, then grouped by
+    the exact (id(first_op), id(last_op)) boundary they share -- runs with
+    the same boundary need their data moved at the exact same point in
+    program order, so folding them into one update self(...)/update
+    device(...) call (rather than one call per variable) is safe and
+    reduces the total number of directives without changing when or what
+    moves. Grouping is by object identity, not equality, since xDSL
+    Operations are ordinary Python objects (each call_op in a given
+    function body is a distinct instance).
+    """
+    update_runs: list = []  # (ref, first_op, last_op), across every identity
+    for ref, touch_list in resolved_touches.values():
+        if ref is None:
+            continue
+
+        update_run: list = []
+        for call_op, category in touch_list:
+            if category == "present":
+                emit_present(ref, call_op)
+                if update_run:
+                    update_runs.append((ref, update_run[0], update_run[-1]))
+                    update_run = []
+            else:  # update
+                update_run.append(call_op)
+        if update_run:
+            update_runs.append((ref, update_run[0], update_run[-1]))
+
+    groups: dict = {}
+    order: list = []
+    for ref, first_op, last_op in update_runs:
+        key = (id(first_op), id(last_op))
+        if key not in groups:
+            groups[key] = (first_op, last_op, [])
+            order.append(key)
+        groups[key][2].append(ref)
+
+    for key in order:
+        first_op, last_op, refs = groups[key]
+        Rewriter.insert_op(
+            directive_op(
+                directive, AccUpdateSelfOp, {"array_refs": refs},
+                OmpTargetUpdateFromOp, {"array_refs": refs},
+            ),
+            InsertPoint.before(first_op),
+        )
+        Rewriter.insert_op(
+            directive_op(
+                directive, AccUpdateDeviceOp, {"array_refs": refs},
+                OmpTargetUpdateToOp, {"array_refs": refs},
+            ),
+            InsertPoint.after(last_op),
+        )
 
 
 def directive_op(directive: str, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs: dict):

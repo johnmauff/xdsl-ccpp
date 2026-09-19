@@ -25,9 +25,9 @@
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "pver", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
 // CHECK-LABEL:     func.func private @ccpp_constituent_indices() -> () attributes {module = "ccpp_scheme_utils"}
-// CHECK:           "ccpp_utils.module_var"() <{var_name = "cld_liq_array", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
+// CHECK:           "ccpp_utils.module_var"() <{var_name = "cld_liq_array", base_type = "real", rank = 2 : i64, kind = "kind_phys", needs_device_residency = true}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "tcld", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_ice_cld_ice_array", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
+// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_ice_cld_ice_array", base_type = "real", rank = 2 : i64, kind = "kind_phys", needs_device_residency = true}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_shadow_cld_ice_array", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_shadow_ncols", base_type = "real", rank = 1 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_const_indices", base_type = "integer", rank = 1 : i64, fixed_dim = 2 : i64, init_value = "[1, 2]"}> : () -> ()
@@ -159,6 +159,7 @@
 // CHECK-NEXT:        %18 = arith.constant 0 : i32
 // CHECK-NEXT:        %19 = arith.cmpi eq, %20, %18 : i32
 // CHECK-NEXT:        %20 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %21 = "ccpp_utils.host_var_ref"() <{var_name = "cld_ice_cld_ice_array", module_name = ""}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        scf.if %19 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%tfreeze, %cld_ice_cld_ice_array, %errmsg, %errflg) <{callee = "cld_ice_init", operand_names = ["tfreeze", "cld_ice_array", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
@@ -213,19 +214,22 @@
 // CHECK-NEXT:        %21 = arith.constant 0 : i32
 // CHECK-NEXT:        %22 = arith.cmpi eq, %23, %21 : i32
 // CHECK-NEXT:        %23 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %24 = "ccpp_utils.host_var_ref"() <{var_name = "cld_ice_cld_ice_array", module_name = ""}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:        "ccpp_utils.acc_update_self"(%24) : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        scf.if %22 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %temp, %qv, %ps__in, %cld_ice_cld_ice_array, %errmsg, %errflg) <{callee = "cld_ice_run", operand_names = ["ncol", "timestep", "temp", "qv", "ps", "cld_ice_array", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %24 = arith.constant 0 : i32
-// CHECK-NEXT:        %25 = arith.cmpi eq, %26, %24 : i32
-// CHECK-NEXT:        %26 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        scf.if %25 {
+// CHECK-NEXT:        "ccpp_utils.acc_update_device"(%24) : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
+// CHECK-NEXT:        %25 = arith.constant 0 : i32
+// CHECK-NEXT:        %26 = arith.cmpi eq, %27, %25 : i32
+// CHECK-NEXT:        %27 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        scf.if %26 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%const_tend, %const, %errflg, %errmsg) <{callee = "apply_constituent_tendencies_run", operand_names = ["const_tend", "const", "errcode", "errmsg"], result_names = [], overrides = {}}> : (memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>) -> ()
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %27 = arith.constant 0 : i32
-// CHECK-NEXT:        %28 = arith.cmpi eq, %29, %27 : i32
-// CHECK-NEXT:        %29 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        scf.if %28 {
+// CHECK-NEXT:        %28 = arith.constant 0 : i32
+// CHECK-NEXT:        %29 = arith.cmpi eq, %30, %28 : i32
+// CHECK-NEXT:        %30 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        scf.if %29 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %cld_shadow_cld_ice_array, %cld_shadow_ncols, %errmsg, %errflg) <{callee = "cld_shadow_run", operand_names = ["ncol", "timestep", "cld_ice_array", "ncols", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        "ccpp_utils.constituent_sync"() <{var_name = "cld_ice_cld_ice_array", q_name = "const", ncol_name = "ncol", constituent_idx = 2 : i32, direction = "writeback"}> : () -> ()

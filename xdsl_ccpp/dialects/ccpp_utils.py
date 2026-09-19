@@ -500,6 +500,43 @@ class AccExitDataOp(IRDLOperation):
         ])
 
 @irdl_op_definition
+class GPUDebugPrintOp(IRDLOperation):
+    """Raw-text GPU residency diagnostic block (debug builds only -- see
+    gpu_debug_print_pass.py, enabled by xdsl_ccpp's own --gpu-debug-prints
+    CLI flag, never emitted otherwise).
+
+    Follows the same raw-text-emission shape as ConstituentApiOp/
+    NonCamHostConstituentApiOp (their body/type_defs are also plain
+    strings, printed verbatim) rather than a fully-structured nested-region
+    IR for the `!$acc parallel ... end parallel` block this needs --
+    unnecessary complexity for a debug-only feature when a flat text block
+    already has first-class printer support.
+
+    `scratch_decls` is a semicolon-joined list of "name:fortran_type" pairs
+    this block's own `text` references (e.g. "ccpp_dbg_sz1:integer") -- the
+    printer declares these as ordinary local scalars alongside the
+    function's other locals (print_ftn.py's _declare_fn_locals), since
+    Fortran requires every declaration to precede all executable statements
+    in a subprogram regardless of where in the executable section this op
+    itself is inserted.
+
+    `text` is the literal (possibly multi-line) Fortran source emitted
+    verbatim at this point -- the assignments/parallel-region/write
+    statements that do the actual diagnostic work.
+    """
+
+    name = "ccpp_utils.gpu_debug_print"
+
+    scratch_decls = prop_def(StringAttr)
+    text          = prop_def(StringAttr)
+
+    def __init__(self, scratch_decls: "list[tuple[str, str]]", text: str):
+        super().__init__(properties={
+            "scratch_decls": StringAttr(";".join(f"{n}:{t}" for n, t in scratch_decls)),
+            "text": StringAttr(text),
+        })
+
+@irdl_op_definition
 class OmpTargetDataBeginOp(IRDLOperation):
     """Emit !$omp target data map(tofrom:...) map(alloc:...) directive."""
     name = "ccpp_utils.omp_target_data_begin"
@@ -640,6 +677,26 @@ class ModuleVarOp(IRDLOperation):
     rank       = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
     fixed_dim  = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
     init_value = opt_prop_def(StringAttr)    # optional Fortran initializer (for fixed_dim vars)
+    needs_device_residency = opt_prop_def(BoolAttr)  # True -> also emit a
+                                # module-level `!$acc declare create(var_name)`
+                                # (guarded by #ifdef USE_GPU) right alongside
+                                # this declaration. A runtime `!$acc enter
+                                # data create(...)` inside a later subroutine
+                                # (see LazyAllocOp) establishes the actual
+                                # device buffer, but for a module-scope
+                                # ALLOCATABLE array referenced across many
+                                # separate, later subroutine calls over the
+                                # life of the run (unlike a single lexically-
+                                # scoped `!$acc data` region), nvfortran needs
+                                # this companion `declare create` at the
+                                # point of declaration itself, or the array's
+                                # device-side descriptor/size is undefined --
+                                # confirmed as the actual cause of a
+                                # "PRESENT clause was not found on device"
+                                # runtime failure for a SuiteOwned scratch
+                                # array even after its enter-data-create/
+                                # update-device calls were verified compiling
+                                # and executing correctly.
 
     def __init__(
         self,
@@ -653,6 +710,7 @@ class ModuleVarOp(IRDLOperation):
         rank: int = 0,
         fixed_dim: int | None = None,
         init_value: str | None = None,
+        needs_device_residency: bool = False,
     ):
         props: dict = {
             "var_name":  StringAttr(var_name),
@@ -671,6 +729,8 @@ class ModuleVarOp(IRDLOperation):
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
         if init_value is not None:
             props["init_value"] = StringAttr(init_value)
+        if needs_device_residency:
+            props["needs_device_residency"] = BoolAttr.from_bool(True)
         super().__init__(properties=props)
 
 
@@ -1963,6 +2023,7 @@ CCPPUtils = Dialect(
         AccUpdateDeviceOp,
         AccEnterDataOp,
         AccExitDataOp,
+        GPUDebugPrintOp,
         OmpTargetDataBeginOp,
         OmpTargetDataEndOp,
         OmpTargetUpdateFromOp,
