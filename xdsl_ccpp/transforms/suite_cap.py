@@ -1252,11 +1252,14 @@ class GenerateSuiteSubroutine(RewritePattern):
 
     def __init__(self, suite_descriptions, meta_data, meta_fn_sigs, top_level_module,
                  ddt_source_module=None,
-                 host_var_index=None, ddt_resolution_maps=None):
+                 host_var_index=None, ddt_resolution_maps=None, debug_sync=False):
         self.suite_descriptions = suite_descriptions
         self.meta_data = meta_data
         self.meta_fn_sigs = meta_fn_sigs
         self.top_level_module = top_level_module
+        # Debug-only: threaded from SuiteCAP's own debug_sync field -- see
+        # _inject_suite_owned_gpu_update/_build_suite_owned_debug_sync_touches.
+        self.debug_sync = debug_sync
         # Maps DDT type name → Fortran module that defines it (from source_module attr).
         self.ddt_source_module: dict[str, str] = ddt_source_module or {}
         # standard_name -> (local_var_name, module_name, is_host_table, is_protected) over HOST/MODULE
@@ -4543,7 +4546,67 @@ class GenerateSuiteSubroutine(RewritePattern):
     )
 
     @staticmethod
-    def _inject_suite_owned_gpu_update(generated_fns, suite_model, meta_data):
+    def _build_suite_owned_debug_sync_touches(calls, suite_model, meta_data):
+        """Build (std_name, call)-keyed debug-sync touches for every
+        producing (intent out/inout) memory_space=device SuiteOwned
+        occurrence in this function's own call sequence -- regardless of
+        divergence status.
+
+        Mirrors GPUDataPass._build_debug_sync_touches (gpu_data_pass.py)
+        for the SuiteOwned ownership kind. Each touch is classified
+        "produced" (not "update") -- cap_shared.emit_coalesced_updates
+        treats this as its own, self-after-only sync at that one call,
+        never a self-before/device-after pair the way a genuine "update"
+        run would (there is nothing to pull in before the device has
+        computed anything, and no host-side write to push back
+        afterward). Keying each entry by (std_name, id(call_op)) instead
+        of just std_name means every producing call gets its own
+        single-call touch: the same var written by two different calls is
+        never merged into one, but two different vars written by the SAME
+        call share that call and get grouped into one `update self(...)`
+        call for free.
+
+        A fresh HostVarRefOp is constructed for each producing occurrence
+        (inserted immediately before its own call, dominating the single
+        use right after) -- SuiteOwned vars are module-scope, never a
+        block argument, so there is no existing SSA value to resolve the
+        way HostMatched/CapScratch args are.
+        """
+        entries_by_std = {
+            e.standard_name: e
+            for e in suite_model.suite_owned_vars()
+            if e.needs_device_residency
+        }
+        if not entries_by_std:
+            return {}
+
+        debug_sync_touches: dict = {}
+        for call_op, scheme_name, table_name in calls:
+            if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+                continue
+            for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments():
+                if not arg.hasAttr("standard_name"):
+                    continue
+                std_name = arg.getAttr("standard_name").lower()
+                entry = entries_by_std.get(std_name)
+                if entry is None:
+                    continue
+                if not arg.hasAttr("memory_space") or arg.getAttr("memory_space") != "device":
+                    continue
+                intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
+                if intent not in ("out", "inout"):
+                    continue
+                var_type = TypeConversions.convert(
+                    entry.fortran_type, entry.kind if entry.kind else None, entry.rank
+                )
+                ref_op = ccpp_utils.HostVarRefOp(entry.local_name, "", var_type)
+                Rewriter.insert_op(ref_op, InsertPoint.before(call_op))
+                key = ("debug_sync", std_name, id(call_op))
+                debug_sync_touches[key] = (ref_op.res, [(call_op, "produced")])
+        return debug_sync_touches
+
+    @staticmethod
+    def _inject_suite_owned_gpu_update(generated_fns, suite_model, meta_data, debug_sync=False):
         """Emit `!$acc update self/device(...)` for SuiteOwned vars whose
         residency need genuinely flips within the suite's own call sequence
         (see cap_shared.find_diverged_suite_owned_vars) -- e.g. a host-only
@@ -4579,9 +4642,23 @@ class GenerateSuiteSubroutine(RewritePattern):
         sides: it is a pure reference with no side effects, and a single
         early insertion point already dominates every later one in this
         block.
+
+        debug_sync (debug-only): when set, also builds producing-touch
+        entries for EVERY device-resident SuiteOwned var in this function
+        -- not just diverged ones -- via _build_suite_owned_debug_sync_touches,
+        merged into the same `resolved` dict feeding the single
+        emit_coalesced_updates call below. These are classified "produced"
+        (self-after-only), a different, independent kind of sync from the
+        diverged-var "update" runs above (which need both a self-before
+        and a device-after) -- the two kinds are emitted completely
+        separately by emit_coalesced_updates and never collide, even when
+        they touch the same call. Two different *producing* touches
+        sharing the exact same call (from this function or from another
+        var) do still merge into one shared `update self(...)`, same as
+        GPUDataPass's own debug-sync support -- see its docstring.
         """
         diverged_std_names = find_diverged_suite_owned_vars(suite_model)
-        if not diverged_std_names:
+        if not diverged_std_names and not debug_sync:
             return
 
         entries_by_std = {
@@ -4655,6 +4732,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                 Rewriter.insert_op(ref_op, InsertPoint.before(touch_list[0][0]))
                 resolved[std_name] = (ref_op.res, touch_list)
 
+            if debug_sync:
+                resolved.update(
+                    GenerateSuiteSubroutine._build_suite_owned_debug_sync_touches(
+                        calls, suite_model, meta_data
+                    )
+                )
+
             if resolved:
                 emit_coalesced_updates("acc", resolved, lambda ref, call_op: None)
 
@@ -4722,7 +4806,9 @@ class GenerateSuiteSubroutine(RewritePattern):
             self._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
         if run_local_entries:
             self._inject_run_local_var_handling(generated_fns, run_local_entries)
-        self._inject_suite_owned_gpu_update(generated_fns, suite_model, self.meta_data)
+        self._inject_suite_owned_gpu_update(
+            generated_fns, suite_model, self.meta_data, debug_sync=self.debug_sync
+        )
         self._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
         seen_stubs: set = set()
@@ -4789,6 +4875,15 @@ class SuiteCAP(ModulePass):
     parameter when building the ``ccpp_opt -p`` pipeline string.
     """
 
+    debug_sync: bool = False
+    """Debug-only: when set, also emit an `update self(...)` immediately
+    after every scheme call that writes (intent out/inout) a
+    memory_space=device SuiteOwned var, regardless of divergence status --
+    see _inject_suite_owned_gpu_update/_build_suite_owned_debug_sync_touches.
+    Supplied via ``--gpu-debug-sync`` on the ``ccpp_xdsl`` CLI, the same way
+    ``emit_resolved_vars`` above is threaded in.
+    """
+
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         assert ccpp_mod is not None
@@ -4834,6 +4929,7 @@ class SuiteCAP(ModulePass):
             ddt_source_module=ddt_source_module,
             host_var_index=host_var_index,
             ddt_resolution_maps=ddt_resolution_maps,
+            debug_sync=self.debug_sync,
         )
         PatternRewriteWalker(
             GreedyRewritePatternApplier([generator]),

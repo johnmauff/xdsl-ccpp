@@ -33,6 +33,28 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
 
+def _resolve_canonical_ref(local_names, arg_by_name):
+    """Return the first of local_names that is a key in arg_by_name, or
+    None if none of them are.
+
+    suite_cap.py unifies same-standard_name args from different schemes
+    into a single shared block-arg parameter, named after whichever
+    scheme's own local arg name was encountered first when the suite cap
+    was built (generateSchemeSubroutineCallOps) -- so a later-contributing
+    scheme's own local name is never itself a block-arg key; only the
+    "winning" name is. Rather than reproduce that dedup-order logic here,
+    try every local name known to touch this identity until one resolves
+    -- since exactly one of them must be the real (shared) block argument,
+    and Fortran call-by-reference means every call passing that var passes
+    the exact same value regardless of which local name it used to do so.
+
+    Shared by the diverged-var resolution (_process_diverged_host_vars/
+    _process_diverged_capscratch_vars) and the debug-sync producing-touch
+    resolution (_build_debug_sync_touches) -- both need this exact trick.
+    """
+    return next((arg_by_name[name] for name in local_names if name in arg_by_name), None)
+
+
 @dataclass(frozen=True)
 class GPUDataPass(ModulePass):
     """Insert OpenACC data directives around GPU-capable scheme calls.
@@ -71,6 +93,15 @@ class GPUDataPass(ModulePass):
 
     # GPU directive backend: "acc" for OpenACC, "omp" for OpenMP target offload.
     directive: str = "acc"
+
+    # Debug-only: when set, also emit an `update self(...)` immediately
+    # after every scheme call that writes (intent out/inout) a
+    # memory_space=device HostMatched or CapScratch arg, regardless of
+    # divergence status -- see _build_debug_sync_touches. Mirrors host
+    # memory to the just-computed device value moments after it's
+    # produced, so a device-blind host-memory debugger (e.g. dropsonde)
+    # reads a live, correct value instead of a stale/uninitialized one.
+    debug_sync: bool = False
 
     def _get_scheme_name(self, callee_name):
         """Strip lifecycle suffix to get the scheme base name.
@@ -228,6 +259,97 @@ class GPUDataPass(ModulePass):
             result[arg.name] = (category, cap_var, is_direct)
         return result
 
+    def _get_producing_device_args(self, scheme_name, table_name, meta_data):
+        """Return {local_name: identity} for every arg in this scheme's
+        <table_name> argument table that writes (intent out/inout) a
+        memory_space=device value, regardless of divergence status --
+        sibling to _get_device_args (unfiltered by intent, used for the
+        hostless-scratch blanket region) and _get_diverged_args (filtered
+        by divergence instead of intent).
+
+        identity is ("host", model_var_name) for a HostMatched arg, or
+        ("capscratch", cap_var) for a CapScratch arg that resolves (via
+        cap_shared.resolve_capscratch_cap_var_name) to a shared cap-owned
+        array -- the same two identity shapes _process_diverged_host_vars/
+        _process_diverged_capscratch_vars already key their own touches
+        dicts by. An arg with neither (a hostless scratch var, already
+        covered by the blanket copyin/copyout region in _process_physics_fn)
+        has no stable cross-call identity to key on and is skipped -- out
+        of scope for debug-sync, matching this pass's existing HostMatched/
+        CapScratch-only scope for per-call routing.
+        """
+        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+            return {}
+        result = {}
+        for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments():
+            if not arg.hasAttr("memory_space") or arg.getAttr("memory_space") != "device":
+                continue
+            intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
+            if intent not in ("out", "inout"):
+                continue
+            if arg.hasAttr("model_var_name"):
+                identity = ("host", arg.getAttr("model_var_name"))
+            elif (
+                arg.hasAttr("ownership_kind")
+                and arg.getAttr("ownership_kind") == ArgOwnershipKind.CapScratch
+                and arg.hasAttr("standard_name")
+            ):
+                cap_var = resolve_capscratch_cap_var_name(
+                    arg.getAttr("standard_name"), arg.hasAttr("constituent")
+                )
+                if cap_var is None:
+                    continue
+                identity = ("capscratch", cap_var)
+            else:
+                continue
+            result[arg.name] = identity
+        return result
+
+    def _build_debug_sync_touches(self, calls, meta_data, arg_by_name):
+        """Build (identity, call)-keyed debug-sync touches for every
+        producing (intent out/inout) memory_space=device arg in this
+        function -- HostMatched and CapScratch alike, regardless of
+        divergence status.
+
+        Each touch is classified "produced" (not "update") --
+        cap_shared.emit_coalesced_updates treats this as its own,
+        self-after-only sync at that one call, never a self-before/
+        device-after pair the way a genuine "update" run would (there is
+        nothing to pull in before the device has computed anything, and
+        no host-side write to push back afterward). Keying each entry by
+        (identity, id(call_op)) instead of just identity means every
+        producing call gets its own single-call touch: the same var
+        written by two different calls is never merged into one run
+        spanning both (which would hide one call's own intermediate value
+        from a host-memory debugger reading in between), but two
+        different vars written by the SAME call DO share that call and
+        get grouped into one `update self(...)` call for free, via
+        emit_coalesced_updates' own per-call grouping for "produced"
+        touches.
+
+        Ref resolution reuses _resolve_canonical_ref, the same "try every
+        local name known to touch this identity across the whole
+        function" trick _process_diverged_host_vars already uses.
+        """
+        touches: dict = {}  # identity -> [(call_op, local_name), ...]
+        for call_op, scheme_name, table_name in calls:
+            for local_name, identity in self._get_producing_device_args(
+                scheme_name, table_name, meta_data
+            ).items():
+                touches.setdefault(identity, []).append((call_op, local_name))
+
+        debug_sync_touches: dict = {}
+        for identity, touch_list in touches.items():
+            ref = _resolve_canonical_ref(
+                (name for _, name in touch_list), arg_by_name
+            )
+            if ref is None:
+                continue
+            for call_op, _ in touch_list:
+                key = ("debug_sync", identity, id(call_op))
+                debug_sync_touches[key] = (ref, [(call_op, "produced")])
+        return debug_sync_touches
+
     def _emit_present(self, ref, call_op):
         """Wrap a single call in its own present()-only data region.
 
@@ -301,9 +423,8 @@ class GPUDataPass(ModulePass):
 
         resolved: dict = {}
         for host_var, touch_list in touches.items():
-            ref = next(
-                (arg_by_name[name] for _, _, name in touch_list if name in arg_by_name),
-                None,
+            ref = _resolve_canonical_ref(
+                (name for _, _, name in touch_list), arg_by_name
             )
             resolved[host_var] = (ref, [(call_op, category) for call_op, category, _ in touch_list])
         return resolved
@@ -350,18 +471,12 @@ class GPUDataPass(ModulePass):
 
         resolved: dict = {}
         for cap_var, touch_list in touches.items():
-            ref = next(
-                (
-                    arg_by_name[name]
-                    for _, _, name, is_direct in touch_list
-                    if is_direct and name in arg_by_name
-                ),
-                None,
+            ref = _resolve_canonical_ref(
+                (name for _, _, name, is_direct in touch_list if is_direct), arg_by_name
             )
             if ref is None:
-                ref = next(
-                    (arg_by_name[name] for _, _, name, _ in touch_list if name in arg_by_name),
-                    None,
+                ref = _resolve_canonical_ref(
+                    (name for _, _, name, _ in touch_list), arg_by_name
                 )
             resolved[cap_var] = (
                 ref, [(call_op, category) for call_op, category, _, _ in touch_list]
@@ -499,6 +614,10 @@ class GPUDataPass(ModulePass):
                 calls, meta_data, diverged_capscratch_vars, arg_by_name
             ).items():
                 merged_touches[("capscratch", cap_var)] = entry
+        if self.debug_sync:
+            merged_touches.update(
+                self._build_debug_sync_touches(calls, meta_data, arg_by_name)
+            )
         if merged_touches:
             emit_coalesced_updates(self.directive, merged_touches, self._emit_present)
 

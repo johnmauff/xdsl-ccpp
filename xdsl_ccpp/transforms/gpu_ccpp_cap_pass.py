@@ -288,15 +288,22 @@ class GPUCcppCapPass(ModulePass):
 
         Host vars where different schemes genuinely disagree about
         present-vs-update treatment (see cap_shared.find_diverged_suite_vars)
-        are excluded entirely from present_vars/update_vars here -- they get
-        no VarLifetime, so _wrap_scheme_call does nothing for them at this
-        (whole-suite) granularity. GPUDataPass routes those instead, per
-        individual scheme call, at the suite_cap level (backlog item (b)).
-        This split can never affect the copy-family (needs_in/needs_out)
-        accumulation below: model_var_memory_space is a single, host-
-        declared attribute, and present/update both require model=device
-        while copy-family requires model=host, so a host var can never be
-        both diverged (present-vs-update) and copy-family at once.
+        are excluded entirely from present_vars/update_vars/copy-family here
+        -- they get no VarLifetime, so _wrap_scheme_call does nothing for
+        them at this (whole-suite) granularity. GPUDataPass routes their
+        per-call present/update clauses instead, at the suite_cap level
+        (backlog item (b)); gpu_ccpp_cap_pass.py's own
+        _analyze_one_suite_residency separately establishes their
+        entry/exit residency (enter/exit data), since excluding a diverged
+        var from copy-family here would otherwise leave it with no
+        entry/exit anchoring at all. This method's own model_space
+        computation deliberately stays a bare per-arg read of
+        model_var_memory_space (the host's own static declaration, NOT
+        find_diverged_suite_vars's suite-scoped divergence union) --
+        present/update/copy-family clause routing for a *non-diverged* var
+        must keep reflecting what the host itself actually declares, not
+        whether some other, unrelated scheme in this suite happens to also
+        touch it.
 
         The diverged check itself stays keyed on the bare model_var_name
         (find_diverged_suite_vars's own convention, shared with GPUDataPass
@@ -452,22 +459,38 @@ class GPUCcppCapPass(ModulePass):
 
     def _analyze_one_suite_residency(self, scheme_names, meta_data, ddt_instance_map, ddt_parent_map, host_var_map):
         """Return {host_var: VarLifetime} for every host var this suite
-        references with model_var_memory_space == "device" -- regardless of
-        the *scheme's* own memory_space (i.e. regardless of whether the var
-        resolves to present, update, or is diverged between the two in
-        _analyze_one_suite above). Establishing device residency is a
-        genuinely separate concern from clause routing: none of
-        present()/update self/update device *allocate* anything (see this
-        pass's class docstring), so whenever the host declares a var
-        device-resident, CCPP needs to establish that residency itself
-        (OpenACC's enter/exit-data are reference-counted, so this is safe
-        even if a larger host model also manages the same var
-        independently -- see ccpp_cap_refactor_plan.md's backlog entry).
+        treats as device-resident: the host's own static
+        model_var_memory_space=="device" declaration (original behavior,
+        unchanged), UNION the set of vars find_diverged_suite_vars reports
+        as diverged for this suite.
 
-        No divergence check needed here (unlike present_vars/update_vars):
-        residency is a plain "does anything need this on the device" union
-        across every contributing scheme, not a per-scheme clause choice
-        that could conflict.
+        The diverged-var half of that union is what makes this method
+        genuinely necessary rather than redundant: _analyze_one_suite
+        excludes every diverged var from its own present_vars/update_vars/
+        copy-family buckets entirely (their per-call present/update clauses
+        are routed elsewhere, by GPUDataPass at the suite_cap level -- see
+        that method's docstring) -- which would otherwise leave a diverged
+        var with no entry/exit residency anchoring (enter/exit data) at
+        all, even though it genuinely needs the device allocation
+        established and torn down somewhere. This is deliberately NOT the
+        broader "any scheme in this suite declares memory_space=device"
+        union: a var with a single, self-consistent occurrence (one scheme
+        wants device, the host doesn't declare it, nothing else touches it)
+        is not diverged and is already fully and correctly handled by
+        _analyze_one_suite's own copy-family bracket (per-call
+        copyin/copy/copyout) -- adding residency on top of that would be
+        pure redundancy, not a fix (confirmed by a real regression while
+        building this: it produced a spurious `present()` region nested
+        inside copy-family's own `copyin()` region for exactly this shape).
+
+        Establishing device residency is a genuinely separate concern from
+        clause routing: none of present()/update self/update device
+        *allocate* anything (see this pass's class docstring), so whenever
+        this union says a var is device-resident, CCPP needs to establish
+        that residency itself (OpenACC's enter/exit-data are
+        reference-counted, so this is safe even if a larger host model also
+        manages the same var independently -- see
+        ccpp_cap_refactor_plan.md's backlog entry).
 
         Every returned VarLifetime is resolved via the same whole-sim/per-
         timestep anchor rules _resolve_lifetime already applies to copy-
@@ -479,6 +502,7 @@ class GPUCcppCapPass(ModulePass):
         why: a var used only at `_run` still needs residency established on
         every call, since register/initialize don't reference it at all).
         """
+        diverged = find_diverged_suite_vars(scheme_names, meta_data)
         phases_used: dict = {}  # host_var -> set[phase]
         for scheme_name in scheme_names:
             props = meta_data.get(scheme_name)
@@ -492,12 +516,13 @@ class GPUCcppCapPass(ModulePass):
                 for arg in table.getFunctionArguments():
                     if not arg.hasAttr("model_var_name"):
                         continue
+                    bare_host_var = arg.getAttr("model_var_name")
                     model_space = (
                         arg.getAttr("model_var_memory_space")
                         if arg.hasAttr("model_var_memory_space")
                         else "host"
                     )
-                    if model_space != "device":
+                    if model_space != "device" and bare_host_var not in diverged:
                         continue
                     host_var = _resolve_host_var_key(
                         arg, ddt_instance_map, ddt_parent_map, host_var_map

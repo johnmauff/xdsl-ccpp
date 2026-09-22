@@ -338,25 +338,40 @@ def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
     """Return the set of host-var names (model_var_name values) for which
     different schemes in `scheme_names` genuinely disagree about GPU
     residency treatment -- one wants `present` (scheme declares
-    memory_space=device against a device-resident host var), another wants
-    `update` (scheme leaves memory_space unset against that same
-    device-resident host var).
+    memory_space=device for its own occurrence), another wants `update`
+    (scheme leaves memory_space unset for its own occurrence of that same
+    host var).
 
-    `model_var_memory_space` is a single, host-declared attribute -- the
-    same value for every scheme referencing that host var, since it's
-    propagated from the host's own metadata by generate-host-match, not the
-    scheme's. `present` requires model=device; `copyin`/`copy`/`copyout`
-    require model=host. These are mutually exclusive, so a host var can
-    only ever diverge between present and update (both require
-    model=device) -- never between either of those and the copy-family
-    (which requires model=host). Divergence is therefore purely a question
-    of whether every contributing scheme's own `memory_space` declaration
-    agrees for a given model=device host var.
+    Deliberately does NOT gate on the host's own static
+    model_var_memory_space declaration first (unlike this function's
+    earlier version): whether two schemes disagree is a fact about their
+    own declarations, independent of what the host separately says. This
+    matters for the exact real-world bug that motivated the change: one
+    scheme in a suite can correctly declare memory_space=device for a host
+    var (e.g. kessler_update, for air_temperature) while a sibling scheme
+    in the *same* suite writes the same var as plain host Fortran with no
+    memory_space of its own (e.g. potential_temp_to_temp) -- a genuine
+    disagreement -- even though the host's own registry declaration never
+    marks that var device-resident at all (a separate, easy-to-forget file
+    nothing connects to either scheme's own annotation). Gating on the
+    host's static declaration first made that disagreement invisible,
+    silently dropping the host-only scheme's write from residency tracking
+    entirely.
+
+    `present`/`update` are still mutually exclusive with the copy-family
+    (`copyin`/`copy`/`copyout`, handled by _analyze_one_suite elsewhere):
+    a var only ever lands here if *some* scheme's own occurrence declares
+    device (giving at least one "present"-category touch) -- a var no
+    scheme ever declares device for never enters `by_host_var` at all, so
+    it can never spuriously "diverge" into this set.
 
     Shared by GPUCcppCapPass (which excludes diverged vars from its
     whole-suite, cross-phase hoisting entirely -- see
-    gpu_ccpp_cap_pass.py's _analyze_one_suite) and GPUDataPass (which routes
-    them to per-scheme-call handling instead -- see gpu_data_pass.py), so
+    gpu_ccpp_cap_pass.py's _analyze_one_suite -- and separately establishes
+    their entry/exit residency in _analyze_one_suite_residency, since
+    exclusion from copy-family would otherwise leave them with no
+    entry/exit anchoring at all) and GPUDataPass (which routes their
+    per-call present/update clauses instead -- see gpu_data_pass.py), so
     the two passes can never disagree about which vars are diverged.
     """
     by_host_var: dict = {}  # host_var -> category ("present" | "update") -> set[scheme_name]
@@ -371,18 +386,11 @@ def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
             for arg in table.getFunctionArguments():
                 if not arg.hasAttr("model_var_name"):
                     continue
-                model_space = (
-                    arg.getAttr("model_var_memory_space")
-                    if arg.hasAttr("model_var_memory_space")
-                    else "host"
-                )
-                if model_space != "device":
-                    continue
+                host_var = arg.getAttr("model_var_name")
                 scheme_space = (
                     arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
                 )
                 category = "present" if scheme_space == "device" else "update"
-                host_var = arg.getAttr("model_var_name")
                 by_host_var.setdefault(host_var, {}).setdefault(category, set()).add(scheme_name)
 
     return frozenset(
@@ -1016,17 +1024,33 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
     own present run overlaps without nesting inside it (see
     gpu_data_pass.py's _emit_present docstring).
 
-    Update-runs are collected across ALL identities first, then grouped by
-    the exact (id(first_op), id(last_op)) boundary they share -- runs with
-    the same boundary need their data moved at the exact same point in
-    program order, so folding them into one update self(...)/update
-    device(...) call (rather than one call per variable) is safe and
-    reduces the total number of directives without changing when or what
-    moves. Grouping is by object identity, not equality, since xDSL
-    Operations are ordinary Python objects (each call_op in a given
-    function body is a distinct instance).
+    "update" touches accumulate into a run needing BOTH an `update
+    self(...)` before the run (pull the latest device value in, since a
+    stretch of host-only code is about to read/write it) and an `update
+    device(...)` after it (push the host's changes back out) -- unchanged
+    from the original diverged-var behavior. Runs are collected across ALL
+    identities first, then grouped by the exact (id(first_op), id(last_op))
+    boundary they share, so several variables' runs sharing a boundary
+    fold into one shared call instead of one each.
+
+    "produced" touches are a third, distinct kind (debug-sync only -- see
+    gpu_data_pass.py's/suite_cap.py's own debug_sync support): a single
+    call just *wrote* a device-resident value and nothing needs pushed
+    back, so only an `update self(...)` immediately AFTER that one call is
+    wanted -- never a `before` sync (there is nothing to pull in before
+    the device has computed anything) and never an `update device(...)`
+    afterward (there is no host-side modification to push out; doing so
+    would just push the same, just-pulled value back, wasted motion at
+    best). This is NOT the same shape as an "update" run of length one --
+    that would still emit both directions -- so "produced" touches are
+    collected and grouped completely separately, keyed by the call alone
+    (there is no "before"/"after" pair, just one point), and only ever
+    emit `update self(...)`. Multiple different variables produced by the
+    exact same call still merge into one shared call, the same free
+    cross-variable grouping "update" runs get.
     """
     update_runs: list = []  # (ref, first_op, last_op), across every identity
+    produced_syncs: list = []  # (ref, call_op), across every identity
     for ref, touch_list in resolved_touches.values():
         if ref is None:
             continue
@@ -1038,22 +1062,37 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
                 if update_run:
                     update_runs.append((ref, update_run[0], update_run[-1]))
                     update_run = []
-            else:  # update
+            elif category == "produced":
+                if update_run:
+                    update_runs.append((ref, update_run[0], update_run[-1]))
+                    update_run = []
+                produced_syncs.append((ref, call_op))
+            else:  # "update"
                 update_run.append(call_op)
         if update_run:
             update_runs.append((ref, update_run[0], update_run[-1]))
 
-    groups: dict = {}
-    order: list = []
-    for ref, first_op, last_op in update_runs:
-        key = (id(first_op), id(last_op))
-        if key not in groups:
-            groups[key] = (first_op, last_op, [])
-            order.append(key)
-        groups[key][2].append(ref)
+    def _grouped(entries, key_fn):
+        """Group (ref, ...) entries by key_fn's own return, deduping refs
+        by identity within each group (see the docstring above for why a
+        dup can genuinely occur), preserving first-seen group order."""
+        groups: dict = {}
+        order: list = []
+        for entry in entries:
+            ref = entry[0]
+            key = key_fn(entry)
+            if key not in groups:
+                groups[key] = (entry[1:], [], set())
+                order.append(key)
+            _, refs, seen_ids = groups[key]
+            if id(ref) not in seen_ids:
+                seen_ids.add(id(ref))
+                refs.append(ref)
+        return [(groups[key][0], groups[key][1]) for key in order]
 
-    for key in order:
-        first_op, last_op, refs = groups[key]
+    for (first_op, last_op), refs in _grouped(
+        update_runs, lambda e: (id(e[1]), id(e[2]))
+    ):
         Rewriter.insert_op(
             directive_op(
                 directive, AccUpdateSelfOp, {"array_refs": refs},
@@ -1067,6 +1106,15 @@ def emit_coalesced_updates(directive: str, resolved_touches: dict, emit_present)
                 OmpTargetUpdateToOp, {"array_refs": refs},
             ),
             InsertPoint.after(last_op),
+        )
+
+    for (call_op,), refs in _grouped(produced_syncs, lambda e: id(e[1])):
+        Rewriter.insert_op(
+            directive_op(
+                directive, AccUpdateSelfOp, {"array_refs": refs},
+                OmpTargetUpdateFromOp, {"array_refs": refs},
+            ),
+            InsertPoint.after(call_op),
         )
 
 
