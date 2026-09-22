@@ -121,6 +121,31 @@ class ccppMain:
                  "are generated regardless of memory_space attributes.",
         )
         parser.add_argument(
+            "--gpu-debug-prints",
+            action="store_true",
+            default=False,
+            help="Instrument every generated GPU data-movement operation "
+                 "(update self/device, copyin, copyout) and every module-scope "
+                 "scalar with a host-vs-device diagnostic print, to debug "
+                 "OpenACC PRESENT/residency failures directly from a run "
+                 "instead of reasoning from source alone. Debug-only; has no "
+                 "effect unless --directive is also set.",
+        )
+        parser.add_argument(
+            "--gpu-debug-sync",
+            action="store_true",
+            default=False,
+            help="Emit an extra `update self(...)` immediately after every "
+                 "scheme call that writes a memory_space=device variable "
+                 "(HostMatched, CapScratch, or SuiteOwned), regardless of "
+                 "whether that variable's residency treatment otherwise "
+                 "needs one. Mirrors host memory to the just-computed "
+                 "device value moments after it's produced, so a "
+                 "device-blind host-memory debugger reads a live, correct "
+                 "value at any breakpoint. Debug-only; has no effect unless "
+                 "--directive is also set.",
+        )
+        parser.add_argument(
             "--kind-map",
             action="append",
             default=[],
@@ -662,6 +687,7 @@ class ccppMain:
             k, iso = kind_maps[0].split(":", 1)
             meta_kinds_pass += f"{{extra_kind={k.strip()} extra_iso={iso.strip()}}}"
         suite_cap_pass = "generate-suite-cap"
+        suite_cap_opts: list[str] = []
         resolved_vars_path = self.options_db.get("emit_resolved_vars")
         if resolved_vars_path:
             # Quoted: xdsl's own pass-pipeline spec lexer
@@ -678,7 +704,11 @@ class ccppMain:
             # ever saw it. Passing \" straight through now (no shell to
             # strip it) would reach that lexer as literal backslash-quote,
             # which its own STRING_LIT regex doesn't accept as a delimiter.
-            suite_cap_pass += f'{{emit_resolved_vars="{resolved_vars_path}"}}'
+            suite_cap_opts.append(f'emit_resolved_vars="{resolved_vars_path}"')
+        if self.options_db.get("gpu_debug_sync"):
+            suite_cap_opts.append("debug_sync=true")
+        if suite_cap_opts:
+            suite_cap_pass += "{" + " ".join(suite_cap_opts) + "}"
 
         has_host = bool(self.options_db.get("host_files"))
         passes = ["generate-meta-cap"]
@@ -699,7 +729,10 @@ class ccppMain:
         passes.append(meta_kinds_pass)
         passes.append(suite_cap_pass)
         if directive:
-            passes.append(f"generate-gpu-data{{directive={directive}}}")
+            gpu_data_opts = [f"directive={directive}"]
+            if self.options_db.get("gpu_debug_sync"):
+                gpu_data_opts.append("debug_sync=true")
+            passes.append(f"generate-gpu-data{{{' '.join(gpu_data_opts)}}}")
         if has_host:
             passes.append(ccpp_cap_pass)
             # Must run immediately after generate-ccpp-cap and before
@@ -709,6 +742,12 @@ class ccppMain:
             passes.append("generate-cpp-cap")
             if directive:
                 passes.append(f"generate-gpu-ccpp-cap{{directive={directive}}}")
+        if self.options_db.get("gpu_debug_prints"):
+            # Must run after generate-gpu-data/generate-gpu-ccpp-cap above
+            # (and generate-suite-cap earlier): it walks the final,
+            # fully-resolved set of data-movement ops and module-var
+            # declarations, not an intermediate state.
+            passes.append("generate-gpu-debug-prints")
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
 

@@ -44,6 +44,7 @@ from xdsl_ccpp.dialects.ccpp_utils import ConstituentIndexLookupOp as CCPPConsti
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import ErrorPropagateOp as CCPPErrorPropagateOp
+from xdsl_ccpp.dialects.ccpp_utils import GPUDebugPrintOp as CCPPGPUDebugPrintOp
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
 from xdsl_ccpp.dialects.ccpp_utils import KindCastOp as CCPPKindCastOp
@@ -1099,6 +1100,16 @@ class ftnPrintContext:
                         self.print(line.lstrip(), use_prefix=False)
                     else:
                         self.print(line)
+            case CCPPGPUDebugPrintOp():
+                # Same raw-text-emission shape as CCPPConstituentApiOp
+                # above (its own scratch-var declarations are handled
+                # separately by _declare_fn_locals, since Fortran requires
+                # them in the specification part, not here).
+                for line in op.text.data.splitlines():
+                    if line.lstrip().startswith("#"):
+                        self.print(line.lstrip(), use_prefix=False)
+                    else:
+                        self.print(line)
             case CCPPCHostCapOp():
                 # Complete standalone Fortran module — emit ftn_text verbatim.
                 # Normally emitted via print_to_ftn at the top level, but handled
@@ -1577,6 +1588,32 @@ class ftnPrintContext:
                             f"{ftn_type}, allocatable :: {var_name}({shape})",
                             prefix="  ",
                         )
+                        if (
+                            op.needs_device_residency is not None
+                            and bool(op.needs_device_residency.value.data)
+                        ):
+                            # A runtime `!$acc enter data create(...)`
+                            # inside a later subroutine (see LazyAllocOp)
+                            # establishes the actual device buffer, but for
+                            # a module-scope ALLOCATABLE array referenced
+                            # across many separate, later subroutine calls
+                            # over the life of the run (unlike a single
+                            # lexically-scoped `!$acc data` region),
+                            # nvfortran needs this companion `declare
+                            # create` at the point of declaration itself,
+                            # or the array's device-side descriptor/size is
+                            # undefined -- confirmed as the actual cause of
+                            # a "PRESENT clause was not found on device"
+                            # runtime failure for a SuiteOwned scratch
+                            # array even after its enter-data-create/
+                            # update-device calls were verified compiling
+                            # and executing correctly.
+                            self.print("#ifdef USE_GPU", use_prefix=False)
+                            self.print(
+                                f"!$acc declare create({var_name})",
+                                prefix="  ",
+                            )
+                            self.print("#endif", use_prefix=False)
 
         # Emit one public :: line per subroutine definition that is marked public.
         public_procs = [
@@ -2042,6 +2079,10 @@ class ftnPrintContext:
         vertical-flip temporaries, row-major transpose temporaries, anonymous
         locals for untracked call results, and (BIND(C) only) the character
         marshaling buffers + loop counter."""
+        # De-duplicates GPUDebugPrintOp's own scratch-var declarations below
+        # -- the debug-print pass may reuse the same scratch name across
+        # multiple diagnostic blocks in one function.
+        seen_debug_scratch_names: set = set()
         # Declare local variables (non-returned allocas, e.g. computed scalars).
         #
         # Two or more sibling subcycles (nested or not) each allocate their
@@ -2127,6 +2168,20 @@ class ftnPrintContext:
                 type_str = inner.mlir_type_to_ftn_type(op.res.type)
                 dim_suffix = inner._ftn_dim_suffix(op.res.type)
                 inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
+            elif isa(op, CCPPGPUDebugPrintOp):
+                # scratch_decls: "name1:type1;name2:type2;..." -- declare
+                # each referenced scratch scalar as an ordinary local,
+                # de-duplicated (the debug-print pass may reuse the same
+                # scratch name across multiple diagnostic blocks in one
+                # function).
+                for pair in op.scratch_decls.data.split(";"):
+                    if not pair:
+                        continue
+                    var_name, type_str = pair.split(":", 1)
+                    if var_name in seen_debug_scratch_names:
+                        continue
+                    seen_debug_scratch_names.add(var_name)
+                    inner.print(f"{type_str} :: {var_name}")
 
         # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
         for op in bdy.block.walk():
