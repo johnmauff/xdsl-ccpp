@@ -625,3 +625,290 @@ class TestGPUDivergedClauseRoutingDDTMember:
         assert "present(qv_a" in suite_fn
         assert "update self(qv_a" in suite_fn
         assert "update device(qv_a" in suite_fn
+
+
+# ── _resolve_array_refs must dedupe by host-var key (real-world crash) ───────
+#
+# Real-world symptom, confirmed on Derecho 2026-09-22:
+# FKESSLER.se_cslam_gpu/se_cslam_multitape_gpu both crashed at RUN with
+# "Accelerator Fatal Error: call to cuMemcpyDtoHAsync returned error 1
+# (CUDA_ERROR_INVALID_VALUE)" inside ccpp_physics_run. The generated cap
+# (cam_ccpp_cap.F90) showed the cause directly:
+#   !$acc exit data copyout(phys_tend%dTdt_total, phys_tend%dTdt_total)
+# -- the same host var listed twice in one clause. _resolve_array_refs scans
+# every HostVarRefOp in a call's block and appends a resolved ref per op it
+# finds matching a wanted var name, with no dedup -- so if upstream IR
+# construction ever produces more than one HostVarRefOp for the same host
+# var within one call's block (the exact upstream mechanism wasn't pinned
+# down to one line during this investigation, but the effect -- two
+# HostVarRefOp, one host var, one block -- was reproduced directly below),
+# every directive built from that var list repeats the name. A repeated
+# name in one !$acc clause isn't just redundant data movement: the second
+# copyout's DtoH copy races/duplicates the first, producing exactly this
+# CUDA_ERROR_INVALID_VALUE at runtime.
+
+
+class TestResolveArrayRefsDedup:
+    """White-box test of GPUCcppCapPass._resolve_array_refs: given a block
+    with two HostVarRefOp for the same host var (the shape confirmed to
+    produce a real runtime crash -- see module comment above), it must
+    return exactly one resolved ref, not one per matching op."""
+
+    def test_dedupes_two_refs_for_same_var(self):
+        from xdsl.dialects.builtin import f64
+        from xdsl.ir import Block
+
+        from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp
+
+        block = Block()
+        block.add_op(HostVarRefOp("dup_var", "test_mod", f64))
+        block.add_op(HostVarRefOp("dup_var", "test_mod", f64))
+
+        pass_ = GPUCcppCapPass(directive="acc")
+        refs = pass_._resolve_array_refs(block, {"dup_var"}, use_sections=False)
+        assert len(refs) == 1
+
+    def test_still_resolves_two_distinct_vars(self):
+        """Dedup must key on the var name, not collapse everything to one
+        ref regardless of identity."""
+        from xdsl.dialects.builtin import f64
+        from xdsl.ir import Block
+
+        from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp
+
+        block = Block()
+        block.add_op(HostVarRefOp("var_one", "test_mod", f64))
+        block.add_op(HostVarRefOp("var_two", "test_mod", f64))
+
+        pass_ = GPUCcppCapPass(directive="acc")
+        refs = pass_._resolve_array_refs(
+            block, {"var_one", "var_two"}, use_sections=False
+        )
+        assert len(refs) == 2
+
+
+# ── multi-group suites (real-world kessler crash) ──────────────────────────
+#
+# Real-world symptom, confirmed on Derecho 2026-09-22, after the
+# _resolve_array_refs dedup fix above removed a different, masking crash:
+#   FATAL ERROR: data in update host clause was not found on device 1:
+#   name=tend_dtdt(:,:)  file: kessler_cap.F90  kessler_physics_after_coupler
+# kessler's suite XML has two groups, physics_before_coupler and
+# physics_after_coupler (src/physics/ncar_ccpp/suites/suite_kessler.xml in
+# CAM-SIMA). phys_tend%dTdt_total is written by kessler (group 1, device
+# scheme) and later synced by dycore_energy_consistency_adjust_run (group 2,
+# host scheme -- diverged "update" category). GPUCcppCapPass only ever
+# discovered group 1's call site (_find_inner_suite_part_if returned on the
+# first scf.IfOp in the suite-part else-if chain, never descending into
+# false_region for later groups), so residency's exit-data landed right
+# after group 1's own call -- before group 2's update self ever ran.
+#
+# This fixture mirrors that shape exactly (two groups named
+# physics_before_coupler/physics_after_coupler, matching kessler's own suite
+# XML, so the _SUITE_CALLEE_MARKERS "_physics" substring match behaves
+# identically): group 1's scheme touches the shared var at both
+# timestep_init (entry) and run (making it hoisted, entry=timestep_initial,
+# exit=run); group 2's scheme touches it only at run, diverging (device vs
+# host) from group 1's own run-phase occurrence -- so both groups' calls
+# naturally reference the var at the *same* phase name ("run"), the exact
+# ambiguity _resolve_phase_group_overrides disambiguates.
+
+_MG_SCHEME_A = f"""\
+[ccpp-table-properties]
+  name = test_mg_scheme_a
+  type = scheme
+[ccpp-arg-table]
+  name = test_mg_scheme_a_timestep_init
+  type = scheme
+[ mg_var_entry ]
+  standard_name = test_mg_var
+  long_name = entry touch -- device scheme, host model
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  memory_space = device
+  intent = in
+[ mg_var_solo_entry ]
+  standard_name = test_mg_solo_var
+  long_name = entry touch for a var only group 1 ever references
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  memory_space = device
+  intent = in
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = test_mg_scheme_a_run
+  type = scheme
+[ mg_var_group1 ]
+  standard_name = test_mg_var
+  long_name = group 1's own run-phase touch -- device scheme (present category)
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  memory_space = device
+  intent = out
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = test_mg_scheme_a_timestep_final
+  type = scheme
+[ mg_var_solo_exit ]
+  standard_name = test_mg_solo_var
+  long_name = group 1's own timestep_final exit touch, never referenced by group 2
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  memory_space = device
+  intent = out
+{CCPP_MANDATORY_ARGS}
+"""
+
+_MG_SCHEME_B = f"""\
+[ccpp-table-properties]
+  name = test_mg_scheme_b
+  type = scheme
+[ccpp-arg-table]
+  name = test_mg_scheme_b_run
+  type = scheme
+[ mg_var_group2 ]
+  standard_name = test_mg_var
+  long_name = group 2's own run-phase touch -- host scheme (update category)
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+[ccpp-arg-table]
+  name = test_mg_scheme_b_timestep_final
+  type = scheme
+{CCPP_MANDATORY_ARGS}
+"""
+
+_MG_HOST_META = """\
+[ccpp-table-properties]
+  name = test_mg_host
+  type = module
+[ccpp-arg-table]
+  name = test_mg_host
+  type = module
+[ mg_host_var ]
+  standard_name = test_mg_var
+  long_name = host var, no declared memory_space (kept on the CPU by default)
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+[ mg_solo_host_var ]
+  standard_name = test_mg_solo_var
+  long_name = host var only group 1 ever references, no declared memory_space
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+"""
+
+_MG_SUITE_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_mg_suite" version="1.0">
+  <group name="physics_before_coupler">
+    <scheme>test_mg_scheme_a</scheme>
+  </group>
+  <group name="physics_after_coupler">
+    <scheme>test_mg_scheme_b</scheme>
+  </group>
+</suite>
+"""
+
+
+def _mg_fortran_output(run_host_match, ccpp_context) -> str:
+    module = run_host_match(
+        scheme_metas=[_MG_SCHEME_A, _MG_SCHEME_B],
+        host_metas=[_MG_HOST_META],
+        suite_xml=_MG_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    GPUDataPass(directive="acc").apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    GPUCcppCapPass(directive="acc").apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
+class TestGPUMultiGroupResidencyAnchoring:
+    """A hoisted, diverged var touched by two different suite-XML groups
+    that share one bare phase name ("run") must get its residency exit
+    anchored to the true last touching group, not whichever group
+    GPUCcppCapPass happens to discover first."""
+
+    def test_ccpp_physics_run_wraps_both_groups(self, run_host_match, ccpp_context):
+        """Regression guard for the discovery bug itself: both group calls
+        must appear in ccpp_physics_run (previously only group 1 did)."""
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        run_fn = fortran.split("subroutine ccpp_physics_run")[1]
+        run_fn = run_fn.split("end subroutine ccpp_physics_run")[0]
+        assert "test_mg_suite_physics_before_coupler" in run_fn
+        assert "test_mg_suite_physics_after_coupler" in run_fn
+
+    def test_exit_data_lands_after_group_2_not_group_1(self, run_host_match, ccpp_context):
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        run_fn = fortran.split("subroutine ccpp_physics_run")[1]
+        run_fn = run_fn.split("end subroutine ccpp_physics_run")[0]
+
+        before_call = run_fn.index("test_mg_suite_physics_before_coupler")
+        after_call = run_fn.index("test_mg_suite_physics_after_coupler")
+        exit_data = run_fn.index("exit data copyout(mg_host_var")
+
+        assert before_call < after_call < exit_data, (
+            "exit-data must land after group 2's call, not between the two "
+            "groups (which would tear the var down before group 2 even runs)"
+        )
+
+    def test_group_1_gets_no_exit_data_of_its_own(self, run_host_match, ccpp_context):
+        """Only one exit-data for mg_host_var in the whole function -- group
+        1 must fall back to passthrough, not also emit its own (which would
+        be the premature exit-data that caused the real crash)."""
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        run_fn = fortran.split("subroutine ccpp_physics_run")[1]
+        run_fn = run_fn.split("end subroutine ccpp_physics_run")[0]
+        assert run_fn.count("exit data copyout(mg_host_var") == 1
+
+    def test_entry_data_still_established_at_timestep_init(self, run_host_match, ccpp_context):
+        """Regression guard: the hoisted entry anchor (single call site,
+        unaffected by the multi-group fix) is untouched."""
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        init_fn = fortran.split("subroutine ccpp_physics_timestep_init")[1]
+        init_fn = init_fn.split("end subroutine ccpp_physics_timestep_init")[0]
+        assert "enter data copyin(mg_host_var" in init_fn
+
+
+class TestGPUMultiGroupExcludesNonTouchingCallSite:
+    """mg_solo_host_var is referenced only by group 1 (test_mg_scheme_a's
+    timestep_init/timestep_final tables); group 2 gets its own, otherwise
+    empty, call site at timestep_final (test_mg_scheme_b_timestep_final,
+    mandatory args only -- mirrors kessler_timestep_final_physics_after_coupler
+    in the real crash, which takes only errflg/errmsg). Before this fix,
+    group 2's call still spuriously got group 1's exit-data for this var,
+    since the natural-ref loop matched by name against the whole shared
+    block rather than by actual attribution to the call being processed --
+    a second, premature exit-data (Derecho: cuMemcpyDtoHAsync
+    CUDA_ERROR_INVALID_VALUE, 2026-09-22)."""
+
+    def test_group_1_gets_its_own_exit_data(self, run_host_match, ccpp_context):
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        final_fn = fortran.split("subroutine ccpp_physics_timestep_final")[1]
+        final_fn = final_fn.split("end subroutine ccpp_physics_timestep_final")[0]
+        before_part = final_fn.split("physics_after_coupler")[0]
+        assert "exit data copyout(mg_solo_host_var" in before_part
+
+    def test_group_2_gets_no_spurious_exit_data(self, run_host_match, ccpp_context):
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        final_fn = fortran.split("subroutine ccpp_physics_timestep_final")[1]
+        final_fn = final_fn.split("end subroutine ccpp_physics_timestep_final")[0]
+        after_part = final_fn.split("physics_after_coupler")[1]
+        assert "mg_solo_host_var" not in after_part
+
+    def test_exactly_one_exit_data_in_whole_function(self, run_host_match, ccpp_context):
+        fortran = _mg_fortran_output(run_host_match, ccpp_context)
+        final_fn = fortran.split("subroutine ccpp_physics_timestep_final")[1]
+        final_fn = final_fn.split("end subroutine ccpp_physics_timestep_final")[0]
+        assert final_fn.count("exit data copyout(mg_solo_host_var") == 1
