@@ -593,29 +593,56 @@ class GPUCcppCapPass(ModulePass):
         f"{SUITE_FN_INFIX}_init_", f"{SUITE_FN_INFIX}_final_",
     )
 
-    def _find_inner_suite_part_if(self, true_block):
-        """Find the scf.IfOp in true_block whose true region contains a
-        per-group suite-cap func.CallOp (see _SUITE_CALLEE_MARKERS).
-        Returns (if_op, call_op) or (None, None).
+    def _find_suite_part_ifs(self, true_block):
+        """Yield (if_op, call_op) for every suite-part scf.IfOp in the
+        else-if chain built by run_dispatch.py's _build_run_dispatch_chain/
+        _build_one_suite_part_dispatch: the first-listed suite part (suite
+        XML order) is the outermost scf.IfOp in true_block, and each
+        subsequent suite part's own scf.IfOp is nested one level deeper in
+        the previous one's false_region (built "from inside out", so the
+        chain reads outer-to-inner in suite-XML/program order) -- confirmed
+        directly against _build_one_suite_part_dispatch's
+        `scf.IfOp(suite_part_eq.res, [], [...], part_inner_false)` and its
+        caller's reverse iteration.
+
+        A suite with only one part (the common case) yields exactly one
+        (if_op, call_op) here, identical to what the old
+        _find_inner_suite_part_if returned -- this generalizes it rather
+        than changing behavior for that case.
         """
-        for op in true_block.ops:
-            if not isa(op, scf.IfOp):
-                continue
-            if not op.true_region.blocks:
-                continue
-            for inner_op in op.true_region.blocks[0].ops:
-                if isa(inner_op, func.CallOp) and any(
-                    marker in inner_op.callee.root_reference.data
-                    for marker in self._SUITE_CALLEE_MARKERS
-                ):
-                    return op, inner_op
-        return None, None
+        block = true_block
+        while True:
+            found_if = next((op for op in block.ops if isa(op, scf.IfOp)), None)
+            if found_if is None:
+                return
+            call_op = None
+            if found_if.true_region.blocks:
+                call_op = next(
+                    (inner for inner in found_if.true_region.blocks[0].ops
+                     if isa(inner, func.CallOp) and any(
+                         marker in inner.callee.root_reference.data
+                         for marker in self._SUITE_CALLEE_MARKERS
+                     )),
+                    None,
+                )
+            if call_op is not None:
+                yield found_if, call_op
+            if not found_if.false_region.blocks:
+                return
+            block = found_if.false_region.blocks[0]
 
     def _collect_run_call_sites(self, fn_op, phase="run"):
         """Yield (suite_name, phase, true_block, suite_call) for every
-        per-suite branch of a two-level (suite_name -> suite_part/group)
+        suite-part call site of a two-level (suite_name -> suite_part/group)
         dispatcher -- ccpp_physics_run, or (task #28) ccpp_physics_timestep_init
-        now that it has the same per-group shape."""
+        now that it has the same per-group shape. A suite with more than one
+        group (e.g. kessler's physics_before_coupler/physics_after_coupler)
+        yields one tuple per group, in suite-XML/program order -- see
+        _find_suite_part_ifs. true_block is always the shared, suite-level
+        block (host var refs for every suite part are hoisted flat into it
+        by run_dispatch.py's _build_one_suite_part_dispatch), so only
+        suite_call varies across the tuples for one suite_name+phase.
+        """
         if not fn_op.body.blocks:
             return
         for op in fn_op.body.blocks[0].ops:
@@ -625,10 +652,8 @@ class GPUCcppCapPass(ModulePass):
             if suite_name is None:
                 continue
             true_block = op.true_region.blocks[0]
-            inner_if, suite_call = self._find_inner_suite_part_if(true_block)
-            if inner_if is None:
-                continue
-            yield suite_name, phase, true_block, suite_call
+            for _if_op, suite_call in self._find_suite_part_ifs(true_block):
+                yield suite_name, phase, true_block, suite_call
 
     def _collect_lifecycle_call_sites(self, fn_op, phase):
         """Yield (suite_name, phase, true_block, suite_call) for every
@@ -668,6 +693,102 @@ class GPUCcppCapPass(ModulePass):
         member = op.attributes.get("member_name")
         return f"{op.var_name.data}%{member.data}" if member is not None else op.var_name.data
 
+    def _ref_used_by_call(self, true_block, host_var, suite_call) -> bool:
+        """True iff some HostVarRefOp for host_var in true_block is actually
+        passed as an argument to suite_call (directly, or via its
+        ArraySectionOp).
+
+        When a suite has more than one suite-part call site (see
+        _find_suite_part_ifs), true_block is the shared, suite-level block
+        holding one HostVarRefOp instance per suite part -- name matching
+        alone (_ref_key) can't tell which specific call a given ref
+        instance belongs to, only whether the name appears *somewhere* in
+        the shared block. Checking actual SSA use against suite_call.arguments
+        is the precise way to attribute a ref to the call it was actually
+        built for by run_dispatch.py's per-suite-part _build_host_var_refs.
+        """
+        call_args = set(suite_call.arguments)
+        section_for_ref = {}
+        for op in true_block.ops:
+            if isa(op, ArraySectionOp):
+                section_for_ref[op.source] = op.res
+        for op in true_block.ops:
+            if not isa(op, HostVarRefOp) or self._ref_key(op) != host_var:
+                continue
+            if op.res in call_args or section_for_ref.get(op.res) in call_args:
+                return True
+        return False
+
+    def _resolve_phase_group_overrides(self, phase, group_calls, true_block, lifetimes):
+        """For one (suite_name, phase) group of call sites sharing a phase
+        name (group_calls, in suite-XML/program order), return
+        {(id(suite_call), host_var): "exclude"|"passthrough"} overriding
+        _role_at's phase-only role for every var whose attribution to a
+        specific call site in the group is ambiguous.
+
+        CCPP scheme metadata has no concept of suite-XML groups, only phase
+        suffixes (_run, _timestep_initial, ...) -- see split_scheme_table_name
+        -- so a var's entry_phase/exit_phase (or, for a non-hoisted var, its
+        single "legacy" phase) is a phase *name*, which multiple suite-part
+        call sites can share (e.g. kessler's physics_before_coupler and
+        physics_after_coupler both dispatch under phase "run"). Two distinct
+        problems follow from this, both confirmed against real generated
+        code, both fixed here:
+
+        1. true_block is the shared, suite-level block -- it holds one
+           HostVarRefOp per suite part (run_dispatch.py's
+           _build_host_var_refs is called once per suite part, all results
+           flattened into the same list -- see _collect_run_call_sites).
+           A var naturally used by only ONE call site in the group is still
+           *visible* to every other call site's natural-ref loop (it just
+           scans true_block.ops by name, not by attribution), so every
+           other call site would independently re-classify and re-insert a
+           directive for a var it never actually references -- confirmed on
+           Derecho: `kessler_timestep_final_physics_after_coupler(errflg,
+           errmsg)` (zero of cpairv/phys_state%T/zm/phis/dse as arguments)
+           got its own spurious `!$acc exit data copyout(cpairv,
+           phys_state%T, ...)` anyway, a second, premature exit-data for
+           vars it has no relationship to, immediately crashing
+           (cuMemcpyDtoHAsync CUDA_ERROR_INVALID_VALUE). Fixed by excluding
+           (not even a present()-check) every call site NOT among the ones
+           actually using the var, per _ref_used_by_call -- for every var,
+           hoisted or not (a "legacy"/non-hoisted var used by only one
+           suite part in the group has the exact same shared-block leak).
+        2. A HOISTED var naturally used by MORE than one call site in the
+           group still needs only its true first (entry) / true last (exit)
+           touching call to actually get "enter"/"exit" -- every other
+           touching call falls back to "passthrough" (a present()-check is
+           still safe and appropriate there, same semantic as this pass's
+           existing "phase strictly between entry and exit" passthrough --
+           the var IS guaranteed already resident, just not established or
+           torn down at this particular call).
+
+        Returns {} whenever the group has at most one call site (the
+        overwhelming common case) -- a guaranteed no-op, so every existing
+        single-call-site-per-phase suite is completely unaffected.
+        """
+        overrides = {}
+        if len(group_calls) <= 1:
+            return overrides
+        for host_var, lt in lifetimes.items():
+            touching_ids = {
+                id(sc) for sc in group_calls
+                if self._ref_used_by_call(true_block, host_var, sc)
+            }
+            for sc in group_calls:
+                if id(sc) not in touching_ids:
+                    overrides[(id(sc), host_var)] = "exclude"
+            if not lt.hoisted or len(touching_ids) <= 1:
+                continue
+            touching = [sc for sc in group_calls if id(sc) in touching_ids]
+            if phase == lt.entry_phase:
+                for sc in touching[1:]:
+                    overrides[(id(sc), host_var)] = "passthrough"
+            if phase == lt.exit_phase:
+                for sc in touching[:-1]:
+                    overrides[(id(sc), host_var)] = "passthrough"
+        return overrides
+
     def _resolve_array_refs(self, true_block, var_names, use_sections=True):
         """For each variable name in var_names, return the best SSA value to
         use in a data/update directive -- preferring the ArraySectionOp result
@@ -701,13 +822,21 @@ class GPUCcppCapPass(ModulePass):
                 if isa(op, ArraySectionOp):
                     section_for_ref[op.source] = op.res
 
-        # For each variable, find its HostVarRefOp and resolve to the best SSA value
+        # For each variable, find its HostVarRefOp and resolve to the best SSA value.
+        # A host var can have more than one HostVarRefOp in true_block (e.g. a
+        # scheme argument bound to the same host var at two dummy-arg
+        # positions) -- only the first is kept, so a directive clause never
+        # lists the same variable twice (a duplicate copyout(x, x) causes a
+        # runtime cuMemcpyDtoHAsync failure, not just redundant movement).
         refs = []
+        seen_names = set()
         for op in true_block.ops:
             if not isa(op, HostVarRefOp):
                 continue
-            if self._ref_key(op) not in var_names:
+            key = self._ref_key(op)
+            if key not in var_names or key in seen_names:
                 continue
+            seen_names.add(key)
             # use_sections=True: prefer array section (efficiency for copyin/copyout/update)
             # use_sections=False: use bare ref (correct semantics for present/hoisted)
             best = section_for_ref.get(op.res, op.res)
@@ -771,7 +900,10 @@ class GPUCcppCapPass(ModulePass):
         """
         return directive_op(self.directive, acc_cls, acc_kwargs, omp_cls, omp_kwargs)
 
-    def _wrap_scheme_call(self, true_block, suite_call, lifetimes, phase, donor_refs):
+    def _wrap_scheme_call(
+        self, true_block, suite_call, lifetimes, phase, donor_refs,
+        role_overrides=None, is_first_call_in_phase_group=True,
+    ):
         """Classify every host var referenced in true_block (plus any
         hoisted var whose forced entry/exit anchor is this phase but has no
         natural reference here) by role, and insert the resulting
@@ -791,7 +923,19 @@ class GPUCcppCapPass(ModulePass):
         device are unstructured (no scoping requirement relative to the
         structured data region or to each other -- they touch disjoint
         variables, since a variable's kind is mutually exclusive).
+
+        role_overrides ({(id(suite_call), host_var): "passthrough"}, from
+        _resolve_phase_group_overrides) takes precedence over _role_at's
+        phase-only role whenever this suite_call is one of more than one
+        call site sharing `phase` within this suite -- see that method's
+        docstring. Empty/None for every single-call-site-per-phase suite
+        (the common case), which is a complete no-op here.
+
+        is_first_call_in_phase_group gates the forced-anchor loop below: it
+        must fire only once per (suite, phase) group, not once per call
+        site now that a phase can have more than one -- see apply().
         """
+        role_overrides = role_overrides or {}
         legacy_present, legacy_copyin, legacy_copy, legacy_copyout = [], [], [], []
         update_vars = []
         enter_copyin, enter_create = [], []
@@ -808,7 +952,16 @@ class GPUCcppCapPass(ModulePass):
             if lt is None:
                 continue
             seen_here.add(var_name)
-            role = self._role_at(lt, phase)
+            role = role_overrides.get((id(suite_call), var_name)) or self._role_at(lt, phase)
+            if role == "exclude":
+                # This call site doesn't naturally reference var_name at all
+                # (see _resolve_phase_group_overrides) -- its visibility
+                # here is an artifact of a *different* suite part's own
+                # HostVarRefOp sharing this suite-level block. seen_here is
+                # still marked above so the forced-anchor loop below (which
+                # only fires for genuinely absent vars) doesn't try to
+                # synthesize a second, redundant reference for it.
+                continue
             if role in ("legacy", "unused"):
                 # "unused" is a hoisted variable's independent finalize
                 # touch falling outside its per-timestep entry/exit range
@@ -846,22 +999,29 @@ class GPUCcppCapPass(ModulePass):
             # _role_at's docstring for when it arises (a per-timestep-hoisted
             # variable's independent finalize touch).
 
-        # Forced anchors with no natural HostVarRefOp at this phase.
-        for var_name, lt in lifetimes.items():
-            if not lt.hoisted or var_name in seen_here:
-                continue
-            if phase == lt.entry_phase:
-                if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
-                    if lt.kind == "update":
-                        update_enter_vars.append(var_name)
-                    else:
-                        (enter_copyin if lt.kind in ("copyin", "copy") else enter_create).append(var_name)
-            elif phase == lt.exit_phase:
-                if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
-                    if lt.kind == "update":
-                        update_exit_vars.append(var_name)
-                    else:
-                        (exit_copyout if lt.kind in ("copyout", "copy") else exit_delete).append(var_name)
+        # Forced anchors with no natural HostVarRefOp at this phase. Gated to
+        # the phase group's first call site only: with more than one call
+        # site sharing `phase` (see apply()), a var relying purely on
+        # synthesis (no natural reference anywhere in the group) must still
+        # get exactly one enter/exit pair for the group, not one per call
+        # site -- any single, stable site works since there's no natural
+        # occurrence to prefer, so "first in program order" is used.
+        if is_first_call_in_phase_group:
+            for var_name, lt in lifetimes.items():
+                if not lt.hoisted or var_name in seen_here:
+                    continue
+                if phase == lt.entry_phase:
+                    if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
+                        if lt.kind == "update":
+                            update_enter_vars.append(var_name)
+                        else:
+                            (enter_copyin if lt.kind in ("copyin", "copy") else enter_create).append(var_name)
+                elif phase == lt.exit_phase:
+                    if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
+                        if lt.kind == "update":
+                            update_exit_vars.append(var_name)
+                        else:
+                            (exit_copyout if lt.kind in ("copyout", "copy") else exit_delete).append(var_name)
 
         # Data region directives go inside the inner scf.IfOp's true
         # region, immediately around the suite physics call.  This way the
@@ -991,7 +1151,10 @@ class GPUCcppCapPass(ModulePass):
                 InsertPoint.after(suite_call),
             )
 
-    def _wrap_residency_directives(self, true_block, suite_call, residency_lifetimes, phase, donor_refs):
+    def _wrap_residency_directives(
+        self, true_block, suite_call, residency_lifetimes, phase, donor_refs,
+        role_overrides=None, is_first_call_in_phase_group=True,
+    ):
         """Establish/tear down device residency for HostMatched vars that
         need it (see _analyze_one_suite_residency), independently of and in
         addition to whatever _wrap_scheme_call already did for the same call
@@ -1001,6 +1164,16 @@ class GPUCcppCapPass(ModulePass):
         present()/update assertion getting two adjacent directives at one
         call site instead of one merged one -- a real but minor verbosity/
         redundancy tradeoff, not a correctness one.
+
+        role_overrides/is_first_call_in_phase_group: same meaning and same
+        source (_resolve_phase_group_overrides, computed once per (suite,
+        phase) group in apply()) as _wrap_scheme_call's own parameters of
+        the same name -- see that method's docstring. This is exactly the
+        mechanism that fixes the real crash this pair of parameters was
+        added for: a suite-XML group boundary (e.g. kessler's
+        physics_before_coupler/physics_after_coupler) that CCPP scheme
+        metadata can't see, since both groups dispatch under the same bare
+        phase name ("run").
 
         Only ever produces data-movement directives (copy/copyin/copyout; never
         create/delete/present/update) -- residency establishment doesn't have a
@@ -1027,6 +1200,7 @@ class GPUCcppCapPass(ModulePass):
         if not residency_lifetimes:
             return
 
+        role_overrides = role_overrides or {}
         enter_vars, exit_vars, legacy_vars = [], [], []
 
         seen_here = set()
@@ -1038,7 +1212,13 @@ class GPUCcppCapPass(ModulePass):
             if lt is None:
                 continue
             seen_here.add(var_name)
-            role = self._role_at(lt, phase)
+            role = role_overrides.get((id(suite_call), var_name)) or self._role_at(lt, phase)
+            if role == "exclude":
+                # See _wrap_scheme_call's identical branch: this call site
+                # doesn't naturally reference var_name at all -- its
+                # visibility here is an artifact of a different suite
+                # part's own HostVarRefOp sharing this block.
+                continue
             if role in ("legacy", "unused"):
                 legacy_vars.append(var_name)
             elif role == "enter":
@@ -1047,15 +1227,18 @@ class GPUCcppCapPass(ModulePass):
                 exit_vars.append(var_name)
             # "passthrough": nothing to do.
 
-        for var_name, lt in residency_lifetimes.items():
-            if not lt.hoisted or var_name in seen_here:
-                continue
-            if phase == lt.entry_phase:
-                if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
-                    enter_vars.append(var_name)
-            elif phase == lt.exit_phase:
-                if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
-                    exit_vars.append(var_name)
+        # See _wrap_scheme_call's identical gate for why this only fires at
+        # the phase group's first call site.
+        if is_first_call_in_phase_group:
+            for var_name, lt in residency_lifetimes.items():
+                if not lt.hoisted or var_name in seen_here:
+                    continue
+                if phase == lt.entry_phase:
+                    if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
+                        enter_vars.append(var_name)
+                elif phase == lt.exit_phase:
+                    if self._synthesize_ref(true_block, var_name, donor_refs) is not None:
+                        exit_vars.append(var_name)
 
         if legacy_vars:
             legacy_refs = self._resolve_array_refs(true_block, set(legacy_vars), use_sections=True)
@@ -1126,6 +1309,39 @@ class GPUCcppCapPass(ModulePass):
                     if phase is not None:
                         call_sites.extend(self._collect_lifecycle_call_sites(child, phase))
 
+        # Group call sites by (suite_name, phase): a suite with more than
+        # one suite-XML group (e.g. kessler's physics_before_coupler/
+        # physics_after_coupler) now yields more than one call site per
+        # phase here (see _collect_run_call_sites/_find_suite_part_ifs).
+        # CCPP scheme metadata has no concept of these groups -- a hoisted
+        # var's entry_phase/exit_phase is a bare phase name shared by every
+        # call site in the group -- so each group needs its own role
+        # overrides (computed once, from both lifetime sources merged: the
+        # two dicts never collide since both are keyed by
+        # (id(suite_call), host_var) and mean the same thing) disambiguating
+        # which specific call site is the true entry/exit anchor, plus a
+        # marker for which call site is first (for forced-anchor synthesis,
+        # which must fire once per group, not once per call site).
+        phase_groups: dict = {}
+        for suite_name, phase, true_block, suite_call in call_sites:
+            phase_groups.setdefault((suite_name, phase), []).append((true_block, suite_call))
+
+        role_overrides: dict = {}
+        first_call_in_group: set = set()
+        for (suite_name, phase), sites in phase_groups.items():
+            first_call_in_group.add(id(sites[0][1]))
+            group_true_block = sites[0][0]
+            group_calls = [sc for _tb, sc in sites]
+            for lifetimes_by_suite in (suite_lifetimes, suite_residency_lifetimes):
+                lifetimes = lifetimes_by_suite.get(suite_name)
+                if not lifetimes:
+                    continue
+                role_overrides.update(
+                    self._resolve_phase_group_overrides(
+                        phase, group_calls, group_true_block, lifetimes
+                    )
+                )
+
         for suite_name, phase, true_block, suite_call in call_sites:
             # Residency must be wrapped *before* _wrap_scheme_call: both
             # anchor new ops via InsertPoint.before/after(suite_call), and
@@ -1140,11 +1356,16 @@ class GPUCcppCapPass(ModulePass):
             # "data in PRESENT clause was not found on device" bug, caught
             # by Copilot review on PR #37 and confirmed by inspecting the
             # actual generated order for exactly this case.
+            is_first = id(suite_call) in first_call_in_group
             residency_lifetimes = suite_residency_lifetimes.get(suite_name)
             if residency_lifetimes:
                 self._wrap_residency_directives(
-                    true_block, suite_call, residency_lifetimes, phase, donor_refs
+                    true_block, suite_call, residency_lifetimes, phase, donor_refs,
+                    role_overrides=role_overrides, is_first_call_in_phase_group=is_first,
                 )
             lifetimes = suite_lifetimes.get(suite_name)
             if lifetimes:
-                self._wrap_scheme_call(true_block, suite_call, lifetimes, phase, donor_refs)
+                self._wrap_scheme_call(
+                    true_block, suite_call, lifetimes, phase, donor_refs,
+                    role_overrides=role_overrides, is_first_call_in_phase_group=is_first,
+                )
