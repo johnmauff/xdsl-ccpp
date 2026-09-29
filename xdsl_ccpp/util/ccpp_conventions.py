@@ -165,8 +165,8 @@ CCPP_LOOP_END_STD_NAME    = "horizontal_loop_end"      # last column index
 CCPP_HORIZ_DIM_STD_NAME   = "horizontal_dimension"     # size of horizontal dimension
 CCPP_VERT_DIM_STD_NAME    = "vertical_layer_dimension" # number of vertical layers
 
-# Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
-# instances/instances_advection entry): a scalar with this standard name,
+# Real capgen-v1's multi-instance model ("instances/instances_advection"
+# entry): a scalar with this standard name,
 # threaded as an ordinary caller-supplied dummy argument, selects which
 # entry of a HOST-owned array-of-DDT (dimensioned by number_of_instances,
 # see cap_shared.py's _build_ddt_resolution_maps) the current call operates
@@ -201,7 +201,7 @@ CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 # conflates this set with genuine host state (data.meta's std_arg,
 # test_host_mod.meta's phys_state/has_graupel, ...), which is what forces
 # every HOST-type reference to be threaded as a block argument today --
-# see ccpp_cap_refactor_plan.md's vocabulary-resolution redesign, Stage 1.
+# part of the vocabulary-resolution redesign, Stage 1.
 # This is the classifier later stages use to tell the two apart; nothing
 # reads it yet (Stage 1 is classification only, no behavior change).
 DISPATCH_SCALAR_STD_NAMES: frozenset = frozenset(

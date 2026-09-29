@@ -8,8 +8,8 @@ temp_adjust.meta exercises exactly this cross-phase (produced in one scheme's
 _run, consumed by a different scheme's _finalize -- separate generated Fortran
 subroutines, called independently by the host) via its interstitial_var arg.
 
-Scoped 2026-08-17 (ccpp_cap_refactor_plan.md's "Interstitial-variable
-register-phase mechanism" entry): detection (is_interstitial), ownership
+Scoped 2026-08-17 ("Interstitial-variable register-phase mechanism"
+entry): detection (is_interstitial), ownership
 classification (SuiteOwned), module-level storage declaration, and guarded
 lazy allocation were all found already implemented -- this test locks in the
 one case actually verified end-to-end (isolated from examples/capgen's own

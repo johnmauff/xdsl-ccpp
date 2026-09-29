@@ -125,12 +125,12 @@ Optional:
                         Requires --host-files.
 ```
 
-Multi-instance `ccpp_t` support (per-instance `ccpp_suite_state`, default cap of
-200 simultaneous instances) is implemented, but `--num-instances` is currently
-only exposed on the lower-level `xdsl_ccpp.frontend.ccpp_xml` frontend module,
-not on this `ccpp_xdsl` driver — see
-[`multi_instance_plan.md`](multi_instance_plan.md) for how to set it via manual
-pipeline composition.
+Multi-instance support is implemented and purely host-metadata-driven, no CLI
+flag needed: a host that declares both `instance_number` and
+`number_of_instances` in its control table (a single paired contract — see
+`suite_cap.py`'s `_is_multi_instance_host`) automatically gets a per-instance
+`ccpp_suite_state` array and constituent-API `lc_instances(:)` bundle instead
+of the ordinary single-instance shape.
 
 ---
 
@@ -318,11 +318,12 @@ Options:
   -v, --verbose      Print the output path for each generated file
 ```
 
-> **Future direction:** [`duplication_analysis_summary.md`](duplication_analysis_summary.md)
-> analyzes how much of a real host model's `.meta` (NCAR/atmospheric_physics) is a
-> hand-maintained mirror of its own Fortran source, and sketches a design for closing the
-> "fills in stubs" gap above entirely — tagging `standard_name`/`units` directly in Fortran
-> comments and generating `.meta` mechanically from them, extending this same tool.
+> **Future direction:** BACKLOG.md's "Someday-maybe: `NCAR/atmospheric_physics`
+> duplication reduction" entry analyzes how much of a real host model's `.meta`
+> (NCAR/atmospheric_physics) is a hand-maintained mirror of its own Fortran
+> source, and sketches a design for closing the "fills in stubs" gap above
+> entirely — tagging `standard_name`/`units` directly in Fortran comments and
+> generating `.meta` mechanically from them, extending this same tool.
 
 Requires fparser: `pip install fparser` (or `pip install -e ".[validate]"`).
 
@@ -892,10 +893,10 @@ explanation).
 | Metadata from Fortran source | ❌ | ❌ | ✅ | ✅ |
 | **Testing** | | | | |
 | Compiled Fortran execution tests | ✅ | ✅ | ✅ | ✅§ |
-| Unit test depth | Moderate | Moderate | 1300+ tests | 544 pytest (542 passing) + CMake/ctest suite (13 examples) |
+| Unit test depth | Moderate | Moderate | 1300+ tests | 710 pytest (709 passing, 1 xfailed) + CMake/ctest suite (13 examples) |
 | **Host model integration** | | | | |
 | CCPP-SCM | ✅ | ✅ | ✅ | ❌ |
-| CAM-SIMA / UFS | ✅ | ✅ | In progress | ❌ |
+| CAM-SIMA / UFS | ✅ | ✅ | In progress | ✅ |
 | **GPU support** | | | | |
 | OpenACC data directives | ❌ | ❌ | ❌ | ✅ |
 | OpenMP target offload | ❌ | ❌ | ❌ | ✅ |

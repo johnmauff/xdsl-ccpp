@@ -69,8 +69,8 @@ class TestBuildNoSuiteMatchedFalseOps:
     """_build_no_suite_matched_false_ops: the shared "no suite matched"
     fallback error sequence -- previously duplicated three ways
     (run_dispatch.py x2, lifecycle_cap.py x1), which is exactly the failure
-    shape that let a Phase 3a review fix land on two copies and miss the
-    third. Now a single implementation, directly testable."""
+    shape that let an earlier fix land on two copies and miss the third.
+    Now a single implementation, directly testable."""
 
     def _fixture_operands(self):
         errmsg_dest = memref.AllocaOp.get(

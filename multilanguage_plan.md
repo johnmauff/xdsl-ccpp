@@ -1,5 +1,15 @@
 # Multi-Language Support Plan: C++/Kokkos Host + Fortran Schemes
 
+**Status (2026-09-29): Phases 1-7 below are all implemented** (verified
+directly against current source, not just the Phase 7 table's own
+self-reported status) — kept as design-background reference (type
+mappings, generated-code examples, design rationale), cited by
+`multilanguage_limitations.md` and the `EAMxx/` docs, not as an active
+plan. One genuine gap remains, tracked in `BACKLOG.md`: the "Fortran
+host → C++ scheme" direction (bottom of this doc) has no compiled
+end-to-end test yet. See the note in Phase 3 below for one place where
+the actual implementation deviated from what's written here.
+
 ## Goal
 
 Enable a C++/Kokkos host model to drive CCPP Fortran physics schemes through
@@ -100,6 +110,13 @@ Add `array_layout` as an optional property on host table-properties blocks in
 ## Phase 3 — BIND(C) Cap Generation (2–3 weeks)
 
 ### New CLI flag
+
+**Superseded, 2026-09-29: this `--interface bindC` flag was never
+actually built.** The capability shipped instead via the cleaner
+metadata-auto-detection mechanism described in "Open Design Questions"
+below (`language = c++` in the host `.meta` file) — no CLI flag needed
+at all. Kept below for the type-mapping table and generated-code
+examples, which are still accurate.
 
 ```
 ccpp_xdsl --interface bindC ...

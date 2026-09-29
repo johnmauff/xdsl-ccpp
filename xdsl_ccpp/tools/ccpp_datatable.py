@@ -40,7 +40,7 @@ from xdsl_ccpp.dialects.ccpp import (
 from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 
 
-# ── Framework-shipped Fortran support files (task #75) ─────────────────────────
+# ── Framework-shipped Fortran support files ─────────────────────────────────
 #
 # Modeled directly on real capgen-v1's own
 # ccpp_capgen.py:_FRAMEWORK_SRC_DIR/_FRAMEWORK_F90_FILES/
@@ -115,9 +115,9 @@ def _iter_schemes_in_group(group_op):
     A single level of SubcycleOp descent isn't enough -- real suites nest
     subcycles several levels deep (e.g.
     examples/var_compat/var_compatibility_suite.xml:5-11 nests three
-    levels in one branch), and this function backs `_used_scheme_names()`
-    (capgen_v1_parity_backlog.md Stage 8b's dependency-reference filter),
-    where under-counting used schemes means silently dropping a real
+    levels in one branch), and this function backs `_used_scheme_names()`'s
+    dependency-reference filter, where under-counting used schemes means
+    silently dropping a real
     dependency a host build needs to compile against, not just an
     incomplete `<api>` section entry (flagged by Copilot review, PR #94).
     GroupOp and SubcycleOp share the same `body = region_def("single_block")`
@@ -151,7 +151,7 @@ def _used_scheme_names(ccpp_mod) -> set[str]:
     a scheme table's own dependencies only contribute if the scheme is
     actually referenced by a resolved suite, since an unreferenced scheme
     passed on the CLI for build-system convenience shouldn't leak its
-    dependencies (capgen_v1_parity_backlog.md Stage 8b).
+    dependencies.
 
     Originally missed both the arbitrary-nesting case and this
     init_scheme/final_scheme case (Copilot review, PR #94, confirmed
@@ -173,11 +173,10 @@ def _used_scheme_names(ccpp_mod) -> set[str]:
 
 
 def _collect_dependencies(ccpp_mod, table_props) -> list[str]:
-    """Return the deduped, sorted list of dependency file paths
-    (capgen_v1_parity_backlog.md Stage 8b) -- real capgen-v1's own
-    `<dependencies>` section, sourced from each table's own
-    `dependencies`/`dependencies_path` metadata (task #6 Tier 1's already-
-    IR-forwarded attributes).
+    """Return the deduped, sorted list of dependency file paths -- real
+    capgen-v1's own `<dependencies>` section, sourced from each table's
+    own `dependencies`/`dependencies_path` metadata (already present on
+    the IR, not computed here).
 
     Filtering mirrors real capgen-v1's own `ccpp_capgen.py` gate: HOST-,
     MODULE-, and DDT-type tables always contribute (approximating real
@@ -418,7 +417,7 @@ def build_datatable(
                 for key, val in info.items():
                     var_el.set(key, val)
 
-    # ── dependencies (capgen_v1_parity_backlog.md Stage 8b) ───────────────────
+    # ── dependencies ───────────────────────────────────────────────────────
     # A top-level sibling of ccpp_files/schemes/api/var_dictionaries above,
     # not nested inside any of them -- matches real capgen-v1's own
     # <ccpp_datatable><dependencies><dependency>path</dependency>...</

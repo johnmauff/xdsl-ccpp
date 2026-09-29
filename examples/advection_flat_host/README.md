@@ -2,7 +2,7 @@
 
 A deliberately minimal companion to `examples/advection`, built specifically to test
 xdsl-ccpp's OpenACC data-movement generation without the DDT-member reference-resolution
-gap that `advection` hits (see `ccpp_cap_refactor_plan.md`'s GPU/OpenACC backlog).
+gap that `advection` hits (see `CHANGELOG.md`'s GPU/OpenACC backlog).
 
 ## Why this exists, and how it differs from `advection`
 
@@ -41,7 +41,7 @@ A plain-CPU generate/build/test (no `--directive`) is unaffected either way, sin
 This was the real, reproducible target for Phase 7's GPU/OpenACC (b)/(c) work — both are now
 done: (c) (turning a silent conflict into a hard error) and (b) (true per-scheme-call clause
 routing, so `qv` actually compiles correctly instead of raising) — see
-`ccpp_cap_refactor_plan.md`'s GPU/OpenACC backlog for the full design history. The multi-group
+`CHANGELOG.md`'s GPU/OpenACC backlog for the full design history. The multi-group
 `ccpp_physics_run` discovery gap (a separate, orthogonal bug affecting every var kind
 `GPUCcppCapPass` still handles) remains deferred, unexercised by this single-group example.
 

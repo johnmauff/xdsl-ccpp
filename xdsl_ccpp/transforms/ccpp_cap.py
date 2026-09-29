@@ -122,8 +122,8 @@ class _CVArgInfo:
 
     Consolidates 5 previously-separate parallel dicts (all keyed by the
     same bare arg name, all populated in the same scan loop, always read
-    back together at the same call sites below) into one dict of these
-    (complexity-audit Tier 2 finding, task #55). std_name/dim_names/
+    back together at the same call sites below) into one dict of these.
+    std_name/dim_names/
     ownership_kind keep "first occurrence wins" semantics (None means "not
     yet seen"); is_constituent/needs_gpu are True once any occurrence sets
     them (never reset).
@@ -148,9 +148,8 @@ def _build_cap_var_map(
     are allocated at cap module scope so they never appear as physics_run
     block arguments.
 
-    instance_local_name -- real capgen-v1's multi-instance model
-    (ccpp_cap_refactor_plan.md's "instances/instances_advection" entry,
-    task #35): when set, every cap var name this function resolves for a
+    instance_local_name -- real capgen-v1's multi-instance model:
+    when set, every cap var name this function resolves for a
     framework-mapped or scratch constituent array (lc_all_constituents,
     lc_constituent_array, lc_const_tend, or a scheme's own
     tendency_of_-scratch var) is wrapped as
@@ -159,15 +158,14 @@ def _build_cap_var_map(
     bare module-var name. Both must agree on the exact same reference text,
     since run_dispatch.py prints whatever cap_var_map hands it verbatim.
 
-    Phase 7, Stage 3: the HostMatched/CapScratch/Block membership decision
-    below now reads the durable ownership classification
-    (generate-arg-ownership, Stage 2) instead of re-deriving it by re-scanning
-    the suite's already-built public signature (public_fns) against
-    host/framework/error standard-name exclusion sets. public_fns is still
-    used to know *which* args are actually on the group's dummy signature at
-    all (that population itself is suite_cap.py's own job, already migrated
-    in this same stage) and to build the scratch-var's concrete allocation
-    shape (rank, dims) -- the one wrinkle this stage's plan flagged: that
+    The HostMatched/CapScratch/Block membership decision below now reads
+    the durable ownership classification (from generate-arg-ownership)
+    instead of re-deriving it by re-scanning the suite's already-built
+    public signature (public_fns) against host/framework/error
+    standard-name exclusion sets. public_fns is still used to know
+    *which* args are actually on the group's dummy signature at all
+    (that population itself is suite_cap.py's own job) and to build the
+    scratch-var's concrete allocation shape (rank, dims): that
     type-dependent construction stays here, downstream of both the
     classification and suite_cap.py's own concrete xDSL types.
 
@@ -361,8 +359,8 @@ def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var
         break
 
 
-# Task #58: _build_suite_variables_fn decomposition. Standard names truly
-# internal to the framework for this function's own variable-list purposes
+# Standard names truly internal to the framework for
+# _build_suite_variables_fn's own variable-list purposes
 # (horizontal_loop_extent only) -- the constituent array names are real
 # physics arrays and must still appear in the list.
 _SUITE_VARS_INTERNAL_STD_NAMES = frozenset({CCPP_LOOP_EXTENT_STD_NAME})
@@ -641,8 +639,8 @@ def _add_active_expr_referenced_names(ccpp_mod, suite_descriptions, input_vars) 
     E.g. var_compat's test_host_data.meta declaring ``active = (flag_
     indicating_cloud_microphysics_has_ice)`` on the ``effri``/``nci`` DDT
     members. ``active`` is a real ArgumentOp property (ccpp.py) but no pass
-    currently evaluates it as a conditional (see ccpp_cap_refactor_plan.md's
-    "opt_arg's dead active property" backlog item) -- the flag it names is
+    currently evaluates it as a conditional ("opt_arg's dead active
+    property" backlog item) -- the flag it names is
     still a genuine value the host must supply, though, so it must appear in
     the suite's variable list even though it's never itself a scheme
     argument anywhere.
@@ -1242,8 +1240,8 @@ class CCPPCAP(ModulePass):
             public_fns=public_fns,
         )
 
-        # Stage 5 of the vocabulary-resolution redesign (ccpp_cap_refactor_plan.md):
-        # bare, capgen-v1-style generic subroutine names (fn_name below is used
+        # Stage 5 of the vocabulary-resolution redesign: bare,
+        # capgen-v1-style generic subroutine names (fn_name below is used
         # as-is, not appended to camel_name/host_name) -- the module itself
         # (mod_name above) is still host-prefixed, exactly matching real
         # capgen-v1's own convention (module <host>_ccpp_cap disambiguates
@@ -1256,8 +1254,8 @@ class CCPPCAP(ModulePass):
         # itself.
         lifecycle_specs = [
             ("ccpp_register", "_register", f"{SUITE_FN_INFIX}_register", None),
-            # ccpp_init/ccpp_final: table_postfix=None (task #28 Stage 3),
-            # not "_init"/"_finalize" -- those postfixes would make the
+            # ccpp_init/ccpp_final: table_postfix=None, not
+            # "_init"/"_finalize" -- those postfixes would make the
             # branch below scan every scheme's own _init/_finalize arg
             # table via _get_suite_lifecycle_ret_info, which still finds
             # real entries (schemes still declare those tables; they just
@@ -1276,19 +1274,19 @@ class CCPPCAP(ModulePass):
             # Per-group dispatch — each group calls its own suite cap function.
             # ccpp_physics_run: the original, unchanged entry (table_postfix
             # None here means "_run" via _generate_run_fn's own default).
-            # ccpp_physics_timestep_init (task #28 Stage 1) and
-            # ccpp_physics_timestep_final (Stage 2) moved from the
-            # flat/minimal-signature form to match real capgen-v1's own
+            # ccpp_physics_timestep_init and ccpp_physics_timestep_final
+            # moved from the flat/minimal-signature form to match real capgen-v1's own
             # group-scoped entry points (a breaking signature change: both
             # now take the full physics signature, not just
             # suite_name/errmsg/errflg).
             ("ccpp_physics_run", None, f"{SUITE_FN_INFIX}_", "__per_group__"),
             ("ccpp_physics_timestep_init", "_timestep_initialize", f"{SUITE_FN_INFIX}_timestep_init_", "__per_group__"),
             ("ccpp_physics_timestep_final", "_timestep_finalize", f"{SUITE_FN_INFIX}_timestep_final_", "__per_group__"),
-            # ccpp_physics_init/ccpp_physics_final (task #28 Stage 3): net
-            # new entry points, not a moved/renamed existing one -- unlike
-            # Stage 1/2, ccpp_init/ccpp_final above are UNCHANGED rows,
-            # still flat and still present (real capgen-v1's own suite-level
+            # ccpp_physics_init/ccpp_physics_final: net new entry points, not
+            # moved/renamed from an existing one the way
+            # ccpp_physics_timestep_init/ccpp_physics_timestep_final were
+            # above -- ccpp_init/ccpp_final above are a separate, UNCHANGED
+            # pair, still flat and still present (real capgen-v1's own suite-level
             # <suite>_init/<suite>_final are framework-setup-only). These
             # own the scheme-level _init/_finalize calls instead (matching
             # real capgen-v1's own group-scoped ccpp_physics_init/
@@ -1312,8 +1310,7 @@ class CCPPCAP(ModulePass):
         # a DDT instance used in the run function may also appear in lifecycle functions).
         shared_seen_host_globals: set = set()
 
-        # Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
-        # "instances/instances_advection" entry, task #35): resolved once
+        # Real capgen-v1's multi-instance model: resolved once
         # for the whole host (instance_number/number_of_instances are
         # HOST-declared scalars, not suite-scoped), same lookup shape as
         # suite_cap.py's own _resolve_host_only_std_name -- scans every
@@ -1565,7 +1562,7 @@ class CCPPCAP(ModulePass):
         # (FRAMEWORK_STD_NAME_TO_CAP_VAR, cap_shared.py), so lc_all_constituents
         # must exist whenever it could be referenced, even for a suite with no
         # dynamic registration or fixed-advected constituent of its own.
-        # SHORT-TERM HACK (TDB-001, technical_debt.md): cam_host builds always
+        # SHORT-TERM HACK (TDB-001, BACKLOG.md): cam_host builds always
         # generate the constituent API so write_init_files.py can unconditionally
         # import cam_constituents_array / cam_model_const_properties from cam_ccpp_cap.
         # The right fix is to make write_init_files.py constituent-aware instead.

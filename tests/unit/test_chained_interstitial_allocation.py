@@ -1,4 +1,4 @@
-"""Unit tests for task #30's chained-interstitial allocation-ordering fix.
+"""Unit tests for the chained-interstitial allocation-ordering fix.
 
 Two independent, complementary mechanisms in suite_cap.py's
 _build_framework_refs/_build_call_ops:

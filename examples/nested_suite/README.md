@@ -60,7 +60,7 @@ given reference happens to live in). Because expansion happens before any
 object exists, nothing downstream (the IR, `suite_cap.py`, `cap_shared.py`,
 `suite_variable_model.py`) needed to change at all. See
 `tests/unit/test_nested_suite_expansion.py` for direct regression coverage
-(sabotage-verified) and `ccpp_cap_refactor_plan.md`'s backlog for the full
+(sabotage-verified) and `CHANGELOG.md`'s backlog for the full
 history.
 
 ### Suite-level `<init>`/`<final>` scheme hooks
@@ -89,7 +89,7 @@ mirroring capgen-v1's own placement. A suite declaring neither hook is
 completely unaffected (confirmed: every existing example's generated output
 is byte-identical). See `tests/unit/test_suite_lifecycle_hooks.py` for
 direct regression coverage (sabotage-verified) and
-`ccpp_cap_refactor_plan.md`'s backlog for the full history.
+`CHANGELOG.md`'s backlog for the full history.
 
 ## Adaptations made during porting (not present in the upstream capgen-v1 files)
 

@@ -1,10 +1,11 @@
 """Regression tests for recognizing top_at_one as a real metadata attribute.
 
-Stage 1 of the vertical-flip work (examples/var_compat's effr_calc/effr_diag
+Metadata recognition for top_at_one (examples/var_compat's effr_calc/effr_diag
 declare top_at_one = True on some arguments). Before this, top_at_one was
 silently dropped with an "unrecognised keys" warning (ArgumentOp.KNOWN_PROPS
-in xdsl_ccpp/dialects/ccpp.py, checked in ccpp_xml.py). This stage only adds
-recognition -- nothing acts on the attribute yet; that's a later stage.
+in xdsl_ccpp/dialects/ccpp.py, checked in ccpp_xml.py). This only adds
+recognition -- nothing acts on the attribute yet; that's handled separately
+by the vertical-flip printer/marshaling code.
 """
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp

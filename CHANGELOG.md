@@ -1,4 +1,10 @@
-# Refactor Plan: Decomposing `ccpp_cap.py` in xdsl-ccpp
+# Refactor Archive: Decomposing `ccpp_cap.py` in xdsl-ccpp
+
+**Historical record.** For the current, open backlog items only, see
+`BACKLOG.md`. Everything below (including the Index) reflects the full
+narrative and is kept for reference; items marked ✅/🔄 here may since have
+moved -- `BACKLOG.md` is the up-to-date source for open items, this file
+is not.
 
 **Target (as of the plan's start, 2026-07-17):** `xdsl_ccpp/transforms/ccpp_cap.py`
 (4,749 lines), the `CCPPCAP` pass (`generate-ccpp-cap`) in
@@ -6767,3 +6773,2065 @@ Findings triaged into four tiers, each now a tracked task:
   no behavior change for any variable whose dimension is already resolvable by the existing
   paths. Full suite 644 passed/1 xfailed (up from 628 — 16 new tests landed between
   #66 and this fix). No scheme source files changed.
+
+---
+
+## CAM-SIMA integration parity backlog (merged from capgen_v1_parity_backlog.md, 2026-09-29)
+
+### Context
+
+This backlog came out of an investigation into swapping xdsl_ccpp in for
+capgen-v1 (`NCAR/ccpp-framework@feature/capgen-v1`) inside CAM-SIMA's build.
+The original approach built a shim (`Claude0728/xdsl-ccpp/scripts/`) that
+vendored a large slice of capgen-v1's own Python internals so CAM-SIMA's
+unmodified `write_init_files.py` could keep working unchanged. That shim
+served its purpose as a diagnostic harness -- it's what actually surfaced
+the two items below -- but it is not a direction to continue: it makes
+xdsl_ccpp depend on capgen-v1's own code to function, which is backwards
+for a project whose point is to be an independent alternative.
+
+This backlog is the corrected plan: give xdsl_ccpp the native capability it
+currently lacks, and adapt CAM-SIMA's consumer to a small, backend-neutral
+interface instead of either framework's native shape. The vendored shim
+should not be carried forward once this work lands.
+
+Two independent workstreams. They don't block each other and can proceed
+in parallel; if sequencing matters, Workstream 2 (the DDT bug) is smaller,
+more bounded, and blocks correctness of real generation (not just
+introspection), so it's reasonable to land first.
+
+---
+
+### Workstream 1: Native introspection API + `ResolvedVar` adapter
+
+##### Problem
+
+CAM-SIMA's `src/data/write_init_files.py` (~1,570 lines, ~60% of it
+CAM-SIMA-specific Fortran-generation logic, the rest introspection-API
+consumption) needs, for every CCPP lifecycle phase, the resolved list of
+variables required by that phase's active schemes -- each with its
+standard name, intent, constituent/protected flags, host module binding,
+and dimension category. capgen-v1 answers this via
+`capgen(run_env, return_db=True)` returning a `CCPPDatabaseObj` with
+`.host_model_dict()` and `.call_list(phase)`. xdsl_ccpp has no native
+equivalent -- it computes nearly all of this same information internally
+during generation (`HostVariableMatchPass`'s `model_var_name`/
+`model_module_name`, `suite_cap.py`'s `_build_arg_tables`/
+`_classify_args` per-phase resolution, the descriptor layer's
+already-copied `standard_name`/`intent`/`dimensions`/etc.) but discards it
+once generation finishes.
+
+##### Structural note
+
+The two `ResolvedVar` translation functions (Stage 4, Stage 5 below) live
+in **CAM-SIMA's own repo**, not xdsl_ccpp's -- CAM-SIMA already depends on
+real `ccpp-framework` via its own submodule, so it's the one piece of this
+whole picture that's supposed to know about both frameworks. xdsl_ccpp's
+repo only ever grows the native capability (Stages 1-3); it never touches
+capgen-v1 code. That's what actually resolves the "xdsl_ccpp depending on
+capgen-v1" problem, as opposed to the vendored shim.
+
+##### Plan: staged, one stage at a time, pause for review between each
+
+**Progress (updated 2026-08-13): Stages 0-3 done, awaiting review; Stages 4-7 done.** Stage 8 not started and
+now explicitly **paused pending a direction decision** -- see the
+"Re-validation (2026-08-13)" entry under Stage 8 below for why: CAM-SIMA's
+real migration off legacy capgen turned out to go through capgen-v1's own
+separate integration path, not this one. Update the status line per stage
+as work lands (`not started` / `in progress` / `done, awaiting review` /
+`done`).
+
+**Stage 0 -- Lock the contract. [done, awaiting review]**
+
+Exhaustively re-audited every `.get_prop_value(...)`/`.source.*`/
+`.array_ref()`/`.call_string(...)`/`.get_dimensions()`/
+`.has_vertical_dimension()`/`.has_horizontal_dimension()`/
+`.intrinsic_elements()`/`.find_variable(...)` call site in
+`write_init_files.py` directly (not from memory) -- this is richer than
+the original 8-field sketch. Finalized contract:
+
+```python
+@dataclass
+class ResolvedVar:
+    standard_name: str
+    local_name: str
+    intent: str                          # 'in' | 'out' | 'inout'
+    is_protected: bool
+    is_advected: bool
+    is_constituent: bool                 # advected/constituent are checked
+                                          # separately in the real code
+                                          # (`advected or constituent`), not
+                                          # one merged flag -- keep distinct
+    is_host_table_var: bool              # True iff source.ptype == 'host'
+                                          # (passed via arg list, always
+                                          # considered initialized)
+    host_module: str | None              # source.name -- module to `use`
+    dimensions: list[str]                # dimension standard names, from
+                                          # get_dimensions()
+    has_horizontal_dim: bool
+    vertical_dim_name: str | None        # local name of vertical dim, else
+                                          # None -- from has_vertical_dimension()
+    array_ref_dims: list[str] | None     # dimension-index standard names
+                                          # needing their OWN resolution --
+                                          # from array_ref()
+    intrinsic_element_names: list[str] | None  # sub-variable standard names
+                                          # for DDT expansion -- from
+                                          # intrinsic_elements()
+    call_string_expr: str                # precomputed Fortran reference
+                                          # expression, from
+                                          # call_string(host_dict)
+```
+
+**Design point surfaced by this audit** (important for Stage 6, not just a
+detail): `array_ref_dims` and `intrinsic_element_names` both mean "this
+variable isn't fully resolved on its own -- go look up these *other*
+standard names too," and the real code (`_find_and_add_host_variable`,
+`_get_host_model_import`) already does this recursively via
+`host_dict.find_variable(name)`. Rather than have each backend's adapter
+try to eagerly pre-flatten this recursion (duplicating non-trivial logic
+once per backend), each adapter should additionally provide a lookup
+function:
+
+```python
+def resolve_by_standard_name(stdname: str) -> ResolvedVar | None: ...
+```
+
+and Stage 6's refactor of `_find_and_add_host_variable`/
+`_get_host_model_import` should be a *minimal* edit -- swap
+`host_dict.find_variable(x)` for `resolve_by_standard_name(x)`, keep the
+existing recursive structure intact. Lower risk than restructuring the
+recursion itself, and there's only one copy of it (in `write_init_files.py`),
+not one per backend.
+
+**Oracle -- doesn't need to be captured, it already exists.**
+CAM-SIMA's own test suite already checks in curated, capgen-v1-produced
+golden files (`sample_files/write_init_files/phys_vars_init_check_*.F90`
+/ `physics_inputs_*.F90`) that `test_write_init_files.py` diffs against --
+better than anything captured fresh this session, since these are already
+the trusted reference. Confirmed the full test-method -> fixture-file
+mapping (29 test methods total); chosen representative subset for Stage
+6/7 validation, covering the three main complexity dimensions:
+
+| Test | Fixture files | Covers |
+|---|---|---|
+| `test_simple_reg_write_init` | `*_simple.F90` | Baseline case |
+| `test_simple_reg_constituent_write_init` | `*_cnst.F90` | `advected`/`constituent` flags |
+| `test_ddt2_reg_write_init` | `*_ddt2.F90` | DDT expansion (`intrinsic_elements()`) |
+
+Exit criteria met: dataclass defined, lookup-function design point
+identified, oracle located (not captured, already exists) and
+representative subset chosen.
+
+**Stage 1 -- Prove xdsl_ccpp can expose the data at all. [done, awaiting review]**
+
+Added a module-level `DEBUG_RESOLVED_VARS` dict in `suite_cap.py`, stashed
+right after `_classify_args` computes `framework_vars`/`input_arg_list`/
+`output_arg_list`, keyed by `(tgt_subroutine_postfix,
+generated_subroutine_posfix, physics_mode)`. Ran the real pipeline
+in-process (frontend + full pass pipeline) against `examples/helloworld`
+and inspected the `_run`-phase entry.
+
+**Result: 8 of 12 variables match capgen-v1's real `call_list(run)`
+exactly** (`horizontal_dimension`, `vertical_layer_dimension`,
+`vertical_interface_dimension`, `time_step_for_physics`,
+`potential_temperature_at_interface`, `potential_temperature`,
+`ccpp_error_message`, `ccpp_error_code`). The 4 that don't are explained,
+not bugs:
+
+- `suite_name`/`suite_part` -- capgen-v1's `API.__init__` synthesizes
+  these itself and adds them directly to every phase's call list
+  (framework bookkeeping for the dispatch subroutine's own signature,
+  never sourced from scheme/host `.meta`). The stash point sits right
+  after metadata-derived resolution; these are added on a separate path
+  (building the actual Fortran signature) not yet hooked.
+- `horizontal_loop_begin`/`horizontal_loop_end` -- capgen-v1's older
+  begin/end-pair convention for the horizontal loop bound vs. xdsl_ccpp's
+  newer single-extent `horizontal_dimension` convention (already present
+  in the list, just represented differently) -- the same vocabulary
+  migration already merged upstream, not a new discrepancy.
+
+Exit criteria met: the concept is proven -- xdsl_ccpp's internal
+resolution produces the same semantic variable set as capgen-v1 for
+metadata-derived variables. Stage 2 needs to explicitly account for (a)
+where the framework-bookkeeping vars (`suite_name`/`suite_part`) get
+added, and (b) normalizing the horizontal-loop-bound representational
+difference into `ResolvedVar`'s dimension fields.
+
+**Stage 2 -- Extend to full coverage. [done, awaiting review]**
+
+No new source changes needed -- Stage 1's raw-object stash already
+exposes everything, since `HostVariableMatchPass` and the descriptor
+layer already populate `model_var_name`/`model_module_name`/`dim_names`
+on the same objects. This stage was pure validation: captured the real
+MLIR for `test_simple_reg_constituent_write_init` (the constituent
+fixture from Stage 0's representative set) and inspected all six phases
+with host-binding and dimension classification extracted (using
+xdsl_ccpp's own existing `is_horizontal_dimension`/`is_vertical_dimension`
+helpers from `ccpp_conventions.py` -- no new classification logic needed
+either).
+
+**Confirmed working:**
+- All six phases populate (three are legitimately empty for this suite --
+  no register/timestep-phase scheme entry points declared, not a bug).
+- Host-variable binding is correct for real host-matched variables, e.g.
+  `potential_temperature` -> `model_var='theta'`,
+  `module='physics_types_simple'`; `vertical_layer_dimension` ->
+  `model_var='pver'`, `module='simple_sub'`.
+- Dimension classification correctly derived: `potential_temperature` ->
+  horizontal+vertical, `air_pressure_at_sea_level` -> horizontal, etc.
+
+**Two design nuances surfaced, both need handling in Stage 4's adapter:**
+1. **Constituent variables have no host-variable binding at all**
+   (`model_var_name`/`model_module_name` both `None` for the one
+   `advected=True` var in this fixture). This isn't a bug -- constituents
+   are handled through CCPP's constituent object/array, never a direct
+   host `use`-association -- and it matches `write_init_files.py`'s own
+   existing logic, which already explicitly skips constituents when
+   building host-module imports. Confirms the `is_advected`/`is_constituent`
+   fields in `ResolvedVar` are load-bearing, not redundant with
+   `host_module`.
+2. **Some resolved args have no `standard_name` at all** -- two
+   synthetic `col_start`/`col_end`-style scalars showed up in the `_run`
+   phase (introduced by `_classify_args`'s physics-mode loop-extent
+   synthesis), purely Fortran-level loop bounds with no CCPP metadata
+   identity. Stage 4's adapter needs to filter these out before producing
+   `ResolvedVar`s -- `write_init_files.py`'s consuming logic keys
+   everything off `standard_name` and has no notion of a nameless var.
+
+Exit criteria met: full phase/binding/dimension coverage confirmed against
+a constituent-using fixture, zero new source risk introduced (validation
+only, `git diff --stat` empty against tracked files throughout).
+
+**Stage 3 -- Design the real exposure mechanism. [done, awaiting review]**
+
+**Decision made, and it's *not* what the stage description guessed:**
+extending `--emit-datatable` turned out to be the wrong fit, not just a
+less-natural one. Traced `_run_datatable`'s actual call site in `run()`:
+it re-parses the *original pre-pass* frontend MLIR (`mlir_file`, from
+`run_frontend`) in a step that runs *after* `run_opt`'s entire pass
+pipeline has already completed and exited its own subprocess. The
+resolved-variable data (host bindings, ownership classification,
+per-phase aggregation) only exists as transient Python state *during*
+`generate-suite-cap`'s execution, inside `run_opt`'s subprocess -- by the
+time `--emit-datatable`'s mechanism runs, that process is long gone and
+the data was never persisted anywhere `_run_datatable` could re-derive it
+from. Piggybacking on it would have meant either reimplementing
+`_build_arg_tables`'s aggregation a second time (exactly the
+"independent, byte-identical implementation" antipattern
+`_collect_ddt_use_stubs`'s own docstring already warns against elsewhere
+in this codebase) or restructuring `--emit-datatable` itself.
+
+**What got built instead**: a new pass parameter, following the exact
+precedent `host_name`/`kind_map` already established (real pass
+parameters threaded through `_build_pipeline()`'s spec string, not a
+separate post-hoc step):
+
+- New CLI flag `--emit-resolved-vars FILE` (`ccpp_dsl.py`).
+- Threaded into the pipeline spec as
+  `generate-suite-cap{emit_resolved_vars="FILE"}` (quoted -- the
+  pass-pipeline spec lexer doesn't accept unquoted `/` in an arg value,
+  which paths always have; discovered by hitting the parse error directly).
+- `SuiteCAP` gains an `emit_resolved_vars: str | None = None` field.
+- `GenerateSuiteSubroutine` gains a real instance-level
+  `self.resolved_vars: dict` accumulator (replacing Stage 1/2's module-level
+  debug global entirely -- superseded, not kept alongside), populated by
+  `generateSubroutineCall` exactly where the Stage 1 stash was, keyed by
+  the friendly CCPP phase name (`register`/`initialize`/`finalize`/
+  `timestep_initial`/`timestep_final`/`run`) rather than the raw postfix
+  tuple.
+- `SuiteCAP.apply()` serializes `generator.resolved_vars` to JSON (deduped
+  by `standard_name` per phase -- capgen-v1's own `call_list(phase)` is
+  likewise one combined list per phase across all groups/suites, not
+  per-group) after the rewrite completes, only if `emit_resolved_vars` was
+  set.
+- Records use the Stage 0 `ResolvedVar` field names directly
+  (`standard_name`, `intent`, `is_advected`, `is_constituent`,
+  `is_protected`, `is_optional`, `model_var_name`, `model_module_name`,
+  `dim_names`, `ownership_kind`), filtering out nameless synthetic args
+  (Stage 2's `col_start`/`col_end` finding) at the source.
+
+**Verified against both fixtures via the real CLI** (`ccpp_opt` with
+`--emit-resolved-vars`, not just in-process tracing):
+- `examples/helloworld`: clean JSON, all 6 phases, correct host bindings
+  (e.g. `potential_temperature` -> `model_var='temp_midpoints'`,
+  `module='hello_world_mod'`).
+- CAM-SIMA's constituent fixture: 7 run-phase vars (correctly excludes
+  the 2 nameless synthetic scalars), constituent var
+  (`super_cool_cat_const`) correctly has `model_var_name`/
+  `model_module_name` both `null`, matching Stage 2's finding.
+- Full CAM-SIMA regression suite: unchanged at 3/16 collections failing
+  (same pre-existing, unrelated missing-CIME-external issue) --
+  `test_write_init_files.py` still fully passing.
+
+Exit criteria met: stable, documented, tested artifact format,
+independent of any host-model concern, ready for its own PR.
+
+**Post-PR Copilot review (PR #51) caught a real bug my own testing missed:**
+`_build_pipeline()`'s `emit_resolved_vars="{path}"` embeds literal double
+quotes into the pipeline spec string, which itself later gets embedded
+inside its *own* double-quoted shell argument (`-p "{pipeline}"`) in
+`run_opt()`/`generate_cpp_headers()`, both of which shell out via
+`os.system()`. My Stage 3 testing called `ccpp_opt` directly with a
+properly shell-quoted argv, which never exercised the actual
+`os.system()`-based path real usage goes through -- so the collision went
+undetected. Reproduced it directly via `sh -c` with the exact command
+`run_opt()` constructs (confirmed broken: `PassPipelineParseError`, no
+output file), fixed by escaping the inner quotes (`\"` instead of `"`) so
+they survive the outer shell-argument quoting, and reconfirmed producing
+correct output through that same real code path. Also fixed a docstring
+inaccuracy Copilot caught in the same review (the flag is defined on the
+`ccpp_xdsl` CLI, not directly on `ccpp_opt`/`ccpp_xml`).
+
+**Stage 4 -- Write the xdsl_ccpp-side adapter. [done]**
+
+Implemented in CAM-SIMA's own repo (`reference/CAM-SIMA`, branch
+`stage4-resolved-var-adapter`): `src/data/resolved_var.py` (the
+`ResolvedVar` dataclass itself, shared by both backends' adapters) and
+`src/data/resolved_var_xdsl_ccpp.py` (`XdslCcppResolvedVars`, loading
+Stage 3's JSON and exposing `.call_list(phase)` /
+`.resolve_by_standard_name(name)`, reusing xdsl_ccpp's own
+`is_horizontal_dimension`/`is_vertical_dimension` directly rather than
+re-implementing dimension classification).
+
+**Validated against the real capgen-v1 oracle**, not just eyeballed:
+instrumented the vendored shim to dump `cap_database.call_list(phase)`'s
+real standard names for the constituent fixture, and diffed against the
+adapter's output phase-by-phase. Two categories of discrepancy found:
+
+1. **Confirmed harmless** -- `suite_name`, `suite_part`,
+   `ccpp_error_message`, `ccpp_error_code` are missing from the adapter's
+   output in various phases (matching Stage 1's finding that these are
+   capgen-v1-synthesized framework bookkeeping, added on a code path
+   Stage 3 doesn't hook). Checked directly against
+   `write_init_files.py`'s own `_EXCLUDED_STDNAMES` set: all four are
+   members. `write_init_files.py` ignores them regardless of whether
+   they're present, so this costs nothing functionally.
+
+2. **A real gap, found and fixed**: `horizontal_dimension` was missing
+   from the adapter's `run`-phase output for the constituent fixture --
+   and critically, this name is *not* in `_EXCLUDED_STDNAMES`, unlike the
+   framework vars above, so it actually mattered to `write_init_files.py`'s
+   real logic. Root cause: `_classify_args`'s physics-mode handling
+   replaces the loop-extent arg with synthetic, nameless `col_start`/
+   `col_end` scalars for suites using per-column dispatch (Stage 2's
+   finding), and `_resolved_var_record` (Stage 3) filters out anything
+   with no `standard_name`, silently dropping the horizontal-dimension
+   identity along with the genuinely-nameless scalars.
+
+   **Fix** (`xdsl_ccpp/transforms/suite_cap.py`): `_classify_args` already
+   computes `ncol_meta` -- the *original*, unmodified loop-extent
+   `CCPPArgument`, still carrying its real `standard_name`, before the
+   col_start/col_end substitution. `generateSubroutineCall` now includes
+   `ncol_meta` alongside `framework_vars`/`input_arg_list`/`output_arg_list`
+   when building the resolved-vars stash, so the loop-extent variable's
+   identity survives even when it's no longer directly represented in the
+   call's own arg list. Also added `_normalize_std_name`, mapping through
+   the existing `CCPP_DEPRECATED_STD_NAMES` table (applied to both
+   `standard_name` and each entry of `dim_names`), since the scheme
+   metadata for this fixture declares the deprecated
+   `horizontal_loop_extent` name but capgen-v1's own output normalizes to
+   `horizontal_dimension` -- without this the adapter would've reported
+   the right variable under the wrong (stale) name.
+
+   **Verified against the real capgen-v1 oracle**: re-ran
+   `--emit-resolved-vars` against both the constituent fixture and
+   `examples/helloworld`; the constituent fixture's `run` phase now
+   reports `horizontal_dimension`, matching the oracle exactly, and
+   helloworld (which was already correct, no col_start/col_end synthesis
+   triggered there) is unaffected. Full CAM-SIMA regression suite (16
+   test collections, `run_python_unit_tests.sh`) and xdsl_ccpp's own
+   pytest suite (539 passed) both still pass; the one xdsl_ccpp pytest
+   failure (`test_ccpp_xdsl_generates_caps`) was confirmed pre-existing
+   and unrelated (a stale `ccpp_xdsl` console-script install resolving
+   against a different checkout -- the same PYTHONPATH/namespace-package
+   issue noted earlier in this doc -- reproduced identically with the fix
+   stashed out).
+
+   **Two adjacent gaps surfaced by the oracle diff, not yet fixed** (out
+   of scope for this fix -- neither was part of the original loss, both
+   are pre-existing absences):
+   - `horizontal_loop_begin`/`horizontal_loop_end`: capgen-v1's oracle
+     output gives the loop-bound scalars their own standard-name identity
+     in the `run` phase. xdsl_ccpp's synthetic `col_start`/`col_end`
+     replacements are still nameless (by design -- `_resolved_var_record`
+     correctly drops them), so these two never appear. Interestingly, the
+     xdsl_ccpp pytest fixture (`ddt_suite.xml`'s `make_ddt` scheme) shows
+     this *can* work when the host metadata declares `cols`/`cole` args
+     with those standard names directly (`model_var_name=col_start`/
+     `col_end`) rather than relying on synthesis -- suggesting the gap is
+     specifically in the synthesized-scalar path, not a fundamental
+     limitation.
+   - `suite_name`/`suite_part`: framework-injected suite metadata vars,
+     not modeled by Stage 3 at all (distinct from the `_EXCLUDED_STDNAMES`
+     framework vars in point 1 above, which Stage 3 *does* see but
+     `write_init_files.py` ignores regardless).
+
+   Revisit both before Stage 6 if a fixture actually needs them --
+   neither is in `_EXCLUDED_STDNAMES`, so both could matter to real
+   `write_init_files.py` logic depending on which host variables a given
+   suite's schemes reference.
+
+Everything else (the fields validated in Stages 1-2 -- host-variable
+binding, dimension classification for non-loop-extent dimensions,
+constituent/protected/optional flags) matches correctly. `array_ref_dims`/
+`intrinsic_element_names` remain unpopulated (see resolved_var.py's
+docstring) -- tested against the `ddt2` fixture specifically and found it
+doesn't actually exercise host-side DDT sub-element expansion in its
+resolved-variable data at all (the complexity there is in host-side DDT
+representation, which Stage 3's JSON doesn't capture), so this wasn't
+resolved, just confirmed out of scope for the fixtures tested so far.
+
+**Stage 5 -- Write the capgen-v1-side adapter. [done]**
+
+Implemented in CAM-SIMA's own repo (`reference/CAM-SIMA`, still on branch
+`stage4-resolved-var-adapter`): `src/data/resolved_var_capgen_v1.py`
+(`Capgenv1ResolvedVars`, wrapping a real `CCPPDatabaseObj` and exposing the
+same `.call_list(phase)` / `.resolve_by_standard_name(name)` shape as
+`resolved_var_xdsl_ccpp.py`), reusing capgen-v1's own
+`is_horizontal_dimension`/`is_vertical_dimension` (`var_props.py`) directly,
+same pattern as the xdsl_ccpp-side adapter reusing xdsl_ccpp's.
+
+Field mapping, from `Var`'s real API (confirmed by reading
+`write_init_files.py`'s existing calls, not guessed): `get_prop_value(...)`
+for standard_name/intent/protected/advected/constituent/optional/local_name;
+the `host_interface_var` property (`source.ptype == 'host'`) for
+`is_host_table_var`; `source.name` for `host_module` (populated
+unconditionally, matching `_get_host_model_import`'s own behavior --
+`is_host_table_var` is the separate flag that tells a consumer whether a
+`use` statement is actually needed, not `host_module` being `None`);
+`get_dimensions()` for `dimensions`, passed straight through *un-flattened*
+(capgen-v1's own dims can be compound colon-forms like
+`ccpp_constant_one:vertical_layer_dimension`, which
+`is_horizontal_dimension`/`is_vertical_dimension` already parse directly --
+confirmed via their own docstrings); `array_ref()` for `array_ref_dims`;
+`intrinsic_elements()` for `intrinsic_element_names`.
+
+**Validated against a real `CCPPDatabaseObj`** (not just eyeballed):
+constructed one via `ccpp_capgen.capgen(run_env, return_db=True)` against
+the real `reference/ccpp-framework` checkout (not the `ccpp_framework`
+symlink, which points at the xdsl_ccpp sandbox), using the same
+`simple_host.meta`/`suite_simple.xml`/`temp_adjust.meta`/`simple_reg.xml`
+fixture set `test_write_init_files.py::test_simple_reg_write_init` already
+uses. Confirmed: dimension classification correctly handles capgen-v1's
+compound colon-forms; `host_module` populated for both host-table and
+module-type vars; `resolve_by_standard_name` returns a different (correct)
+view of the same standard name than `call_list` does, when host-table vs.
+scheme-call perspectives genuinely differ (e.g. `horizontal_dimension`'s
+`intent`/`is_host_table_var` differ between "as declared on the host" and
+"as seen by the calling scheme" -- both correct, not a bug).
+
+**One real bug found and fixed during validation**: `intrinsic_elements()`
+returns a variable's own standard name as a bare *string* when it's already
+an intrinsic leaf with nothing to expand (only genuine DDT sub-element
+lists are meaningful) -- confirmed directly from `write_init_files.py`'s
+own `_find_and_add_host_variable`, which explicitly gates on
+`isinstance(ielem, list)`. The adapter's first draft passed this bare
+string through unfiltered, which would have made every ordinary scalar
+variable look like a DDT with one bogus "sub-element" (itself). Fixed by
+adding the same `isinstance(..., list)` gate before assigning
+`intrinsic_element_names`.
+
+Like Stage 4, `array_ref_dims`/`intrinsic_element_names`'s list-producing
+paths remain unexercised: the available fixtures (including `ddt2`, tried
+again here) don't route a DDT or array-ref standard name through
+`call_list`/`resolve_by_standard_name` in a way that actually triggers
+either. Unlike Stage 4, the *code path* for both is real and implemented
+(not stubbed to `None`/approximated) since capgen-v1's own `Var` object
+supports them directly -- only real-fixture coverage is missing. Revisit
+if Stage 6/7 needs a fixture that does.
+
+**Stage 6 -- Refactor `write_init_files.py` to consume only `ResolvedVar`. [done]**
+
+Touched `gather_ccpp_req_vars`, `_find_and_add_host_variable`,
+`collect_host_var_imports`/`_get_host_model_import`, `get_dimension_info`,
+and the top-level `write_init_files()` entry point -- all now take/thread a
+backend-neutral `resolved_vars` adapter instead of a raw `CCPPDatabaseObj`/
+`host_dict`. `write_init_files.py` no longer imports anything from
+capgen-v1 (`ccpp_state_machine`, `var_props`) -- `CCPP_PHASES` and
+`is_horizontal_dimension`/`is_vertical_dimension` now live in
+`resolved_var.py` itself (ported verbatim from `var_props.py`; a shared
+CCPP vocabulary convention, not backend logic, mirroring how xdsl_ccpp
+keeps its own independent copy in `ccpp_conventions.py`).
+
+The bulk of the actual Fortran-string-emission code (the `outfile.write(...)`
+calls, control flow, use-statement formatting) is genuinely untouched, as
+planned. But the "~970 lines stay untouched" framing undersold how many
+distinct Var-API surfaces those functions actually call (`get_prop_value`,
+`source.ptype`/`source.name`, `has_horizontal_dimension()`/
+`has_vertical_dimension()`, `call_string()`, `get_dimensions()`,
+`array_ref()`, `intrinsic_elements()`, plus a `VarDDT`-specific `.var`
+property) -- every one of those needed a mechanical attribute-access rename
+or, in a few cases (below), a real design decision. `get_dimension_info`
+also got a genuine simplification: it no longer re-parses a raw vertical-
+dimension string into 'lev'/'ilev' since `ResolvedVar.vertical_dim_name` is
+already normalized by the adapter.
+
+**Three real bugs found and fixed during validation** (all found by running
+the refactor through the real capgen-v1 adapter against
+`test_write_init_files.py`'s fixtures with `filecmp.cmp(..., shallow=False)`,
+not by inspection):
+
+1. **`ResolvedVar` was unhashable.** `write_init_files()` itself dedupes its
+   required-variable lists via `OrderedDict.fromkeys(all_req_vars)`, which
+   needs identity-hashable entries -- exactly what real capgen-v1's `Var`
+   class provides (no `__eq__`/`__hash__` override). A plain `@dataclass`
+   defaults to `eq=True`, which sets `__hash__` to `None` on a mutable
+   class. Fixed with `@dataclass(eq=False)`, restoring identity-based
+   equality/hashing to match `Var`.
+
+2. **Adapter-side caching gap.** Even after fixing hashability,
+   `Capgenv1ResolvedVars` still built a *new* `ResolvedVar` object on every
+   `call_list`/`resolve_by_standard_name` call -- so the same inout
+   variable, resolved once via `in_vars` and once via `out_vars`, produced
+   two distinct objects that identity-based dedup could no longer tell
+   apart, silently duplicating the variable in generated output (`phys_var_num`
+   off by one, extra IC-name/array entries). Real capgen-v1 avoids this
+   because `host_dict`/`call_list` return the *same* `Var` instance on
+   repeat lookups. Fixed by caching `ResolvedVar` construction in
+   `Capgenv1ResolvedVars`, keyed by the underlying `Var` object's identity.
+   `resolved_var_xdsl_ccpp.py` already got this right in Stage 4 (its
+   `_flat`/`_by_phase` dicts are built once and reused).
+
+3. **A single `local_name` field can't represent capgen-v1's DDT
+   sub-element naming.** For a DDT sub-element (e.g. `potential_temperature`,
+   a field of a `phys_state` DDT), real capgen-v1's `VarDDT` genuinely
+   distinguishes three different names, confirmed directly against the
+   `ddt`/`ddt2`/`ddt_array` fixtures (previously believed "out of scope,
+   not exercised" per Stage 4/5 -- turned out to be very much exercised
+   once write_init_files.py's real call sites were touched):
+   - `get_prop_value('local_name')` delegates to the *leaf* field, giving
+     the bare name (`"theta"`) -- used as the IC-file variable-name
+     fallback.
+   - the root DDT variable's own name (`"phys_state"`, reached only via
+     `VarDDT`'s `.var` property, which returns a base-class view of self
+     bypassing the leaf-delegating override) -- used in `use module, only:`
+     import statements.
+   - `call_string(host_dict)` builds the full dotted chain
+     (`"phys_state%theta"`) -- used at the actual Fortran call site, and
+     also resolves array-ref index variables (e.g. `foo(bar)`) the same
+     way.
+
+   `ResolvedVar` gained two new fields, `import_name` and `call_expr`,
+   alongside `local_name` (now specifically the bare/leaf name) to carry
+   these independently. `resolved_var_capgen_v1.py` populates all three
+   correctly; `resolved_var_xdsl_ccpp.py` defaults `import_name`/`call_expr`
+   to `local_name` (Stage 3's JSON has no DDT-chain data, so this is
+   correct for every fixture validated so far, same class of gap as
+   `array_ref_dims`/`intrinsic_element_names` -- revisit together if Stage 7
+   needs a DDT fixture).
+
+**Also found and fixed**: a real, non-test production call site --
+`cime_config/cam_autogen.py`'s `generate_init_routines()` calls
+`write_init_files()` directly as part of CAM-SIMA's actual build (not just
+`test_write_init_files.py`). Updated it to wrap `cap_database` with
+`Capgenv1ResolvedVars` before calling `write_init_files()`. Hardcoded to the
+capgen-v1 adapter for now, with a comment flagging that Stage 7 needs to
+make this backend-selectable once xdsl_ccpp enters the picture here.
+
+**Validation**: all 16 `test_write_init_files.py` fixtures pass with
+byte-identical output (`filecmp.cmp(..., shallow=False)`) against real
+capgen-v1, including the three DDT fixtures that surfaced bug #3 above.
+Full CAM-SIMA regression suite (`run_python_unit_tests.sh`, 16 test
+collections including `test_cam_autogen.py`'s `test_generate_init_routines`,
+which exercises the real `cam_autogen.py` call site) passes. Test files
+themselves needed mechanical updates too: `test_write_init_files.py`'s 15
+call sites now build `resolved_vars = Capgenv1ResolvedVars(cap_database)`
+and pass that instead of the raw `cap_database`. All of this was run with
+the real `reference/ccpp-framework` checkout prepended to `PYTHONPATH`
+(bypassing this sandbox's own `ccpp_framework` symlink override, which
+points at the xdsl_ccpp checkout for the eventual Stage 7 test) --
+confirms Stage 6 is validated against genuine capgen-v1, not the xdsl_ccpp
+shim, matching the stage's own stated goal.
+
+**Stage 7 -- Validate xdsl_ccpp end-to-end through the refactored file. [done
+-- found the central capability gap this whole effort was looking for]**
+
+**Setup**: ran the real `xdsl_ccpp.tools.ccpp_dsl` CLI (not the vendored
+shim) with `--emit-resolved-vars` against CAM-SIMA's actual fixture
+scheme/host `.meta` + suite XML files, loaded the JSON through
+`resolved_var_xdsl_ccpp.py`, and called the Stage 6-refactored
+`write_init_files()` with it -- the same fixtures `test_write_init_files.py`
+already validates against real capgen-v1.
+
+**Result on the real fixtures: all 16 fail**, but all for the *same*,
+single, well-understood reason (not 16 independent problems):
+
+**The confirmed capability gap**: every one of CAM-SIMA's existing scheme
+`.meta` fixtures declares the legacy `horizontal_loop_extent` convention
+(triggers `_classify_args`'s physics-mode `col_start`/`col_end` synthesis,
+per the Stage 4 fix). Real capgen-v1 independently host-matches the
+resulting `horizontal_dimension` identity against the host's own direct
+declaration (`pcols` in `simple_host.meta`) via its `VarLoopSubst`/
+`CCPP_LOOP_DIM_SUBSTS` substitution machinery -- confirmed directly:
+capgen-v1's own `call_list('run')` includes a *separate*, properly
+host-bound `horizontal_dimension` entry (`local_name='pcols'`), distinct
+from the scheme's own loop-extent arg. **xdsl_ccpp's `HostVariableMatchPass`
+has no equivalent** -- the loop-extent arg (`ncol_meta`, recovered by the
+Stage 4 fix so its *identity* survives) never gets matched against any host
+variable, so `model_var_name`/`model_module_name` stay `None` for it. Since
+Stage 3's `--emit-resolved-vars` JSON only records args actually resolved
+by a suite's own calls (not a full host-variable dictionary the way
+capgen-v1's `host_model_dict()` is), there's no way for the CAM-SIMA-side
+adapter to recover `pcols` from data that was never captured in the first
+place -- this needs an actual xdsl_ccpp capability addition, not just an
+adapter-side fix.
+
+Confirmed this is specifically about the *loop-extent-synthesis* path, not
+host-matching in general, by isolating the two mechanisms:
+- Scheme declaring `horizontal_loop_extent` (physics-mode synthesis
+  triggered): `horizontal_dimension` resolves with `model_var_name=null` --
+  the gap.
+- Scheme declaring `horizontal_dimension` directly (no synthesis): resolves
+  correctly to `model_var_name="pcols"`, `model_module_name="simple_sub"`,
+  `ownership_kind="host_matched"`.
+
+**Confirmed the rest of the pipeline is genuinely correct, not just
+"probably fine"**: built a minimal scheme declaring `horizontal_dimension`
+directly (avoiding the gap) plus a registry-generated module variable
+(`potential_temperature`/`theta`), ran it through the full real
+`ccpp_dsl` -> `resolved_var_xdsl_ccpp.py` -> refactored `write_init_files()`
+chain, and got `retmsg=''` with fully correct generated Fortran --
+`use simple_sub, only: pcols` and `use physics_types_simple, only: theta`,
+exactly matching capgen-v1's own use-statement/local-name shape for both a
+host-type var and a registry-generated module-type var. This isolates the
+loop-extent gap as the *specific, singular* blocker, not a sign of broader
+plumbing problems in Stages 3/4/6.
+
+**A real robustness gap found and fixed along the way** (in
+`write_init_files.py`, backend-neutral, benefits both backends):
+`_find_and_add_host_variable` treated any non-`None` `resolve_by_standard_name`
+result as "found," even when `local_name` was itself `None` (no real host
+binding) -- surfaced as a raw `TypeError: object of type 'NoneType' has no
+len()` three functions deep in `write_ic_params`, instead of the normal,
+clear "Error: Missing required host variables: ..." reporting this
+function already has for genuinely-unresolvable names. Fixed by treating
+`hvar.local_name is None` the same as "not found." Never triggers on
+capgen-v1 (its `Var` objects always have a `local_name` when
+`find_variable()` returns non-`None`) -- confirmed via the full
+capgen-v1 regression suite still passing unchanged after the fix.
+
+**Two remediation paths for the core gap** (not attempted -- this is a real
+xdsl_ccpp capability addition, not a Stage 7 "just validate" task, and
+warrants a decision before committing to one):
+1. Extend `HostVariableMatchPass` (or a new pass) to also match the
+   loop-extent-derived dimension identity (`horizontal_dimension`, and
+   ideally `horizontal_loop_begin`/`horizontal_loop_end`) against host
+   declarations, independent of how the *scheme* itself expresses its own
+   loop-bound argument. Would also naturally fix `ncol_meta`'s
+   `model_var_name`/`model_module_name` gap, since Stage 3's existing
+   per-call JSON would then just capture the match correctly -- no new
+   artifact needed.
+2. Add a broader "full host-variable table" introspection artifact
+   (closer to capgen-v1's `host_model_dict()`) that `resolve_by_standard_name`
+   could fall back to. More invasive; (1) seems more consistent with
+   xdsl_ccpp's existing design and narrower in scope.
+
+This is the concrete, load-bearing capability gap the whole Workstream 1
+effort set out to find: xdsl_ccpp cannot currently drop in for any CAM-SIMA
+suite using the (still-valid, still-supported) per-column
+`horizontal_loop_extent` chunking convention, until one of the above is
+implemented.
+
+##### Post-Stage-7 follow-up: implemented Option 1, both parts
+
+User's call: rather than migrate CAM-SIMA's fixtures off
+`horizontal_loop_extent` (the lower-effort path), implement Option 1
+natively in xdsl_ccpp, since the effort estimate came back small (the hard
+part -- host-variable-by-standard-name indexing -- already existed and was
+reusable) and closing the actual capability gap has more lasting value than
+routing around it.
+
+**Part 1 -- host-match the loop-extent-derived `horizontal_dimension`
+identity.** Added `build_host_var_index(ccpp_mod)` to
+`xdsl_ccpp/transforms/util/ir_utils.py` -- a small, side-effect-free sibling
+of `HostVariableMatchPass._build_model_var_index` (deliberately *not*
+reused directly: that method also emits a `CcppHandleOp` as a side effect,
+which must only ever happen once, during the real `generate-host-match`
+pass). `SuiteCAP.apply()` builds this index once per module and threads it
+into `GenerateSuiteSubroutine`; `generateSubroutineCall`'s resolved-vars
+stash now falls back to it for `ncol_meta` specifically (not
+`framework_vars`/`input_arg_list`/`output_arg_list`, which can be
+legitimately host-unmatched by design) when `ncol_meta`'s own
+`model_var_name` is `None`. Confirmed via the "simple" fixture: `horizontal_dimension`
+now resolves to `model_var_name="pcols"`, `model_module_name="simple_sub"`,
+matching real capgen-v1 exactly.
+
+**Part 2 -- `is_host_table_var` was hardcoded `False`.** Fixing Part 1
+immediately exposed this second, previously-documented-but-inert gap (Stage
+4's `resolved_var_xdsl_ccpp.py` comment) as now concretely blocking: host-
+table vars (`pcols`/`pver`/`dtime_phys` in `simple_host.meta`) were
+incorrectly included in `write_init_files.py`'s required-variable list
+instead of being excluded (host-table vars are passed via the host's
+argument list, never read from an IC file). Fixed the same way as Part 1 --
+`HostVariableMatchPass._build_model_var_index`/`_match_and_validate` now
+also records and annotates whether a match came from a HOST-type (not
+MODULE-type) table (`model_var_is_host_table`, a new `ccpp.arg` IRDL
+property in `xdsl_ccpp/dialects/ccpp.py` -- the underlying IR op is a
+strict, statically-typed schema, so a new property key needs an actual
+IRDL declaration, not just a dict write, confirmed the hard way via a
+`VerifyException` the first time this was missed). Threaded through
+`ccpp_descriptors.py`'s `BuildMetaDataDescriptions` (mirroring the existing
+`model_var_is_ddt` copy pattern), `_resolved_var_record`'s JSON output, and
+`resolved_var_xdsl_ccpp.py`'s `_to_resolved_var` (no longer hardcoded).
+
+**Validation**: full xdsl_ccpp pytest suite (543 tests) confirmed clean
+after each part -- the IRDL-property miss above was caught here (3 filecheck
+regressions, `VerifyException: property 'model_var_is_host_table' is not
+defined by the operation 'ccpp.arg'`), fixed, then reconfirmed at 542
+passed / 1 pre-existing unrelated failure (the stale `ccpp_xdsl`
+console-script issue, same as always) / 1 xfail -- unchanged from
+pre-Stage-7 baseline.
+
+**Full re-sweep across 13 of the 16 `test_write_init_files.py` fixtures**
+(excluding `meta_file_reg` and `bad_vertical_dimension`, not adapted into
+the sweep harness; DDT fixtures included) through the real xdsl_ccpp CLI ->
+`resolved_var_xdsl_ccpp.py` -> refactored `write_init_files()`, diffed
+against golden capgen-v1 output:
+
+- **8/13 now byte-identical**: `simple`, `simple_reg_constituent`,
+  `no_reqvar`, `host_input_var`, `no_horiz_var`, `scalar_var`, `4d_5d_var`,
+  `simple_constituent_dim`. (Two of these initially showed spurious diffs
+  from a bug in the *sweep harness itself* -- hardcoding empty
+  `ic_names`/`constituents`/`vars_init_value` instead of each fixture's
+  real `gen_registry()` return values; fixed and reconfirmed MATCH.)
+- **2/13 (`protected`, `parameter`) revealed a new, small, same-pattern
+  gap -- found and fixed**: `is_protected` wasn't propagated from a
+  host/module declaration onto a matched scheme arg's resolved-var record
+  either -- e.g. `g` (declared `protected = True` in the registry) showed
+  `is_protected=False` through xdsl_ccpp, so `write_init_files.py`
+  incorrectly tried to read it from an IC file instead of skipping it as
+  already-initialized. Exact same shape as `is_host_table_var`: extended
+  `_build_model_var_index`/`build_host_var_index`'s tuples with
+  `is_protected` (`arg_op.protected is not None` on the HOST/MODULE
+  declaration), annotated the matched scheme arg via a new
+  `model_var_is_protected` IRDL property (`ccpp.py`; learned from the
+  `model_var_is_host_table` miss to add the IRDL declaration up front this
+  time -- confirmed clean on the first pytest run, no regressions), threaded
+  through `ccpp_descriptors.py`, and OR'd into `_resolved_var_record`'s
+  `is_protected` (a scheme arg's own `protected` property is never set
+  directly; only `model_var_is_protected`, from the match, actually fires
+  in practice). `ncol_meta`'s host-var-index fallback OR's in the 4th tuple
+  element the same way. Reconfirmed via the full sweep: `protected` and
+  `parameter` now MATCH too.
+- **3/13 (`ddt`, `ddt2`, `ddt_array`) confirmed the already-known DDT-chain
+  gap -- found and fixed.**
+
+##### Post-Stage-7 follow-up: the DDT-chain gap
+
+**Investigated first, not guessed at.** A research pass found that DDT
+chain resolution *already exists* in xdsl_ccpp -- just not where the
+`--emit-resolved-vars` introspection code was looking. It lives in
+`xdsl_ccpp/transforms/util/cap_shared.py`, already shared between two real
+cap-generation consumers (`run_dispatch.py`, `gpu_ccpp_cap_pass.py`):
+`_build_ddt_resolution_maps(meta_data)` builds a DDT type name -> instance
+variable map (and a nested-DDT parent map) by scanning MODULE/HOST tables
+for a variable whose own `type` matches the DDT's name; `_resolve_ddt_access_path`
+recursively walks nesting to build the `%`-chain; `_resolve_member_subscripts`
+resolves array-section index tokens within a member reference. All three
+are pure functions of the same metadata dict `suite_cap.py` already builds
+-- reusing them for introspection wasn't "build new resolution logic," it
+was "call the existing logic from a third place."
+
+**The fix** (`suite_cap.py`): `SuiteCAP.apply()` now builds these same maps
+(gated on `self.emit_resolved_vars`, same reasoning as the host-var-index
+fix -- zero cost when nobody asked for resolved-vars output) and threads
+them into `GenerateSuiteSubroutine` as `ddt_resolution_maps`. A new
+`_apply_ddt_chain(record, arg, ddt_resolution_maps)` patches every
+resolved-var record for an arg with `model_var_is_ddt` set: what
+`_resolved_var_record` left in `model_module_name` is actually the DDT
+*type* name, not a real module -- `_apply_ddt_chain` resolves it to the
+real instance variable/module and rewrites `model_module_name`
+(now correct for `use` statements), plus two new record fields,
+`import_name` (the instance variable, e.g. `"phys_state"`) and `call_expr`
+(the full chain, e.g. `"phys_state%theta"`).
+
+**A second gap found along the way**: even with the chain resolved, the
+`ddt_array` fixture's array-index variable (`index_of_potential_temperature`)
+still failed with "Missing host indices" -- `resolve_by_standard_name`
+had no way to find it, since (like the original `horizontal_dimension`/
+`pcols` gap) it's a real host variable that's never itself a scheme
+argument, so never appears in any phase's own call list.  Fixed by
+serializing `cap_shared.py`'s `_build_host_var_map` (already computed for
+DDT resolution) into the JSON as a new top-level `"host_vars"` key -- a
+genuine standard_name -> (local_name, module_name) dictionary over *every*
+HOST/MODULE variable, not just ones some suite call happened to resolve.
+`resolved_var_xdsl_ccpp.py`'s `resolve_by_standard_name` now falls back to
+it when the per-phase flat lookup misses.
+
+**Validation**: full xdsl_ccpp pytest suite clean throughout (542/543,
+same pre-existing unrelated failure). Full sweep re-run: `ddt` and `ddt2`
+now byte-identical; `ddt_array` produces fully correct output with one
+remaining single-character cosmetic difference -- the array member's local
+name is declared `"T"` (uppercase) in the registry, and real capgen-v1
+emits it lowercased (`phys_state%t(...)`) somewhere in its own Fortran-
+emission pipeline that a quick search didn't pin down, while xdsl_ccpp
+preserves the declared case (`phys_state%T(...)`). Functionally identical
+Fortran (case-insensitive language); not chased further since it's cosmetic
+only, not a correctness gap. **12/13 fixtures now byte-identical, the 13th
+(`ddt_array`) functionally correct with one cosmetic byte-diff** -- up from
+0 before Stage 7's fixes.
+
+**On the `T`/`t` diff specifically: this is capgen-v1's behavior diverging
+from the registry's own declared name, not an xdsl_ccpp gap.** xdsl_ccpp
+preserves the local name exactly as declared (`"T"` in, `"T"` out) --
+arguably the more predictable, defensible behavior of the two. Real
+capgen-v1 changes the case somewhere between parsing and Fortran emission;
+searching `metavar.py`, `mkcap.py`, `ddt_library.py`, `metadata_table.py`,
+and `suite_objects.py` didn't turn up the exact responsible line, so it's
+unclear whether this is (a) a deliberate style normalization to lowercase
+in capgen-v1's Fortran-emission layer, or (b) an accidental side effect of
+one of the several `.lower()` calls used elsewhere in that codebase for
+case-insensitive dictionary lookups/matching, whose lowercased copy then
+gets reused for printing instead of the original declared case. Either
+way, there is nothing here for xdsl_ccpp to "fix" to achieve parity in any
+meaningful sense -- both outputs are the identical Fortran reference to a
+case-insensitive language; this is recorded for transparency, not as an
+open action item.
+
+**Stage 8 -- Real integration / upstream PRs.** [not started]
+Stage 3's work as a PR to xdsl_ccpp (same workflow as the DDT fix);
+Stages 4-7 as a PR to CAM-SIMA (`johnmauff/CAM-SIMA` fork ->
+`ESCOMP/CAM-SIMA`).
+
+Stages 1-3 can proceed independently of anything CAM-SIMA-side; 4-7 depend
+on Stage 3 landing (or at least stabilizing) first.
+
+##### Re-validation (2026-08-13): --legacy-mode impact, a stale adapter, and a
+##### bigger strategic finding -- PAUSED here by request, awaiting direction
+
+**Trigger**: the `--legacy-mode` work (`CHANGELOG.md`) flipped
+`ArgumentOp`'s default from warn-on-deprecated-name to reject-by-default.
+Every fixture this whole Workstream validates against declares
+`horizontal_loop_extent`, so this needed re-confirming before treating
+Stage 7's findings as still current.
+
+**Confirmed intact.** Pulled `johnmauff/CAM-SIMA@xdsl-ccpp-adapter` fresh
+(this is PR #2 on that repo, open, base `development` -- see below) and ran
+a real fixture (`temp_adjust.meta` + `simple_host.meta`) through the current
+xdsl_ccpp pipeline end-to-end, through the actual committed
+`resolved_var_xdsl_ccpp.py`. Fails without `--legacy-mode` (by design); with
+it, reproduces exactly the Post-Stage-7 resolution: `horizontal_dimension`
+-> `local_name='pcols'`, `host_module='simple_sub'`, `is_host_table_var=True`,
+`is_protected=True`. `--legacy-mode` is a strict superset of the old
+warn-only behavior for this path -- nothing regressed.
+
+**Found: the committed CAM-SIMA-side adapter is stale.** `johnmauff/CAM-SIMA`
+PR #2's own description says "10/13 produce byte-identical output... the
+remaining 3 (DDT-member variables) have a known, documented gap" -- that's
+the pre-Post-Stage-7 state (Stage 4-6 level), not the 12/13-plus-one-cosmetic
+state this doc claims above. Confirmed directly: xdsl_ccpp's
+`--emit-resolved-vars` JSON still emits a correct top-level `"host_vars"` key
+today, but `resolved_var_xdsl_ccpp.py` on that branch never reads it, and
+still aliases `import_name`/`call_expr` to `model_var_name` instead of the
+dedicated fields the DDT-chain fix added. DDT/array-ref fixtures (`ddt`,
+`ddt2`, `ddt_array`) would very likely still show the old 10/13-level gap on
+that branch -- the "Post-Stage-7 follow-up: the DDT-chain gap" section
+above's byte-identical claim was validated against a local/scratch copy of
+the adapter that was never pushed to CAM-SIMA.
+
+**A bigger finding: real capgen-v1 has already built its own, separate,
+apparently production-track integration path for CAM-SIMA**, independent of
+anything in this Workstream. capgen-v1's own repo docs
+(`doc/capgen_compat_layer.md`, `doc/migration.md` §4.5, both current as of
+the 2026-08-10 `feature/capgen-v1` tip) describe `cime_config/capgen_compat/`
+-- a facade living in the CAM-SIMA tree that lets CAM-SIMA's *unmodified*
+`write_init_files.py`/`cam_autogen.py`/`generate_registry_data.py` keep
+calling the old ccpp-capgen Python API (`cap_database.host_model_dict()`,
+`.call_list(phase)`, `Var.get_prop_value(...)`, ...) while capgen-v1
+generates underneath. Per that doc's own "Status" section: three real suites
+(`kessler`, `rrtmgp`, and the full `cam7` suite via `se_cslam`) already
+**build and run to completion on Derecho, bit-comparable, under both gnu and
+intel**. This has nothing to do with xdsl_ccpp's `ResolvedVar` bridge, and is
+a working migration path already in place.
+
+That same doc states capgen-v1's own long-term "Convergence goal" explicitly:
+CAM-SIMA talking to capgen-v1 through **three CLI utilities plus the
+on-disk `datatable.xml` contract**, not a Python object model -- notably
+closer to xdsl_ccpp's already-existing `--emit-datatable`/`ccpp_datatable.py`
+than to this Workstream's `ResolvedVar` approach.
+
+**Also confirmed via GitHub**: `johnmauff/CAM-SIMA`'s `xdsl-ccpp-adapter`
+branch has an open PR (#2, -> `development`), whose own description frames
+it as exploratory -- "Not wired into `cam_autogen.py`... kept on its own
+branch while xdsl_ccpp itself is still under evaluation" -- consistent with
+everything above; it was never intended as the production integration path.
+
+**Implication, not yet acted on.** This doesn't make Workstream 1 wrong or
+wasted -- it proved xdsl_ccpp *can* expose this information natively, a real
+capability it previously lacked, and that capability is confirmed intact
+today. But CAM-SIMA's actual migration off legacy capgen went through
+capgen-v1 directly, not through this bridge, and capgen-v1's own stated
+target interface (CLI + `datatable.xml`) is a different shape than what this
+Workstream built. **Paused here by explicit request (2026-08-13)**, pending
+a decision on whether to: (a) finish Stage 8 as originally scoped (sync the
+stale CAM-SIMA-side adapter, land the xdsl_ccpp-side Stage 3 work as a real
+PR) purely as a capability proof; (b) leave Workstream 1 as-is and instead
+investigate whether `--emit-datatable` already satisfies (or could be
+extended to satisfy) capgen-v1's own stated convergence interface; or (c)
+deprioritize this entirely now that CAM-SIMA's real path is confirmed not to
+depend on it.
+
+##### Decision (2026-08-24): resume as Stage 8+, scoped against the real `cam_autogen.py` call sites, not just as a capability proof
+
+**Decision: pursue (a) and (b) together, not as alternatives.** Finishing
+Stage 8 (syncing the stale CAM-SIMA-side adapter) is small and already
+proven; it's also a real prerequisite for (b), not a separate track --
+`cam_autogen.py` needs *both* pieces (resolved-var data and the
+`datatable_report()` query path) working before xdsl_ccpp can generate a
+single real suite cap for CAM-SIMA. This session traced `cam_autogen.py`
+itself (not just this doc's own prior notes) to pin down exactly what those
+two pieces need to do, plus a third piece neither (a) nor (b) covered:
+cap-generation invocation and backend selection, which don't exist at all
+today.
+
+**What `cam_autogen.py` actually calls, confirmed by direct read
+(`johnmauff/CAM-SIMA@xdsl-ccpp-adapter`):**
+- `generate_physics_suites()` (`cam_autogen.py:657`) unconditionally calls
+  real capgen-v1's Python API: `capgen_db = capgen(run_env,
+  return_db=True)` (imported `from ccpp_capgen import capgen` at line 48).
+  No xdsl_ccpp branch exists.
+- The same function then queries the generated `ccpp_datatable.xml`
+  (`cap_output_file`) exactly twice, both via real capgen-v1's own
+  `ccpp_datafile.py` (imported directly from the vendored
+  `ccpp_framework/capgen/` checkout, *not* through
+  `cime_config/capgen_compat/`'s shim layer -- confirming it's treated as
+  the stable, non-shimmed interface): `DatatableReport("utility_files")`
+  (`cam_autogen.py:731`) and `DatatableReport("dependencies")`
+  (`cam_autogen.py:735`). These are the *only* two `datatable_report()`
+  queries this file makes -- not the full `required_variables`/
+  `input_variables`/`suite_variables`/etc. surface `ccpp_datafile.py`
+  exposes, so the real scope here is narrower than "full datatable schema
+  parity."
+- `generate_init_routines()` (`cam_autogen.py:801`) hardcodes
+  `resolved_vars = Capgenv1ResolvedVars(cap_database)`, with its own
+  comment: "Only one such adapter exists today... this call would need to
+  become backend-selectable if a second CCPP-framework implementation is
+  ever adopted alongside it." Confirms no backend-selection mechanism
+  exists anywhere in this file.
+- `generate_registry()`/`generate_registry_data.py` (imports
+  `parse_metadata_file` from `metadata_table` at
+  `generate_registry_data.py:37`) is a **separate, orthogonal step** --
+  it parses the CAM registry's own `.meta` files to emit host-model data
+  structures, independent of which backend generates *suite* caps. It
+  already depends on real capgen-v1's metadata parser today and keeps
+  doing so regardless of this workstream; not part of this scope.
+
+**Real capgen-v1's own `ccpp_datatable.xml` schema** (confirmed directly
+from `ccpp_datafile.py`'s own doctests in the vendored
+`ccpp-framework-fresh/capgen/ccpp_datafile.py`, not guessed): root
+`<ccpp_datatable version="1.0">`; a `<capgen_files>` section containing
+typed sub-elements (`<host_files>`, `<suite_files>`, `<scheme_files>`,
+`<utility_files>`), each holding `<file>` entries as **element text**;
+a separate `<dependencies>` section holding `<dependency>` entries the
+same way. xdsl_ccpp's own `--emit-datatable` output uses a different, ad
+hoc schema (file paths as **attributes**, no `dependencies`/
+`utility_files` sections at all -- this is exactly why `ccpp_cap_refactor_
+plan.md`'s task #32/"Tier 2 of #6" was logged as not-yet-attempted).
+
+**Schema decision (2026-08-24, user confirmed): match real capgen-v1's
+schema exactly**, not a parallel xdsl_ccpp-specific reader. This lets
+`cam_autogen.py`'s existing `from ccpp_datafile import DatatableReport,
+datatable_report` calls read xdsl_ccpp's datatable.xml with **zero
+`cam_autogen.py` code changes** -- the same reader module, already
+vendored, just pointed at a different generator's output. Matches
+capgen-v1's own declared convergence goal (`doc/capgen_compat_layer.md`:
+"CAM-SIMA interacts with capgen through... `datatable.xml`" as "the
+non-negotiable cross-language contract") instead of entrenching a second,
+competing schema.
+
+**Staged plan:**
+- **Stage 8a -- Done (2026-08-24).** Pushed to
+  `johnmauff/CAM-SIMA@xdsl-ccpp-adapter`; PR #2's CI (including the
+  `pylint` gate this fix specifically targeted) is green.
+  `resolved_var_xdsl_ccpp.py` now reads
+  `import_name`/`call_expr` straight off each JSON record (suite_cap.py's
+  `_resolved_var_record` already sets both to `model_var_name` for every
+  record, and `_apply_ddt_chain` overwrites them in place for a DDT
+  member -- reading them directly, rather than re-deriving from
+  `model_var_name` in this adapter, is what makes DDT resolution flow
+  through at all) and `array_ref_dims` off the record too (was hardcoded
+  `None`); `resolve_by_standard_name` now falls back to a new
+  `self._host_vars` dict (the JSON's top-level `"host_vars"` key) for a
+  name that never appears in any phase's own call list, degrading cleanly
+  (no `host_vars` lookup, no error) when that key is absent from an older
+  JSON. Also fixed two real `pylint` findings CI caught on this file
+  independently (`W1514` unspecified-`open()`-encoding,
+  `C0116` missing docstring on `resolve_by_standard_name`) -- both real,
+  not config noise (the `test/.pylintrc` `E0015` in the same CI output is
+  a pre-existing, unrelated pylintrc-vs-installed-pylint-version mismatch,
+  not something this file's own diff caused or should fix). Local
+  `pylint --rcfile=test/.pylintrc`: 10.00/10 (was 9.17/10, CI's own
+  reported score, below the 9.5 gate).
+  - **Verified directly against real xdsl_ccpp CLI output, not by
+    inspection.** Built a minimal DDT fixture (mirroring
+    `tests/unit/test_ddt_chain_resolved_vars.py`'s own
+    `TestDdtChainModuleTableInstance` scenario: a `phys_state_t` DDT
+    instance in a MODULE table, a scheme reading/writing one of its
+    members) and ran it through the real `ccpp_dsl.py` CLI end-to-end.
+    Confirmed the emitted JSON already carries the correct chain
+    (`import_name="phys_state"`, `call_expr="phys_state%counter"`), then
+    fed that same JSON through the fixed adapter and confirmed the
+    resulting `ResolvedVar` carries them through unchanged (would have
+    read `import_name="counter"`, `call_expr="counter"` before this fix --
+    exactly the bug this stage closes). Separately built a second fixture
+    with a host variable declared but never referenced by any scheme arg
+    (mirroring the `ddt_array` fixture's `index_of_potential_temperature`
+    class of gap) and confirmed `resolve_by_standard_name` finds it via
+    the `host_vars` fallback, that a genuinely unknown standard name still
+    correctly returns `None` (not a spurious match), and that the ordinary
+    per-phase lookup still takes priority when a name is in both places.
+    Also confirmed the adapter degrades cleanly (no crash, same behavior
+    as before this fix) against a JSON with the `"host_vars"` key
+    stripped out, simulating an older xdsl_ccpp build.
+  - **Deliberately deferred, still not done: the full 13-fixture
+    `write_init_files.py` byte-identical re-verification** the original
+    Stage 8a plan called for. Attempted directly against
+    `CAM-SIMA-fresh`'s own `test/unit/python/test_write_init_files.py`
+    fixtures, but that harness needs real capgen-v1's own
+    `framework_env.py`/`ccpp_capgen.py` (via CAM-SIMA's `ccpp_framework`
+    git submodule, currently unpopulated in this checkout, and pointed at
+    the wrong fork in `.gitmodules` besides -- the user confirmed the real
+    one for this integration is `johnmauff/ccpp-framework`, not
+    `NCAR/ccpp-framework`) to run `gen_registry`/`capgen()` at all -- an
+    environment-setup gap unrelated to this fix. Deferred by explicit
+    request (2026-08-24), not attempted further. The narrower, real-CLI
+    verification above confirms the fix itself is correct; the full
+    fixture sweep should still happen once that submodule is populated
+    from the right fork.
+  - **Update (2026-09-29): superseded, not a live blocker.** Extensive real
+    CIME regression testing since this was written (the `/cam-sima-regression`
+    xdsl4x suite runs, spanning several weeks, plus the Kessler CPU/GPU
+    parity work) has exercised `write_init_files.py` against real
+    xdsl_ccpp-generated resolved vars across many real cases. This narrower
+    byte-identical unit-fixture sweep is no longer treated as an open item
+    -- the live regression evidence is more thorough than what it would
+    have added.
+- **Stage 8b -- Done (2026-08-24), `dependencies` implemented and directly
+  verified against real capgen-v1's own reader; `utility_files` left
+  empty-but-schema-valid by deliberate scope decision (user-confirmed),
+  not populated with real content.**
+  - **What real capgen-v1 actually does, read directly from
+    `ccpp-framework-fresh/capgen/generator/datatable.py` (the real
+    *writer*, not just `ccpp_datafile.py`'s reader this doc originally
+    scoped against) -- corrects this entry's own earlier guess.**
+    `<capgen_files><utilities>` is **not** derived from `.meta`-declared
+    data at all -- confirmed via `ccpp_capgen.py:1065-1069`, it's a fixed
+    list the driver assembles itself: `ccpp_kinds.F90`, a generated
+    `ccpp_host_constituents.F90`, plus framework-bundled support files
+    (`_resolve_framework_f90_files()`, e.g. `ccpp_constituent_prop_mod.F90`/
+    `ccpp_scheme_utils.F90`-equivalents, resolved from the vendored
+    `ccpp_framework/` checkout itself). `<dependencies>`, by contrast, is
+    exactly what this doc originally expected: sourced from each
+    `MetadataTable.dependencies` (`ccpp_capgen.py:1121-1130`), with a real
+    filter -- host/DDT-adjacent tables' dependencies always contribute;
+    a scheme table's own dependencies only contribute if that scheme is
+    actually referenced by some resolved suite's group membership (an
+    unreferenced scheme passed on the CLI for build-system convenience
+    shouldn't leak its dependencies into the datatable).
+  - **The real, separate gap this surfaced**: xdsl_ccpp's own equivalents
+    of capgen-v1's bundled framework support files
+    (`ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90`) currently
+    live only in `examples/shared/` -- fine for this repo's own example
+    harness, but not resolvable from an installed `xdsl_ccpp` package or a
+    real host model like CAM-SIMA. Deciding where these should actually
+    live (vendored into the installed package, analogous to real
+    capgen-v1's own `_resolve_framework_f90_files()`) is a real design
+    question, not a filename-pattern-heuristic guess -- **deliberately not
+    solved here** (user-confirmed 2026-08-24: implement `dependencies` now,
+    scope `utility_files` content as its own follow-up).
+  - **Implementation** (`xdsl_ccpp/tools/ccpp_datatable.py`): `<dependencies>`
+    added as a new top-level sibling of the existing `ccpp_files`/`schemes`/
+    `api`/`var_dictionaries` sections (confirmed real capgen-v1's own
+    `ccpp_datafile.py` never validates the root element's own tag name, only
+    looks up direct children by tag -- so this file's own `<datatable>` root,
+    unlike real capgen-v1's `<ccpp_datatable>`, needed no change for this to
+    work), populated via a new `_collect_dependencies()` reading each
+    `TablePropertiesOp`'s `dependencies`/`dependencies_path` attributes
+    (task #6 Tier 1's already-IR-forwarded data) and a new
+    `_used_scheme_names()` replicating real capgen-v1's own reference
+    filter (reusing the same group-membership walk the existing `<api>`
+    section already does). Also added a minimal,
+    schema-valid (but content-empty) `<capgen_files><utilities>/<host_files>/
+    <suite_files></capgen_files>` -- **required**, not optional, once
+    real testing showed `DatatableReport("utility_files")` raises
+    `CCPPDatatableError("Element type, 'capgen_files', not found in
+    table")` with no `<capgen_files>` element present at all, which
+    `cam_autogen.py:731` calls unconditionally; this makes that query
+    return an empty list instead of crashing, without deciding what
+    should populate it.
+  - **Known limitation, documented in code, not solved here**: each
+    dependency path is joined with its own table's `dependencies_path`
+    (when set) via a plain relative `os.path.join`, not resolved to an
+    absolute path -- real capgen-v1's own convention resolves
+    `dependencies_path` relative to the *original .meta file's own
+    directory*, but `build_datatable()` only receives parsed MLIR text and
+    a cap-files list (`ccpp_dsl.py:697`), not the original
+    `--scheme-files`/`--host-files` search paths needed to do that
+    resolution. A caller needing an absolute path must resolve this
+    relative path against its own known scheme/host search directory.
+  - **Verified directly against real capgen-v1's own unmodified
+    `ccpp_datafile.py`, not by inspection of the written XML alone.**
+    Generated a real datatable.xml via `examples/capgen` (both suites, six
+    scheme files) and ran `ccpp_datafile.py <path> --dependencies
+    --separator ";"` from the real `ccpp-framework-fresh/capgen/` checkout
+    directly against it: returned `temp_kinds.F90` (deduped -- both
+    `temp_set.meta` and `temp_adjust.meta` declare the identical
+    dependency), exit 0. Ran `--utility-files` the same way: empty output,
+    exit 0 (was a hard crash before the `<capgen_files>` stub was added).
+    Separately built a minimal two-scheme fixture (one referenced by the
+    loaded suite, one not, each with its own distinct `dependencies`
+    entry) and confirmed the unreferenced scheme's dependency is correctly
+    excluded -- proving the reference filter, not just the happy path.
+    Full suite: 628 passed/1 xfailed (unchanged); `ruff` unchanged (the
+    one finding in this file, an import-sort issue, confirmed pre-existing
+    via git-stash comparison, not introduced by this change).
+  - **Copilot review follow-up on PR #94 (2026-08-24), fixed -- a real
+    correctness bug, not a style nit.** `_used_scheme_names()` reused
+    `_iter_schemes_in_group()`, which only descended one `SubcycleOp`
+    level; real suites nest deeper (confirmed against
+    `examples/var_compat/var_compatibility_suite.xml:5-11`, three levels
+    to reach `effr_calc`), and `_used_scheme_names()` also never checked
+    `SuiteOp.init_scheme`/`final_scheme` (the v2.0 SDF suite-level
+    lifecycle hook) at all. Either gap meant a real scheme's own
+    `dependencies` could be silently excluded from the datatable --
+    exactly the kind of missing-compile-dependency failure a host build
+    would only discover as an opaque link error, not something caught
+    here. Fixed: `_iter_schemes_in_group` now recurses into arbitrarily-
+    nested `SubcycleOp` (a 3-line change -- `GroupOp`/`SubcycleOp` share
+    the same body-region shape, so the function calls itself unchanged);
+    `_used_scheme_names()` now also adds `init_scheme`/`final_scheme` when
+    set, matching real capgen-v1's own `used_scheme_names` gate exactly
+    (`ccpp_capgen.py`'s own `suite_init_call`/`suite_final_call` handling).
+    Verified fail-before/pass-after, not just pass-after: two new
+    regression tests (`TestDependenciesSection::
+    test_deeply_nested_subcycle_scheme_included`, mirroring
+    `var_compatibility_suite.xml`'s own 3-level nesting exactly, and
+    `test_suite_init_scheme_dependency_included`) confirmed failing
+    against the pre-fix code via `git stash` before confirming they pass
+    against the fix. Also re-ran the real `var_compat` example end-to-end
+    and confirmed `effr_calc` (the 3-levels-deep scheme) now correctly
+    appears in the generated `<api>` section too -- a direct side-benefit
+    of fixing the shared `_iter_schemes_in_group` walker, not something
+    separately implemented. Full suite: 637 passed/1 xfailed (635 + 2
+    new); `ruff` unchanged.
+
+- **Task #75 (Stage 8b follow-up) -- Done (2026-08-24): vendor the
+  `<capgen_files><utilities>` content for real, matching real capgen-v1's
+  own pattern exactly.** Real capgen-v1's own answer (`ccpp_capgen.py:
+  110-165`, read directly, not guessed): `_FRAMEWORK_SRC_DIR =
+  os.path.join(_SCRIPT_DIR, 'src')` -- a `src/` directory shipped inside
+  the capgen-v1 package itself, not supplied by the host model at all
+  ("capgen ships self-contained -- no external src/ companion needed");
+  `_FRAMEWORK_F90_FILES`, a fixed filename list
+  (`ccpp_constituent_prop_mod.F90`, `ccpp_hashable.F90`,
+  `ccpp_hash_table.F90`, `ccpp_scheme_utils.F90`);
+  `_resolve_framework_f90_files()` joins the two, hard-erring (not silently
+  skipping) if any file is missing, with a message telling the deployer
+  exactly what to do ("Vendor the missing file(s) into capgen/src/").
+  - **Implementation, the same pattern exactly**: moved
+    `ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` from
+    `examples/shared/` (a checkout-only location, unreachable from an
+    installed package or a real host model) to `xdsl_ccpp/framework_src/`
+    -- inside the installed package itself. Added `_FRAMEWORK_SRC_DIR`/
+    `_FRAMEWORK_F90_FILES`/`_resolve_framework_f90_files()` to
+    `xdsl_ccpp/tools/ccpp_datatable.py` (same names, same hard-fail-with-
+    message behavior as real capgen-v1's own). Wired into the
+    `<capgen_files><utilities>` section Stage 8b left empty: now lists
+    `ccpp_kinds.F90` (picked out of the already-generated `cap_files` list
+    by name -- it's always generated, unconditionally, same as real
+    capgen-v1's own first `utility_paths` entry) plus the two resolved
+    framework files. `pyproject.toml` gained a
+    `[tool.setuptools.package-data]` entry (`xdsl_ccpp =
+    ["framework_src/*.F90"]`) so these ship in a real wheel/install, not
+    just a dev checkout.
+  - **`examples/shared/` removed** (user-requested, once #75 landed) --
+    updated all 8 `CMakeLists.txt` files that referenced it by path
+    (`examples/advection`, `advection_flat_host`, `constadv`,
+    `constituents_dim`, `constprop`, `instances_advection`, `nested_suite`,
+    `var_compat`) plus the root `CMakeLists.txt`'s own comment, to
+    `${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/...` instead. Confirmed
+    `XDSL_CCPP_ROOT` (`set(XDSL_CCPP_ROOT "${CMAKE_SOURCE_DIR}")`, root
+    `CMakeLists.txt`) is already visible in every example's own
+    `add_subdirectory()`-inherited scope, so no new CMake variable needed.
+  - **Verified for real, not by inspection alone**: regenerated
+    `examples/var_compat`'s real datatable.xml and confirmed
+    `<capgen_files><utilities>` now lists all three real file paths;
+    ran real capgen-v1's own unmodified `ccpp_datafile.py
+    --utility-files` against it and got the same three paths back, exit
+    0 (previously: a hard `CCPPDatatableError` with no `<capgen_files>`
+    at all, then an empty-but-valid list after Stage 8b, now real
+    content). Confirmed the exact `${XDSL_CCPP_ROOT}/xdsl_ccpp/
+    framework_src/...` path CMake now substitutes resolves to real files
+    on disk. **Built a real wheel** (`python -m build --wheel`) and
+    confirmed both `.F90` files are actually present inside it
+    (`xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90`/
+    `ccpp_scheme_utils.F90`) -- proving the `package-data` declaration
+    genuinely works for a real install, not just an editable dev
+    checkout, which is the exact scenario a real host model like
+    CAM-SIMA needs. Confirmed the file move itself is a pure rename with
+    zero content changes (`git diff` on the moved files: empty). Full
+    suite 628 passed/1 xfailed (unchanged); `ruff` unchanged (same
+    pre-existing baseline finding as Stage 8b, confirmed via git-stash
+    comparison). Could not run a real Fortran compile of any affected
+    example locally (this machine has no Fortran compiler) -- the file-
+    existence-at-resolved-path check above is the practical substitute;
+    a real compile/link check should still happen on the user's own CI.
+- **Stage 9 -- Backend selection + real invocation wiring in
+  `cam_autogen.py`. Implemented (2026-08-24), matching the detailed scope
+  below exactly.** All in
+  `CAM-SIMA-fresh`, none of it in `xdsl-ccpp-fresh` -- Stages 8a/8b already
+  gave `cam_autogen.py` everything it needs to *consume*
+  (`ResolvedVar` adapter, schema-compatible `datatable_report()` queries);
+  Stage 9 is entirely about *calling* xdsl_ccpp instead of real capgen-v1
+  and picking which adapter to build from the result.
+
+  - **Real call chain, traced directly, not assumed**: `cam_config.py`'s
+    `ConfigCAM.generate_cam_src()` (the CIME buildcpp-style driver) reads
+    CIME case XML variables via `case.get_value(...)` (e.g.
+    `self.__gpu_flag = case.get_value("OPENACC_GPU_OFFLOAD")`,
+    `cam_config.py:191`, declared as an `<entry id="OPENACC_GPU_OFFLOAD">`-
+    style block -- the exact shape confirmed via `CAM_DYCORE`'s own entry,
+    `cime_config/config_component.xml:106-118`), then calls
+    `generate_registry()` -> `generate_physics_suites()` ->
+    `generate_init_routines()` in sequence (`cam_config.py:867-904`).
+
+  - **(1) New CIME xml variable.** Add an `<entry id="CCPP_GENERATOR">`
+    block to `cime_config/config_component.xml`, matching `CAM_DYCORE`'s
+    exact shape (`type=char`, `valid_values=capgen,xdsl_ccpp`,
+    `default_value=capgen` -- the default MUST stay real capgen-v1, so
+    every existing case/test keeps building exactly as it does today with
+    zero opt-in required; `group=build_component_cam`,
+    `file=env_build.xml`). Read it in `cam_config.py` alongside
+    `self.__gpu_flag` (`case.get_value("CCPP_GENERATOR")`), thread it as a
+    new parameter into the `generate_physics_suites(...)` and
+    `generate_init_routines(...)` calls.
+
+  - **(2) `generate_physics_suites()` (`cam_autogen.py:484-745`): branch
+    on the new parameter.** The `capgen` branch is the *entire existing
+    function body, byte-for-byte unchanged* -- this is the one thing Stage
+    9 must not touch, since it's CAM-SIMA's real, currently-working
+    production path. The `xdsl_ccpp` branch is genuinely new code:
+    1. Build the equivalent xdsl_ccpp CLI invocation from the same
+       `host_files`/`scheme_files`/`sdfs`/`host_name`/`genccpp_dir`
+       variables the `capgen` branch already computes earlier in the same
+       function (suite/scheme/host discovery is backend-agnostic --
+       nothing there needs duplicating).
+    2. **Invoke as a subprocess, not xdsl_ccpp's Python API in-process --
+       a specific, evidence-based choice, not a style preference.** Traced
+       `ccpp_dsl.py`'s own methods directly: several (e.g.
+       `run_pipeline_stage`'s own error path) call `sys.exit(1)` on
+       failure rather than raising a catchable exception -- confirmed via
+       this doc's own "Smaller interface-shape gaps" note below ("No
+       `CCPPError`-equivalent exception type"). Calling these Python
+       methods in-process from `cam_autogen.py` would let a cap-generation
+       failure kill CIME's *entire build process* with a bare exit code,
+       not a clean, catchable `CamAutoGenError` the way every other
+       failure path in this file works. A subprocess call isolates that:
+       `cam_autogen.py` checks `CompletedProcess.returncode` and raises
+       `CamAutoGenError` itself on nonzero, exactly like every other error
+       path in this file already does. This also matches capgen-v1's own
+       stated convergence goal (`doc/capgen_compat_layer.md`,
+       re-confirmed via the 2026-08-13 re-validation above): CLI
+       invocation is the *preferred* interface, Python API only when CLI
+       is impossible -- it isn't impossible here.
+       **Update (2026-09-29): this specific blocker is fixed.**
+       `ccpp_dsl.py` no longer calls `sys.exit()` internally except at its
+       own CLI `main()` -- failures now raise a catchable `CcppDslError`,
+       making `ccppMain().run()` safe to call in-process. The subprocess
+       choice documented here was correct when made and CAM-SIMA's own
+       production path (subprocess + `--emit-resolved-vars` JSON) doesn't
+       need to change on this basis alone, but the door is now open to an
+       in-process alternative if a future in-process, object-returning API
+       (tracked in `BACKLOG.md`) makes that worthwhile.
+    3. Command shape (confirmed against `ccpp_dsl.py --help` and
+       `ccpp_prebuild.py`'s own precedent for the same option set):
+       `--host-files`/`--scheme-files`/`--suites` each want one
+       comma-joined string, not a repeated flag (`CHANGELOG.md`'s
+       own "Smaller interface-shape gaps" note below already flags this
+       list-vs-string mismatch -- this call site is where it has to be
+       handled, via `",".join(...)`); plus `--host-name`, `-o
+       <genccpp_dir>`, `--tempdir`, `--emit-datatable <cap_output_file>`
+       (same path the `capgen` branch already computes and later queries
+       via `datatable_report()` -- unchanged), and a **new**
+       `--emit-resolved-vars <json_path>` (e.g.
+       `os.path.join(genccpp_dir, "resolved_vars.json")`).
+    4. On nonzero exit, raise `CamAutoGenError` with the subprocess's
+       captured stderr, matching this file's own existing error-message
+       conventions elsewhere.
+    5. **The `utility_files`/`dependencies` `datatable_report()` calls
+       immediately after (`cam_autogen.py:731-745`) need zero changes for
+       either backend** -- this is Stage 8b's actual payoff: real
+       capgen-v1's own vendored `ccpp_datafile.py` reads xdsl_ccpp's
+       `datatable.xml` exactly as it reads real capgen-v1's own, so this
+       whole block (`DatatableReport("utility_files")`,
+       `DatatableReport("dependencies")`, the RRTMGP dependency-path
+       adjustment, `_update_genccpp_dir`) is genuinely backend-agnostic
+       already and needs no branch.
+    6. **Known, accepted consequence of leaving `<capgen_files><utilities>`
+       empty (Stage 8b, task #75 follow-up)**: for the `xdsl_ccpp` branch
+       specifically, the `utility_files` query will always return an empty
+       list until task #75 lands, so `_update_genccpp_dir` copies nothing
+       via that path for an xdsl_ccpp-generated build. Not a Stage 9 bug --
+       an explicit, already-tracked gap; Stage 9 should not attempt to
+       work around it by inventing a filename-pattern heuristic here
+       either (same reasoning as Stage 8b's own deferral).
+    7. **Return-value naming wart, worth fixing while touching this
+       code, not required**: `generate_physics_suites()`'s own return
+       tuple's `capgen_db` position becomes backend-dependent (a real
+       `CCPPDatabaseObj` for `capgen`, a JSON file path string for
+       `xdsl_ccpp`) -- consider renaming to something backend-neutral
+       (e.g. `resolved_vars_source`) at both this function's own return
+       and `generate_init_routines()`'s own parameter, so the dual meaning
+       is visible in the name rather than only in a comment.
+  - **(3) `generate_init_routines()` (`cam_autogen.py:754-811`): branch on
+    the same parameter.** `capgen` branch unchanged
+    (`Capgenv1ResolvedVars(cap_database)`); `xdsl_ccpp` branch imports
+    `XdslCcppResolvedVars` (`from resolved_var_xdsl_ccpp import
+    XdslCcppResolvedVars`, same `sys.path` convention the rest of this
+    file already relies on) and constructs `XdslCcppResolvedVars(cap_database)`
+    -- where, per the naming wart above, `cap_database` in this branch is
+    actually the resolved-vars JSON path, not a database object; pass the
+    backend selection explicitly as a new parameter here too rather than
+    inferring it from `cap_database`'s own type, since explicit is safer
+    than type-sniffing for a cross-backend branch like this.
+  - **Verification plan, staged**: (a) `CCPP_GENERATOR=capgen` (the
+    default) produces a byte-identical build to today's -- this is the
+    regression check that matters most, since it's the only currently
+    real production path; (b) `CCPP_GENERATOR=xdsl_ccpp` against a
+    minimal real CAM-SIMA test case, confirming cap generation succeeds,
+    `write_init_files.py` runs against `XdslCcppResolvedVars`, and the
+    build at least compiles (full run-to-completion comparison against
+    real capgen-v1's own output is a stretch goal, not a Stage 9 blocker,
+    given the still-open items below); (c) a deliberate cap-generation
+    failure (e.g. a malformed suite XML) under `CCPP_GENERATOR=xdsl_ccpp`,
+    confirming it surfaces as a clean `CamAutoGenError`, not a raw
+    subprocess traceback or a silently-succeeded partial build.
+  - **Open items this stage does not resolve, inherited from 8a/8b,
+    listed here so Stage 9 isn't blocked pretending they don't exist**
+    (as originally drafted, before task #75 and the Copilot PR #94 fix
+    landed later the same day -- **correction, 2026-09-29: both of those
+    were in fact resolved before this document's own Stage 9 write-up was
+    finished; the list below originally named them "still open" by
+    drafting-order accident, not because they genuinely were.** Only the
+    first item was ever a real, still-open gap, and it's since been
+    superseded too -- see the note under Stage 8a above):
+    the deferred 13-fixture `write_init_files.py` byte-identical sweep
+    (superseded, see above); ~~task #75 (`utility_files` vendoring)~~
+    (done, see Stage 8b follow-up above); ~~the narrower suite-level-
+    `<init>`/`<final>`-scheme-reference gap in Stage 8b's own dependency
+    filter~~ (done, see the Copilot PR #94 follow-up under Stage 8b above).
+
+  - **Implementation, matching the scope above exactly (`CAM-SIMA-fresh`,
+    branch `xdsl-ccpp-adapter`)**: `<entry id="CCPP_GENERATOR">` added to
+    `cime_config/config_component.xml` (`valid_values=capgen,xdsl_ccpp`,
+    `default_value=capgen`); `cam_config.py` reads it via
+    `case.get_value("CCPP_GENERATOR")` alongside `self.__gpu_flag`, threads
+    it into both `generate_physics_suites(...)` and
+    `generate_init_routines(...)` calls (renaming the unpacked return value
+    at this call site from `capgen_db` to `resolved_vars_source`, per the
+    naming-wart note above -- the function-internal variable name stays
+    `capgen_db` inside `generate_physics_suites` itself, to keep the diff
+    to the untouched `capgen` branch minimal). `generate_physics_suites()`
+    and `generate_init_routines()` both gained a `ccpp_generator="capgen"`
+    parameter (default matches the CIME variable's own default, so any
+    other caller that doesn't yet pass it keeps today's behavior) and an
+    `if ccpp_generator == "xdsl_ccpp": ... else: <original code, unchanged
+    except for reindentation>` branch exactly where scoped. The
+    `XdslCcppResolvedVars` import is deliberately **not** added alongside
+    `Capgenv1ResolvedVars` at this file's own top-of-file import block --
+    it transitively imports `xdsl_ccpp` itself, and an unconditional
+    top-level import would make every `ccpp_generator=capgen` build (the
+    only real production path) fail on any system without `xdsl_ccpp`
+    installed. Deferred to a local import inside
+    `generate_init_routines()`'s own `xdsl_ccpp` branch instead, with
+    `sys.path` temporarily re-extended with `_REG_GEN_DIR` around it
+    (mirroring this file's own top-of-file append/remove pattern, since
+    that directory was already removed from `sys.path` by the time this
+    branch runs).
+  - **Verified for real, in the two ways actually available without a
+    working CIME case (the `ccpp_framework` submodule gap above blocks a
+    true end-to-end CIME run just like it blocked Stage 8a's own full
+    sweep)**: (1) `pylint --rcfile=test/.pylintrc` on both modified `.py`
+    files: 9.89/10 (baseline, confirmed via git-stash comparison: 9.88/10)
+    -- every finding present in both runs is pre-existing (same functions,
+    shifted line numbers only); the one genuinely new finding
+    (`import-outside-toplevel` on the deliberately-deferred import) is
+    suppressed with a targeted `#pylint: disable`/`#pylint: enable` pair,
+    matching this file's own existing suppression convention. (2) Built a
+    minimal real fixture (one host module, one scheme, one suite) and ran
+    the *exact* command shape `generate_physics_suites()`'s new branch
+    constructs directly against it: produced the caps, `resolved_vars.json`,
+    and `ccpp_datatable.xml` in one call, exit 0; fed the resulting JSON
+    through the real `XdslCcppResolvedVars` adapter (confirming
+    `generate_init_routines()`'s own new branch consumes it correctly) and
+    separately through real capgen-v1's own unmodified `ccpp_datafile.py`
+    (confirming the unchanged `datatable_report()` calls right after still
+    work, per Stage 8b) -- both succeeded. Also ran a deliberately broken
+    invocation (nonexistent scheme file) and confirmed a clean nonzero exit
+    (1) with an informative stderr message, exactly what the new
+    `if result.returncode != 0: raise CamAutoGenError(...)` check needs --
+    not a hang, a traceback leaking past the subprocess boundary, or a
+    silent partial success.
+  - **Not verified, and can't be without the submodule gap closing
+    first**: a true end-to-end CIME case build with
+    `CCPP_GENERATOR=xdsl_ccpp` set, and the `capgen` branch's own
+    regression check (confirming `CCPP_GENERATOR=capgen`, the default,
+    still produces byte-identical output to today) -- the code path is
+    unchanged from before this stage (verified by inspection: the only
+    difference is one extra level of `if/else` nesting, no logic edits),
+    but hasn't been re-run through a real case build this session.
+
+Stages 8a/8b can proceed independently and in parallel; Stage 9 depends on
+both landing first (it wires together exactly what they each produce).
+
+---
+
+### Workstream 2: Fix the DDT redefinition bug -- RESOLVED
+
+##### Problem (as understood before investigation)
+
+Confirmed, reproducible bug: when a suite (a) generates both a host cap
+and a suite cap, and (b) references a DDT shared between host and scheme
+(e.g. `ccpp_constituent_prop_ptr_t`), xdsl's IR verifier rejected the
+combined module with `Redefinition of symbol
+"ccpp_constituent_prop_ptr_t"`. Reproduced via CAM-SIMA's
+`test_simple_reg_constituent_write_init` fixture.
+
+##### Actual root cause (confirmed by direct MLIR inspection)
+
+Not a duplicate *type definition* -- a duplicate *use-association stub*
+(an `llvm.GlobalOp` named after the DDT, tagged with which Fortran module
+to `use`), and confined entirely to `ccpp_cap.py` (`suite_cap.py` was
+never at risk -- it only has one stub-emission path). `_generate_ccpp_cap_module`
+had two independent paths that could each decide to emit a stub for the
+same DDT without knowing about the other:
+
+1. `_generate_constituent_api()` (`constituent_cap.py`) unconditionally
+   emits its own hardcoded stubs for `ccpp_constituent_properties_t`/
+   `ccpp_constituent_prop_ptr_t` whenever constituent handling is needed
+   -- necessary, since the constituent-registration code it generates
+   references these types regardless of whether any *parsed metadata
+   arg* happens to be typed with them.
+2. A generic scan (`_collect_ddt_use_stubs`, fed by `ddt_source_module`)
+   over every arg table's declared argument *types*, emitted afterward.
+
+Both got added to `_generate_ccpp_cap_module`'s `all_globals` list; path 1
+was tracked in a local dedup set (`shared_seen_host_globals`), but path 2
+used `_collect_ddt_use_stubs`'s own fresh, local `seen` set and never
+checked path 1's output -- so when a scheme's arg table also referenced
+`ccpp_constituent_prop_ptr_t` by type (the common case), both paths
+independently added a same-named `GlobalOp`, producing the collision.
+
+Confirmed via direct MLIR inspection at each pass boundary (dumping every
+submodule's child symbol names) that exactly two `GlobalOp`s named
+`ccpp_constituent_prop_ptr_t` existed inside the generated
+`<Host>_ccpp_cap` submodule as of right after `generate-ccpp-cap` --
+nothing to do with `TablePropertiesOp`/type-definition duplication at
+all.
+
+##### Fix applied
+
+`xdsl_ccpp/transforms/ccpp_cap.py`, in `_generate_ccpp_cap_module`: route
+the second (generic) stub-emission path through the same
+`shared_seen_host_globals` dedup already used for the constituent-API
+stubs, instead of a raw `all_globals.extend(...)`. Six-line change,
+`constituent_cap.py` untouched (its stubs are still necessary on their
+own). Diff lives uncommitted in the sandbox
+(`xdsl_ccpp/transforms/ccpp_cap.py`) pending review.
+
+##### Verification
+
+- Direct MLIR inspection: zero duplicate symbols in the generated
+  submodule after the fix; `module.verify()` passes.
+- `test/unit/python/test_write_init_files.py` (CAM-SIMA, real subprocess
+  path, all 16 tests): `FAILED (errors=15)` -> `OK`.
+- Full `test/run_python_unit_tests.sh`: `4 out of 16 test collections
+  FAILED` -> `3 out of 16` (the remaining 3 are the pre-existing, unrelated
+  missing-CIME-external issue, not this bug).
+- `examples/helloworld` smoke test (non-constituent case): still passes,
+  no regression.
+
+##### Remaining follow-up (not yet done)
+
+- Add a permanent filecheck regression test under `tests/filecheck/`
+  covering host-cap + suite-cap + constituent-variable generation
+  together, so this doesn't silently regress.
+- Consider whether `_generate_constituent_api`'s hardcoded stub list
+  should eventually be unified with the generic `ddt_source_module`
+  mechanism rather than living as a second parallel path at all --
+  today's fix makes the two paths *coexist safely*, it doesn't merge
+  them.
+
+---
+
+### Smaller interface-shape gaps (fold into Workstream 1's adapter boundary)
+
+Found alongside the two items above; small individually, but the kind of
+thing the `ResolvedVar`/adapter boundary should absorb rather than leave
+for every caller to work around independently:
+
+- `options_db` takes comma-joined **strings** for file-list arguments;
+  capgen-v1 takes plain Python lists. A real format mismatch, not just
+  cosmetic.
+- No `CCPPError`-equivalent exception type -- xdsl_ccpp uses
+  `print()`/`sys.exit()` internally rather than raising something a
+  caller can catch programmatically.
+- Multi-step manual pipeline (`run_frontend` -> `run_opt` ->
+  `split_fortran_output` -> ...) vs. capgen-v1's single `capgen()` call.
+  Ergonomics, not a capability gap, but worth a convenience wrapper.
+
+### Not gaps (confirmed, don't re-litigate)
+
+- `degC` vs `C` unit-string handling, and metadata declaring a custom
+  kind (`kind_dyn_val`-style) with no backing Fortran declaration: both
+  were strictness differences in the *vendored capgen-v1 parser*, not
+  xdsl_ccpp. xdsl_ccpp handled both cases natively without issue.
+- `memory_space` (GPU-directive metadata extension) and the
+  `horizontal_loop_extent` -> `horizontal_dimension` vocabulary migration
+  are one-directional xdsl_ccpp extensions/improvements, not gaps.
+
+### Untested -- unknown, not confirmed either way
+
+- Real production physics suites from `NCAR/atmospheric_physics`.
+  Everything exercised so far was either xdsl_ccpp's own demo examples
+  or CAM-SIMA's synthetic unit-test fixtures.
+- ~~The `datatable_report()`/`DatatableReport` query path itself...~~ --
+  **resolved, no longer untested (2026-08-24, Stages 8b/9/task #75).**
+  Directly verified: xdsl_ccpp's own `<capgen_files><utilities>`/
+  `<dependencies>` output, read by real capgen-v1's own unmodified
+  `ccpp_datafile.py`, returns correct `utility_files`/`dependencies`
+  results; `cam_autogen.py`'s own call sites now wired to actually invoke
+  xdsl_ccpp (Stage 9). See that section's own write-up above for the full
+  verification detail.
+- Nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
+  directives in an actual CAM-SIMA context (only tested in isolation via
+  xdsl_ccpp's own examples) -- still genuinely untested.
+- **Real production physics suites from `NCAR/atmospheric_physics`,
+  exercised through the real, now-wired-up `cam_autogen.py` pipeline.**
+  The single biggest open risk for a first real test: everything this
+  whole engagement has exercised was either xdsl_ccpp's own toy examples
+  or CAM-SIMA's synthetic unit-test fixtures, never an actual production
+  CCPP suite through the real integration path. Not a backlog item to
+  finish before testing starts -- it's the thing a first real test run
+  itself is for.
+
+---
+
+## atmospheric_physics duplication analysis (merged from duplication_analysis_summary.md, 2026-09-29)
+
+**Repo analyzed:** local clone of `NCAR/atmospheric_physics` (companion to `ccpp-framework`), HEAD `b45efc1`, clean working tree.
+**Scope:** Fortran source (`schemes/`, `phys_utils/`, `to_be_ccppized/`), CCPP metadata (`.meta`), and suite-definition files (SDF, `suites/*.xml`, `test/test_suites/*.xml`).
+
+### Executive summary
+
+Three layers were analyzed for duplication. They differ enormously in both proportion and root cause:
+
+| Layer | Total | Duplicated | Percentage |
+|---|---|---|---|
+| Fortran source (`.F90`) | 45,399 lines | 651 lines | **1.4%** |
+| CCPP metadata (`.meta`) | 23,862 lines | 607 lines (intra-`.meta` clones only) | **2.5%** |
+| Suite definitions (SDF XML) | 619 scheme-call entries (1,364 total XML lines, 23 files) | 280 entries | **45.2%** |
+
+But the more consequential finding isn't intra-`.meta` duplication — it's that **most of `.meta`'s content duplicates the adjacent Fortran source itself**, a different and much larger problem than any of the above (see §4).
+
+Of three proposed interventions, ranked by code volume eliminable:
+
+| Intervention | Layer targeted | Volume eliminable |
+|---|---|---|
+| Eliminate `.meta` as a hand-maintained shadow file (generate it from annotated Fortran) | Fortran ↔ metadata redundancy | **~14,300+ lines** |
+| Python suite-composition DSL (replace XML SDF) | SDF | ~280 lines |
+| `scheme_family` code generator (symbolic-tracing templating) | Fortran | ~320-360 lines |
+
+---
+
+### 1. Fortran-layer duplication
+
+**Method:** type-2 clone detection — subroutine/function bodies compared after canonicalizing every identifier by order-of-first-appearance, so renamed-but-structurally-identical code is caught (e.g. `qv` vs `qc` vs `qr`).
+
+**Result:** 27 clone families, 66 member subroutines, 651 duplicated lines out of 45,399 (1.4%).
+
+Of these, 17 families (539 of the 651 lines) were individually verified by reading source, confirming genuine "same formula, different named quantity" duplication:
+
+- `wet_to_dry_{water_vapor,cloud_liquid_water,cloud_ice,rain}` / `dry_to_wet_{...}` (`schemes/utilities/state_converters.F90`) — 8 subroutines, one multiply/divide by `pdel`/`pdeldry` each. **132 lines.**
+- `apply_tendency_of_{eastward_wind,northward_wind,air_temperature}` (`schemes/utilities/physics_tendency_updaters.F90`) — identical 3-statement update pattern. **50 lines.**
+- Saturation-vapor-pressure dispatch family (`to_be_ccppized/wv_sat_methods.F90`, `wv_saturation.F90`) — `qsat_{water,ice,trans}`, `svp_{water,ice}` dispatchers, and pure forwarding wrappers. **~221 lines.**
+- MUSICA TUV-x profile/radiator builders — `create_{dry_air,O2,O3}_profile`, `create_{aerosol,cloud}_optics_radiator`. **73 lines.**
+- Misc. small pairs: `set_{shallow,deep}_conv_fluxes_to_general` (11), `geopotential_height_wrt_sfc_{at_if_,}to_msl_run` (24), `gravity_wave_drag_ridge_{beta,gamma}_init` (23), `to_lower`/`to_upper` (21), `linear_1d_operators.F90` derivative/tridiag wrappers (22).
+
+**One important negative result:** `GoffGratch_svp_water` vs. `GoffGratch_svp_ice` initially looked like the same family (same naming convention, similar "flavor") but turned out on inspection to be genuinely different empirical correlations — different number of terms, different reference constants (`tboil` vs. `h2otrip`), not a renamed copy. The clone scanner correctly did not flag these. This is the boundary of the technique: it collapses duplicated formulas, not merely similar-looking ones.
+
+**Why it exists at all:** CCPP's argument binding is nominal (string-matched by `standard_name`), so a scheme can't be generic over a family of standard names — each physically distinct quantity needs its own named subroutine, even when the logic is identical.
+
+**Estimated achievable savings:** splitting by whether CCPP forces a distinct named entry point per instance:
+- CCPP-scheme-bound families (240 lines: wet/dry converters, tendency updaters, flux/geopotential/init pairs) — need to keep N named entry points, so only "thin wrapper + shared core" is possible → **~45-50% savings, ~110-120 lines.**
+- Internal (non-CCPP) helper families (299 lines: SVP dispatch, MUSICA builders, `linear_1d_operators` wrappers) — no naming constraint, can collapse much further, some (the pure forwarding wrappers) almost entirely → **~70-80% savings, ~210-240 lines.**
+- **Total: ~320-360 lines**, under 1% of the Fortran codebase.
+
+**Mechanism proposed (not implemented):** symbolic tracing, the same technique behind SymPy's Fortran code-printer. A Python `formula=lambda q, pdel, pdeldry: q * (pdel / pdeldry)` is called once with placeholder objects that overload `+ - * /` to build an expression tree instead of computing a value; a printer walks the tree and emits Fortran array syntax. Works cleanly for every confirmed family above (all straight-line arithmetic, no branching); does not and should not apply to schemes with real control flow (`kessler`'s microphysics, `qneg`'s clipping, iterative solvers) — those aren't "one formula, renamed" duplicates in the first place.
+
+---
+
+### 2. SDF (suite XML)-layer duplication
+
+**Method:** each suite's scheme-call sequence treated as an ordered token stream; greedy longest-match-first search for contiguous blocks (length ≥ 2) that recur identically across 2+ files.
+
+**Result:** 24 repeated cross-file blocks, 280 of 619 total scheme-call entries (45.2%) sit inside a block duplicated verbatim elsewhere.
+
+**Headline finding:** `suite_cam4.xml` and `suite_cam7.xml` are largely concatenations of the standalone single-process test suites:
+
+| Monolithic-suite block | Duplicated verbatim in | Length |
+|---|---|---|
+| Rasch-Kristjansson stratiform cloud | `suite_rasch_kristjansson.xml` | 38 schemes |
+| RRTMGP radiation | `suite_rrtmgp.xml` | 38 schemes |
+| Holtslag-Boville vertical diffusion | `suite_vdiff_holtslag_boville.xml` | 31 schemes |
+| Zhang-McFarlane convection | `suite_zhang_mcfarlane.xml` | 28 schemes |
+| Shallow convection | `suite_convect_shallow_hack.xml` | 17 schemes |
+| Gravity wave drag | `suite_gw_cam4.xml` | 16 schemes |
+
+91% of `suite_cam4.xml` (183/201 entries) is reconstructible from these 6 other files — each maintained as a fully independent copy.
+
+Second tier: the `wet_to_dry_*`/`kessler`/`dry_to_wet_*` bracket (14 schemes) is duplicated verbatim between `suite_kessler.xml` and `suite_kessler_test.xml`.
+
+Third tier: small idiomatic 2-5 scheme pairs reused across otherwise-unrelated suites — `check_energy_scaling→check_energy_chng` (5 files), `sima_state_diagnostics→sima_tend_diagnostics` (5 files), `qneg→geopotential_temp` (4 files), `tropopause_find→tropopause_diagnostics` (3 files), and a full 5-scheme closing tail (`thermo_water_update→check_energy_scaling→dycore_energy_consistency_adjust→apply_tendency_of_air_temperature→sima_tend_diagnostics`) shared identically by `suite_cam7.xml`, `suite_kessler.xml`, and `suite_tj2016.xml`.
+
+**Crossed-bracket structural finding:** within `suite_kessler.xml`, two conceptual "wrap" operations around the `kessler` scheme —
+- a *theta basis* bracket: `temp_to_potential_temp` ... `potential_temp_to_temp`
+- a *dry basis* bracket: `wet_to_dry_{water_vapor,cloud_liquid_water,rain}` ... `dry_to_wet_{...}`
+
+— interleave in a way that is **not properly nested** (theta opens first but also closes first, a crossed interval). An automated bracket-pair scan across all 23 suite files found this pattern recurs in exactly one other place: `suite_convection_permitting.xml`, where three tracer conversions (water_vapor, cloud_liquid_water, cloud_ice) bracket a much larger 18-scheme MMM-physics block, opening and closing in matching *forward* order rather than LIFO — i.e. independent resources, not a stack discipline. Two other candidate bracket types (`check_energy_zero_fluxes`/`check_energy_chng`, `rrtmgp_pre`/`rrtmgp_post`) showed **zero** crossings anywhere in the corpus — those are always cleanly nestable.
+
+**Correctness check:** verified (by reading each scheme's declared `intent`/`standard_name` arguments) that the theta and dry-basis conversions around `kessler` touch completely disjoint variable sets, so their relative ordering has no effect on the computed result — reordering to a properly-nested form is safe, just not byte-identical to the original hand-written file. Worth noting: CCPP performs no dependency-based reordering of its own; it executes the SDF list exactly as given, so this safety was never verified by the framework in the first place, only implicitly by whoever wrote the file.
+
+**Proposed alternative — a Python suite-composition DSL:**
+```python
+with suite.group("physics_before_coupler") as g:
+    g.add("calc_exner")
+    with theta_basis(g):
+        g.add("calc_dry_air_ideal_gas_density")
+        with dry_basis(g, TRACERS):
+            g.add("kessler")
+    g.add("kessler_update")
+    ...
+```
+`dry_basis`/`theta_basis` are combinators that auto-insert the conversion bracket around a block, parameterized by a tracer list — collapsing the copy-pasted XML bracket into one reusable call. (Full worked example saved as `suite_kessler_example.py` in this directory.)
+
+**Which pieces are actually reusable, checked against real data:**
+- `theta_basis` — narrowly reusable: a true open+close pair exists only in `suite_kessler.xml`/`suite_kessler_test.xml` (the same suite, forked for testing). `suite_convection_permitting.xml` calls `temp_to_potential_temp` once with no matching close, so it isn't really using this bracket at all.
+- `dry_basis` — genuinely reusable with a parameter: two distinct tracer lists across two suite families (`[water_vapor, cloud_liquid_water, rain]` for kessler; `[water_vapor, cloud_liquid_water, cloud_ice]` for convection_permitting).
+- Bigger payoff than either: `energy_budget` (8 files, zero crossings, safe to factor out), `rrtmgp_radiation` (2 files), and named per-process pipeline functions for the 6 cam4/cam7 blocks above — these account for most of the 45% SDF duplication.
+
+**Estimated savings:** ~280 lines directly, but the more important benefit is eliminating the *risk* that `cam4`'s embedded copy of, e.g., the Rasch-Kristjansson pipeline drifts from the standalone test suite's copy — a correctness/maintenance risk that raw line count understates.
+
+---
+
+### 3. CCPP metadata (`.meta`)-layer duplication
+
+Not initially in scope — added after being asked directly whether `.meta` files had been checked (they hadn't).
+
+**Method:** same clone-detection approach adapted to `.meta`'s INI-like block structure (`[ccpp-table-properties]`, `[ccpp-arg-table]`, per-variable `[ varname ]` sections).
+
+**First pass (exact match): only 237 of 23,862 lines (1.0%)** — surprisingly low, and traced to a real bug-and-finding combination: `wet_to_dry_water_vapor.meta`'s `qv` variable is missing a `long_name` field that the sibling `qc`/`qi`/`qr` blocks all have. That's a genuine small inconsistency in the repo, and it also broke exact-match comparison (one incidental optional-field difference made otherwise-identical blocks look "different").
+
+**After normalizing away that purely-documentary field: 607 duplicated lines (2.5%)** — and the families that appear track almost exactly onto the CCPP-scheme-bound Fortran families (`wet_to_dry_*`/`dry_to_wet_*` alone account for 370 of the 607 lines), plus two `.meta`-only matches (`rrtmgp_{lw,sw}_calculate_heating_rate`, `convect_shallow_diagnostics`/`rk_stratiform_diagnostics`).
+
+---
+
+### 4. The bigger question: how much of `.meta` duplicates the Fortran itself?
+
+This turned out to matter more than intra-`.meta` duplication. Field-by-field classification across all ~3,596 variable-argument blocks in the corpus:
+
+| Category | Fields | Lines | % of `.meta` |
+|---|---|---|---|
+| Fully derivable from Fortran | variable-name header, `type`, `intent` | 10,788 | 45.2% |
+| Mixed | `dimensions` (rank derivable; which standard-named quantity each axis represents is not) | 3,596 | 15.1% |
+| Must be human-supplied, load-bearing | `standard_name`, `units` | 7,192 | 30.1% |
+| Optional, human-added, sparse | `long_name` (present in only ~7.7% of blocks), `advected`, `persistence` | 302 | 1.3% |
+| Structural boilerplate | table headers, separators, blank lines | 1,984 | 8.3% |
+
+So **roughly 45% of every `.meta` file is a mechanical mirror of the Fortran signature** (type, intent, argument name), **~15% is half-mechanical** (dimension count, but not meaning), and **~30% (`standard_name`/`units`) is genuinely irreducible information that cannot be derived from Fortran at all** — this is the actual reason `.meta` exists, since CCPP's cross-scheme wiring depends entirely on `standard_name` matching. This matches the repo's own tooling instructions (`scheme_diagnostics_template.F90`): run `ccpp_fortran_to_metadata.py` to get the skeleton, then "complete the metadata (fill out standard names, units, dimensions)" by hand.
+
+##### Proposed intervention: put `standard_name`/`units` in the Fortran source itself
+
+Rather than accepting `.meta` as a permanently separate, hand-synchronized file, embed the non-derivable fields directly at the declaration site via a structured comment:
+
+```fortran
+real(kind_phys), intent(in) :: qv(:,:)  !! standard_name=water_vapor_mixing_ratio_wrt_moist_air_and_condensed_water units=kg kg-1
+```
+
+This is not a foreign idea for this codebase — it already does the equivalent twice: the `!> \section arg_table_X_run` Doxygen-style markers, and the pervasive `!$acc parallel loop collapse(2)` OpenACC directives throughout `kessler.F90`, `kessler_update.F90`, `wv_sat_methods.F90`. Both are "semantic information a bare type signature can't express, embedded in a structured comment co-located with the code it describes." `standard_name`/`units` would be a third instance of the same house style.
+
+**Practically achievable without changing CCPP itself:** `capgen` only ever consumes `.meta` as a file, indifferent to its provenance. A local pre-build step (extending the already-referenced `ccpp_fortran_to_metadata.py`) could parse the annotated Fortran and mechanically emit `.meta` in full — turning it from hand-maintained source into a generated build artifact that can never drift from the declarations it describes, eliminating exactly the class of bug found in §3 (the missing `qv` `long_name`) by construction.
+
+**Caveats:** a few things aren't naturally per-argument-line (table-level scheme name, cross-references to other schemes' declared dimension standard-names) and need a modest annotation-scheme extension beyond one tag per line; and this fixes the *two-sources-of-truth* problem, not the *N-named-entry-points-per-family* problem from §1 — the two ideas compose (a `scheme_family` generator could emit annotated Fortran per tracer, and this extraction step turns that into `.meta` "for free," with zero un-derivable residue left).
+
+##### Magnitude comparison
+
+| Intervention | Lines eliminable | What kind of win |
+|---|---|---|
+| `scheme_family` generator (§1) | ~320-360 | Deduplicating copies of a formula *within* Fortran |
+| Python SDF DSL (§2) | ~280 | Deduplicating copies of a scheme sequence *within* XML |
+| Eliminate `.meta` as hand-maintained shadow file (§4) | **~14,300+** (the derivable+mixed 60.3% of 23,862 lines that would no longer need separate authorship, review, or sync) | Eliminating an entire *second representation* of information that already exists elsewhere |
+
+The third is not just larger, it's a different category of fix — the first two remove redundant copies of the same kind of artifact; the third removes the need for an entire redundant artifact format to exist as hand-written source at all. It is also the one requiring the most new tooling investment (an annotation parser and a pre-`capgen` generation step), versus the other two, which are purely local Python authoring-layer changes with no build-pipeline impact.
+
+---
+
+### 5. Effort assessment: eliminating the `.meta` shadow file
+
+This section evaluates how hard the §4 proposal (embed `standard_name`/`units` in the Fortran source and generate `.meta` mechanically) would actually be to build, grounded in a review of the real source of [`johnmauff/xdsl-ccpp`](https://github.com/johnmauff/xdsl-ccpp) — an experimental MLIR/xDSL-based alternative to `ccpp_capgen` under active development — rather than assessed in the abstract.
+
+**Most of the required architecture already exists:**
+
+- **Two independent "derive from Fortran" extractors are already implemented** — `fparser2_to_meta.py` (pure-Python parse) and `fir_to_meta.py` (via Flang/HLFIR compilation) — and both docstrings independently state the exact same gap this analysis derived from `atmospheric_physics` data: *"Information NOT available from Fortran source text: `standard_name`/`long_name`, `units`, kind name."* This is convergent validation of the §4 field-derivability split from a completely independent source.
+- **`ccpp_generate_meta.py` already generates stub `.meta` skeletons** from either extractor, filling unresolvable fields with placeholders (`std_name_001`, `enter_units`) — matching the existing `ccpp_fortran_to_metadata.py` workflow, i.e. "generate skeleton, then hand-edit," not yet closing the loop.
+- **The IR already has zero-cost room for the missing fields.** `ArgumentOp` in `xdsl_ccpp/dialects/ccpp.py` already declares `standard_name`, `units`, `long_name`, `dim_names` as first-class optional properties, currently populated from the XML/`.meta` frontend or the Python `py_api` inline-authoring mode. The `.meta`-text writer (`meta_from_module`) already prints these generically from whatever's on the op. **Adding a third way to populate the same properties — from a parsed Fortran comment — requires no dialect change and no writer change**, only a change to the extraction step.
+- **A Python suite-authoring frontend already exists** (`xdsl_ccpp.frontend.py_api`, `@ccpp_suite`/`@ccpp_scheme`/`forLoop`), independently arriving at the same "suites should be composable Python, not XML" idea proposed in §2 — though without a `dry_basis`/`theta_basis`-style auto-bracketing combinator yet.
+
+**The hard technical fork:** annotation-based generation can only ever work through the `fparser2` path, never the Flang/FIR path. Once Flang compiles source to FIR/HLFIR, comments are gone — `fir_to_meta.py` reads compiler IR that never retained them. So this only ever extends `fparser2_to_meta.py`; the compiler-validated route stays `.meta`-consuming, not `.meta`-producing, for this purpose.
+
+##### Resolved: how `fparser2` actually handles the annotation
+
+Tested directly against the installed `fparser2` library rather than assessed from documentation. **Comments are fully stripped from the parse tree** — confirmed empirically: parsing a subroutine with `!! standard_name=... units=...` comments (trailing or standalone) through `f03.Program(reader)`, the exact API `fparser2_to_meta.py` already uses, produces zero `Comment` nodes anywhere near the declarations.
+
+However, every parsed `Type_Declaration_Stmt` carries `.item.span` (the exact 1-indexed source line range the statement occupies) and `.item.line` (the statement text with the comment already removed). That's enough for a reliable recovery path: split the original source into lines once, index into the statement's line span, and regex for `!` onward on that raw line. Demonstrated end-to-end on a real 149-character standard name:
+
+```
+Parsed OK: REAL, INTENT(IN) :: qv_tend(:, :)
+item.span: (4, 4)
+item.line (comment stripped by fparser2): real, intent(in) :: qv_tend(:,:)
+Recovered comment via raw-line cross-reference:
+  !! standard_name=tendency_of_water_vapor_mixing_ratio_wrt_moist_air_and_condensed_water_from_cloud_condensation_minus_precipitation_evaporation_due_to_deep_convection units=kg kg-1 s-1
+Recovered standard_name matches original: True
+```
+
+fparser2 parsed the 222-character source line with zero errors — no truncation, no failure. **This resolves the earlier "one real unknown" and downgrades it from a medium-risk spike to a small, well-defined implementation task** with a working technique already demonstrated. No `fparser2` patching or lower-level tokenizer access is needed.
+
+##### Resolved: the line-length concern, checked against the real corpus
+
+Pulled the actual `standard_name` length distribution across all 3,596 variable blocks in `atmospheric_physics`:
+
+| Threshold | Count exceeding | % |
+|---|---|---|
+| > 60 chars | 1,363 | 37.9% |
+| > 80 chars | 590 | 16.4% |
+| > 100 chars | 224 | 6.2% |
+| > 132 chars (traditional Fortran free-form limit) | 27 | 0.8% |
+
+Median is 53 characters, max is 167. `units` values are short and negligible (median 15, max 31 chars). So the risk is real but narrow — under 1% of variables would push a trailing-comment line past 132 characters from the standard name alone.
+
+More importantly: **this isn't a new problem the proposal introduces.** The current `.meta` file already contains an unwrapped ~186-character line for that same worst-case name, sitting in the repo today without remark, because plain-text `.meta` was never subject to any line-length convention. What's new is only that Fortran source is traditionally held to a stricter one — so the proposal relocates an existing "some names are long" reality rather than creating it.
+
+##### Refined design: name-tagged annotation block, not trailing-per-line comments
+
+The original sketch (a `!!` comment trailing each declaration) has a real weakness: matching by line adjacency is fragile to reordering — if declarations get rearranged and a comment doesn't move with its declaration, the association silently breaks. A better design tags each annotation with the variable's local name explicitly and matches by name instead of position:
+
+```fortran
+subroutine wet_to_dry_water_vapor_run(ncol, nz, pdel, pdeldry, qv, qv_dry, errmsg, errflg)
+  !ccpp [qv] standard_name=water_vapor_mixing_ratio_wrt_moist_air_and_condensed_water units=kg kg-1
+  !ccpp [qv_dry] standard_name=water_vapor_mixing_ratio_wrt_dry_air units=kg kg-1
+  integer, intent(in) :: ncol
+  ...
+```
+
+This is deliberately close to `.meta`'s existing `[ qv ]` bracket-header syntax, just prefixed with a comment marker and relocated into the `.F90` file — minimal new grammar to design or teach. Advantages over the trailing-per-line version:
+
+- **Immune to reordering.** Matching is "does this tag's bracketed name match a real dummy argument," not "is this comment adjacent to the right line" — declarations can be reordered freely with no risk of silent misattribution.
+- **Groups cleanly into one block**, close to today's `.meta` right after the `subroutine` header, rather than being scattered one-per-declaration-line — better readability, and it further defuses the line-length concern since the block's lines never sit next to or compete with code.
+- **Simpler to implement, not harder.** Matching only needs to be *subroutine*-scoped, not *line*-scoped: use `fparser2`'s `Subroutine_Subprogram` span to find all `!ccpp [name]` tags anywhere within that range, then join by name. This is coarser-grained than the line-span technique already demonstrated above, so it composes directly with it while requiring less bookkeeping.
+- **Enables a hard validation check that doesn't exist today**: the extraction tool can error if a `!ccpp [name]` tag doesn't match any actual dummy argument, or if an argument has no matching tag — a build-time consistency guarantee current `.meta` never had. Today, Fortran and `.meta` can silently drift (as found with `qv`'s missing `long_name` in §3) with nothing catching it.
+- **One small thing reintroduced, worth being explicit about:** the local name is now spelled twice — once in the declaration, once in the tag's bracket — so it can itself go stale if a variable is renamed without updating its tag. This is a much narrower risk than today's, where five fields (type, intent, dimensions, standard_name, units) can each independently drift; here only the name-as-join-key can drift, and the hard-error check above turns that into a build failure rather than a silent gap.
+
+##### Bonus finding: `memory_space` is likely derivable too — from existing GPU directives, not a new annotation
+
+`xdsl-ccpp`'s `ArgumentOp` also carries a `memory_space` property (`"host"`/`"device"`/`"unified"`), added to drive GPU data-movement directive generation. Unlike `standard_name`/`units`, this is a *mechanical/data-placement* property, not a *physical-meaning* one — much closer in kind to `intent`, which is already fully derivable. That makes it a fundamentally better candidate for derivation, and this codebase already shows the right kind of evidence.
+
+`schemes/kessler/kessler_update.F90` has a currently-disabled macro:
+```fortran
+!#define DEVICEPTR(...) deviceptr(__VA_ARGS__)
+#define DEVICEPTR(...)
+```
+whose clear intent, once enabled, is to expand into an OpenACC clause naming exactly which arguments the kernel expects as device pointers — e.g. `!$acc parallel loop collapse(2) deviceptr(theta, exner, temp_prev, ttend_t)`. That's a per-variable, machine-parseable assertion of device residency sitting in the compute directive itself.
+
+Tested whether this is recoverable using the same subroutine-span cross-referencing technique already demonstrated for `!ccpp` tags (fparser2 strips `!$acc` sentinel comments too, confirmed empirically — same as any other comment). Scanning `kessler_update_run`'s line span for `!$acc ... deviceptr(...)` and matching names recovered exactly the right set with no new annotation grammar at all:
+```
+subroutine kessler_update_run: span=(3, 23)
+  device-resident (deviceptr) vars found: {'theta', 'ttend_t', 'temp_prev', 'exner'}
+```
+
+**Where this goes architecturally:** not into the `!ccpp [name] key=value` block alongside `standard_name`/`units` — it would be a separate, fourth extraction pass (parallel to the type/intent/rank extractor and the `!ccpp`-tag extractor) that scans for `!$acc`/`!$omp` directives within a subroutine's span and feeds the result into the same, already-existing `ArgumentOp.memory_space` property. Same target, same merge point, different source.
+
+**Caveats:** (1) this only gives a signal for variables a scheme's directives *already* name explicitly — an unported subroutine gives nothing, and would need to fall back to an explicit `!ccpp` tag or a project-wide default; (2) absence of a clause doesn't reliably mean "host," since some OpenACC/OpenMP code relies on an outer `!$acc data` region or compiler defaults rather than per-call clauses, so the signal is only as strong as the scheme's own discipline about writing explicit clauses; (3) the dialect already separates this from `model_var_memory_space` ("memory space declared by the host model") — only the scheme-side `memory_space` is derivable from the scheme's own Fortran; the host-side fact would still need to come from the host's own metadata.
+
+**Staged effort:**
+
+| Phase | Work | Size |
+|---|---|---|
+| 0. Design | Finalize the `!ccpp [name] key=value ...` grammar; decide how table-level scheme name and cross-scheme dimension standard-names (not local to one line) get expressed | Small — days |
+| 1. Extend `fparser2_to_meta.py` | Use `Subroutine_Subprogram` span to collect `!ccpp` tags per subroutine, join by bracketed name against the already-extracted declaration dict, merge into the same `attrs` structure that already feeds `type`/`intent`/`rank`; wire `ccpp_generate_meta.py` to use real values instead of stubs when present, and hard-error on unmatched tags/arguments | Moderate — well-isolated, no IR changes needed, and the core recovery technique is already demonstrated working |
+| 2. Add a `memory_space` extraction pass | Scan each subroutine's span for `!$acc`/`!$omp` device/data clauses (`deviceptr`, `present`, `copyin`/`copyout`), populate `ArgumentOp.memory_space` directly — independent of the `!ccpp` tag mechanism, reusing the same span-based recovery technique | Small — narrow, well-isolated, technique already demonstrated working |
+| 3. Migrate `atmospheric_physics` | Backfill ~3,596 existing variable declarations across ~126 `.meta` files as `!ccpp` blocks — a scripted job, not re-authoring, since the `standard_name`/`units` values already exist in the checked-in `.meta` today; a one-time tool matches each `.meta` block to its Fortran subroutine by name, inserts the tagged block, then round-trips through the new generator to diff against the original for verification | Moderate, mostly automated, human review only on mismatches (like the `qv`/`long_name` gap found in §3) |
+| 4. CI wiring | Regenerate `.meta` as a build step; check it matches the committed copy (standard generated-artifact CI pattern) | Small |
+
+**A framing point that lowers perceived risk:** this doesn't require the repo to stop *committing* `.meta`, and it doesn't require any change to production `ccpp-framework`/`capgen` at all — a generated `.meta` file is still a completely valid `.meta` file. What changes is that humans stop *hand-editing* it; annotated Fortran becomes the source of truth, and `.meta` becomes a build artifact that also happens to be checked in for the benefit of tools that only know how to read `.meta`. That makes this adoptable incrementally, without coordinating a change to the production toolchain.
+
+**Overall verdict:** given how much of the surrounding plumbing (IR schema, `.meta` writer, module-grouping convention, entry-point-suffix filtering) already exists and already generalizes cleanly to this, and given that the two open risks (comment retrievability, line length) are now both resolved with working techniques and real corpus data rather than open questions, this looks like a small-to-moderate effort — on the order of a couple of focused weeks for the tooling change plus the one-time migration script — with no remaining architecturally risky unknowns. The irreducible 30% (`standard_name`/`units` content itself) was never going to get easier to *author*; what this buys is making it impossible for that content to *drift* from the Fortran it describes, and with the name-tagged design, making any remaining drift a loud build failure rather than a silent gap — which was the actual problem this analysis was chasing, not the authoring effort itself. `memory_space` turning out to be plausibly derivable from existing (if currently dormant) GPU directives is a bonus: it suggests the "genuinely irreducible" fraction of `.meta` may be smaller than the §4 field-derivability table implies once fields like this are examined individually rather than assumed to all be equally human-only.
+
+---
+
+### Files produced during this analysis
+
+- `suite_kessler_example.py` — worked Python SDF DSL sketch for `suite_kessler.xml`, corrected for the `kessler`/`kessler_update` adjacency and crossed-bracket issues discussed in §2.
+- Clone-detection scripts (Fortran, SDF-block, `.meta`) were run from scratch space and are not preserved in this directory, but all reported numbers are reproducible from the methods described above.
+
+---
+
+## EAMxx bridge automation design proposal (merged from EAMxx/EAMxx-bridge-automation.md, 2026-09-29)
+
+This document is a forward-looking design proposal, not a record of work already done (see
+`EAMxx/kessler-README.md` for that). It addresses: given both the CPU and GPU (OpenACC) Fortran versions of a
+scheme like Kessler, how would `xdsl-ccpp` need to be used and extended to automatically generate
+all of the code required to call it from EAMxx, including the EAMxx `AtmosphereProcess` C++
+interface itself, not just the Fortran bridge/cap layer? Investigated 2026-07-29 by reading the
+`xdsl-ccpp` generator source (`xdsl_ccpp/transforms/`) in addition to its docs. No code changes were
+made; nothing here has been implemented.
+
+---
+
+### What already exists in xdsl-ccpp that's reusable
+
+The generator has more GPU-directive infrastructure than its own docs (`multilanguage_limitations.md`)
+let on. `xdsl_ccpp/transforms/gpu_data_pass.py` and `gpu_ccpp_cap_pass.py` read `memory_space`
+metadata annotations and automatically insert `!$acc`/`!$omp target` data-movement directives
+(`enter/exit data`, `update device/self`) at the correct lifecycle-phase boundaries, including
+handling for cross-phase hoisting and per-scheme "diverged" variables. This is exactly the machinery
+that produced the directives seen in `generated_bridge/Kessler_ccpp_cap.F90`.
+
+However, this GPU-directive machinery is wired only into the plain `ccpp_cap.py` path -- the one
+that expects a Fortran host module (`type = module`, e.g. the never-generated
+`eamxx_kessler_host_mod`) -- and is **not** connected to `xdsl_ccpp/transforms/cpp_interop.py`'s
+chost-cap path, which is what actually generates `Kessler_ccpp_chost_cap.F90`/`.h` and is what the
+EAMxx C++ interface calls. That's the structural reason the chost cap has zero GPU-directive support
+today.
+
+`cpp_interop.py` itself (the chost-cap generator, pass name `generate-cpp-cap`) is a solid,
+well-factored per-lifecycle emitter: it already does kind mapping (`kind_phys` -> `real(c_double)`/
+`double`), DDT flattening, and automatic `ncol`/`nz` injection, all driven off the completed IR. A
+new EAMxx-targeted printer should build on this same completed-IR state rather than re-deriving it
+from the raw `.meta` files.
+
+---
+
+### Phase A -- Teach the metadata format about CPU/GPU scheme variants
+
+This directly fixes bugs #2/#3 from `EAMxx/kessler-README.md` at the tool level instead of via a hand-patched meta
+fork.
+
+1. **Fix the upstream drift first.** Update
+   `GPU_ports/atmospheric_physics/schemes/kessler/kessler_update.meta` so it actually matches its own
+   `.F90` (add the missing `ncol`/`nz` entries on `kessler_update_timestep_init` and
+   `kessler_update_timestep_final`, in the real subroutine's argument order, including the
+   `errflg`-before-`errmsg` ordering on `timestep_final`). Do the same check for `kessler.meta`, even
+   though `kessler_run`/`kessler_init` were confirmed identical between the CPU and GPU_ports trees.
+2. **Add a variant tag to the metadata format.** Extend `[ccpp-table-properties]` with a new
+   property, e.g. `variant = openacc`, parallel to the existing `array_layout` and `language`
+   properties, so the CPU and GPU_ports `.meta` files for the same scheme can both be fed to the
+   generator in one invocation without one overwriting the other.
+3. **Extend `suite_cap.py`'s call emission.** The code that currently emits a single hardcoded
+   `call kessler_update_timestep_init(...)` needs to detect when two variant tables for the same
+   scheme+lifecycle have different argument lists, and emit a `#ifdef <directive-flag>` /
+   `#else` branch automatically -- mechanizing the fix from the README's to-do list, generically,
+   for any future scheme divergence, not just Kessler.
+
+Effort: moderate. No new printer required. This alone would make `ccpp_xdsl` capable of generating a
+correct, dual-variant chost cap for Kessler in one command, with no hand-editing of generated output.
+
+---
+
+### Phase B -- Make the chost cap's device-pointer contract explicit
+
+Today, "the host always hands the cap an already-resident device pointer" is true only because EAMxx
+happens to behave that way and the GPU_ports scheme happens to use `!$acc ... deviceptr(...)`
+clauses internally -- nothing in the metadata says this is guaranteed. Proposed fix: add a host-meta
+property (e.g. `gpu_pointer_mode = deviceptr`, sibling to the existing `array_layout`) that tells
+`cpp_interop.py` to emit zero data-staging directives at the chost-cap boundary and simply pass
+pointers through as-is.
+
+This turns `multilanguage_limitations.md` section 2's current state -- "the generated code provides
+no help with this, hope your scheme happens to use `deviceptr`" -- into a documented,
+generator-checked contract. It also creates a place for the generator to flag a mismatch at
+generation time (e.g. `memory_space = device` declared on an argument, but the scheme's own
+directives don't use `deviceptr`), instead of only failing silently at runtime.
+
+---
+
+### Phase C -- A new "EAMxx AtmosphereProcess" printer
+
+This is the actual "generate the whole C++ interface" ask. Nothing like it exists in xdsl-ccpp today
+-- `multilanguage_plan.md` only ever generates a flat C header plus a thin C++ ergonomics wrapper
+(`Kessler_chost.hpp`), never a framework-integrated host class. It would be a new backend module,
+e.g. `xdsl_ccpp/backend/print_eamxx_process.py`, consuming the same completed IR that
+`cpp_interop.py` already builds.
+
+##### Mechanical part (low risk -- the IR already has what's needed)
+
+- `initialize_impl` / `run_impl` / `finalize_impl` bodies that call the generated
+  `Kessler_chost_physics_*` entry points in the correct lifecycle order. This is a direct readout of
+  the suite's lifecycle function list, which `cpp_interop.py` already computes internally.
+
+##### Requires genuinely new, EAMxx-specific metadata vocabulary
+
+- `create_requests()`'s `add_field<Required/Updated/Computed>` / `add_tracer` calls need each host
+  variable classified beyond what CCPP's `intent` already captures: is this a Field-Manager-registered
+  field, a tracer, or purely local/derived data never seen by the host's field manager? What
+  `FieldLayout` tags does it need (`COL`, `LEV`)? (`units` is already present in the metadata and
+  needs no extension.)
+- Buffer management (`requested_buffer_size_in_bytes` / `init_buffers`, `ATMBufferManager`) and the
+  Kokkos transpose glue (`params_helpers` / `params_computed` structs, `h_*` vs `f_*` view selection)
+  require the generator to understand EAMxx's buffer-manager and Kokkos-View APIs specifically. There
+  is no existing analog anywhere in the tool for this. This is the highest-effort, most bespoke piece
+  of the whole plan, and the first version would likely still need per-process hand-tuning (pack
+  sizes, buffer counts) even once generated.
+
+##### Should stay hand-written -- permanently, not just for now
+
+- **`add_invariant_check` / `add_postcondition_check` physical bounds** (e.g. `qv` clamped to
+  `[1e-13, 0.2]`). This is an EAMxx QA convention with no CCPP equivalent. Encoding "what bounds are
+  physically sane for this variable" into generic scheme metadata would be scope creep well beyond
+  what a bridge-code generator should take on.
+- **Energy-fixer boundary-flux zeroing** -- EAMxx-integration bookkeeping unrelated to Kessler
+  itself.
+
+The claim that originally sat here -- that all of the host-side physics derivation
+(`PF::exner_function`, `calculate_theta_from_T`, `calculate_dz`, `calculate_z_int`/`calculate_z_mid`)
+should stay permanently hand-written because it's "not part of Kessler's CCPP-described interface at
+all" turned out to be wrong. See the next section.
+
+---
+
+### Revision (2026-07-29): the real suite XML changes the "hand-written" assessment
+
+The assessment above was based only on the two-scheme suite (`kessler`, `kessler_update`) described
+by `xdsl-cpp/examples/kessler/scheme/kessler_suite.xml`, the ad hoc suite definition used to generate
+this bridge. The actual upstream suite definition,
+`atmospheric_physics/suites/suite_kessler.xml`, lists 20 schemes across two groups:
+
+```
+physics_before_coupler:
+  calc_exner, temp_to_potential_temp, calc_dry_air_ideal_gas_density,
+  wet_to_dry_water_vapor, wet_to_dry_cloud_liquid_water, wet_to_dry_rain,
+  kessler,
+  potential_temp_to_temp, dry_to_wet_water_vapor, dry_to_wet_cloud_liquid_water, dry_to_wet_rain,
+  kessler_update,
+  qneg, geopotential_temp,
+  check_energy_zero_fluxes, check_energy_scaling, check_energy_chng,
+  sima_state_diagnostics, kessler_diagnostics
+physics_after_coupler:
+  thermo_water_update, check_energy_scaling, dycore_energy_consistency_adjust,
+  apply_tendency_of_air_temperature, sima_tend_diagnostics
+```
+
+`eamxx_kessler_process_interface.cpp` already tracks this exact list via inline
+`// <scheme>name</scheme>` comments -- whoever wrote the bridge was working through this real suite
+XML scheme-by-scheme. Reading `schemes/utilities/state_converters.F90` (which implements
+`calc_exner`, `temp_to_potential_temp`, `calc_dry_air_ideal_gas_density`, and all the wet/dry
+conversion schemes) splits the old, single "physics derivation" bucket into three categories that
+need different treatment, plus a fourth for `geopotential_temp` specifically.
+
+##### Category 1 -- Real CCPP schemes, formulas match, kept hand-fused purely for performance
+
+`calc_exner_run` (`exner = (pmid/ref_pres)**(rair/cpair)`) and `temp_to_potential_temp_run`
+(`theta = temp/exner`) are essentially the same math as `PF::exner_function`/
+`PF::calculate_theta_from_T`, just expressed as standalone CCPP schemes instead of Kokkos device
+functions. One real subtlety: `calc_exner_run` takes per-column, composition-dependent `rair`/`cpair`
+as arguments, while EAMxx's `PF::exner_function(p_mid)` uses fixed dry-air constants internally -- so
+the current hand-written preprocessing kernel and the real CCPP scheme are not even bit-identical
+today; the CCPP version is arguably *more* thermodynamically self-consistent, since it reuses the
+same composition-dependent `cpair`/`rair` fed into Kessler downstream. These genuinely could be
+generated and called as separate bridge calls -- the reason not to is pure performance: doing so
+would add two more Fortran round-trips (with column-major transposes each way) for cheap per-column
+arithmetic that's currently fused into one Kokkos `parallel_for` alongside the rest of the
+preprocessing. That is a legitimate engineering tradeoff, not a generator limitation, so the original
+"not part of Kessler's CCPP interface at all" framing was wrong for this subset.
+
+##### Category 2 -- Nominally generatable; needs manual/metadata verification of matching conventions, not an assumption
+
+`calc_dry_air_ideal_gas_density_run` computes `rho = pmiddry/(rair*temp)` using **dry** mid-level
+pressure, not EAMxx's mass-weighted `rho = pseudo_density/(g*dz)` derivation -- a genuinely different
+vertical-coordinate approach requiring a `pmiddry` quantity EAMxx does not currently compute.
+`create_requests()` even has a commented-out line, `add_field<Required>("pseudo_density_dry", ...)`,
+suggesting this was started and abandoned. Whether the CCPP scheme's ideal-gas density and EAMxx's
+mass-weighted density agree closely enough to be interchangeable is a real open physics question, not
+a code-generation question, and should not be assumed either way without checking.
+
+The wet/dry mixing-ratio converters (`wet_to_dry_water_vapor`, `dry_to_wet_water_vapor`, etc.) looked
+like a similar unaddressed gap at first glance, since the bridge has no comment justifying skipping
+them (every other skipped scheme in Category 3 below has one). **This has since been confirmed not to
+be a bug for Kessler specifically**: both `kessler_run` and `kessler_update`'s Fortran already declare
+`qv`/`qc`/`qr` with standard name `water_vapor_mixing_ratio_wrt_dry_air` (etc.), and this matches what
+EAMxx already provides for those fields, so no wet/dry conversion is needed in this particular case --
+the standard names agree on both sides of the host/scheme boundary.
+
+That agreement will not hold for every future scheme, though. CCPP's standard-name convention is
+exactly the mechanism that should catch a mismatch (a scheme expecting
+`water_vapor_mixing_ratio_wrt_dry_air` will simply fail to match a host variable declared
+`_wrt_moist_air`, forcing either an explicit conversion scheme in the suite or a host-side fix) -- but
+that protection only works if the host `.meta` file's standard name is *honestly* the basis the host
+variable is actually on. A host author who mislabels a wet-basis field as dry-basis produces a
+silent, high-confidence-looking match that is simply wrong, and no automated check catches a
+mislabeling problem, since matching is defined as standard-name equality, not a semantic audit. So
+the right practice going forward is: confirm the moisture basis (and any other convention a standard
+name implies) by hand for each new field the first time it's wired up, and/or add this to a
+host-to-scheme meta consistency check (see the suite-coverage idea below) rather than assuming
+agreement by default.
+
+##### Category 3 -- Real schemes, structurally superseded by EAMxx's own centralized infrastructure
+
+`qneg`, `check_energy_zero_fluxes`/`check_energy_scaling`/`check_energy_chng`,
+`sima_state_diagnostics`/`kessler_diagnostics`/`sima_tend_diagnostics`, `thermo_water_update`,
+`dycore_energy_consistency_adjust`, `apply_tendency_of_air_temperature` are all real, generatable CCPP
+schemes, but each has a comment in `eamxx_kessler_process_interface.cpp` mapping it to an
+EAMxx-generic mechanism instead: postcondition/invariant field checks substitute for `qneg`,
+`output_fields.yml`-driven diagnostics substitute for the `sima_*`/`kessler_diagnostics` schemes, and
+a single centralized energy-fixer `AtmosphereProcess` (wrapping the whole process list, not per-scheme)
+substitutes for the `check_energy_*` family. Calling the generated versions of these *in addition to*
+EAMxx's centralized equivalents would risk double-applying corrections -- e.g. two independent energy
+adjustments on the same budget. This is a durable, architectural reason to exclude them, not a
+metadata gap, and a smarter generator should never try to paper over it. Two of these
+(`thermo_water_update`, and the `dycore_energy_consistency_adjust`/`apply_tendency_of_air_temperature`
+pair) are marked with "I think" / "TODO ?" in the existing comments -- genuinely unresolved
+uncertainty in the current bridge, independent of code generation.
+
+##### `geopotential_temp` -- a fourth, distinct case: linked but dead
+
+`geopotential_temp` is in the suite, and its `.F90` is already linked into
+`kessler/CMakeLists.txt`'s source list, but it is never actually called anywhere -- `z_mid` is instead
+derived by a hand-written Kokkos team-parallel-scan (`calculate_z_int`/`calculate_z_mid`). Unlike
+Category 3's entries, there is no comment establishing this as a deliberate, verified substitution --
+it reads as linked dead code rather than a documented architectural decision.
+
+##### A cheaper, higher-value piece of tooling than the full `AtmosphereProcess` printer
+
+Reading the real suite XML suggests a "suite-coverage checker": a small script that diffs the real
+suite XML's `<scheme>` list against the `<scheme>` tracking comments already present in
+`eamxx_kessler_process_interface.cpp`, and flags any suite entry with no corresponding comment at
+all. That check alone would have flagged the wet/dry conversion question mechanically (it turned out
+to be a non-issue for Kessler, but the bridge gave no evidence of having checked), and would catch the
+same class of silent gap for every future scheme brought in this way. It requires no new xdsl-ccpp
+printer and no new metadata vocabulary -- just a script comparing two lists of scheme names -- and
+would be worth building well before Phase C.
+
+---
+
+### Recommended order
+
+Do Phase A and Phase B first. They are a direct, generalizable fix for a bug already found and
+documented in `EAMxx/kessler-README.md`, require no new printer, and immediately make `ccpp_xdsl` produce a
+correct dual-variant chost cap for Kessler with no manual patching of generated output. The
+suite-coverage checker above is a similarly cheap, high-value addition and should happen around the
+same time -- it needs no generator changes at all. Phase C is the larger "generate the whole
+interface" ask, but it is an order of magnitude more implementation effort, and even fully built would
+still leave some hand-written code inside `run_impl`: the QA-check bounds and energy-fixer bookkeeping
+permanently (see above), and the Category 1 preprocessing kernels (`calc_exner`/
+`temp_to_potential_temp`) by deliberate performance choice rather than necessity. "Automatically
+generate all of the code" is realistically achievable for the bridge/cap layer and the
+lifecycle-orchestration skeleton, but not for the entire file.

@@ -4,7 +4,7 @@
 ! own header comment for the full port history. Two adaptations from the
 ! literal upstream driver:
 !   1) ccpp_physics_init/ccpp_physics_final calls: task #28's "Full
-!      6-phase to 8-phase lifecycle match" (ccpp_cap_refactor_plan.md)
+!      6-phase to 8-phase lifecycle match" (CHANGELOG.md)
 !      originally left these out entirely, since xdsl-ccpp's own
 !      ccpp_init/ccpp_final covered everything real capgen-v1 splits into
 !      a separate per-group ccpp_physics_init/ccpp_physics_final call.

@@ -1,9 +1,9 @@
-"""Unit test for task #60: lifecycle_cap.py's _generate_lifecycle_fn resolving
+"""Unit test for lifecycle_cap.py's _generate_lifecycle_fn resolving
 a framework cap-var (FRAMEWORK_STD_NAME_TO_CAP_VAR) INPUT arg on a non-_run
 lifecycle phase.
 
-Found while scoping task #60 (investigate unifying lifecycle_cap.py's arg
-resolution with run_dispatch.py's ResolvedArgOp pattern): run_dispatch.py's
+Found while scoping whether to unify lifecycle_cap.py's arg resolution
+with run_dispatch.py's ResolvedArgOp pattern: run_dispatch.py's
 own "_run" dispatch (_build_per_suite_run_info) explicitly checks
 `std_name in cap_var_map` to resolve a CapVar-sourced input
 (ArgSourceKind.CapVar) -- but _generate_lifecycle_fn's input-arg resolution
@@ -125,10 +125,10 @@ class TestLifecycleInitResolvesCapScratchInput:
     def test_init_call_uses_real_cap_var_not_fresh_local(
         self, run_host_match, ccpp_context, monkeypatch
     ):
-        # task #28 Stage 3: scheme_a's own _init call now happens via the
-        # group-scoped ccpp_physics_init/test_suite_init_physics, not
-        # the flat ccpp_init/test_suite_initialize (which no longer
-        # emits any scheme calls at all -- see suite_cap.py's
+        # scheme_a's own _init call now happens via the group-scoped
+        # ccpp_physics_init/test_suite_init_physics, not the flat
+        # ccpp_init/test_suite_initialize (which no longer emits any
+        # scheme calls at all -- see suite_cap.py's
         # emit_scheme_calls). The resolution fix this test guards is
         # unaffected -- it just runs through run_dispatch.py's own,
         # already-correct cap_var_map lookup now, same as ccpp_physics_run.

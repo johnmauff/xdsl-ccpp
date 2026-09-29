@@ -1,14 +1,14 @@
-"""Validation tests for ArgOwnershipPass (Phase 7).
+"""Validation tests for ArgOwnershipPass.
 
-Phase 7, Stage 2 introduced ArgOwnershipPass as a dual-build alongside the
-existing independently-computed heuristics (suite_cap.py's SuiteOwned gate,
+ArgOwnershipPass was introduced as a dual-build alongside the existing
+independently-computed heuristics (suite_cap.py's SuiteOwned gate,
 ccpp_cap.py's HostMatched/CapScratch/Block split), verifying the new IR's
 per-arg decisions agreed with those old mechanisms on every real example.
-Stage 3 switched both consumers over to reading this classification instead,
-and Stage 4 deleted the old heuristics entirely -- there is nothing left to
-cross-check against, so that comparison test is gone. What remains is the
-one check that's still meaningful on its own: no scheme arg should ever be
-left unclassified.
+Both consumers were then switched over to reading this classification
+instead, and the old heuristics were deleted entirely -- there is nothing
+left to cross-check against, so that comparison test is gone. What remains
+is the one check that's still meaningful on its own: no scheme arg should
+ever be left unclassified.
 
 Real examples are used deliberately here rather than small hand-built
 fixtures: the point is confirming the pass classifies every scheme arg on

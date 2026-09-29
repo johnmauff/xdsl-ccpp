@@ -1,5 +1,4 @@
-"""Unit tests for cap_shared.classify_host_table_vars (Stage 1 of the
-vocabulary-resolution redesign -- see ccpp_cap_refactor_plan.md).
+"""Unit tests for cap_shared.classify_host_table_vars.
 
 Classification used by run_dispatch.py to distinguish host-owned "state" variables from fixed
 CCPP-protocol dispatch scalars. It exists to tell apart, within xdsl_ccpp's own HOST-type

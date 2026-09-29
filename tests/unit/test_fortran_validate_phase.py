@@ -4,9 +4,8 @@ validate_fir.py + the same-stem/same-directory pairing convention from
 ccpp_validate_source.py), with CPP preprocessing (fortran_preprocess.py)
 applied before extraction.
 
-Currently warn-only (see the plan that introduced this method / this
-repo's capgen_v1_parity_backlog.md): mismatches are printed to stderr, never
-raised, pending a full sweep across CAM-SIMA's real scheme tree.
+Currently warn-only: mismatches are printed to stderr, never raised,
+pending a full sweep across CAM-SIMA's real scheme tree.
 """
 
 import pytest

@@ -41,7 +41,7 @@ def iter_arg_tables(ccpp_mod, table_type=None, table_name_in=None):
     table_name_in: an optional collection of table names -- a table_prop_op
         is yielded from only if its own table_name.data is a member.
 
-    Extracted (complexity-audit Tier 2 finding, task #43) after this exact
+    Extracted after this exact
     2-level "isa(TablePropertiesOp) -> isa(ArgumentTableOp)" nesting was
     found reimplemented at ~10 sites across arg_ownership_pass.py,
     ccpp_cap.py, suite_kinds.py, and host_var_match_pass.py -- each site
@@ -212,7 +212,7 @@ def _build_no_suite_matched_false_ops(errmsg_dest, trim_suite_name_res, errflg_d
     run_dispatch.py (two call sites: _build_run_chain_preamble and
     _generate_suite_part_list_fn) and lifecycle_cap.py (one call site) --
     previously three independent copies of the same error sequence, which is
-    exactly the failure shape that let a Phase 3a review fix land on two
+    exactly the failure shape that let an earlier fix land on two
     copies and miss the third (a one-word text fix applied to run_dispatch.py's
     two copies, initially missing lifecycle_cap.py's).
     """
@@ -254,10 +254,10 @@ LIFECYCLE_POSTFIX_ALIASES: dict[str, str] = {
 # "kessler_suite". Real capgen-v1 never inserts this infix at all: it builds
 # dispatch names as plain suite_name + phase, e.g. "kessler_suite_register"
 # (confirmed against ccpp-framework-fresh/capgen/generator/suite_cap.py:
-# 1284-1290). Task #66 Stage 1 first centralized what were ~15-20
+# 1284-1290). First centralized what were ~15-20
 # independent, hand-maintained copies of this exact literal string (across
 # suite_cap.py, ccpp_cap.py, gpu_data_pass.py, and gpu_ccpp_cap_pass.py) into
-# this single constant with zero behavior change; task #66 Stage 2 now sets
+# this single constant with zero behavior change; then set
 # it to "" here, the one place needed, to match real capgen-v1's convention
 # exactly. Kept as a named constant rather than deleted outright: every call
 # site below still reads cleanly as "suite_name + SUITE_FN_INFIX + phase",
@@ -275,9 +275,10 @@ def _resolve_lifecycle_table_name(scheme_name: str, meta_data, postfix: str) -> 
     used to either hardcode a bare "_run" (never needing an alias, since
     "_run" has none) or build the table name directly without trying the
     alias form at all -- both wrong once a caller needs a postfix that DOES
-    have a short-form alias (task #28's phase-parameterization of
-    run_dispatch.py's own per-suite scheme-table scans and
-    _get_suite_lifecycle_ret_info/_get_suite_leading_inout_ret_info below).
+    have a short-form alias (true once run_dispatch.py's own per-suite
+    scheme-table scans and
+    _get_suite_lifecycle_ret_info/_get_suite_leading_inout_ret_info below
+    were parameterized by phase rather than hardcoded to "_run").
     suite_cap.py's own _build_arg_tables inlines the identical candidate-list
     idea for its own arg-table resolution; this is the same idea, shared,
     for run_dispatch.py's and cap_shared.py's own table-name-only lookups.
@@ -553,8 +554,8 @@ def classify_host_table_vars(meta_data) -> dict:
     """Return std_name.lower() -> 'state'|'dispatch_scalar' for every
     variable declared in a HOST-type table in meta_data.
 
-    Stage 1 of the vocabulary-resolution redesign (see
-    ccpp_cap_refactor_plan.md): 'dispatch_scalar' means the standard_name is
+    'dispatch_scalar' means
+    the standard_name is
     one of the fixed CCPP-protocol dispatch parameters
     (is_dispatch_scalar_std_name -- loop bounds, error handling) that both
     this codebase and real capgen-v1 legitimately thread as a plain
@@ -562,7 +563,7 @@ def classify_host_table_vars(meta_data) -> dict:
     that real capgen-v1 resolves via use-association (like this codebase's
     own MODULE-type vars already are).
 
-    Originally a method on suite_cap.py's GenerateSuiteSubroutine (Stage 1);
+    Originally a method on suite_cap.py's GenerateSuiteSubroutine;
     promoted to a free function here so run_dispatch.py's own write-back
     resolution can reuse the same classification (see that module's own
     host_var_map/state_host_var_map split) rather than duplicating it.
@@ -915,8 +916,8 @@ def _collect_host_block_std_names(meta_data) -> set:
     to a cap-owned module variable.
 
     Shared by ccpp_cap.py's _build_cap_var_map and classify_arg_ownership
-    below -- previously computed inline only inside _build_cap_var_map; Stage 2
-    of Phase 7 (full IR unification, see ccpp_cap_refactor_plan.md) needs the
+    below -- previously computed inline only inside _build_cap_var_map; full
+    IR unification needs the
     identical set independently, at the same early point ownership
     classification runs, before any suite's subroutine signature exists.
     """
@@ -939,7 +940,7 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
 
     The single source of truth for this ownership question -- suite_cap.py's
     SuiteOwned gate and ccpp_cap.py's HostMatched/CapScratch/Block split
-    (independently (re-)computed heuristics, prior to Phase 7 Stage 3) both
+    (previously independently (re-)computed heuristics) both
     now read the result of this classification instead. Computed purely from
     this arg's own properties plus module-wide, meta_data-only lookups
     (host_var_map_lc, host_block_std_names, FRAMEWORK_STD_NAME_TO_CAP_VAR,
@@ -1125,7 +1126,7 @@ def directive_op(directive: str, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs:
 
     Shared by gpu_ccpp_cap_pass.py and gpu_data_pass.py's own otherwise-
     independent `if self.directive == "omp": ... else: ...` dispatch
-    blocks -- extracted (complexity-audit Tier 2 finding, task #45) after
+    blocks -- extracted after
     confirming ~10 of the 13 total GPU-directive dispatch sites across the
     two files are genuine 1:1 substitutions (same shape, different op
     class/kwarg names only). The remaining ~3 sites (a call site's own

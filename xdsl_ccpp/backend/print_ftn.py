@@ -587,8 +587,7 @@ class ftnPrintContext:
         is_optional_array is True.
 
         Shared by CCPPKindCastOp/CCPPUnitConvertOp/CCPPVerticalFlipOp's own
-        array-case printing (complexity-audit Tier 2 finding, task #46) --
-        RowMajorConvertOp is deliberately NOT included: its rank/sizes come
+        array-case printing. RowMajorConvertOp is deliberately NOT included: its rank/sizes come
         from an explicit `dim_exprs` attribute, not the result type's own
         shape the way the other three derive theirs from
         `self._ftn_dim_suffix`, and its source is always a host module-var
@@ -666,8 +665,8 @@ class ftnPrintContext:
                 name = op.global_name.root_reference.data
                 if "ccpp_instance_ref" in op.attributes:
                     # Real capgen-v1's multi-instance model
-                    # (ccpp_cap_refactor_plan.md's "instances/
-                    # instances_advection" entry): ccpp_instance_ref holds
+                    # ("instances/instances_advection" entry): ccpp_instance_ref
+                    # holds
                     # the plain local Fortran name of this call's own
                     # instance_number-standard-name scalar arg -- the
                     # global (ccpp_suite_state) is itself dimensioned by

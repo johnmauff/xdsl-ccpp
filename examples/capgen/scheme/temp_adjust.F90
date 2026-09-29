@@ -62,7 +62,7 @@ CONTAINS
     ! variable (produced here, consumed in temp_adjust_finalize) is genuinely
     ! allocated and persists, without depending on the chained
     ! dimension_for_interstitial_variable sizing capgen-v1's own upstream test
-    ! uses (see ccpp_cap_refactor_plan.md's "chained-interstitial
+    ! uses (see CHANGELOG.md's "chained-interstitial
     ! allocation-ordering bug" entry -- a confirmed, separately-tracked gap).
     interstitial_var = 6
 

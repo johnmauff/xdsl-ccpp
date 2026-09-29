@@ -301,7 +301,7 @@ class ArgOwnershipKind(StrEnum):
     only classifies args that already survived *not* being SuiteOwned (an
     interstitial/advected/allocatable-real arg never becomes a dummy arg at
     all, so it never reaches ResolvedArgOp's world -- there is deliberately
-    no SuiteOwned case there). Phase 7 (see ccpp_cap_refactor_plan.md) unified
+    no SuiteOwned case there). Phase 7 unified
     what were previously two independently-computed heuristics for this same
     ownership question (suite_cap.py's SuiteOwned gate and ccpp_cap.py's
     HostMatched/CapScratch/Block split) into reading this classification.
@@ -358,8 +358,8 @@ class ArgumentOp(IRDLOperation):
     model_var_is_protected  = opt_prop_def(UnitAttr)  # set when the matched host/module declaration is itself 'protected'
     model_var_active_expr   = opt_prop_def(StringAttr)  # copied from the matched host/module var's own 'active' Fortran logical expression, if set
     is_interstitial    = opt_prop_def(UnitAttr)   # set when var flows between lifecycle phases
-    # Phase 7, Stage 2: durable ownership classification (see ArgOwnershipKind),
-    # set by generate-arg-ownership. Reuses this op's own standard_name for the
+    # Durable ownership classification (see ArgOwnershipKind), set by
+    # generate-arg-ownership. Reuses this op's own standard_name for the
     # HostMatched/CapScratch payload rather than storing it a second time.
     ownership_kind    = opt_prop_def(ArgOwnershipKindAttr)
     is_promoted        = opt_prop_def(UnitAttr)   # set when scheme rank < host rank (promotion)
@@ -612,8 +612,9 @@ class ArgOwnershipOp(IRDLOperation):
     """Durable record of one scheme arg's ownership bucket (see
     ArgOwnershipKind).
 
-    Stage 1 of Phase 7 ("define, don't wire") -- not called by any pass yet.
-    Future stages compute this early (right after HostVariableMatchPass, before
+    Defines the op without wiring it into any pass yet ("define, don't
+    wire") -- not called anywhere today. Future work computes this early
+    (right after HostVariableMatchPass, before
     generate-suite-cap runs) and migrate suite_cap.py/ccpp_cap.py/run_dispatch.py
     to read it instead of their own independently-computed heuristics.
 

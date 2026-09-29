@@ -13,9 +13,9 @@ out explicitly rather than repeated with unwarranted confidence.
 
 This is about capgen-v1's own vocabulary, not xdsl-ccpp's port of it — no line-by-line "does
 xdsl-ccpp implement this" column. Where this session's own work already established xdsl-ccpp's
-status for a given item (from `ccpp_cap_refactor_plan.md`'s vocabulary-gap entries, task #11 and
-its splits #68/#69), a short parenthetical says so; treat those as pointers, not the point of
-this document.
+status for a given item (from `BACKLOG.md`'s/`CHANGELOG.md`'s vocabulary-gap entries, mainly
+task #11 and its `--gfs-dim-aliases` item, split off once done as task #68), a short
+parenthetical says so; treat those as pointers, not the point of this document.
 
 ## Correction to `doc/migration.md` §3.1
 
@@ -61,7 +61,7 @@ hard error (`ccpp_capgen.py:725-730,806-824`):
 | `thread_number` / `number_of_threads`       | Multi-threading API (count carried for API symmetry — the framework itself only consumes it at register/init time, per the comment at `ccpp_capgen.py:716-720`) |
 
 (xdsl-ccpp mirrors the `instance_number`/`number_of_instances` pair; the `thread_number`/
-`number_of_threads` pair is task #69's own scoped gap.)
+`number_of_threads` pair is still open, tracked under task #11 in BACKLOG.md.)
 
 ## 2. Dimension standard names
 
@@ -90,8 +90,9 @@ Full `_LEGACY_NAME_MAP`, `metadata/legacy_compat.py:61-73` — confirmed no othe
 | `horizontal_loop_extent`      | `horizontal_dimension` |
 | `number_of_openmp_threads`    | `number_of_threads`    |
 
-(xdsl-ccpp mirrors the first via `CCPP_DEPRECATED_STD_NAMES`; the second is task #11/#69's own
-scoped gap — noted there as coupled to, not independent of, the `thread_number` mechanism in §5.)
+(xdsl-ccpp mirrors the first via `CCPP_DEPRECATED_STD_NAMES`; the second is still open, tracked
+under task #11 in BACKLOG.md — noted there as coupled to, not independent of, the `thread_number`
+mechanism in §5.)
 
 ## 4. GFS dim aliases (`--gfs-dim-aliases`)
 
@@ -119,8 +120,8 @@ DDT-instance variable may (hard parse-time error otherwise):
 | `number_of_threads`      | `thread_number`            |
 
 (xdsl-ccpp implements the first pair as two hardcoded constants + logic spread across 8 files,
-not as a general table like this one — task #69's own scoped gap covers generalizing it and
-adding the second pair.)
+not as a general table like this one — generalizing it and adding the second pair is still open,
+tracked under task #11 in BACKLOG.md.)
 
 ## 6. Error/status vocabulary
 

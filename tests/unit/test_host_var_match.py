@@ -473,7 +473,7 @@ class TestDimensionCompatibility:
         scheme, host = self._make_pair("horizontal_dimension", "horizontal_dimension")
         run_host_match(scheme_metas=[scheme], host_metas=[host])
 
-    # ── GFS dim aliases (task #68) — opt-in only, off by default ────────────
+    # ── GFS dim aliases — opt-in only, off by default ───────────────────────
 
     def test_gfs_radiation_alias_raises_by_default(self, run_host_match):
         """adjusted_vertical_layer_dimension_for_radiation vs
@@ -650,7 +650,7 @@ class TestFrameworkFallbackStdNames:
 # ── ccpp_constituent_properties_t outside the register phase ─────────────────
 #
 # Ported from real capgen-v1's own deliberate negative test
-# (examples/advection/dlc_liq.meta + cld_suite_error.xml, task #10): declaring
+# (examples/advection/dlc_liq.meta + cld_suite_error.xml): declaring
 # a ccpp_constituent_properties_t-typed allocatable arg anywhere but a
 # scheme's _register entry point must be rejected. Before this fix, xdsl-ccpp
 # had no such check: constituent_cap.py's own dynamic-constituent scan

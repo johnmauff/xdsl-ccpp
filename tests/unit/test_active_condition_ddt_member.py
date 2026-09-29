@@ -1,6 +1,6 @@
 """Regression test for a real gfortran CI compile failure found while wiring
-examples/instances into the real build (ccpp_cap_refactor_plan.md's
-"instances/instances_advection" backlog entry, Stage 5):
+examples/instances into the real build ("instances/instances_advection"
+backlog entry):
 
     Error: Symbol 'flag_for_opt_array' at (1) has no IMPLICIT type
 

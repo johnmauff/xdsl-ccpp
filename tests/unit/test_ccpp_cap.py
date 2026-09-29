@@ -1,9 +1,9 @@
 """Unit tests for xdsl_ccpp.transforms.ccpp_cap's pure-data functions.
 
-Phase 4 (narrow extraction): _build_cap_var_map was extracted from an inline
-block in _generate_ccpp_cap_module into a named, independently-testable
-function. This is its first direct unit test -- previously only exercised
-indirectly via end-to-end examples.
+_build_cap_var_map was extracted from an inline block in
+_generate_ccpp_cap_module into a named, independently-testable function.
+This is its first direct unit test -- previously only exercised indirectly
+via end-to-end examples.
 """
 
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind

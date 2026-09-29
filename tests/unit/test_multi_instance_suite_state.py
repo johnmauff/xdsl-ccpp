@@ -1,6 +1,6 @@
 """Regression test for a real ctest failure found while wiring
-examples/instances into the real CMake/CI build (ccpp_cap_refactor_plan.md's
-"instances/instances_advection" backlog entry, post-Stage-5 fix):
+examples/instances into the real CMake/CI build ("instances/instances_advection"
+backlog entry, post-Stage-5 fix):
 
     An error occurred in ccpp_init:
     Invalid initial CCPP state, 'initialized' in unit_conv_suite_initialize

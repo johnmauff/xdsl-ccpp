@@ -69,9 +69,9 @@ def _module_to_mlir(module) -> str:
 
 def _scheme_meta_with_dependencies(name: str, dependencies: str, phase: str = "run") -> str:
     """A scheme .meta with a `dependencies = ...` table-properties entry
-    (task #6 Tier 1's already-IR-forwarded attribute) -- used to test
-    _collect_dependencies()'s own reference filter (capgen_v1_parity_
-    backlog.md Stage 8b/task #75), not the argument-table shape.
+    (an attribute already forwarded through the IR) -- used to test
+    _collect_dependencies()'s own reference filter, not the argument-table
+    shape.
     """
     return f"""\
 [ccpp-table-properties]
@@ -181,7 +181,7 @@ class TestBuildDatatable:
         assert len(scheme_names) == len(set(scheme_names)), "Duplicate scheme entries found"
 
 
-# ── capgen_files / dependencies (task #75, capgen_v1_parity_backlog.md) ────────
+# ── capgen_files / dependencies ────────────────────────────────────────────
 # Real capgen-v1's own vendored ccpp_datafile.py reads these two sections
 # directly, unmodified (confirmed via cam_autogen.py's DatatableReport
 # ("utility_files")/DatatableReport("dependencies") calls) -- these tests
@@ -218,9 +218,9 @@ class TestCapgenFilesSection:
         module = build_module([_scheme_meta("s1")], [], None)
         mlir_text = _module_to_mlir(module)
         root = build_datatable(mlir_text, [])
-        # Empty-but-present (capgen_v1_parity_backlog.md's own rationale --
-        # real capgen-v1 always writes these, even when empty, to keep the
-        # schema stable for a reader that unconditionally looks them up).
+        # Empty-but-present: real capgen-v1 always writes these, even when
+        # empty, to keep the schema stable for a reader that
+        # unconditionally looks them up.
         assert root.find("./capgen_files/host_files") is not None
         assert root.find("./capgen_files/suite_files") is not None
 
@@ -266,8 +266,8 @@ class TestDependenciesSection:
 
     def test_deduped_across_schemes(self, build_module):
         # Two schemes, both used, both declaring the identical dependency
-        # (the same real situation Stage 8b's own verification found in
-        # examples/capgen: temp_set.meta and temp_adjust.meta both declare
+        # (the same real situation found in examples/capgen:
+        # temp_set.meta and temp_adjust.meta both declare
         # `dependencies = temp_kinds.F90`) -- must appear exactly once.
         suite_xml = """\
 <?xml version="1.0" encoding="UTF-8"?>

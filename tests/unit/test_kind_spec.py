@@ -3,8 +3,7 @@
 Real capgen-v1 lets a ``.meta`` table's ``[ccpp-table-properties]`` block
 declare ``kind_spec = <module>:<kind_name>=>spec`` (or the ``<module>:<spec>``
 shorthand) to say a kind comes from a real host/scheme Fortran module instead
-of the hardcoded ISO_FORTRAN_ENV table -- see ccpp_cap_refactor_plan.md's
-"kind_spec" backlog entry and capgen-v1's own
+of the hardcoded ISO_FORTRAN_ENV table -- see capgen-v1's own
 metadata/metadata_table.py:_parse_kind_spec_value / ccpp_capgen.py's
 _collect_metadata_kind_specs, which this mirrors.
 """

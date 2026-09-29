@@ -1,10 +1,11 @@
 """Unit tests for VerticalFlipOp/VerticalFlipWriteBackOp in isolation.
 
-Stage 2 of the vertical-flip work: these two operations (modeled directly on
+These two operations (modeled directly on
 the existing KindCastOp/KindWriteBackOp pair) and their print_ftn.py cases
 are tested here by constructing the IR directly and printing it, WITHOUT
 going through suite_cap.py -- nothing in the real generation pipeline
-inserts these ops yet. That wiring is a later stage.
+inserts these ops yet. That wiring is added separately by suite_cap.py's
+own marshaling logic.
 
 VerticalFlipOp allocates a local temp and reverses an array section along
 the vertical (layer) dimension:

@@ -623,20 +623,19 @@ class GPUDataPass(ModulePass):
 
     # Suffixes of the suite-level lifecycle subroutines built by
     # suite_cap.py (suite_name + SUITE_FN_INFIX + generated_subroutine_posfix
-    # -- SUITE_FN_INFIX is task #66's centralized infix constant, currently
-    # "", previously "_suite"; see ccpp_cap.py's lifecycle_specs for the
+    # -- SUITE_FN_INFIX is the centralized infix constant, currently "",
+    # previously "_suite"; see ccpp_cap.py's lifecycle_specs for the
     # matching callee_suffix values). The f"{SUITE_FN_INFIX}_physics"/
     # f"{SUITE_FN_INFIX}_timestep_init_"/f"{SUITE_FN_INFIX}_timestep_final_"/
     # f"{SUITE_FN_INFIX}_init_"/f"{SUITE_FN_INFIX}_final_" markers are handled
     # separately below via substring match, since per-group callees are
     # suffixed with the group name (e.g. f"{SUITE_FN_INFIX}_physics1",
-    # f"{SUITE_FN_INFIX}_timestep_init_g1"), not an exact ending -- task #28
-    # moved timestep_init (Stage 1) and timestep_final (Stage 2) from flat,
-    # exact-suffix phases to per-group, the same shape
-    # f"{SUITE_FN_INFIX}_physics" already has, and added net-new per-group
-    # ccpp_physics_init/ccpp_physics_final (Stage 3) alongside the still-flat,
-    # now scheme-call-free f"{SUITE_FN_INFIX}_initialize"/
-    # f"{SUITE_FN_INFIX}_finalize".
+    # f"{SUITE_FN_INFIX}_timestep_init_g1"), not an exact ending --
+    # timestep_init and timestep_final moved from flat, exact-suffix phases
+    # to per-group, the same shape f"{SUITE_FN_INFIX}_physics" already has,
+    # and net-new per-group ccpp_physics_init/ccpp_physics_final were added
+    # alongside the still-flat, now scheme-call-free
+    # f"{SUITE_FN_INFIX}_initialize"/f"{SUITE_FN_INFIX}_finalize".
     _LIFECYCLE_SUITE_FN_SUFFIXES = (
         f"{SUITE_FN_INFIX}_register",
         f"{SUITE_FN_INFIX}_initialize",

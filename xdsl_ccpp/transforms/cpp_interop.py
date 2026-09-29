@@ -1,7 +1,7 @@
 """C++/BIND(C) host-interop cap generation ("chost").
 
-Extracted from ccpp_cap.py's CCPPCAP pass (Phase 1 of the restructuring plan):
-this module owns everything needed to emit a BIND(C) Fortran cap module plus
+Extracted from ccpp_cap.py's CCPPCAP pass: this module owns everything
+needed to emit a BIND(C) Fortran cap module plus
 matching C++ header/wrapper text for a C++ host model, given the already-
 generated ccpp_cap module. Runs as its own pass, generate-cpp-cap, right after
 generate-ccpp-cap in the pipeline.
@@ -664,8 +664,8 @@ def _chost_fn_name(camel_name: str, lc: str) -> str:
 
     Built from camel_name/lc directly rather than string-munging the plain
     cap's own bind-C function name: since Stage 5 of the vocabulary-
-    resolution redesign (ccpp_cap_refactor_plan.md) made the plain cap's
-    own subroutine names bare (capgen-v1-style, no host prefix), the plain
+    resolution redesign made the plain cap's own subroutine names bare
+    (capgen-v1-style, no host prefix), the plain
     name alone no longer carries camel_name to derive this from. chost's
     own naming is xdsl_ccpp-specific (there's no capgen-v1 equivalent to
     align it with) and is deliberately left unchanged by that redesign --
@@ -677,8 +677,8 @@ def _chost_fn_name(camel_name: str, lc: str) -> str:
 def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
     """Return the list of suite cap function names for a given lifecycle.
 
-    "run", "timestep_initial"/"timestep_final" (task #28 Stages 1-2), and
-    "physics_initial"/"physics_final" (Stage 3) are all group-scoped -- one
+    "run", "timestep_initial"/"timestep_final", and "physics_initial"/
+    "physics_final" are all group-scoped -- one
     suite cap function per XML group, named suite_cap.py's own
     generated_subroutine_posfix convention (f"_{group_name}" for run,
     f"_timestep_init_{group_name}" for timestep_initial,
@@ -751,7 +751,7 @@ _LC_TO_ENTRY_SUFFIX = {
     "timestep_final":   ("_timestep_final",),
     "finalize":         ("_finalize",),
     "register":         ("_register",),
-    # physics_initial/physics_final (task #28 Stage 3): the new group-scoped
+    # physics_initial/physics_final: the new group-scoped
     # ccpp_physics_init/ccpp_physics_final call schemes via the SAME
     # "_init"/"_finalize" scheme-table postfixes "initialize"/"finalize"
     # above already use (see suite_cap.py's group_phase_specs) -- without

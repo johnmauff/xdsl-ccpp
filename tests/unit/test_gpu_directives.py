@@ -245,9 +245,9 @@ class TestGPUDataSuiteCapLifecycleCoverage:
         that name -- so the old hardcoded '<scheme>_run' lookup would have
         found nothing here at all.
 
-        test_gpu_suite_timestep_init_physics (task #28: timestep_init
-        is now group-scoped, like test_gpu_suite_physics already was
-        for _run) -- not the old flat test_gpu_suite_timestep_initial.
+        test_gpu_suite_timestep_init_physics (timestep_init is now
+        group-scoped, like test_gpu_suite_physics already was for _run) --
+        not the old flat test_gpu_suite_timestep_initial.
         """
         fortran = _fortran_output(run_host_match, ccpp_context)
         suite_fn = fortran.split("subroutine test_gpu_suite_timestep_init_physics")[1]

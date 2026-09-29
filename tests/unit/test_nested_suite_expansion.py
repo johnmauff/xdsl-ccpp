@@ -1,6 +1,6 @@
 """Unit tests for XMLSuite's <nested_suite> cross-file expansion.
 
-Backlog item: `nested_suite` in ccpp_cap_refactor_plan.md. Ported from
+Backlog item: `nested_suite`. Ported from
 reading NCAR ccpp-framework's real feature/capgen-v1 source directly
 (capgen/metadata/parse_tools/xml_tools.py's expand_nested_suites /
 replace_nested_suite / load_suite_by_name), not guessed from the SDF v2.0
