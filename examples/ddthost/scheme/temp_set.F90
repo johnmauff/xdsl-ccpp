@@ -3,7 +3,7 @@
 
 module temp_set
 
-  use ccpp_kinds, only: kind_phys
+  use ccpp_kinds, only: kind_phys, kind_temp
 
   implicit none
   private
@@ -18,18 +18,21 @@ contains
 !> \section arg_table_temp_set_run  Argument Table
 !! \htmlinclude arg_table_temp_set_run.html
 !!
-  subroutine temp_set_run(ncol, lev, timestep, temp_level, temp, ps,         &
-       to_promote, promote_pcnst, errmsg, errflg)
+  subroutine temp_set_run(ncol, lev, timestep, temp_level, temp_diag, temp, ps, &
+       to_promote, promote_pcnst, slev_lbound, soil_levs, var_array, errmsg, errflg)
 !----------------------------------------------------------------
    implicit none
 !----------------------------------------------------------------
 
-   integer,            intent(in)    :: ncol, lev
+   integer,            intent(in)    :: ncol, lev, slev_lbound
    real(kind_phys),    intent(out)   :: temp(:,:)
    real(kind_phys),    intent(in)    :: timestep
    real(kind_phys),    intent(in)    :: ps(:)
    real(kind_phys),    intent(inout) :: temp_level(:, :)
-   real(kind_phys),    intent(out)   :: to_promote(:, :)
+   real(kind_phys),    intent(inout) :: temp_diag(:,:)
+   real(kind_phys),    intent(inout) :: soil_levs(slev_lbound:)
+   real(kind_phys),    intent(inout) :: var_array(:,:,:,:)
+   real(kind_temp),    intent(out)   :: to_promote(:, :)
    real(kind_phys),    intent(out)   :: promote_pcnst(:)
    character(len=512), intent(out)   :: errmsg
    integer,            intent(out)   :: errflg
@@ -38,6 +41,7 @@ contains
 
    integer :: col_index
    integer :: lev_index
+   real(kind_phys) :: internal_scalar_var
 
     errmsg = ''
     errflg = 0
@@ -55,6 +59,12 @@ contains
                + temp_level(col_index, lev_index + 1)) / 2.0_kind_phys
        end do
     end do
+
+    var_array(:,:,:,:) = 1._kind_phys
+
+    !
+    internal_scalar_var = soil_levs(slev_lbound)
+    internal_scalar_var = soil_levs(0)
 
   end subroutine temp_set_run
 

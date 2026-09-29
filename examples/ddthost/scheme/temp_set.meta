@@ -1,6 +1,8 @@
 [ccpp-table-properties]
   name = temp_set
   type = scheme
+  dependencies = temp_kinds.F90
+  kind_spec = temp_kinds:kind_temp=>temp_r8
 [ccpp-arg-table]
   name = temp_set_run
   type = scheme
@@ -32,6 +34,13 @@
   type = real
   kind = kind_phys
   intent = inout
+[ temp_diag ]
+  standard_name = temperature_at_diagnostic_levels
+  units = K
+  dimensions = (horizontal_dimension, 6)
+  type = real
+  kind = kind_phys
+  intent = inout
 [ temp ]
   standard_name = potential_temperature
   units = K
@@ -52,7 +61,7 @@
   units = K
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real
-  kind = kind_phys
+  kind = kind_temp
   intent = out
 [ promote_pcnst ]
   standard_name = promote_this_variable_with_no_horizontal_dimension
@@ -61,6 +70,28 @@
   type = real
   kind = kind_phys
   intent = out
+[ slev_lbound ]
+  standard_name = lower_bound_of_vertical_dimension_of_soil
+  type = integer
+  units = count
+  dimensions = ()
+  intent = in
+[ soil_levs ]
+  standard_name = soil_levels
+  long_name = soil levels
+  units = cm
+  dimensions = (lower_bound_of_vertical_dimension_of_soil:upper_bound_of_vertical_dimension_of_soil)
+  type = real
+  kind = kind_phys
+  intent = inout
+[ var_array ]
+  standard_name = array_variable_for_testing
+  long_name = array variable for testing
+  units = none
+  dimensions = (horizontal_dimension,2,4,6)
+  type = real
+  kind = kind_phys
+  intent = inout
 [ errmsg ]
   standard_name = ccpp_error_message
   long_name = Error message for error handling in CCPP

@@ -35,6 +35,13 @@
   kind = kind_phys
   units = Pa
   dimensions = (horizontal_dimension, vertical_layer_dimension)
+[ soil_levs ]
+  standard_name = soil_levels
+  long_name = soil levels
+  units = cm
+  dimensions = (lower_bound_of_vertical_dimension_of_soil:upper_bound_of_vertical_dimension_of_soil)
+  type = real
+  kind = kind_phys
 [ q ]
   standard_name = constituent_mixing_ratio
   state_variable = true
