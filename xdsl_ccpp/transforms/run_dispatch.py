@@ -1108,8 +1108,7 @@ def _build_array_section_ops(
                 # external consumer, not dead code. Deliberately deferred rather
                 # than consolidated: no fixture in this repo to regression-test
                 # against locally (CAM-SIMA's own test_write_init_files.py is the
-                # only known harness that exercises it, per
-                # capgen_v1_parity_backlog.md's Workstream 2 entry).
+                # only known harness that exercises it).
                 # Additional dimensions (e.g. pver for rank-2 CapScratch arrays)
                 # are now resolved via _resolve_extra_dim_bounds so that 2-D+
                 # scratch arrays receive the correct (col_start:col_end, 1:pver)

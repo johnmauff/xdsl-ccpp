@@ -763,10 +763,9 @@ def _generate_constituent_api(
     # generator currently needs an advected-only view cached anywhere else.
     #
     # Raw-string body (RawFortranLinesOp), matching every other function in
-    # this file -- a deliberate, documented kludge (TDB-002 in
-    # technical_debt.md: constituent_cap.py's IR-ification is a separate,
-    # dedicated refactor task, not something to do incrementally alongside
-    # feature work).
+    # this file -- a deliberate, documented kludge (TDB-002 in BACKLOG.md:
+    # constituent_cap.py's IR-ification is a separate, dedicated refactor
+    # task, not something to do incrementally alongside feature work).
     aca_op = ConstituentFunctionOp(
         fn_name=f"{h}_advected_constituents_array",
         is_function=True,

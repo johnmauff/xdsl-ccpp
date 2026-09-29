@@ -1,5 +1,4 @@
-"""Unit tests for SuiteCAP's --emit-resolved-vars JSON output
-(see capgen_v1_parity_backlog.md).
+"""Unit tests for SuiteCAP's --emit-resolved-vars JSON output.
 
 Covers a fix: _classify_args's physics-mode dispatch
 replaces a scheme-declared horizontal_loop_extent arg with synthetic,

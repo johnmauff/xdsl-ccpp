@@ -211,9 +211,12 @@ would be a correctness issue for threaded host models that call physics from
 multiple threads simultaneously.
 
 **Potential resolution:** Either (a) protect suite state with a Fortran critical
-section, or (b) require the C++ caller to serialize physics calls, or (c) use
-the existing `--num-instances N` multi-instance path to give each thread its own
-state slot.
+section, or (b) require the C++ caller to serialize physics calls, or (c) give
+each thread its own state slot via the host-metadata-driven multi-instance
+support (a host declaring both `instance_number`/`number_of_instances` gets a
+per-instance `ccpp_suite_state` array automatically — see
+`suite_cap.py`'s `_is_multi_instance_host`; superseded the old, now-removed
+`--num-instances` CLI flag this section used to reference).
 
 ---
 

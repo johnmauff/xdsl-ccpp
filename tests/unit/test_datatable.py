@@ -181,7 +181,7 @@ class TestBuildDatatable:
         assert len(scheme_names) == len(set(scheme_names)), "Duplicate scheme entries found"
 
 
-# ── capgen_files / dependencies (see capgen_v1_parity_backlog.md) ─────────────
+# ── capgen_files / dependencies ────────────────────────────────────────────
 # Real capgen-v1's own vendored ccpp_datafile.py reads these two sections
 # directly, unmodified (confirmed via cam_autogen.py's DatatableReport
 # ("utility_files")/DatatableReport("dependencies") calls) -- these tests
@@ -218,9 +218,9 @@ class TestCapgenFilesSection:
         module = build_module([_scheme_meta("s1")], [], None)
         mlir_text = _module_to_mlir(module)
         root = build_datatable(mlir_text, [])
-        # Empty-but-present (capgen_v1_parity_backlog.md's own rationale --
-        # real capgen-v1 always writes these, even when empty, to keep the
-        # schema stable for a reader that unconditionally looks them up).
+        # Empty-but-present: real capgen-v1 always writes these, even when
+        # empty, to keep the schema stable for a reader that
+        # unconditionally looks them up.
         assert root.find("./capgen_files/host_files") is not None
         assert root.find("./capgen_files/suite_files") is not None
 

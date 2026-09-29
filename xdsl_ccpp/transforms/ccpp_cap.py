@@ -1562,7 +1562,7 @@ class CCPPCAP(ModulePass):
         # (FRAMEWORK_STD_NAME_TO_CAP_VAR, cap_shared.py), so lc_all_constituents
         # must exist whenever it could be referenced, even for a suite with no
         # dynamic registration or fixed-advected constituent of its own.
-        # SHORT-TERM HACK (TDB-001, technical_debt.md): cam_host builds always
+        # SHORT-TERM HACK (TDB-001, BACKLOG.md): cam_host builds always
         # generate the constituent API so write_init_files.py can unconditionally
         # import cam_constituents_array / cam_model_const_properties from cam_ccpp_cap.
         # The right fix is to make write_init_files.py constituent-aware instead.

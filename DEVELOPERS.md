@@ -61,12 +61,14 @@ python3 examples/helloworld/helloworld_py.py \
 | `generate-meta-cap` | Build cap metadata ops from descriptor tables |
 | `generate-meta-kinds` | Propagate kind information across the IR |
 | `generate-host-match` | Annotate scheme args with matching host variable names, kinds, and units |
+| `generate-arg-ownership` | Annotate every scheme `ccpp.arg` op with its `ownership_kind` — durably, once, whether the cap owns this arg or its data comes from outside (Phase 7 IR unification) |
 | `generate-suite-cap` | Emit per-suite subroutines (`*_suite_physics`, lifecycle init/finalize) |
 | `generate-ccpp-cap` | Emit the host-facing cap (`ccpp_physics_initialize`, `ccpp_physics_run`, etc.) |
 | `generate-cpp-cap` | Emit a BIND(C) chost Fortran cap + C++ header/wrapper, for C++ host models. No-ops unless a host/module table declares `language = "c++"` |
 | `generate-kinds` | Emit `ccpp_kinds.F90` |
 | `generate-gpu-ccpp-cap` | Insert OpenACC/OpenMP data directives at the ccpp_cap level |
 | `generate-gpu-data` | Insert OpenACC/OpenMP directives at the suite_cap level for unmatched device variables |
+| `generate-gpu-debug-prints` | Opt-in GPU-residency debug prints (only emitted with `--gpu-debug-prints`) — reports whether a variable/slice is actually present and correctly sized on the device at a given point in a run |
 | `strip-ccpp` | Remove CCPP dialect ops, leaving standard MLIR |
 | `fir-to-meta` | Generate CCPP metadata (`table_properties`/`arg_table`/`arg`) from Flang FIR MLIR — an alternative to parsing `.meta` files, used standalone by `xdsl_ccpp/tools/fir2meta.py` and the `ccpp_validate_fir.py`/`ccpp_validate_source.py` tools, not part of the `ccpp_xdsl` generation pipeline |
 | `lower-ccpp-utils` | Lower remaining `ccpp_utils` dialect ops (`strcmp`, `set_string`, `write_errmsg`, `host_var_ref`, etc.) to plain `arith`/`memref`/`llvm`, for consumers needing fully-lowered standard MLIR rather than printed Fortran text |
@@ -124,10 +126,11 @@ contributing functions into the *same* ModuleOp `ccpp_cap.py` is still
 assembling, using shared Python state (`host_var_map`, `cap_var_map`, the
 `ccpp_t` handle) that isn't durable IR. Promoting any of them would mean
 re-deriving that state from the IR the way `cpp_interop.py` does — which
-isn't possible until that state actually becomes durable IR. That's tracked
-as its own deferred sub-plan, Phase 7 ("full IR unification"), in the
-refactor plan — not scheduled, but with a concrete 4-stage execution plan
-recorded there if it's ever picked up.
+wasn't possible until that state became durable IR. That state's now
+durable: Phase 7 ("full IR unification", Stages 1-4) is done — see
+`CHANGELOG.md` for the full history — but promoting these three modules
+into registered passes hasn't been revisited since, so they remain plain
+modules called mid-construction for now.
 
 Shared utilities live in `xdsl_ccpp/transforms/util/`:
 
@@ -147,7 +150,7 @@ Custom MLIR dialects are defined under `xdsl_ccpp/dialects/`:
 | Module | Contents |
 |--------|----------|
 | `ccpp_utils.py` | Core CCPP ops: `ModuleVarOp`, `HostVarRefOp`, `UnitConvertOp`, `RowMajorConvertOp`, and related ops |
-| `ccpp.py` | Suite-structure ops (`SuiteOp`, `GroupOp`, `SchemeOp`, `SubcycleOp`), metadata table ops (`TablePropertiesOp`, `ArgumentTableOp`, `ArgumentOp`), kind ops (`KindOp`, `KindsOp`), `CcppHandleOp` (the host's `ccpp_t` variable, for multi-instance support), and `ResolvedArgOp`/`ArgSourceKind` (durable per-argument source resolution, built by `run_dispatch.py`) |
+| `ccpp.py` | Suite-structure ops (`SuiteOp`, `GroupOp`, `SchemeOp`, `SubcycleOp`), metadata table ops (`TablePropertiesOp`, `ArgumentTableOp`, `ArgumentOp`), kind ops (`KindOp`, `KindsOp`), and `ResolvedArgOp`/`ArgSourceKind` (durable per-argument source resolution, built by `run_dispatch.py`) |
 
 ### ModuleVarOp type representation
 
@@ -159,7 +162,8 @@ as four structured attributes rather than a pre-rendered Fortran string:
 | `base_type` | yes | `"real"`, `"integer"`, `"character"`, `"logical"`, `"type"` |
 | `kind` | no | `"kind_phys"`, `"kind_dyn"`, `"512"` (char length) |
 | `ddt_name` | no | `"vmr_type"` (when `base_type == "type"`) |
-| `ftn_attrs` | no | `"target"`, `"pointer"` |
+| `is_pointer` | no | `True` → Fortran `POINTER` attribute |
+| `is_target` | no | `True` → Fortran `TARGET` attribute |
 
 The Fortran printer reconstructs the declaration from these fields; a C++ header
 printer can interpret the type without parsing Fortran syntax.

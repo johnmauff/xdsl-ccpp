@@ -535,10 +535,9 @@ class ccppMain:
         capability), and compare against the .meta-declared signature via
         validate_fir.compare_modules.
 
-        Diagnostic only, currently warn-only (see this repo's
-        capgen_v1_parity_backlog.md / the plan that introduced this method):
-        mismatches are printed to stderr, never raised, and any failure to
-        load or parse a given pair is itself just a printed warning. This
+        Diagnostic only, currently warn-only: mismatches are printed to
+        stderr, never raised, and any failure to load or parse a given
+        pair is itself just a printed warning. This
         phase is not required for cap generation to succeed, and silently
         does nothing if fparser is not installed.
         """
