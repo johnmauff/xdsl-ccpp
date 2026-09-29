@@ -2,12 +2,12 @@
 ! instances_advection/main.F90, feature/capgen-v1 branch) to xdsl-ccpp's
 ! actual generated calling convention -- see examples/instances_advection/
 ! CMakeLists.txt's own header comment for the full port history, and
-! ccpp_cap_refactor_plan.md's "instances/instances_advection" backlog entry
+! CHANGELOG.md's "instances/instances_advection" backlog entry
 ! (task #35) for the constituent-API instance-awareness fix this adaptation
 ! depends on. Adaptations from the literal upstream driver, matching
 ! examples/instances' own precedent for the identical reasons:
 !   1) ccpp_physics_init/ccpp_physics_final calls: task #28's "Full
-!      6-phase to 8-phase lifecycle match" (ccpp_cap_refactor_plan.md)
+!      6-phase to 8-phase lifecycle match" (CHANGELOG.md)
 !      originally left these out entirely, since xdsl-ccpp's own
 !      ccpp_init/ccpp_final covered everything real capgen-v1 splits into
 !      a separate per-group ccpp_physics_init/ccpp_physics_final call.

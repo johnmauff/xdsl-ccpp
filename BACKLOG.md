@@ -28,27 +28,38 @@ later narrative entries:
 
 | Item | Notes | Archive |
 |---|---|---|
-| Follow-up items spawned by `constituents_dim`: single-source migration for `advection`; naming-convention audit | | L3305 |
 | Task #65 (downgraded, 2026-08-20): DDT-typed interstitial-declaration test coverage; non-`real` interstitial-array test coverage | Small, no design work — opportunistic test-writing only. The other 2 sub-items (cross-phase `already_scheduled_allocs` unification; cross-phase ordering validation) are deferred indefinitely, folded into task #61, no open action | L5326 |
 | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
 | `examples/ddthost` has fallen behind `examples/capgen` (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | Scoped (2026-08-24): M, 1 prerequisite + 2 stages; real cross-file coupling (`temp_calc_adjust`+`temp_adjust` share a standard_name, must land together). Not started; not a CAM-SIMA blocker | L5531 |
-| Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already; only the deletion itself remains open | L5679 |
-| Consolidate `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | Investigated 2026-08-24: 2 of 4 files already unified; the other 2 are real, still-used `--legacy-mode` code. Deliberately deferred until a CAM-SIMA-backed fixture exists to test a consolidation against | L5698 |
+| Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already; only the deletion itself remains open. Confirmed 2026-09-29: `ccpp.py`'s `is_legacy_mode()` gate is still called, path not yet deleted | L5679 |
+| Consolidate `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | Investigated 2026-08-24: 2 of 4 files already unified; the other 2 are real, still-used `--legacy-mode` code. Originally deferred until a CAM-SIMA-backed fixture exists to test a consolidation against — **unblocked 2026-09-29**: this session's extensive external `/cam-sima-regression` testing (in `CAM-SIMA.xdsl-ccpp`) satisfies that condition per project-owner judgment, even though no fixture lives in this repo itself. Not started | L5698 |
 | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
 | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
+
+**Resolved since last verification (2026-09-29), removed from the list above**:
+follow-up items spawned by `constituents_dim` (single-source migration for
+`advection`, naming-convention audit) — `examples/advection/CMakeLists.txt`
+now links `xdsl_ccpp/framework_src/` directly, and the naming audit landed
+via Stage 5 (bare capgen-v1-style names), CHANGELOG.md L4727.
 
 ## Other flagged issues
 
 | Item | Notes | Archive |
 |---|---|---|
 | `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | S, cosmetic | L5825 |
-| Move examples' build system from per-example Makefiles to CMake | Size TBD | L5856 |
 | CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
 | `[ccpp-table-properties]`'s `module_name` override unsupported | S | L5955 |
 | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
 | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | M, real refactor — `ArraySectionOp` is actively used across 5 files including the highest-risk dispatch code in the repo, not dead code | L6593 |
 | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | S-M — strong evidence of redundancy, but needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting deletion | L6593 |
+
+**Resolved since last verification (2026-09-29), removed from the list above**:
+"Move examples' build system from per-example Makefiles to CMake" — fully
+done. Zero Makefiles remain under `examples/`; the repo-wide CMake
+migration (root `CMakeLists.txt` + `cmake/xdsl_ccpp_capgen.cmake`,
+documented in `README.md`'s "Repo-wide example build" section) replaced
+them entirely.
 
 ## New: in-process, object-returning API for `ccpp_dsl.py`
 
@@ -327,7 +338,10 @@ entries here so they surface in a backlog sweep too.
   etc.). Potential fix: an optional `--directive` mode emitting `!$acc
   host_data use_device(...)`/`!$omp target data use_device_ptr(...)` at
   the chost boundary. Medium-High effort. `multilanguage_limitations.md`
-  §2.
+  §2. Related: the EAMxx bridge automation proposal's "Phase B — explicit
+  device-pointer contract" below (`gpu_pointer_mode = deviceptr`) is a
+  more concrete, narrower design for the same underlying gap — a fix
+  there would directly resolve this item, not just a similar one.
 - **Column-major array layout requirement** — a C++ caller must lay out
   arrays column-major (Fortran order) or get silently wrong physics
   results; no detection or row-major option exists. Potential fix:
@@ -383,7 +397,10 @@ Three phases, recommended in this order:
   `gpu_pointer_mode = deviceptr` host-meta property so `cpp_interop.py`
   knows to pass GPU pointers straight through with zero data-staging
   directives, instead of silently assuming the scheme's own directives
-  happen to do the right thing. CHANGELOG.md L8650.
+  happen to do the right thing. CHANGELOG.md L8650. Related: this is a
+  concrete design for the "chost (C++ host) known limitations" section's
+  "GPU memory management" item above — implementing this would directly
+  close that gap.
 - **Phase C — a new "EAMxx AtmosphereProcess" printer** (large, an order
   of magnitude more effort than A+B): generate the whole C++
   `AtmosphereProcess` class, not just the BIND(C) layer. Needs genuinely
