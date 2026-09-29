@@ -1,6 +1,6 @@
 """Unit tests for suite_cap.py's per-call vertical-flip marshaling.
 
-Stage 3 of the vertical-flip work: two or more schemes can share a
+Two or more schemes can share a
 standard_name while disagreeing on top_at_one (examples/var_compat:
 effr_pre/effr_post/effrs_calc don't declare it, effr_calc/effr_diag declare
 it True). Since a host never declares an explicit vertical convention to
@@ -192,9 +192,9 @@ class TestKindUnitsAndFlipChainTogether:
 
 
 class TestOptionalArgWithTopAtOneDivergence:
-    """Regression test for a real gap found while scoping task #46: the
-    vertical-flip printer (CCPPVerticalFlipOp/CCPPVerticalFlipWriteBackOp)
-    had no present()-gating for an optional array, unlike the sibling
+    """Regression test for a real gap found while auditing the vertical-flip
+    printer: CCPPVerticalFlipOp/CCPPVerticalFlipWriteBackOp had no
+    present()-gating for an optional array, unlike the sibling
     CCPPKindCastOp/CCPPUnitConvertOp printers -- a latent crash risk (an
     absent optional array has no bounds to call size() on) for any
     divergent-std-name arg that is also declared optional, since

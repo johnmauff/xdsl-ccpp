@@ -360,7 +360,7 @@ def _table_descriptor_from_class(cls, table_type: str) -> TableDescriptor:
     """Shared body for ccpp_ddt/ccpp_module/ccpp_host: every non-private
     list attribute on the decorated class becomes one arg table.
 
-    Extracted (complexity-audit Tier 2 finding, task #53) after confirming
+    Extracted after confirming
     the three decorators below were byte-identical apart from the literal
     table-type string passed to TableDescriptor.
     """

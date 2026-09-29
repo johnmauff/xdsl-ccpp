@@ -74,7 +74,8 @@ class TestDdtMemberConstruction:
     def test_construct_from_string_kind(self):
         """source_kind accepts the exact tag run_dispatch.py's ad hoc tuples
         use today ("ddt_member", not the auto()-squashed "ddtmember") --
-        this is what lets Stage 2 convert those tuples without translation.
+        this is what lets a caller convert those tuples into a
+        ResolvedArgOp without any translation step.
         """
         op = ResolvedArgOp(
             "rad_temp",

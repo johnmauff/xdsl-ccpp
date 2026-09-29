@@ -29,7 +29,7 @@ def build_host_var_index(ccpp_mod):
     recover a host binding for framework-level identities (e.g.
     horizontal_dimension) that no scheme argument in a suite directly
     carries once physics-mode column-dispatch has synthesized
-    col_start/col_end in its place (capgen_v1_parity_backlog.md Stage 7).
+    col_start/col_end in its place.
     DDT tables are intentionally excluded -- not needed for this lookup.
     """
     from xdsl_ccpp.dialects import ccpp

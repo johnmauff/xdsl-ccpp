@@ -1,6 +1,6 @@
 """Unit tests for suite-level <init>/<final> scheme hooks (v2.0 SDF schema).
 
-Backlog item: `nested_suite` in ccpp_cap_refactor_plan.md. Ported from
+Backlog item: `nested_suite`. Ported from
 reading NCAR ccpp-framework's real feature/capgen-v1 source directly
 (capgen/generator/suite_resolver.py's suite-level <init>/<final> resolution,
 suite_cap.py's _init_lines/_final_lines call emission), not guessed from the
@@ -187,7 +187,7 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
         ) in init_fn
 
         # Not spuriously called anywhere else. test_suite_timestep_init_g1
-        # (task #28: timestep_init is now group-scoped), not the old flat
+        # (timestep_init is now group-scoped), not the old flat
         # test_suite_timestep_initial.
         for other_fn_name in (
             "test_suite_timestep_init_g1",
@@ -207,7 +207,7 @@ class TestSuiteLifecycleHooksEmitCallsInTheRightSubroutines:
             "errmsg=errmsg, errflg=errflg)"
         ) in final_fn
 
-        # test_suite_timestep_init_g1 (task #28: timestep_init is now
+        # test_suite_timestep_init_g1 (timestep_init is now
         # group-scoped), not the old flat test_suite_timestep_initial.
         for other_fn_name in (
             "test_suite_initialize",

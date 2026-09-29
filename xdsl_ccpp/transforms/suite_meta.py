@@ -95,8 +95,7 @@ class MetaCAP(ModulePass):
         MLIR return value to model intent(out) here. (A previous version of
         this method branched on intent's three values plus the no-intent
         case, but every branch did the same `in_args.append(arg_type)` --
-        pure vestigial classification, simplified away in the
-        complexity-audit's Tier 2 pass, task #54.) An unrecognized intent
+        pure vestigial classification, simplified away.) An unrecognized intent
         value is still rejected rather than silently accepted.
 
         Args:

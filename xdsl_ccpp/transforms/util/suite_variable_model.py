@@ -81,7 +81,7 @@ class SuiteVarEntry:
                                 # suite_cap.py's _build_framework_refs must
                                 # never also schedule a LazyAllocOp for such a
                                 # var, whichever of its two allocation sites
-                                # would otherwise reach it (task #30, Copilot
+                                # would otherwise reach it (found via Copilot
                                 # review PR #83).
     occurrences: list = None   # list[SuiteVarOccurrence], in true call order
                                 # (every phase/group, not just the first

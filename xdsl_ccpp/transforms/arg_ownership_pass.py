@@ -23,8 +23,8 @@ class ArgOwnershipPass(ModulePass):
     ArgOwnershipKind in ccpp.py) -- does the cap own this arg, or does its
     data come from outside?
 
-    Part of the full IR unification plan in ccpp_cap_refactor_plan.md
-    (Phase 7): computes this ownership decision durably, once, on the arg
+    Part of the Phase 7 full IR unification: computes this ownership
+    decision durably, once, on the arg
     itself. suite_cap.py's SuiteOwned gate and ccpp_cap.py's
     HostMatched/CapScratch/Block split -- previously two independently
     (re-)computed heuristics for this same question -- both read this

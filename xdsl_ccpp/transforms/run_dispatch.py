@@ -1,14 +1,13 @@
 """Run-dispatch resolution and generation.
 
-Extracted from ccpp_cap.py's CCPPCAP pass (Phase 3a of the restructuring plan,
-mechanical move only -- no logic changes; promoting the _Run* dataclasses to
-real IR ops is Phase 3b, done separately later once this move has been stable
-for a while).
+Extracted from ccpp_cap.py's CCPPCAP pass as a mechanical move (no logic
+changes at extraction time); per-arg resolution was later promoted from
+plain dataclasses to real IR ops (see ResolvedArgOp/ArgSourceKind below).
 
 Builds the per-suite run-dispatch chain (resolve host/control/suite/constituent
 data for each scheme call, generate the nested if/else dispatcher on
 suite_name) and the suite-part-list query function. Kept as a plain
-importable module (not a registered pass) per the phase plan, mirroring
+importable module (not a registered pass), mirroring
 lifecycle_cap.py/constituent_cap.py -- called directly from
 generate-ccpp-cap's final module assembly via _generate_run_fn and
 _generate_suite_part_list_fn.
@@ -164,8 +163,8 @@ def _build_per_suite_run_info(
     into seen_host_globals (mutated in-place — shared across lifecycle functions).
 
     phase_postfix -- which scheme entry-point phase to scan for arg
-    classification (task #28's group-scoped-phase generalization; defaults
-    to "_run" so the original physics-run dispatch is unaffected). Resolved
+    classification (generalizes this beyond a single hardcoded "_run" phase;
+    defaults to "_run" so the original physics-run dispatch is unaffected). Resolved
     against LIFECYCLE_POSTFIX_ALIASES' short forms too, via
     _resolve_lifecycle_table_name.
 
@@ -587,8 +586,8 @@ def _build_run_block_signature(
         }
         # Filter: remove args whose arg_name matches a ccpp_info member, OR
         # whose canonical name maps to a ccpp_info-provided std_name, OR
-        # whose own declared TYPE is the ccpp_info_t DDT itself (task #28
-        # Stage 3, examples/ddthost: make_ddt's own "_init" table declares
+        # whose own declared TYPE is the ccpp_info_t DDT itself (found via
+        # examples/ddthost: make_ddt's own "_init" table declares
         # an arg of type ccpp_info_t -- the DDT-instance-creating scheme's
         # normal output, unrelated to this host's ccpp_info_t bundling
         # convention for errmsg/errflg/col_start/col_end. The member-name
@@ -799,7 +798,7 @@ def _build_run_chain_preamble(
     )
 
 
-# ── Task #57: decomposition of _build_run_dispatch_chain's former 789-line body ──
+# ── Decomposition of _build_run_dispatch_chain's former 789-line body ──
 
 @dataclass
 class _RunChainCtx:
@@ -832,9 +831,8 @@ def _build_state_host_var_map(meta_data, host_var_map) -> dict:
     rather than discarding it into a throwaway local. Used only at the
     result write-back sites below (never for dimension-name/DDT-member
     resolution elsewhere in this file), since those other host_var_map
-    lookups aren't yet confirmed safe to widen the same way -- see
-    ccpp_cap_refactor_plan.md's suite_allocate scoping note for why this
-    is deliberately narrow, not a blanket include_host=True flip.
+    lookups aren't yet confirmed safe to widen the same way -- this is
+    deliberately narrow, not a blanket include_host=True flip.
     'dispatch_scalar'-classified HOST-type vars (loop bounds, error
     handling) are excluded -- they have no backing Fortran module to
     use-associate from.
@@ -1028,8 +1026,7 @@ def _build_array_section_ops(
         previously two independently-maintained copies of the same
         "resolve dim standard_name -> host var ref, dedupe the
         external-global stub, lazily create the shared '1' constant"
-        logic (run_dispatch.py's own Tier 1 complexity-audit finding,
-        task #40). Returns False and stops at the first dim whose
+        logic, unified here. Returns False and stops at the first dim whose
         standard_name has no host_var_map entry, matching both call
         sites' original fail-fast (break-out-of-loop) behavior.
         """
@@ -1098,10 +1095,10 @@ def _build_array_section_ops(
                 continue
             _cv_first_dim = _cv_dims[0].lower()
             if _cv_first_dim == CCPP_LOOP_EXTENT_STD_NAME:
-                # Original, already-working convention -- task #18 investigated
+                # Original, already-working convention -- an investigation into
                 # consolidating this into the horizontal_dimension branch below
                 # (single-dim is a strict subset of that branch's own general
-                # multi-dim handling) but found no example in this repo's own
+                # multi-dim handling) found no example in this repo's own
                 # examples/ still exercises this path (examples/advection, the
                 # comment's original citation, has since migrated off it) --
                 # confirmed via CAM-SIMA-fresh's own
@@ -1179,7 +1176,7 @@ def _build_array_section_ops(
 
         # Look up the var descriptor; for DDT members, search the DDT table.
         # Explicit membership checks rather than try/except(KeyError,
-        # AssertionError) as control flow (task #61 item 6) -- the only
+        # AssertionError) as control flow -- the only
         # exception getFunctionArgument can actually raise is KeyError, from
         # its own plain dict lookup, so an explicit `in` check is exactly
         # equivalent, not just similar.
@@ -1359,7 +1356,7 @@ def _result_keyword_name(idx, ret_type, ctx, n_inout_ret, leading_inout_ret, run
     only by a real compiler (ifx), not by FileCheck goldens or
     gfortran's more permissive diagnostics.
 
-    Hoisted to module level (task #61 item 8) out of
+    Hoisted to module level out of
     _build_call_and_copy_back_ops's own body, where it was a closure
     rebuilt fresh on every call (once per suite part) purely to capture
     ctx/n_inout_ret/leading_inout_ret/run_ret_alloc -- now threaded
@@ -1409,12 +1406,11 @@ def _build_call_and_copy_back_ops(
         Shared by both result-classification branches below (the
         leading-inout-return branch and the trailing-alloc-return
         branch) -- previously two independently-maintained,
-        byte-identical copies of this same search (complexity-audit
-        Tier 2 finding, task #50). Read-only lookup with no
-        insertion-point/anchor-order interaction, unlike this
-        file's own GPU-directive-adjacent logic (see task #45's
-        scoping note) -- it only decides *what* ref to build, not
-        *where* to insert it.
+        byte-identical copies of this same search, unified here.
+        Read-only lookup with no insertion-point/anchor-order
+        interaction, unlike GPUCcppCapPass's own directive-insertion
+        logic (gpu_ccpp_cap_pass.py) -- it only decides *what* ref to
+        build, not *where* to insert it.
         """
         for i, (a_name, a_type) in enumerate(
             zip(callee_input_names, callee_input_types)
@@ -1487,7 +1483,7 @@ def _build_call_and_copy_back_ops(
             # (errmsg/errflg) fall through to type-matching below. This
             # order matters: an ordinary inout scalar can share errflg's
             # own i32 type (e.g. examples/nested_suite's scheme_order,
-            # task #28 Stage 3's own physics_init/final phases -- the
+            # in the physics_init/final phases -- the
             # first time a leading-inout echo of exactly this type reached
             # this code path). Checking type first (the previous order)
             # silently misrouted such a scalar's real write-back into
@@ -1882,7 +1878,7 @@ def _generate_run_fn(
     inside each suite's branch.
 
     phase_postfix -- which scheme entry-point phase this per-group dispatch
-    is for (task #28's generalization beyond "_run" alone -- e.g.
+    is for (generalizes this beyond "_run" alone -- e.g.
     "_timestep_initialize" for the group-scoped ccpp_physics_timestep_init).
     Defaults to "_run" so the original physics-run dispatch is unaffected;
     threaded through to _build_per_suite_run_info and
@@ -1900,7 +1896,7 @@ def _generate_run_fn(
     # ── Build host variable maps from metadata ─────────────────────────────
     _maps = _build_run_metadata_maps(meta_data)
     host_var_map = _maps.host_var_map
-    # Unused here (task #61 item 7) -- kept unpacked, `_`-prefixed rather
+    # Unused here -- kept unpacked, `_`-prefixed rather
     # than deleted, so this block still spells out every field
     # _build_run_metadata_maps returns, matching the fully-spelled-out
     # unpacking style the rest of this function (and _sig/_pre below) use.
@@ -1925,7 +1921,7 @@ def _generate_run_fn(
         per_suite, meta_data, kwargs,
         suite_name_type, suite_part_type, errmsg_type, errflg_type, int_base,
     )
-    # Same rationale as _maps above (task #61 item 7): unused fields stay
+    # Same rationale as _maps above: unused fields stay
     # unpacked and `_`-prefixed rather than deleted.
     _new_block = _sig.new_block
     _all_block_types = _sig.all_block_types
@@ -1946,7 +1942,7 @@ def _generate_run_fn(
     _pre = _build_run_chain_preamble(
         per_suite, suite_name_arg, errmsg_arg, errflg_arg,
     )
-    # Same rationale as _maps/_sig above (task #61 item 7).
+    # Same rationale as _maps/_sig above.
     _err_const = _pre.err_const
     _store_errflg = _pre.store_errflg
     trim_suite_name = _pre.trim_suite_name

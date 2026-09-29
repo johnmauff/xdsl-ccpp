@@ -2,13 +2,13 @@
 """Mechanically regenerate a filecheck golden fixture from its own real
 pipeline output.
 
-Built for task #28 (6-to-8-phase lifecycle match with capgen-v1): each
-remaining stage (3-5) changes the lifecycle dispatch shape again, and each
-time, roughly a dozen-plus fixtures need their CHECK block updated to match
--- purely mechanical work that Stages 1-2 did by hand (via forked agents
-re-deriving the same "CHECK on the first line after a label/blank-line gap,
-CHECK-NEXT elsewhere" pattern from scratch each time). This script automates
-that pattern directly.
+Built while migrating the suite lifecycle dispatch to match capgen-v1's
+full 6-to-8-phase model: each migration step changes the lifecycle
+dispatch shape again, and each time, roughly a dozen-plus fixtures need
+their CHECK block updated to match -- purely mechanical work previously
+done by hand (via forked agents re-deriving the same "CHECK on the first
+line after a label/blank-line gap, CHECK-NEXT elsewhere" pattern from
+scratch each time). This script automates that pattern directly.
 
 Safety rule (the reason this isn't just "diff and overwrite"): only
 fixtures classified as "literal-mirror" style -- CHECK-NEXT lines already
@@ -16,9 +16,9 @@ dominate the file, i.e. it already asserts on nearly every generated line --
 are eligible for full regeneration. Fixtures classified as "sparse" --
 deliberately asserting only a handful of properties, e.g. a single
 CHECK-LABEL with no CHECK-NEXT follow-through -- are NEVER auto-rewritten.
-Blind literal regeneration previously corrupted one of these (task #28
-Stage 1, kessler-bindC.mlir: 52 real lines -> 655 CHECK-NEXT lines) before
-being caught and reverted. This script would have refused to touch that
+Blind literal regeneration previously corrupted one of these
+(kessler-bindC.mlir: 52 real lines -> 655 CHECK-NEXT lines) before being
+caught and reverted. This script would have refused to touch that
 file at all.
 
 Usage:

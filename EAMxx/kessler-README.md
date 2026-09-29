@@ -128,7 +128,7 @@ same GPU context, but it's a property of this specific scheme's directives, not 
 xdsl-ccpp-generated cap itself provides or enforces.
 
 ### Bug #1 root cause (`kessler_suite_suite_*` naming) -- UPDATE: this was in fact a generator
-defect, now fixed upstream (task #66, `ccpp_cap_refactor_plan.md`)
+defect, now fixed upstream (task #66, `CHANGELOG.md`)
 
 Original diagnosis (2026-07-29) read: `xdsl-cpp/examples/kessler/scheme/kessler_suite.xml` names
 the suite `kessler_suite`. The generator (`suite_cap.py`) built function names as

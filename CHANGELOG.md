@@ -1,4 +1,10 @@
-# Refactor Plan: Decomposing `ccpp_cap.py` in xdsl-ccpp
+# Refactor Archive: Decomposing `ccpp_cap.py` in xdsl-ccpp
+
+**Historical record.** For the current, open backlog items only, see
+`BACKLOG.md`. Everything below (including the Index) reflects the full
+narrative and is kept for reference; items marked ✅/🔄 here may since have
+moved -- `BACKLOG.md` is the up-to-date source for open items, this file
+is not.
 
 **Target (as of the plan's start, 2026-07-17):** `xdsl_ccpp/transforms/ccpp_cap.py`
 (4,749 lines), the `CCPPCAP` pass (`generate-ccpp-cap`) in

@@ -1,8 +1,8 @@
 """Unit tests for whitespace tolerance in the frontend suite-XML/CLI parsers.
 
 Found by auditing ccpp_xml.py after fixing the ".meta" argument-bracket
-spacing bug (see ccpp_cap_refactor_plan.md and
-tests/unit/test_meta_parser_bracket_spacing.py): the same class of bug --
+spacing bug (see tests/unit/test_meta_parser_bracket_spacing.py): the same
+class of bug --
 user-authored text taken at face value without stripping, relying entirely
 on everyone happening to format things the same tight way -- turned up in
 three more spots. None are currently live failures (every suite XML/CLI

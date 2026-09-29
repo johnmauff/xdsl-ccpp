@@ -129,10 +129,9 @@ def _resolved_var_record(arg) -> "dict | None":
 
     Returns None for args with no standard_name (e.g. the synthetic
     col_start/col_end loop-bound scalars _classify_args introduces for
-    physics_mode calls) -- capgen_v1_parity_backlog.md Stage 2 found these
-    have no CCPP metadata identity, so a ResolvedVar-style consumer
-    (write_init_files.py keys everything off standard_name) has nothing
-    to do with them.
+    physics_mode calls) -- these have no CCPP metadata identity, so a
+    ResolvedVar-style consumer (write_init_files.py keys everything off
+    standard_name) has nothing to do with them.
     """
     if not arg.hasAttr("standard_name"):
         return None
@@ -293,7 +292,7 @@ def _write_resolved_vars(resolved_vars: dict, path: str, host_vars: dict = None)
         json.dump(out, f, indent=2)
 
 
-# ── Task #56 Stage 1: mechanical extractions out of GenerateSuiteSubroutine ──
+# ── Mechanical extractions out of GenerateSuiteSubroutine ──
 #
 # Each of these was previously a method reading only self.meta_data (plus,
 # for a couple, other now-also-extracted helpers) -- no other instance state,
@@ -546,7 +545,7 @@ def _build_suite_state_lazy_alloc(ninstances_ssa) -> "LazyAllocOp":
 # Fortran-keyword/relational-operator tokens that can appear inside an
 # 'active = <expr>' expression but are never themselves a referenced
 # standard_name -- see _resolve_active_condition below. (Moved from
-# GenerateSuiteSubroutine._ACTIVE_EXPR_TOKEN_RE -- task #56 Stage 1.)
+# GenerateSuiteSubroutine._ACTIVE_EXPR_TOKEN_RE.)
 _ACTIVE_EXPR_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -557,7 +556,7 @@ def _active_expr_var_indexes(meta_data) -> dict:
     Covers every MODULE-type var (always use-associated in this codebase)
     *and* every 'state'-classified HOST-type var -- real host-owned data
     with its own backing Fortran module (Stage 2a of the vocabulary-
-    resolution redesign, ccpp_cap_refactor_plan.md: resolved the same way
+    resolution redesign: resolved the same way
     MODULE-type vars already are, via a USE stub, rather than threaded as a
     dummy argument the way every HOST-type var used to be regardless of
     classification).
@@ -570,8 +569,7 @@ def _active_expr_var_indexes(meta_data) -> dict:
     optionality would depend on). _resolve_active_condition raises a clear
     error if one is ever referenced in an 'active =' expression rather than
     silently threading an untested dummy-argument workaround for a case
-    that has never actually occurred (Stage 3 of the redesign -- see
-    ccpp_cap_refactor_plan.md).
+    that has never actually occurred.
     """
     from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 
@@ -640,9 +638,8 @@ def _resolve_active_condition(
     flag_indicating_cloud_microphysics_has_graupel -> has_graupel case.
 
     A MODULE-type reference, or a 'state'-classified HOST-type reference
-    (Stage 2a of the vocabulary-resolution redesign -- e.g. opt_arg's own
-    flag_for_opt_arg, data.meta's type=host but genuinely host-owned
-    state), resolves to its own local name and emits a USE stub for it. A
+    (e.g. opt_arg's own flag_for_opt_arg, data.meta's type=host but
+    genuinely host-owned state), resolves to its own local name and emits a USE stub for it. A
     'dispatch_scalar'-classified HOST-type reference (loop bounds, error
     handling) raises rather than being silently supported -- see
     _active_expr_var_indexes.
@@ -652,8 +649,8 @@ def _resolve_active_condition(
     resolves via the same _resolve_ddt_access_path machinery run_dispatch.py's
     own DDT-member resolution uses. When the DDT's own module-level instance
     is itself a HOST-owned array of model instances (real capgen-v1's
-    multi-instance model, ccpp_cap_refactor_plan.md's "instances/
-    instances_advection" entry), <arg_table> -- the calling scheme's own
+    multi-instance model, "instances/instances_advection" entry),
+    <arg_table> -- the calling scheme's own
     _run table -- must have a sibling instance_number-standard-name arg to
     index by; this raises a clear error rather than silently emitting an
     unindexed (and therefore wrong) reference if it doesn't, matching the
@@ -758,7 +755,7 @@ def _resolve_active_condition(
     return _ACTIVE_EXPR_TOKEN_RE.sub(_substitute, raw_expr)
 
 
-# ── Task #59 Stage 2: kind/unit-cast helpers + _build_block_signature decomposition ──
+# ── Kind/unit-cast helpers + _build_block_signature decomposition ──
 
 def _std_key(arg) -> str:
     """Return the standard_name (lowercase) if set, otherwise the local arg name."""
@@ -1091,7 +1088,7 @@ def _tag_data_ops_by_std_name(input_arg_list, final_values, data_ops) -> None:
         data_ops[("std_name", _std_key(fn_arg))] = final_values[idx]
 
 
-# ── Task #30: chained-interstitial allocation-ordering fix ──
+# ── Chained-interstitial allocation-ordering fix ──
 
 def _find_producer_scheme(matching_arg, arg_tables) -> "str | None":
     """Return the scheme name whose own arg table declares matching_arg.
@@ -1182,8 +1179,8 @@ class _LifecycleFnsResult:
 @dataclass
 class _PendingAlloc:
     """A SuiteOwned var whose allocation dimension is a same-phase scheme
-    output that hasn't been called yet (task #30's chained-interstitial
-    fix). Registered by _build_framework_refs instead of emitting a
+    output that hasn't been called yet. Registered by _build_framework_refs
+    instead of emitting a
     LazyAllocOp immediately; resolved and spliced into call_ops by
     _build_call_ops once producer_scheme's own call ops have been emitted.
     """
@@ -1200,7 +1197,7 @@ class _PendingAlloc:
 @dataclass
 class _CallSeqContext:
     """Read-only context shared across _build_call_ops's own call-sequence
-    walk (task #56 Stage 3 decomposition of its former nested closures).
+    walk (extracted from its former nested closures).
     """
     all_args: dict
     data_ops: dict
@@ -1215,7 +1212,7 @@ class _CallSeqContext:
 
 
 def _raise_unresolved_pending_allocs_error(pending_allocs, tgt_subroutine_postfix) -> None:
-    """Task #30: at least one deferred allocation was never resolved by
+    """At least one deferred allocation was never resolved by
     the time the whole call sequence finished -- either its producer
     scheme's call never appears in this phase's own sequence, or it's
     nested inside a promoted-dimension loop body (subcycle nesting IS
@@ -1233,8 +1230,7 @@ def _raise_unresolved_pending_allocs_error(pending_allocs, tgt_subroutine_postfi
         f"call never appears in this suite's call sequence for "
         f"'{tgt_subroutine_postfix}', or it's nested inside a "
         f"promoted-dimension loop body -- not yet supported for a "
-        f"same-phase allocation dependency (see task #30 in "
-        f"ccpp_cap_refactor_plan.md; a subcycle-nested producer IS "
+        f"same-phase allocation dependency (a subcycle-nested producer IS "
         f"supported, since subcycle bodies route through the same "
         f"call-emission path as the flat case). Give the host/SDF a "
         f"call sequence where the producing scheme runs before "
@@ -1267,8 +1263,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         # the --emit-resolved-vars introspection path (generateSubroutineCall)
         # to recover a host binding for framework-level identities like
         # horizontal_dimension that ncol_meta itself was never host-matched
-        # against (capgen_v1_parity_backlog.md Stage 7). Not used by, and
-        # has no effect on, actual Fortran cap generation.
+        # against. Not used by, and has no effect on, actual Fortran cap
+        # generation.
         self.host_var_index: dict = host_var_index or {}
         # (ddt_instance_map, ddt_parent_map, ddt_host_var_map,
         # host_table_names) from cap_shared.py's _build_ddt_resolution_maps/
@@ -1282,8 +1278,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         # -- not used by, and has no effect on, actual Fortran cap
         # generation, which resolves this independently via run_dispatch.py.
         self.ddt_resolution_maps = ddt_resolution_maps
-        # Per-phase resolved-variable records (capgen_v1_parity_backlog.md
-        # Stage 3), populated by generateSubroutineCall. Scoped to this
+        # Per-phase resolved-variable records, populated by
+        # generateSubroutineCall. Scoped to this
         # instance (one per SuiteCAP.apply() call), not global state --
         # appended across every ccpp.SuiteOp/group this instance processes,
         # deduped by standard_name at serialization time in SuiteCAP.apply().
@@ -1513,9 +1509,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         meaningful value. Once producer_scheme IS in resolved_producers
         (the caller re-invokes this after emitting that scheme's own call
         ops), the same matching resolves normally, exactly like any other
-        already-in-scope arg -- see task #30's fix design in
-        ccpp_cap_refactor_plan.md for the full reasoning, including why
-        this can't be solved by _find_loop_upper_bound's own existing
+        already-in-scope arg. This can't be solved by
+        _find_loop_upper_bound's own existing
         fallback chain (it has no way to know "not yet, but will be soon"
         versus "genuinely unresolvable").
 
@@ -2644,8 +2639,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         already_scheduled_allocs,
     ) -> list:
         """After scheme_name's own call ops have been emitted, retry
-        resolving any pending_allocs entries keyed to it (task #30) --
-        returns the LazyAllocOps to splice in immediately after those call
+        resolving any pending_allocs entries keyed to it -- returns the
+        LazyAllocOps to splice in immediately after those call
         ops, in order. Mutates pending_allocs/already_scheduled_allocs.
         """
         ops: list = []
@@ -2798,7 +2793,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         # _timestep_finalize entry point by subcycle count -- each fires
         # exactly once per group regardless of how many <subcycle> layers
         # wrap it in the XML for _run's own purposes). Gating on
-        # ctx.physics_mode alone (task #28 Stage 3's original code) wraps
+        # ctx.physics_mode alone (the original approach) wraps
         # group-scoped _init/_finalize calls in the same loop too, since
         # physics_mode is True for all 5 group-scoped phases -- confirmed
         # via a real CI runtime failure on examples/nested_suite: wrapping
@@ -2861,7 +2856,7 @@ class GenerateSuiteSubroutine(RewritePattern):
     ):
         """Build scheme call ops and collect fn_sigs for all items in the call sequence.
 
-        pending_allocs (task #30) -- dict of producer_scheme -> list[_PendingAlloc],
+        pending_allocs -- dict of producer_scheme -> list[_PendingAlloc],
         from _build_framework_refs, for SuiteOwned vars whose allocation
         dimension is a same-phase scheme output not yet available when the
         preamble was built. As each scheme's own (non-promoted, non-
@@ -2870,8 +2865,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         into call_ops immediately after that scheme's own call ops --
         exactly where the dimension first becomes safe to read. Deliberately
         does NOT retry inside a promoted-dim or subcycle body (a producer
-        scheme nested there is out of scope for this fix's first cut --
-        see ccpp_cap_refactor_plan.md); any pending_allocs entry still
+        scheme nested there is out of scope for this fix's first cut);
+        any pending_allocs entry still
         unresolved once the whole call sequence has been walked raises a
         clear error rather than silently emitting wrong-order Fortran.
         """
@@ -3077,8 +3072,10 @@ class GenerateSuiteSubroutine(RewritePattern):
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
         pending_only=False,
     ) -> None:
-        """Task #30's mechanism 1/2: decide whether and how fw_arg gets
-        allocated during this phase. A no-op unless is_alloc_phase.
+        """Decide whether and how fw_arg gets allocated during this
+        phase: skip allocation when the scheme's own dummy self-allocates,
+        otherwise resolve its allocation dimensions immediately or defer
+        them via pending_allocs. A no-op unless is_alloc_phase.
         Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
 
         pending_only -- when True, only the deferred (pending_allocs) path
@@ -3098,7 +3095,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             # never allocate()'d here, only pointer-associated in _run.
             return
         if fw_arg.hasAttr("allocatable"):
-            # Task #30, mechanism 1: when the scheme's dummy is truly
+            # When the scheme's dummy is truly
             # `allocatable, intent(out)` the scheme performs the
             # allocate() itself in real Fortran (see
             # examples/advection/dlc_liq.F90, examples/
@@ -3244,8 +3241,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         Mutates lazy_alloc_ops/pending_allocs/already_scheduled_allocs.
         """
         already_allocated = {op.var_name.data for op in lazy_alloc_ops}
-        # Also exclude vars the framework_vars loop above already deferred
-        # (task #30): those aren't in lazy_alloc_ops yet (their own
+        # Also exclude vars the framework_vars loop above already
+        # deferred: those aren't in lazy_alloc_ops yet (their own
         # LazyAllocOp won't exist until _build_call_ops resolves them
         # later), but they've already been claimed -- without this, this
         # sweep would independently re-discover the same var (it also
@@ -3267,8 +3264,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             if entry.local_name in already_allocated:
                 continue
             if entry.allocatable:
-                # Task #30, mechanism 1 (Copilot review, PR #83): this
-                # var's own first-writer scheme declares it allocatable
+                # This var's own first-writer scheme declares it allocatable
                 # and self-allocates it in its own Fortran body -- same
                 # as the framework_vars loop's own guard above, this
                 # sweep must never also schedule a LazyAllocOp for it,
@@ -3358,7 +3354,7 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         Mutates data_ops, suite_use_stubs, and already_scheduled_allocs as
         side effects. Returns (framework_ref_ops, lazy_alloc_ops,
-        pending_allocs) -- pending_allocs (task #30) is a dict of
+        pending_allocs) -- pending_allocs is a dict of
         producer_scheme -> list[_PendingAlloc], for SuiteOwned vars whose
         allocation dimension is itself produced by another scheme's call
         within this same phase's own call sequence (not yet emitted at
@@ -3506,12 +3502,12 @@ class GenerateSuiteSubroutine(RewritePattern):
         self, tgt_subroutine_postfix, physics_mode,
         framework_vars, input_arg_list, output_arg_list, ncol_meta,
     ) -> None:
-        """--emit-resolved-vars bookkeeping (task #56 Stage 1 extraction,
-        pure code movement out of generateSubroutineCall): append this
+        """--emit-resolved-vars bookkeeping (pure code movement out of
+        generateSubroutineCall): append this
         phase's resolved-variable records to self.resolved_vars.
 
         Keyed on tgt_subroutine_postfix alone, not physics_mode, except for
-        "_run" itself (task #28: a group-scoped non-run phase, e.g. the new
+        "_run" itself (a group-scoped non-run phase, e.g. the new
         group-scoped "_timestep_initialize", must land in the SAME bucket
         its flat counterpart used to use, not get merged into "run" just
         because physics_mode is now True for it too).
@@ -3532,8 +3528,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         # intact) that _classify_args replaces in input_arg_list with
         # nameless synthetic col_start/col_end scalars for physics_mode
         # dispatch -- included here so the loop-extent variable's identity
-        # isn't lost entirely (capgen_v1_parity_backlog.md Stage 4 found it
-        # otherwise silently disappears, since _resolved_var_record filters
+        # isn't lost entirely (it otherwise silently disappears, since
+        # _resolved_var_record filters
         # out the nameless col_start/col_end args that replace it). Unlike
         # framework_vars/input_arg_list/output_arg_list, ncol_meta was
         # never itself run through HostVariableMatchPass (that pass runs
@@ -3541,8 +3537,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         # None here even when the host directly declares the normalized
         # identity (e.g. horizontal_dimension) -- real capgen-v1 resolves
         # this via its own VarLoopSubst mechanism.
-        # capgen_v1_parity_backlog.md Stage 7 confirmed this blocked every
-        # CAM-SIMA fixture using the (still-valid, still-supported)
+        # This blocked every CAM-SIMA fixture using the (still-valid,
+        # still-supported)
         # horizontal_loop_extent column-chunking convention. Fixed here,
         # not in HostVariableMatchPass itself: a fallback lookup against
         # host_var_index (built once per SuiteCAP.apply() from the same
@@ -3604,8 +3600,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                                    gets a LazyAllocOp without duplicating one
                                    an earlier _init/_register call already
                                    made.
-        emit_scheme_calls       -- task #28 Stage 3: real capgen-v1's own
-                                   suite-level <suite>_init/<suite>_final are
+        emit_scheme_calls       -- real capgen-v1's own suite-level
+                                   <suite>_init/<suite>_final are
                                    framework-setup-only and never call any
                                    scheme's own _init/_finalize directly --
                                    that happens at group granularity, in
@@ -3762,7 +3758,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         # upstream example (suite_lifecycle.F90 declares suite_lifecycle_init/
         # suite_lifecycle_final, matching the <init>/<final> tag names
         # themselves, not this codebase's own group-scheme "_finalize"
-        # convention). "and not physics_mode" (task #28 Stage 3) -- once
+        # convention). "and not physics_mode" -- once
         # ccpp_physics_init/ccpp_physics_final also call generateSubroutineCall
         # with tgt_subroutine_postfix="_init"/"_finalize" (per group), this
         # hook would otherwise fire once per group too, duplicating the
@@ -3823,8 +3819,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         one group-scoped _timestep_finalize per physics group.
 
         _timestep_initialize/_timestep_finalize used to also be flat specs
-        here (see git history) -- task #28's real-capgen-v1 lifecycle match
-        moved both to per-group (matching upstream's own group-scoped
+        here (see git history) -- both were moved to per-group (matching
+        upstream's own group-scoped
         ccpp_physics_timestep_init/ccpp_physics_timestep_final), since real
         capgen-v1 has no flat, whole-suite timestep_init/timestep_final
         subroutine at all. This also relocates ownership of the per-timestep
@@ -3834,8 +3830,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         transitions, unchanged): the group-scoped _run FuncOp below only
         ever *checks* "in_time_step" (state_string=None there, unchanged).
         """
-        # emit_scheme_calls=False for _init/_finalize (task #28 Stage 3):
-        # real capgen-v1's own suite-level <suite>_init/<suite>_final are
+        # emit_scheme_calls=False for _init/_finalize: real capgen-v1's
+        # own suite-level <suite>_init/<suite>_final are
         # framework-setup-only and never call scheme _init/_finalize
         # directly -- that now happens at group granularity, in the new
         # ccpp_physics_init/ccpp_physics_final (see group_phase_specs
@@ -3891,24 +3887,23 @@ class GenerateSuiteSubroutine(RewritePattern):
         # Per-group physics phases: (tgt_postfix, generated-name prefix,
         # state_string, check_string). "_run" is the original, unchanged
         # entry, only ever checking "in_time_step". "_timestep_initialize"
-        # (task #28 Stage 1) and "_timestep_finalize" (Stage 2) own the two
-        # state transitions in and out of "in_time_step", respectively.
-        # Both deliberately pass check_string=None (no state check): a
-        # suite with more than one group (e.g. examples/nested_suite, via
-        # <nested_suite> XML includes) calls each of these once per group,
-        # and the first group's own check+set would poison every
-        # subsequent group's check (state has already moved on by the time
-        # group 2's call runs). Real capgen-v1 has zero ccpp_suite_state
-        # checks at group granularity at all (verified via group_cap.py) --
-        # dropping the check matches upstream and is idempotent across any
-        # group count. The state_string SET on each stays, since nothing
-        # else performs these transitions now that both phases are fully
-        # per-group -- there is no longer any flat suite-wide
-        # _timestep_finalize to fall back on (Stage 1's docstring above
-        # still described one; Stage 2 removed it).
-        # "_init"/"_finalize" (task #28 Stage 3) own the scheme-level
-        # _init/_finalize calls the flat subroutine_specs rows above no
-        # longer emit (emit_scheme_calls=False there). check_string=
+        # and "_timestep_finalize" own the two state transitions in and out
+        # of "in_time_step", respectively. Both deliberately pass
+        # check_string=None (no state check): a suite with more than one
+        # group (e.g. examples/nested_suite, via <nested_suite> XML
+        # includes) calls each of these once per group, and the first
+        # group's own check+set would poison every subsequent group's
+        # check (state has already moved on by the time group 2's call
+        # runs). Real capgen-v1 has zero ccpp_suite_state checks at group
+        # granularity at all (verified via group_cap.py) -- dropping the
+        # check matches upstream and is idempotent across any group count.
+        # The state_string SET on each stays, since nothing else performs
+        # these transitions now that both phases are fully per-group --
+        # there is no longer any flat suite-wide _timestep_finalize to
+        # fall back on.
+        # "_init"/"_finalize" own the scheme-level _init/_finalize calls
+        # the flat subroutine_specs rows above no longer emit
+        # (emit_scheme_calls=False there). check_string=
         # "initialized" on both is safe (check-only, no state_string set --
         # same pattern as _run's own check) even under multiple groups: a
         # check-only phase can't poison a later group's own check the way a
@@ -4041,8 +4036,8 @@ class GenerateSuiteSubroutine(RewritePattern):
 
         For a multi-instance suite (host declares BOTH instance_number and
         number_of_instances -- see _is_multi_instance_host; real capgen-v1's
-        multi-instance model, ccpp_cap_refactor_plan.md's "instances/
-        instances_advection" entry), ccpp_suite_state must hold one entry
+        multi-instance model, "instances/instances_advection" entry),
+        ccpp_suite_state must hold one entry
         per model instance, not a single shared scalar -- else two
         instances collide on the same state (the real ctest failure on
         examples/instances this fixes). number_of_instances is itself a
@@ -4865,8 +4860,8 @@ class SuiteCAP(ModulePass):
 
     emit_resolved_vars: "str | None" = None
     """Optional path: write a JSON file of the resolved variables required at
-    each CCPP lifecycle phase (capgen_v1_parity_backlog.md Stage 3's native
-    introspection artifact -- host-model consumers like a
+    each CCPP lifecycle phase (a native introspection artifact --
+    host-model consumers like a
     write_init_files.py-equivalent read this instead of any capgen-v1 object).
 
     Not a flag of this pass directly in normal use: supplied via

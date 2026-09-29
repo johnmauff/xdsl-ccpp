@@ -2,7 +2,7 @@
 
 Backlog item: "``.meta`` argument-bracket parser requires exact spacing
 (``[ name ]``, not ``[name]``) to tell an argument name apart from an
-unrecognized token" (ccpp_cap_refactor_plan.md).
+unrecognized token."
 
 Root cause: ccpp_xml.py's parse_meta_file disambiguated an argument-name
 bracket from an unrecognized token purely by checking whether the bracket's

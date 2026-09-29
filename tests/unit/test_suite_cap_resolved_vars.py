@@ -1,7 +1,7 @@
 """Unit tests for SuiteCAP's --emit-resolved-vars JSON output
-(capgen_v1_parity_backlog.md Stage 3/4).
+(see capgen_v1_parity_backlog.md).
 
-Covers the fix for the Stage 4 gap: _classify_args's physics-mode dispatch
+Covers a fix: _classify_args's physics-mode dispatch
 replaces a scheme-declared horizontal_loop_extent arg with synthetic,
 nameless col_start/col_end scalars, which used to silently drop the
 loop-extent variable's standard_name identity from the resolved-vars output

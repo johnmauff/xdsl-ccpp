@@ -1,6 +1,6 @@
 """Shared Flang-invocation helpers for xdsl_ccpp's CLI tools.
 
-Extracted (complexity-audit Tier 1 finding) after `ccpp_validate_fir.py` and
+Extracted after `ccpp_validate_fir.py` and
 `ccpp_validate_source.py` were found to independently reimplement the same
 "search PATH for a Flang binary, then run `flang -fc1 -emit-hlfir ...`" logic
 -- and `fir2meta.py`'s own copy had already silently drifted from both:

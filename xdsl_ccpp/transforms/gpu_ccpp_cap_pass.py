@@ -43,7 +43,7 @@ from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 # tables can belong to (see cap_shared.split_scheme_table_name). register/
 # initialize/finalize each run exactly once per simulation; timestep_initial/
 # run/timestep_final each run once per timestep (always at the same count).
-# physics_initial/physics_final (task #28 Stage 3) also run exactly once per
+# physics_initial/physics_final also run exactly once per
 # simulation -- like register/initialize/finalize, NOT once per timestep --
 # they just happen to have the same two-level, per-group dispatch SHAPE as
 # run/timestep_initial/timestep_final (see _TWO_LEVEL_DISPATCH_PHASES),
@@ -65,18 +65,18 @@ _PER_TIMESTEP_PHASES = frozenset({"timestep_initial", "run", "timestep_final"})
 # apply() (substring match, not suffix, via _TWO_LEVEL_DISPATCH_PHASES)
 # since their dispatch shape -- an outer per-suite IfOp wrapping a second,
 # nested per-suite-part/group IfOp -- differs from these single-level
-# dispatchers, so none of the five are in this map. Task #28 moved
-# ccpp_physics_timestep_init (Stage 1) and ccpp_physics_timestep_final
-# (Stage 2) from flat, single-level dispatchers (matching this map's own
-# shape) to the same two-level, per-group shape ccpp_physics_run already
-# had; Stage 3 added ccpp_physics_init/ccpp_physics_final as net-new
+# dispatchers, so none of the five are in this map.
+# ccpp_physics_timestep_init and ccpp_physics_timestep_final moved from
+# flat, single-level dispatchers (matching this map's own shape) to the
+# same two-level, per-group shape ccpp_physics_run already had;
+# ccpp_physics_init/ccpp_physics_final were then added as net-new
 # entries with that same shape (NOT a move -- ccpp_init/ccpp_final below
 # are unchanged, still flat, still exist; see suite_cap.py's
 # emit_scheme_calls for why they no longer emit scheme calls themselves).
-# Names are bare (Stage 5 of the vocabulary-resolution redesign,
-# ccpp_cap_refactor_plan.md: capgen-v1-style generic subroutine names, no
-# host prefix) -- matched with endswith rather than == purely for
-# defensive robustness against a future prefix, not because one exists today.
+# Names are bare (capgen-v1-style generic subroutine names, no host
+# prefix, per the vocabulary-resolution redesign) -- matched with
+# endswith rather than == purely for defensive robustness against a
+# future prefix, not because one exists today.
 _LIFECYCLE_FN_SUFFIX_TO_PHASE = {
     "ccpp_register": "register",
     "ccpp_init": "initialize",
@@ -140,8 +140,8 @@ class GPUCcppCapPass(ModulePass):
     an !$acc data region using host model variable names. For each of the
     lifecycle dispatchers (ccpp_register/ccpp_init/ccpp_final/
     ccpp_physics_timestep_init/ccpp_physics_timestep_final -- bare,
-    capgen-v1-style names since Stage 5 of the vocabulary-resolution
-    redesign, ccpp_cap_refactor_plan.md), wraps the suite callee call
+    capgen-v1-style names since the vocabulary-resolution redesign),
+    wraps the suite callee call
     inside each suite-name scf.IfOp the same way.
 
     The OpenACC clause is chosen by comparing the scheme's declared memory
@@ -225,7 +225,7 @@ class GPUCcppCapPass(ModulePass):
     currently untested in practice: no example in this repo declares a host
     variable memory_space=device, so this path has zero real exercise today
     beyond its unit tests. Flagged as a real, accepted risk rather than
-    deferred -- see ccpp_cap_refactor_plan.md's GPU/OpenACC backlog entry.
+    deferred -- tracked as a GPU/OpenACC backlog item.
 
     Naming note: 'model_var_name' refers to the host MODEL variable name,
     not a CPU-memory variable. 'host'/'device' in memory_space follow
@@ -489,8 +489,7 @@ class GPUCcppCapPass(ModulePass):
         this union says a var is device-resident, CCPP needs to establish
         that residency itself (OpenACC's enter/exit-data are
         reference-counted, so this is safe even if a larger host model also
-        manages the same var independently -- see
-        ccpp_cap_refactor_plan.md's backlog entry).
+        manages the same var independently).
 
         Every returned VarLifetime is resolved via the same whole-sim/per-
         timestep anchor rules _resolve_lifetime already applies to copy-
@@ -577,13 +576,13 @@ class GPUCcppCapPass(ModulePass):
     # Callee-name markers identifying a per-group suite-cap callee, checked
     # as substrings (the callee name's own trailing group-name segment
     # varies per suite XML, so an exact suffix can't be used). Each marker is
-    # `SUITE_FN_INFIX` (task #66; currently "", previously "_suite") followed
+    # `SUITE_FN_INFIX` (currently "", previously "_suite") followed
     # by a fixed literal segment. f"{SUITE_FN_INFIX}_physics" is the
     # pre-existing run marker (relies on this codebase's own example suites
     # conventionally naming their run group "physics" -- narrow, but
     # pre-existing and out of scope to broaden here); the
-    # f"{SUITE_FN_INFIX}_timestep_init_"-style markers (task #28) are
-    # genuinely group-name-independent, since that segment is fixed
+    # f"{SUITE_FN_INFIX}_timestep_init_"-style markers are genuinely
+    # group-name-independent, since that segment is fixed
     # regardless of the group's own name (suite_cap.py's
     # generated_subroutine_posfix always inserts it before the group name,
     # never depending on what the group is called).
@@ -634,8 +633,8 @@ class GPUCcppCapPass(ModulePass):
     def _collect_run_call_sites(self, fn_op, phase="run"):
         """Yield (suite_name, phase, true_block, suite_call) for every
         suite-part call site of a two-level (suite_name -> suite_part/group)
-        dispatcher -- ccpp_physics_run, or (task #28) ccpp_physics_timestep_init
-        now that it has the same per-group shape. A suite with more than one
+        dispatcher -- ccpp_physics_run, or ccpp_physics_timestep_init now
+        that it has the same per-group shape. A suite with more than one
         group (e.g. kessler's physics_before_coupler/physics_after_coupler)
         yields one tuple per group, in suite-XML/program order -- see
         _find_suite_part_ifs. true_block is always the shared, suite-level
@@ -895,8 +894,7 @@ class GPUCcppCapPass(ModulePass):
     def _directive_op(self, acc_cls, acc_kwargs: dict, omp_cls, omp_kwargs: dict):
         """Return the ACC or OMP op for one GPU directive role, chosen by
         self.directive -- see cap_shared.directive_op's own docstring for
-        why this dispatch is centralized (complexity-audit Tier 2 finding,
-        task #45), shared with gpu_data_pass.py.
+        why this dispatch is centralized, shared with gpu_data_pass.py.
         """
         return directive_op(self.directive, acc_cls, acc_kwargs, omp_cls, omp_kwargs)
 

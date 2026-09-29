@@ -182,7 +182,7 @@ class XMLSuite(XMLSuiteBase):
 # the CCPPArgument descriptor by BuildMetaDataDescriptions.traverse_argument_op
 # below. Extracted from 10 previously separate, identically-shaped
 # `if "<flag>" in arg_op.properties: arg.setAttr("<flag>", True)` blocks
-# (complexity-audit Tier 2 finding, task #53) into one tuple + loop; each
+# into one tuple + loop; each
 # flag's own explanation (several non-obvious) is preserved here rather than
 # dropped:
 #   optional                -- a flag attribute (vs. a value-carrying one)
@@ -194,8 +194,7 @@ class XMLSuite(XMLSuiteBase):
 #                              HOST-type (not MODULE-type) table -- passed to
 #                              physics via the host's own argument list rather
 #                              than use-associated, and always considered
-#                              initialized. capgen_v1_parity_backlog.md Stage 7:
-#                              surfaced via --emit-resolved-vars as
+#                              initialized. Surfaced via --emit-resolved-vars as
 #                              is_host_table_var, matching real capgen-v1's
 #                              own Var.host_interface_var.
 #   model_var_is_protected  -- marks a matched host/module variable that is
@@ -203,8 +202,7 @@ class XMLSuite(XMLSuiteBase):
 #                              this arg's own 'protected' property (which a
 #                              scheme argument never carries directly; only
 #                              the host/module declaration does).
-#                              capgen_v1_parity_backlog.md Stage 7: surfaced
-#                              via --emit-resolved-vars as is_protected,
+#                              Surfaced via --emit-resolved-vars as is_protected,
 #                              matching real capgen-v1's own propagation of
 #                              the host declaration's protected status onto
 #                              the resolved call-list entry.
@@ -320,9 +318,9 @@ class BuildMetaDataDescriptions(Visitor):
                        "model_var_memory_space", "model_var_kind_mismatch",
                        "model_var_unit_mismatch", "model_var_active_expr",
                        "default_value", "promoted_dim",
-                       # Phase 7, Stage 2's durable ownership classification
+                       # The durable ownership classification
                        # (ArgOwnershipKind) -- .data here is the enum member
-                       # itself, not a string, same access pattern Stage 3
+                       # itself, not a string, same access pattern later
                        # consumers compare directly against (e.g.
                        # ArgOwnershipKind.SuiteOwned).
                        "ownership_kind"]

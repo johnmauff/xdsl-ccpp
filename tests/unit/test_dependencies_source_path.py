@@ -1,6 +1,5 @@
 """Unit tests for metadata ``dependencies``/``dependencies_path``/``source_path``
-tracking (Tier 1 of ccpp_cap_refactor_plan.md's "dependencies/source_path
-tracking" entry).
+tracking (the "dependencies/source_path tracking" backlog entry).
 
 Real capgen-v1 (``metadata/metadata_table.py``'s ``MetadataTable.apply_table_props``)
 supports these three ``[ccpp-table-properties]`` keys to locate a scheme's real
@@ -10,8 +9,8 @@ at all (a real upstream ``.meta`` file declaring it would crash the parser);
 and accepted a nonstandard ``relative_path`` key instead of the real
 ``dependencies_path`` name. This restores the real key names and forwards all
 three onto ``TablePropertiesOp``'s IR attributes -- deliberately *not*
-resolving them to filesystem paths (no code consumes them for that yet, see
-the backlog entry's own "Tier 2" note).
+resolving them to filesystem paths (no code consumes them for that yet;
+file-path resolution is intentionally still unimplemented).
 """
 
 import pytest

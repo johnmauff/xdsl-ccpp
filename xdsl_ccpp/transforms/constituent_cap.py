@@ -1,9 +1,9 @@
 """Constituent-API generation.
 
-Extracted from ccpp_cap.py's CCPPCAP pass (Phase 2 of the restructuring plan):
-builds the runtime constituent registration/query API for a suite. Kept as a
-plain importable module (not a registered pass) per the phase plan -- called
-directly from generate-ccpp-cap's final module assembly.
+Extracted from ccpp_cap.py's CCPPCAP pass: builds the runtime constituent
+registration/query API for a suite. Kept as a plain importable module (not
+a registered pass) -- called directly from generate-ccpp-cap's final
+module assembly.
 """
 
 from xdsl.dialects import llvm
@@ -159,8 +159,7 @@ def _generate_constituent_api(
     -- caught by Copilot review on PR #38.
 
     instance_local_name/ninstances_local_name -- real capgen-v1's
-    multi-instance model (ccpp_cap_refactor_plan.md's "instances/
-    instances_advection" entry, task #35): when set (the host declares
+    multi-instance model: when set (the host declares
     instance_number/number_of_instances), every module-level array this API
     owns (lc_all_constituents, lc_constituent_array, lc_const_tend,
     lc_const_props, each scheme's own dynamic-array, and any scratch var)

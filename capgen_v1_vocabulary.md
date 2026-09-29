@@ -13,7 +13,7 @@ out explicitly rather than repeated with unwarranted confidence.
 
 This is about capgen-v1's own vocabulary, not xdsl-ccpp's port of it — no line-by-line "does
 xdsl-ccpp implement this" column. Where this session's own work already established xdsl-ccpp's
-status for a given item (from `ccpp_cap_refactor_plan.md`'s vocabulary-gap entries, task #11 and
+status for a given item (from `CHANGELOG.md`'s vocabulary-gap entries, task #11 and
 its splits #68/#69), a short parenthetical says so; treat those as pointers, not the point of
 this document.
 

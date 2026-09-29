@@ -1,6 +1,6 @@
-"""Regression test for a real bug found while implementing Stage 4 of the
-multi-instance array-of-DDT-instance feature (ccpp_cap_refactor_plan.md's
-instances/instances_advection entry, real capgen-v1's own multi-instance
+"""Regression test for a real bug found while implementing the
+multi-instance array-of-DDT-instance feature ("instances/instances_advection"
+entry, real capgen-v1's own multi-instance
 model): print_ftn.py's CCPPArraySectionOp handler silently dropped the
 "%member" suffix entirely when the DDT instance itself was already
 subscripted by an instance index.

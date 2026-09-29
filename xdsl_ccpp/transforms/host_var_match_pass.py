@@ -25,8 +25,8 @@ def _parse_dim_names(arg_op) -> list:
     """Parse an ArgumentOp's comma-separated dim_names attribute into a
     stripped list of dimension standard names ([] if unset).
 
-    Extracted (complexity-audit Tier 2 finding, task #52) after this exact
-    shape was found duplicated for both scheme_arg_op and host_arg_op at
+    Extracted after this exact shape was found duplicated for both
+    scheme_arg_op and host_arg_op at
     two sites in _check_compatibility's own dimension rank check (the
     promotion-prefix branch and the equal-rank per-dimension-name branch).
     Not shared with validate_fir.py's own similar-looking dim_names split
@@ -76,8 +76,8 @@ class HostVariableMatchPass(ModulePass):
 
     name = "generate-host-match"
 
-    # Opt-in via --gfs-dim-aliases (task #68 in ccpp_cap_refactor_plan.md),
-    # off by default matching real capgen-v1's own posture: collapses the
+    # Opt-in via --gfs-dim-aliases, off by default matching real
+    # capgen-v1's own posture: collapses the
     # GFS-specific vertical-axis names in CCPP_GFS_DIM_ALIASES to
     # vertical_layer_dimension for the dims_compatible() checks below only.
     gfs_dim_aliases: bool = False
@@ -441,8 +441,7 @@ class HostVariableMatchPass(ModulePass):
             # True iff this variable is declared in a HOST-type table (as
             # opposed to MODULE or DDT) -- passed to physics via the host's
             # own argument list rather than use-associated, and always
-            # considered initialized. capgen_v1_parity_backlog.md Stage 7:
-            # recorded here (not just used internally) so
+            # considered initialized. Recorded here (not just used internally) so
             # --emit-resolved-vars can expose it as is_host_table_var,
             # matching real capgen-v1's Var.host_interface_var.
             is_host_table = table_prop_op.table_type.data == TableTypeKind.Host

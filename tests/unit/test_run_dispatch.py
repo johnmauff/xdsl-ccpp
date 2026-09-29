@@ -1,6 +1,6 @@
 """Unit tests for run_dispatch.py's pure-data functions.
 
-Phase 3a (the mechanical move of the run-dispatch cluster out of ccpp_cap.py)
+The mechanical move of the run-dispatch cluster out of ccpp_cap.py
 made it possible, for the first time, to unit-test this logic in isolation
 instead of only exercising it indirectly through full end-to-end pipeline
 runs. These tests cover the functions that operate on plain data (dicts,
@@ -339,8 +339,8 @@ class TestBuildRunMetadataMaps:
 # ---------------------------------------------------------------------------
 # _build_per_suite_run_info -- resolved_arg_ops classification
 #
-# Phase 3b Stage 4: the classification loop builds ResolvedArgOp directly
-# (the tuple form and its tuple->op conversion helpers are gone). This
+# The classification loop builds ResolvedArgOp directly (the tuple form
+# and its tuple->op conversion helpers are gone). This
 # exercises one arg of each of the four source kinds and asserts each op's
 # fields directly.
 # ---------------------------------------------------------------------------
@@ -460,8 +460,8 @@ class TestBuildPerSuiteRunInfoResolvedArgOps:
 
 class TestBuildPerSuiteRunInfoMultiInstanceArray:
     """_build_per_suite_run_info's array-of-DDT-instance case (real
-    capgen-v1's multi-instance model, ccpp_cap_refactor_plan.md's
-    instances/instances_advection entry): a DDT member of a HOST-owned
+    capgen-v1's multi-instance model, "instances/instances_advection"
+    entry): a DDT member of a HOST-owned
     array-of-DDT resolves with index_std_name set when this same call
     already resolves a sibling instance_number-standard-name scalar --
     shaped like examples/instances/data.meta's instance_data +

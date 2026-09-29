@@ -48,8 +48,7 @@ class CCPPTableProperties(CCPPItem):
     ``MetadataTable.apply_table_props``) verbatim in name and shape, but --
     unlike upstream -- are stored as the raw declared strings, not resolved to
     absolute filesystem paths: no code here yet consumes them for anything
-    (see ccpp_cap_refactor_plan.md's "dependencies/source_path tracking" entry
-    for why file-path resolution is deliberately out of scope for now).
+    (file-path resolution is deliberately out of scope for now).
     """
 
     def __init__(self):

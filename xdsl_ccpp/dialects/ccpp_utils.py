@@ -40,7 +40,7 @@ def _coerce_str_attr(value: "str | StringAttr | None") -> "StringAttr | None":
     """Coerce a plain str to StringAttr, passing an already-built StringAttr
     (or None) through.
 
-    Extracted (complexity-audit Tier 2 finding, task #47) after this exact
+    Extracted after this exact
     2-line `if isinstance(value, str): value = StringAttr(value)` pattern
     was found repeated, byte-identical, across 15 op/attribute constructors
     in this file. Accepts None because StrCmpOp.__init__ calls this
@@ -1303,8 +1303,8 @@ class ConstituentApiOp(IRDLOperation):
     -- before `CONTAINS`, alongside `ModuleVarOp` declarations -- since
     Fortran forbids a type definition inside the executable/CONTAINS
     section. Used by the multi-instance constituent-API fix
-    (ccpp_cap_refactor_plan.md's "instances/instances_advection" entry,
-    task #35): real capgen-v1's multi-instance model needs a per-instance
+    (`examples/instances`/`examples/instances_advection`): real capgen-v1's
+    multi-instance model needs a per-instance
     bundle of the constituent-registration arrays this API owns
     (`lc_all_constituents`, `lc_constituent_array`, etc.), and unlike every
     other derived type this codebase ever prints, that bundle type is

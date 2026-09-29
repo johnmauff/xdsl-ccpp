@@ -2,7 +2,7 @@
 (``frontend/ccpp_xml.py``) and the IR-reconstruction path
 (``transforms/util/ccpp_descriptors.py``).
 
-Extracted (complexity-audit Tier 2 finding, task #48) after confirming
+Extracted after confirming
 `CCPPType`, `CCPPItem`, and `CCPPArgument` were three genuinely byte-identical
 classes (docstring wording aside) independently defined in both files.
 `CCPPTableProperties`/`CCPPArgumentTable` -- which share the same class names

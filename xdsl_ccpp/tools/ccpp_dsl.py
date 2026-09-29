@@ -19,6 +19,16 @@ from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
 
 
+class CcppDslError(Exception):
+    """Raised for any ccpp_dsl.py pipeline failure. Catchable by an
+    in-process caller (e.g. ccppMain().run()); main() is the only place
+    that converts this to a printed message and a process exit."""
+
+    def __init__(self, message, returncode=1):
+        super().__init__(message)
+        self.returncode = returncode
+
+
 class ccppMain:
     def initialise_argument_parser(self):
         parser = argparse.ArgumentParser(description="xDSL CCPP DSL compiler flow")
@@ -38,9 +48,9 @@ class ccppMain:
 
         Single source of truth for any tool that drives `ccppMain`
         programmatically rather than through `main()`'s own CLI parsing --
-        extracted (complexity-audit Tier 1 finding, task #38) after
-        `ccpp_prebuild.py`'s own hand-built `options_db` dict was found
-        already missing 9 keys this parser supports (`py`, `directive`,
+        extracted after a codebase audit found `ccpp_prebuild.py`'s own
+        hand-built `options_db` dict was already missing 9 keys this
+        parser supports (`py`, `directive`,
         `kind_map`, `emit_datatable`, `no_memory_space_warning`,
         `emit_html`, `emit_resolved_vars`, `bind_c`, `legacy_mode`), with
         nothing to flag it the next time a key is added here. Building
@@ -183,8 +193,7 @@ class ccppMain:
             help="Write a JSON file of the resolved variables required at each "
                  "CCPP lifecycle phase (register/initialize/finalize/"
                  "timestep_initial/timestep_final/run), including host-variable "
-                 "binding and dimension info -- capgen_v1_parity_backlog.md "
-                 "Stage 3's native introspection artifact.",
+                 "binding and dimension info.",
         )
         parser.add_argument(
             "--bind-c",
@@ -311,8 +320,7 @@ class ccppMain:
 
     def post_stage_check(self, path):
         if not os.path.exists(path) or os.path.getsize(path) == 0:
-            print(f"Error: expected output '{path}' was not created", file=sys.stderr)
-            sys.exit(1)
+            raise CcppDslError(f"expected output '{path}' was not created")
         if self.options_db["verbose"] >= 1:
             print(f"  -> Completed, results in '{path}'")
 
@@ -324,7 +332,7 @@ class ccppMain:
     def run_pipeline_stage(self, cmd, out_path, label):
         """Run one pipeline subprocess, redirecting its stdout to out_path.
 
-        cmd -- an argv list, never a shell string (task #62): the four
+        cmd -- an argv list, never a shell string: the four
         pipeline stages this backs (run_frontend/run_py_frontend/run_opt/
         generate_cpp_headers) used to build an interpolated shell command
         string for os.system(), which breaks on any path containing quotes
@@ -366,7 +374,7 @@ class ccppMain:
         empty header output on a *successful* (exit 0) run is an
         expected, non-error outcome for it (no BIND(C) functions found)
         -- distinct from empty output because the command failed, which
-        this method itself already catches and exits on before returning.
+        this method itself already catches and raises on before returning.
         """
         self.print_verbose_message(
             label,
@@ -376,14 +384,12 @@ class ccppMain:
             with open(out_path, "w") as out_f:
                 result = subprocess.run(cmd, stdout=out_f, stderr=None)
         except FileNotFoundError:
-            print(f"Error: could not execute '{cmd[0]}'", file=sys.stderr)
-            sys.exit(1)
+            raise CcppDslError(f"could not execute '{cmd[0]}'") from None
         if result.returncode != 0:
-            print(
-                f"Error: {label.lower()} failed (exit code {result.returncode})",
-                file=sys.stderr,
+            raise CcppDslError(
+                f"{label.lower()} failed (exit code {result.returncode})",
+                returncode=result.returncode,
             )
-            sys.exit(result.returncode)
 
     def run_frontend(self, tmp_dir):
         suites_arg = ",".join(self.options_db["suites"])
@@ -717,7 +723,7 @@ class ccppMain:
             if self.options_db.get("gfs_dim_aliases"):
                 host_match_pass += "{gfs_dim_aliases=true}"
             passes.append(host_match_pass)
-        # Phase 7, Stage 2 (see ccpp_cap_refactor_plan.md): computes the
+        # Ownership classification pass: computes the
         # SuiteOwned/HostMatched/CapScratch/Block ownership classification
         # durably, before any suite's subroutine signature exists. Nothing
         # reads it yet (suite_cap.py/ccpp_cap.py/run_dispatch.py still use
@@ -859,8 +865,7 @@ class ccppMain:
         try:
             self.options_db = self.build_options_db_from_args(args)
         except (ValueError, FileNotFoundError) as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            raise CcppDslError(str(e)) from e
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files/
         # merge_meta build ops in-process; run_frontend/run_py_frontend
@@ -899,8 +904,15 @@ class ccppMain:
 
 
 def main():
-    ccppMain().run()
+    """CLI entry point: the only place that converts a CcppDslError into a
+    printed message and a process exit. An in-process caller should call
+    ccppMain().run() directly and catch CcppDslError itself instead."""
+    try:
+        ccppMain().run()
+    except CcppDslError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(e.returncode)
 
 
 if __name__ == "__main__":
-    ccppMain().run()
+    main()

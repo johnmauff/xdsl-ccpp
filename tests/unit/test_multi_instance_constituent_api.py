@@ -1,7 +1,6 @@
 """Regression test for a real gap found while re-investigating
 examples/instances_advection once examples/instances went CI-green
-(ccpp_cap_refactor_plan.md's "instances/instances_advection" backlog entry,
-task #35).
+("instances/instances_advection" backlog entry).
 
 The originally-tracked memref.copy verifier crash for instances_advection
 turned out to already be fixed (an incidental side effect of the
@@ -184,7 +183,7 @@ class TestConstituentApiHasAPerInstanceBundleType:
         variable (checked above) carries it, and that propagates to every
         subobject including this one."""
         fortran = _fortran_output(run_host_match, ccpp_context)
-        # lc_all_constituents is now an integer size-proxy (Stage 2 change).
+        # lc_all_constituents is now an integer size-proxy.
         # The old module-level ccpp_constituent_properties_t form must not appear.
         assert "type(ccpp_constituent_properties_t), allocatable, target :: lc_all_constituents(:)" \
             not in fortran
@@ -373,7 +372,7 @@ class TestPartialMultiInstanceMetadataStaysSingleInstance:
         assert "lc_instances" not in fortran
         assert "None" not in fortran
         # Falls back to the plain, non-multi-instance constituent API shape.
-        # lc_all_constituents is now an integer size-proxy (Stage 2 change).
+        # lc_all_constituents is now an integer size-proxy.
         assert "integer, allocatable :: lc_all_constituents(:)" in fortran
 
     def test_instance_number_alone_does_not_index_ccpp_suite_state(
@@ -403,5 +402,5 @@ class TestPartialMultiInstanceMetadataStaysSingleInstance:
         )
         assert "lc_instances" not in fortran
         assert "None" not in fortran
-        # lc_all_constituents is now an integer size-proxy (Stage 2 change).
+        # lc_all_constituents is now an integer size-proxy.
         assert "integer, allocatable :: lc_all_constituents(:)" in fortran

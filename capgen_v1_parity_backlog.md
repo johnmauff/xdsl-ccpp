@@ -821,7 +821,7 @@ on Stage 3 landing (or at least stabilizing) first.
 ### Re-validation (2026-08-13): --legacy-mode impact, a stale adapter, and a
 ### bigger strategic finding -- PAUSED here by request, awaiting direction
 
-**Trigger**: the `--legacy-mode` work (`ccpp_cap_refactor_plan.md`) flipped
+**Trigger**: the `--legacy-mode` work (`CHANGELOG.md`) flipped
 `ArgumentOp`'s default from warn-on-deprecated-name to reject-by-default.
 Every fixture this whole Workstream validates against declares
 `horizontal_loop_extent`, so this needed re-confirming before treating
@@ -1251,7 +1251,7 @@ competing schema.
     3. Command shape (confirmed against `ccpp_dsl.py --help` and
        `ccpp_prebuild.py`'s own precedent for the same option set):
        `--host-files`/`--scheme-files`/`--suites` each want one
-       comma-joined string, not a repeated flag (`ccpp_cap_refactor_plan.md`'s
+       comma-joined string, not a repeated flag (`CHANGELOG.md`'s
        own "Smaller interface-shape gaps" note below already flags this
        list-vs-string mismatch -- this call site is where it has to be
        handled, via `",".join(...)`); plus `--host-name`, `-o

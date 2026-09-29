@@ -1,11 +1,10 @@
-"""Unit tests for ArgOwnershipOp / ArgOwnershipKind (Phase 7, Stage 1).
+"""Unit tests for ArgOwnershipOp / ArgOwnershipKind.
 
 These test the op/attribute definitions directly, independent of the
-classification logic that will construct them in a later Phase 7 stage.
-Stage 1 is "define, don't wire" -- ArgOwnershipOp is not called by any pass
-yet; this file covers verify()'s required/forbidden-field rules per
-ownership_kind in isolation, the same way test_resolved_arg_op.py covers
-ResolvedArgOp/ArgSourceKind (the Phase 3b precedent this mirrors).
+classification logic that will later construct them -- no pass calls
+ArgOwnershipOp yet, so this file covers verify()'s required/forbidden-field
+rules per ownership_kind in isolation, the same way test_resolved_arg_op.py
+covers ResolvedArgOp/ArgSourceKind (the precedent this mirrors).
 """
 
 import pytest

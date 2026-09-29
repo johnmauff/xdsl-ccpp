@@ -1,9 +1,9 @@
 """Lifecycle-fn generation.
 
-Extracted from ccpp_cap.py's CCPPCAP pass (Phase 2 of the restructuring plan):
-builds init/run/finalize dispatch subroutines for a suite lifecycle phase.
-Kept as a plain importable module (not a registered pass) per the phase plan
--- called directly from generate-ccpp-cap's final module assembly.
+Extracted from ccpp_cap.py's CCPPCAP pass: builds init/run/finalize dispatch
+subroutines for a suite lifecycle phase. Kept as a plain importable module
+(not a registered pass) -- called directly from generate-ccpp-cap's final
+module assembly.
 """
 
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
@@ -103,7 +103,7 @@ def _generate_lifecycle_fn(
     # timestep_final declared local, never-allocated
     # lc_nx/lc_var/lc_opt_var/lc_opt_var_2 and passed those into the suite
     # callee). This pre-scan is unaffected by the vocabulary-resolution
-    # redesign's Stage 2a (ccpp_cap_refactor_plan.md): that stage moved
+    # redesign's Stage 2a: that stage moved
     # HOST-type vars referenced *only* inside an 'active = <expr>' property
     # (never a real scheme argument) to use-association inside suite_cap.py's
     # own generated function -- this pre-scan only ever concerns itself with
@@ -118,8 +118,7 @@ def _generate_lifecycle_fn(
     # gets a few lines down.
     _ccpp_info_type_for_scan = kwargs.get("ccpp_info_type")
 
-    # Real capgen-v1's multi-instance model (ccpp_cap_refactor_plan.md's
-    # "instances/instances_advection" entry, task #35): a scheme's own
+    # Real capgen-v1's multi-instance model: a scheme's own
     # _register-phase dynamically-registered constituent output (e.g.
     # dyn_const) is referenced below via a dedicated CapVarRefOp branch,
     # keyed purely by matching constituent_cap.py's own bare naming
@@ -159,8 +158,8 @@ def _generate_lifecycle_fn(
     # Inverted (local var name -> standard_name) fallback for callee args no
     # scheme's own entry-point metadata declares at all for THIS phase --
     # e.g. instance_number/number_of_instances (real capgen-v1's
-    # multi-instance model, ccpp_cap_refactor_plan.md's "instances/
-    # instances_advection" entry): suite_cap.py's
+    # multi-instance model, "instances/instances_advection" entry):
+    # suite_cap.py's
     # _synthesize_instance_number_arg/_synthesize_number_of_instances_arg
     # add them straight to the suite callee's own signature for every
     # lifecycle phase, not because any scheme's _init/_finalize/
@@ -177,7 +176,7 @@ def _generate_lifecycle_fn(
         _std_name_of: dict = {}
         _intent_of: dict = {}
         # _entry_postfix is None for a phase with no scheme-level arg table
-        # to scan at all (task #28 Stage 3: ccpp_init/ccpp_final, once
+        # to scan at all (ccpp_init/ccpp_final, once
         # suite_cap.py stopped emitting scheme calls for them -- see
         # emit_scheme_calls there and this file's own table_postfix=None
         # comment in ccpp_cap.py). _std_name_of/_intent_of just stay empty
@@ -291,7 +290,7 @@ def _generate_lifecycle_fn(
         # Build {bare_arg_name → standard_name} from the scheme entry-point tables
         std_name_of: dict = {}
         # {bare_arg_name → intent} from the same scan -- needed to gate the
-        # cap_var_map input-resolution branch below (task #60) to genuine
+        # cap_var_map input-resolution branch below to genuine
         # intent(in)/intent(inout) reads only. An intent(out)-only arg (e.g.
         # environ_conditions_init's own "o3"/"hno3" outputs, real examples
         # in examples/ddthost) just needs a fresh writable local, exactly as
@@ -438,7 +437,7 @@ def _generate_lifecycle_fn(
                 # through to the "not host-matched" local-alloca fallback
                 # below and silently read an uninitialized value -- the same
                 # bug class the opt_arg pre-scan (extra_host_arg_index,
-                # above) already fixed for HOST-type-table args. Task #60.
+                # above) already fixed for HOST-type-table args.
                 #
                 # Deliberately narrower than "any std_name in cap_var_map":
                 # cap_var_map ALSO accumulates plain CapScratch scratch vars
@@ -495,7 +494,7 @@ def _generate_lifecycle_fn(
                     # via ModuleVarOp.  Reference them with CapVarRefOp so the
                     # allocated values persist after physics_register returns.
                     #
-                    # Real capgen-v1's multi-instance model (task #35):
+                    # Real capgen-v1's multi-instance model:
                     # when the host is multi-instance, constituent_cap.py
                     # moves this same array from a bare module var into a
                     # per-instance bundle-type component
