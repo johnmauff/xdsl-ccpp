@@ -30,7 +30,6 @@ later narrative entries:
 |---|---|---|
 | Task #65 (downgraded, 2026-08-20): DDT-typed interstitial-declaration test coverage; non-`real` interstitial-array test coverage | Small, no design work — opportunistic test-writing only. The other 2 sub-items (cross-phase `already_scheduled_allocs` unification; cross-phase ordering validation) are deferred indefinitely, folded into task #61, no open action | L5326 |
 | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
-| `examples/ddthost` has fallen behind `examples/capgen` (missing `kind_spec`, `interstitial_var`, rank re-sync, `temp_adjust_register`) | Scoped (2026-08-24): M, 1 prerequisite + 2 stages; real cross-file coupling (`temp_calc_adjust`+`temp_adjust` share a standard_name, must land together). Not started; not a CAM-SIMA blocker | L5531 |
 | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already; only the deletion itself remains open. Confirmed 2026-09-29: `ccpp.py`'s `is_legacy_mode()` gate is still called, path not yet deleted | L5679 |
 | Consolidate `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | Investigated 2026-08-24: 2 of 4 files already unified; the other 2 are real, still-used `--legacy-mode` code. Originally deferred until a CAM-SIMA-backed fixture exists to test a consolidation against — **unblocked 2026-09-29**: this session's extensive external `/cam-sima-regression` testing (in `CAM-SIMA.xdsl-ccpp`) satisfies that condition per project-owner judgment, even though no fixture lives in this repo itself. Not started | L5698 |
 | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
@@ -40,7 +39,11 @@ later narrative entries:
 follow-up items spawned by `constituents_dim` (single-source migration for
 `advection`, naming-convention audit) — `examples/advection/CMakeLists.txt`
 now links `xdsl_ccpp/framework_src/` directly, and the naming audit landed
-via Stage 5 (bare capgen-v1-style names), CHANGELOG.md L4727.
+via Stage 5 (bare capgen-v1-style names), CHANGELOG.md L4727. `examples/ddthost`
+falling behind `examples/capgen` — addressed by PR #104 (prerequisite + both
+stages landed, plus two real bugs found and fixed during CI verification: an
+uninitialized `cind` read shared with `examples/capgen`, and a missing
+`ccpp_register` driver call), CI green, CHANGELOG.md L5616.
 
 ## Other flagged issues
 

@@ -5613,6 +5613,36 @@ dependency is noted.
       starting CAM-SIMA testing or are small, low-risk cleanups; this is neither (real M-sized
       scheme/host work spanning two examples, no urgency). Left as a fully-scoped backlog item
       for whenever it's picked up.
+  - **RESOLVED (2026-09-29), via PR #104.** Implemented the prerequisite (`temp_kinds.F90`
+    ported verbatim) and both stages exactly as scoped above: `temp_set` gained `kind_spec` plus
+    the four new variables (`temp_diag`, `slev_lbound`, `soil_levs`, `var_array`), with matching
+    host-side additions in `test_host_data.meta`/`test_host_mod.meta`; `temp_calc_adjust` +
+    `temp_adjust` landed together as one unit (2D rank re-sync on the shared
+    `potential_temperature_at_previous_timestep` standard_name, the `temp_adjust_register` entry
+    point + `config_var` host addition, the `interstitial_var` producer/consumer chain, `kind_temp`
+    on `to_promote`) -- `ddthost`'s pre-existing `ps` `state_variable = true` addition was
+    deliberately preserved rather than dropped while merging in capgen's changes.
+    - **Two real bugs found and fixed during CI verification, both distinct from the scoped port
+      itself.** (1) `test_host_mod.F90`'s `init_data()` read `cind` uninitialized before its first
+      use (undefined behavior identically present in `examples/capgen`'s own copy, not something
+      the port introduced) -- confirmed against real upstream `capgen-v1`
+      (`origin/feature/capgen-v1:end-to-end-tests/capgen/test_host_mod.F90`, fetched into the
+      `ccpp-framework` checkout) that upstream explicitly sets `cind = 1` before the loop; fixed
+      identically in both examples' copies to match upstream's literal structure, not just its
+      numerical effect. (2) `examples/ddthost/host_ftn/test_host.F90` never called the newly
+      generated `ccpp_register` entry point at all (a straight omission in the port -- `examples/
+      capgen`'s own driver does call it) -- so `temp_adjust_register` never ran,
+      `module_level_config` stayed `.false.`, and `temp_adjust_run` silently took its no-op early
+      return every time, producing runtime answers off by a uniform, timestep-count-scaled
+      constant offset in both `temp_midpoints` and the first constituent's `q`. Fixed by adding the
+      missing `use`/call, matching `ddthost`'s own `ccpp_info_t`-bundled calling convention (not
+      capgen's separate errmsg/errflg-argument convention).
+    - **Verified:** both `ddthost_ftn_host.exe` and `ddthost_cxx_host.exe` build and run clean
+      (`ctest_ddthost_ftn_host`/`ctest_ddthost_cxx_host` pass), and `capgen_ftn_host.exe`/
+      `capgen_cxx_host.exe` still pass unaffected by the shared `cind` fix. Regenerated the
+      `frontend`/`completed_ir` `ddthost-xml.mlir` filecheck goldens (purely additive lines for the
+      new host variables, reviewed before accepting -- `end_to_end`/both `-py.mlir` variants were
+      unaffected). Full suite: 709 passed, 1 xfailed.
   - **Verified:** regenerated `examples/capgen`'s frontend/completed_ir/end_to_end
     output directly -- `dependencies`/`source_path`/`dependencies_path` are
     only ever visible at the frontend (pre-pass) stage; `strip-ccpp` removes
