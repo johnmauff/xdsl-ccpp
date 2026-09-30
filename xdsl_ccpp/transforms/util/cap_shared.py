@@ -224,6 +224,37 @@ def _build_no_suite_matched_false_ops(errmsg_dest, trim_suite_name_res, errflg_d
     return [write_err, one_err, store_errflg_err, scf.YieldOp()]
 
 
+def build_ncol_compute_ops(col_start_ref, col_end_ref, name_hint: str = "ncol") -> tuple:
+    """Build ops computing ncol = col_end - col_start + 1 from two
+    already-resolved scalar-integer memref/SSA values. Returns
+    (ops, ncol_alloc) -- caller inserts ops and stores ncol_alloc (or its
+    own `.memref` accessor, if that's what its own bookkeeping expects)
+    wherever it needs the result.
+
+    Shared by suite_cap.py's `_build_ncol_compute_ops` (keyed off its own
+    `data_ops` dict) and run_dispatch.py's `_build_host_var_refs` (keyed off
+    `ctx.block_arg_map`) -- previously two independent, op-for-op-identical
+    copies of the same alloc/load/load/sub/const/add/store sequence (each
+    module's own docstring/comment already pointed at the other as the
+    source of the duplication). Deliberately takes plain SSA-value refs
+    rather than a dict + key, since the two callers' lookup dicts are the
+    one place they genuinely differ -- pushing that lookup to each caller
+    avoids re-implementing it as a lambda inside this helper.
+    """
+    ncol_alloc = memref.AllocaOp.get(TypeConversions.getBaseType("integer"), shape=[])
+    ncol_alloc.memref.name_hint = name_hint
+    load_col_start = memref.LoadOp.get(col_start_ref, [])
+    load_col_end = memref.LoadOp.get(col_end_ref, [])
+    sub_op = arith.SubiOp(load_col_end, load_col_start)
+    one_const = arith.ConstantOp.from_int_and_width(1, 32)
+    add_op = arith.AddiOp(sub_op, one_const)
+    store_ncol = memref.StoreOp.get(add_op, ncol_alloc, [])
+    return (
+        [ncol_alloc, load_col_start, load_col_end, sub_op, one_const, add_op, store_ncol],
+        ncol_alloc,
+    )
+
+
 def _bare(name: str) -> str:
     """Strip __alloc, __opt, or __in suffix from an arg name hint to get the bare Fortran name."""
     if name.endswith("__alloc"):
