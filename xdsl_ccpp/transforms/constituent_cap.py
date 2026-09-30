@@ -15,7 +15,9 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CamDirectCallOp,
     CamHostConstituentApiOp,
     ConstituentFunctionOp,
+    DdtComponentDeclOp,
     DdtMethodCallOp,
+    DerivedTypeDefOp,
     ErrorGuardOp,
     ErrorPropagateOp,
     IfThenOp,
@@ -227,11 +229,12 @@ def _generate_constituent_api(
 
     # ── Module-level variable declarations ──────────────────────────────
     # Non-multi-instance: unchanged -- one plain ModuleVarOp per array.
-    # Multi-instance: every one of these becomes a *component* of a new
-    # bundle type instead (see type_defs_text below), and the only actual
+    # Multi-instance: every one of these becomes a DdtComponentDeclOp
+    # component of a new DerivedTypeDefOp bundle type instead (built below,
+    # wired into NonCamHostConstituentApiOp's body), and the only actual
     # module variable is the single lc_instances(:) array.
     module_var_ops: list = []
-    type_def_lines: list = []
+    component_ops: list = []
     if not multi_instance:
         # cam_constituents_obj: scalar ccpp_model_constituents_t with target
         # (so that field_data_ptr() and constituent_props_ptr() pointer results
@@ -286,7 +289,6 @@ def _generate_constituent_api(
                 init_value="-1",
             ))
     else:
-        type_def_lines.append(f"type :: {instance_type_name}")
         # cam_constituents_obj as a non-pointer, non-target DDT component.
         # TARGET is NOT allowed on derived-type components (gfortran: "Attribute
         # at (1) is not allowed in a TYPE definition").  TARGET instead goes on
@@ -294,57 +296,55 @@ def _generate_constituent_api(
         # rule that TARGET propagates from a variable to all subobjects
         # (including allocatable/ordinary components) is what makes the
         # field_data_ptr() and constituent_props_ptr() pointer results valid.
-        type_def_lines.append(
-            f"  type(ccpp_model_constituents_t) :: cam_constituents_obj"
+        component_ops.append(
+            DdtComponentDeclOp("cam_constituents_obj", "type",
+                               ddt_name="ccpp_model_constituents_t", rank=0)
         )
         for n in dynamic_array_names:
-            type_def_lines.append(
-                f"  type(ccpp_constituent_properties_t), allocatable :: lc_{n}(:)"
+            component_ops.append(
+                DdtComponentDeclOp(f"lc_{n}", "type",
+                                   ddt_name="ccpp_constituent_properties_t", rank=1)
             )
-        type_def_lines.append(
-            "  integer, allocatable :: lc_all_constituents(:)"
-        )
+        component_ops.append(DdtComponentDeclOp("lc_all_constituents", "integer", rank=1))
         # lc_constituent_array: pointer component (points into cam_constituents_obj
         # internal storage after lock_data; TARGET propagates from lc_instances).
-        type_def_lines.append(
-            "  real(kind=kind_phys), pointer :: lc_constituent_array(:, :, :) => null()"
+        component_ops.append(
+            DdtComponentDeclOp("lc_constituent_array", "real", kind="kind_phys",
+                               is_pointer=True, rank=3)
         )
         if needs_const_tend:
-            type_def_lines.append(
-                "  real(kind=kind_phys), allocatable :: lc_const_tend(:, :, :)"
+            component_ops.append(
+                DdtComponentDeclOp("lc_const_tend", "real", kind="kind_phys", rank=3)
             )
-        type_def_lines.append(
-            "  type(ccpp_constituent_prop_ptr_t), allocatable :: lc_const_props(:)"
+        component_ops.append(
+            DdtComponentDeclOp("lc_const_props", "type",
+                               ddt_name="ccpp_constituent_prop_ptr_t", rank=1)
         )
         for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
-            shape = ", ".join([":"] * rank)
-            if _cst_std:
-                type_def_lines.append(
-                    f"  real(kind=kind_phys), pointer :: {lc_name}({shape}) => null()"
-                )
-            else:
-                type_def_lines.append(
-                    f"  real(kind=kind_phys), allocatable :: {lc_name}({shape})"
-                )
+            component_ops.append(
+                DdtComponentDeclOp(lc_name, "real", kind="kind_phys",
+                                   is_pointer=bool(_cst_std), rank=rank)
+            )
         if n_fixed > 0:
             _max_std_len = max(len(s) for s, *_ in fixed_advected)
             _names_parts = [f"'{s}'" for s, *_ in fixed_advected]
             _names_str = (_names_parts[0] if n_fixed == 1
                           else ", &\n      ".join(_names_parts))
-            type_def_lines.append(
-                f"  character(len={_max_std_len}) :: "
-                f"cam_model_const_stdnames({n_fixed}) = "
-                f"[ character(len={_max_std_len}) :: {_names_str} ]"
-            )
-            type_def_lines.append(
-                f"  integer :: cam_model_const_indices({n_fixed}) = -1"
-            )
-        type_def_lines.append(f"end type {instance_type_name}")
+            component_ops.append(DdtComponentDeclOp(
+                "cam_model_const_stdnames", "character",
+                kind=str(_max_std_len),
+                fixed_dim=n_fixed,
+                init_value=f"[ character(len={_max_std_len}) :: {_names_str} ]",
+            ))
+            component_ops.append(DdtComponentDeclOp(
+                "cam_model_const_indices", "integer",
+                fixed_dim=n_fixed,
+                init_value="-1",
+            ))
         module_var_ops.append(
             ModuleVarOp("lc_instances", "type", ddt_name=instance_type_name,
                         is_target=True, rank=1)
         )
-    type_defs_text = "\n".join(type_def_lines) if type_def_lines else None
 
     _instance_arg = f", {instance_local_name}" if multi_instance else ""
     _instance_decl = (
@@ -887,11 +887,10 @@ def _generate_constituent_api(
             [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op, gc_op, uc_op],
         )
     else:
-        api_op = NonCamHostConstituentApiOp(
-            public_names_list,
-            type_defs_text,
-            [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op],
-        )
+        _nc_fn_ops = [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op]
+        if multi_instance:
+            _nc_fn_ops = [DerivedTypeDefOp(instance_type_name, component_ops)] + _nc_fn_ops
+        api_op = NonCamHostConstituentApiOp(public_names_list, _nc_fn_ops)
 
     # ── USE stubs for ccpp_constituent_prop_mod ──────────────────────────
     global_stubs: list = []

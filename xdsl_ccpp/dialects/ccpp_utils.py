@@ -1375,6 +1375,94 @@ class ConstituentFunctionOp(IRDLOperation):
 
 
 @irdl_op_definition
+class DdtComponentDeclOp(IRDLOperation):
+    """One component declaration inside a DerivedTypeDefOp.
+
+    Same shape as ModuleVarOp (base_type/kind/ddt_name/is_pointer/rank/
+    fixed_dim/init_value) but deliberately has no is_target/
+    needs_device_residency properties at all -- TARGET is illegal on a
+    Fortran derived-type component (gfortran: "Attribute at (1) is not
+    allowed in a TYPE definition"); omitting the property entirely (not
+    just leaving it unset by convention) makes that structurally
+    impossible to emit by accident.
+
+    Printer output mirrors ModuleVarOp's own declaration-line shapes:
+        rank=0: ``{type} :: {var_name}``
+        rank>0, not pointer: ``{type}, allocatable :: {var_name}(:, ...)``
+        rank>0, pointer: ``{type}, pointer :: {var_name}(:, ...) => null()``
+        fixed_dim set: ``{type} :: {var_name}({n}) = {init_value}``
+    """
+
+    name = "ccpp_utils.ddt_component_decl"
+
+    var_name   = prop_def(StringAttr)
+    base_type  = prop_def(StringAttr)
+    kind       = opt_prop_def(StringAttr)
+    ddt_name   = opt_prop_def(StringAttr)
+    is_pointer = opt_prop_def(BoolAttr)
+    rank       = prop_def(IntegerAttr)
+    fixed_dim  = opt_prop_def(IntegerAttr)
+    init_value = opt_prop_def(StringAttr)
+
+    def __init__(self, var_name: str, base_type: str, *, kind: str | None = None,
+                 ddt_name: str | None = None, is_pointer: bool = False,
+                 rank: int = 0, fixed_dim: int | None = None,
+                 init_value: str | None = None):
+        props: dict = {
+            "var_name":  StringAttr(var_name),
+            "base_type": StringAttr(base_type),
+            "rank":      IntegerAttr.from_int_and_width(rank, 64),
+        }
+        if kind is not None:
+            props["kind"] = StringAttr(kind)
+        if ddt_name is not None:
+            props["ddt_name"] = StringAttr(ddt_name)
+        if is_pointer:
+            props["is_pointer"] = BoolAttr.from_bool(True)
+        if fixed_dim is not None:
+            props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
+        if init_value is not None:
+            props["init_value"] = StringAttr(init_value)
+        super().__init__(properties=props)
+
+
+@irdl_op_definition
+class DerivedTypeDefOp(IRDLOperation):
+    """A Fortran derived-type definition, emitted in the module
+    specification part (before CONTAINS, since Fortran forbids a
+    ``type :: ... end type`` block inside CONTAINS) -- a Region of
+    DdtComponentDeclOp children.
+
+    Emits::
+
+        type :: {type_name}
+          {component declarations}
+        end type {type_name}
+
+    Lives as a child of NonCamHostConstituentApiOp's own body Region
+    (the multi-instance per-instance bundle type is its only user today)
+    rather than being printed generically by the main statement dispatch --
+    the printer gives it a no-op case there and instead emits it from a
+    dedicated pre-scan alongside ModuleVarOp's own module-preamble
+    emission, for the same "must come before CONTAINS" reason.
+    """
+
+    name = "ccpp_utils.derived_type_def"
+
+    type_name = prop_def(StringAttr)
+    body      = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, type_name: str, component_ops: list):
+        from xdsl.ir import Block, Region
+        super().__init__(
+            properties={"type_name": StringAttr(type_name)},
+            regions=[Region([Block(component_ops)])],
+        )
+
+
+@irdl_op_definition
 class CamHostConstituentApiOp(IRDLOperation):
     """Container for the cam_host=True constituent registration API.
 
@@ -1403,16 +1491,16 @@ class NonCamHostConstituentApiOp(IRDLOperation):
     """Container for the non-cam_host constituent registration API.
 
     ``public_names`` — names to export with ``public ::`` in the module preamble.
-    ``type_defs``    — optional raw Fortran type-definition block (printed in the
-                       module's specification section before CONTAINS); used for
-                       the multi-instance per-instance bundle type.
-    ``body``         — single-block Region of ``ConstituentFunctionOp`` children.
+    ``body``         — single-block Region of ``ConstituentFunctionOp`` children,
+                       optionally preceded by one DerivedTypeDefOp (the
+                       multi-instance per-instance bundle type, when present --
+                       the printer's module-preamble pre-scan looks for it here
+                       rather than this op carrying a separate type_defs property).
     """
 
     name = "ccpp_utils.non_cam_host_constituent_api"
 
     public_names = prop_def(ArrayAttr)          # ArrayAttr[StringAttr]
-    type_defs    = opt_prop_def(StringAttr)     # raw DDT text for multi-instance
     body         = region_def("single_block")
 
     traits = traits_def(NoTerminator())
@@ -1420,7 +1508,6 @@ class NonCamHostConstituentApiOp(IRDLOperation):
     def __init__(
         self,
         public_names_list: "list[str]",
-        type_defs: "str | None",
         fn_ops: list,
     ):
         from xdsl.ir import Block, Region
@@ -1428,8 +1515,6 @@ class NonCamHostConstituentApiOp(IRDLOperation):
         props: dict = {
             "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
         }
-        if type_defs is not None:
-            props["type_defs"] = StringAttr(type_defs)
         super().__init__(properties=props, regions=[body])
 
 
@@ -2174,6 +2259,8 @@ CCPPUtils = Dialect(
         ConstituentFunctionOp,
         CamHostConstituentApiOp,
         NonCamHostConstituentApiOp,
+        DdtComponentDeclOp,
+        DerivedTypeDefOp,
         SuiteVariablesOp,
         CHostCapOp,
         CapVarRefOp,

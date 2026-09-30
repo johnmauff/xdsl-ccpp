@@ -87,6 +87,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     NonCamHostConstituentApiOp as CCPPNonCamHostConstituentApiOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
+    DdtComponentDeclOp as CCPPDdtComponentDeclOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
+    DerivedTypeDefOp as CCPPDerivedTypeDefOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
     ConstituentFunctionOp as CCPPConstituentFunctionOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import RawFortranLinesOp as CCPPRawFortranLinesOp
@@ -126,6 +132,30 @@ def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
 
     if op.is_target is not None and op.is_target.value.data:
         ftn += ", target"
+    if op.is_pointer is not None and op.is_pointer.value.data:
+        ftn += ", pointer"
+    return ftn
+
+
+def _ddt_component_fortran_type(op: CCPPDdtComponentDeclOp) -> str:
+    """Like _module_var_fortran_type, but for DdtComponentDeclOp -- no
+    TARGET check at all, since that property doesn't exist on this op
+    (TARGET is illegal on a Fortran derived-type component)."""
+    base = op.base_type.data
+    kind = op.kind.data if op.kind is not None else None
+    ddt  = op.ddt_name.data if op.ddt_name is not None else None
+
+    if base == "type":
+        ftn = f"type({ddt})"
+    elif kind is not None:
+        if base == "character":
+            len_spec = kind if kind.startswith("len=") else f"len={kind}"
+            ftn = f"character({len_spec})"
+        else:
+            ftn = f"{base}(kind={kind})"
+    else:
+        ftn = base
+
     if op.is_pointer is not None and op.is_pointer.value.data:
         ftn += ", pointer"
     return ftn
@@ -870,6 +900,8 @@ class ftnPrintContext:
                 self.print("#endif", use_prefix=False)
             case CCPPModuleVarOp():
                 pass  # declared in _print_module preamble, not here
+            case CCPPDerivedTypeDefOp() | CCPPDdtComponentDeclOp():
+                pass  # declared in _print_module preamble, not here (see ModuleVarOp)
             case CCPPLazyAllocOp():
                 vname = op.var_name.data
                 dim_names = [self._get_variable_name_for(v) for v in op.dim_vars]
@@ -1573,9 +1605,32 @@ class ftnPrintContext:
         # block inside CONTAINS in the first place, hence needing this
         # separate emission point at all.
         for op in body.ops:
-            if isa(op, CCPPNonCamHostConstituentApiOp) and op.type_defs is not None:
-                for line in op.type_defs.data.splitlines():
-                    self.print(line, prefix="  ")
+            if not isa(op, CCPPNonCamHostConstituentApiOp):
+                continue
+            for child in op.body.block.ops:
+                if not isa(child, CCPPDerivedTypeDefOp):
+                    continue
+                self.print(f"type :: {child.type_name.data}", prefix="  ")
+                for comp in child.body.block.ops:
+                    if not isa(comp, CCPPDdtComponentDeclOp):
+                        continue
+                    rank      = comp.rank.value.data
+                    ftn_type  = _ddt_component_fortran_type(comp)
+                    var_name  = comp.var_name.data
+                    is_ptr    = comp.is_pointer is not None and comp.is_pointer.value.data
+                    if comp.fixed_dim is not None:
+                        dim = comp.fixed_dim.value.data
+                        init_part = f" = {comp.init_value.data}" if comp.init_value else ""
+                        self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="    ")
+                    elif rank == 0:
+                        self.print(f"{ftn_type} :: {var_name}", prefix="    ")
+                    else:
+                        shape = ", ".join([":"] * rank)
+                        if is_ptr:
+                            self.print(f"{ftn_type} :: {var_name}({shape}) => null()", prefix="    ")
+                        else:
+                            self.print(f"{ftn_type}, allocatable :: {var_name}({shape})", prefix="    ")
+                self.print(f"end type {child.type_name.data}", prefix="  ")
 
         # Emit module-level variable declarations (unified ModuleVarOp).
         # rank=0: scalar, fixed_dim set: fixed-size non-allocatable array,

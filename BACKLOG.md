@@ -314,6 +314,114 @@ output today, cost is architectural (no IR-level analysis/GPU-pass
 coverage of chost-generated code, drift risk between the two printers'
 independent string logic).
 
+### TDB-004: No language-neutral expression IR — blocks real multi-language support
+
+ID: `tdb-004`
+
+**File**: repo-wide — `xdsl_ccpp/dialects/ccpp_utils.py` (most op
+definitions), `xdsl_ccpp/transforms/{suite_cap,run_dispatch,constituent_cap,
+lifecycle_cap,cpp_interop}.py`. **Added 2026-09-30**, surfaced while
+implementing TDB-002 and discussed directly with the project owner, whose
+long-term goal is full multi-language support in xdsl_ccpp (both C++ as a
+host model and C++ as a scheme implementation — see the "C++ host + C++
+scheme track" priorities discussed this session).
+
+**The gap, precisely**: TDB-002 converted `constituent_cap.py`'s raw
+Fortran-string *statement bodies* into typed ops (`IfThenOp`,
+`DdtMethodCallOp`, `PointerAssignOp`, etc.), so a second-language printer
+could in principle decide how to render an `if`/`then`/`else`, a type-bound
+call, or a pointer assignment in its own target syntax. But confirmed
+directly: every one of those ops' *expression-bearing* properties —
+`IfThenOp.condition_expr`, `ActiveCheckOp`/`PresentCheckOp`'s condition
+text, `ErrorGuardOp.errmsg_text`, `DdtMethodCallOp.args`/`.kwargs`,
+`PointerAssignOp.rhs_expr`, `AllocateOp.dims`, `ModuleVarOp.init_value` —
+still hold raw Fortran-syntax *text* (`.or.`/`/=` operators, `errcode=errcode`
+keyword-arg syntax, `[ character(len=8) :: 'foo' ]` array-constructor
+literals, `.true.`/`''` literal spellings). This isn't specific to
+`constituent_cap.py` or to TDB-002's new ops — it's the same pattern in
+every op this codebase already treats as "converted" (`LazyAllocOp`,
+`SafeDeallocOp`, `ArraySectionOp`'s bounds, `CamDirectCallOp`'s args, and
+so on, going back to the original "Eliminate text strings" work). A
+hypothetical C++ printer can't render `.or.` as `||` or `.true.` as `true`
+without re-parsing Fortran syntax out of a string first — which defeats
+the entire purpose of routing everything through a printer abstraction.
+So today's IR genericizes *statement shape* (if/else, do-loop, call) but
+not *expression content* — and expression content is exactly what differs
+between Fortran and any other target language.
+
+**Why this is the real prerequisite for the stated long-term goal**: the
+multi-language direction this session settled on (TDB-002 → TDB-003 →
+eventually a second-language printer) cannot actually reach a second
+language until expression content stops being baked into the IR as
+Fortran-syntax text at construction time. TDB-002/TDB-003 are necessary
+groundwork (they at least stop hand-building whole statements as joined
+strings) but not sufficient on their own — flagged here explicitly so the
+gap doesn't get rediscovered as a surprise after TDB-003 lands.
+
+**The right fix, staged**:
+
+1. **Small, immediate, low-risk cleanup piece** (can land on its own,
+   doesn't depend on anything else here): `constituent_cap.py` still has a
+   handful of genuine one-off `RawFortranLinesOp` leaves left after TDB-002
+   (plain scalar assignments like `errflg = 0`; one `write(errmsg, ...)`
+   call; a few `#ifdef USE_GPU`/`!$acc` directive blocks; `allocate(x,
+   stat=errcode)`'s STAT-clause form, which doesn't match `AllocateOp`'s
+   plain shape). Add three small dedicated ops for these (`AssignOp`,
+   `WriteStmtOp`, `PreprocDirectiveOp`), matching TDB-002's established
+   op-design conventions exactly. This doesn't solve the expression-content
+   problem (these ops would still hold Fortran-syntax text for their RHS/
+   format-string content) but it does get `constituent_cap.py` itself to
+   zero raw-string leaves, and gives 3 more small, real precedents before
+   attempting the bigger design below.
+2. **Design a small core expression-IR vocabulary**: literal ops
+   (int/bool/string), a variable/member-reference op (covers both Fortran's
+   `%` and a future C++ printer's `.`/`->`), a binary/unary-op op
+   (parameterized by a language-neutral operator kind enum — `eq`/`ne`/
+   `and`/`or`/`add`/... — not a pre-rendered token), a call-as-expression
+   op (distinct from today's statement-level call ops), and an
+   array-constructor op. Deliberately small and proven on one file first
+   rather than designed in the abstract for the whole codebase at once.
+3. **Retrofit one already-converted file's expression properties** to use
+   the new vocabulary instead of `StringAttr`/`ArrayAttr[StringAttr]` —
+   `constituent_cap.py` is the natural pilot (freshly converted, well
+   covered by both unit tests and FileCheck goldens, including the new
+   multi-instance golden). Expect this to reveal real gaps in the Stage 2
+   vocabulary; iterate.
+4. **Prove the abstraction actually holds** before committing to the full
+   retrofit: sketch (doesn't need to be production-quality) how a second
+   printer would render the same expression IR in a different target
+   syntax. This is the real validation step — if the vocabulary can't
+   cleanly support even a sketch of a second printer, stage 2's design
+   needs another pass before stage 5 below begins.
+5. **Propagate incrementally, file by file**, not a single rewrite:
+   `suite_cap.py`, `run_dispatch.py`, `lifecycle_cap.py`, and (once TDB-003
+   lands) `cpp_interop.py`'s own new ops all need the same retrofit
+   eventually. Each file's own existing test/golden coverage is the
+   regression net, same discipline as TDB-002.
+
+**Sequencing: after TDB-003, per project-owner decision.** TDB-003
+(`cpp_interop.py`'s own de-stringification, using the same statement-shape-
+only pattern TDB-002 just established) gives a second, independent real
+data point for exactly which expression-text shapes recur across the
+codebase — Fortran-only patterns from `constituent_cap.py` alone risk
+under-designing the vocabulary for C++ interop's own needs. Doing this
+first would also further delay TDB-003's already-scoped work for a
+design question TDB-003 doesn't itself require answered.
+
+**Effort**: large — likely the single biggest item in this backlog,
+bigger than TDB-002 and TDB-003 combined, given its breadth (every
+expression-bearing property on every op in `ccpp_utils.py`, across five
+transform files). Treat stages 1-4 above as a multi-week design-and-pilot
+phase on their own, with stage 5's full propagation as further,
+separately-scoped follow-on work per file, not one PR.
+
+**Risk of leaving as-is**: unlike TDB-002/TDB-003 ("low short-term, correct
+output today"), this one is different in kind — it's not a code-quality
+cost that accumulates quietly, it's a hard blocker on the stated
+multi-language goal. No second-language printer is achievable at all
+until this lands, regardless of how much statement-shape conversion work
+(TDB-002, TDB-003) happens first.
+
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 
 Not scheduled, not started (unchanged status since first logged
