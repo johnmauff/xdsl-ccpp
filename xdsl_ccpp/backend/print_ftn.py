@@ -32,6 +32,7 @@ from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
 from xdsl_ccpp.dialects.ccpp_utils import ArraySectionOp as CCPPArraySectionOp
 from xdsl_ccpp.dialects.ccpp_utils import CamClearErrStateOp as CCPPCamClearErrStateOp
 from xdsl_ccpp.dialects.ccpp_utils import CamDirectCallOp as CCPPCamDirectCallOp
+from xdsl_ccpp.dialects.ccpp_utils import CallStatementOp as CCPPCallStatementOp
 from xdsl_ccpp.dialects.ccpp_utils import CamQminPostambleOp as CCPPCamQminPostambleOp
 from xdsl_ccpp.dialects.ccpp_utils import CamQminPreambleOp as CCPPCamQminPreambleOp
 from xdsl_ccpp.dialects.ccpp_utils import CamSuiteDispatchOp as CCPPCamSuiteDispatchOp
@@ -74,6 +75,7 @@ from xdsl_ccpp.dialects.ccpp_utils import DdtMethodCallOp as CCPPDdtMethodCallOp
 from xdsl_ccpp.dialects.ccpp_utils import ErrorGuardOp as CCPPErrorGuardOp
 from xdsl_ccpp.dialects.ccpp_utils import IfThenOp as CCPPIfThenOp
 from xdsl_ccpp.dialects.ccpp_utils import NullifyPointerOp as CCPPNullifyPointerOp
+from xdsl_ccpp.dialects.ccpp_utils import AssignOp as CCPPAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import PointerAssignOp as CCPPPointerAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import PointerSliceAssignOp as CCPPPointerSliceAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
@@ -95,6 +97,15 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.dialects.ccpp_utils import (
     ConstituentFunctionOp as CCPPConstituentFunctionOp,
 )
+from xdsl_ccpp.dialects.ccpp_utils import (
+    BindCSubroutineOp as CCPPBindCSubroutineOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
+    CToFortranStringCopyOp as CCPPCToFortranStringCopyOp,
+)
+from xdsl_ccpp.dialects.ccpp_utils import (
+    FortranToCStringCopyOp as CCPPFortranToCStringCopyOp,
+)
 from xdsl_ccpp.dialects.ccpp_utils import RawFortranLinesOp as CCPPRawFortranLinesOp
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
@@ -110,6 +121,33 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 
 _MAX_LINE_LEN = 99
+
+
+def _wrap_paren_list(prefix: str, items: list, suffix: str, max_col: int, cont_indent: str) -> list:
+    """Emit ``{prefix}{items joined by ', '}{suffix}``, Fortran-continuation-
+    wrapping the item list onto ``cont_indent``-indented lines (each ending
+    in ``' &'``) when the single-line form would exceed ``max_col``.
+
+    Shared by BindCSubroutineOp's header-signature printing and (later)
+    its suite-cap call-emission printing -- previously two independently
+    hand-rolled copies of the same wrap loop in cpp_interop.py
+    (``_emit_subr_header``/``_emit_call``), differing only in
+    prefix/suffix/budget/indent.
+    """
+    single = prefix + ", ".join(items) + suffix
+    if len(single) <= max_col:
+        return [single]
+    lines = [prefix + " &"]
+    cur = cont_indent
+    for i, item in enumerate(items):
+        sep = ", " if i < len(items) - 1 else ""
+        if len(cur) + len(item) + len(sep) + 4 > max_col:
+            lines.append(cur + " &")
+            cur = cont_indent + item + sep
+        else:
+            cur += item + sep
+    lines.append(cur + suffix)
+    return lines
 
 
 def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
@@ -947,6 +985,8 @@ class ftnPrintContext:
                 )
             case CCPPPointerAssignOp():
                 self.print(f"{op.ptr_name.data} => {op.rhs_expr.data}")
+            case CCPPAssignOp():
+                self.print(f"{op.lhs_expr.data} = {op.rhs_expr.data}")
             case CCPPDdtMethodCallOp():
                 all_args = [a.data for a in op.args.data] + [k.data for k in op.kwargs.data]
                 self.print(f"call {op.obj_expr.data}%{op.method.data}({', '.join(all_args)})")
@@ -1002,6 +1042,46 @@ class ftnPrintContext:
                         fn_inner.print(decl.data)
                     fn_inner.print_block(op.body.block)
                 self.print(f"end {kw} {fn_name}")
+            case CCPPBindCSubroutineOp():
+                fn_name = op.fn_name.data
+                is_func = op.is_function.value.data
+                kw = "function" if is_func else "subroutine"
+                vnames = [a.data for a in op.args.data]
+                result_part = (
+                    f" result({op.result_name.data})" if op.result_name is not None else ""
+                )
+                header_lines = _wrap_paren_list(
+                    f"{kw} {fn_name}(", vnames, f"){result_part} &", 92, "    "
+                )
+                for line in header_lines:
+                    self.print(line)
+                with self.descend() as fn_inner:
+                    fn_inner.print(f"bind(C, name='{op.bind_name.data}')")
+                    if op.result_decl is not None:
+                        fn_inner.print(op.result_decl.data)
+                    for decl in op.arg_decls.data:
+                        fn_inner.print(decl.data)
+                    for decl in op.local_decls.data:
+                        fn_inner.print(decl.data)
+                    fn_inner.print_block(op.body.block)
+                self.print(f"end {kw} {fn_name}")
+            case CCPPCToFortranStringCopyOp():
+                c_var = op.c_var.data
+                f_var = op.f_var.data
+                self.print(f"{f_var} = ' '")
+                self.print(f"do i = 1, len({f_var})")
+                with self.descend() as inner:
+                    inner.print(f"if ({c_var}(i) == c_null_char) exit")
+                    inner.print(f"{f_var}(i:i) = {c_var}(i)")
+                self.print("end do")
+            case CCPPFortranToCStringCopyOp():
+                c_var = op.c_var.data
+                f_var = op.f_var.data
+                self.print(f"do i = 1, len_trim({f_var})")
+                with self.descend() as inner:
+                    inner.print(f"{c_var}(i) = {f_var}(i:i)")
+                self.print("end do")
+                self.print(f"{c_var}(len_trim({f_var})+1) = c_null_char")
             case CCPPCamHostConstituentApiOp():
                 self.print_block(op.body.block)
             case CCPPNonCamHostConstituentApiOp():
@@ -1027,6 +1107,13 @@ class ftnPrintContext:
             case CCPPCamDirectCallOp():
                 args = ", ".join(a.data for a in op.call_args.data)
                 self.print(f"call {op.callee.data}({args})")
+            case CCPPCallStatementOp():
+                call_args = [a.data for a in op.call_args.data]
+                lines = _wrap_paren_list(
+                    f"call {op.callee.data}(", call_args, ")", 80, "    "
+                )
+                for line in lines:
+                    self.print(line)
             case CCPPCamClearErrStateOp():
                 self.print(f"{op.errcode_var.data} = 0")
                 self.print(f"{op.errmsg_var.data} = ''")
@@ -1162,11 +1249,10 @@ class ftnPrintContext:
                     else:
                         self.print(line)
             case CCPPCHostCapOp():
-                # Complete standalone Fortran module — emit ftn_text verbatim.
+                # Complete standalone Fortran module — emit ftn_body verbatim.
                 # Normally emitted via print_to_ftn at the top level, but handled
                 # here too in case the op appears inside a module body.
-                for line in op.ftn_text.data.splitlines():
-                    self.print(line)
+                self.print_block(op.ftn_body.block)
             case CCPPRankReducingSliceOp():
                 # Register the Fortran array-section expression for the result.
                 # Scan dim_pattern left-to-right, consuming range pairs and
@@ -2562,5 +2648,4 @@ def print_to_ftn(
                 ctx.print("// -----")
             divider = True
             ctx.print("// FILE: " + op.mod_name.data + ".F90")
-            for line in op.ftn_text.data.splitlines():
-                ctx.print(line)
+            ctx.print_block(op.ftn_body.block)

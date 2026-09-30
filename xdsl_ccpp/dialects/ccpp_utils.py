@@ -1131,6 +1131,39 @@ class PointerAssignOp(IRDLOperation):
 
 
 @irdl_op_definition
+class AssignOp(IRDLOperation):
+    """A plain (non-pointer) scalar or array-element assignment statement.
+
+    Emits::
+
+        {lhs_expr} = {rhs_expr}
+
+    Both sides are printed verbatim -- this deliberately does not attempt
+    to structurally model the assigned expression (see TDB-004 in
+    BACKLOG.md: a real language-neutral expression IR is a separate,
+    much larger effort). Covers plain-value assignment; use
+    PointerAssignOp/PointerSliceAssignOp instead for `=>` pointer
+    association.
+
+    Added as part of TDB-003 (cpp_interop.py's own raw-string conversion,
+    which needs this regardless), deliberately pulled forward from
+    TDB-004's own Stage-1 proposal for constituent_cap.py's remaining
+    leaves -- landing one AssignOp design now means TDB-004 reconciles a
+    single existing design instead of two independently-invented ones.
+    """
+
+    name = "ccpp_utils.assign"
+    lhs_expr = prop_def(StringAttr)
+    rhs_expr = prop_def(StringAttr)
+
+    def __init__(self, lhs_expr: str, rhs_expr: str):
+        super().__init__(properties={
+            "lhs_expr": StringAttr(lhs_expr),
+            "rhs_expr": StringAttr(rhs_expr),
+        })
+
+
+@irdl_op_definition
 class DdtMethodCallOp(IRDLOperation):
     """Call a type-bound procedure on a DDT object, with positional and/or
     keyword arguments.
@@ -1375,6 +1408,150 @@ class ConstituentFunctionOp(IRDLOperation):
 
 
 @irdl_op_definition
+class BindCSubroutineOp(IRDLOperation):
+    """A Fortran subroutine or function with a ``bind(C, name='...')``
+    interface, e.g. the chost BIND(C) cap's own per-lifecycle entry
+    points and its constituent-query functions.
+
+    ``fn_name``     — Fortran identifier of the subroutine/function.
+    ``bind_name``   — the C-visible symbol name (``bind(C, name=...)``).
+    ``is_function`` — True for FUNCTION, False (default) for SUBROUTINE.
+    ``args``        — argument names for the signature line (printer
+                       column-wraps this across Fortran continuation
+                       lines when it would otherwise exceed the line
+                       budget -- see the shared ``_wrap_paren_list``
+                       helper in print_ftn.py).
+    ``arg_decls``   — argument declaration lines.
+    ``local_decls`` — local variable declaration lines.
+    ``result_name`` — (functions only) name of the RESULT variable.
+    ``result_decl`` — (functions only) type declaration for the result
+                       variable.
+    ``body``        — single-block Region of statement ops.
+
+    Distinct from ConstituentFunctionOp (no bind(C) support, and its
+    printer joins the argument list on one line with no wrapping at all
+    -- retrofitting it risked destabilizing its own already-proven output
+    format across every existing caller, so this is a separate op rather
+    than an extension). ``is_function``/``result_name``/``result_decl``
+    were added here rather than on a third op since this op had zero real
+    callers yet when the chost constituent-query functions (which need
+    both RESULT(...) and bind(C) together) were reached -- no proven
+    output format at risk.
+    """
+
+    name = "ccpp_utils.bind_c_subroutine"
+
+    fn_name     = prop_def(StringAttr)
+    bind_name   = prop_def(StringAttr)
+    is_function = prop_def(BoolAttr)
+    args        = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    arg_decls   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    result_name = opt_prop_def(StringAttr)
+    result_decl = opt_prop_def(StringAttr)
+    body        = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        fn_name: str,
+        bind_name: str,
+        args: "list[str]",
+        arg_decls: "list[str]",
+        local_decls: "list[str]",
+        body_ops: list,
+        is_function: bool = False,
+        result_name: "str | None" = None,
+        result_decl: "str | None" = None,
+    ):
+        from xdsl.ir import Block, Region
+        props: dict = {
+            "fn_name":     StringAttr(fn_name),
+            "bind_name":   StringAttr(bind_name),
+            "is_function": BoolAttr.from_bool(is_function),
+            "args":        ArrayAttr([StringAttr(a) for a in args]),
+            "arg_decls":   ArrayAttr([StringAttr(d) for d in arg_decls]),
+            "local_decls": ArrayAttr([StringAttr(d) for d in local_decls]),
+        }
+        if result_name is not None:
+            props["result_name"] = StringAttr(result_name)
+        if result_decl is not None:
+            props["result_decl"] = StringAttr(result_decl)
+        super().__init__(properties=props, regions=[Region([Block(body_ops)])])
+
+
+@irdl_op_definition
+class CToFortranStringCopyOp(IRDLOperation):
+    """The fixed-shape C-to-Fortran NUL-terminated char-array copy-in idiom
+    used by the chost BIND(C) cap to receive a ``character(kind=c_char)``
+    array argument into a local deferred-length Fortran string.
+
+    Emits::
+
+        {f_var} = ' '
+        do i = 1, len({f_var})
+          if ({c_var}(i) == c_null_char) exit
+          {f_var}(i:i) = {c_var}(i)
+        end do
+
+    ``c_var``/``f_var`` are opaque name text (see AssignOp's own docstring
+    re: TDB-004). The shape is fixed -- always blank-init then scan-until-
+    NUL -- so a dedicated op is clearer here than composing it from
+    smaller loop primitives; it never varies across its call sites.
+
+    Relies on a surrounding scope having declared an untyped ``integer``
+    loop variable named ``i`` (matching the original hand-written code;
+    not owned by this op).
+    """
+
+    name = "ccpp_utils.c_to_fortran_string_copy"
+    c_var = prop_def(StringAttr)
+    f_var = prop_def(StringAttr)
+
+    def __init__(self, c_var: str, f_var: str):
+        super().__init__(properties={
+            "c_var": StringAttr(c_var),
+            "f_var": StringAttr(f_var),
+        })
+
+
+@irdl_op_definition
+class FortranToCStringCopyOp(IRDLOperation):
+    """The fixed-shape Fortran-to-C NUL-terminated char-array copy-out
+    idiom used by the chost BIND(C) cap to return a local Fortran string
+    through a ``character(kind=c_char)`` array argument.
+
+    Emits::
+
+        do i = 1, len_trim({f_var})
+          {c_var}(i) = {f_var}(i:i)
+        end do
+        {c_var}(len_trim({f_var})+1) = c_null_char
+
+    ``c_var``/``f_var`` are opaque name text (see AssignOp's own docstring
+    re: TDB-004). Mirror image of CToFortranStringCopyOp; kept as a
+    separate op rather than a direction flag since the two shapes share no
+    printable text and a flag would just push the branching into the
+    printer.
+
+    Relies on a surrounding scope having declared an untyped ``integer``
+    loop variable named ``i`` (matching the original hand-written code;
+    not owned by this op).
+    """
+
+    name = "ccpp_utils.fortran_to_c_string_copy"
+    c_var = prop_def(StringAttr)
+    f_var = prop_def(StringAttr)
+
+    def __init__(self, c_var: str, f_var: str):
+        super().__init__(properties={
+            "c_var": StringAttr(c_var),
+            "f_var": StringAttr(f_var),
+        })
+
+
+@irdl_op_definition
 class DdtComponentDeclOp(IRDLOperation):
     """One component declaration inside a DerivedTypeDefOp.
 
@@ -1538,14 +1715,18 @@ class SuiteVariablesOp(IRDLOperation):
 
 @irdl_op_definition
 class CHostCapOp(IRDLOperation):
-    """Carries auto-generated BIND(C) cap text for a C++ host model.
+    """Carries the auto-generated BIND(C) cap for a C++ host model.
 
-    Holds the complete Fortran module text (``ftn_text``), matching C++
-    header text (``cpp_text``), and C++ ergonomics wrapper (``wrapper_text``)
-    as pre-built strings.  Generated by the ``generate-ccpp-cap`` pass when
-    the host declares ``language = "c++"``; consumed by ``print_ftn.py`` (emits ``ftn_text``
-    verbatim) and ``print_cpp_header.py`` (emits ``cpp_text`` and
-    ``wrapper_text`` verbatim as separate ``// FILE:`` sections).
+    ``ftn_body`` holds the complete Fortran module as structured IR (a
+    single-block Region of statement ops, printed by ``print_ftn.py``
+    exactly like any other module body). ``cpp_text``/``wrapper_text``
+    remain pre-built C++ header/wrapper text (TDB-003 Stages 2/3 give
+    these the same region-based treatment; until then ``print_cpp_header.py``
+    has no op-dispatch printer of its own to consume regions for C++ output
+    -- unlike ``print_ftn.py``, which already had one, so ``ftn_body`` alone
+    could adopt the region shape in Stage 1 without inventing that
+    infrastructure speculatively). Generated by the ``generate-ccpp-cap``
+    pass when the host declares ``language = "c++"``.
 
     ``mod_name`` is the base name used for the module and header file, e.g.
     ``"Kessler_ccpp_chost_cap"``.
@@ -1553,19 +1734,24 @@ class CHostCapOp(IRDLOperation):
 
     name = "ccpp_utils.chost_cap"
 
-    ftn_text     = prop_def(StringAttr)   # complete Fortran module text
+    ftn_body     = region_def("single_block")   # complete Fortran module, as ops
     cpp_text     = prop_def(StringAttr)   # complete C++ header text
     wrapper_text = prop_def(StringAttr)   # C++ ergonomics wrapper (.hpp)
     mod_name     = prop_def(StringAttr)   # base name, e.g. "Kessler_ccpp_chost_cap"
 
-    def __init__(self, ftn_text: str, cpp_text: str, mod_name: str,
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, ftn_body_ops: list, cpp_text: str, mod_name: str,
                  wrapper_text: str = ""):
-        super().__init__(properties={
-            "ftn_text":     StringAttr(ftn_text),
-            "cpp_text":     StringAttr(cpp_text),
-            "wrapper_text": StringAttr(wrapper_text),
-            "mod_name":     StringAttr(mod_name),
-        })
+        from xdsl.ir import Block, Region
+        super().__init__(
+            properties={
+                "cpp_text":     StringAttr(cpp_text),
+                "wrapper_text": StringAttr(wrapper_text),
+                "mod_name":     StringAttr(mod_name),
+            },
+            regions=[Region([Block(ftn_body_ops)])],
+        )
 
 
 @irdl_op_definition
@@ -1976,6 +2162,38 @@ class CamDirectCallOp(IRDLOperation):
 
 
 @irdl_op_definition
+class CallStatementOp(IRDLOperation):
+    """A column-wrapped ``call {callee}(args...)`` statement.
+
+    Emits::
+
+        call {callee}(a, b, c)
+
+    or, when the single-line form would exceed the printer's column
+    budget, Fortran-continuation-wraps the argument list the same way
+    BindCSubroutineOp's own header does (shared ``_wrap_paren_list``
+    helper in print_ftn.py) -- replaces cpp_interop.py's own
+    independently hand-rolled ``_emit_call`` wrap loop.
+
+    Distinct from CamDirectCallOp (no wrapping at all -- retrofitting it
+    risked destabilizing its own already-proven single-line output format
+    across its existing callers, same reasoning BindCSubroutineOp was kept
+    separate from ConstituentFunctionOp).
+    """
+
+    name = "ccpp_utils.call_statement"
+
+    callee    = prop_def(StringAttr)
+    call_args = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, callee: str, call_args: "list[str]"):
+        super().__init__(properties={
+            "callee":    StringAttr(callee),
+            "call_args": ArrayAttr([StringAttr(a) for a in call_args]),
+        })
+
+
+@irdl_op_definition
 class CamClearErrStateOp(IRDLOperation):
     """Emit the no-dispatch error-state reset for timestep lifecycle wrappers.
 
@@ -2250,6 +2468,7 @@ CCPPUtils = Dialect(
         ZeroFillOp,
         PointerSliceAssignOp,
         PointerAssignOp,
+        AssignOp,
         DdtMethodCallOp,
         ErrorGuardOp,
         IfThenOp,
@@ -2257,6 +2476,9 @@ CCPPUtils = Dialect(
         ScopedBlockOp,
         RawFortranLinesOp,
         ConstituentFunctionOp,
+        BindCSubroutineOp,
+        CToFortranStringCopyOp,
+        FortranToCStringCopyOp,
         CamHostConstituentApiOp,
         NonCamHostConstituentApiOp,
         DdtComponentDeclOp,
@@ -2275,6 +2497,7 @@ CCPPUtils = Dialect(
         ConstituentSyncOp,
         ConstituentIndexLookupOp,
         CamDirectCallOp,
+        CallStatementOp,
         CamClearErrStateOp,
         CamQminPreambleOp,
         CamQminPostambleOp,
