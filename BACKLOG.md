@@ -8,6 +8,15 @@ convention the archive's own Index already uses). Historical/completed
 work — the full six-phase decomposition, Phase 7, every ✅ backlog item, and
 the codebase complexity/duplication audit — lives only in the archive now.
 
+Every item below carries a stable ID (a short kebab-case slug in
+backticks, e.g. `` `hle-vocab-retire` ``, not a plain integer — integers
+were found to reshuffle depending on how the list gets presented/derived).
+Where an item already had an established numeric identity elsewhere in the
+repo/history (`Task #NN`, `TDB-NNN`), the slug incorporates it (e.g.
+`task70-arraysection`) or the original ID is kept as-is (`tdb-001`). Use
+these IDs, not position in the list, when referring to an item across
+sessions.
+
 Two corrections found while building this list, where the archive's own
 Index table (last updated 2026-08-24) had gone stale relative to its own
 later narrative entries:
@@ -26,14 +35,14 @@ later narrative entries:
 
 ## capgen-v1 end-to-end-test capability gaps
 
-| Item | Notes | Archive |
-|---|---|---|
-| Task #65 (downgraded, 2026-08-20): DDT-typed interstitial-declaration test coverage; non-`real` interstitial-array test coverage | Small, no design work — opportunistic test-writing only. The other 2 sub-items (cross-phase `already_scheduled_allocs` unification; cross-phase ordering validation) are deferred indefinitely, folded into task #61, no open action | L5326 |
-| Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
-| Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already; only the deletion itself remains open. Confirmed 2026-09-29: `ccpp.py`'s `is_legacy_mode()` gate is still called, path not yet deleted | L5679 |
-| Consolidate `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | Investigated 2026-08-24: 2 of 4 files already unified; the other 2 are real, still-used `--legacy-mode` code. Originally deferred until a CAM-SIMA-backed fixture exists to test a consolidation against — **unblocked 2026-09-29**: this session's extensive external `/cam-sima-regression` testing (in `CAM-SIMA.xdsl-ccpp`) satisfies that condition per project-owner judgment, even though no fixture lives in this repo itself. Not started | L5698 |
-| Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
-| Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
+| ID | Item | Notes | Archive |
+|---|---|---|---|
+| `task65-interstitial-tests` | Task #65 (downgraded, 2026-08-20): DDT-typed interstitial-declaration test coverage; non-`real` interstitial-array test coverage | Small, no design work — opportunistic test-writing only. The other 2 sub-items (cross-phase `already_scheduled_allocs` unification; cross-phase ordering validation) are deferred indefinitely, folded into task #61, no open action | L5326 |
+| `cmake-dep-manifest` | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
+| `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already; only the deletion itself remains open. Confirmed 2026-09-29: `ccpp.py`'s `is_legacy_mode()` gate is still called, path not yet deleted | L5679 |
+| `hle-chunk-consolidate` | Consolidate `horizontal_loop_extent`'s duplicate chunking code (`suite_cap.py`/`run_dispatch.py`) | Investigated 2026-08-24: 2 of 4 files already unified; the other 2 are real, still-used `--legacy-mode` code. Originally deferred until a CAM-SIMA-backed fixture exists to test a consolidation against — **unblocked 2026-09-29**: this session's extensive external `/cam-sima-regression` testing (in `CAM-SIMA.xdsl-ccpp`) satisfies that condition per project-owner judgment, even though no fixture lives in this repo itself. Not started | L5698 |
+| `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
+| `task11-omp-thread` | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 follow-up items spawned by `constituents_dim` (single-source migration for
@@ -47,15 +56,15 @@ uninitialized `cind` read shared with `examples/capgen`, and a missing
 
 ## Other flagged issues
 
-| Item | Notes | Archive |
-|---|---|---|
-| `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | S, cosmetic | L5825 |
-| CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
-| `[ccpp-table-properties]`'s `module_name` override unsupported | S | L5955 |
-| `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
-| Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
-| Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | M, real refactor — `ArraySectionOp` is actively used across 5 files including the highest-risk dispatch code in the repo, not dead code | L6593 |
-| Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | S-M — strong evidence of redundancy, but needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting deletion | L6593 |
+| ID | Item | Notes | Archive |
+|---|---|---|---|
+| `errflg-guard-order` | `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | S, cosmetic | L5825 |
+| `cmake-configure-regen` | CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
+| `table-props-module-name` | `[ccpp-table-properties]`'s `module_name` override unsupported | S | L5955 |
+| `type-control-gap` | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
+| `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
+| `task70-arraysection` | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | M, real refactor — `ArraySectionOp` is actively used across 5 files including the highest-risk dispatch code in the repo, not dead code | L6593 |
+| `task71-validate-fir` | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | S-M — strong evidence of redundancy, but needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting deletion | L6593 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 "Move examples' build system from per-example Makefiles to CMake" — fully
@@ -85,7 +94,8 @@ capgen-v1's single `capgen()` call" ergonomics note (CHANGELOG.md L8267) is
 the same convenience-wrapper idea as the scope below — not tracked as a
 separate item.
 
-- **Scope**: design and implement a return value for `ccppMain().run()` (or
+- `dsl-inprocess-api` —
+  **Scope**: design and implement a return value for `ccppMain().run()` (or
   a thin wrapper) that hands back the in-memory resolved-variable data
   (and whatever else a caller like CAM-SIMA's `resolved_var_xdsl_ccpp.py`
   adapter currently has to reconstruct from JSON) as real Python objects,
@@ -96,7 +106,7 @@ separate item.
   decide the shape of the returned object and whether the JSON artifact
   stays as the CLI-facing contract with the object return as an
   in-process-only addition, or something else. Size TBD.
-- Also still open: `options_db` takes comma-joined **strings** for
+- `optionsdb-list-format` — Also still open: `options_db` takes comma-joined **strings** for
   file-list arguments where capgen-v1 takes plain Python lists — a real
   format mismatch (CHANGELOG.md L8267), separate from the above.
 
@@ -109,17 +119,17 @@ already be done or superseded by this session's own extensive
 `/cam-sima-regression` testing — see CHANGELOG.md's merged section for the
 full history. Two small items survive as genuinely open:
 
-- Add a permanent filecheck regression test under `tests/filecheck/`
+- `ddt-redef-filecheck` — Add a permanent filecheck regression test under `tests/filecheck/`
   covering host-cap + suite-cap + constituent-variable generation
   together, so the DDT-redefinition bug (Workstream 2) doesn't silently
   regress. (CHANGELOG.md L8254)
-- Consider whether `_generate_constituent_api`'s hardcoded DDT stub list
+- `constituent-ddt-stub-unify` — Consider whether `_generate_constituent_api`'s hardcoded DDT stub list
   should eventually be unified with the generic `ddt_source_module`
   mechanism rather than living as a second parallel path — today's fix
   makes the two paths coexist safely, it doesn't merge them. (CHANGELOG.md
   L8254)
 
-One item **probably** also superseded, flagging rather than closing
+`camsima-untested-confirm` — One item **probably** also superseded, flagging rather than closing
 outright since it wasn't one of the three items already confirmed:
 nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
 directives "in an actual CAM-SIMA context," and real production physics
@@ -138,6 +148,8 @@ All three items confirmed still open and accurate as of this merge
 `constituent_cap.py` already cite TDB-001/TDB-002 by number.
 
 ### TDB-001: Constituent API always generated for CAM host builds
+
+ID: `tdb-001`
 
 **File**: `xdsl_ccpp/transforms/ccpp_cap.py`, `_generate_ccpp_cap_module`
 (the `or self.cam_host` condition gating the call to
@@ -168,6 +180,8 @@ runtime (empty arrays, no-op register calls) — the only cost is a small
 amount of dead code in `cam_ccpp_cap.F90` for constituent-free suites.
 
 ### TDB-002: Constituent API generation uses raw Fortran string assembly
+
+ID: `tdb-002`
 
 **File**: `xdsl_ccpp/transforms/constituent_cap.py`. **Added 2026-09-06;
 extended 2026-09-15; narrowed 2026-09-29.**
@@ -251,6 +265,8 @@ isolation; this doesn't change the scope or urgency of the fix above.
 
 ### TDB-003: `CHostCapOp`/`cpp_interop.py` still carries raw C++/Fortran text
 
+ID: `tdb-003`
+
 **File**: `xdsl_ccpp/dialects/ccpp_utils.py` (`CHostCapOp`),
 `xdsl_ccpp/transforms/cpp_interop.py`. **Added 2026-09-29** (PR 5 of
 `ir_cleanup_and_lifecycle_dedup_plan.md`, not tracked elsewhere before
@@ -289,16 +305,16 @@ analysis, worked examples, resolved technical risks, and an effort
 staging table live in CHANGELOG.md (L8320 onward). Three proposals,
 smallest to largest:
 
-- **`scheme_family` code generator** (symbolic-tracing templating for
+- `dup-scheme-family-gen` — **`scheme_family` code generator** (symbolic-tracing templating for
   formula-duplicate Fortran subroutines, e.g. `wet_to_dry_*`/
   `dry_to_wet_*`) — ~320-360 lines eliminable, <1% of the Fortran
   codebase. CHANGELOG.md L8365.
-- **Python suite-composition DSL** (replace hand-copied SDF XML blocks
+- `dup-suite-composition-dsl` — **Python suite-composition DSL** (replace hand-copied SDF XML blocks
   with composable Python, e.g. `dry_basis`/`theta_basis` combinators) —
   ~280 lines directly, bigger value in removing drift risk between
   `suite_cam4.xml`/`suite_cam7.xml` and their standalone-suite sources.
   CHANGELOG.md L8453.
-- **Eliminate `.meta` as a hand-maintained shadow file** — the big one:
+- `dup-meta-shadow-elim` — **Eliminate `.meta` as a hand-maintained shadow file** — the big one:
   tag `standard_name`/`units` directly in Fortran source comments
   (`!ccpp [name] key=value`), generate `.meta` mechanically. ~14,300+
   lines' worth of hand-authored `.meta` content (45% mechanical mirror of
@@ -326,7 +342,7 @@ reference, not backlog noise). These 4 items are its only open ones as
 of 2026-09-29 (10 of its 14 numbered items are already resolved); pointer
 entries here so they surface in a backlog sweep too.
 
-- **Rank > 2 arrays, plain `--bind-c` path (no chost layer)** — a
+- `chost-rank3-bindc` — **Rank > 2 arrays, plain `--bind-c` path (no chost layer)** — a
   suspected assumed-size→assumed-shape rank mismatch between
   `ccpp_cap.py`'s flat `flux(*)` declaration and the suite cap's
   assumed-shape `(:,:,:)` dummy. Confirmed still unverified against a real
@@ -334,7 +350,7 @@ entries here so they surface in a backlog sweep too.
   for exactly this reason). This session ran on Derecho with real
   compilers throughout — worth actually verifying now rather than staying
   theoretical. `multilanguage_limitations.md` §5.
-- **GPU memory management** — the chost cap is a CPU BIND(C) wrapper; a
+- `chost-gpu-memory` — **GPU memory management** — the chost cap is a CPU BIND(C) wrapper; a
   C++ host driving GPU physics is entirely on its own for device-pointer
   placement across the boundary (Kokkos `CudaSpace` invisible to OpenACC,
   no automatic pointer sharing across a BIND(C) call for OpenMP target,
@@ -345,14 +361,14 @@ entries here so they surface in a backlog sweep too.
   device-pointer contract" below (`gpu_pointer_mode = deviceptr`) is a
   more concrete, narrower design for the same underlying gap — a fix
   there would directly resolve this item, not just a similar one.
-- **Column-major array layout requirement** — a C++ caller must lay out
+- `chost-column-major` — **Column-major array layout requirement** — a C++ caller must lay out
   arrays column-major (Fortran order) or get silently wrong physics
   results; no detection or row-major option exists. Potential fix:
   generate a row-major variant that transposes internally, or an
   `array_layout = row_major` host `.meta` option. Medium effort, more a
   documentation/footgun risk than a broken feature today.
   `multilanguage_limitations.md` §1.
-- **Thread safety — `ccpp_suite_state`** — concurrent C++ threads calling
+- `chost-thread-safety` — **Thread safety — `ccpp_suite_state`** — concurrent C++ threads calling
   the chost cap race on the module-level suite-state variable. Safe today
   only because the one real C++ driver (kessler) is single-threaded.
   Low-Medium effort; multi-instance support (see above) is one viable
@@ -360,6 +376,8 @@ entries here so they surface in a backlog sweep too.
   flag has been corrected. `multilanguage_limitations.md` §6.
 
 ## Fortran host → C++ scheme: no compiled end-to-end test
+
+ID: `cxx-scheme-no-e2e-test`
 
 From `multilanguage_plan.md` (kept standalone as design-background
 reference; its main C++-host/Fortran-scheme plan, Phases 1-7, is fully
@@ -391,12 +409,12 @@ host's *entire* bridge, not just the Fortran cap layer — motivated by
 repo, kept here as reference, not tracked as this repo's own backlog).
 Three phases, recommended in this order:
 
-- **Phase A — metadata `variant` tag** (moderate effort): teach the
+- `eamxx-phaseA-variant-tag` — **Phase A — metadata `variant` tag** (moderate effort): teach the
   `.meta` format that a scheme has CPU and GPU (OpenACC) variants with
   different argument lists, so `suite_cap.py` can emit an `#ifdef`
   branch automatically instead of requiring a hand-patched meta per
   build config. CHANGELOG.md L8624.
-- **Phase B — explicit device-pointer contract** (small): a
+- `eamxx-phaseB-deviceptr` — **Phase B — explicit device-pointer contract** (small): a
   `gpu_pointer_mode = deviceptr` host-meta property so `cpp_interop.py`
   knows to pass GPU pointers straight through with zero data-staging
   directives, instead of silently assuming the scheme's own directives
@@ -404,7 +422,7 @@ Three phases, recommended in this order:
   concrete design for the "chost (C++ host) known limitations" section's
   "GPU memory management" item above — implementing this would directly
   close that gap.
-- **Phase C — a new "EAMxx AtmosphereProcess" printer** (large, an order
+- `eamxx-phaseC-printer` — **Phase C — a new "EAMxx AtmosphereProcess" printer** (large, an order
   of magnitude more effort than A+B): generate the whole C++
   `AtmosphereProcess` class, not just the BIND(C) layer. Needs genuinely
   new EAMxx-specific metadata vocabulary (Field-Manager registration,
@@ -413,7 +431,7 @@ Three phases, recommended in this order:
   energy-fixer bookkeeping) should stay permanently hand-written even if
   built. CHANGELOG.md L8667.
 
-A cheaper, high-value piece of tooling identified independent of the
+`eamxx-suite-coverage-checker` — A cheaper, high-value piece of tooling identified independent of the
 three phases: a "suite-coverage checker" script diffing a real suite
 XML's scheme list against a hand-written bridge's own tracking comments,
 flagging any scheme with no corresponding comment — needs no generator
