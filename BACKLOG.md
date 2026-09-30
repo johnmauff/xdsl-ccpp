@@ -159,10 +159,13 @@ CHANGELOG.md L8406.
 ## Technical debt (merged from `technical_debt.md` and
 `ir_cleanup_and_lifecycle_dedup_plan.md`, 2026-09-29)
 
-All three items confirmed still open and accurate as of this merge
-(verified directly against current source, not just carried over). The
-`TDB-NNN` IDs are kept as-is since source comments in `ccpp_cap.py` and
-`constituent_cap.py` already cite TDB-001/TDB-002 by number.
+All three items confirmed still open and accurate as of the 2026-09-29
+merge (verified directly against current source, not just carried over).
+**Update 2026-09-30**: `TDB-002` is now resolved (see below); `TDB-001`
+and `TDB-003` remain open; a new item, `TDB-004`, was added, scoped to
+follow `TDB-003`. The `TDB-NNN` IDs are kept as-is (including for the
+now-resolved `TDB-002`) since source comments in `ccpp_cap.py` and
+elsewhere already cite them by number.
 
 ### TDB-001: Constituent API always generated for CAM host builds
 
@@ -196,89 +199,25 @@ constituent presence.
 runtime (empty arrays, no-op register calls) — the only cost is a small
 amount of dead code in `cam_ccpp_cap.F90` for constituent-free suites.
 
-### TDB-002: Constituent API generation uses raw Fortran string assembly
+### TDB-002: Constituent API generation uses raw Fortran string assembly — RESOLVED
 
 ID: `tdb-002`
 
-**File**: `xdsl_ccpp/transforms/constituent_cap.py`. **Added 2026-09-06;
-extended 2026-09-15; narrowed 2026-09-29.**
-
-All constituent API subroutines (both the generic and `cam_host` paths)
-are built as raw Python f-strings stored in a `ConstituentApiOp(body=
-StringAttr(...))` / per-function `RawFortranLinesOp` bodies and emitted
-verbatim by `print_ftn.py`, instead of going through the typed MLIR IR
-(`func.FuncOp`/`call.CallOp`/SSA values) the rest of xdsl_ccpp uses to
-represent Fortran semantics and derive text from. Consequences: no
-IR-level analysis/transformation can touch these subroutines;
-line-length limits, continuation lines, USE deduplication, and
-indentation are all managed by hand in Python instead of by the emitter;
-extending the API means editing f-string templates instead of composing
-IR ops.
-
-**Narrowed 2026-09-29**: this item originally also named `ccpp_cap.py`'s
-`_generate_cam_lifecycle_wrappers` (the `cam_ccpp_physics_*` wrappers) as
-using the same raw-string pattern. Confirmed that's no longer true —
-commit `125cfe2` ("Eliminate text strings phase 1", 2026-09-07, the day
-after this item was first added) rewrote it to return real `func.FuncOp`
-IR (`return wrappers, list(_seen_globals.values())`), matching
-`lifecycle_duplication_report.md`'s Finding 2 "Phase B" proposal exactly
-(that report, and its other 4 findings, are now fully resolved — deleted
-2026-09-29, nothing else survived as open). Only `constituent_cap.py`
-remains on the raw-string pattern.
-
-**The right fix, staged** (merged in from `ir_cleanup_and_lifecycle_dedup_plan.md`'s
-PR 3, 2026-09-29 — that plan's PRs 1/2/4 are done, see the "Narrowed"
-note above; PR 3 is this item; PR 5 is TDB-003 below):
-
-- **Stage A — declarations to `ModuleVarOp`.** All 7 declaration types
-  currently built as raw strings in `type_defs_lines` become `ModuleVarOp`
-  instances, using the `is_pointer`/`is_target` boolean properties (already
-  landed). E.g. `real(kind=kind_phys), allocatable, target ::
-  lc_const_tend(:,:,:)` becomes `ModuleVarOp("lc_const_tend", "real",
-  kind="kind_phys", is_target=True, rank=3)`. Delete `type_defs_lines`,
-  `type_defs_text`, and the `type_defs=` argument to `ConstituentApiOp`.
-- **Stage B — new statement ops for subroutine bodies**, each following
-  the `LazyAllocOp`/`SafeDeallocOp` pattern (typed properties, no
-  hand-built Fortran outside the printer): `DeallocateIfOwnedOp(var)` →
-  `if (allocated(x)) deallocate(x)`; `NullifyPointerOp(ptr)` →
-  `nullify(x)`; `AllocateOp(var, shape_ops)` → `allocate(x(n, m, k))`;
-  `ZeroFillOp(var)` → `x = 0.0_kind_phys`; `PointerSliceAssignOp(ptr,
-  array, index_var)` → `ptr => arr(:, :, idx)`;
-  `ConstituentIndexLookupOp(obj, std_name, idx_var, errflg)` → `call
-  obj%const_index(idx, 'std_name', errcode=...)`; `ScopedBlockOp(locals,
-  body: Region)` → `block; ...; end block`.
-- **Stage C — `ConstituentApiOp.body` from `StringAttr` to a `Region`**
-  containing one `ConstituentFunctionOp` per subroutine (each with its own
-  Stage B body Region); `print_ftn.py` walks the Region instead of
-  printing a blob. Do both parallel paths
-  (`_generate_constituent_api_cam_host` and `_generate_constituent_api`)
-  together, since they share the same op definitions. Gate Stage C on
-  Stage A/B passing cleanly first.
-
-Each new op: define in `ccpp_utils.py` with typed properties (a
-`StringAttr` only for names/labels, never code fragments) → add exactly
-one printer case in `print_ftn.py` (the only place that op's Fortran
-syntax appears) → update the transform call site to build the op instead
-of a string. Clean examples already in the codebase to follow:
-single-statement ops `LazyAllocOp`/`SafeDeallocOp` (no Region, printer
-does all the syntax); Region-body ops `PromotionLoopOp`/`SubcycleLoopOp`
-(`body = region_def("single_block")`, builder takes `body_ops`, printer
-walks children); conditional-body ops `PresentCheckOp`/`ActiveCheckOp`
-(two named Regions, printer emits `if/else/end if`). Verify after each
-converted site: full test suite + a CAM-SIMA regression run.
-
-Estimated effort (from the source plan): ~2-3 weeks, the largest of the
-still-open IR-cleanup items — two parallel ~970-line f-string-heavy
-functions, ~9 subroutine bodies each.
-
-**Risk of leaving as-is**: low short-term — the raw strings produce
-correct Fortran and pass all tests; the cost accumulates as the
-constituent API grows (each new subroutine/argument is more raw-string
-bookkeeping). Confirmed still the only pattern in use as of the
-2026-09-16 `cam_advected_constituents_array` addition (`aca_op`) — added
-using the same `RawFortranLinesOp`-body pattern deliberately, by explicit
-user decision, rather than partially refactoring one function in
-isolation; this doesn't change the scope or urgency of the fix above.
+**RESOLVED 2026-09-30.** All 10 `constituent_cap.py` subroutines converted
+from raw-string `RawFortranLinesOp` blobs to typed IR (7 new ops designed;
+`ScopedBlockOp` got its first real usage anywhere in the codebase;
+`ConstituentApiOp`, the op this item's original text was written against,
+removed as dead code — superseded by `CamHostConstituentApiOp`/
+`NonCamHostConstituentApiOp` since commit `125cfe2`, which the original
+scoping hadn't caught up to). Bonus: closed a real coverage gap with a new
+FileCheck golden for the multi-instance derived-type path. Verified with
+the full local suite (714 passed, 1 xfailed) and a final
+`/cam-sima-regression` run (`xdsl44g`): 30/31 pass, 1 known pre-existing
+unrelated failure. A few deliberate one-off text leaves remain (plain
+assignments, a `write()` call, `#ifdef` directive blocks) — not a scoping
+miss; closing those, plus the deeper issue that even the now-typed ops
+still carry raw Fortran-syntax *expression text*, is `TDB-004` (sequenced
+after `TDB-003`). Full staged history archived in `CHANGELOG.md` L9016.
 
 ### TDB-003: `CHostCapOp`/`cpp_interop.py` still carries raw C++/Fortran text
 
@@ -302,12 +241,14 @@ verbatim by `print_ftn.py` (`ftn_text`) and `print_cpp_header.py`
 **The right fix**: deliberately not scoped in detail yet — the source
 plan explicitly deferred this "until PRs 1-4 establish the patterns...
 [requires] defining abstract ops that both the Fortran and C++ printers
-can handle — a larger design discussion." PRs 1/2/4 are now done and TDB-002
-above is the in-progress PR 3, so the patterns this needs (the Step
-1/2/3 conversion methodology, the op-design precedents) now exist to
-draw on, but the two-printer (`print_ftn.py` *and* `print_cpp_header.py`)
-abstraction question itself is still open and needs its own design pass
-before implementation starts.
+can handle — a larger design discussion." PRs 1/2/4 are done, and
+`TDB-002` (PR 3) is now also done (2026-09-30), so the patterns this needs
+(the Step 1/2/3 conversion methodology, the op-design precedents, and —
+per `TDB-004`'s own finding while implementing `TDB-002` — the awareness
+that statement-shape conversion alone doesn't cover expression content)
+now exist to draw on, but the two-printer (`print_ftn.py` *and*
+`print_cpp_header.py`) abstraction question itself is still open and
+needs its own design pass before implementation starts.
 
 **Risk of leaving as-is**: low short-term, same shape as TDB-002 — correct
 output today, cost is architectural (no IR-level analysis/GPU-pass
