@@ -53,6 +53,7 @@ contains
     ! Allocate and initialize temperature
     allocate(temp_midpoints(ncols, pver))
     temp_midpoints = 0.0_kind_phys
+    cind = 1
     do lev = 1, pverP
        offsize = ((cind - 1) * (ncols * pver)) + ((lev - 1) * ncols)
        do col = 1, ncols

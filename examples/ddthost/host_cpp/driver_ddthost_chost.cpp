@@ -3,6 +3,13 @@
 // DDT args. The generated chost cap reconstructs the vmr_type DDT on the
 // Fortran side; C++ owns all arrays as flat buffers.
 //
+// Two schemes in one group, matching examples/capgen's own chost driver
+// (minus setup_coeffs, not needed here):
+//   make_ddt:         O3/HNO3 -> vmr DDT (validated by timestep_final)
+//   temp_calc_adjust: temp_calc[:,:] = 1.0 (ignores temp_level, sets output --
+//                     2D (horizontal_dimension, vertical_layer_dimension),
+//                     matching real capgen-v1's own rank for this standard_name)
+//
 // make_ddt physics:
 //   init:           allocates vmr%vmr_array(ncols, 2); sets vmr%nvmr = 2
 //   run:            vmr_array(:,1) = O3(:); vmr_array(:,2) = HNO3(:)
@@ -21,6 +28,8 @@
 
 static constexpr int NCOL    = 5;
 static constexpr int VMR_NVS = 2;   // hardcoded by make_ddt_init: vmr%nvmr = 2
+static constexpr int PVERP   = 4;   // number of vertical interfaces
+static constexpr int PVER    = PVERP - 1;   // number of vertical layers
 
 static void check(const char* label, const Ddthost_chost::Status& s) {
     if (!s.ok()) {
@@ -30,7 +39,13 @@ static void check(const char* label, const Ddthost_chost::Status& s) {
 }
 
 int main() {
-    Ddthost_chost::State state(NCOL, VMR_NVS);
+    // State's real constructor order is (ncols, pverP, pver, vmr_nvmr) --
+    // NOT (ncols, vmr_nvmr, pverP, pver) -- confirmed against the generated
+    // Ddthost_chost.hpp before trusting this. See
+    // examples/capgen/host_cpp/driver_capgen_chost.cpp's own comment for the
+    // full history: getting this order wrong there silently mis-sized every
+    // array in state.allocate(), causing a real heap buffer overflow.
+    Ddthost_chost::State state(NCOL, PVERP, PVER, VMR_NVS);
     state.allocate();
 
     // ccpp_info members forwarded to make_ddt_init (scheme only uses nbox/ncols)
@@ -43,6 +58,13 @@ int main() {
         state.O3[i]   = (i + 1) * 1.0e-6;
         state.HNO3[i] = (i + 1) * 1.0e-9;
     }
+
+    // temp_interfaces: arbitrary input values (temp_calc_adjust_run ignores them)
+    for (int col = 0; col < NCOL; ++col)
+        for (int lev = 0; lev < PVERP; ++lev)
+            state.temp_interfaces[col + NCOL * lev] = 200.0 + lev * 5.0;
+
+    state.dt = 1800.0;
 
     // CCPP call sequence
     check("register",         Ddthost_chost::do_register());
@@ -80,12 +102,30 @@ int main() {
         }
     }
 
+    // Verify temp_calc (temp_calc_adjust_run sets all to 1.0, all columns and
+    // levels -- 2D (horizontal_dimension, vertical_layer_dimension), flattened
+    // column-major the same way state.temp_interfaces already is: index =
+    // col + NCOL * lev).
+    for (int lev = 0; lev < PVER; ++lev) {
+        for (int col = 0; col < NCOL; ++col) {
+            int idx = col + NCOL * lev;
+            if (state.temp_calc[idx] != 1.0) {
+                std::fprintf(stderr, "FAIL: temp_calc[%d] = %.3e, expected 1.0\n",
+                    idx, state.temp_calc[idx]);
+                passed = false;
+            }
+        }
+    }
+
     if (passed) {
-        std::printf("PASS: %d columns, vmr_nvmr=%d\n", NCOL, VMR_NVS);
+        std::printf("PASS: %d columns, vmr_nvmr=%d, pverP=%d, pver=%d\n",
+                    NCOL, VMR_NVS, PVERP, PVER);
         std::printf("  O3   [0..%d]: %.3e .. %.3e\n",
                     NCOL - 1, state.vmr_vmr_array[0], state.vmr_vmr_array[NCOL - 1]);
         std::printf("  HNO3 [0..%d]: %.3e .. %.3e\n",
                     NCOL - 1, state.vmr_vmr_array[NCOL], state.vmr_vmr_array[2 * NCOL - 1]);
+        std::printf("  temp_calc[0..%d]: %.3e .. %.3e\n",
+                    NCOL * PVER - 1, state.temp_calc[0], state.temp_calc[NCOL * PVER - 1]);
         return 0;
     }
     return 1;
