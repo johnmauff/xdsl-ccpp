@@ -1714,19 +1714,184 @@ class SuiteVariablesOp(IRDLOperation):
 
 
 @irdl_op_definition
+class CppIncludeOp(IRDLOperation):
+    """A C/C++ ``#include`` directive.
+
+    Emits::
+
+        #include <{header}>      (default: system/angle-bracket form)
+        #include "{header}"      (``local=True``: quoted form)
+    """
+
+    name = "ccpp_utils.cpp_include"
+    header = prop_def(StringAttr)
+    local  = opt_prop_def(BoolAttr)
+
+    def __init__(self, header: str, local: bool = False):
+        props: dict = {"header": StringAttr(header)}
+        if local:
+            props["local"] = BoolAttr.from_bool(True)
+        super().__init__(properties=props)
+
+
+@irdl_op_definition
+class ExternCGuardOp(IRDLOperation):
+    """Wraps a region in the ``#ifdef __cplusplus`` / ``extern "C"`` guard
+    block used by every generated C++-interop header.
+
+    Emits::
+
+        #ifdef __cplusplus
+        extern "C" {
+        #endif
+        {body}
+        #ifdef __cplusplus
+        }
+        #endif
+
+    No properties -- the guard text is fixed. Replaces what was, before
+    TDB-003 Stage 2, two independently hand-duplicated copies of this exact
+    block in ``cpp_interop.py`` (``_build_chost_cpp_text``) and a third in
+    ``print_cpp_header.py`` (``_emit_cap_header``).
+    """
+
+    name = "ccpp_utils.extern_c_guard"
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, body_ops: list):
+        from xdsl.ir import Block, Region
+        super().__init__(regions=[Region([Block(body_ops)])])
+
+
+@irdl_op_definition
+class CFunctionSigOp(IRDLOperation):
+    """A C function prototype, or an ``inline`` C++ function definition.
+
+    Emits, when ``body`` is empty (a declaration)::
+
+        {return_type} {fn_name}(
+            {param_type}       {param_name},  {param_comment}
+            ...
+        );
+
+    or, with no params::
+
+        {return_type} {fn_name}(void);
+
+    When ``body`` is non-empty (a definition -- Stage 3's own use, not yet
+    exercised by Stage 2)::
+
+        inline {return_type} {fn_name}(...) {
+          {body}
+        }
+
+    ``param_names``/``param_types``/``param_comments`` are parallel
+    ``ArrayAttr[StringAttr]`` (``param_comments`` entries may be empty
+    strings), matching ``print_cpp_header.py``'s own pre-existing
+    ``_fn_params`` tuple shape so retrofitting its callers is close to
+    mechanical.
+    """
+
+    name = "ccpp_utils.c_function_sig"
+
+    fn_name         = prop_def(StringAttr)
+    return_type     = prop_def(StringAttr)
+    is_inline       = opt_prop_def(BoolAttr)
+    param_names     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    param_types     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    param_comments  = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    body            = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, fn_name: str, param_names: "list[str]", param_types: "list[str]",
+        param_comments: "list[str]", body_ops: list,
+        return_type: str = "void", is_inline: bool = False,
+    ):
+        from xdsl.ir import Block, Region
+        props: dict = {
+            "fn_name":        StringAttr(fn_name),
+            "return_type":    StringAttr(return_type),
+            "param_names":    ArrayAttr([StringAttr(n) for n in param_names]),
+            "param_types":    ArrayAttr([StringAttr(t) for t in param_types]),
+            "param_comments": ArrayAttr([StringAttr(c) for c in param_comments]),
+        }
+        if is_inline:
+            props["is_inline"] = BoolAttr.from_bool(True)
+        super().__init__(properties=props, regions=[Region([Block(body_ops)])])
+
+
+@irdl_op_definition
+class CppFieldDeclOp(IRDLOperation):
+    """One member-variable declaration inside a CppStructDefOp.
+
+    Emits::
+
+        {cpp_type} {field_name}{array_suffix};
+
+    ``array_suffix`` (e.g. ``"[129]"``) is opaque text, same
+    declaration-stays-text convention used everywhere else in this
+    codebase for this kind of trailing shape annotation.
+    """
+
+    name = "ccpp_utils.cpp_field_decl"
+    field_name   = prop_def(StringAttr)
+    cpp_type     = prop_def(StringAttr)
+    array_suffix = opt_prop_def(StringAttr)
+
+    def __init__(self, field_name: str, cpp_type: str, array_suffix: "str | None" = None):
+        props: dict = {"field_name": StringAttr(field_name), "cpp_type": StringAttr(cpp_type)}
+        if array_suffix is not None:
+            props["array_suffix"] = StringAttr(array_suffix)
+        super().__init__(properties=props)
+
+
+@irdl_op_definition
+class CppStructDefOp(IRDLOperation):
+    """A C/C++ struct definition.
+
+    Emits::
+
+        struct {struct_name} {
+          {members}
+        };
+
+    ``is_pod`` (default True) gates whether a future ``methods`` region
+    would be legal -- not yet added here. Stage 2's only use is a POD
+    struct (``CcppConstituentInfo``, plain data, no member functions);
+    Stage 3 is expected to extend this op with an optional ``methods``
+    region when it designs the non-POD struct cases (``Status``/
+    ``XxxArgs``/``State``), per the TDB-003 plan's own Stage 3 sketch.
+    """
+
+    name = "ccpp_utils.cpp_struct_def"
+    struct_name = prop_def(StringAttr)
+    is_pod      = opt_prop_def(BoolAttr)
+    members     = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, struct_name: str, member_ops: list, is_pod: bool = True):
+        from xdsl.ir import Block, Region
+        props: dict = {"struct_name": StringAttr(struct_name)}
+        if is_pod:
+            props["is_pod"] = BoolAttr.from_bool(True)
+        super().__init__(properties=props, regions=[Region([Block(member_ops)])])
+
+
+@irdl_op_definition
 class CHostCapOp(IRDLOperation):
     """Carries the auto-generated BIND(C) cap for a C++ host model.
 
-    ``ftn_body`` holds the complete Fortran module as structured IR (a
-    single-block Region of statement ops, printed by ``print_ftn.py``
-    exactly like any other module body). ``cpp_text``/``wrapper_text``
-    remain pre-built C++ header/wrapper text (TDB-003 Stages 2/3 give
-    these the same region-based treatment; until then ``print_cpp_header.py``
-    has no op-dispatch printer of its own to consume regions for C++ output
-    -- unlike ``print_ftn.py``, which already had one, so ``ftn_body`` alone
-    could adopt the region shape in Stage 1 without inventing that
-    infrastructure speculatively). Generated by the ``generate-ccpp-cap``
-    pass when the host declares ``language = "c++"``.
+    ``ftn_body`` holds the complete Fortran module as structured IR, printed
+    by ``print_ftn.py`` (TDB-003 Stage 1). ``cpp_body`` holds the complete
+    C header as structured IR, printed by ``print_cpp_header.py`` (Stage
+    2). ``wrapper_text`` remains pre-built C++ ergonomics-wrapper text
+    (Stage 3 gives this the same region-based treatment once its own
+    non-POD struct/namespace op vocabulary is designed).
 
     ``mod_name`` is the base name used for the module and header file, e.g.
     ``"Kessler_ccpp_chost_cap"``.
@@ -1735,22 +1900,21 @@ class CHostCapOp(IRDLOperation):
     name = "ccpp_utils.chost_cap"
 
     ftn_body     = region_def("single_block")   # complete Fortran module, as ops
-    cpp_text     = prop_def(StringAttr)   # complete C++ header text
+    cpp_body     = region_def("single_block")   # complete C++ header, as ops
     wrapper_text = prop_def(StringAttr)   # C++ ergonomics wrapper (.hpp)
     mod_name     = prop_def(StringAttr)   # base name, e.g. "Kessler_ccpp_chost_cap"
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, ftn_body_ops: list, cpp_text: str, mod_name: str,
+    def __init__(self, ftn_body_ops: list, cpp_body_ops: list, mod_name: str,
                  wrapper_text: str = ""):
         from xdsl.ir import Block, Region
         super().__init__(
             properties={
-                "cpp_text":     StringAttr(cpp_text),
                 "wrapper_text": StringAttr(wrapper_text),
                 "mod_name":     StringAttr(mod_name),
             },
-            regions=[Region([Block(ftn_body_ops)])],
+            regions=[Region([Block(ftn_body_ops)]), Region([Block(cpp_body_ops)])],
         )
 
 
@@ -2484,6 +2648,11 @@ CCPPUtils = Dialect(
         DdtComponentDeclOp,
         DerivedTypeDefOp,
         SuiteVariablesOp,
+        CppIncludeOp,
+        ExternCGuardOp,
+        CFunctionSigOp,
+        CppFieldDeclOp,
+        CppStructDefOp,
         CHostCapOp,
         CapVarRefOp,
         KindCastOp,
