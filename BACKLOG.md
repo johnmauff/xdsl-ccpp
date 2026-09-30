@@ -39,7 +39,7 @@ later narrative entries:
 |---|---|---|---|
 | `task65-interstitial-tests` | Task #65 (downgraded, 2026-08-20): DDT-typed interstitial-declaration test coverage; non-`real` interstitial-array test coverage | Small, no design work — opportunistic test-writing only. The other 2 sub-items (cross-phase `already_scheduled_allocs` unification; cross-phase ordering validation) are deferred indefinitely, folded into task #61, no open action | L5326 |
 | `cmake-dep-manifest` | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
-| `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already; only the deletion itself remains open. Confirmed 2026-09-29: `ccpp.py`'s `is_legacy_mode()` gate is still called, path not yet deleted | L5679 |
+| `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | **Re-scoped 2026-09-29: deferred indefinitely, not a schedulable near-term task.** Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already, but the 2026-07-27 premise that the legacy code path was "provably dead for every example" was found false by the 2026-08-24 investigation (real CAM-SIMA still declares `horizontal_loop_extent` directly, e.g. `temp_adjust.meta`/`temp_adjust_scalar.meta`) and reconfirmed by this session's own `/cam-sima-regression` run (`xdsl43g`) against real CAM-SIMA test cases. The code path must be retained for as long as `--legacy-mode` itself is supported — deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent` upstream, an external dependency this repo can't resolve on its own. `ccpp.py`'s `is_legacy_mode()` gate is still called; not scheduled for removal | L5679 |
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
 | `task11-omp-thread` | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
 
@@ -65,7 +65,6 @@ separately), CHANGELOG.md L5850.
 
 | ID | Item | Notes | Archive |
 |---|---|---|---|
-| `errflg-guard-order` | `generateSchemeSubroutineCallOps`'s errflg-guard SSA def-use order | S, cosmetic | L5825 |
 | `cmake-configure-regen` | CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
 | `table-props-module-name` | `[ccpp-table-properties]`'s `module_name` override unsupported | S | L5955 |
 | `type-control-gap` | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
@@ -78,7 +77,13 @@ separately), CHANGELOG.md L5850.
 done. Zero Makefiles remain under `examples/`; the repo-wide CMake
 migration (root `CMakeLists.txt` + `cmake/xdsl_ccpp_capgen.cmake`,
 documented in `README.md`'s "Repo-wide example build" section) replaced
-them entirely.
+them entirely. `errflg-guard-order` — fixed at the root cause in
+`generateSchemeSubroutineCallOps` (`suite_cap.py`), a one-line reorder to
+match true SSA def-use order; regenerated and diff-reviewed all 8 affected
+`completed_ir` goldens (one more than originally flagged — `var_compat`
+was added since), and found the same bug had also been causing a related
+indentation glitch in the pretty-printer, fixed as a side effect. Full
+suite green: 711 passed, 1 xfailed. CHANGELOG.md L5968.
 
 ## New: in-process, object-returning API for `ccpp_dsl.py`
 
@@ -136,15 +141,20 @@ full history. Two small items survive as genuinely open:
   makes the two paths coexist safely, it doesn't merge them. (CHANGELOG.md
   L8254)
 
-`camsima-untested-confirm` — One item **probably** also superseded, flagging rather than closing
-outright since it wasn't one of the three items already confirmed:
-nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
-directives "in an actual CAM-SIMA context," and real production physics
-suites from `NCAR/atmospheric_physics`, were marked "Untested" as of
-2026-08-24 (CHANGELOG.md L8293). Given the GPU kessler/MPAS/se_cslam_gpu
-work and the `/cam-sima-regression` xdsl4x suite runs done since, this
-looks very likely covered now — worth a quick confirm-and-close rather
-than treating as still open.
+**Resolved since last verification (2026-09-29), removed from the list above**:
+`camsima-untested-confirm` — checked each of the four distinct "Untested" sub-claims
+individually against real evidence rather than closing the group on general confidence. Three
+confirmed covered: real production physics suites (`cam4`/`cam7` via real `/cam-sima-regression`
+runs, most recently `xdsl43g`), subcycles in an actual CAM-SIMA context (`suite_cam7.xml`'s own
+active subcycle blocks, successfully cap-generated), and GPU/`memory_space` directives in an
+actual CAM-SIMA context (this session's se_cslam_gpu/kessler_mpas GPU fixes, against real CIME
+`nvhpc` builds). One sub-claim, "nested" subcycles specifically, isn't a real gap — no CAM-SIMA
+suite today nests one subcycle inside another (checked directly, max depth 1), so it can't be
+confirmed or refuted either way. One genuinely narrower gap survives, not tracked as its own
+numbered item (no urgency, no current use case): multi-suite builds in an actual CAM-SIMA
+context remain untested — every real case's `CAM_CONFIG_OPTS` declares exactly one
+`--physics-suites` name, even though both CAM-SIMA's CLI and xdsl_ccpp's generator support more.
+CHANGELOG.md L8406.
 
 ## Technical debt (merged from `technical_debt.md` and
 `ir_cleanup_and_lifecycle_dedup_plan.md`, 2026-09-29)

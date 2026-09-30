@@ -5916,6 +5916,20 @@ dependency is noted.
         (`kessler_mpas`, `kessler_mpas_derecho_history`) and both real SE-dycore/`--legacy-mode`-
         adjacent cases this backlog item's own code paths are most directly exercised by. This
         satisfies the plan's verification bar -- `hle-chunk-consolidate` is now fully resolved.
+    - **`hle-vocab-retire` re-scoped (2026-09-29): deferred indefinitely, not a schedulable
+      near-term task.** This backlog item ("actual code-path deletion" of the legacy
+      `horizontal_loop_extent` machinery, the one piece of the 2026-07-27 migration left open)
+      rested on that migration's own premise that the legacy code path was "now-provably-dead-for-
+      every-example." The 2026-08-24 investigation above already corrected that premise once (real
+      CAM-SIMA still declares `horizontal_loop_extent` directly), and this session's own
+      `/cam-sima-regression` run (`xdsl43g`, done for `hle-chunk-consolidate`'s own verification,
+      immediately above) reconfirmed it against real CAM-SIMA test cases. Net effect: the legacy
+      code path (`ccpp_conventions.py`'s `is_legacy_mode()` gate, `cpp_interop.py`'s C++-side
+      fallback naming, `run_dispatch.py`, `ccpp_cap.py`, `suite_cap.py`'s `_classify_args`/
+      `_build_ncol_compute_ops` synthesis) must be retained for as long as `--legacy-mode` itself
+      is supported -- deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent`
+      upstream, an external dependency this repo has no control over and no visibility into a
+      timeline for. Not scheduled; re-check only if/when CAM-SIMA's own upstream state changes.
 
 ---
 
@@ -5951,6 +5965,24 @@ dependency is noted.
     the golden file must match real generator output, so swapping only the
     `CHECK` lines without also fixing `generateSchemeSubroutineCallOps` would
     make the test fail instead of passing).
+  - **RESOLVED (2026-09-29), `errflg-guard-order`.** Fixed at the root cause:
+    `generateSchemeSubroutineCallOps` (`suite_cap.py`) now returns
+    `[err_const_comp, load_op, cmp, conditional_op]`, matching true SSA
+    def-use order (`load_op` before the `cmp` that consumes it). Blast
+    radius was one file larger than originally flagged — `var_compat-xml.mlir`
+    joined the affected set since being added after this was first logged, for
+    8 affected `completed_ir` goldens total (`advection-xml`, `capgen-xml`,
+    `ddthost-py`/`-xml`, `helloworld-py`/`-xml`, `kw-override-py`,
+    `var_compat-xml`), all regenerated via `update-filecheck-test.py` and
+    diff-reviewed before accepting. **Bonus finding while reviewing the
+    diff**: `git diff -w` (ignore-whitespace) showed the real content diff was
+    far smaller than the raw diff suggested (114 vs. 2244 lines for
+    `capgen-xml` alone) — the out-of-order emission had also been confusing
+    the pretty-printer's indentation tracking for these exact lines
+    (2-space instead of the surrounding 8-space indent), a second, related
+    cosmetic artifact fixed as a side effect of the same one-line change.
+    Full suite green: 711 passed, 1 xfailed (unchanged, pre-existing,
+    unrelated), 0 failed.
 
 - **Move examples' build system from hand-written per-example Makefiles to
   CMake — size TBD, project owner preference (flagged 2026-07-23).** Every
@@ -8391,9 +8423,12 @@ for every caller to work around independently:
 
 ### Untested -- unknown, not confirmed either way
 
-- Real production physics suites from `NCAR/atmospheric_physics`.
+- ~~Real production physics suites from `NCAR/atmospheric_physics`.
   Everything exercised so far was either xdsl_ccpp's own demo examples
-  or CAM-SIMA's synthetic unit-test fixtures.
+  or CAM-SIMA's synthetic unit-test fixtures.~~ -- **resolved, no longer
+  untested (`camsima-untested-confirm`, 2026-09-29).** See the combined
+  write-up below (folded together with the next two bullets, since all
+  three turned out to share the same evidence).
 - ~~The `datatable_report()`/`DatatableReport` query path itself...~~ --
   **resolved, no longer untested (2026-08-24, Stages 8b/9/task #75).**
   Directly verified: xdsl_ccpp's own `<capgen_files><utilities>`/
@@ -8402,17 +8437,59 @@ for every caller to work around independently:
   results; `cam_autogen.py`'s own call sites now wired to actually invoke
   xdsl_ccpp (Stage 9). See that section's own write-up above for the full
   verification detail.
-- Nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
+- ~~Nested suites, subcycles, multi-suite builds, and GPU/`memory_space`
   directives in an actual CAM-SIMA context (only tested in isolation via
-  xdsl_ccpp's own examples) -- still genuinely untested.
-- **Real production physics suites from `NCAR/atmospheric_physics`,
-  exercised through the real, now-wired-up `cam_autogen.py` pipeline.**
+  xdsl_ccpp's own examples) -- still genuinely untested.~~ -- **partially
+  resolved (`camsima-untested-confirm`, 2026-09-29); one sub-claim
+  narrowed and kept open, see below.**
+- ~~Real production physics suites from `NCAR/atmospheric_physics`,
+  exercised through the real, now-wired-up `cam_autogen.py` pipeline.~~ --
+  **resolved (`camsima-untested-confirm`, 2026-09-29).**
   The single biggest open risk for a first real test: everything this
   whole engagement has exercised was either xdsl_ccpp's own toy examples
   or CAM-SIMA's synthetic unit-test fixtures, never an actual production
-  CCPP suite through the real integration path. Not a backlog item to
-  finish before testing starts -- it's the thing a first real test run
-  itself is for.
+  CCPP suite through the real integration path.
+
+**`camsima-untested-confirm` (2026-09-29): confirm-and-close pass on the three bullets above,
+against real evidence, not just accumulated session confidence.** Checked each of the four
+distinct sub-claims individually rather than treating the group as one item -- they didn't all
+turn out equally confirmed:
+
+- **Real production physics suites -- CONFIRMED covered.** This session's own `/cam-sima-regression`
+  runs (most recently `xdsl43g`, done for `hle-chunk-consolidate`'s verification) built and ran
+  real `cam4`/`cam7` physics compsets (`F1850_C4`/`F2000_C4`/`QPC4` on `se_cam4`; `F2000_C7` on
+  `se_cslam`) through the actual, wired-up `cam_autogen.py` pipeline -- not toy examples or
+  synthetic unit-test fixtures. `suite_cam4.xml`/`suite_cam7.xml` (`src/physics/ncar_ccpp/suites/`
+  in `CAM-SIMA.xdsl-ccpp`) are the real production suite definitions used.
+- **Subcycles in an actual CAM-SIMA context -- CONFIRMED covered.** `suite_cam7.xml` declares two
+  active `<subcycle loop="number_of_diagnostic_subcycles">` blocks (plus one currently
+  commented-out `cld_macmic_num_steps` subcycle). The `F2000_C7`/`se_cslam_analy_ic` case's
+  `SHAREDLIB_BUILD` phase -- where xdsl_ccpp's own cap generation actually runs -- passed cleanly
+  against this exact suite file. (That case's later `MODEL_BUILD` failure is the separate,
+  already-diagnosed, unrelated missing-physics-registry gap tracked elsewhere in this file --
+  confirmed not a subcycle-handling issue.)
+- **"Nested" suites/subcycles specifically -- not applicable, not a real gap.** Checked
+  `suite_cam7.xml`'s actual subcycle nesting depth directly (parsed the XML): maximum depth is 1
+  -- no real CAM-SIMA suite today nests a subcycle inside another subcycle. The original claim
+  can't be confirmed *or* refuted by real testing because the situation it describes doesn't
+  currently exist in any real suite; revisit only if a future suite actually adds nested
+  subcycles.
+- **GPU/`memory_space` directives in an actual CAM-SIMA context -- CONFIRMED covered.** This
+  session's separate GPU work (se_cslam_gpu duplicate-copyout fix, se_cslam_gpu/multitape_gpu
+  multi-group residency fix, MPAS+kessler GPU isolation fix, shared-lib `__acc_compiled`
+  contamination fix -- all found and fixed against real CIME `nvhpc`/OpenACC builds on Derecho, not
+  isolated xdsl_ccpp examples) is exactly this claim's own evidence, just recorded separately at
+  the time each bug was found rather than cross-referenced here.
+- **Multi-suite builds in an actual CAM-SIMA context -- genuinely still untested, kept open.**
+  Checked every real CAM-SIMA test case's own `CAM_CONFIG_OPTS` (`--physics-suites <name>`) across
+  every test-ID directory still on disk in this session's `fphys_xdsl_test` tree: every single one
+  declares exactly one suite name. `--physics-suites` is plural-named and both CAM-SIMA's own CLI
+  and xdsl_ccpp's generator (`examples/ddthost`'s own dual `ddt_suite`+`temp_suite` build is an
+  existing in-repo proof the generator itself handles it) support more than one, but no real
+  CAM-SIMA case anywhere in this environment has ever actually exercised it. Narrower and smaller
+  than the original bullet, but a real, honestly-still-open gap -- not tracked as its own numbered
+  backlog item (no urgency, no current CAM-SIMA use case for it), just recorded here so a future
+  session doesn't need to re-derive this from scratch.
 
 ---
 
