@@ -95,9 +95,9 @@
 // CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %10 = arith.constant 0 : i32
-// CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
-// CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        scf.if %11 {
+// CHECK-NEXT:        %11 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
+// CHECK-NEXT:        scf.if %12 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%errmsg, %errflg) <{callee = "hello_scheme_init", operand_names = ["errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
@@ -132,9 +132,9 @@
 // CHECK-NEXT:          memref.store %15, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %16 = arith.constant 0 : i32
-// CHECK-NEXT:        %17 = arith.cmpi eq, %18, %16 : i32
-// CHECK-NEXT:        %18 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        scf.if %17 {
+// CHECK-NEXT:        %17 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %18 = arith.cmpi eq, %17, %16 : i32
+// CHECK-NEXT:        scf.if %18 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%lev, %errmsg, %errflg) <{callee = "hello_scheme_run", operand_names = ["lev", "errmsg", "errflg"], result_names = [], overrides = {ncol = "5"}}> : (memref<i32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
@@ -183,9 +183,9 @@
 // CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %10 = arith.constant 0 : i32
-// CHECK-NEXT:        %11 = arith.cmpi eq, %12, %10 : i32
-// CHECK-NEXT:        %12 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        scf.if %11 {
+// CHECK-NEXT:        %11 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
+// CHECK-NEXT:        scf.if %12 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%errmsg, %errflg) <{callee = "hello_scheme_finalize", operand_names = ["errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
