@@ -505,9 +505,9 @@ class GPUDebugPrintOp(IRDLOperation):
     gpu_debug_print_pass.py, enabled by xdsl_ccpp's own --gpu-debug-prints
     CLI flag, never emitted otherwise).
 
-    Follows the same raw-text-emission shape as ConstituentApiOp/
-    NonCamHostConstituentApiOp (their body/type_defs are also plain
-    strings, printed verbatim) rather than a fully-structured nested-region
+    Follows the same raw-text-emission shape as RawFortranLinesOp/
+    NonCamHostConstituentApiOp's type_defs (also plain strings, printed
+    verbatim) rather than a fully-structured nested-region
     IR for the `!$acc parallel ... end parallel` block this needs --
     unnecessary complexity for a debug-only feature when a flat text block
     already has first-class printer support.
@@ -1104,6 +1104,168 @@ class PointerSliceAssignOp(IRDLOperation):
 
 
 @irdl_op_definition
+class PointerAssignOp(IRDLOperation):
+    """Associate a pointer with an arbitrary right-hand-side expression.
+
+    Emits::
+
+        {ptr_name} => {rhs_expr}
+
+    ``rhs_expr`` is printed verbatim -- deliberately general (a bare
+    pointer name, a type-bound function-call result, a DDT member access,
+    etc.), since composing a fully-structured RHS expression is out of
+    scope here. Distinct from PointerSliceAssignOp (which has a fixed
+    ``{ptr} => {array}(:, :, {index_var})`` shape); use that one instead
+    when the RHS really is a trailing-index 3-D slice.
+    """
+
+    name = "ccpp_utils.pointer_assign"
+    ptr_name = prop_def(StringAttr)
+    rhs_expr = prop_def(StringAttr)
+
+    def __init__(self, ptr_name: str, rhs_expr: str):
+        super().__init__(properties={
+            "ptr_name": StringAttr(ptr_name),
+            "rhs_expr": StringAttr(rhs_expr),
+        })
+
+
+@irdl_op_definition
+class DdtMethodCallOp(IRDLOperation):
+    """Call a type-bound procedure on a DDT object, with positional and/or
+    keyword arguments.
+
+    Emits::
+
+        call {obj_expr}%{method}({args joined with kwargs, comma-separated})
+
+    ``obj_expr`` is the object expression text (may itself be a resolved
+    reference like ``lc_instances(instance)%cam_constituents_obj``).
+    ``args`` are positional argument expressions; ``kwargs`` are already-
+    formatted ``name=expr`` strings. Distinct from CamDirectCallOp (a plain
+    ``call {callee}(...)`` with positional-only args, no ``%`` receiver
+    convention implied) and from ConstituentIndexLookupOp (an unrelated,
+    fixed-shape batch lookup via the free function
+    ``ccpp_constituent_indices(...)`` -- do not confuse the two).
+    """
+
+    name = "ccpp_utils.ddt_method_call"
+    obj_expr = prop_def(StringAttr)
+    method   = prop_def(StringAttr)
+    args     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr], positional
+    kwargs   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr], "name=expr"
+
+    def __init__(self, obj_expr: str, method: str,
+                 args: "list[str] | None" = None, kwargs: "list[str] | None" = None):
+        super().__init__(properties={
+            "obj_expr": StringAttr(obj_expr),
+            "method":   StringAttr(method),
+            "args":     ArrayAttr([StringAttr(a) for a in (args or [])]),
+            "kwargs":   ArrayAttr([StringAttr(k) for k in (kwargs or [])]),
+        })
+
+
+@irdl_op_definition
+class ErrorGuardOp(IRDLOperation):
+    """Early-return guard: if NOT condition, set error state and return.
+
+    Emits::
+
+        if (.not. {condition}) then
+          {errflg_var} = 1
+          {errmsg_var} = '{errmsg_text}'
+          return
+        end if
+
+    Replaces constituent_cap.py's own ``_error_guard()`` Python helper,
+    which built exactly this 5-line block as a joined string.
+    """
+
+    name = "ccpp_utils.error_guard"
+    condition   = prop_def(StringAttr)
+    errmsg_text = prop_def(StringAttr)
+    errflg_var  = opt_prop_def(StringAttr)  # default "errflg" if unset
+    errmsg_var  = opt_prop_def(StringAttr)  # default "errmsg" if unset
+
+    def __init__(self, condition: str, errmsg_text: str,
+                 errflg_var: str = "errflg", errmsg_var: str = "errmsg"):
+        props: dict = {
+            "condition":   StringAttr(condition),
+            "errmsg_text": StringAttr(errmsg_text),
+        }
+        if errflg_var != "errflg":
+            props["errflg_var"] = StringAttr(errflg_var)
+        if errmsg_var != "errmsg":
+            props["errmsg_var"] = StringAttr(errmsg_var)
+        super().__init__(properties=props)
+
+
+@irdl_op_definition
+class IfThenOp(IRDLOperation):
+    """A single-branch Fortran conditional, no ``else``.
+
+    Emits::
+
+        if ({condition_expr}) then
+          {body}
+        end if
+
+    Distinct from PresentCheckOp/ActiveCheckOp, which always emit both an
+    ``if`` and an ``else`` branch -- forcing a body through either of those
+    with an empty ``without_body_ops`` would print a stray empty ``else``
+    this op avoids entirely.
+    """
+
+    name = "ccpp_utils.if_then"
+    condition_expr = prop_def(StringAttr)
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, condition_expr: str, body_ops: list):
+        from xdsl.ir import Block, Region
+        super().__init__(
+            properties={"condition_expr": StringAttr(condition_expr)},
+            regions=[Region([Block(body_ops)])],
+        )
+
+
+@irdl_op_definition
+class TextBoundedDoLoopOp(IRDLOperation):
+    """Fortran ``do {loop_var} = 1, {upper_expr}`` whose trip count is a
+    runtime Fortran text expression (e.g. ``size(x)``), not an SSA value.
+
+    Emits::
+
+        do {loop_var} = 1, {upper_expr}
+          {body}
+        end do
+
+    Distinct from PromotionLoopOp/SubcycleLoopOp, which loop over SSA-valued
+    bounds -- constituent_cap.py has no SSA values for its locals at all
+    (every reference is a plain text name via its own ``ref()`` helper), so
+    those two ops don't apply here.
+    """
+
+    name = "ccpp_utils.text_bounded_do_loop"
+    loop_var   = prop_def(StringAttr)
+    upper_expr = prop_def(StringAttr)
+    body       = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, loop_var: str, upper_expr: str, body_ops: list):
+        from xdsl.ir import Block, Region
+        super().__init__(
+            properties={
+                "loop_var":   StringAttr(loop_var),
+                "upper_expr": StringAttr(upper_expr),
+            },
+            regions=[Region([Block(body_ops)])],
+        )
+
+
+@irdl_op_definition
 class ScopedBlockOp(IRDLOperation):
     """Fortran BLOCK construct introducing a local scope with declarations.
 
@@ -1287,46 +1449,6 @@ class SuiteVariablesOp(IRDLOperation):
     def __init__(self, fn_op):
         from xdsl.ir import Block, Region
         super().__init__(regions=[Region([Block([fn_op])])])
-
-
-@irdl_op_definition
-class ConstituentApiOp(IRDLOperation):
-    """Carries generated constituent registration API Fortran text.
-
-    The `body` attribute holds the complete pre-built Fortran routines as a
-    string; the printer emits them verbatim inside the module's CONTAINS section.
-    The `public_names` attribute lists subroutine/function names to export with
-    `public ::` declarations.
-
-    `type_defs`, when set, holds a derived-type definition (`type :: ... end
-    type`) that must instead be printed in the module's *specification* part
-    -- before `CONTAINS`, alongside `ModuleVarOp` declarations -- since
-    Fortran forbids a type definition inside the executable/CONTAINS
-    section. Used by the multi-instance constituent-API fix
-    (`examples/instances`/`examples/instances_advection`): real capgen-v1's
-    multi-instance model needs a per-instance
-    bundle of the constituent-registration arrays this API owns
-    (`lc_all_constituents`, `lc_constituent_array`, etc.), and unlike every
-    other derived type this codebase ever prints, that bundle type is
-    itself generated here, not host-declared -- there was no existing
-    mechanism to emit a *type definition* (as opposed to a variable of an
-    already-existing type) into a module's preamble before this.
-    """
-
-    name = "ccpp_utils.constituent_api"
-
-    body         = prop_def(StringAttr, prop_name="body")
-    public_names = prop_def(ArrayAttr,  prop_name="public_names")
-    type_defs    = opt_prop_def(StringAttr)
-
-    def __init__(self, body: str, public_names_list: list, type_defs: str | None = None):
-        props: dict = {
-            "body":         StringAttr(body),
-            "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
-        }
-        if type_defs is not None:
-            props["type_defs"] = StringAttr(type_defs)
-        super().__init__(properties=props)
 
 
 @irdl_op_definition
@@ -2042,13 +2164,17 @@ CCPPUtils = Dialect(
         AllocateOp,
         ZeroFillOp,
         PointerSliceAssignOp,
+        PointerAssignOp,
+        DdtMethodCallOp,
+        ErrorGuardOp,
+        IfThenOp,
+        TextBoundedDoLoopOp,
         ScopedBlockOp,
         RawFortranLinesOp,
         ConstituentFunctionOp,
         CamHostConstituentApiOp,
         NonCamHostConstituentApiOp,
         SuiteVariablesOp,
-        ConstituentApiOp,
         CHostCapOp,
         CapVarRefOp,
         KindCastOp,

@@ -39,7 +39,6 @@ from xdsl_ccpp.dialects.ccpp_utils import CamSuiteSchemeListOp as CCPPCamSuiteSc
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
-from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApiOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentIndexLookupOp as CCPPConstituentIndexLookupOp
 from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
@@ -71,10 +70,15 @@ from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
 from xdsl_ccpp.dialects.ccpp_utils import AllocateOp as CCPPAllocateOp
+from xdsl_ccpp.dialects.ccpp_utils import DdtMethodCallOp as CCPPDdtMethodCallOp
+from xdsl_ccpp.dialects.ccpp_utils import ErrorGuardOp as CCPPErrorGuardOp
+from xdsl_ccpp.dialects.ccpp_utils import IfThenOp as CCPPIfThenOp
 from xdsl_ccpp.dialects.ccpp_utils import NullifyPointerOp as CCPPNullifyPointerOp
+from xdsl_ccpp.dialects.ccpp_utils import PointerAssignOp as CCPPPointerAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import PointerSliceAssignOp as CCPPPointerSliceAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import ScopedBlockOp as CCPPScopedBlockOp
+from xdsl_ccpp.dialects.ccpp_utils import TextBoundedDoLoopOp as CCPPTextBoundedDoLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import ZeroFillOp as CCPPZeroFillOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     CamHostConstituentApiOp as CCPPCamHostConstituentApiOp,
@@ -909,6 +913,30 @@ class ftnPrintContext:
                     f"{op.ptr_name.data} => "
                     f"{op.array_name.data}(:, :, {op.index_var.data})"
                 )
+            case CCPPPointerAssignOp():
+                self.print(f"{op.ptr_name.data} => {op.rhs_expr.data}")
+            case CCPPDdtMethodCallOp():
+                all_args = [a.data for a in op.args.data] + [k.data for k in op.kwargs.data]
+                self.print(f"call {op.obj_expr.data}%{op.method.data}({', '.join(all_args)})")
+            case CCPPErrorGuardOp():
+                errflg_var = op.errflg_var.data if op.errflg_var is not None else "errflg"
+                errmsg_var = op.errmsg_var.data if op.errmsg_var is not None else "errmsg"
+                self.print(f"if (.not. {op.condition.data}) then")
+                with self.descend() as inner:
+                    inner.print(f"{errflg_var} = 1")
+                    inner.print(f"{errmsg_var} = '{op.errmsg_text.data}'")
+                    inner.print("return")
+                self.print("end if")
+            case CCPPIfThenOp():
+                self.print(f"if ({op.condition_expr.data}) then")
+                with self.descend() as inner:
+                    inner.print_block(op.body.block)
+                self.print("end if")
+            case CCPPTextBoundedDoLoopOp():
+                self.print(f"do {op.loop_var.data} = 1, {op.upper_expr.data}")
+                with self.descend() as inner:
+                    inner.print_block(op.body.block)
+                self.print("end do")
             case CCPPScopedBlockOp():
                 self.print("block")
                 with self.descend() as blk:
@@ -1086,24 +1114,16 @@ class ftnPrintContext:
                 self.print("end do")
             case CCPPSuiteVariablesOp():
                 self.print_block(op.body.block)
-            case CCPPConstituentApiOp():
-                # Preprocessor directives (CapScratch GPU residency's
-                # `#ifdef USE_GPU`/`#endif`, string-templated directly into
-                # this op's raw-text body) must stay at column 0 -- gfortran's
-                # -cpp rejects an indented '#' as invalid Fortran source,
-                # unlike every other emitted case here which goes through
-                # dedicated printer branches that already pass
-                # use_prefix=False for exactly this reason.
-                for line in op.body.data.splitlines():
-                    if line.lstrip().startswith("#"):
-                        self.print(line.lstrip(), use_prefix=False)
-                    else:
-                        self.print(line)
             case CCPPGPUDebugPrintOp():
-                # Same raw-text-emission shape as CCPPConstituentApiOp
-                # above (its own scratch-var declarations are handled
-                # separately by _declare_fn_locals, since Fortran requires
-                # them in the specification part, not here).
+                # Preprocessor directives (`#ifdef USE_GPU`/`#endif`,
+                # string-templated directly into this op's raw-text body)
+                # must stay at column 0 -- gfortran's -cpp rejects an
+                # indented '#' as invalid Fortran source, unlike every
+                # other emitted case here which goes through dedicated
+                # printer branches that already pass use_prefix=False for
+                # exactly this reason. Its own scratch-var declarations are
+                # handled separately by _declare_fn_locals, since Fortran
+                # requires them in the specification part, not here.
                 for line in op.text.data.splitlines():
                     if line.lstrip().startswith("#"):
                         self.print(line.lstrip(), use_prefix=False)
@@ -1540,21 +1560,18 @@ class ftnPrintContext:
                             prefix="  ",
                         )
 
-        # Emit derived-type definitions a ConstituentApiOp needs declared in
-        # the specification part (before CONTAINS) -- e.g. the multi-instance
-        # constituent-API fix's own per-instance bundle type. Must come
-        # BEFORE the plain ModuleVarOp declarations below: a var of this new
-        # type is one of them (lc_instances), and Fortran requires a
-        # derived-type definition to appear before any variable declared
-        # with it in the same specification part -- confirmed the hard way,
-        # printing these in the other order produced "has no IMPLICIT type"
-        # on lc_instances' own type name. Also its own reason Fortran
-        # forbids a `type :: ... end type` block inside CONTAINS in the
-        # first place, hence needing this separate emission point at all.
-        for op in body.ops:
-            if isa(op, CCPPConstituentApiOp) and op.type_defs is not None:
-                for line in op.type_defs.data.splitlines():
-                    self.print(line, prefix="  ")
+        # Emit derived-type definitions a NonCamHostConstituentApiOp needs
+        # declared in the specification part (before CONTAINS) -- e.g. the
+        # multi-instance constituent-API fix's own per-instance bundle
+        # type. Must come BEFORE the plain ModuleVarOp declarations below:
+        # a var of this new type is one of them (lc_instances), and
+        # Fortran requires a derived-type definition to appear before any
+        # variable declared with it in the same specification part --
+        # confirmed the hard way, printing these in the other order
+        # produced "has no IMPLICIT type" on lc_instances' own type name.
+        # Also its own reason Fortran forbids a `type :: ... end type`
+        # block inside CONTAINS in the first place, hence needing this
+        # separate emission point at all.
         for op in body.ops:
             if isa(op, CCPPNonCamHostConstituentApiOp) and op.type_defs is not None:
                 for line in op.type_defs.data.splitlines():
@@ -1631,11 +1648,6 @@ class ftnPrintContext:
         ] + [
             name.data
             for op in body.ops
-            if isa(op, CCPPConstituentApiOp)
-            for name in op.public_names.data
-        ] + [
-            name.data
-            for op in body.ops
             if isa(op, CCPPCamHostConstituentApiOp)
             for name in op.public_names.data
         ] + [
@@ -1651,7 +1663,6 @@ class ftnPrintContext:
         has_func_defs = any(
             (isa(op, func.FuncOp) and not op.is_declaration)
             or isa(op, CCPPSuiteVariablesOp)
-            or isa(op, CCPPConstituentApiOp)
             or isa(op, CCPPCamHostConstituentApiOp)
             or isa(op, CCPPNonCamHostConstituentApiOp)
             for op in body.ops
