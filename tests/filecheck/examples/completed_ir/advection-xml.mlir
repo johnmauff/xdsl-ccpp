@@ -598,31 +598,158 @@
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cam_model_const_indices", base_type = "integer", rank = 0 : i64, fixed_dim = 2 : i64, init_value = "-1"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.non_cam_host_constituent_api"() <{public_names = ["Cld_ccpp_is_scheme_constituent", "Cld_ccpp_deallocate_dynamic_constituents", "Cld_ccpp_register_constituents", "Cld_ccpp_number_constituents", "Cld_ccpp_initialize_constituents", "Cld_constituents_array", "Cld_advected_constituents_array", "Cld_const_get_index", "Cld_model_const_properties"]}> ({
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_is_scheme_constituent", is_function = false, args = ["std_name", "is_const", "errflg", "errmsg"], use_stmts = [], arg_decls = ["character(len=*), intent(in) :: std_name", "logical, intent(out) :: is_const", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = ["integer :: lc_idx", "character(len=256) :: lc_std_name"]}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nis_const = .false.\nif (any(cam_model_const_stdnames == std_name)) then\n  is_const = .true.\n  return\nend if\nif (allocated(lc_dyn_const)) then\n  do lc_idx = 1, size(lc_dyn_const)\n    call lc_dyn_const(lc_idx)%standard_name(lc_std_name)\n    if (trim(lc_std_name) == trim(std_name)) then\n      is_const = .true.\n      return\n    end if\n  end do\nend if\nif (allocated(lc_dyn_const_ice)) then\n  do lc_idx = 1, size(lc_dyn_const_ice)\n    call lc_dyn_const_ice(lc_idx)%standard_name(lc_std_name)\n    if (trim(lc_std_name) == trim(std_name)) then\n      is_const = .true.\n      return\n    end if\n  end do\nend if"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nis_const = .false."}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "any(cam_model_const_stdnames == std_name)"}> ({
+// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_dyn_const)"}> ({
+// CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_idx", upper_expr = "size(lc_dyn_const)"}> ({
+// CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{obj_expr = "lc_dyn_const(lc_idx)", method = "standard_name", args = ["lc_std_name"], kwargs = []}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.if_then"() <{condition_expr = "trim(lc_std_name) == trim(std_name)"}> ({
+// CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_dyn_const_ice)"}> ({
+// CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_idx", upper_expr = "size(lc_dyn_const_ice)"}> ({
+// CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{obj_expr = "lc_dyn_const_ice(lc_idx)", method = "standard_name", args = ["lc_std_name"], kwargs = []}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.if_then"() <{condition_expr = "trim(lc_std_name) == trim(std_name)"}> ({
+// CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_deallocate_dynamic_constituents", is_function = false, args = [], use_stmts = [], arg_decls = [], local_decls = []}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "if (allocated(lc_dyn_const)) deallocate(lc_dyn_const)\nif (allocated(lc_dyn_const_ice)) deallocate(lc_dyn_const_ice)\nif (allocated(lc_all_constituents)) deallocate(lc_all_constituents)\nif (allocated(lc_const_props)) deallocate(lc_const_props)\nif (associated(lc_constituent_array)) nullify(lc_constituent_array)\nif (allocated(lc_const_tend)) deallocate(lc_const_tend)\nnullify(lc_cld_liq_tend)\ncall cam_constituents_obj%reset()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_dyn_const"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_dyn_const_ice"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_all_constituents"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "if (associated(lc_constituent_array)) nullify(lc_constituent_array)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_tend"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_cld_liq_tend"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.cam_direct_call"() <{callee = "cam_constituents_obj%reset", call_args = []}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_register_constituents", is_function = false, args = ["host_constituents", "errmsg", "errcode"], use_stmts = ["use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t", "use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents"], arg_decls = ["type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)", "character(len=512), intent(out) :: errmsg", "integer, intent(out) :: errcode"], local_decls = ["integer :: lc_i, lc_num_consts, field_ind", "type(ccpp_constituent_properties_t), pointer :: const_prop", "type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)"]}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''\nlc_num_consts = size(host_constituents)\nif (allocated(lc_dyn_const)) lc_num_consts = lc_num_consts + size(lc_dyn_const)\nif (allocated(lc_dyn_const_ice)) lc_num_consts = lc_num_consts + size(lc_dyn_const_ice)\nlc_num_consts = lc_num_consts + 2\ncall cam_constituents_obj%initialize_table(lc_num_consts)\ndo lc_i = 1, size(host_constituents)\n  allocate(const_prop, stat=errcode)\n  if (errcode /= 0) then\n    errmsg = 'ERROR allocating const_prop'\n    return\n  end if\n  const_prop = host_constituents(lc_i)\n  call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)\n  nullify(const_prop)\n  if (errcode /= 0) return\nend do\nif (allocated(lc_dyn_const)) then\n  do lc_i = 1, size(lc_dyn_const)\n    allocate(const_prop, stat=errcode)\n    if (errcode /= 0) then\n      errmsg = 'ERROR allocating const_prop'\n      return\n    end if\n    const_prop = lc_dyn_const(lc_i)\n    call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)\n    nullify(const_prop)\n    if (errcode /= 0) return\n  end do\nend if\nif (allocated(lc_dyn_const_ice)) then\n  do lc_i = 1, size(lc_dyn_const_ice)\n    allocate(const_prop, stat=errcode)\n    if (errcode /= 0) then\n      errmsg = 'ERROR allocating const_prop'\n      return\n    end if\n    const_prop = lc_dyn_const_ice(lc_i)\n    call cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)\n    nullify(const_prop)\n    if (errcode /= 0) return\n  end do\nend if\nallocate(const_prop, stat=errcode)\nif (errcode /= 0) then\n  errmsg = 'ERROR allocating const_prop'\n  return\nend if\ncall const_prop%instantiate( &\n    std_name='cloud_liquid_dry_mixing_ratio', &\n    long_name='Cloud liquid dry mixing ratio', &\n    diag_name='cld_liq_array', units='kg kg-1', &\n    vertical_dim='vertical_layer_dimension', &\n    advected=.true., errcode=errcode, errmsg=errmsg)\nif (errcode /= 0) return\ncall cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)\nnullify(const_prop)\nif (errcode /= 0) return\nallocate(const_prop, stat=errcode)\nif (errcode /= 0) then\n  errmsg = 'ERROR allocating const_prop'\n  return\nend if\ncall const_prop%instantiate( &\n    std_name='cloud_ice_dry_mixing_ratio', &\n    long_name='Cloud ice dry mixing ratio', &\n    diag_name='cld_ice_array', units='kg kg-1', &\n    vertical_dim='vertical_layer_dimension', &\n    advected=.true., default_value=0.0_kind_phys, errcode=errcode, errmsg=errmsg)\nif (errcode /= 0) return\ncall cam_constituents_obj%new_field(const_prop, errcode=errcode, errmsg=errmsg)\nnullify(const_prop)\nif (errcode /= 0) return\ncall cam_constituents_obj%lock_table(errcode=errcode, errmsg=errmsg)\nif (errcode /= 0) return\nlc_props_ptr => cam_constituents_obj%constituent_props_ptr()\nif (allocated(lc_const_props)) deallocate(lc_const_props)\nallocate(lc_const_props(size(lc_props_ptr)))\nlc_const_props = lc_props_ptr\nnullify(lc_props_ptr)\ncall ccpp_scheme_utils_set_constituents(lc_const_props)\ncall cam_constituents_obj%num_constituents(lc_num_consts, errcode=errcode, errmsg=errmsg)\nif (errcode /= 0) return\nif (allocated(lc_all_constituents)) deallocate(lc_all_constituents)\nallocate(lc_all_constituents(lc_num_consts))\ndo lc_i = 1, size(cam_model_const_indices)\n  call cam_constituents_obj%const_index(field_ind, cam_model_const_stdnames(lc_i), &\n      errcode=errcode, errmsg=errmsg)\n  if (errcode /= 0) return\n  if (field_ind > 0) then\n    cam_model_const_indices(lc_i) = field_ind\n  else\n    errcode = 1\n    errmsg = 'No field index for '//trim(cam_model_const_stdnames(lc_i))\n    return\n  end if\nend do"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_num_consts = size(host_constituents)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "if (allocated(lc_dyn_const)) lc_num_consts = lc_num_consts + size(lc_dyn_const)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "if (allocated(lc_dyn_const_ice)) lc_num_consts = lc_num_consts + size(lc_dyn_const_ice)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_num_consts = lc_num_consts + 2"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "initialize_table", args = ["lc_num_consts"], kwargs = []}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
+// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = host_constituents(lc_i)"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "new_field", args = ["const_prop"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_dyn_const)"}> ({
+// CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(lc_dyn_const)"}> ({
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = lc_dyn_const(lc_i)"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "new_field", args = ["const_prop"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_dyn_const_ice)"}> ({
+// CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(lc_dyn_const_ice)"}> ({
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = lc_dyn_const_ice(lc_i)"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "new_field", args = ["const_prop"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "const_prop", method = "instantiate", args = [], kwargs = ["std_name='cloud_liquid_dry_mixing_ratio'", "long_name='Cloud liquid dry mixing ratio'", "diag_name='cld_liq_array'", "units='kg kg-1'", "vertical_dim='vertical_layer_dimension'", "advected=.true.", "errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "new_field", args = ["const_prop"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "const_prop", method = "instantiate", args = [], kwargs = ["std_name='cloud_ice_dry_mixing_ratio'", "long_name='Cloud ice dry mixing ratio'", "diag_name='cld_ice_array'", "units='kg kg-1'", "vertical_dim='vertical_layer_dimension'", "advected=.true., default_value=0.0_kind_phys", "errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "new_field", args = ["const_prop"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "lock_table", args = [], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_props_ptr", rhs_expr = "cam_constituents_obj%constituent_props_ptr()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_const_props", dims = ["size(lc_props_ptr)"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_const_props = lc_props_ptr"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_props_ptr"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.cam_direct_call"() <{callee = "ccpp_scheme_utils_set_constituents", call_args = ["lc_const_props"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "num_constituents", args = ["lc_num_consts"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_all_constituents"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_all_constituents", dims = ["lc_num_consts"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(cam_model_const_indices)"}> ({
+// CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "const_index", args = ["field_ind", "cam_model_const_stdnames(lc_i)"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.active_check"() <{condition_expr = "field_ind > 0"}> ({
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "cam_model_const_indices(lc_i) = field_ind"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 1\nerrmsg = 'No field index for '//trim(cam_model_const_stdnames(lc_i))\nreturn"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_number_constituents", is_function = false, args = ["num_advected", "errmsg", "errcode", "advected"], use_stmts = [], arg_decls = ["integer, intent(out) :: num_advected", "character(len=512), intent(out) :: errmsg", "integer, intent(out) :: errcode", "logical, optional, intent(in) :: advected"], local_decls = []}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''\ncall cam_constituents_obj%num_constituents(num_advected, advected=advected, &\n    errcode=errcode, errmsg=errmsg)"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "num_constituents", args = ["num_advected"], kwargs = ["advected=advected", "errcode=errcode", "errmsg=errmsg"]}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_initialize_constituents", is_function = false, args = ["ncols", "pver", "errflg", "errmsg"], use_stmts = [], arg_decls = ["integer, intent(in) :: ncols", "integer, intent(in) :: pver", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = []}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nif (.not. allocated(lc_all_constituents)) then\n  errflg = 1\n  errmsg = 'ccpp_initialize_constituents: register_constituents not called'\n  return\nend if\ncall cam_constituents_obj%lock_data(ncols, pver, errcode=errflg, errmsg=errmsg)\nif (errflg /= 0) return\nlc_constituent_array => cam_constituents_obj%field_data_ptr()\nif (allocated(lc_const_tend)) deallocate(lc_const_tend)\nallocate(lc_const_tend(ncols, pver, size(lc_all_constituents)))\nlc_const_tend = 0.0_kind_phys\n#ifdef USE_GPU\n!$acc enter data copyin(lc_const_tend)\n#endif\nblock\n  integer :: lc_tend_idx\n  character(len=512) :: lc_tend_errmsg\n  nullify(lc_cld_liq_tend)\n  call cam_constituents_obj%const_index(lc_tend_idx, 'cloud_liquid_dry_mixing_ratio', &\n      errcode=errflg, errmsg=lc_tend_errmsg)\n  if (errflg == 0 .and. lc_tend_idx > 0) then\n    lc_cld_liq_tend => lc_const_tend(:, :, lc_tend_idx)\n  else\n    errflg = 0\n  end if\nend block"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_all_constituents)", errmsg_text = "ccpp_initialize_constituents: register_constituents not called"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "lock_data", args = ["ncols", "pver"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errflg"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_constituent_array", rhs_expr = "cam_constituents_obj%field_data_ptr()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_tend"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_const_tend", dims = ["ncols", "pver", "size(lc_all_constituents)"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_const_tend"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "#ifdef USE_GPU\n!$acc enter data copyin(lc_const_tend)\n#endif"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.scoped_block"() <{local_decls = ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"]}> ({
+// CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_cld_liq_tend"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "const_index", args = ["lc_tend_idx", "'cloud_liquid_dry_mixing_ratio'"], kwargs = ["errcode=errflg", "errmsg=lc_tend_errmsg"]}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.active_check"() <{condition_expr = "errflg == 0 .and. lc_tend_idx > 0"}> ({
+// CHECK-NEXT:              "ccpp_utils.pointer_slice_assign"() <{ptr_name = "lc_cld_liq_tend", array_name = "lc_const_tend", index_var = "lc_tend_idx"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_constituents_array", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "real(kind=kind_phys), pointer :: ptr(:, :, :)"}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "ptr => lc_constituent_array"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr", rhs_expr = "lc_constituent_array"}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_advected_constituents_array", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "real(kind=kind_phys), pointer :: ptr(:, :, :)"}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "ptr => cam_constituents_obj%advected_constituents_ptr()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr", rhs_expr = "cam_constituents_obj%advected_constituents_ptr()"}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_const_get_index", is_function = false, args = ["std_name", "index", "errflg", "errmsg"], use_stmts = ["use ccpp_constituent_prop_mod, only: to_lower"], arg_decls = ["character(len=*), intent(in) :: std_name", "integer, intent(out) :: index", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = []}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nindex = -1\nif (.not. allocated(lc_all_constituents)) then\n  errflg = 1\n  errmsg = 'const_get_index: constituents not registered'\n  return\nend if\ncall cam_constituents_obj%const_index(index, to_lower(std_name), &\n    errcode=errflg, errmsg=errmsg)\nif (errflg /= 0 .or. index <= 0) then\n  errflg = 1\n  write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'\nend if"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nindex = -1"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_all_constituents)", errmsg_text = "const_get_index: constituents not registered"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "const_index", args = ["index", "to_lower(std_name)"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errflg /= 0 .or. index <= 0"}> ({
+// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 1\nwrite(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_model_const_properties", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)"}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "ptr => lc_const_props"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr", rhs_expr = "lc_const_props"}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-LABEL:     func.func private @cld_suite_register(memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>) -> (memref<512xi8>, memref<i32>) attributes {module = "cld_suite_cap"}

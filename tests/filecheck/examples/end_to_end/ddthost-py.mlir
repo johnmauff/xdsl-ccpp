@@ -491,8 +491,8 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: advected
 // CHECK-NEXT:      errcode = 0
 // CHECK-NEXT:      errmsg = ''
-// CHECK-NEXT:      call cam_constituents_obj%num_constituents(num_advected, advected=advected, &
-// CHECK-NEXT:          errcode=errcode, errmsg=errmsg)
+// CHECK-NEXT:      call cam_constituents_obj%num_constituents(num_advected, advected=advected, errcode=errcode,  &
+// CHECK-NEXT:        errmsg=errmsg)
 // CHECK-NEXT:    end subroutine Ddt_ccpp_number_constituents
 // CHECK-LABEL:   subroutine Ddt_ccpp_initialize_constituents(ncols, pver, errflg, errmsg)
 // CHECK:           integer, intent(in) :: ncols
@@ -550,8 +550,7 @@
 // CHECK-NEXT:        errmsg = 'const_get_index: constituents not registered'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), &
-// CHECK-NEXT:          errcode=errflg, errmsg=errmsg)
+// CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), errcode=errflg, errmsg=errmsg)
 // CHECK-NEXT:      if (errflg /= 0 .or. index <= 0) then
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'

@@ -9011,3 +9011,71 @@ permanently (see above), and the Category 1 preprocessing kernels (`calc_exner`/
 `temp_to_potential_temp`) by deliberate performance choice rather than necessity. "Automatically
 generate all of the code" is realistically achievable for the bridge/cap layer and the
 lifecycle-orchestration skeleton, but not for the entire file.
+---
+
+## TDB-002 resolution: constituent API raw-string assembly converted to typed IR (2026-09-30)
+
+Archived from `BACKLOG.md`'s "Technical debt" section on resolution, matching this
+repo's standard practice of moving resolved items out of the open-items list and
+into this file, with only a short pointer left behind.
+
+**File**: `xdsl_ccpp/transforms/constituent_cap.py`. **Added 2026-09-06;
+extended 2026-09-15; narrowed 2026-09-29; RESOLVED 2026-09-30.**
+
+**Original problem** (kept for context/citation, since `TDB-003`/`TDB-004`
+reference this item by number): all constituent API subroutines were
+built as raw Python f-strings emitted verbatim by `print_ftn.py`, instead
+of going through typed MLIR IR the rest of xdsl_ccpp uses.
+
+**Resolution, staged as originally scoped (a/b/c/d/e/f)**:
+- **(a)** Removed `ConstituentApiOp` (the op this item's original text was
+  written against) as dead code — confirmed never constructed anywhere;
+  superseded by `CamHostConstituentApiOp`/`NonCamHostConstituentApiOp`
+  since commit `125cfe2`, which the original scoping note hadn't caught up
+  to. **Stage C was therefore already done** before this item's own work
+  began, just via a different op family than planned.
+- **(b)** Wired in 4 already-existing-but-unused ops (`SafeDeallocOp`,
+  `NullifyPointerOp`, `AllocateOp`, `ZeroFillOp`) for their direct-fit
+  statements.
+- **(c)+(d)+(e) (merged during implementation — found interleaved within
+  the same subroutines, not cleanly separable as originally staged)**:
+  designed and added 5 new ops (`PointerAssignOp`, `DdtMethodCallOp`,
+  `ErrorGuardOp`, `IfThenOp`, `TextBoundedDoLoopOp`); converted all 10
+  subroutines; gave `ScopedBlockOp` its first real usage anywhere in the
+  codebase; removed the now-dead `_error_guard()` Python helper.
+- **(f)**: finished Stage A for the one piece the original scoping
+  correctly identified as still-raw — the multi-instance per-instance
+  bundle derived type. Two more new ops (`DerivedTypeDefOp`,
+  `DdtComponentDeclOp`); changed `NonCamHostConstituentApiOp`'s own
+  signature (dropped its `type_defs: StringAttr` property in favor of a
+  `DerivedTypeDefOp` region child).
+- **Bonus**: added a 5th FileCheck golden (`instances_advection-xml.mlir`,
+  ×3 dirs) — the only example that exercises the multi-instance path at
+  all, closing a real pre-existing coverage gap.
+
+**A few one-off `RawFortranLinesOp` text leaves remain deliberately**
+(plain scalar assignments, one `write()` call, `#ifdef USE_GPU` directive
+blocks, an `allocate(x, stat=errcode)` STAT-clause form) — not a scoping
+miss, a deliberate boundary: converting *statement shape* (if/else,
+do-loops, type-bound calls) is what this item was about, and is done.
+Eliminating those remaining leaves entirely, and the deeper issue that
+even the now-typed ops still carry raw Fortran-syntax *expression text*
+in their string properties, is `TDB-004` (new item, added 2026-09-30,
+sequenced after `TDB-003`).
+
+**Verification**: full `pytest tests/` green throughout (714 passed, 1
+xfailed after the bonus golden), all FileCheck goldens regenerated and
+manually diff-reviewed before accepting at each stage. Final
+`/cam-sima-regression` run (test ID `xdsl44g`, gnu): 30/31 aux_sima cases
+pass, 1 known pre-existing unrelated failure (`F2000_C7`/cam7
+`MODEL_BUILD`, same root cause as confirmed during `hle-chunk-consolidate`'s
+own verification — tracked separately, not a `tdb-002` regression).
+Several of the passing cases (`se_cam4`, `se_cslam`, `F2000_C7`'s own
+`SHAREDLIB_BUILD` phase) directly exercise the converted constituent API
+against real CAM-SIMA builds.
+
+**Effort actually spent**: roughly matches the corrected estimate made
+before starting (~1.5-2 weeks of nominal effort, not the original stale
+"~2-3 weeks" figure) — confirming ~60% of the originally-scoped work
+(Stage A's common case, all of Stage C) was already done by an unrelated
+commit before this item's own work began.
