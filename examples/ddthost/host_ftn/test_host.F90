@@ -115,6 +115,7 @@ contains
        ! inside ccpp_physics_final's own dispatcher module -- no explicit
        ! arg needed there.
        use test_host_mod,      only: model_times
+       use test_host_ccpp_cap, only: ccpp_register
        use test_host_ccpp_cap, only: ccpp_init
        use test_host_ccpp_cap, only: ccpp_physics_init
        use test_host_ccpp_cap, only: ccpp_physics_timestep_init
@@ -172,6 +173,16 @@ contains
        if (.not. retval) then
           return
        end if
+
+       ! Use the suite information to call the register phase
+       do sind = 1, num_suites
+          call ccpp_register(test_suites(sind)%suite_name, &
+               ccpp_info)
+          if (ccpp_info%errflg /= 0) then
+             write(6, '(4a)') 'ERROR in register of ',                        &
+                  trim(test_suites(sind)%suite_name), ': ', trim(ccpp_info%errmsg)
+          end if
+       end do
 
        ! Use the suite information to setup the run
        do sind = 1, num_suites
