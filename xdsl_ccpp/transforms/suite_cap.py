@@ -2170,7 +2170,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             cast_ops + [call_op] + divergent_writeback_ops + [scf.YieldOp()],
         )
 
-        return [err_const_comp, cmp, load_op, conditional_op]
+        return [err_const_comp, load_op, cmp, conditional_op]
 
     def generateStringConstantGlobal(self, string: str) -> llvm.GlobalOp:
         """Create an internal LLVM global holding a 16-byte string constant."""
