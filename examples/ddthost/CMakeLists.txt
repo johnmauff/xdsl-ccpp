@@ -2,8 +2,10 @@
 #
 # ddthost: two-suite DDT (Fortran derived-type) example with two drivers --
 # a Fortran host (ftn_host, both ddt_suite and temp_suite, six schemes) and
-# a C++ host-model/chost driver (cxx_host, make_ddt only, exercising DDT
-# flattening) -- similar in spirit to examples/kessler's multi-driver
+# a C++ host-model/chost driver (cxx_host, make_ddt + temp_calc_adjust,
+# exercising DDT flattening and a second, independent scheme in the same
+# group -- matching examples/capgen's own chost suite, minus setup_coeffs)
+# -- similar in spirit to examples/kessler's multi-driver
 # structure, but simpler: no numerical cross-driver comparison (each
 # driver's own exit code is all that's checked, matching the existing
 # Makefile's own `check` target) and no GPU/OpenACC support at all (no
@@ -37,11 +39,11 @@ set(PLAIN_DDT_CAP     "${PLAIN_CAP_DIR}/ddt_suite_cap.F90")
 set(PLAIN_TEMP_CAP    "${PLAIN_CAP_DIR}/temp_suite_cap.F90")
 set(PLAIN_CCPP_CAP    "${PLAIN_CAP_DIR}/test_host_ccpp_cap.F90")
 
-# ── Chost generation (C++ host, make_ddt only) ────────────────────────────
+# ── Chost generation (C++ host, make_ddt + temp_calc_adjust) ──────────────
 set(CHOST_CAP_DIR "${CMAKE_CURRENT_BINARY_DIR}/chost")
 xdsl_ccpp_capgen(HOSTFILES host_cpp/ddthost_host_mod.meta host_cpp/ddthost_host_sub.meta
                            scheme/host_ccpp_ddt.meta
-                 SCHEMEFILES scheme/make_ddt.meta
+                 SCHEMEFILES scheme/make_ddt.meta scheme/temp_calc_adjust.meta
                  SUITES scheme/ddthost_suite.xml
                  OUTPUT_ROOT "${CHOST_CAP_DIR}")
 set(CHOST_KINDS      "${CHOST_CAP_DIR}/ccpp_kinds.F90")
@@ -100,6 +102,7 @@ if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
     ${CHOST_KINDS}
     scheme/host_ccpp_ddt.F90
     scheme/make_ddt.F90
+    scheme/temp_calc_adjust.F90
     ${CHOST_SUITE_CAP}
     ${CHOST_CHOST_CAP}
     host_cpp/driver_ddthost_chost.cpp)
