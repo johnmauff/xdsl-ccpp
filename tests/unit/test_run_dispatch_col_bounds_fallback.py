@@ -70,6 +70,7 @@ from xdsl_ccpp.backend.print_ftn import print_to_ftn
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
+from xdsl_ccpp.transforms.util import cap_shared
 
 import pytest
 
@@ -187,6 +188,30 @@ _CAPVAR_SCHEME_META = f"""\
 {CCPP_MANDATORY_ARGS}
 """
 
+_CAPVAR_LEGACY_UNRESOLVABLE_SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = capvar_legacy_unresolvable_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = capvar_legacy_unresolvable_scheme_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  units = count
+  type = integer
+  dimensions = ()
+  intent = in
+[ z_out ]
+  standard_name = some_unmatched_2d_legacy_output_var
+  units = m
+  type = real
+  kind = kind_phys
+  dimensions = (horizontal_loop_extent,some_unresolvable_extra_dim)
+  intent = out
+  optional = True
+{CCPP_MANDATORY_ARGS}
+"""
+
 _WHOLE_ARRAY_SCHEME_META = f"""\
 [ccpp-table-properties]
   name = whole_array_scheme
@@ -261,6 +286,20 @@ def _fortran_output_capvar_scheme(run_host_match, ccpp_context) -> str:
         scheme_metas=[_CAPVAR_SCHEME_META],
         host_metas=[_HOST_META, _HOST_MOD_META_2D],
         suite_xml=minimal_suite_xml("capvar_scheme"),
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return out.getvalue()
+
+
+def _fortran_output_capvar_legacy_unresolvable_scheme(run_host_match, ccpp_context) -> str:
+    module = run_host_match(
+        scheme_metas=[_CAPVAR_LEGACY_UNRESOLVABLE_SCHEME_META],
+        host_metas=[_HOST_META, _HOST_MOD_META],
+        suite_xml=minimal_suite_xml("capvar_legacy_unresolvable_scheme"),
     )
     ArgOwnershipPass().apply(ccpp_context, module)
     SuiteCAP().apply(ccpp_context, module)
@@ -454,3 +493,83 @@ class TestCapVarSlicedWhenRankTwo:
             line for line in fn_body.splitlines() if "call test_suite_physics" in line
         )
         assert "y_host(col_start:col_end, 1:pver)" in call_line, call_line
+
+
+class TestCapVarLegacyBranchUnresolvableExtraDim:
+    """Pins run_dispatch.py's _build_array_section_ops behavior for a rank-2
+    legacy (horizontal_loop_extent) CapVar whose second dimension's
+    standard_name has no host_var_map entry anywhere (some_unresolvable_extra_dim
+    is declared in no host .meta here).
+
+    Before hle-chunk-consolidate's Stage 3 merge, the legacy CapVar branch
+    called _resolve_extra_dim_bounds and discarded its return value, so it
+    always built an ArraySectionOp from whatever partial lowers/uppers got
+    appended -- here, just the seeded col_start/col_end pair, since the
+    second dim never resolves. Net effect: z_out was sliced on only its
+    first axis (col_start:col_end), even though it's really rank 2 -- a
+    latent bug, not intentional behavior.
+
+    After the merge (adopting the non-legacy branch's stricter
+    `if not _cv_valid: continue` guard for the legacy path too): the whole
+    ArraySectionOp is skipped and the call falls through to the CapVar's
+    own rank-aware whole-array reference instead (built earlier, in
+    _build_host_var_refs's CapVar case: lc_z_out(:, :) for a rank-2 var) --
+    a valid, unsliced-but-correctly-ranked reference, rather than a
+    possibly rank-mismatched col_start:col_end-only slice. This is the
+    new, correct behavior this test now pins."""
+
+    def test_capvar_not_sliced_when_extra_dim_unresolvable(
+        self, run_host_match, ccpp_context
+    ):
+        fortran = _fortran_output_capvar_legacy_unresolvable_scheme(
+            run_host_match, ccpp_context
+        )
+        fn_body = fortran.split("subroutine ccpp_physics_run")[1].split(
+            "end subroutine ccpp_physics_run"
+        )[0]
+        call_stmt = fn_body.split("call test_suite_physics", 1)[1].split(")\n")[0]
+        assert "z_out=lc_z_out(:, :)" in call_stmt, call_stmt
+        assert "z_out=lc_z_out(col_start:col_end)" not in call_stmt, call_stmt
+
+
+class TestNcolComputeIsActuallyUnified:
+    """suite_cap.py's legacy ncol synthesis (_classify_args ->
+    _build_ncol_compute_ops, triggered by chunked_scheme's own
+    horizontal_loop_extent scalar) and run_dispatch.py's non-legacy fallback
+    (_build_host_var_refs, triggered by ncol_scheme's horizontal_dimension
+    scalar) used to each build their own, independently-maintained copy of
+    the same 7-op alloc/load/load/sub/const/add/store sequence -- unified
+    into cap_shared.build_ncol_compute_ops (hle-chunk-consolidate, Stage 1).
+
+    A goldens-only check (the FileCheck suite) would only prove the two
+    paths still produce the same-shaped output -- it can't tell "genuinely
+    unified" apart from "coincidentally still identical after independent
+    edits." Patching (with wraps=, so the real op-building logic still runs
+    and both fixtures' own output-shape assertions elsewhere in this file
+    stay meaningful) proves the two call sites actually reach the one
+    shared function.
+    """
+
+    def test_suite_cap_and_run_dispatch_both_call_the_shared_helper(
+        self, run_host_match, ccpp_context, monkeypatch
+    ):
+        import xdsl_ccpp.transforms.run_dispatch as run_dispatch_mod
+        import xdsl_ccpp.transforms.suite_cap as suite_cap_mod
+        from unittest.mock import MagicMock
+
+        real = cap_shared.build_ncol_compute_ops
+        suite_cap_spy = MagicMock(wraps=real)
+        run_dispatch_spy = MagicMock(wraps=real)
+        monkeypatch.setattr(suite_cap_mod, "build_ncol_compute_ops", suite_cap_spy)
+        monkeypatch.setattr(run_dispatch_mod, "build_ncol_compute_ops", run_dispatch_spy)
+
+        # chunked_scheme: legacy horizontal_loop_extent -> suite_cap.py's
+        # _build_ncol_compute_ops (via _classify_args's synthesis).
+        _fortran_output(run_host_match, ccpp_context, _CHUNKED_SCHEME_META)
+        assert suite_cap_spy.call_count == 1
+        assert run_dispatch_spy.call_count == 0
+
+        # ncol_scheme: current horizontal_dimension scalar -> run_dispatch.py's
+        # _build_host_var_refs inline case.
+        _fortran_output_ncol_scheme(run_host_match, ccpp_context)
+        assert run_dispatch_spy.call_count == 1

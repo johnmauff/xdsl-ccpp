@@ -5847,6 +5847,75 @@ dependency is noted.
       unrelated — the rank-3 chost issue), 1 failed (pre-existing, unrelated —
       `test_build_integration.py` invokes the `ccpp_xdsl` console script, which on this laptop
       resolves via PATH to a separate persistent checkout, not this session's scratchpad clone).
+    - **Unblocked (2026-09-29), by project-owner judgment, not by a new in-repo fixture.** The
+      2026-08-24 decision above deferred consolidation until "a CAM-SIMA-backed fixture exists in
+      this repo to test against locally" — that fixture still does not exist. Instead, the project
+      owner judged this session's extensive external `/cam-sima-regression` testing (real CIME
+      builds/runs against a separate `CAM-SIMA.xdsl-ccpp` checkout, spanning several weeks of work
+      recorded elsewhere in this file) sufficient evidence to proceed with consolidation anyway.
+      Recorded here explicitly so a future reader doesn't mistake "unblocked" for "a fixture was
+      added" — the underlying test-coverage gap this repo has for the legacy `horizontal_loop_extent`
+      chunking path (unit tests + 2 non-XFAIL FileCheck goldens only, no `examples/` build exercises
+      `--legacy-mode` at all) is unchanged; the risk is simply judged acceptable to proceed against.
+      Consolidation work itself tracked as `BACKLOG.md`'s `hle-chunk-consolidate` item.
+    - **Stage 1 (2026-09-29): unified the `ncol` computation.** `suite_cap.py`'s
+      `_build_ncol_compute_ops` and `run_dispatch.py`'s inline block in `_build_host_var_refs`
+      built the identical 7-op alloc/load/load/sub/const/add/store sequence independently
+      (`run_dispatch.py`'s own comment already said as much) -- extracted into
+      `cap_shared.build_ncol_compute_ops`, taking plain SSA-value refs so each caller keeps its
+      own `data_ops`/`block_arg_map` lookup. Pure refactor, zero behavior change by construction.
+      Added a unit test (`test_run_dispatch_col_bounds_fallback.py::TestNcolComputeIsActuallyUnified`)
+      that patches the shared function with a `wraps=`-mocked spy in both `suite_cap`'s and
+      `run_dispatch`'s own module namespaces and asserts both call sites actually invoke it --
+      proves genuine unification, not just coincidentally-identical output.
+    - **Stage 3 (2026-09-29): unified the CapVar branch in `_build_array_section_ops`, with one
+      real, deliberate behavior change.** Found a divergence the 2026-08-24 investigation didn't
+      catch: the legacy `horizontal_loop_extent` CapVar branch called `_resolve_extra_dim_bounds`
+      and discarded its return value, so it always built an `ArraySectionOp` from whatever partial
+      `lowers`/`uppers` got appended -- even when an extra dimension's standard_name had no host
+      var match, silently emitting a possibly rank-mismatched section. The `horizontal_dimension`
+      sibling branch already checked the return value (`if not _cv_valid: continue`) and skipped
+      the section entirely on the same failure. So "the general path is a strict superset of the
+      narrow one" (the 2026-08-24 justification) held only on the success path. Collapsed both
+      branches into one (keyed only by which standard name matched `_cv_dims[0]`, since
+      `dims_compatible` already treats the two as equivalent) and adopted the stricter guard for
+      both -- a deliberate fix, not a silent one. Also extracted the "look up
+      `col_begin_key`/`col_end_key`, None-guard against `ctx.block_arg_map`, seed
+      `lowers`/`uppers`" 6-line idiom (repeated 3x across the CapVar and Host/DdtMember branches)
+      into one shared closure, `_seed_horiz_bounds`.
+      - Added a behavior-pin test (`TestCapVarLegacyBranchUnresolvableExtraDim`) *before* making
+        the change, confirmed it captured the old (buggy) behavior, then updated its assertion in
+        the same commit as the merge -- the fix is a visible, deliberate diff in one test, not a
+        silent regression. The new behavior turned out better than expected: the call falls
+        through to the CapVar's own rank-aware whole-array reference (`lc_z_out(:, :)` for a
+        rank-2 var, built earlier in `_build_host_var_refs`'s CapVar case) rather than a bare,
+        unranked name.
+      - **Deviation from the original plan, noted explicitly**: the plan called for a new
+        FileCheck golden exercising this branch (e.g. via `array_layout_suite.py`). On inspection,
+        that fixture is declared `array_layout="row_major"`, which makes every one of its array
+        args take the separate `RowMajorConvertOp` path (`_build_array_section_ops` explicitly
+        skips any arg in `local_to_array_layout`) -- it was never actually reachable from the
+        CapVar branch being changed, and extending it would have added a fixture that still didn't
+        cover this code. Substituted the unit test above instead, which runs the real
+        `ArgOwnershipPass`/`SuiteCAP`/`CCPPCAP` passes (not mocks) and pins exact generated
+        Fortran -- equivalent real-generator coverage without a fixture that wouldn't have worked.
+      - **Verification**: full suite green after both stages -- `tests/unit` + `tests/filecheck`,
+        711 passed, 1 xfailed (pre-existing, unrelated -- the rank-3 chost issue), 0 failed. All
+        pre-existing legacy-mode tests/goldens listed in the plan (`test_deprecated_std_names.py`,
+        `test_run_dispatch_col_bounds_fallback.py`'s other 3 classes, `test_suite_cap_resolved_vars.py`,
+        `test_optional_args.py`, `array-layout-*`/`kw-override-py` goldens, `chost-r3-ftn.mlir`
+        staying `XFAIL`) pass unmodified.
+      - **RESOLVED (2026-09-29): `/cam-sima-regression` confirmed.** Ran the full `aux_sima`
+        suite against `CAM-SIMA.xdsl-ccpp` (test ID `xdsl43g`, `gnu` compiler only -- a single
+        compiler is sufficient here since this change is pure code-generation logic with no
+        compiler-specific or GPU/OpenACC paths touched). Result: 28/31 cases pass, 2 timed out in
+        the PBS queue behind the rest (never reached a FAIL), 1 known pre-existing, unrelated
+        failure -- `F2000_C7`/cam7's `MODEL_BUILD` (missing physics host-var matches, already
+        confirmed elsewhere in this file to fail identically under real capgen-v1, not something
+        this change touches). Zero unexpected failures, including both MPAS-dycore cases
+        (`kessler_mpas`, `kessler_mpas_derecho_history`) and both real SE-dycore/`--legacy-mode`-
+        adjacent cases this backlog item's own code paths are most directly exercised by. This
+        satisfies the plan's verification bar -- `hle-chunk-consolidate` is now fully resolved.
 
 ---
 
