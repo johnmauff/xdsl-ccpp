@@ -61,6 +61,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _iter_schemes,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
+    build_ncol_compute_ops,
     classify_host_table_vars,
     emit_coalesced_updates,
     find_diverged_suite_owned_vars,
@@ -3466,16 +3467,9 @@ class GenerateSuiteSubroutine(RewritePattern):
         """Compute ncol = col_end - col_start + 1 and lbound_one; mutates data_ops."""
         if not (physics_mode and "col_start" in data_ops and "col_end" in data_ops):
             return []
-        ncol_alloc = memref.AllocaOp.get(
-            TypeConversions.getBaseType("integer"), shape=[]
+        ncol_ops, ncol_alloc = build_ncol_compute_ops(
+            data_ops["col_start"], data_ops["col_end"]
         )
-        ncol_alloc.memref.name_hint = "ncol"
-        load_col_start = memref.LoadOp.get(data_ops["col_start"], [])
-        load_col_end = memref.LoadOp.get(data_ops["col_end"], [])
-        sub_op = arith.SubiOp(load_col_end, load_col_start)
-        one_const = arith.ConstantOp.from_int_and_width(1, 32)
-        add_op = arith.AddiOp(sub_op, one_const)
-        store_ncol = memref.StoreOp.get(add_op, ncol_alloc, [])
         data_ops["ncol"] = ncol_alloc
         if ncol_meta.name != "ncol":
             data_ops[ncol_meta.name] = ncol_alloc
@@ -3486,13 +3480,7 @@ class GenerateSuiteSubroutine(RewritePattern):
         lbound_one_store = memref.StoreOp.get(lbound_one_const, lbound_one_alloc, [])
         data_ops["ccpp_lbound_one"] = lbound_one_alloc
         return [
-            ncol_alloc,
-            load_col_start,
-            load_col_end,
-            sub_op,
-            one_const,
-            add_op,
-            store_ncol,
+            *ncol_ops,
             lbound_one_alloc,
             lbound_one_const,
             lbound_one_store,

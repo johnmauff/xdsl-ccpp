@@ -53,6 +53,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_ddt_access_path,
     _resolve_lifecycle_table_name,
     _resolve_member_subscripts,
+    build_ncol_compute_ops,
     classify_host_table_vars,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -912,28 +913,16 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
                 # block below slices this call's array args down to
                 # col_start:col_end, so the scheme must be told the
                 # matching (possibly smaller) chunk width, not ncols.
-                # Mirrors suite_cap.py's _build_ncol_compute_ops (same
-                # alloc/load/sub/add-one/store op sequence), just built
+                # Built via cap_shared.build_ncol_compute_ops, shared with
+                # suite_cap.py's own _build_ncol_compute_ops -- just built
                 # against block_arg_map's plain block-argument memrefs
                 # instead of that method's own data_ops dict.
-                _ncol_alloc = memref.AllocaOp.get(
-                    TypeConversions.getBaseType("integer"), shape=[]
+                _ncol_ops, _ncol_alloc = build_ncol_compute_ops(
+                    ctx.block_arg_map[_col_begin_key],
+                    ctx.block_arg_map[_col_end_key],
+                    name_hint=_bare(arg_name),
                 )
-                _ncol_alloc.memref.name_hint = _bare(arg_name)
-                _load_col_start = memref.LoadOp.get(
-                    ctx.block_arg_map[_col_begin_key], []
-                )
-                _load_col_end = memref.LoadOp.get(
-                    ctx.block_arg_map[_col_end_key], []
-                )
-                sub_op = arith.SubiOp(_load_col_end, _load_col_start)
-                one_const = arith.ConstantOp.from_int_and_width(1, 32)
-                add_op = arith.AddiOp(sub_op, one_const)
-                store_op = memref.StoreOp.get(add_op, _ncol_alloc, [])
-                host_var_ref_ops.extend([
-                    _ncol_alloc, _load_col_start, _load_col_end,
-                    sub_op, one_const, add_op, store_op,
-                ])
+                host_var_ref_ops.extend(_ncol_ops)
                 host_var_ref_results[arg_name] = _ncol_alloc.memref
                 host_name_to_ref_result[host_var_name] = _ncol_alloc.memref
             else:
@@ -1068,6 +1057,24 @@ def _build_array_section_ops(
             uppers.append(dim_upper_ref)
         return True
 
+    def _seed_horiz_bounds():
+        """Seed (lowers, uppers) with this call's col_start/col_end bound,
+        or return None if the canonical column-bound block args aren't
+        available (e.g. no host declares horizontal_loop_begin/end).
+
+        Shared by all three ArraySectionOp sources below (CapVar,
+        Host/DdtMember) -- previously the same 6-line lookup-and-guard
+        idiom repeated independently at each site (hle-chunk-consolidate
+        Stage 3, 2026-09-29).
+        """
+        col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+        col_end_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+        if not col_begin_key or not col_end_key:
+            return None
+        if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
+            return None
+        return [ctx.block_arg_map[col_begin_key]], [ctx.block_arg_map[col_end_key]]
+
     for i, (arg_name, arg_type) in enumerate(
         zip(callee_input_names, callee_input_types)
     ):
@@ -1094,72 +1101,34 @@ def _build_array_section_ops(
             if not _cv_dims:
                 continue
             _cv_first_dim = _cv_dims[0].lower()
-            if _cv_first_dim == CCPP_LOOP_EXTENT_STD_NAME:
-                # Original, already-working convention -- an investigation into
-                # consolidating this into the horizontal_dimension branch below
-                # (single-dim is a strict subset of that branch's own general
-                # multi-dim handling) found no example in this repo's own
-                # examples/ still exercises this path (examples/advection, the
-                # comment's original citation, has since migrated off it) --
-                # confirmed via CAM-SIMA-fresh's own
-                # test/unit/python/sample_files/write_init_files/temp_adjust.meta
-                # that real CAM-SIMA fixtures still declare horizontal_loop_extent
-                # this way, so this is live, --legacy-mode-only code for a real
-                # external consumer, not dead code. Deliberately deferred rather
-                # than consolidated: no fixture in this repo to regression-test
-                # against locally (CAM-SIMA's own test_write_init_files.py is the
-                # only known harness that exercises it).
-                # Additional dimensions (e.g. pver for rank-2 CapScratch arrays)
-                # are now resolved via _resolve_extra_dim_bounds so that 2-D+
-                # scratch arrays receive the correct (col_start:col_end, 1:pver)
-                # section rather than the bare array. For 1-D arrays _cv_dims[1:]
-                # is empty so the call is a no-op and existing behaviour is
-                # unchanged.
-                col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-                col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-                if not col_begin_key or not col_end_key:
-                    continue
-                if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
-                    continue
-                lowers = [ctx.block_arg_map[col_begin_key]]
-                uppers = [ctx.block_arg_map[col_end_key]]
-                _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers)
-                section = ArraySectionOp(
-                    host_var_ref_results[arg_name],
-                    lowers,
-                    uppers,
-                )
-                array_section_main_ops.append(section)
-                host_var_ref_results[arg_name] = section.res
+            if _cv_first_dim not in (CCPP_LOOP_EXTENT_STD_NAME, CCPP_HORIZ_DIM_STD_NAME):
                 continue
-            if _cv_first_dim != CCPP_HORIZ_DIM_STD_NAME:
+            # A cap-owned scratch buffer's first dimension means "this
+            # call's own column chunk" under either the legacy
+            # horizontal_loop_extent convention (still live, --legacy-mode-
+            # only, for a real external consumer -- confirmed via CAM-SIMA-
+            # fresh's own test/unit/python/sample_files/write_init_files/
+            # temp_adjust.meta) or the current horizontal_dimension one
+            # (var_compat's own effr_calc/ncl_out) -- both route through
+            # the same section-building logic here since dims_compatible/
+            # CCPP_HORIZONTAL_DIMENSIONS already treat the two standard
+            # names as equivalent (host_var_match_pass.py). A cap-owned
+            # scratch buffer can be rank >= 2 too (e.g. ncl_out's
+            # horizontal_dimension, vertical_layer_dimension) -- resolve
+            # every additional dimension's upper bound the same way the
+            # Host/DdtMember branch below does. If any additional
+            # dimension can't be resolved, skip building a section
+            # entirely rather than emit one with a mismatched rank
+            # (hle-chunk-consolidate Stage 3, 2026-09-29: previously the
+            # legacy convention alone ignored this failure and always
+            # built a possibly rank-mismatched section -- unified onto
+            # the stricter, already-battle-tested guard the
+            # horizontal_dimension convention already used).
+            seeded = _seed_horiz_bounds()
+            if seeded is None:
                 continue
-            # Newer horizontal_dimension-always-means-this-call's-
-            # columns convention (var_compat's own effr_calc, whose
-            # unmatched optional ncl_out output falls back to a
-            # cap-owned scratch buffer, sized to the full host column
-            # count, dimensioned by horizontal_dimension like any
-            # other array arg) -- same reasoning as the Host/DdtMember
-            # branch above, including proper multi-dimension support.
-            col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-            col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-            if not col_begin_key or not col_end_key:
-                continue
-            if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
-                continue
-
-            lowers = [ctx.block_arg_map[col_begin_key]]
-            uppers = [ctx.block_arg_map[col_end_key]]
-
-            # A cap-owned scratch buffer can be rank >= 2 too (e.g.
-            # ncl_out's horizontal_dimension, vertical_layer_dimension)
-            # -- resolve every additional dimension's upper bound the
-            # same way the Host/DdtMember branch above does, since
-            # those dimensions (e.g. "pver") are always real host
-            # variables regardless of the array itself being cap-owned.
-            _cv_valid = _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers)
-
-            if not _cv_valid:
+            lowers, uppers = seeded
+            if not _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers):
                 continue
 
             section = ArraySectionOp(
@@ -1213,15 +1182,10 @@ def _build_array_section_ops(
 
         # Find the canonical block arg names for loop begin/end via
         # standard_name, since different schemes use different local names.
-        col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
-        col_end_key   = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
-        if not col_begin_key or not col_end_key:
+        seeded = _seed_horiz_bounds()
+        if seeded is None:
             continue
-        if col_begin_key not in ctx.block_arg_map or col_end_key not in ctx.block_arg_map:
-            continue
-
-        lowers = [ctx.block_arg_map[col_begin_key]]
-        uppers = [ctx.block_arg_map[col_end_key]]
+        lowers, uppers = seeded
 
         valid = _resolve_extra_dim_bounds(dim_names_list[1:], lowers, uppers)
 
