@@ -27,7 +27,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CamSuiteDispatchOp,
     CamSuiteSchemeListOp,
     ClearStringOp,
-    ConstituentApiOp,
     ConstituentFunctionOp,
     DerivedType,
     ErrorPropagateOp,
