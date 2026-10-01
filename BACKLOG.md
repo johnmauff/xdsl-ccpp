@@ -219,146 +219,35 @@ miss; closing those, plus the deeper issue that even the now-typed ops
 still carry raw Fortran-syntax *expression text*, is `TDB-004` (sequenced
 after `TDB-003`). Full staged history archived in `CHANGELOG.md` L9016.
 
-### TDB-003: `CHostCapOp`/`cpp_interop.py` still carries raw C++/Fortran text — IN PROGRESS
+### TDB-003: `CHostCapOp`/`cpp_interop.py` still carries raw C++/Fortran text — RESOLVED
 
 ID: `tdb-003`
 
-**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (`CHostCapOp`),
-`xdsl_ccpp/transforms/cpp_interop.py`. **Added 2026-09-29** (PR 5 of
-`ir_cleanup_and_lifecycle_dedup_plan.md`, not tracked elsewhere before
-this merge).
-
-Staged 3 ways (Stage 1: pure-Fortran `_build_chost_ftn_text`; Stage 2:
-`_build_chost_cpp_text`, the C header; Stage 3: `_build_chost_wrapper_text`,
-the genuine-C++ ergonomics wrapper — the real design risk, no existing op
-precedent). Full plan: `ir_cleanup_and_lifecycle_dedup_plan.md`-successor
-plan, `i-need-you-help-typed-petal.md`.
-
-**Stage 1 — DONE (2026-09-30).** `CHostCapOp`'s container shape decided:
-one op, `ftn_body` (region, replacing `ftn_text: StringAttr`) +
-`cpp_text`/`wrapper_text` staying `StringAttr` until Stages 2/3 (deferred
-deliberately — `print_cpp_header.py` has no op-dispatch printer yet, so
-region-izing those now would mean inventing that infrastructure
-speculatively). New ops: `AssignOp`, `BindCSubroutineOp` (covers both
-`subroutine` and `function ... result(...) bind(C, ...)` shapes),
-`CToFortranStringCopyOp`/`FortranToCStringCopyOp`, `CallStatementOp` +
-shared `_wrap_paren_list` column-wrap helper (unifying what
-`_emit_subr_header`/`_emit_call` each hand-rolled separately — both now
-removed as dead code). `_chost_fn_contexts`'s 3x-independent call (one per
-builder, on identical inputs) folded into a single shared call in
-`_generate_chost_cap_module`. `_build_chost_ftn_text` (350 lines) fully
-converted to typed ops; declaration-only boilerplate (module/use/private/
-public/BIND(C) struct def) stays a single `RawFortranLinesOp`, matching
-the existing convention that declarations stay opaque text everywhere else
-in this codebase. Verified: full local suite green (714 passed, 1
-xfailed) throughout; `chost-r3-ftn.mlir` re-confirmed XFAIL for its same
-pre-existing documented reason; affected FileCheck goldens regenerated and
-reviewed (one, `chost-f32-ftn.mlir`, hand-fixed after the auto-updater
-blew its targeted/commented structure into an undifferentiated exhaustive
-dump); GitHub CI green; `/cam-sima-regression` run `xdsl45g`: 28/31 pass +
-1 known pre-existing unrelated failure (2 cases were still in queue at
-last check, unrelated to the chost path).
-
-**Stage 2 — DONE (2026-09-30).** `CHostCapOp`'s `cpp_text: StringAttr` →
-`cpp_body` (region); `wrapper_text` stays `StringAttr` until Stage 3. New
-ops: `CppIncludeOp`, `ExternCGuardOp`, `CFunctionSigOp` (covers both C
-prototypes now and, for Stage 3, inline C++ definitions), `CppFieldDeclOp`,
-`CppStructDefOp` (POD-only for now — Stage 3 is expected to add an
-optional `methods` region for the non-POD cases). `print_cpp_header.py`
-gained its own op-dispatch printer (`_print_cpp_op`, mirroring
-`print_ftn.py`'s `print_op`) plus a shared `_CPP_HEADER_BANNER` constant,
-which also let `_emit_cap_header` (the regular Fortran-host
-`ccpp_cap.h` path) drop its own hand-duplicated copy of the same guard/
-banner text. `_build_chost_cpp_text` (77 lines) converted to typed ops.
-Verified: full local suite green (714 passed, 1 xfailed); notably **zero**
-goldens needed regeneration — output matched the pre-existing absolute-
-indentation format exactly (no prior descend()-based convention to
-normalize toward here, unlike Stage 1); constituent-struct/prototype path
-manually verified via `constprop` (no existing golden covers it, same gap
-as Stage 1's own constituent-query-function path).
-
-**Deferred out of Stage 2, deliberately**: the original plan for this
-stage also called for unifying `_chost_cpp_type` (`cpp_interop.py`, keyed
-off a resolved `ChostArgInfo` dict) with `_cpp_type` (`print_cpp_header.py`,
-keyed off an MLIR type) into one shared type-decision table. On inspection
-this is riskier than scoped — the two key off structurally different
-inputs with several independently-evolved edge cases (`is_ncol`/`is_nz`
-special-casing in the chost version; rank-0 reals always being
-`value, intent(in)` in the generated Fortran regardless of the scheme's
-actual intent) that would need careful reconciliation to merge safely.
-Left undone rather than rushed; a good small follow-up item once Stage 3
-needs its own closer look at `_chost_cpp_type` anyway (Stage 3's
-`_build_chost_wrapper_text` is `_chost_cpp_type`'s other real caller).
-
-Also note (not a regression, no golden covers it either way): reusing the
-same generic `CFunctionSigOp` printer for the two constituent-query
-prototypes (`nconstituents`/`get_constituent_info`) instead of the
-original's hand-written single-line declarations produces a slightly
-different but valid whitespace layout — a deliberate normalization, same
-category as Stage 1's own untested-path reformatting.
-
-**Stage 3 — implementation complete, local verification green
-(2026-09-30); awaiting GitHub CI confirmation before closing TDB-003 out.**
-`CHostCapOp`'s `wrapper_text: StringAttr` → `wrapper_body` (region),
-completing the container-shape migration for all three outputs. New ops:
-`CppNamespaceOp`, `CppCallStatementOp` (C++ sibling of `CallStatementOp`,
-reusing `print_ftn.py`'s `_wrap_paren_list` — generalized and renamed
-`wrap_paren_list` with a `cont_marker` param so it's no longer
-Fortran-only), `CppConstructorOp`, `CppBraceInitCallOp`, `RawCppLinesOp`
-(permanent escape hatch, C++ sibling of `RawFortranLinesOp`, also used as
-the staging vehicle). Extended: `CFunctionSigOp` gained `is_const`;
-`CppFieldDeclOp` gained `init_expr`/`type_width` (its padding formula
-changed to pad-plus-mandatory-space, verified byte-identical to Stage 2's
-own 3 actual type strings — Stage 2's old pad-only formula had a latent
-bug for any type name ≥9 chars, never triggered before Stage 3); `CppStructDefOp`
-gained `methods`/`private_members` regions with real `is_pod` enforcement
-(raises if either is non-empty while `is_pod=True`).
-
-Converted in 6 steps per the dedicated Stage 3 plan
-(`i-need-you-help-typed-petal.md`): container-shape migration → peel
-banner/namespace → pilot (`Status` struct + constituent-query functions +
-one zero-arg lifecycle) → generalize to all per-lifecycle functions →
-`State` struct/constructor/`allocate()`/overloads → final review. Found
-and fixed 4 real bugs along the way, all caught by local verification
-before reaching any golden: C++ inline functions need `()` not `(void)`
-for zero params (was C-prototype-only convention); `CppCallStatementOp`
-was missing its leading indent; `CFunctionSigOp`'s non-empty-body branch
-had a spurious trailing blank line (double-blank between sections); and
-`_print_cpp_params` needs to key single-line-vs-multiline off `is_inline`,
-not param count (the 3-param loop-bounds overload signature needed
-single-line too). The deliberate column-budget-vs-chunks-of-4 call-wrap
-normalization (same kind already established in Stages 1/2) is the one
-expected, intentional output difference from the original.
-
-Verified: full local suite green (714 passed, 1 xfailed) at every step;
-`g++ -std=c++17 -Wall -Wextra` compile checks at every step (approved for
-this stage specifically, not a standing practice) — zero warnings
-throughout, including linking and exercising the actual `State`/
-`allocate()`/`run()` API surface for `kessler` and `tinyddt`, and the
-constituent-query path via `constprop`. The two wrapper goldens
-(`kessler-chost-wrapper.mlir`, `tinyddt-chost-wrapper.mlir`) already pass
-unmodified — their loose `CHECK:` substring matching tolerates the
-call-wrap normalization — so left untouched rather than forced through
-the auto-updater, which (same issue hit in Stage 1) blows sparse,
-richly-commented goldens into undifferentiated exhaustive dumps.
-
-**Next**: push for GitHub CI (`tests.yml` + `compile-tests-cmake.yml`,
-leaning on the latter harder per the original plan, same reasoning as the
-local `g++` checks above) — no `/cam-sima-regression` run, the chost path
-is unreachable from any CAM-SIMA case. Once CI is green, close TDB-003 out
-fully: move this full history to `CHANGELOG.md`, shrink this entry to a
-short RESOLVED pointer (do not repeat the earlier mistake of leaving the
-full writeup here), and open the two follow-on items TDB-003 itself
-flagged as explicitly out of scope: the `_chost_cpp_type`/`_cpp_type`
-unification deferred from Stage 2, and the two-subprocess-pipeline
-inefficiency (`ccpp_dsl.py` running `print_ftn`/`print_cpp_header` as
-fully separate passes, each re-deriving `CHostCapOp` from scratch) noted
-in this item's own original scoping section above.
-
-**Risk of leaving as-is**: low short-term, same shape as TDB-002 — correct
-output today, cost is architectural (no IR-level analysis/GPU-pass
-coverage of chost-generated code, drift risk between the two printers'
-independent string logic).
+**RESOLVED 2026-09-30.** All 3 stages done: `CHostCapOp`'s three
+`StringAttr` payload fields (`ftn_text`/`cpp_text`/`wrapper_text`) each
+converted to a region of typed ops (`ftn_body`/`cpp_body`/`wrapper_body`),
+staged Fortran → C header → genuine-C++ wrapper (the real design risk, no
+existing op precedent going in). New ops across the three stages:
+`AssignOp`, `BindCSubroutineOp`, `CToFortranStringCopyOp`/
+`FortranToCStringCopyOp`, `CallStatementOp`, `CppIncludeOp`,
+`ExternCGuardOp`, `CFunctionSigOp`, `CppFieldDeclOp`, `CppStructDefOp`,
+`CppNamespaceOp`, `CppCallStatementOp`, `CppConstructorOp`,
+`CppBraceInitCallOp`, `RawCppLinesOp` (14 new ops; several existing ops
+extended rather than duplicated). Found and fixed one latent formatting
+bug (`CppFieldDeclOp`'s old padding formula silently dropped the
+separating space for any type name ≥9 chars) and 4 real Stage-3 bugs, all
+caught by local verification before reaching any golden. Verified: full
+local suite green (714 passed, 1 xfailed) at every step; GitHub CI green
+after each stage; one `/cam-sima-regression` run after Stage 1 only (the
+chost/C++ host path is confirmed unreachable from any real CAM-SIMA
+`aux_sima` case, so a repeat run after Stages 2/3 would verify nothing
+new); `g++ -std=c++17 -Wall -Wextra` compile/link checks for Stage 3
+specifically (approved by the project owner for this stage alone, given
+its novelty — not a standing practice). Two follow-on items opened,
+explicitly deferred during this item's own work rather than discovered
+after the fact: `TDB-005` (unify `_chost_cpp_type`/`_cpp_type`) and
+`TDB-006` (the two-subprocess print pipeline). Full staged history
+archived in `CHANGELOG.md` L9083.
 
 ### TDB-004: No language-neutral expression IR — blocks real multi-language support
 
@@ -609,3 +498,64 @@ flagging any scheme with no corresponding comment — needs no generator
 changes at all, would have mechanically caught a real silent gap found
 during this analysis. CHANGELOG.md's merged section, "A cheaper,
 higher-value piece of tooling."
+
+### TDB-005: `_chost_cpp_type`/`_cpp_type` type-decision tables aren't unified
+
+ID: `tdb-005`
+
+**File**: `xdsl_ccpp/transforms/cpp_interop.py` (`_chost_cpp_type`),
+`xdsl_ccpp/backend/print_cpp_header.py` (`_cpp_type`). **Added 2026-09-30**,
+deferred out of `TDB-003` Stage 2 rather than rushed.
+
+Both functions solve the same problem — "map a type + intent to a C++
+type string" — but from structurally different inputs: `_chost_cpp_type`
+reads a resolved `ChostArgInfo` dict (booleans like `is_real`/`is_char`,
+an explicit `real_width`), while `_cpp_type` reads an MLIR type directly
+(`MemRefType`/`IntegerType`/`Float32Type`) plus a separate intent string.
+Each has accreted its own edge cases independently: `_chost_cpp_type`
+special-cases `is_ncol`/`is_nz` to `"int"` with no MLIR-type analog;
+`_cpp_type` has no equivalent for the Fortran-generator convention that
+rank-0 real args are always `value, intent(in)` regardless of the
+scheme's actual declared intent.
+
+**The right fix**: extract the actual decision table (base kind / width /
+rank / intent → C++ type string) into one small shared pure function,
+with each of the two existing functions becoming a thin adapter that
+maps its own input shape onto that table's parameters. Do this as its own
+focused pass — reconciling the edge cases above needs to be done
+carefully, not as a side effect of unrelated work (this is exactly why it
+was deferred out of `TDB-003` Stage 2 rather than attempted there).
+
+**Risk of leaving as-is**: low — both functions are independently correct
+today, confirmed by `TDB-003`'s own verification (Stage 2's C header,
+Stage 3's C++ wrapper, and the regular Fortran-host `_cpp_type` path all
+passing). The cost is purely maintenance drift risk: a future type-mapping
+fix applied to one function but not the other.
+
+### TDB-006: Fortran and C++ header printers each re-run the whole pipeline independently
+
+ID: `tdb-006`
+
+**File**: `xdsl_ccpp/transforms/ccpp_dsl.py` (`run_opt`/`generate_cpp_headers`).
+**Added 2026-09-30**, confirmed still out of scope while finishing `TDB-003`.
+
+`ccpp_dsl.py` invokes `ccpp_opt.py` as two fully separate subprocesses —
+one producing the `.F90` output (`-t ftn`), one producing the C++ header
+output (`-t cpp_header`) — each re-running the *entire* pipeline
+independently from the original frontend IR, including rebuilding every
+`CHostCapOp` from scratch twice. Now that `TDB-003` has converted
+`CHostCapOp`'s full payload (`ftn_body`/`cpp_body`/`wrapper_body`) to
+typed IR rather than raw text, printing both targets from one shared
+in-memory module after a single pipeline run becomes natural — the
+underlying reason this was awkward before (text blobs built by two
+independent code paths, hard to guarantee a single build produced both)
+no longer applies.
+
+**The right fix**: run the pipeline once, then call both
+`print_to_ftn`/`print_to_cpp_headers` against the same resulting module,
+replacing the current two-subprocess invocation in `ccpp_dsl.py`.
+
+**Risk of leaving as-is**: low correctness risk (output is identical
+either way, confirmed throughout `TDB-003`'s own verification) — purely a
+performance/efficiency cost (the whole frontend+transform pipeline runs
+twice per generation instead of once), worth fixing but not urgent.
