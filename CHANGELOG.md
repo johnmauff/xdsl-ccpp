@@ -9060,8 +9060,11 @@ miss, a deliberate boundary: converting *statement shape* (if/else,
 do-loops, type-bound calls) is what this item was about, and is done.
 Eliminating those remaining leaves entirely, and the deeper issue that
 even the now-typed ops still carry raw Fortran-syntax *expression text*
-in their string properties, is `TDB-004` (new item, added 2026-09-30,
-sequenced after `TDB-003`).
+in their string properties, is `lang-neutral-expr-ir` (new item, added
+2026-09-30, sequenced after the chost cap's own conversion below; given a
+`TDB-004` numeric ID at the time this entry was written, renamed to this
+stable slug shortly after — see `BACKLOG.md`'s Technical Debt section
+intro).
 
 **Verification**: full `pytest tests/` green throughout (714 passed, 1
 xfailed after the bonus golden), all FileCheck goldens regenerated and
@@ -9152,7 +9155,7 @@ concept.
   independently-evolved edge cases (`is_ncol`/`is_nz` special-casing;
   rank-0 reals always being `value, intent(in)` regardless of actual
   intent) that need careful reconciliation to merge safely. Tracked as a
-  new backlog item (`TDB-005`) rather than left implicit.
+  new backlog item (`cpp-type-table-unify`) rather than left implicit.
 
 - **Stage 3 — `_build_chost_wrapper_text`** (genuine C++ ergonomics
   wrapper, ~246 lines, the real design risk — no existing op precedent).
@@ -9224,7 +9227,7 @@ concept.
 printers run as two fully separate `ccpp_opt.py` subprocess invocations
 from `ccpp_dsl.py`, each re-running the entire pipeline independently
 (rebuilding `CHostCapOp` from scratch twice). Tracked as a new backlog
-item (`TDB-006`).
+item (`cpp-dual-print-pipeline`).
 
 **Verification**: full `pytest tests/` green throughout all 3 stages (714
 passed, 1 xfailed). GitHub CI (`tests.yml` + `compile-tests-cmake.yml`)
@@ -9233,7 +9236,11 @@ run once, after Stage 1 only (per the approved plan — the chost/C++ host
 path is confirmed unreachable from any real CAM-SIMA `aux_sima` case, so a
 repeat run after Stages 2/3 would verify nothing new).
 
-**Follow-on items opened**: `TDB-005` (unify `_chost_cpp_type`/`_cpp_type`
-into one shared type-decision table) and `TDB-006` (the two-subprocess
-pipeline inefficiency above) — both explicitly deferred during this
-item's own work, not discovered after the fact.
+**Follow-on items opened**: `cpp-type-table-unify` (unify
+`_chost_cpp_type`/`_cpp_type` into one shared type-decision table) and
+`cpp-dual-print-pipeline` (the two-subprocess pipeline inefficiency
+above) — both explicitly deferred during this item's own work, not
+discovered after the fact. (Note: both were given `TDB-NNN` numeric IDs
+at the time this entry was first written; renamed to stable kebab-case
+slugs shortly after, matching every other item in `BACKLOG.md` — see that
+file's Technical Debt section intro.)

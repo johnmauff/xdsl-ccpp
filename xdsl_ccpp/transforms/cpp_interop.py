@@ -95,7 +95,7 @@ _CONSTITUENT_STRUCT_FIELDS = [
 # _emit_subr_header/_emit_call (hand-rolled column-wrap loops) removed:
 # superseded by BindCSubroutineOp/CallStatementOp, which share the
 # wrap_paren_list helper in print_ftn.py instead of each hand-rolling its
-# own copy (TDB-003 Stage 1).
+# own copy.
 
 
 def _chost_kind_iso_map(ccpp_mod) -> dict:
@@ -1045,8 +1045,8 @@ class CPPInteropCap(ModulePass):
     ):
         """Build the complete Fortran BIND(C) chost cap module as typed ops.
 
-        Returns a list of ops for ``CHostCapOp.ftn_body`` (TDB-003 Stage 1).
-        The module preamble (``module``/``use``/``implicit none``/``private``/
+        Returns a list of ops for ``CHostCapOp.ftn_body``. The module
+        preamble (``module``/``use``/``implicit none``/``private``/
         ``public``/the BIND(C) struct type def/module-level allocatable
         decls) stays as a single ``RawFortranLinesOp`` -- declaration-only
         boilerplate, kept as opaque text by the same convention every other
@@ -1401,8 +1401,8 @@ class CPPInteropCap(ModulePass):
         return module_ops
 
     def _build_chost_cpp_text(self, mod_name, fn_ctxs):
-        """Build the complete C++ header for the chost cap as typed ops
-        (TDB-003 Stage 2). Returns a list of ops for ``CHostCapOp.cpp_body``.
+        """Build the complete C++ header for the chost cap as typed ops.
+        Returns a list of ops for ``CHostCapOp.cpp_body``.
 
         The fixed banner/``#pragma once`` preamble is not part of this
         list -- it's identical across every generated header (this one and
@@ -1468,8 +1468,7 @@ class CPPInteropCap(ModulePass):
 
     def _build_chost_wrapper_body(self, camel_name, mod_name, fn_ctxs, ncol_var, nz_var):
         """Build the C++ ergonomics wrapper (.hpp) for the chost cap as
-        typed ops (TDB-003 Stage 3). Returns a list of ops for
-        ``CHostCapOp.wrapper_body``.
+        typed ops. Returns a list of ops for ``CHostCapOp.wrapper_body``.
 
         Produces a header-only wrapper with:
         - A ``Status`` struct carrying an int code and std::string message.
@@ -1486,8 +1485,11 @@ class CPPInteropCap(ModulePass):
         builds from real statement ops (CppStructDefOp/CFunctionSigOp/
         CppCallStatementOp/CppConstructorOp/CppBraceInitCallOp);
         RawCppLinesOp remains only for comments, declarations, and returns
-        -- same opaque-expression-content boundary TDB-002/Stage 1 already
-        established (see TDB-004 in BACKLOG.md).
+        -- statement *shape* is typed, expression *content* stays opaque
+        text, same boundary used everywhere else in this codebase (a real
+        language-neutral expression IR, distinguishing operators/literals/
+        references instead of opaque text, is a separate, much larger
+        effort -- see BACKLOG.md's technical-debt section).
 
         ``L``/``A``/``flush``/``emit`` above let not-yet-converted sections
         interleave with already-converted ones in the right output order;
@@ -1507,12 +1509,12 @@ class CPPInteropCap(ModulePass):
         def struct_name(lc):
             return "".join(w.capitalize() for w in lc.split("_")) + "Args"
 
-        # TDB-003 Stage 3 step 3 (pilot): body_ops is the real ops list for
-        # CppNamespaceOp's body. L/A/flush/emit let not-yet-converted
-        # sections keep using the original L.append(text) style -- flush()
-        # wraps whatever's buffered into one RawCppLinesOp right before any
-        # real op is inserted, so converted and unconverted sections can be
-        # interleaved in the correct output order during steps 3-5.
+        # body_ops is the real ops list for CppNamespaceOp's body. L/A are
+        # a text buffer for comment/declaration/return lines that stay
+        # opaque text (see this function's own docstring); flush() wraps
+        # whatever's buffered into one RawCppLinesOp right before any real
+        # op is inserted via emit(), so raw text and typed ops interleave
+        # in the correct output order.
         body_ops: list = []
         L: list = []
         A = L.append
@@ -1578,8 +1580,6 @@ class CPPInteropCap(ModulePass):
 
         lc_data: list = []   # (cpp_fn, struct_args) per lifecycle, for State generation
 
-        # TDB-003 Stage 3 step 4: every lifecycle converted to real ops
-        # (generalized from step 3's pilot, which converted only "finalize").
         for ctx in fn_ctxs_hpp:
             cfn, lc, visible = ctx["cfn"], ctx["lc"], ctx["visible"]
 

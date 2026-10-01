@@ -1139,17 +1139,11 @@ class AssignOp(IRDLOperation):
         {lhs_expr} = {rhs_expr}
 
     Both sides are printed verbatim -- this deliberately does not attempt
-    to structurally model the assigned expression (see TDB-004 in
-    BACKLOG.md: a real language-neutral expression IR is a separate,
-    much larger effort). Covers plain-value assignment; use
-    PointerAssignOp/PointerSliceAssignOp instead for `=>` pointer
-    association.
-
-    Added as part of TDB-003 (cpp_interop.py's own raw-string conversion,
-    which needs this regardless), deliberately pulled forward from
-    TDB-004's own Stage-1 proposal for constituent_cap.py's remaining
-    leaves -- landing one AssignOp design now means TDB-004 reconciles a
-    single existing design instead of two independently-invented ones.
+    to structurally model the assigned expression; a real language-neutral
+    expression IR (distinguishing operators/literals/references instead of
+    opaque text) is a separate, much larger effort. Covers plain-value
+    assignment; use PointerAssignOp/PointerSliceAssignOp instead for `=>`
+    pointer association.
     """
 
     name = "ccpp_utils.assign"
@@ -1496,9 +1490,10 @@ class CToFortranStringCopyOp(IRDLOperation):
         end do
 
     ``c_var``/``f_var`` are opaque name text (see AssignOp's own docstring
-    re: TDB-004). The shape is fixed -- always blank-init then scan-until-
-    NUL -- so a dedicated op is clearer here than composing it from
-    smaller loop primitives; it never varies across its call sites.
+    for why expression content stays unstructured). The shape is fixed --
+    always blank-init then scan-until-NUL -- so a dedicated op is clearer
+    here than composing it from smaller loop primitives; it never varies
+    across its call sites.
 
     Relies on a surrounding scope having declared an untyped ``integer``
     loop variable named ``i`` (matching the original hand-written code;
@@ -1530,10 +1525,10 @@ class FortranToCStringCopyOp(IRDLOperation):
         {c_var}(len_trim({f_var})+1) = c_null_char
 
     ``c_var``/``f_var`` are opaque name text (see AssignOp's own docstring
-    re: TDB-004). Mirror image of CToFortranStringCopyOp; kept as a
-    separate op rather than a direction flag since the two shapes share no
-    printable text and a flag would just push the branching into the
-    printer.
+    for why expression content stays unstructured). Mirror image of
+    CToFortranStringCopyOp; kept as a separate op rather than a direction
+    flag since the two shapes share no printable text and a flag would
+    just push the branching into the printer.
 
     Relies on a surrounding scope having declared an untyped ``integer``
     loop variable named ``i`` (matching the original hand-written code;
@@ -1749,9 +1744,9 @@ class ExternCGuardOp(IRDLOperation):
         }
         #endif
 
-    No properties -- the guard text is fixed. Replaces what was, before
-    TDB-003 Stage 2, two independently hand-duplicated copies of this exact
-    block in ``cpp_interop.py`` (``_build_chost_cpp_text``) and a third in
+    No properties -- the guard text is fixed. Replaces what were two
+    independently hand-duplicated copies of this exact block in
+    ``cpp_interop.py`` (``_build_chost_cpp_text``) and a third in
     ``print_cpp_header.py`` (``_emit_cap_header``).
     """
 
@@ -1972,10 +1967,10 @@ class CppCallStatementOp(IRDLOperation):
 
     The C++-syntax sibling of ``CallStatementOp`` (Fortran's ``call
     {callee}(args)``): emits ``{callee}(args);``, column-wrapped via the
-    shared ``wrap_paren_list`` helper (``print_ftn.py``, generalized in
-    TDB-003 Stage 3 with a ``cont_marker`` parameter so it no longer
-    hardcodes Fortran's ``" &"`` continuation) when the single-line form
-    would be too long -- with no continuation marker needed in C++.
+    shared ``wrap_paren_list`` helper (``print_ftn.py``, generalized with a
+    ``cont_marker`` parameter so it no longer hardcodes Fortran's ``" &"``
+    continuation) when the single-line form would be too long -- with no
+    continuation marker needed in C++.
     """
 
     name = "ccpp_utils.cpp_call_statement"
@@ -2095,11 +2090,11 @@ class RawCppLinesOp(IRDLOperation):
 class CHostCapOp(IRDLOperation):
     """Carries the auto-generated BIND(C) cap for a C++ host model.
 
-    ``ftn_body`` holds the complete Fortran module as structured IR, printed
-    by ``print_ftn.py`` (TDB-003 Stage 1). ``cpp_body`` holds the complete
-    C header as structured IR, printed by ``print_cpp_header.py`` (Stage
-    2). ``wrapper_body`` holds the complete C++ ergonomics wrapper (.hpp)
-    as structured IR, printed by ``print_cpp_header.py`` (Stage 3).
+    ``ftn_body`` holds the complete Fortran module as structured IR,
+    printed by ``print_ftn.py``. ``cpp_body`` holds the complete C header
+    as structured IR, and ``wrapper_body`` holds the complete C++
+    ergonomics wrapper (.hpp) as structured IR, both printed by
+    ``print_cpp_header.py``.
 
     ``mod_name`` is the base name used for the module and header file, e.g.
     ``"Kessler_ccpp_chost_cap"``.

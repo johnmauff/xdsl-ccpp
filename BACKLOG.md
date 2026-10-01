@@ -17,6 +17,12 @@ repo/history (`Task #NN`, `TDB-NNN`), the slug incorporates it (e.g.
 these IDs, not position in the list, when referring to an item across
 sessions.
 
+**`CPP_BACKLOG.md`** is a priority-ordered subset of this file, filtered
+and reordered around the multi-language (C++) support goal specifically —
+same stable IDs, kept manually in sync with this file. Check it when
+deciding what C++/multi-language work to pick up next; keep both files in
+sync when an item on it changes here.
+
 Two corrections found while building this list, where the archive's own
 Index table (last updated 2026-08-24) had gone stale relative to its own
 later narrative entries:
@@ -159,13 +165,26 @@ CHANGELOG.md L8406.
 ## Technical debt (merged from `technical_debt.md` and
 `ir_cleanup_and_lifecycle_dedup_plan.md`, 2026-09-29)
 
-All three items confirmed still open and accurate as of the 2026-09-29
-merge (verified directly against current source, not just carried over).
-**Update 2026-09-30**: `TDB-002` is now resolved (see below); `TDB-001`
-and `TDB-003` remain open; a new item, `TDB-004`, was added, scoped to
-follow `TDB-003`. The `TDB-NNN` IDs are kept as-is (including for the
-now-resolved `TDB-002`) since source comments in `ccpp_cap.py` and
-elsewhere already cite them by number.
+**Update 2026-09-30, ID-scheme cleanup**: `TDB-002` and `TDB-003` are both
+now resolved and, per this file's normal convention for resolved items
+(full history archived in `CHANGELOG.md`, nothing lingers here), have been
+removed rather than kept as RESOLVED pointer entries — a prior version of
+this cleanup kept them visible on the reasoning that their `TDB-NNN`
+numbers were "cited by number in source code," but that citation was
+self-inserted during this session's own implementation work, not a real
+pre-existing external constraint, so it didn't actually justify an
+exception to the normal resolved-item treatment; those source comments
+have been rewritten to drop the numeric references. The three items that
+were sequenced after `TDB-003` (one still open, two new follow-ons from
+`TDB-003`'s own closeout) are kept but renamed to stable kebab-case
+slugs, matching every other item in this file — the `TDB-NNN` scheme
+itself has no real claim to permanence for items invented during this
+session, unlike `TDB-001` below, whose number is cited by an actual
+pre-existing source comment (`ccpp_cap.py`) that predates this cleanup and
+was deliberately left untouched pending confirmation it should change too.
+`CHANGELOG.md`'s own archived section titles still say "TDB-002"/"TDB-003"
+— that's fine, left as the real historical name those pieces of work went
+by, not something retroactively renamed.
 
 ### TDB-001: Constituent API always generated for CAM host builds
 
@@ -199,69 +218,25 @@ constituent presence.
 runtime (empty arrays, no-op register calls) — the only cost is a small
 amount of dead code in `cam_ccpp_cap.F90` for constituent-free suites.
 
-### TDB-002: Constituent API generation uses raw Fortran string assembly — RESOLVED
+**Resolved, removed from the list above** (matching every other resolved
+item in this file): the constituent API (`constituent_cap.py`) and the
+chost cap generator (`cpp_interop.py`/`CHostCapOp`) were both converted
+from raw-string assembly to typed IR — full history in `CHANGELOG.md`,
+"TDB-002 resolution" (L9016) and "TDB-003 resolution" (L9083).
 
-ID: `tdb-002`
+### `lang-neutral-expr-ir`: No language-neutral expression IR — blocks real multi-language support
 
-**RESOLVED 2026-09-30.** All 10 `constituent_cap.py` subroutines converted
-from raw-string `RawFortranLinesOp` blobs to typed IR (7 new ops designed;
-`ScopedBlockOp` got its first real usage anywhere in the codebase;
-`ConstituentApiOp`, the op this item's original text was written against,
-removed as dead code — superseded by `CamHostConstituentApiOp`/
-`NonCamHostConstituentApiOp` since commit `125cfe2`, which the original
-scoping hadn't caught up to). Bonus: closed a real coverage gap with a new
-FileCheck golden for the multi-instance derived-type path. Verified with
-the full local suite (714 passed, 1 xfailed) and a final
-`/cam-sima-regression` run (`xdsl44g`): 30/31 pass, 1 known pre-existing
-unrelated failure. A few deliberate one-off text leaves remain (plain
-assignments, a `write()` call, `#ifdef` directive blocks) — not a scoping
-miss; closing those, plus the deeper issue that even the now-typed ops
-still carry raw Fortran-syntax *expression text*, is `TDB-004` (sequenced
-after `TDB-003`). Full staged history archived in `CHANGELOG.md` L9016.
-
-### TDB-003: `CHostCapOp`/`cpp_interop.py` still carries raw C++/Fortran text — RESOLVED
-
-ID: `tdb-003`
-
-**RESOLVED 2026-09-30.** All 3 stages done: `CHostCapOp`'s three
-`StringAttr` payload fields (`ftn_text`/`cpp_text`/`wrapper_text`) each
-converted to a region of typed ops (`ftn_body`/`cpp_body`/`wrapper_body`),
-staged Fortran → C header → genuine-C++ wrapper (the real design risk, no
-existing op precedent going in). New ops across the three stages:
-`AssignOp`, `BindCSubroutineOp`, `CToFortranStringCopyOp`/
-`FortranToCStringCopyOp`, `CallStatementOp`, `CppIncludeOp`,
-`ExternCGuardOp`, `CFunctionSigOp`, `CppFieldDeclOp`, `CppStructDefOp`,
-`CppNamespaceOp`, `CppCallStatementOp`, `CppConstructorOp`,
-`CppBraceInitCallOp`, `RawCppLinesOp` (14 new ops; several existing ops
-extended rather than duplicated). Found and fixed one latent formatting
-bug (`CppFieldDeclOp`'s old padding formula silently dropped the
-separating space for any type name ≥9 chars) and 4 real Stage-3 bugs, all
-caught by local verification before reaching any golden. Verified: full
-local suite green (714 passed, 1 xfailed) at every step; GitHub CI green
-after each stage; one `/cam-sima-regression` run after Stage 1 only (the
-chost/C++ host path is confirmed unreachable from any real CAM-SIMA
-`aux_sima` case, so a repeat run after Stages 2/3 would verify nothing
-new); `g++ -std=c++17 -Wall -Wextra` compile/link checks for Stage 3
-specifically (approved by the project owner for this stage alone, given
-its novelty — not a standing practice). Two follow-on items opened,
-explicitly deferred during this item's own work rather than discovered
-after the fact: `TDB-005` (unify `_chost_cpp_type`/`_cpp_type`) and
-`TDB-006` (the two-subprocess print pipeline). Full staged history
-archived in `CHANGELOG.md` L9083.
-
-### TDB-004: No language-neutral expression IR — blocks real multi-language support
-
-ID: `tdb-004`
+ID: `lang-neutral-expr-ir`
 
 **File**: repo-wide — `xdsl_ccpp/dialects/ccpp_utils.py` (most op
 definitions), `xdsl_ccpp/transforms/{suite_cap,run_dispatch,constituent_cap,
 lifecycle_cap,cpp_interop}.py`. **Added 2026-09-30**, surfaced while
-implementing TDB-002 and discussed directly with the project owner, whose
-long-term goal is full multi-language support in xdsl_ccpp (both C++ as a
-host model and C++ as a scheme implementation — see the "C++ host + C++
-scheme track" priorities discussed this session).
+converting `constituent_cap.py`'s raw-string assembly to typed IR and
+discussed directly with the project owner, whose long-term goal is full
+multi-language support in xdsl_ccpp (both C++ as a host model and C++ as
+a scheme implementation).
 
-**The gap, precisely**: TDB-002 converted `constituent_cap.py`'s raw
+**The gap, precisely**: that conversion turned `constituent_cap.py`'s raw
 Fortran-string *statement bodies* into typed ops (`IfThenOp`,
 `DdtMethodCallOp`, `PointerAssignOp`, etc.), so a second-language printer
 could in principle decide how to render an `if`/`then`/`else`, a type-bound
@@ -273,41 +248,46 @@ text, `ErrorGuardOp.errmsg_text`, `DdtMethodCallOp.args`/`.kwargs`,
 still hold raw Fortran-syntax *text* (`.or.`/`/=` operators, `errcode=errcode`
 keyword-arg syntax, `[ character(len=8) :: 'foo' ]` array-constructor
 literals, `.true.`/`''` literal spellings). This isn't specific to
-`constituent_cap.py` or to TDB-002's new ops — it's the same pattern in
-every op this codebase already treats as "converted" (`LazyAllocOp`,
-`SafeDeallocOp`, `ArraySectionOp`'s bounds, `CamDirectCallOp`'s args, and
-so on, going back to the original "Eliminate text strings" work). A
-hypothetical C++ printer can't render `.or.` as `||` or `.true.` as `true`
-without re-parsing Fortran syntax out of a string first — which defeats
-the entire purpose of routing everything through a printer abstraction.
-So today's IR genericizes *statement shape* (if/else, do-loop, call) but
-not *expression content* — and expression content is exactly what differs
-between Fortran and any other target language.
+`constituent_cap.py` or to that conversion's new ops — it's the same
+pattern in every op this codebase already treats as "converted"
+(`LazyAllocOp`, `SafeDeallocOp`, `ArraySectionOp`'s bounds,
+`CamDirectCallOp`'s args, and so on, going back to the original "Eliminate
+text strings" work, and confirmed true again for `cpp_interop.py`'s own
+later conversion). A hypothetical C++ printer can't render `.or.` as `||`
+or `.true.` as `true` without re-parsing Fortran syntax out of a string
+first — which defeats the entire purpose of routing everything through a
+printer abstraction. So today's IR genericizes *statement shape* (if/else,
+do-loop, call) but not *expression content* — and expression content is
+exactly what differs between Fortran and any other target language.
 
 **Why this is the real prerequisite for the stated long-term goal**: the
-multi-language direction this session settled on (TDB-002 → TDB-003 →
-eventually a second-language printer) cannot actually reach a second
-language until expression content stops being baked into the IR as
-Fortran-syntax text at construction time. TDB-002/TDB-003 are necessary
-groundwork (they at least stop hand-building whole statements as joined
-strings) but not sufficient on their own — flagged here explicitly so the
-gap doesn't get rediscovered as a surprise after TDB-003 lands.
+multi-language direction this session settled on (convert
+`constituent_cap.py`, then `cpp_interop.py`, to typed IR, then eventually
+a second-language printer) cannot actually reach a second language until
+expression content stops being baked into the IR as Fortran-syntax text at
+construction time. That statement-shape conversion work was necessary
+groundwork (it at least stopped hand-building whole statements as joined
+strings) but isn't sufficient on its own — flagged here explicitly so the
+gap doesn't get rediscovered as a surprise now that both conversions are
+done.
 
 **The right fix, staged**:
 
 1. **Small, immediate, low-risk cleanup piece** (can land on its own,
    doesn't depend on anything else here): `constituent_cap.py` still has a
-   handful of genuine one-off `RawFortranLinesOp` leaves left after TDB-002
-   (plain scalar assignments like `errflg = 0`; one `write(errmsg, ...)`
-   call; a few `#ifdef USE_GPU`/`!$acc` directive blocks; `allocate(x,
+   handful of genuine one-off `RawFortranLinesOp` leaves (plain scalar
+   assignments like `errflg = 0`; one `write(errmsg, ...)` call; a few
+   `#ifdef USE_GPU`/`!$acc` directive blocks; `allocate(x,
    stat=errcode)`'s STAT-clause form, which doesn't match `AllocateOp`'s
-   plain shape). Add three small dedicated ops for these (`AssignOp`,
-   `WriteStmtOp`, `PreprocDirectiveOp`), matching TDB-002's established
-   op-design conventions exactly. This doesn't solve the expression-content
-   problem (these ops would still hold Fortran-syntax text for their RHS/
-   format-string content) but it does get `constituent_cap.py` itself to
-   zero raw-string leaves, and gives 3 more small, real precedents before
-   attempting the bigger design below.
+   plain shape). Add three small dedicated ops for these (`AssignOp` —
+   already landed, reused by `cpp_interop.py`'s own conversion —
+   `WriteStmtOp`, `PreprocDirectiveOp`), matching the established
+   op-design conventions from that earlier conversion exactly. This
+   doesn't solve the expression-content problem (these ops would still
+   hold Fortran-syntax text for their RHS/format-string content) but it
+   does get `constituent_cap.py` itself to zero raw-string leaves, and
+   gives a few more small, real precedents before attempting the bigger
+   design below.
 2. **Design a small core expression-IR vocabulary**: literal ops
    (int/bool/string), a variable/member-reference op (covers both Fortran's
    `%` and a future C++ printer's `.`/`->`), a binary/unary-op op
@@ -320,7 +300,7 @@ gap doesn't get rediscovered as a surprise after TDB-003 lands.
    the new vocabulary instead of `StringAttr`/`ArrayAttr[StringAttr]` —
    `constituent_cap.py` is the natural pilot (freshly converted, well
    covered by both unit tests and FileCheck goldens, including the new
-   multi-instance golden). Expect this to reveal real gaps in the Stage 2
+   multi-instance golden). Expect this to reveal real gaps in the stage 2
    vocabulary; iterate.
 4. **Prove the abstraction actually holds** before committing to the full
    retrofit: sketch (doesn't need to be production-quality) how a second
@@ -329,33 +309,35 @@ gap doesn't get rediscovered as a surprise after TDB-003 lands.
    cleanly support even a sketch of a second printer, stage 2's design
    needs another pass before stage 5 below begins.
 5. **Propagate incrementally, file by file**, not a single rewrite:
-   `suite_cap.py`, `run_dispatch.py`, `lifecycle_cap.py`, and (once TDB-003
-   lands) `cpp_interop.py`'s own new ops all need the same retrofit
-   eventually. Each file's own existing test/golden coverage is the
-   regression net, same discipline as TDB-002.
+   `suite_cap.py`, `run_dispatch.py`, `lifecycle_cap.py`, and
+   `cpp_interop.py`'s own new ops (its own raw-string-to-typed-IR
+   conversion is done, so this is now actionable, not blocked on anything)
+   all need the same retrofit eventually. Each file's own existing
+   test/golden coverage is the regression net, same discipline used
+   throughout both earlier conversions.
 
-**Sequencing: after TDB-003, per project-owner decision.** TDB-003
-(`cpp_interop.py`'s own de-stringification, using the same statement-shape-
-only pattern TDB-002 just established) gives a second, independent real
-data point for exactly which expression-text shapes recur across the
-codebase — Fortran-only patterns from `constituent_cap.py` alone risk
-under-designing the vocabulary for C++ interop's own needs. Doing this
-first would also further delay TDB-003's already-scoped work for a
-design question TDB-003 doesn't itself require answered.
+**Sequencing, now resolved**: this item was deliberately held until
+`cpp_interop.py`'s own raw-string conversion finished (done, 2026-09-30 —
+see `CHANGELOG.md`'s "TDB-003 resolution"), since Fortran-only patterns
+from `constituent_cap.py` alone risked under-designing the vocabulary for
+C++ interop's own needs; that conversion is now a second, independent real
+data point this item can draw on. No longer blocked — actionable whenever
+picked up.
 
 **Effort**: large — likely the single biggest item in this backlog,
-bigger than TDB-002 and TDB-003 combined, given its breadth (every
-expression-bearing property on every op in `ccpp_utils.py`, across five
-transform files). Treat stages 1-4 above as a multi-week design-and-pilot
-phase on their own, with stage 5's full propagation as further,
-separately-scoped follow-on work per file, not one PR.
+bigger than either of the two earlier statement-shape conversions
+combined, given its breadth (every expression-bearing property on every
+op in `ccpp_utils.py`, across five transform files). Treat stages 1-4
+above as a multi-week design-and-pilot phase on their own, with stage 5's
+full propagation as further, separately-scoped follow-on work per file,
+not one PR.
 
-**Risk of leaving as-is**: unlike TDB-002/TDB-003 ("low short-term, correct
-output today"), this one is different in kind — it's not a code-quality
-cost that accumulates quietly, it's a hard blocker on the stated
-multi-language goal. No second-language printer is achievable at all
-until this lands, regardless of how much statement-shape conversion work
-(TDB-002, TDB-003) happens first.
+**Risk of leaving as-is**: unlike the two earlier statement-shape
+conversions ("low short-term, correct output today"), this one is
+different in kind — it's not a code-quality cost that accumulates
+quietly, it's a hard blocker on the stated multi-language goal. No
+second-language printer is achievable at all until this lands, regardless
+of how much statement-shape conversion work happens first.
 
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 
@@ -499,13 +481,14 @@ changes at all, would have mechanically caught a real silent gap found
 during this analysis. CHANGELOG.md's merged section, "A cheaper,
 higher-value piece of tooling."
 
-### TDB-005: `_chost_cpp_type`/`_cpp_type` type-decision tables aren't unified
+### `cpp-type-table-unify`: `_chost_cpp_type`/`_cpp_type` type-decision tables aren't unified
 
-ID: `tdb-005`
+ID: `cpp-type-table-unify`
 
 **File**: `xdsl_ccpp/transforms/cpp_interop.py` (`_chost_cpp_type`),
 `xdsl_ccpp/backend/print_cpp_header.py` (`_cpp_type`). **Added 2026-09-30**,
-deferred out of `TDB-003` Stage 2 rather than rushed.
+deferred out of the chost cap's own C-header conversion rather than
+rushed.
 
 Both functions solve the same problem — "map a type + intent to a C++
 type string" — but from structurally different inputs: `_chost_cpp_type`
@@ -524,38 +507,39 @@ with each of the two existing functions becoming a thin adapter that
 maps its own input shape onto that table's parameters. Do this as its own
 focused pass — reconciling the edge cases above needs to be done
 carefully, not as a side effect of unrelated work (this is exactly why it
-was deferred out of `TDB-003` Stage 2 rather than attempted there).
+was deferred rather than attempted inline).
 
 **Risk of leaving as-is**: low — both functions are independently correct
-today, confirmed by `TDB-003`'s own verification (Stage 2's C header,
-Stage 3's C++ wrapper, and the regular Fortran-host `_cpp_type` path all
+today, confirmed by the chost cap conversion's own verification (the C
+header, the C++ wrapper, and the regular Fortran-host `_cpp_type` path all
 passing). The cost is purely maintenance drift risk: a future type-mapping
 fix applied to one function but not the other.
 
-### TDB-006: Fortran and C++ header printers each re-run the whole pipeline independently
+### `cpp-dual-print-pipeline`: Fortran and C++ header printers each re-run the whole pipeline independently
 
-ID: `tdb-006`
+ID: `cpp-dual-print-pipeline`
 
 **File**: `xdsl_ccpp/transforms/ccpp_dsl.py` (`run_opt`/`generate_cpp_headers`).
-**Added 2026-09-30**, confirmed still out of scope while finishing `TDB-003`.
+**Added 2026-09-30**, confirmed still out of scope while finishing the
+chost cap's raw-string-to-typed-IR conversion.
 
 `ccpp_dsl.py` invokes `ccpp_opt.py` as two fully separate subprocesses —
 one producing the `.F90` output (`-t ftn`), one producing the C++ header
 output (`-t cpp_header`) — each re-running the *entire* pipeline
 independently from the original frontend IR, including rebuilding every
-`CHostCapOp` from scratch twice. Now that `TDB-003` has converted
-`CHostCapOp`'s full payload (`ftn_body`/`cpp_body`/`wrapper_body`) to
-typed IR rather than raw text, printing both targets from one shared
-in-memory module after a single pipeline run becomes natural — the
-underlying reason this was awkward before (text blobs built by two
-independent code paths, hard to guarantee a single build produced both)
-no longer applies.
+`CHostCapOp` from scratch twice. Now that `CHostCapOp`'s full payload
+(`ftn_body`/`cpp_body`/`wrapper_body`) has been converted to typed IR
+rather than raw text, printing both targets from one shared in-memory
+module after a single pipeline run becomes natural — the underlying
+reason this was awkward before (text blobs built by two independent code
+paths, hard to guarantee a single build produced both) no longer applies.
 
 **The right fix**: run the pipeline once, then call both
 `print_to_ftn`/`print_to_cpp_headers` against the same resulting module,
 replacing the current two-subprocess invocation in `ccpp_dsl.py`.
 
 **Risk of leaving as-is**: low correctness risk (output is identical
-either way, confirmed throughout `TDB-003`'s own verification) — purely a
-performance/efficiency cost (the whole frontend+transform pipeline runs
-twice per generation instead of once), worth fixing but not urgent.
+either way, confirmed throughout the chost cap conversion's own
+verification) — purely a performance/efficiency cost (the whole
+frontend+transform pipeline runs twice per generation instead of once),
+worth fixing but not urgent.

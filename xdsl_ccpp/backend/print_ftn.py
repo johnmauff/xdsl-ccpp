@@ -134,9 +134,9 @@ def wrap_paren_list(
     ``cont_marker`` defaults to Fortran's ``" &"`` continuation (both
     existing call sites below are Fortran and rely on this default,
     unchanged). Pass ``cont_marker=""`` for C++, which needs no
-    continuation marker at all (TDB-003 Stage 3's ``CppCallStatementOp``,
-    in ``print_cpp_header.py``, which imports this cross-module the same
-    way that module already imports ``classify_arg_intent`` from here).
+    continuation marker at all (``CppCallStatementOp`` in
+    ``print_cpp_header.py``, which imports this cross-module the same way
+    that module already imports ``classify_arg_intent`` from here).
 
     Shared by BindCSubroutineOp's header-signature printing and its
     suite-cap call-emission printing -- previously two independently
