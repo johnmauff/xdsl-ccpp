@@ -123,13 +123,23 @@ from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 _MAX_LINE_LEN = 99
 
 
-def _wrap_paren_list(prefix: str, items: list, suffix: str, max_col: int, cont_indent: str) -> list:
-    """Emit ``{prefix}{items joined by ', '}{suffix}``, Fortran-continuation-
-    wrapping the item list onto ``cont_indent``-indented lines (each ending
-    in ``' &'``) when the single-line form would exceed ``max_col``.
+def wrap_paren_list(
+    prefix: str, items: list, suffix: str, max_col: int, cont_indent: str,
+    cont_marker: str = " &",
+) -> list:
+    """Emit ``{prefix}{items joined by ', '}{suffix}``, continuation-wrapping
+    the item list onto ``cont_indent``-indented lines (each ending in
+    ``cont_marker``) when the single-line form would exceed ``max_col``.
 
-    Shared by BindCSubroutineOp's header-signature printing and (later)
-    its suite-cap call-emission printing -- previously two independently
+    ``cont_marker`` defaults to Fortran's ``" &"`` continuation (both
+    existing call sites below are Fortran and rely on this default,
+    unchanged). Pass ``cont_marker=""`` for C++, which needs no
+    continuation marker at all (TDB-003 Stage 3's ``CppCallStatementOp``,
+    in ``print_cpp_header.py``, which imports this cross-module the same
+    way that module already imports ``classify_arg_intent`` from here).
+
+    Shared by BindCSubroutineOp's header-signature printing and its
+    suite-cap call-emission printing -- previously two independently
     hand-rolled copies of the same wrap loop in cpp_interop.py
     (``_emit_subr_header``/``_emit_call``), differing only in
     prefix/suffix/budget/indent.
@@ -137,12 +147,12 @@ def _wrap_paren_list(prefix: str, items: list, suffix: str, max_col: int, cont_i
     single = prefix + ", ".join(items) + suffix
     if len(single) <= max_col:
         return [single]
-    lines = [prefix + " &"]
+    lines = [prefix + cont_marker]
     cur = cont_indent
     for i, item in enumerate(items):
         sep = ", " if i < len(items) - 1 else ""
         if len(cur) + len(item) + len(sep) + 4 > max_col:
-            lines.append(cur + " &")
+            lines.append(cur + cont_marker)
             cur = cont_indent + item + sep
         else:
             cur += item + sep
@@ -1050,7 +1060,7 @@ class ftnPrintContext:
                 result_part = (
                     f" result({op.result_name.data})" if op.result_name is not None else ""
                 )
-                header_lines = _wrap_paren_list(
+                header_lines = wrap_paren_list(
                     f"{kw} {fn_name}(", vnames, f"){result_part} &", 92, "    "
                 )
                 for line in header_lines:
@@ -1109,7 +1119,7 @@ class ftnPrintContext:
                 self.print(f"call {op.callee.data}({args})")
             case CCPPCallStatementOp():
                 call_args = [a.data for a in op.call_args.data]
-                lines = _wrap_paren_list(
+                lines = wrap_paren_list(
                     f"call {op.callee.data}(", call_args, ")", 80, "    "
                 )
                 for line in lines:

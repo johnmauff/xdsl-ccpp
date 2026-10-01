@@ -259,7 +259,101 @@ dump); GitHub CI green; `/cam-sima-regression` run `xdsl45g`: 28/31 pass +
 1 known pre-existing unrelated failure (2 cases were still in queue at
 last check, unrelated to the chost path).
 
-**Stages 2/3 — not started.**
+**Stage 2 — DONE (2026-09-30).** `CHostCapOp`'s `cpp_text: StringAttr` →
+`cpp_body` (region); `wrapper_text` stays `StringAttr` until Stage 3. New
+ops: `CppIncludeOp`, `ExternCGuardOp`, `CFunctionSigOp` (covers both C
+prototypes now and, for Stage 3, inline C++ definitions), `CppFieldDeclOp`,
+`CppStructDefOp` (POD-only for now — Stage 3 is expected to add an
+optional `methods` region for the non-POD cases). `print_cpp_header.py`
+gained its own op-dispatch printer (`_print_cpp_op`, mirroring
+`print_ftn.py`'s `print_op`) plus a shared `_CPP_HEADER_BANNER` constant,
+which also let `_emit_cap_header` (the regular Fortran-host
+`ccpp_cap.h` path) drop its own hand-duplicated copy of the same guard/
+banner text. `_build_chost_cpp_text` (77 lines) converted to typed ops.
+Verified: full local suite green (714 passed, 1 xfailed); notably **zero**
+goldens needed regeneration — output matched the pre-existing absolute-
+indentation format exactly (no prior descend()-based convention to
+normalize toward here, unlike Stage 1); constituent-struct/prototype path
+manually verified via `constprop` (no existing golden covers it, same gap
+as Stage 1's own constituent-query-function path).
+
+**Deferred out of Stage 2, deliberately**: the original plan for this
+stage also called for unifying `_chost_cpp_type` (`cpp_interop.py`, keyed
+off a resolved `ChostArgInfo` dict) with `_cpp_type` (`print_cpp_header.py`,
+keyed off an MLIR type) into one shared type-decision table. On inspection
+this is riskier than scoped — the two key off structurally different
+inputs with several independently-evolved edge cases (`is_ncol`/`is_nz`
+special-casing in the chost version; rank-0 reals always being
+`value, intent(in)` in the generated Fortran regardless of the scheme's
+actual intent) that would need careful reconciliation to merge safely.
+Left undone rather than rushed; a good small follow-up item once Stage 3
+needs its own closer look at `_chost_cpp_type` anyway (Stage 3's
+`_build_chost_wrapper_text` is `_chost_cpp_type`'s other real caller).
+
+Also note (not a regression, no golden covers it either way): reusing the
+same generic `CFunctionSigOp` printer for the two constituent-query
+prototypes (`nconstituents`/`get_constituent_info`) instead of the
+original's hand-written single-line declarations produces a slightly
+different but valid whitespace layout — a deliberate normalization, same
+category as Stage 1's own untested-path reformatting.
+
+**Stage 3 — implementation complete, local verification green
+(2026-09-30); awaiting GitHub CI confirmation before closing TDB-003 out.**
+`CHostCapOp`'s `wrapper_text: StringAttr` → `wrapper_body` (region),
+completing the container-shape migration for all three outputs. New ops:
+`CppNamespaceOp`, `CppCallStatementOp` (C++ sibling of `CallStatementOp`,
+reusing `print_ftn.py`'s `_wrap_paren_list` — generalized and renamed
+`wrap_paren_list` with a `cont_marker` param so it's no longer
+Fortran-only), `CppConstructorOp`, `CppBraceInitCallOp`, `RawCppLinesOp`
+(permanent escape hatch, C++ sibling of `RawFortranLinesOp`, also used as
+the staging vehicle). Extended: `CFunctionSigOp` gained `is_const`;
+`CppFieldDeclOp` gained `init_expr`/`type_width` (its padding formula
+changed to pad-plus-mandatory-space, verified byte-identical to Stage 2's
+own 3 actual type strings — Stage 2's old pad-only formula had a latent
+bug for any type name ≥9 chars, never triggered before Stage 3); `CppStructDefOp`
+gained `methods`/`private_members` regions with real `is_pod` enforcement
+(raises if either is non-empty while `is_pod=True`).
+
+Converted in 6 steps per the dedicated Stage 3 plan
+(`i-need-you-help-typed-petal.md`): container-shape migration → peel
+banner/namespace → pilot (`Status` struct + constituent-query functions +
+one zero-arg lifecycle) → generalize to all per-lifecycle functions →
+`State` struct/constructor/`allocate()`/overloads → final review. Found
+and fixed 4 real bugs along the way, all caught by local verification
+before reaching any golden: C++ inline functions need `()` not `(void)`
+for zero params (was C-prototype-only convention); `CppCallStatementOp`
+was missing its leading indent; `CFunctionSigOp`'s non-empty-body branch
+had a spurious trailing blank line (double-blank between sections); and
+`_print_cpp_params` needs to key single-line-vs-multiline off `is_inline`,
+not param count (the 3-param loop-bounds overload signature needed
+single-line too). The deliberate column-budget-vs-chunks-of-4 call-wrap
+normalization (same kind already established in Stages 1/2) is the one
+expected, intentional output difference from the original.
+
+Verified: full local suite green (714 passed, 1 xfailed) at every step;
+`g++ -std=c++17 -Wall -Wextra` compile checks at every step (approved for
+this stage specifically, not a standing practice) — zero warnings
+throughout, including linking and exercising the actual `State`/
+`allocate()`/`run()` API surface for `kessler` and `tinyddt`, and the
+constituent-query path via `constprop`. The two wrapper goldens
+(`kessler-chost-wrapper.mlir`, `tinyddt-chost-wrapper.mlir`) already pass
+unmodified — their loose `CHECK:` substring matching tolerates the
+call-wrap normalization — so left untouched rather than forced through
+the auto-updater, which (same issue hit in Stage 1) blows sparse,
+richly-commented goldens into undifferentiated exhaustive dumps.
+
+**Next**: push for GitHub CI (`tests.yml` + `compile-tests-cmake.yml`,
+leaning on the latter harder per the original plan, same reasoning as the
+local `g++` checks above) — no `/cam-sima-regression` run, the chost path
+is unreachable from any CAM-SIMA case. Once CI is green, close TDB-003 out
+fully: move this full history to `CHANGELOG.md`, shrink this entry to a
+short RESOLVED pointer (do not repeat the earlier mistake of leaving the
+full writeup here), and open the two follow-on items TDB-003 itself
+flagged as explicitly out of scope: the `_chost_cpp_type`/`_cpp_type`
+unification deferred from Stage 2, and the two-subprocess-pipeline
+inefficiency (`ccpp_dsl.py` running `print_ftn`/`print_cpp_header` as
+fully separate passes, each re-deriving `CHostCapOp` from scratch) noted
+in this item's own original scoping section above.
 
 **Risk of leaving as-is**: low short-term, same shape as TDB-002 — correct
 output today, cost is architectural (no IR-level analysis/GPU-pass
