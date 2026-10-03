@@ -685,7 +685,7 @@
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_num_consts = lc_num_consts + 0"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "initialize_table", args = ["lc_num_consts"], kwargs = []}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
-// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
@@ -732,7 +732,8 @@
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_all_constituents)", errmsg_text = "const_get_index: constituents not registered"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "const_index", args = ["index", "to_lower(std_name)"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errflg /= 0 .or. index <= 0"}> ({
-// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 1\nwrite(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_model_const_properties", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)"}> ({

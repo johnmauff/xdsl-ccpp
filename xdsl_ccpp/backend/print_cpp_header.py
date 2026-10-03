@@ -2,18 +2,25 @@ from __future__ import annotations
 
 from typing import IO
 
-from xdsl.dialects import builtin, func, memref
+from xdsl.dialects import arith, builtin, func, math, memref
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     Float32Type,
+    FloatAttr,
+    IntAttr,
+    IntegerAttr,
     IntegerType,
     MemRefType,
     ModuleOp,
 )
+from xdsl.ir import SSAValue
 from xdsl.utils.hints import isa
 
+from xdsl_ccpp.backend import expr_precedence
 from xdsl_ccpp.backend.print_ftn import classify_arg_intent, wrap_paren_list
 from xdsl_ccpp.dialects.ccpp_utils import (
+    ArrayConstructorExprOp,
+    CallExprOp,
     CFunctionSigOp,
     CHostCapOp,
     CppBraceInitCallOp,
@@ -24,9 +31,199 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CppNamespaceOp,
     CppStructDefOp,
     ExternCGuardOp,
+    IndexExprOp,
     KindDefOp,
+    MemberAccessExprOp,
     RawCppLinesOp,
+    SliceExprOp,
+    StrCmpOp,
+    StringConcatExprOp,
+    StringLiteralExprOp,
+    TrimOp,
+    VarRefExprOp,
 )
+
+# op.name -> C++ infix token, paralleling print_ftn.py's _binops. Built
+# independently (not derived from print_ftn's own table) since this file
+# has its own correctness requirements -- e.g. Fortran's AndIOp/OrIOp
+# tokens are the logical words ".and."/".or."; C++'s are "&&"/"||".
+_CPP_BINOPS: dict[str, str] = {
+    arith.AddfOp.name: "+",
+    arith.AddiOp.name: "+",
+    arith.MulfOp.name: "*",
+    arith.MuliOp.name: "*",
+    arith.DivfOp.name: "/",
+    arith.DivSIOp.name: "/",
+    arith.DivUIOp.name: "/",
+    arith.SubfOp.name: "-",
+    arith.SubiOp.name: "-",
+    arith.AndIOp.name: "&&",
+    arith.OrIOp.name: "||",
+}
+
+# op.name -> predicate-name -> C++ comparison token, paralleling
+# print_ftn.py's _cmp_ops. None marks a predicate with no C++ rendering
+# (xDSL's "ordered"/"unordered" float predicates have no direct infix
+# equivalent; not exercised by any real call site).
+_CPP_CMP_OPS: dict[str, dict[str, str | None]] = {
+    arith.CmpiOp.name: {
+        "eq": "==", "ne": "!=",
+        "slt": "<", "sle": "<=", "sgt": ">", "sge": ">=",
+        "ult": "<", "ule": "<=", "ugt": ">", "uge": ">=",
+    },
+    arith.CmpfOp.name: {
+        "false": None,
+        "oeq": "==", "ogt": ">", "oge": ">=", "olt": "<", "ole": "<=",
+        "one": "!=", "ord": None,
+        "ueq": "==", "ugt": ">", "uge": ">=", "ult": "<", "ule": "<=", "une": "!=",
+        "uno": None, "true": None,
+    },
+}
+
+
+def _cpp_literal_str(attr: object) -> str:
+    """Render an arith.ConstantOp's value attribute as a C++ literal --
+    C++ sibling of print_ftn.py's attribute_value_to_str, minus the
+    Fortran-specific kind-suffix/logical-literal spelling."""
+    match attr:
+        case IntegerAttr(value=val, type=IntegerType(width=IntAttr(data=1))):
+            return "true" if bool(val.data) else "false"
+        case IntegerAttr(value=val):
+            return str(val.data)
+        case FloatAttr(value=val) if val.data == 0:
+            return "0.0"
+        case FloatAttr(value=val):
+            return str(val.data)
+        case builtin.StringAttr() as s:
+            return f'"{s.data}"'
+        case _:
+            return f"<!unknown value {attr}>"
+
+
+def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) -> str:
+    """Render op as a C++ sub-expression string.
+
+    print_cpp_header.py's first-ever expression printer (lang-neutral-
+    expr-ir Stage 2) -- mirrors print_ftn.py's _render_expr over the
+    *same* arith/math/StrCmpOp/TrimOp/ccpp_utils expr-op tree, targeting
+    C++ spelling and the shared xdsl_ccpp/backend/expr_precedence table
+    instead of Fortran's.
+
+    ``variables`` resolves a memref.LoadOp/StrCmpOp/TrimOp operand's name
+    the same way print_ftn.py's ftnPrintContext.variables does; omit it
+    when every leaf is one of the new ops that carries its own name as a
+    property (VarRefExprOp) rather than a real compiled SSA load.
+    """
+    variables = variables if variables is not None else {}
+
+    def var_name(val: SSAValue) -> str:
+        return variables.get(val, val.name_hint or "<unnamed>")
+
+    def cmp_token(cmp_op, predicate_name: str) -> str:
+        tok = _CPP_CMP_OPS[cmp_op.name][predicate_name]
+        if tok is None:
+            raise AssertionError(
+                f"expr_to_cpp_str: predicate {predicate_name!r} on {cmp_op.name} "
+                "has no C++ rendering"
+            )
+        return tok
+
+    def render_binop(bin_op, l: SSAValue, r: SSAValue, token: str) -> str:
+        my_level = expr_precedence.level_of(bin_op)
+        my_assoc = expr_precedence.assoc_of(bin_op)
+        lhs_str = expr_precedence.parenthesize(
+            render(l.owner), expr_precedence.level_of(l.owner), my_level, "lhs", my_assoc
+        )
+        rhs_str = expr_precedence.parenthesize(
+            render(r.owner), expr_precedence.level_of(r.owner), my_level, "rhs", my_assoc
+        )
+        return f"{lhs_str} {token} {rhs_str}"
+
+    def render_base(region) -> str:
+        (base_op,) = region.block.ops
+        return expr_precedence.parenthesize(
+            render(base_op), expr_precedence.level_of(base_op),
+            expr_precedence.ATOM_LEVEL, "lhs", "left",
+        )
+
+    def render(o: object) -> str:
+        match o:
+            case arith.ConstantOp(value=v):
+                return _cpp_literal_str(v)
+            case memref.LoadOp(memref=arr):
+                return var_name(arr)
+            case arith.CmpiOp(predicate=v, lhs=l, rhs=r):
+                str_pred = arith.CMPI_COMPARISON_OPERATIONS[v.value.data]
+                return render_binop(o, l, r, cmp_token(o, str_pred))
+            case arith.CmpfOp(predicate=v, lhs=l, rhs=r):
+                str_pred = arith.CMPF_COMPARISON_OPERATIONS[v.value.data]
+                return render_binop(o, l, r, cmp_token(o, str_pred))
+            case arith.XOrIOp():
+                l, r = o.lhs, o.rhs
+                if isa(r.owner, arith.ConstantOp):
+                    return f"!({render(l.owner)})"
+                elif isa(l.owner, arith.ConstantOp):
+                    return f"!({render(r.owner)})"
+                else:
+                    # General XOR -- C++'s logical-inequality spelling is
+                    # "!=" between bools; see print_ftn._render_expr's own
+                    # ".neqv." sibling case for why this stays unparen-
+                    # thesized (no real nested call site to get wrong yet).
+                    return f"{render(l.owner)} != {render(r.owner)}"
+            case TrimOp():
+                # C++ strings need no explicit trim -- the buffer already
+                # carries its own real length; render the name directly.
+                return var_name(o.lhs)
+            case StrCmpOp():
+                if o.literal is not None:
+                    return f'{render(o.lhs.owner)} == "{o.literal.data}"'
+                else:
+                    return f"{var_name(o.lhs)} == {var_name(o.rhs)}"
+            case (
+                arith.AddiOp() | arith.SubiOp()
+                | arith.MuliOp() | arith.DivSIOp() | arith.DivUIOp()
+                | arith.AndIOp() | arith.OrIOp()
+                | arith.AddfOp() | arith.SubfOp() | arith.MulfOp() | arith.DivfOp()
+            ):
+                return render_binop(o, o.lhs, o.rhs, _CPP_BINOPS[o.name])
+            case math.PowFOp() | math.IPowIOp() | math.FPowIOp():
+                # C++ has no native ** operator -- std::pow() instead.
+                return f"std::pow({render(o.lhs.owner)}, {render(o.rhs.owner)})"
+            case StringLiteralExprOp():
+                return f'"{o.text.data}"'
+            case VarRefExprOp():
+                return o.var_name.data
+            case StringConcatExprOp():
+                pieces = [render(p) for p in o.pieces.block.ops]
+                return " + ".join(pieces)
+            case MemberAccessExprOp():
+                base_str = render_base(o.base)
+                sep = "->" if (o.via is not None and o.via.data == "pointer") else "."
+                return f"{base_str}{sep}{o.member.data}"
+            case IndexExprOp():
+                base_str = render_base(o.base)
+                idx_strs = []
+                for i in o.indices.block.ops:
+                    if isa(i, SliceExprOp):
+                        raise AssertionError(
+                            "expr_to_cpp_str: array slicing is unsupported in C++"
+                        )
+                    idx_strs.append(render(i))
+                return base_str + "".join(f"[{s}]" for s in idx_strs)
+            case CallExprOp():
+                if any(True for _ in o.kwargs.block.ops):
+                    raise AssertionError(
+                        "expr_to_cpp_str: C++ has no keyword-argument call syntax"
+                    )
+                pos = [render(a) for a in o.args.block.ops]
+                return f"{o.callee.data}({', '.join(pos)})"
+            case ArrayConstructorExprOp():
+                elems = [render(e) for e in o.elements.block.ops]
+                return "{ " + ", ".join(elems) + " }"
+            case _:
+                raise AssertionError(f"Unhandled op in expr_to_cpp_str: {type(o)}")
+
+    return render(op)
 
 # Fixed boilerplate shared by every generated C++-interop header -- was
 # independently hand-duplicated between _emit_cap_header (below) and
