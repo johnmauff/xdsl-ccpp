@@ -1536,7 +1536,10 @@ class ftnPrintContext:
                 conv_name = self._get_variable_name_for(op.conv_result)
                 dest_name = self._get_variable_name_for(op.original_dest)
                 host_kind = self._elem_kind_name(op.original_dest.type)
-                to_expr = self._suffix_kind_in_expr(op.to_host_expr.data, host_kind)
+                to_expr = self._suffix_kind_in_expr(
+                    self._unit_conversion_suffix(op.to_host_expr, op.conversion),
+                    host_kind,
+                )
                 dim_suffix = self._ftn_dim_suffix(op.conv_result.type)
                 # Mirror CCPPUnitConvertOp's own presence gating: an absent
                 # optional array was never allocated/converted, so there is
