@@ -12,6 +12,7 @@ from xdsl.dialects.builtin import StringAttr, i8
 from xdsl_ccpp.dialects.ccpp_utils import (
     ActiveCheckOp,
     AllocateOp,
+    AssignOp,
     CamDirectCallOp,
     CamHostConstituentApiOp,
     ConstituentFunctionOp,
@@ -30,6 +31,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     SafeDeallocOp,
     ScopedBlockOp,
     TextBoundedDoLoopOp,
+    WriteStmtOp,
     ZeroFillOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import _CCPP_CONSTITUENT_MOD, _bare
@@ -495,7 +497,7 @@ def _generate_constituent_api(
         idiom -- identical across host constituents, each dynamic array,
         and each fixed-advected constituent below."""
         return [
-            RawFortranLinesOp("allocate(const_prop, stat=errcode)"),
+            AllocateOp("const_prop", [], stat_var="errcode"),
             IfThenOp("errcode /= 0", [
                 RawFortranLinesOp("errmsg = 'ERROR allocating const_prop'\nreturn"),
             ]),
@@ -524,7 +526,7 @@ def _generate_constituent_api(
         long_name_f = std_name_f.replace('_', ' ').capitalize()
         extra = f", default_value={default_val_f}" if default_val_f is not None else ""
         rc_body_ops += [
-            RawFortranLinesOp("allocate(const_prop, stat=errcode)"),
+            AllocateOp("const_prop", [], stat_var="errcode"),
             IfThenOp("errcode /= 0", [
                 RawFortranLinesOp("errmsg = 'ERROR allocating const_prop'\nreturn"),
             ]),
@@ -800,10 +802,13 @@ def _generate_constituent_api(
         DdtMethodCallOp(ref('cam_constituents_obj'), "const_index",
                         args=["index", "to_lower(std_name)"],
                         kwargs=["errcode=errflg", "errmsg=errmsg"]),
-        IfThenOp("errflg /= 0 .or. index <= 0", [RawFortranLinesOp(
-            "errflg = 1\n"
-            "write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'"
-        )]),
+        IfThenOp("errflg /= 0 .or. index <= 0", [
+            AssignOp(lhs_expr="errflg", rhs_expr="1"),
+            WriteStmtOp(
+                dest="errmsg", format_spec="(3a)",
+                items=["'const_get_index: constituent '", "trim(std_name)", "' not found'"],
+            ),
+        ]),
     ]
     ci_op = ConstituentFunctionOp(
         fn_name=f"{h}_const_get_index",

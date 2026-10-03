@@ -244,6 +244,36 @@ class WriteErrMsgOp(IRDLOperation):
 
 
 @irdl_op_definition
+class WriteStmtOp(IRDLOperation):
+    """A Fortran formatted ``write`` statement with an arbitrary item list.
+
+    Emits::
+
+        write({dest}, '{format_spec}') {items[0]}, {items[1]}, ...
+
+    Sibling of ``WriteErrMsgOp`` for files with no SSA locals to wrap in
+    operands (e.g. ``constituent_cap.py`` -- "every reference is a plain
+    text name," per ``TextBoundedDoLoopOp``'s own docstring): ``dest`` and
+    every item are opaque text, same declaration-stays-text convention
+    used throughout this codebase. Use ``WriteErrMsgOp`` instead when the
+    dynamic part is a real SSA buffer value.
+    """
+
+    name = "ccpp_utils.write_stmt"
+
+    dest        = prop_def(StringAttr)
+    format_spec = prop_def(StringAttr)
+    items       = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, dest: str, format_spec: str, items: "list[str]"):
+        super().__init__(properties={
+            "dest":        StringAttr(dest),
+            "format_spec": StringAttr(format_spec),
+            "items":       ArrayAttr([StringAttr(i) for i in items]),
+        })
+
+
+@irdl_op_definition
 class ArraySectionOp(IRDLOperation):
     """Represent a Fortran array section: source(lower0:upper0, lower1:upper1, ...).
 
@@ -1042,25 +1072,39 @@ class NullifyPointerOp(IRDLOperation):
 
 @irdl_op_definition
 class AllocateOp(IRDLOperation):
-    """Allocate a Fortran allocatable or pointer variable to a given shape.
+    """Allocate a Fortran allocatable or pointer variable, with an
+    optional shape and an optional STAT= clause.
 
-    Emits::
+    Emits, with one or more ``dims`` (an array/array-of-arrays allocation)::
 
-        allocate({var_name}({dims[0]}, {dims[1]}, ...))
+        allocate({var_name}({dims[0]}, {dims[1]}, ...)[, stat={stat_var}])
+
+    or, with zero ``dims`` (a scalar allocatable/pointer allocation, e.g.
+    a derived-type pointer target)::
+
+        allocate({var_name}[, stat={stat_var}])
 
     ``dims`` is an ArrayAttr of StringAttr Fortran expressions (e.g.
-    ``"ncols"``, ``"size(lc_const_props)"``).
+    ``"ncols"``, ``"size(lc_const_props)"``). ``stat_var`` is the
+    STAT= clause's variable name (opaque text, same declaration-stays-text
+    convention as everywhere else in this codebase) -- covers the
+    recurring ``allocate(const_prop, stat=errcode)`` idiom, previously a
+    one-off ``RawFortranLinesOp`` leaf.
     """
 
     name = "ccpp_utils.allocate"
     var_name = prop_def(StringAttr)
     dims     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    stat_var = opt_prop_def(StringAttr)
 
-    def __init__(self, var_name: str, dims: "list[str]"):
-        super().__init__(properties={
+    def __init__(self, var_name: str, dims: "list[str]", stat_var: "str | None" = None):
+        props: dict = {
             "var_name": StringAttr(var_name),
             "dims":     ArrayAttr([StringAttr(d) for d in dims]),
-        })
+        }
+        if stat_var is not None:
+            props["stat_var"] = StringAttr(stat_var)
+        super().__init__(properties=props)
 
 
 @irdl_op_definition
@@ -2808,6 +2852,7 @@ CCPPUtils = Dialect(
         HostVarRefOp,
         ClearStringOp,
         WriteErrMsgOp,
+        WriteStmtOp,
         ArraySectionOp,
         KindDefOp,
         SetStringOp,

@@ -119,6 +119,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     VerticalFlipWriteBackOp as CCPPVerticalFlipWriteBackOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
+from xdsl_ccpp.dialects.ccpp_utils import WriteStmtOp as CCPPWriteStmtOp
 
 _MAX_LINE_LEN = 99
 
@@ -863,6 +864,9 @@ class ftnPrintContext:
                 self.print(f"write({dest_name}, '(3a)') \"{op.prefix.data}\", ", end="")
                 self.print_expr(op.var.owner)
                 self.print(f', "{op.suffix.data}"', use_prefix=False)
+            case CCPPWriteStmtOp():
+                items = ", ".join(i.data for i in op.items.data)
+                self.print(f"write({op.dest.data}, '{op.format_spec.data}') {items}")
             case CCPPArraySectionOp():
                 # Register the full Fortran array-section expression as the
                 # result's variable name so call-site printing emits it inline.
@@ -985,7 +989,9 @@ class ftnPrintContext:
                 self.print(f"nullify({op.ptr_name.data})")
             case CCPPAllocateOp():
                 dims = ", ".join(d.data for d in op.dims.data)
-                self.print(f"allocate({op.var_name.data}({dims}))")
+                target = f"{op.var_name.data}({dims})" if dims else op.var_name.data
+                stat = f", stat={op.stat_var.data}" if op.stat_var is not None else ""
+                self.print(f"allocate({target}{stat})")
             case CCPPZeroFillOp():
                 self.print(f"{op.var_name.data} = 0.0_kind_phys")
             case CCPPPointerSliceAssignOp():
