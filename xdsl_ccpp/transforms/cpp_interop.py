@@ -22,9 +22,28 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AllocateOp,
+    AssignOp,
+    BindCSubroutineOp,
+    CallStatementOp,
+    CFunctionSigOp,
     CHostCapOp,
+    CppBraceInitCallOp,
+    CppCallStatementOp,
+    CppConstructorOp,
+    CppFieldDeclOp,
+    CppIncludeOp,
+    CppNamespaceOp,
+    CppStructDefOp,
+    CToFortranStringCopyOp,
     DerivedType,
+    ExternCGuardOp,
+    FortranToCStringCopyOp,
+    IfThenOp,
+    RawCppLinesOp,
+    RawFortranLinesOp,
     RealKindType,
+    TextBoundedDoLoopOp,
 )
 from xdsl_ccpp.transforms.ccpp_cap import _collect_public_suite_functions
 from xdsl_ccpp.transforms.util.cap_shared import (
@@ -73,46 +92,10 @@ _CONSTITUENT_STRUCT_FIELDS = [
 ]
 
 
-def _emit_subr_header(append_fn, cfn: str, vnames: list, max_col: int = 92) -> None:
-    """Emit a subroutine header line with bind(C), using continuation if needed."""
-    prefix = f"  subroutine {cfn}("
-    bind_line = f"      bind(C, name='{cfn}')"
-    single = prefix + ", ".join(vnames) + ") &"
-    if len(single) <= max_col:
-        append_fn(single)
-    else:
-        append_fn(prefix + " &")
-        indent = "      "
-        cur = indent
-        for i, nm in enumerate(vnames):
-            sep = ", " if i < len(vnames) - 1 else ""
-            if len(cur) + len(nm) + len(sep) + 4 > max_col:
-                append_fn(cur + " &")
-                cur = indent + nm + sep
-            else:
-                cur += nm + sep
-        append_fn(cur + ") &")
-    append_fn(bind_line)
-
-
-def _emit_call(append_fn, fn_name: str, call_exprs: list, max_col: int = 80) -> None:
-    """Emit 'call fn(args)' with Fortran continuation lines when needed."""
-    prefix = f"    call {fn_name}("
-    single = prefix + ", ".join(call_exprs) + ")"
-    if len(single) <= max_col:
-        append_fn(single)
-        return
-    append_fn(prefix + " &")
-    indent = "        "
-    cur = indent
-    for i, expr in enumerate(call_exprs):
-        sep = ", " if i < len(call_exprs) - 1 else ""
-        if len(cur) + len(expr) + len(sep) + 4 > max_col:
-            append_fn(cur + " &")
-            cur = indent + expr + sep
-        else:
-            cur += expr + sep
-    append_fn(cur + ")")
+# _emit_subr_header/_emit_call (hand-rolled column-wrap loops) removed:
+# superseded by BindCSubroutineOp/CallStatementOp, which share the
+# wrap_paren_list helper in print_ftn.py instead of each hand-rolling its
+# own copy.
 
 
 def _chost_kind_iso_map(ccpp_mod) -> dict:
@@ -1028,58 +1011,58 @@ class CPPInteropCap(ModulePass):
         suite_names = list(suite_descriptions.keys())
         suite_cap_mod_name = suite_names[0] + "_cap" if suite_names else ""
 
-        ftn_text = self._build_chost_ftn_text(
-            camel_name, mod_name, suite_cap_mod_name, bind_c_fns, meta_data, ccpp_mod,
-            public_fns or {}, suite_descriptions,
-            ddt_source_module=ddt_source_module,
-        )
-        cpp_text = self._build_chost_cpp_text(
-            camel_name, mod_name, bind_c_fns,
-            meta_data, public_fns or {}, suite_descriptions, ccpp_mod,
-            ddt_source_module=ddt_source_module,
-        )
-        wrapper_text = self._build_chost_wrapper_text(
-            camel_name, mod_name, bind_c_fns,
-            meta_data, public_fns or {}, suite_descriptions, ccpp_mod,
-            ddt_source_module=ddt_source_module,
+        public_fns = public_fns or {}
+
+        # Metadata maps + fn_ctxs computed once and shared across all three
+        # builders below -- previously each independently recomputed the
+        # same std_to_host/local_to_std/ncol_var/nz_var/kind_iso_map maps
+        # and called _chost_fn_contexts on identical inputs.
+        std_to_host, local_to_std, ncol_var, nz_var = _chost_build_maps(meta_data)
+        kind_iso_map = _chost_kind_iso_map(ccpp_mod) if ccpp_mod is not None else {}
+        suite_name = next(iter(suite_descriptions), "")
+        fn_ctxs = _chost_fn_contexts(
+            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
+            ncol_var, local_to_std, std_to_host, kind_iso_map,
+            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         )
 
-        return CHostCapOp(ftn_text, cpp_text, mod_name, wrapper_text)
+        ftn_body_ops = self._build_chost_ftn_text(
+            camel_name, mod_name, suite_cap_mod_name, bind_c_fns,
+            public_fns, fn_ctxs, ncol_var, nz_var,
+            ddt_source_module=ddt_source_module,
+        )
+        cpp_body_ops = self._build_chost_cpp_text(mod_name, fn_ctxs)
+        wrapper_body_ops = self._build_chost_wrapper_body(
+            camel_name, mod_name, fn_ctxs, ncol_var, nz_var,
+        )
+
+        return CHostCapOp(ftn_body_ops, cpp_body_ops, mod_name, wrapper_body_ops)
 
     def _build_chost_ftn_text(
-        self, camel_name, mod_name, suite_cap_mod_name, bind_c_fns, meta_data, ccpp_mod,
-        public_fns, suite_descriptions, ddt_source_module=None,
+        self, camel_name, mod_name, suite_cap_mod_name, bind_c_fns,
+        public_fns, fn_ctxs, ncol_var, nz_var,
+        ddt_source_module=None,
     ):
-        """Generate the complete Fortran BIND(C) chost cap module text."""
-        # ── Metadata maps ──────────────────────────────────────────────────────
-        # std_to_host: standard_name → host-local variable name (MODULE + HOST tables)
-        std_to_host: dict = {}
-        for props in meta_data.values():
-            if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
-                continue
-            for atbl in props.arg_tables.values():
-                for var in atbl.getFunctionArguments():
-                    if var.hasAttr("standard_name"):
-                        sn = var.getAttr("standard_name").lower()
-                        if sn not in std_to_host:
-                            std_to_host[sn] = var.name
+        """Build the complete Fortran BIND(C) chost cap module as typed ops.
 
-        # local_to_std: any local name (all table types) → standard_name
-        # Covers SCHEME args like lv_in, col_start (from HOST), etc.
-        local_to_std: dict = {}
-        for props in meta_data.values():
-            for atbl in props.arg_tables.values():
-                for var in atbl.getFunctionArguments():
-                    if var.hasAttr("standard_name") and var.name not in local_to_std:
-                        local_to_std[var.name] = var.getAttr("standard_name").lower()
+        Returns a list of ops for ``CHostCapOp.ftn_body``. The module
+        preamble (``module``/``use``/``implicit none``/``private``/
+        ``public``/the BIND(C) struct type def/module-level allocatable
+        decls) stays as a single ``RawFortranLinesOp`` -- declaration-only
+        boilerplate, kept as opaque text by the same convention every other
+        op in this area already uses for ``arg_decls``/``local_decls``/
+        ``use_stmts`` (see ConstituentFunctionOp/BindCSubroutineOp). Each
+        per-lifecycle subroutine body, and the two constituent-query
+        functions, are built from real statement ops
+        (AssignOp/CallStatementOp/CToFortranStringCopyOp/
+        FortranToCStringCopyOp/IfThenOp/TextBoundedDoLoopOp/AllocateOp).
 
-        ncol_var = (std_to_host.get(CCPP_HORIZ_DIM_STD_NAME)
-                    or std_to_host.get(CCPP_LOOP_EXTENT_STD_NAME) or "ncol")
-        nz_var = std_to_host.get(CCPP_VERT_DIM_STD_NAME, "nz")
-
-        kind_iso_map = _chost_kind_iso_map(ccpp_mod)
-
-        suite_name = next(iter(suite_descriptions), "")
+        ``fn_ctxs``/``ncol_var``/``nz_var`` are computed once in
+        ``_generate_chost_cap_module`` and shared with
+        ``_build_chost_cpp_text``/``_build_chost_wrapper_body`` -- previously
+        each of the three builders independently recomputed the same
+        metadata maps and called ``_chost_fn_contexts`` on identical inputs.
+        """
 
         def ftn_decl(ai):
             host = ai["host"]
@@ -1117,12 +1100,6 @@ class CPPInteropCap(ModulePass):
                 return f"    integer(c_int),               intent(out) :: {host}"
             return f"    ! unclassified arg: {host}"
 
-        fn_ctxs = _chost_fn_contexts(
-            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
-            ncol_var, local_to_std, std_to_host, kind_iso_map,
-            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
-        )
-
         # ── Collect suite cap functions referenced ──────────────────────────────
         used_suite_fns: list = []
         for ctx in fn_ctxs:
@@ -1149,45 +1126,47 @@ class CPPInteropCap(ModulePass):
                     _seen_cv.add(cv)
                     all_constituent_vars.append(cv)
 
-        # ── Module header ───────────────────────────────────────────────────────
-        L: list = []
-        A = L.append
+        # ── Module header (declaration-only boilerplate; stays as text) ─────────
+        H: list = []
+        HA = H.append
 
-        A(f"module {mod_name}")
-        A("")
-        A("  use ccpp_kinds, only: kind_phys")
-        A("  use iso_c_binding")
+        HA(f"module {mod_name}")
+        HA("")
+        HA("  use ccpp_kinds, only: kind_phys")
+        HA("  use iso_c_binding")
         for tn, mod in sorted(ddt_uses.items()):
-            A(f"  use {mod}, only: {tn}")
+            HA(f"  use {mod}, only: {tn}")
         if all_constituent_vars:
-            A(f"  use {_CCPP_CONSTITUENT_MOD}, only: {_CONSTITUENT_DDT_NAME}")
+            HA(f"  use {_CCPP_CONSTITUENT_MOD}, only: {_CONSTITUENT_DDT_NAME}")
         for sfn in used_suite_fns:
-            A(f"  use {suite_cap_mod_name}, only: {sfn}")
-        A("")
-        A("  implicit none")
-        A("  private")
-        A("")
+            HA(f"  use {suite_cap_mod_name}, only: {sfn}")
+        HA("")
+        HA("  implicit none")
+        HA("  private")
+        HA("")
         for fn_op in bind_c_fns:
-            A(f"  public :: {_chost_fn_name(camel_name, _lc_of(fn_op.sym_name.data))}")
+            HA(f"  public :: {_chost_fn_name(camel_name, _lc_of(fn_op.sym_name.data))}")
         if all_constituent_vars:
-            A(f"  public :: {mod_name}_nconstituents")
-            A(f"  public :: {mod_name}_get_constituent_info")
-            A("")
-            A("  ! BIND(C) struct mirroring CcppConstituentInfo on the C++ side")
-            A("  type, public, bind(c) :: chost_constituent_info_t")
+            HA(f"  public :: {mod_name}_nconstituents")
+            HA(f"  public :: {mod_name}_get_constituent_info")
+            HA("")
+            HA("  ! BIND(C) struct mirroring CcppConstituentInfo on the C++ side")
+            HA("  type, public, bind(c) :: chost_constituent_info_t")
             for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
                 if fkind == "char":
-                    A(f"    character(kind=c_char) :: {fname}({flen + 1})")
+                    HA(f"    character(kind=c_char) :: {fname}({flen + 1})")
                 elif fkind == "real":
-                    A(f"    real(c_double)         :: {fname}")
+                    HA(f"    real(c_double)         :: {fname}")
                 else:  # logical
-                    A(f"    logical(c_bool)        :: {fname}")
-            A("  end type chost_constituent_info_t")
-            A("")
+                    HA(f"    logical(c_bool)        :: {fname}")
+            HA("  end type chost_constituent_info_t")
+            HA("")
             for cv in all_constituent_vars:
-                A(f"  type({_CONSTITUENT_DDT_NAME}), allocatable, save :: _chost_{cv}(:)")
-        A("")
-        A("contains")
+                HA(f"  type({_CONSTITUENT_DDT_NAME}), allocatable, save :: _chost_{cv}(:)")
+        HA("")
+        HA("contains")
+
+        module_ops: list = [RawFortranLinesOp("\n".join(H))]
 
         # ── Subroutines ─────────────────────────────────────────────────────────
         for ctx in fn_ctxs:
@@ -1202,71 +1181,65 @@ class CPPInteropCap(ModulePass):
             has_sname  = any(ai["is_sname"]  for ai in visible)
             plain_char_args = [ai for ai in visible
                                if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]]
-
-            # ── Subroutine signature ──────────────────────────────────────────
-            A("")
-            _emit_subr_header(A, cfn, [ai["host"] for ai in visible])
+            sn = next((ai["host"] for ai in visible if ai["is_sname"]), None)
+            em = next((ai["host"] for ai in visible if ai["is_errmsg"]), None)
 
             # ── Declarations ─────────────────────────────────────────────────
-            for ai in visible:
-                A(ftn_decl(ai))
+            arg_decls = [ftn_decl(ai).lstrip() for ai in visible]
+            local_decls: list = []
             if has_errmsg or has_sname or plain_char_args:
-                A("    integer :: i")
+                local_decls.append("integer :: i")
             if has_sname:
-                sn = next(ai["host"] for ai in visible if ai["is_sname"])
-                A(f"    character(len={CCPP_SCHEME_NAME_LEN})  :: {sn}_f")
+                local_decls.append(f"character(len={CCPP_SCHEME_NAME_LEN})  :: {sn}_f")
             if has_errmsg:
-                em = next(ai["host"] for ai in visible if ai["is_errmsg"])
-                A(f"    character(len={CCPP_ERRMSG_LEN}) :: {em}_f")
+                local_decls.append(f"character(len={CCPP_ERRMSG_LEN}) :: {em}_f")
             for ai in plain_char_args:
                 cl = ai.get("char_len") or CCPP_ERRMSG_LEN
-                A(f"    character(len={cl}) :: {ai['host']}_f")
+                local_decls.append(f"character(len={cl}) :: {ai['host']}_f")
             for li in ddt_locals.values():
-                A(f"    type({li['ddt_type']}) :: {li['local_name']}")
+                local_decls.append(f"type({li['ddt_type']}) :: {li['local_name']}")
 
             # ── Body initialization ───────────────────────────────────────────
-            A("")
+            body_ops: list = []
             if has_errmsg:
-                A(f"    {em}_f = ' '")
+                body_ops.append(AssignOp(lhs_expr=f"{em}_f", rhs_expr="' '"))
             if has_sname:
-                A(f"    {sn}_f = ' '")
+                body_ops.append(AssignOp(lhs_expr=f"{sn}_f", rhs_expr="' '"))
             if any(ai["is_errflg"] for ai in visible):
                 ef = next(ai["host"] for ai in visible if ai["is_errflg"])
-                A(f"    {ef} = 0")
+                body_ops.append(AssignOp(lhs_expr=ef, rhs_expr="0"))
             # C→F copy-in for plain character(len=N) args (intent=in or intent=inout)
             for ai in plain_char_args:
                 if ai.get("intent") in ("in", "inout"):
                     h = ai["host"]
-                    A(f"    {h}_f = ' '")
-                    A(f"    do i = 1, len({h}_f)")
-                    A(f"      if ({h}(i) == c_null_char) exit")
-                    A(f"      {h}_f(i:i) = {h}(i)")
-                    A(f"    end do")
+                    body_ops.append(CToFortranStringCopyOp(c_var=h, f_var=f"{h}_f"))
 
             # ── DDT copy-in: scalars assigned, arrays allocated and filled ────
             for li in ddt_locals.values():
                 lname = li["local_name"]
                 # Character members are not in the C interface; initialise blank.
                 for mn in li.get("char_member_blanks", []):
-                    A(f"    {lname}%{mn} = ' '")
+                    body_ops.append(AssignOp(lhs_expr=f"{lname}%{mn}", rhs_expr="' '"))
                 for ai in li["member_ais"]:
                     mn = ai["_ddt_member"]
                     fn_ = ai["bare"]
                     if ai["rank"] == 0:
-                        A(f"    {lname}%{mn} = {fn_}")
+                        body_ops.append(AssignOp(lhs_expr=f"{lname}%{mn}", rhs_expr=fn_))
                     else:
                         _dn = ai.get("dim_ncol") or ncol_var
                         _dz = ai.get("dim_nz")   or nz_var
                         if ai["rank"] == 1:
-                            dims = _dn
+                            dims = [_dn]
                         elif ai["rank"] == 2:
-                            dims = f"{_dn}, {_dz}"
+                            dims = [_dn, _dz]
                         else:
-                            dims = f"{_dn}, {_dz}, *"
+                            dims = [_dn, _dz, "*"]
                         if ai["intent"] != "out":
                             # intent=out: scheme allocates internally; skip pre-alloc.
-                            A(f"    allocate({lname}%{mn}({dims}))")
-                            A(f"    {lname}%{mn} = real({fn_}, kind_phys)")
+                            body_ops.append(AllocateOp(var_name=f"{lname}%{mn}", dims=dims))
+                            body_ops.append(AssignOp(
+                                lhs_expr=f"{lname}%{mn}", rhs_expr=f"real({fn_}, kind_phys)"
+                            ))
 
             # ── Suite cap calls ───────────────────────────────────────────────
             for sfn_i in sfns:
@@ -1308,7 +1281,7 @@ class CPPInteropCap(ModulePass):
                         call_exprs.append(f"{oai['host']}_f")
                     else:
                         call_exprs.append(oai["host"])
-                _emit_call(A, sfn_i, call_exprs)
+                body_ops.append(CallStatementOp(callee=sfn_i, call_args=call_exprs))
 
             # ── DDT cleanup: writeback inout arrays ───────────────────────────
             # No explicit deallocate here: lname is a local, non-SAVE derived-
@@ -1329,168 +1302,206 @@ class CPPInteropCap(ModulePass):
                     fn_ = ai["bare"]
                     if ai["intent"] != "in":
                         c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
-                        A(f"    {fn_} = real({lname}%{mn}, {c_real})")
+                        body_ops.append(AssignOp(
+                            lhs_expr=fn_, rhs_expr=f"real({lname}%{mn}, {c_real})"
+                        ))
 
             # ── F→C string copy loops ─────────────────────────────────────────
             if has_sname:
-                A(f"    do i = 1, len_trim({sn}_f)")
-                A(f"      {sn}(i) = {sn}_f(i:i)")
-                A(f"    end do")
-                A(f"    {sn}(len_trim({sn}_f)+1) = c_null_char")
+                body_ops.append(FortranToCStringCopyOp(c_var=sn, f_var=f"{sn}_f"))
             if has_errmsg:
-                A(f"    do i = 1, len_trim({em}_f)")
-                A(f"      {em}(i) = {em}_f(i:i)")
-                A(f"    end do")
-                A(f"    {em}(len_trim({em}_f)+1) = c_null_char")
+                body_ops.append(FortranToCStringCopyOp(c_var=em, f_var=f"{em}_f"))
             for ai in plain_char_args:
                 if ai.get("intent") in ("out", "inout"):
                     h = ai["host"]
-                    A(f"    do i = 1, len_trim({h}_f)")
-                    A(f"      {h}(i) = {h}_f(i:i)")
-                    A(f"    end do")
-                    A(f"    {h}(len_trim({h}_f)+1) = c_null_char")
+                    body_ops.append(FortranToCStringCopyOp(c_var=h, f_var=f"{h}_f"))
 
-            A(f"  end subroutine {cfn}")
+            module_ops.append(BindCSubroutineOp(
+                fn_name=cfn, bind_name=cfn,
+                args=[ai["host"] for ai in visible],
+                arg_decls=arg_decls, local_decls=local_decls,
+                body_ops=body_ops,
+            ))
 
         # ── Constituent query functions ──────────────────────────────────────────
         if all_constituent_vars:
-            A("")
-            A(f"  function {mod_name}_nconstituents() result(n) &")
-            A(f"      bind(c, name=\"{mod_name}_nconstituents\")")
-            A("    integer(c_int) :: n")
-            A("    n = 0_c_int")
+            nc_body: list = [AssignOp(lhs_expr="n", rhs_expr="0_c_int")]
             for cv in all_constituent_vars:
-                A(f"    if (allocated(_chost_{cv})) &")
-                A(f"        n = n + int(size(_chost_{cv}), c_int)")
-            A(f"  end function {mod_name}_nconstituents")
-            A("")
-            A(f"  subroutine {mod_name}_get_constituent_info(buf, n) &")
-            A(f"      bind(c, name=\"{mod_name}_get_constituent_info\")")
-            A("    type(chost_constituent_info_t), intent(out) :: buf(n)")
-            A("    integer(c_int), value, intent(in) :: n")
-            A("    integer :: _chost_idx, _chost_j, _chost_slen, _chost_i")
-            A("    _chost_idx = 0")
+                nc_body.append(IfThenOp(
+                    condition_expr=f"allocated(_chost_{cv})",
+                    body_ops=[AssignOp(
+                        lhs_expr="n", rhs_expr=f"n + int(size(_chost_{cv}), c_int)"
+                    )],
+                ))
+            module_ops.append(BindCSubroutineOp(
+                fn_name=f"{mod_name}_nconstituents",
+                bind_name=f"{mod_name}_nconstituents",
+                args=[], arg_decls=[], local_decls=[],
+                body_ops=nc_body,
+                is_function=True, result_name="n",
+                result_decl="integer(c_int) :: n",
+            ))
+
+            gci_body: list = [AssignOp(lhs_expr="_chost_idx", rhs_expr="0")]
             for cv in all_constituent_vars:
-                A(f"    if (allocated(_chost_{cv})) then")
-                A(f"      do _chost_i = 1, size(_chost_{cv})")
-                A("        _chost_idx = _chost_idx + 1")
-                A("        if (_chost_idx > n) return")
+                inner_do_body: list = [
+                    AssignOp(lhs_expr="_chost_idx", rhs_expr="_chost_idx + 1"),
+                    IfThenOp(
+                        condition_expr="_chost_idx > n",
+                        body_ops=[RawFortranLinesOp("return")],
+                    ),
+                ]
                 for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
                     src = f"_chost_{cv}(_chost_i)%{fname}"
                     dst = f"buf(_chost_idx)%{fname}"
                     if fkind == "char":
-                        A(f"        _chost_slen = min(len_trim({src}), {flen})")
-                        A(f"        do _chost_j = 1, _chost_slen")
-                        A(f"          {dst}(_chost_j) = {src}(_chost_j:_chost_j)")
-                        A(f"        end do")
-                        A(f"        {dst}(min(_chost_slen+1,{flen+1})) = c_null_char")
+                        inner_do_body.append(AssignOp(
+                            lhs_expr="_chost_slen", rhs_expr=f"min(len_trim({src}), {flen})"
+                        ))
+                        inner_do_body.append(TextBoundedDoLoopOp(
+                            loop_var="_chost_j", upper_expr="_chost_slen",
+                            body_ops=[AssignOp(
+                                lhs_expr=f"{dst}(_chost_j)",
+                                rhs_expr=f"{src}(_chost_j:_chost_j)",
+                            )],
+                        ))
+                        inner_do_body.append(AssignOp(
+                            lhs_expr=f"{dst}(min(_chost_slen+1,{flen+1}))",
+                            rhs_expr="c_null_char",
+                        ))
                     elif fkind == "real":
-                        A(f"        {dst} = real({src}, c_double)")
+                        inner_do_body.append(AssignOp(
+                            lhs_expr=dst, rhs_expr=f"real({src}, c_double)"
+                        ))
                     else:  # logical
-                        A(f"        {dst} = logical({src}, c_bool)")
-                A(f"      end do")
-                A(f"    end if")
-            A(f"  end subroutine {mod_name}_get_constituent_info")
+                        inner_do_body.append(AssignOp(
+                            lhs_expr=dst, rhs_expr=f"logical({src}, c_bool)"
+                        ))
+                gci_body.append(IfThenOp(
+                    condition_expr=f"allocated(_chost_{cv})",
+                    body_ops=[TextBoundedDoLoopOp(
+                        loop_var="_chost_i", upper_expr=f"size(_chost_{cv})",
+                        body_ops=inner_do_body,
+                    )],
+                ))
+            module_ops.append(BindCSubroutineOp(
+                fn_name=f"{mod_name}_get_constituent_info",
+                bind_name=f"{mod_name}_get_constituent_info",
+                args=["buf", "n"],
+                arg_decls=[
+                    "type(chost_constituent_info_t), intent(out) :: buf(n)",
+                    "integer(c_int), value, intent(in) :: n",
+                ],
+                local_decls=["integer :: _chost_idx, _chost_j, _chost_slen, _chost_i"],
+                body_ops=gci_body,
+            ))
 
-        A("")
-        A(f"end module {mod_name}")
+        module_ops.append(RawFortranLinesOp(f"end module {mod_name}"))
 
-        return "\n".join(L) + "\n"
+        return module_ops
 
-    def _build_chost_cpp_text(
-        self, camel_name, mod_name, bind_c_fns,
-        meta_data, public_fns, suite_descriptions, ccpp_mod=None,
-        ddt_source_module=None,
-    ):
-        """Generate the complete C++ header text for the chost cap."""
-        std_to_host, local_to_std, ncol_var, nz_var = _chost_build_maps(meta_data)
+    def _build_chost_cpp_text(self, mod_name, fn_ctxs):
+        """Build the complete C++ header for the chost cap as typed ops.
+        Returns a list of ops for ``CHostCapOp.cpp_body``.
 
-        kind_iso_map = _chost_kind_iso_map(ccpp_mod) if ccpp_mod is not None else {}
+        The fixed banner/``#pragma once`` preamble is not part of this
+        list -- it's identical across every generated header (this one and
+        the regular ``<HostName>_ccpp_cap.h``), so ``print_cpp_header.py``
+        writes it once itself rather than modeling it as generated content.
 
-        suite_name = next(iter(suite_descriptions), "")
-
-        L: list = []
-        A = L.append
-        A("// Generated by xdsl-ccpp."
-          " Array arguments are column-major (Fortran order).")
-        A("// Pass Kokkos::View with LayoutLeft, or transpose before calling.")
-        A("#pragma once")
-        A("#ifdef __cplusplus")
-        A('extern "C" {')
-        A("#endif")
-        A("")
-
+        ``fn_ctxs`` is computed once in ``_generate_chost_cap_module`` and
+        shared with ``_build_chost_ftn_text``/``_build_chost_wrapper_body``
+        -- previously each of the three builders independently recomputed
+        the same metadata maps and called ``_chost_fn_contexts`` on
+        identical inputs.
+        """
         all_constituent_vars_cpp: list = []
         _seen_cv_cpp: set = set()
-        fn_ctxs_cpp = list(_chost_fn_contexts(
-            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
-            ncol_var, local_to_std, std_to_host, kind_iso_map,
-            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
-        ))
-        for ctx in fn_ctxs_cpp:
+        for ctx in fn_ctxs:
             for cv in ctx.get("constituent_vars", []):
                 if cv not in _seen_cv_cpp:
                     _seen_cv_cpp.add(cv)
                     all_constituent_vars_cpp.append(cv)
 
-        for ctx in fn_ctxs_cpp:
+        proto_ops: list = []
+        for ctx in fn_ctxs:
             cfn, visible = ctx["cfn"], ctx["visible"]
-            params = [(ai["host"], _chost_cpp_type(ai)) for ai in visible]
+            proto_ops.append(CFunctionSigOp(
+                fn_name=cfn,
+                param_names=[ai["host"] for ai in visible],
+                param_types=[_chost_cpp_type(ai) for ai in visible],
+                param_comments=["" for _ in visible],
+                body_ops=[],
+            ))
 
-            if not params:
-                A(f"void {cfn}(void);")
-            else:
-                A(f"void {cfn}(")
-                for i, (name, cpp_t) in enumerate(params):
-                    comma = "," if i < len(params) - 1 else " "
-                    A(f"    {cpp_t:<16} {name}{comma}")
-                A(");")
-            A("")
-
-        A("#ifdef __cplusplus")
-        A("}")
-        A("#endif")
+        body_ops: list = [ExternCGuardOp(body_ops=proto_ops)]
 
         if all_constituent_vars_cpp:
-            A("")
-            A("#include <stdbool.h>")
-            A("struct CcppConstituentInfo {")
+            field_ops: list = []
             for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
                 if fkind == "char":
-                    A(f"    char     {fname}[{flen + 1}];")
+                    field_ops.append(CppFieldDeclOp(
+                        field_name=fname, cpp_type="char", array_suffix=f"[{flen + 1}]"
+                    ))
                 elif fkind == "real":
-                    A(f"    double   {fname};")
+                    field_ops.append(CppFieldDeclOp(field_name=fname, cpp_type="double"))
                 else:  # logical
-                    A(f"    bool     {fname};")
-            A("};")
-            A("")
-            A("#ifdef __cplusplus")
-            A('extern "C" {')
-            A("#endif")
-            A(f"int  {mod_name}_nconstituents(void);")
-            A(f"void {mod_name}_get_constituent_info(struct CcppConstituentInfo* buf, int n);")
-            A("#ifdef __cplusplus")
-            A("}")
-            A("#endif")
+                    field_ops.append(CppFieldDeclOp(field_name=fname, cpp_type="bool"))
+            body_ops.append(CppIncludeOp(header="stdbool.h"))
+            body_ops.append(CppStructDefOp(
+                struct_name="CcppConstituentInfo", member_ops=field_ops
+            ))
+            body_ops.append(ExternCGuardOp(body_ops=[
+                CFunctionSigOp(
+                    fn_name=f"{mod_name}_nconstituents", return_type="int",
+                    param_names=[], param_types=[], param_comments=[], body_ops=[],
+                ),
+                CFunctionSigOp(
+                    fn_name=f"{mod_name}_get_constituent_info",
+                    param_names=["buf", "n"],
+                    param_types=["struct CcppConstituentInfo*", "int"],
+                    param_comments=["", ""], body_ops=[],
+                ),
+            ]))
 
-        return "\n".join(L) + "\n"
+        return body_ops
 
-    def _build_chost_wrapper_text(
-        self, camel_name, mod_name, bind_c_fns,
-        meta_data, public_fns, suite_descriptions, ccpp_mod=None,
-        ddt_source_module=None,
-    ):
-        """Generate the C++ ergonomics wrapper (.hpp) for the chost cap.
+    def _build_chost_wrapper_body(self, camel_name, mod_name, fn_ctxs, ncol_var, nz_var):
+        """Build the C++ ergonomics wrapper (.hpp) for the chost cap as
+        typed ops. Returns a list of ops for ``CHostCapOp.wrapper_body``.
 
         Produces a header-only wrapper with:
         - A ``Status`` struct carrying an int code and std::string message.
         - Per-lifecycle named arg structs (e.g. ``RunArgs``) — errmsg/errflg/
           scheme_name are excluded and handled internally.
         - ``inline`` free functions inside ``namespace <camel_name>_chost``.
+        - A ``State`` struct aggregating fields across all lifecycles, with
+          a constructor, a ``std::vector``-backed ``allocate()``, and
+          designated-initializer convenience overloads.
+
+        The fixed banner/pragma/includes are not part of this list -- 100%
+        derivable from ``mod_name``, ``print_cpp_header.py``'s
+        ``_cpp_wrapper_banner`` writes them directly. Everything else
+        builds from real statement ops (CppStructDefOp/CFunctionSigOp/
+        CppCallStatementOp/CppConstructorOp/CppBraceInitCallOp);
+        RawCppLinesOp remains only for comments, declarations, and returns
+        -- statement *shape* is typed, expression *content* stays opaque
+        text, same boundary used everywhere else in this codebase (a real
+        language-neutral expression IR, distinguishing operators/literals/
+        references instead of opaque text, is a separate, much larger
+        effort -- see BACKLOG.md's technical-debt section).
+
+        ``L``/``A``/``flush``/``emit`` above let not-yet-converted sections
+        interleave with already-converted ones in the right output order;
+        every section is now converted, so by the end of this function
+        every ``flush()`` call sees only comment/separator text.
+
+        ``fn_ctxs`` is computed once in ``_generate_chost_cap_module`` and
+        shared with ``_build_chost_ftn_text``/``_build_chost_cpp_text`` --
+        previously each of the three builders independently recomputed the
+        same metadata maps and called ``_chost_fn_contexts`` on identical
+        inputs.
         """
-        std_to_host, local_to_std, ncol_var, nz_var = _chost_build_maps(meta_data)
-        kind_iso_map = _chost_kind_iso_map(ccpp_mod) if ccpp_mod is not None else {}
-        suite_name = next(iter(suite_descriptions), "")
         ns_name = f"{camel_name}_chost"
 
         _CPP_FN_NAME = {"register": "do_register"}  # 'register' is a C++ keyword
@@ -1498,31 +1509,44 @@ class CPPInteropCap(ModulePass):
         def struct_name(lc):
             return "".join(w.capitalize() for w in lc.split("_")) + "Args"
 
+        # body_ops is the real ops list for CppNamespaceOp's body. L/A are
+        # a text buffer for comment/declaration/return lines that stay
+        # opaque text (see this function's own docstring); flush() wraps
+        # whatever's buffered into one RawCppLinesOp right before any real
+        # op is inserted via emit(), so raw text and typed ops interleave
+        # in the correct output order.
+        body_ops: list = []
         L: list = []
         A = L.append
-        A(f"// Generated by xdsl-ccpp. C++ ergonomics wrapper for {mod_name}.")
-        A("// Array arguments are column-major (Fortran order).")
-        A("#pragma once")
-        A("#include <string>")
-        A("#include <vector>")
-        A(f'#include "{mod_name}.h"')
+
+        def flush():
+            if L:
+                body_ops.append(RawCppLinesOp("\n".join(L) + "\n"))
+                L.clear()
+
+        def emit(op):
+            flush()
+            body_ops.append(op)
+
         A("")
-        A(f"namespace {ns_name} {{")
-        A("")
-        A("struct Status {")
-        A("    int         code;")
-        A("    std::string message;")
-        A("    bool ok() const { return code == 0; }")
-        A("};")
+        emit(CppStructDefOp(
+            "Status",
+            member_ops=[
+                CppFieldDeclOp(field_name="code", cpp_type="int", type_width=11),
+                CppFieldDeclOp(field_name="message", cpp_type="std::string", type_width=11),
+            ],
+            is_pod=False,
+            method_ops=[CFunctionSigOp(
+                fn_name="ok", return_type="bool", is_const=True,
+                param_names=[], param_types=[], param_comments=[],
+                body_ops=[RawCppLinesOp("return code == 0;")],
+            )],
+        ))
 
         # Collect constituent vars across all lifecycles for this wrapper
         all_constituent_vars_hpp: list = []
         _seen_cv_hpp: set = set()
-        fn_ctxs_hpp = list(_chost_fn_contexts(
-            camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
-            ncol_var, local_to_std, std_to_host, kind_iso_map,
-            meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
-        ))
+        fn_ctxs_hpp = fn_ctxs
         for ctx in fn_ctxs_hpp:
             for cv in ctx.get("constituent_vars", []):
                 if cv not in _seen_cv_hpp:
@@ -1534,17 +1558,25 @@ class CPPInteropCap(ModulePass):
             A("// ── constituent query ─────────────────────────────────────────────────────")
             A("// CcppConstituentInfo is declared in the included .h file.")
             A("// Use nconstituents() + get_constituents() after do_register().")
+            flush()
+            body_ops.append(RawCppLinesOp("\n"))
+            emit(CFunctionSigOp(
+                fn_name="nconstituents", return_type="int", is_inline=True,
+                param_names=[], param_types=[], param_comments=[],
+                body_ops=[RawCppLinesOp(f"    return {mod_name}_nconstituents();")],
+            ))
             A("")
-            A("inline int nconstituents() {")
-            A(f"    return {mod_name}_nconstituents();")
-            A("}")
-            A("")
-            A("inline std::vector<CcppConstituentInfo> get_constituents() {")
-            A("    int n = nconstituents();")
-            A("    std::vector<CcppConstituentInfo> v(static_cast<std::size_t>(n));")
-            A(f"    if (n > 0) {mod_name}_get_constituent_info(v.data(), n);")
-            A("    return v;")
-            A("}")
+            emit(CFunctionSigOp(
+                fn_name="get_constituents", return_type="std::vector<CcppConstituentInfo>",
+                is_inline=True,
+                param_names=[], param_types=[], param_comments=[],
+                body_ops=[RawCppLinesOp(
+                    "    int n = nconstituents();\n"
+                    "    std::vector<CcppConstituentInfo> v(static_cast<std::size_t>(n));\n"
+                    f"    if (n > 0) {mod_name}_get_constituent_info(v.data(), n);\n"
+                    "    return v;"
+                )],
+            ))
 
         lc_data: list = []   # (cpp_fn, struct_args) per lifecycle, for State generation
 
@@ -1565,34 +1597,48 @@ class CPPInteropCap(ModulePass):
             sn     = struct_name(lc)
             lc_data.append((cpp_fn, struct_args))
 
-            # ── Section header ─────────────────────────────────────────────────
             dashes = "─" * max(1, 72 - len(lc))
+
+            # ── Section header ─────────────────────────────────────────────────
             A("")
             A(f"// ── {lc} {dashes}")
-            A("")
+            flush()
+            body_ops.append(RawCppLinesOp("\n"))
 
             # ── Arg struct (only if there are physics args) ────────────────────
             if struct_args:
-                A(f"struct {sn} {{")
-                for ai in struct_args:
-                    cpp_t = _chost_cpp_type(ai)
-                    A(f"    {cpp_t:<16} {ai['host']};")
-                A("};")
-                A("")
-                A(f"inline Status {cpp_fn}(const {sn}& a) {{")
+                emit(CppStructDefOp(
+                    sn,
+                    member_ops=[
+                        CppFieldDeclOp(
+                            field_name=ai["host"], cpp_type=_chost_cpp_type(ai),
+                            type_width=16,
+                        )
+                        for ai in struct_args
+                    ],
+                ))
+                body_ops.append(RawCppLinesOp("\n"))
+                param_names  = ["a"]
+                param_types  = [f"const {sn}&"]
             else:
-                A(f"inline Status {cpp_fn}() {{")
+                param_names  = []
+                param_types  = []
 
             # ── Internal buffers ───────────────────────────────────────────────
             # +1 on each: the Fortran side writes a null terminator at
             # len_trim(...)+1, which is one past the end of a buffer sized
             # exactly CCPP_*_LEN when the string fully fills it.
+            fn_body_ops: list = []
             if has_sname:
-                A(f"    char   scheme_name[{CCPP_SCHEME_NAME_LEN + 1}]  = {{}};")
+                fn_body_ops.append(RawCppLinesOp(
+                    f"    char   scheme_name[{CCPP_SCHEME_NAME_LEN + 1}]  = {{}};"
+                ))
             if has_errmsg:
-                A(f"    char   errmsg[{CCPP_ERRMSG_LEN + 1}]      = {{}};")
+                fn_body_ops.append(RawCppLinesOp(
+                    f"    char   errmsg[{CCPP_ERRMSG_LEN + 1}]      = {{}};"
+                ))
             if has_errflg:
-                A("    int    errflg           = 0;")
+                fn_body_ops.append(RawCppLinesOp("    int    errflg           = 0;"))
 
             # ── C function call ────────────────────────────────────────────────
             call_args = []
@@ -1605,23 +1651,22 @@ class CPPInteropCap(ModulePass):
                     call_args.append("scheme_name")
                 else:
                     call_args.append(f"a.{ai['host']}")
-
-            chunks = [call_args[i:i + 4] for i in range(0, len(call_args), 4)]
-            if len(chunks) == 1:
-                A(f"    {cfn}({', '.join(chunks[0])});")
-            elif chunks:
-                A(f"    {cfn}(")
-                for j, chunk in enumerate(chunks):
-                    comma = "," if j < len(chunks) - 1 else ""
-                    A(f"        {', '.join(chunk)}{comma}")
-                A("    );")
+            fn_body_ops.append(CppCallStatementOp(callee=cfn, call_args=call_args))
 
             # ── Return ─────────────────────────────────────────────────────────
             if has_errflg and has_errmsg:
-                A('    return {errflg, errflg ? errmsg : ""};')
+                fn_body_ops.append(RawCppLinesOp(
+                    '    return {errflg, errflg ? errmsg : ""};'
+                ))
             else:
-                A("    return {0, \"\"};")
-            A("}")
+                fn_body_ops.append(RawCppLinesOp('    return {0, ""};'))
+
+            emit(CFunctionSigOp(
+                fn_name=cpp_fn, return_type="Status", is_inline=True,
+                param_names=param_names, param_types=param_types,
+                param_comments=[""] * len(param_names),
+                body_ops=fn_body_ops,
+            ))
 
         # ── State struct + overloads ──────────────────────────────────────────
         # Collect all physics fields across all lifecycles, excluding col_start/col_end
@@ -1639,13 +1684,17 @@ class CPPInteropCap(ModulePass):
         if state_fields:
             A("")
             A("// ── State " + "─" * 69)
-            A("")
-            A("struct State {")
+            flush()
+            body_ops.append(RawCppLinesOp("\n"))
+
+            member_ops = []
             for ai in state_fields:
                 # Host owns the memory — strip const so allocate() and init can write
                 cpp_t   = _chost_cpp_type(ai).replace("const ", "")
-                default = " = nullptr" if cpp_t.endswith("*") else " = 0"
-                A(f"    {cpp_t:<16} {ai['host']}{default};")
+                init    = "nullptr" if cpp_t.endswith("*") else "0"
+                member_ops.append(CppFieldDeclOp(
+                    field_name=ai["host"], cpp_type=cpp_t, type_width=16, init_expr=init,
+                ))
 
             # Constructor: initialise ncol and all is_nz scalars; other fields
             # default via their in-class initialisers.  Prevents aggregate-init
@@ -1653,16 +1702,6 @@ class CPPInteropCap(ModulePass):
             ncol_fields = [ai for ai in state_fields if ai["is_ncol"]]
             nz_fields   = [ai for ai in state_fields if ai["is_nz"] or ai.get("is_dim_scalar")]
             dim_scalar_fields = ncol_fields + nz_fields
-            if dim_scalar_fields:
-                params_str = ", ".join(
-                    f"int {ai['host']} = 0" for ai in dim_scalar_fields
-                )
-                inits_str = ", ".join(
-                    f"{ai['host']}({ai['host']})" for ai in dim_scalar_fields
-                )
-                A("")
-                A(f"    State({params_str})")
-                A(f"        : {inits_str} {{}}")
 
             # Array fields whose size we can express from their dim_ncol / dim_nz / dim_n3
             alloc_fields = [
@@ -1673,13 +1712,22 @@ class CPPInteropCap(ModulePass):
                     or (ai["rank"] >= 3 and ai.get("dim_n3"))
                 )
             ]
+
+            method_ops = []
+            if dim_scalar_fields:
+                method_ops.append(CppConstructorOp(
+                    param_names=[ai["host"] for ai in dim_scalar_fields],
+                    param_types=["int"] * len(dim_scalar_fields),
+                    param_defaults=["0"] * len(dim_scalar_fields),
+                    init_members=[ai["host"] for ai in dim_scalar_fields],
+                    init_exprs=[ai["host"] for ai in dim_scalar_fields],
+                    body_ops=[],
+                ))
+
+            private_member_ops = []
             if alloc_fields:
-                A("")
-                A("    // Allocate all array fields from internal storage.")
-                A("    // Set ncol (and nz/ncnst for higher-rank arrays) before calling.")
-                A("    void allocate() {")
+                allocate_body_ops = []
                 for ai in alloc_fields:
-                    elem_t = _chost_cpp_type(ai).replace("const ", "").replace("*", "").strip()
                     _dn = ai.get("dim_ncol") or ncol_var
                     _dz = ai.get("dim_nz")   or nz_var
                     if ai["rank"] == 1:
@@ -1689,16 +1737,29 @@ class CPPInteropCap(ModulePass):
                     else:
                         _n3 = ai.get("dim_n3") or "1"
                         size_expr = f"static_cast<std::size_t>({_dn}) * {_dz} * {_n3}"
-                    A(f"        _{ai['host']}.assign({size_expr}, 0);")
-                    A(f"        {ai['host']} = _{ai['host']}.data();")
-                A("    }")
-                A("")
-                A("private:")
+                    allocate_body_ops.append(RawCppLinesOp(
+                        f"        _{ai['host']}.assign({size_expr}, 0);\n"
+                        f"        {ai['host']} = _{ai['host']}.data();"
+                    ))
+                method_ops.append(RawCppLinesOp(
+                    "\n    // Allocate all array fields from internal storage.\n"
+                    "    // Set ncol (and nz/ncnst for higher-rank arrays) before calling."
+                ))
+                method_ops.append(CFunctionSigOp(
+                    fn_name="allocate", return_type="void",
+                    param_names=[], param_types=[], param_comments=[],
+                    body_ops=allocate_body_ops,
+                ))
                 for ai in alloc_fields:
                     elem_t = _chost_cpp_type(ai).replace("const ", "").replace("*", "").strip()
-                    A(f"    std::vector<{elem_t}> _{ai['host']};")
+                    private_member_ops.append(CppFieldDeclOp(
+                        field_name=f"_{ai['host']}", cpp_type=f"std::vector<{elem_t}>",
+                    ))
 
-            A("};")
+            emit(CppStructDefOp(
+                "State", member_ops=member_ops, is_pod=False,
+                method_ops=method_ops, private_member_ops=private_member_ops,
+            ))
 
             for cpp_fn, sargs in lc_data:
                 if not sargs:
@@ -1707,25 +1768,38 @@ class CPPInteropCap(ModulePass):
                     ai["is_col_start"] or ai["is_col_end"] for ai in sargs
                 )
                 A("")
+                flush()
                 if has_loop_bounds:
-                    A(f"inline Status {cpp_fn}(const State& s, int col_start, int col_end) {{")
+                    param_names = ["s", "col_start", "col_end"]
+                    param_types = ["const State&", "int", "int"]
                 else:
-                    A(f"inline Status {cpp_fn}(const State& s) {{")
-                A(f"    return {cpp_fn}({{")
+                    param_names = ["s"]
+                    param_types = ["const State&"]
+
+                field_names  = []
+                field_values = []
                 for ai in sargs:
+                    field_names.append(ai["host"])
                     if ai["is_col_start"]:
-                        A(f"        .{ai['host']}=col_start,")
+                        field_values.append("col_start")
                     elif ai["is_col_end"]:
-                        A(f"        .{ai['host']}=col_end,")
+                        field_values.append("col_end")
                     else:
-                        A(f"        .{ai['host']}=s.{ai['host']},")
-                A("    });")
-                A("}")
+                        field_values.append(f"s.{ai['host']}")
+
+                emit(CFunctionSigOp(
+                    fn_name=cpp_fn, return_type="Status", is_inline=True,
+                    param_names=param_names, param_types=param_types,
+                    param_comments=[""] * len(param_names),
+                    body_ops=[CppBraceInitCallOp(
+                        callee=cpp_fn, field_names=field_names, field_values=field_values,
+                    )],
+                ))
 
         A("")
-        A(f"}} // namespace {ns_name}")
+        flush()
 
-        return "\n".join(L) + "\n"
+        return [CppNamespaceOp(ns_name=ns_name, body_ops=body_ops)]
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)

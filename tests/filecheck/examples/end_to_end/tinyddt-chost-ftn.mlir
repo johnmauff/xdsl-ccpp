@@ -508,7 +508,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK:  end module Tinyddt_ccpp_cap
+// CHECK-NEXT:  end module Tinyddt_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: Tinyddt_ccpp_chost_cap.F90
 // CHECK-LABEL: module Tinyddt_ccpp_chost_cap
@@ -535,139 +535,138 @@
 // CHECK-NEXT:    public :: Tinyddt_chost_physics_physics_initial
 // CHECK-NEXT:    public :: Tinyddt_chost_physics_physics_final
 // CHECK:       contains
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_register(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_register')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_register(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_register
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_initialize(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_initialize')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_initialize(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_initialize
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_finalize(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_finalize')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_finalize(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_finalize
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_run( &
-// CHECK:             ncol, state_nz, tend_nz, col_start, col_end, state_temp, tend_dtemp, errmsg,  &
-// CHECK-NEXT:        errflg) &
-// CHECK-NEXT:        bind(C, name='Tinyddt_chost_physics_run')
-// CHECK-NEXT:      integer(c_int), value, intent(in) :: ncol
-// CHECK-NEXT:      integer(c_int), value, intent(in) :: state_nz
-// CHECK-NEXT:      integer(c_int), value, intent(in) :: tend_nz
-// CHECK-NEXT:      integer(c_int), value, intent(in) :: col_start
-// CHECK-NEXT:      integer(c_int), value, intent(in) :: col_end
-// CHECK-NEXT:      real(c_double), target, intent(inout) :: state_temp(ncol, state_nz)
-// CHECK-NEXT:      real(c_double), target, intent(inout) :: tend_dtemp(ncol, tend_nz)
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK-NEXT:      type(tiny_state_t) :: state_local
-// CHECK-NEXT:      type(tiny_tend_t) :: tend_local
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      state_local%nz = state_nz
-// CHECK-NEXT:      allocate(state_local%temp(ncol, state_nz))
-// CHECK-NEXT:      state_local%temp = real(state_temp, kind_phys)
-// CHECK-NEXT:      tend_local%nz = tend_nz
-// CHECK-NEXT:      allocate(tend_local%dtemp(ncol, tend_nz))
-// CHECK-NEXT:      tend_local%dtemp = real(tend_dtemp, kind_phys)
-// CHECK-NEXT:      call tinyddt_suite_physics( &
-// CHECK-NEXT:          col_start, col_end, state_local, tend_local, errmsg_f, errflg)
-// CHECK-NEXT:      state_temp = real(state_local%temp, c_double)
-// CHECK-NEXT:      tend_dtemp = real(tend_local%dtemp, c_double)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_run
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_timestep_initial(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_timestep_initial')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_timestep_init_physics(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_timestep_initial
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_timestep_final(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_timestep_final')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_timestep_final_physics(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_timestep_final
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_physics_initial(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_physics_initial')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_init_physics(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_physics_initial
-// CHECK-LABEL:   subroutine Tinyddt_chost_physics_physics_final(errmsg, errflg) &
-// CHECK:             bind(C, name='Tinyddt_chost_physics_physics_final')
-// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:      integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:      integer :: i
-// CHECK-NEXT:      character(len=512) :: errmsg_f
-// CHECK:           errmsg_f = ' '
-// CHECK-NEXT:      errflg = 0
-// CHECK-NEXT:      call tinyddt_suite_final_physics(errflg, errmsg_f)
-// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:      end do
-// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:    end subroutine Tinyddt_chost_physics_physics_final
-// CHECK:       end module Tinyddt_ccpp_chost_cap
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_register(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_register')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_register(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_register
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_initialize(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_initialize')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_initialize(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_initialize
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_finalize(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_finalize')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_finalize(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_finalize
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_run( &
+// CHECK-NEXT:      ncol, state_nz, tend_nz, col_start, col_end, state_temp, tend_dtemp, errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_run')
+// CHECK-NEXT:    integer(c_int), value, intent(in) :: ncol
+// CHECK-NEXT:    integer(c_int), value, intent(in) :: state_nz
+// CHECK-NEXT:    integer(c_int), value, intent(in) :: tend_nz
+// CHECK-NEXT:    integer(c_int), value, intent(in) :: col_start
+// CHECK-NEXT:    integer(c_int), value, intent(in) :: col_end
+// CHECK-NEXT:    real(c_double), target, intent(inout) :: state_temp(ncol, state_nz)
+// CHECK-NEXT:    real(c_double), target, intent(inout) :: tend_dtemp(ncol, tend_nz)
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    type(tiny_state_t) :: state_local
+// CHECK-NEXT:    type(tiny_tend_t) :: tend_local
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    state_local%nz = state_nz
+// CHECK-NEXT:    allocate(state_local%temp(ncol, state_nz))
+// CHECK-NEXT:    state_local%temp = real(state_temp, kind_phys)
+// CHECK-NEXT:    tend_local%nz = tend_nz
+// CHECK-NEXT:    allocate(tend_local%dtemp(ncol, tend_nz))
+// CHECK-NEXT:    tend_local%dtemp = real(tend_dtemp, kind_phys)
+// CHECK-NEXT:    call tinyddt_suite_physics( &
+// CHECK-NEXT:        col_start, col_end, state_local, tend_local, errmsg_f, errflg)
+// CHECK-NEXT:    state_temp = real(state_local%temp, c_double)
+// CHECK-NEXT:    tend_dtemp = real(tend_local%dtemp, c_double)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_run
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_timestep_initial(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_timestep_initial')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_timestep_init_physics(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_timestep_initial
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_timestep_final(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_timestep_final')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_timestep_final_physics(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_timestep_final
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_physics_initial(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_physics_initial')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_init_physics(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_physics_initial
+// CHECK-NEXT:  subroutine Tinyddt_chost_physics_physics_final(errmsg, errflg) &
+// CHECK-NEXT:    bind(C, name='Tinyddt_chost_physics_physics_final')
+// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
+// CHECK-NEXT:    integer :: i
+// CHECK-NEXT:    character(len=512) :: errmsg_f
+// CHECK-NEXT:    errmsg_f = ' '
+// CHECK-NEXT:    errflg = 0
+// CHECK-NEXT:    call tinyddt_suite_final_physics(errflg, errmsg_f)
+// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:    end do
+// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:  end subroutine Tinyddt_chost_physics_physics_final
+// CHECK-NEXT:  end module Tinyddt_ccpp_chost_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds
