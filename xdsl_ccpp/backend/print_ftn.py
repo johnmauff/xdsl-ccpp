@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import IO, cast
 
-from xdsl.dialects import arith, builtin, func, llvm, memref, scf
+from xdsl.dialects import arith, builtin, func, llvm, math, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     DenseIntOrFPElementsAttr,
@@ -359,8 +359,16 @@ class ftnPrintContext:
                 arith.RemSIOp.name: "%",
                 arith.RemUIOp.name: "%",
                 arith.ShLIOp.name: "<<",
-                arith.AndIOp.name: "&",
-                arith.OrIOp.name: "|",
+                # Fortran logical .and./.or., not C-style bitwise & / | --
+                # this codebase's only real use of AndIOp/OrIOp is on i1
+                # (boolean) operands (the XOrIOp-as-NOT idiom's siblings),
+                # never wide-integer bitwise ops, so the Fortran-valid
+                # logical spelling is correct here. (This table was unread
+                # by any code before Stage 1a of lang-neutral-expr-ir, so
+                # these entries were never exercised/verified -- fixed as
+                # part of actually wiring the table up for the first time.)
+                arith.AndIOp.name: ".and.",
+                arith.OrIOp.name: ".or.",
             }
         )
         self._cmp_ops.update(
@@ -384,14 +392,18 @@ class ftnPrintContext:
                     "oge": ">=",
                     "olt": "<",
                     "ole": "<=",
-                    "one": "!=",
+                    # Fortran has no "!=" (C/C++ only) -- "/=" is the
+                    # correct not-equal spelling. Fixed alongside the
+                    # AndIOp/OrIOp entries above, same reasoning: this
+                    # whole table was unread before Stage 1a.
+                    "one": "/=",
                     "ord": None,
                     "ueq": "==",
                     "ugt": ">",
                     "uge": ">=",
                     "ult": "<",
                     "ule": "<=",
-                    "une": "!=",
+                    "une": "/=",
                     "uno": None,
                     "true": None,
                 },
@@ -561,8 +573,12 @@ class ftnPrintContext:
             case IntAttr():
                 return str(cast(IntAttr[int], attr).data)
             case IntegerAttr(value=val, type=IntegerType(width=IntAttr(data=1))):
-                # i1 values are printed as Fortran logical literals
-                return str(bool(val.data)).lower()
+                # i1 values are printed as Fortran logical literals --
+                # ".true."/".false.", not bare "true"/"false" (not valid
+                # Fortran; fixed as part of Stage 1a of lang-neutral-expr-ir,
+                # since nothing previously exercised an i1 arith.ConstantOp
+                # reaching this specific rendering path to catch the bug)
+                return f".{bool(val.data)}.".lower()
             case IntegerAttr(value=val):
                 return str(val.data)
             case FloatAttr(value=val) if val.data == 0:
@@ -622,6 +638,16 @@ class ftnPrintContext:
                     f" {self._cmp_ops[op.name][str_pred]} ", end="", use_prefix=False
                 )
                 self.print_expr(r.owner)
+            case arith.CmpfOp(predicate=v, lhs=l, rhs=r):
+                # Float-comparison sibling of the CmpiOp case above -- same
+                # shape, arith's own float predicate table instead of the
+                # int one.
+                str_pred = arith.CMPF_COMPARISON_OPERATIONS[v.value.data]
+                self.print_expr(l.owner)
+                self.print(
+                    f" {self._cmp_ops[op.name][str_pred]} ", end="", use_prefix=False
+                )
+                self.print_expr(r.owner)
             case arith.XOrIOp():
                 # XOrI(x, 1_i1) is a logical NOT; detect which operand is the constant
                 l, r = op.lhs, op.rhs
@@ -656,6 +682,31 @@ class ftnPrintContext:
             case arith.SubiOp():
                 self.print_expr(op.lhs.owner)
                 self.print(" - ", end="", use_prefix=False)
+                self.print_expr(op.rhs.owner)
+            case (
+                arith.MuliOp() | arith.DivSIOp() | arith.DivUIOp()
+                | arith.AndIOp() | arith.OrIOp()
+                | arith.AddfOp() | arith.SubfOp() | arith.MulfOp() | arith.DivfOp()
+            ):
+                # Table-driven sibling of the AddiOp/SubiOp cases above --
+                # those two stay hand-written for now (not touched by Stage
+                # 1a of lang-neutral-expr-ir, to keep this checkpoint's risk
+                # to a minimum); every op newly handled here reads its
+                # Fortran token from the shared _binops table instead
+                # (populated by register_binops, previously built but never
+                # read by this function). No parenthesization/precedence
+                # logic yet -- same as AddiOp/SubiOp's own existing
+                # behavior; that's unified for all binary ops together in
+                # lang-neutral-expr-ir's Stage 2.
+                self.print_expr(op.lhs.owner)
+                self.print(f" {self._binops[op.name]} ", end="", use_prefix=False)
+                self.print_expr(op.rhs.owner)
+            case math.PowFOp() | math.IPowIOp() | math.FPowIOp():
+                # Fortran has a native ** operator (unlike C++, which needs
+                # std::pow) -- first real use of the math dialect in this
+                # project.
+                self.print_expr(op.lhs.owner)
+                self.print(" ** ", end="", use_prefix=False)
                 self.print_expr(op.rhs.owner)
             case _:
                 raise AssertionError(f"Unhandled op in print_expr: {type(op)}")
