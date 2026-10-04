@@ -702,7 +702,7 @@
 // CHECK-NEXT:        call cam_constituents_obj%const_index(field_ind, cam_model_const_stdnames(lc_i),            &
 // CHECK-NEXT:          errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:        if (errcode /= 0) return
-// CHECK-NEXT:        if (field_ind > 0) then
+// CHECK-NEXT:        if (field_ind .gt. 0) then
 // CHECK-NEXT:          cam_model_const_indices(lc_i) = field_ind
 // CHECK-NEXT:        else
 // CHECK-NEXT:          errcode = 1
@@ -748,7 +748,7 @@
 // CHECK-NEXT:        nullify(lc_cld_liq_tend)
 // CHECK-NEXT:        call cam_constituents_obj%const_index(lc_tend_idx, 'cloud_liquid_dry_mixing_ratio',         &
 // CHECK-NEXT:          errcode=errflg, errmsg=lc_tend_errmsg)
-// CHECK-NEXT:        if (errflg == 0 .and. lc_tend_idx > 0) then
+// CHECK-NEXT:        if (errflg .eq. 0 .and. lc_tend_idx .gt. 0) then
 // CHECK-NEXT:          lc_cld_liq_tend => lc_const_tend(:, :, lc_tend_idx)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          errflg = 0

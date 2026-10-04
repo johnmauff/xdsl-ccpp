@@ -776,6 +776,11 @@ class ModuleVarOp(IRDLOperation):
     rank       = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
     fixed_dim  = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
     init_value = opt_prop_def(StringAttr)    # optional Fortran initializer (for fixed_dim vars)
+    # lang-neutral-expr-ir Stage 3a: structured alternative to init_value,
+    # pass init_value_op= instead. At most one of the two may be given.
+    # Kept as an independent opt slot (not exactly-one) since most real
+    # call sites set neither.
+    init_value_region = opt_region_def("single_block")
     needs_device_residency = opt_prop_def(BoolAttr)  # True -> also emit a
                                 # module-level `!$acc declare create(var_name)`
                                 # (guarded by #ifdef USE_GPU) right alongside
@@ -797,6 +802,8 @@ class ModuleVarOp(IRDLOperation):
                                 # update-device calls were verified compiling
                                 # and executing correctly.
 
+    traits = traits_def(NoTerminator())
+
     def __init__(
         self,
         var_name: str,
@@ -809,8 +816,11 @@ class ModuleVarOp(IRDLOperation):
         rank: int = 0,
         fixed_dim: int | None = None,
         init_value: str | None = None,
+        init_value_op=None,
         needs_device_residency: bool = False,
     ):
+        if init_value is not None and init_value_op is not None:
+            raise ValueError("ModuleVarOp: pass at most one of init_value or init_value_op")
         props: dict = {
             "var_name":  StringAttr(var_name),
             "base_type": StringAttr(base_type),
@@ -826,11 +836,14 @@ class ModuleVarOp(IRDLOperation):
             props["is_target"] = BoolAttr.from_bool(True)
         if fixed_dim is not None:
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
+        init_region = None
         if init_value is not None:
             props["init_value"] = StringAttr(init_value)
+        elif init_value_op is not None:
+            init_region = _single_op_region([init_value_op])
         if needs_device_residency:
             props["needs_device_residency"] = BoolAttr.from_bool(True)
-        super().__init__(properties=props)
+        super().__init__(properties=props, regions=[init_region])
 
 
 @irdl_op_definition
@@ -1105,21 +1118,41 @@ class ActiveCheckOp(IRDLOperation):
     ``condition_expr`` is printed verbatim as the if-condition. ``with_body``
     contains the slice op(s) + scheme call that include the active-gated
     arg(s). ``without_body`` contains the scheme call that omits them.
+
+    lang-neutral-expr-ir Stage 3a adds a structured alternative to the
+    opaque ``condition_expr`` text, same shape as ``IfThenOp``'s own:
+    pass ``condition_op`` instead. Exactly one of the two must be given;
+    the opaque-text form remains fully supported so suite_cap.py's own
+    caller is unaffected.
     """
 
     name = "ccpp_utils.active_check"
 
-    condition_expr = prop_def(StringAttr)
+    condition_expr = opt_prop_def(StringAttr)
+    condition = opt_region_def("single_block")
 
     with_body    = region_def("single_block")
     without_body = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, condition_expr: str, with_body_ops: list, without_body_ops: list):
+    def __init__(
+        self, condition_expr: "str | None" = None, with_body_ops: "list | None" = None,
+        without_body_ops: "list | None" = None, *, condition_op=None,
+    ):
+        if (condition_expr is None) == (condition_op is None):
+            raise ValueError(
+                "ActiveCheckOp: pass exactly one of condition_expr or condition_op"
+            )
+        props: dict = {}
+        cond_region = None
+        if condition_expr is not None:
+            props["condition_expr"] = _coerce_str_attr(condition_expr)
+        else:
+            cond_region = _single_op_region([condition_op])
         super().__init__(
-            properties={"condition_expr": StringAttr(condition_expr)},
-            regions=[with_body_ops, without_body_ops],
+            properties=props,
+            regions=[cond_region, with_body_ops or [], without_body_ops or []],
         )
 
 
@@ -1159,21 +1192,37 @@ class AllocateOp(IRDLOperation):
     convention as everywhere else in this codebase) -- covers the
     recurring ``allocate(const_prop, stat=errcode)`` idiom, previously a
     one-off ``RawFortranLinesOp`` leaf.
+
+    lang-neutral-expr-ir Stage 3a adds a structured alternative for
+    ``dims`` (same shape as other ops in this round): pass ``dim_ops``
+    (a list of expression ops, one per dimension) instead. ``var_name``
+    and ``stat_var`` stay plain text -- every real call site uses a bare
+    variable name for both, never a computed expression.
     """
 
     name = "ccpp_utils.allocate"
     var_name = prop_def(StringAttr)
-    dims     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    dims     = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr]
+    dims_region = var_region_def("single_block")   # structured dim expr ops
     stat_var = opt_prop_def(StringAttr)
 
-    def __init__(self, var_name: str, dims: "list[str]", stat_var: "str | None" = None):
-        props: dict = {
-            "var_name": StringAttr(var_name),
-            "dims":     ArrayAttr([StringAttr(d) for d in dims]),
-        }
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, var_name: str, dims: "list[str] | None" = None,
+        stat_var: "str | None" = None, *, dim_ops: "list | None" = None,
+    ):
+        if dims is not None and dim_ops is not None:
+            raise ValueError("AllocateOp: pass at most one of dims or dim_ops")
+        props: dict = {"var_name": StringAttr(var_name)}
+        if dim_ops is not None:
+            dims_regions = [_single_op_region([d]) for d in dim_ops]
+        else:
+            props["dims"] = ArrayAttr([StringAttr(d) for d in (dims or [])])
+            dims_regions = []
         if stat_var is not None:
             props["stat_var"] = StringAttr(stat_var)
-        super().__init__(properties=props)
+        super().__init__(properties=props, regions=[dims_regions])
 
 
 @irdl_op_definition
@@ -1230,17 +1279,33 @@ class PointerAssignOp(IRDLOperation):
     scope here. Distinct from PointerSliceAssignOp (which has a fixed
     ``{ptr} => {array}(:, :, {index_var})`` shape); use that one instead
     when the RHS really is a trailing-index 3-D slice.
+
+    lang-neutral-expr-ir Stage 3a adds a structured alternative for
+    ``rhs_expr`` (same shape as other ops in this round): pass
+    ``rhs_expr_op`` instead. ``ptr_name`` stays plain text -- every real
+    call site uses a bare pointer-variable name, never a computed
+    expression, so there is nothing for a structured form to buy there.
     """
 
     name = "ccpp_utils.pointer_assign"
     ptr_name = prop_def(StringAttr)
-    rhs_expr = prop_def(StringAttr)
+    rhs_expr = opt_prop_def(StringAttr)
+    rhs_expr_region = opt_region_def("single_block")
 
-    def __init__(self, ptr_name: str, rhs_expr: str):
-        super().__init__(properties={
-            "ptr_name": StringAttr(ptr_name),
-            "rhs_expr": StringAttr(rhs_expr),
-        })
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, ptr_name: str, rhs_expr: "str | None" = None, *, rhs_expr_op=None):
+        if (rhs_expr is None) == (rhs_expr_op is None):
+            raise ValueError(
+                "PointerAssignOp: pass exactly one of rhs_expr or rhs_expr_op"
+            )
+        props: dict = {"ptr_name": StringAttr(ptr_name)}
+        rhs_region = None
+        if rhs_expr is not None:
+            props["rhs_expr"] = StringAttr(rhs_expr)
+        else:
+            rhs_region = _single_op_region([rhs_expr_op])
+        super().__init__(properties=props, regions=[rhs_region])
 
 
 @irdl_op_definition
@@ -1287,22 +1352,64 @@ class DdtMethodCallOp(IRDLOperation):
     convention implied) and from ConstituentIndexLookupOp (an unrelated,
     fixed-shape batch lookup via the free function
     ``ccpp_constituent_indices(...)`` -- do not confuse the two).
+
+    lang-neutral-expr-ir Stage 3a adds a structured alternative for each
+    of the three text slots independently (object expression, positional
+    args, keyword args) -- not one all-or-nothing switch, since real call
+    sites mix e.g. a plain-text ``obj_expr`` with structured ``kwargs``.
+    Pass ``obj_expr_op`` instead of ``obj_expr``; ``arg_ops`` instead of
+    ``args``; ``kwarg_ops`` (a list of ``KeywordArgExprOp``) instead of
+    ``kwargs``. Each slot accepts at most one of its two forms.
     """
 
     name = "ccpp_utils.ddt_method_call"
-    obj_expr = prop_def(StringAttr)
+    obj_expr = opt_prop_def(StringAttr)
+    obj_expr_region = opt_region_def("single_block")
     method   = prop_def(StringAttr)
-    args     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr], positional
-    kwargs   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr], "name=expr"
+    args     = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr], positional
+    args_region = var_region_def("single_block")   # structured positional arg exprs
+    kwargs   = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr], "name=expr"
+    kwargs_region = var_region_def("single_block")  # structured KeywordArgExprOp children
 
-    def __init__(self, obj_expr: str, method: str,
-                 args: "list[str] | None" = None, kwargs: "list[str] | None" = None):
-        super().__init__(properties={
-            "obj_expr": StringAttr(obj_expr),
-            "method":   StringAttr(method),
-            "args":     ArrayAttr([StringAttr(a) for a in (args or [])]),
-            "kwargs":   ArrayAttr([StringAttr(k) for k in (kwargs or [])]),
-        })
+    irdl_options = [AttrSizedRegionSegments()]
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, obj_expr: "str | None" = None, method: str = "",
+        args: "list[str] | None" = None, kwargs: "list[str] | None" = None,
+        *, obj_expr_op=None, arg_ops: "list | None" = None, kwarg_ops: "list | None" = None,
+    ):
+        if (obj_expr is None) == (obj_expr_op is None):
+            raise ValueError(
+                "DdtMethodCallOp: pass exactly one of obj_expr or obj_expr_op"
+            )
+        if args is not None and arg_ops is not None:
+            raise ValueError("DdtMethodCallOp: pass at most one of args or arg_ops")
+        if kwargs is not None and kwarg_ops is not None:
+            raise ValueError("DdtMethodCallOp: pass at most one of kwargs or kwarg_ops")
+
+        props: dict = {}
+        obj_region = None
+        if obj_expr is not None:
+            props["obj_expr"] = StringAttr(obj_expr)
+        else:
+            obj_region = _single_op_region([obj_expr_op])
+        props["method"] = StringAttr(method)
+        if arg_ops is not None:
+            args_regions = [_single_op_region([a]) for a in arg_ops]
+        else:
+            props["args"] = ArrayAttr([StringAttr(a) for a in (args or [])])
+            args_regions = []
+        if kwarg_ops is not None:
+            kwargs_regions = [_single_op_region([k]) for k in kwarg_ops]
+        else:
+            props["kwargs"] = ArrayAttr([StringAttr(k) for k in (kwargs or [])])
+            kwargs_regions = []
+
+        super().__init__(
+            properties=props,
+            regions=[obj_region, args_regions, kwargs_regions],
+        )
 
 
 @irdl_op_definition
@@ -1319,25 +1426,44 @@ class ErrorGuardOp(IRDLOperation):
 
     Replaces constituent_cap.py's own ``_error_guard()`` Python helper,
     which built exactly this 5-line block as a joined string.
+
+    lang-neutral-expr-ir Stage 3a adds a structured alternative to the
+    opaque ``condition`` text (same shape as ``IfThenOp``'s own): pass
+    ``condition_op`` instead. Exactly one of the two must be given.
+    ``errmsg_text`` stays a plain string in both cases -- every real call
+    site uses a static literal message, never a computed expression, so
+    there is nothing for a structured form to buy here.
     """
 
     name = "ccpp_utils.error_guard"
-    condition   = prop_def(StringAttr)
+    condition   = opt_prop_def(StringAttr)
+    condition_region = opt_region_def("single_block")
     errmsg_text = prop_def(StringAttr)
     errflg_var  = opt_prop_def(StringAttr)  # default "errflg" if unset
     errmsg_var  = opt_prop_def(StringAttr)  # default "errmsg" if unset
 
-    def __init__(self, condition: str, errmsg_text: str,
-                 errflg_var: str = "errflg", errmsg_var: str = "errmsg"):
-        props: dict = {
-            "condition":   StringAttr(condition),
-            "errmsg_text": StringAttr(errmsg_text),
-        }
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, condition: "str | None" = None, errmsg_text: "str | None" = None,
+        errflg_var: str = "errflg", errmsg_var: str = "errmsg", *, condition_op=None,
+    ):
+        if (condition is None) == (condition_op is None):
+            raise ValueError(
+                "ErrorGuardOp: pass exactly one of condition or condition_op"
+            )
+        props: dict = {}
+        cond_region = None
+        if condition is not None:
+            props["condition"] = _coerce_str_attr(condition)
+        else:
+            cond_region = _single_op_region([condition_op])
+        props["errmsg_text"] = StringAttr(errmsg_text)
         if errflg_var != "errflg":
             props["errflg_var"] = StringAttr(errflg_var)
         if errmsg_var != "errmsg":
             props["errmsg_var"] = StringAttr(errmsg_var)
-        super().__init__(properties=props)
+        super().__init__(properties=props, regions=[cond_region])
 
 
 @irdl_op_definition

@@ -1182,7 +1182,12 @@ class ftnPrintContext:
             case CCPPNullifyPointerOp():
                 self.print(f"nullify({op.ptr_name.data})")
             case CCPPAllocateOp():
-                dims = ", ".join(d.data for d in op.dims.data)
+                if op.dims is not None:
+                    dims = ", ".join(d.data for d in op.dims.data)
+                else:
+                    dims = ", ".join(
+                        self._render_expr(r.block.last_op) for r in op.dims_region
+                    )
                 target = f"{op.var_name.data}({dims})" if dims else op.var_name.data
                 stat = f", stat={op.stat_var.data}" if op.stat_var is not None else ""
                 self.print(f"allocate({target}{stat})")
@@ -1194,16 +1199,36 @@ class ftnPrintContext:
                     f"{op.array_name.data}(:, :, {op.index_var.data})"
                 )
             case CCPPPointerAssignOp():
-                self.print(f"{op.ptr_name.data} => {op.rhs_expr.data}")
+                if op.rhs_expr is not None:
+                    rhs_str = op.rhs_expr.data
+                else:
+                    rhs_str = self._render_expr(op.rhs_expr_region.block.last_op)
+                self.print(f"{op.ptr_name.data} => {rhs_str}")
             case CCPPAssignOp():
                 self.print(f"{op.lhs_expr.data} = {op.rhs_expr.data}")
             case CCPPDdtMethodCallOp():
-                all_args = [a.data for a in op.args.data] + [k.data for k in op.kwargs.data]
-                self.print(f"call {op.obj_expr.data}%{op.method.data}({', '.join(all_args)})")
+                if op.obj_expr is not None:
+                    obj_str = op.obj_expr.data
+                else:
+                    obj_str = self._render_expr(op.obj_expr_region.block.last_op)
+                if op.args is not None:
+                    arg_strs = [a.data for a in op.args.data]
+                else:
+                    arg_strs = [self._render_expr(r.block.last_op) for r in op.args_region]
+                if op.kwargs is not None:
+                    kwarg_strs = [k.data for k in op.kwargs.data]
+                else:
+                    kwarg_strs = [self._render_expr(r.block.last_op) for r in op.kwargs_region]
+                all_args = arg_strs + kwarg_strs
+                self.print(f"call {obj_str}%{op.method.data}({', '.join(all_args)})")
             case CCPPErrorGuardOp():
                 errflg_var = op.errflg_var.data if op.errflg_var is not None else "errflg"
                 errmsg_var = op.errmsg_var.data if op.errmsg_var is not None else "errmsg"
-                self.print(f"if (.not. {op.condition.data}) then")
+                if op.condition is not None:
+                    cond_str = op.condition.data
+                else:
+                    cond_str = self._render_expr(op.condition_region.block.last_op)
+                self.print(f"if (.not. {cond_str}) then")
                 with self.descend() as inner:
                     inner.print(f"{errflg_var} = 1")
                     inner.print(f"{errmsg_var} = '{op.errmsg_text.data}'")
@@ -1424,7 +1449,10 @@ class ftnPrintContext:
                     inner.print_block(op.without_body.blocks[0])
                 self.print("end if")
             case CCPPActiveCheckOp():
-                condition_expr = op.condition_expr.data
+                if op.condition_expr is not None:
+                    condition_expr = op.condition_expr.data
+                else:
+                    condition_expr = self._render_expr(op.condition.block.last_op)
                 self.print(f"if ({condition_expr}) then")
                 with self.descend() as inner:
                     inner.print_block(op.with_body.blocks[0])
@@ -1949,7 +1977,12 @@ class ftnPrintContext:
                 is_ptr   = op.is_pointer is not None and op.is_pointer.value.data
                 if op.fixed_dim is not None:
                     dim = op.fixed_dim.value.data
-                    init_part = f" = {op.init_value.data}" if op.init_value else ""
+                    if op.init_value is not None:
+                        init_part = f" = {op.init_value.data}"
+                    elif op.init_value_region is not None:
+                        init_part = f" = {self._render_expr(op.init_value_region.block.last_op)}"
+                    else:
+                        init_part = ""
                     self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="  ")
                 elif rank == 0:
                     self.print(f"{ftn_type} :: {var_name}", prefix="  ")
