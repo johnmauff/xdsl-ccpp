@@ -19,31 +19,39 @@ from. This is new, from scratch.
 
 from xdsl.dialects import arith, math
 
+from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp, StringConcatExprOp
+
 # Atoms -- literals, references, calls, indexing, member access -- never
 # need outer parens when used as a child of a binary/comparison op.
 ATOM_LEVEL = 1000
 
-# Precedence levels, highest binds tightest. The relative ordering of
-# .or./.and./comparisons/+-/*//** is identical in Fortran and C++ even
-# though the spellings differ (.and. vs &&, etc.) -- only the *level
-# number* matters to parenthesize(), never the printed token.
+# Precedence levels, highest binds tightest. The relative ordering below
+# matches real Fortran operator precedence (** > * / > + - > // >
+# relational > .NOT. > .AND. > .OR. > .EQV./.NEQV.) and is shared with
+# C++ even though the spellings differ (.and. vs &&, etc.) -- only the
+# *level number* matters to parenthesize(), never the printed token.
+LEVEL_EQV = 5  # .eqv./.neqv. (general XOR; looser than .or. in Fortran)
 LEVEL_OR = 10  # .or.  / ||
 LEVEL_AND = 20  # .and. / &&
 LEVEL_CMP = 30  # == /= < <= > >=  (relational ops don't chain in either language)
+LEVEL_CONCAT = 35  # // (Fortran string concat; C++ sibling uses '+' at this level)
 LEVEL_ADD = 40  # + -
 LEVEL_MUL = 50  # * / %
 LEVEL_POW = 60  # **  (right-associative)
 
 # op.name -> (level, associativity). Ops absent from this table (every
-# atom: ConstantOp, memref.LoadOp, StrCmpOp, TrimOp, and all of the new
+# atom: ConstantOp, memref.LoadOp, TrimOp, and most of the new
 # ccpp_utils expr-* ops) are ATOM_LEVEL/"none" via level_of()/assoc_of()'s
 # own fallback -- they never need outer parens as a child, and never
 # parenthesize their own children on associativity grounds.
 OP_PRECEDENCE: dict[str, tuple[int, str]] = {
     arith.OrIOp.name: (LEVEL_OR, "left"),
     arith.AndIOp.name: (LEVEL_AND, "left"),
+    arith.XOrIOp.name: (LEVEL_EQV, "left"),
     arith.CmpiOp.name: (LEVEL_CMP, "none"),
     arith.CmpfOp.name: (LEVEL_CMP, "none"),
+    StrCmpOp.name: (LEVEL_CMP, "none"),
+    StringConcatExprOp.name: (LEVEL_CONCAT, "left"),
     arith.AddiOp.name: (LEVEL_ADD, "left"),
     arith.AddfOp.name: (LEVEL_ADD, "left"),
     arith.SubiOp.name: (LEVEL_ADD, "left"),
@@ -60,16 +68,20 @@ OP_PRECEDENCE: dict[str, tuple[int, str]] = {
 
 
 def level_of(op) -> int:
-    """Return op's precedence level, or ATOM_LEVEL if it has none."""
-    entry = OP_PRECEDENCE.get(op.name)
+    """Return op's precedence level, or ATOM_LEVEL if it has none (also
+    the safe fallback when op is a Block rather than an Operation -- an
+    SSA value's owner is a Block for a function/block argument, which is
+    always atomic from a precedence standpoint)."""
+    entry = OP_PRECEDENCE.get(getattr(op, "name", None))
     return entry[0] if entry is not None else ATOM_LEVEL
 
 
 def assoc_of(op) -> str:
     """Return op's associativity ("left"/"right"/"none"), or "none" if
     op has no precedence entry (irrelevant for an atom -- it never
-    parenthesizes its own children on associativity grounds)."""
-    entry = OP_PRECEDENCE.get(op.name)
+    parenthesizes its own children on associativity grounds). Safe for
+    a Block owner too -- see level_of's own note."""
+    entry = OP_PRECEDENCE.get(getattr(op, "name", None))
     return entry[1] if entry is not None else "none"
 
 

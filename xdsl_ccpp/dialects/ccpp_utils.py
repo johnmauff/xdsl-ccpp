@@ -1,3 +1,4 @@
+from xdsl.dialects.arith import ConstantOp as ArithConstantOp
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     ArrayAttr,
@@ -2386,22 +2387,29 @@ class IndexExprOp(IRDLOperation):
     child per subscript -- each either a plain expression op or a
     SliceExprOp (Fortran range syntax only; C++ slicing is unsupported,
     see SliceExprOp).
+
+    ``result_type`` is optional, same "type set at construction to match
+    callee expectation" convention as ``VarRefExprOp``'s own -- see its
+    docstring; pass it when an indexed element needs to compose as a
+    real operand of an ``arith``/``math`` op (e.g. ``arr(i) + 1``).
     """
 
     name = "ccpp_utils.index_expr"
     base = region_def("single_block")
     indices = region_def("single_block")
+    res = opt_result_def()
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, base_op, index_ops: "list"):
+    def __init__(self, base_op, index_ops: "list", result_type=None):
         from xdsl.ir import Block, Region
 
         index_ops = list(index_ops)
         if not index_ops:
             raise ValueError("IndexExprOp needs at least one index")
         super().__init__(
-            regions=[_single_op_region([base_op]), Region([Block(index_ops)])]
+            regions=[_single_op_region([base_op]), Region([Block(index_ops)])],
+            result_types=[result_type] if result_type is not None else [None],
         )
 
 
@@ -2466,22 +2474,30 @@ class CallExprOp(IRDLOperation):
     this is a sub-expression (e.g. a function-call RHS, ``trim(x)`` as
     one piece of a StringConcatExprOp), not a call statement in its own
     right.
+
+    ``result_type`` is optional, same "type set at construction to match
+    callee expectation" convention as ``VarRefExprOp``'s own -- see its
+    docstring; pass it when a numeric call's result needs to compose as
+    a real operand of an ``arith``/``math`` op (e.g. ``len(x) + 1``).
     """
 
     name = "ccpp_utils.call_expr"
     callee = prop_def(StringAttr)
     args = region_def("single_block")  # positional argument expr ops
     kwargs = region_def("single_block")  # KeywordArgExprOp children
+    res = opt_result_def()
 
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, callee: str, arg_ops: "list | None" = None, kwarg_ops: "list | None" = None
+        self, callee: str, arg_ops: "list | None" = None, kwarg_ops: "list | None" = None,
+        result_type=None,
     ):
         from xdsl.ir import Block, Region
 
         super().__init__(
             properties={"callee": StringAttr(callee)},
+            result_types=[result_type] if result_type is not None else [None],
             regions=[
                 Region([Block(list(arg_ops or []))]),
                 Region([Block(list(kwarg_ops or []))]),
@@ -2574,6 +2590,15 @@ class UnitConvertOp(IRDLOperation):
         if to_scheme_expr is not None:
             props["to_scheme_expr"] = _coerce_str_attr(to_scheme_expr)
         else:
+            if not isinstance(conversion_op.rhs.owner, ArithConstantOp):
+                raise ValueError(
+                    "UnitConvertOp: conversion_op.rhs must be a plain "
+                    "arith.ConstantOp -- a compound rhs would lose its own "
+                    "grouping when flattened into the printed suffix "
+                    "fragment (e.g. 'source - a + b' instead of "
+                    "'source - (a + b)'), and _suffix_kind_in_expr's kind "
+                    "suffix is only meaningful on a literal"
+                )
             region = _single_op_region([conversion_op])
         super().__init__(
             operands=[source],
@@ -2629,6 +2654,12 @@ class UnitWriteBackOp(IRDLOperation):
         if to_host_expr is not None:
             props["to_host_expr"] = _coerce_str_attr(to_host_expr)
         else:
+            if not isinstance(conversion_op.rhs.owner, ArithConstantOp):
+                raise ValueError(
+                    "UnitWriteBackOp: conversion_op.rhs must be a plain "
+                    "arith.ConstantOp -- see UnitConvertOp's own identical "
+                    "check for why a compound rhs is rejected"
+                )
             region = _single_op_region([conversion_op])
         super().__init__(
             operands=[conv_result, original_dest],

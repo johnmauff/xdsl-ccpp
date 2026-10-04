@@ -19,7 +19,7 @@ from xdsl.dialects.builtin import (
     ModuleOp,
     StringAttr,
 )
-from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Attribute, Block, BlockArgument, Operation, OpResult, Region, SSAValue
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
@@ -648,6 +648,50 @@ class ftnPrintContext:
         """
         self.print(self._render_expr(op), end="", use_prefix=False)
 
+    def _render_value(self, val: SSAValue) -> str:
+        """Render an SSA value used as an operand: resolve it by name
+        first (covers function block arguments, whose owner is a Block,
+        not an Operation -- _render_expr's own match must never recurse
+        into val.owner blindly for those), falling back to recursively
+        rendering its defining operation."""
+        if val in self.variables:
+            return self.variables[val]
+        if isinstance(val, BlockArgument):
+            return self._get_variable_name_for(val)
+        return self._render_expr(val.owner)
+
+    def _is_negative_numeric_literal(self, val: SSAValue) -> bool:
+        """True if val is an arith.ConstantOp holding a negative int/float
+        value -- needed because math.Pow*'s lhs must be parenthesized when
+        negative: Fortran's ** binds tighter than unary minus, so
+        "-2.0 ** 2.0" parses as "-(2.0 ** 2.0)" == -4.0, not
+        "(-2.0) ** 2.0" == 4.0, and the generic atom/precedence mechanism
+        alone never parenthesizes a bare literal (ATOM_LEVEL never needs
+        outer parens)."""
+        owner = val.owner
+        if not isa(owner, arith.ConstantOp):
+            return False
+        match owner.value:
+            case IntegerAttr(value=v):
+                return v.data < 0
+            case FloatAttr(value=v):
+                return v.data < 0
+            case _:
+                return False
+
+    def _cmp_token(self, op: Operation, predicate_name: str) -> str:
+        """Look up op's Fortran comparison token for predicate_name,
+        raising instead of silently rendering a literal "None" when the
+        predicate has no Fortran-safe rendering (e.g. CmpfOp's
+        NaN-unordered predicates)."""
+        tok = self._cmp_ops[op.name][predicate_name]
+        if tok is None:
+            raise AssertionError(
+                f"print_expr: predicate {predicate_name!r} on {op.name} has "
+                "no Fortran rendering"
+            )
+        return tok
+
     def _render_binop(self, op: Operation, l: SSAValue, r: SSAValue, token: str) -> str:
         """Render `{lhs} {token} {rhs}`, wrapping either side in parens
         when its own precedence/associativity requires it relative to
@@ -656,11 +700,11 @@ class ftnPrintContext:
         my_level = expr_precedence.level_of(op)
         my_assoc = expr_precedence.assoc_of(op)
         lhs_str = expr_precedence.parenthesize(
-            self._render_expr(l.owner), expr_precedence.level_of(l.owner),
+            self._render_value(l), expr_precedence.level_of(l.owner),
             my_level, "lhs", my_assoc,
         )
         rhs_str = expr_precedence.parenthesize(
-            self._render_expr(r.owner), expr_precedence.level_of(r.owner),
+            self._render_value(r), expr_precedence.level_of(r.owner),
             my_level, "rhs", my_assoc,
         )
         return f"{lhs_str} {token} {rhs_str}"
@@ -693,28 +737,35 @@ class ftnPrintContext:
             case arith.CmpiOp(predicate=v, lhs=l, rhs=r):
                 # Emit lhs <op> rhs using the Fortran comparison operator
                 str_pred = arith.CMPI_COMPARISON_OPERATIONS[v.value.data]
-                return self._render_binop(op, l, r, self._cmp_ops[op.name][str_pred])
+                return self._render_binop(op, l, r, self._cmp_token(op, str_pred))
             case arith.CmpfOp(predicate=v, lhs=l, rhs=r):
                 # Float-comparison sibling of the CmpiOp case above -- same
                 # shape, arith's own float predicate table instead of the
                 # int one.
                 str_pred = arith.CMPF_COMPARISON_OPERATIONS[v.value.data]
-                return self._render_binop(op, l, r, self._cmp_ops[op.name][str_pred])
+                return self._render_binop(op, l, r, self._cmp_token(op, str_pred))
             case arith.XOrIOp():
-                # XOrI(x, 1_i1) is a logical NOT; detect which operand is the constant
+                # XOrI(x, 1_i1) is a logical NOT; detect which operand is
+                # the constant. NOTE: this detection is constant-VALUE-
+                # blind (any constant operand, true or false, triggers the
+                # NOT shortcut) -- a pre-existing latent bug that predates
+                # lang-neutral-expr-ir, deliberately not fixed here since it
+                # would change already-shipped Fortran output for a
+                # currently-passing real call site; flagged separately as
+                # its own backlog item, not touched by this change.
                 l, r = op.lhs, op.rhs
                 if isa(r.owner, arith.ConstantOp):
-                    return f".NOT. ({self._render_expr(l.owner)})"
+                    return f".NOT. ({self._render_value(l)})"
                 elif isa(l.owner, arith.ConstantOp):
-                    return f".NOT. ({self._render_expr(r.owner)})"
+                    return f".NOT. ({self._render_value(r)})"
                 else:
-                    # General XOR — emit as logical inequality. Deliberately
-                    # not routed through _render_binop/OP_PRECEDENCE (XOrIOp
-                    # has no entry there) -- this idiom is unexercised by any
-                    # nested real call site, so it keeps its original,
-                    # unparenthesized shape rather than guessing a precedence
-                    # for it.
-                    return f"{self._render_expr(l.owner)} .neqv. {self._render_expr(r.owner)}"
+                    # General XOR, now precedence-aware via the shared
+                    # expr_precedence table: .eqv./.neqv. bind looser than
+                    # .and./.or. in Fortran, so a nested AndIOp/OrIOp child
+                    # now gets correctly parenthesized (previously this
+                    # branch printed flat, unparenthesized text
+                    # unconditionally).
+                    return self._render_binop(op, l, r, ".neqv.")
             case CCPPTrimOp():
                 lhs_name = self._get_variable_name_for(op.lhs)
                 return f"trim({lhs_name})"
@@ -741,10 +792,29 @@ class ftnPrintContext:
             case math.PowFOp() | math.IPowIOp() | math.FPowIOp():
                 # Fortran has a native ** operator (unlike C++, which needs
                 # std::pow) -- first real use of the math dialect in this
-                # project.
-                return self._render_binop(op, op.lhs, op.rhs, "**")
+                # project. ** is right-associative and binds tighter than
+                # unary minus, so a negative-literal base needs a forced
+                # paren the generic atom/precedence mechanism alone can't
+                # supply (a bare literal is always ATOM_LEVEL, so
+                # parenthesize() alone never wraps it): "-2.0 ** 2.0"
+                # parses as "-(2.0 ** 2.0)" == -4.0 in Fortran, not
+                # "(-2.0) ** 2.0" == 4.0.
+                lhs_str = expr_precedence.parenthesize(
+                    self._render_value(op.lhs), expr_precedence.level_of(op.lhs.owner),
+                    expr_precedence.LEVEL_POW, "lhs", "right",
+                )
+                if self._is_negative_numeric_literal(op.lhs):
+                    lhs_str = f"({lhs_str})"
+                rhs_str = expr_precedence.parenthesize(
+                    self._render_value(op.rhs), expr_precedence.level_of(op.rhs.owner),
+                    expr_precedence.LEVEL_POW, "rhs", "right",
+                )
+                return f"{lhs_str} ** {rhs_str}"
             case CCPPStringLiteralExprOp():
-                return f"'{op.text.data}'"
+                # Fortran escapes an embedded single quote by doubling it
+                # inside a '...'-delimited literal.
+                escaped = op.text.data.replace("'", "''")
+                return f"'{escaped}'"
             case CCPPVarRefExprOp():
                 return op.var_name.data
             case CCPPStringConcatExprOp():

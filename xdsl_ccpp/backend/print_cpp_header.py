@@ -13,7 +13,7 @@ from xdsl.dialects.builtin import (
     MemRefType,
     ModuleOp,
 )
-from xdsl.ir import SSAValue
+from xdsl.ir import BlockArgument, SSAValue
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.backend import expr_precedence
@@ -62,9 +62,14 @@ _CPP_BINOPS: dict[str, str] = {
 }
 
 # op.name -> predicate-name -> C++ comparison token, paralleling
-# print_ftn.py's _cmp_ops. None marks a predicate with no C++ rendering
-# (xDSL's "ordered"/"unordered" float predicates have no direct infix
-# equivalent; not exercised by any real call site).
+# print_ftn.py's _cmp_ops. None marks a predicate with no C++ rendering --
+# for CmpfOp, that's every predicate except the "ordered" ones
+# (oeq/ogt/oge/olt/ole): C++'s own comparison operators are always
+# ordered (false whenever either operand is NaN), so mapping "one"
+# (ordered-not-equal, must be false for a NaN operand) to C++'s "!="
+# (true for a NaN operand) or any "unordered" predicate to its
+# seemingly-matching C++ operator would silently change NaN semantics --
+# marked unsupported instead (not exercised by any real call site yet).
 _CPP_CMP_OPS: dict[str, dict[str, str | None]] = {
     arith.CmpiOp.name: {
         "eq": "==", "ne": "!=",
@@ -74,11 +79,48 @@ _CPP_CMP_OPS: dict[str, dict[str, str | None]] = {
     arith.CmpfOp.name: {
         "false": None,
         "oeq": "==", "ogt": ">", "oge": ">=", "olt": "<", "ole": "<=",
-        "one": "!=", "ord": None,
-        "ueq": "==", "ugt": ">", "uge": ">=", "ult": "<", "ule": "<=", "une": "!=",
+        "one": None, "ord": None,
+        "ueq": None, "ugt": None, "uge": None, "ult": None, "ule": None, "une": None,
         "uno": None, "true": None,
     },
 }
+
+
+def _cpp_string_literal(s: str) -> str:
+    """Encode s as a double-quoted C++ string literal, escaping
+    backslashes, double quotes, and control characters -- the one shared
+    encoder for every site that turns arbitrary text into C++ source
+    (previously each site embedded text unescaped, so e.g. a quote or
+    backslash in the text could break or silently change the generated
+    source)."""
+    out = []
+    for ch in s:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\r":
+            out.append("\\r")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def _is_true_literal(const_op: object) -> bool:
+    """True if const_op is an arith.ConstantOp holding a nonzero (True)
+    value -- used to detect the XOR-as-NOT idiom correctly: XOR(x, true)
+    is NOT x, but XOR(x, false) is just x unchanged, and a value-blind
+    "is it a constant" check (print_ftn.py's own pre-existing idiom)
+    wrongly treats both the same way."""
+    match const_op.value:
+        case IntegerAttr(value=v):
+            return bool(v.data)
+        case _:
+            return False
 
 
 def _cpp_literal_str(attr: object) -> str:
@@ -95,7 +137,7 @@ def _cpp_literal_str(attr: object) -> str:
         case FloatAttr(value=val):
             return str(val.data)
         case builtin.StringAttr() as s:
-            return f'"{s.data}"'
+            return _cpp_string_literal(s.data)
         case _:
             return f"<!unknown value {attr}>"
 
@@ -119,6 +161,18 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
     def var_name(val: SSAValue) -> str:
         return variables.get(val, val.name_hint or "<unnamed>")
 
+    def render_value(val: SSAValue) -> str:
+        """Render an SSA value used as an operand: resolve it by name
+        first (covers function block arguments, whose owner is a Block,
+        not an Operation -- render()'s own match must never recurse into
+        val.owner blindly for those), falling back to recursively
+        rendering its defining operation."""
+        if val in variables:
+            return variables[val]
+        if isinstance(val, BlockArgument):
+            return val.name_hint or "<unnamed>"
+        return render(val.owner)
+
     def cmp_token(cmp_op, predicate_name: str) -> str:
         tok = _CPP_CMP_OPS[cmp_op.name][predicate_name]
         if tok is None:
@@ -132,10 +186,10 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
         my_level = expr_precedence.level_of(bin_op)
         my_assoc = expr_precedence.assoc_of(bin_op)
         lhs_str = expr_precedence.parenthesize(
-            render(l.owner), expr_precedence.level_of(l.owner), my_level, "lhs", my_assoc
+            render_value(l), expr_precedence.level_of(l.owner), my_level, "lhs", my_assoc
         )
         rhs_str = expr_precedence.parenthesize(
-            render(r.owner), expr_precedence.level_of(r.owner), my_level, "rhs", my_assoc
+            render_value(r), expr_precedence.level_of(r.owner), my_level, "rhs", my_assoc
         )
         return f"{lhs_str} {token} {rhs_str}"
 
@@ -159,26 +213,47 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                 str_pred = arith.CMPF_COMPARISON_OPERATIONS[v.value.data]
                 return render_binop(o, l, r, cmp_token(o, str_pred))
             case arith.XOrIOp():
+                # XOR(x, true) is NOT x; XOR(x, false) is x unchanged --
+                # value-aware, unlike print_ftn.py's pre-existing (and
+                # deliberately not touched here) constant-VALUE-blind
+                # idiom. See _is_true_literal's own docstring.
                 l, r = o.lhs, o.rhs
                 if isa(r.owner, arith.ConstantOp):
-                    return f"!({render(l.owner)})"
+                    return f"!({render_value(l)})" if _is_true_literal(r.owner) else render_value(l)
                 elif isa(l.owner, arith.ConstantOp):
-                    return f"!({render(r.owner)})"
+                    return f"!({render_value(r)})" if _is_true_literal(l.owner) else render_value(r)
                 else:
                     # General XOR -- C++'s logical-inequality spelling is
-                    # "!=" between bools; see print_ftn._render_expr's own
-                    # ".neqv." sibling case for why this stays unparen-
-                    # thesized (no real nested call site to get wrong yet).
-                    return f"{render(l.owner)} != {render(r.owner)}"
+                    # "!=" between bools, now precedence-aware via
+                    # render_binop (mirrors print_ftn._render_expr's own
+                    # ".neqv." sibling case).
+                    return render_binop(o, l, r, "!=")
             case TrimOp():
-                # C++ strings need no explicit trim -- the buffer already
-                # carries its own real length; render the name directly.
-                return var_name(o.lhs)
+                # Fortran trim() strips trailing blanks from a fixed-
+                # width character buffer -- that is NOT the same thing as
+                # "the C++ representation already knows its own length"
+                # (a space-padded fixed-size char[N] buffer, mirroring
+                # Fortran's own storage, would still need the padding
+                # stripped for a content comparison/concatenation to be
+                # correct). No real C++ call site has settled that buffer
+                # convention yet, so reject rather than silently return
+                # the padded name unchanged.
+                raise AssertionError(
+                    "expr_to_cpp_str: TrimOp has no settled C++ lowering yet "
+                    "-- the trailing-blank-trimming semantics depend on a "
+                    "buffer convention not yet decided"
+                )
             case StrCmpOp():
-                if o.literal is not None:
-                    return f'{render(o.lhs.owner)} == "{o.literal.data}"'
-                else:
-                    return f"{var_name(o.lhs)} == {var_name(o.rhs)}"
+                # _cpp_type maps a character buffer to char*/const char*;
+                # "==" on those compares addresses, not contents, and the
+                # two-buffer form ignores StrCmpOp.length entirely. No
+                # real C++ call site needs this yet -- reject rather than
+                # silently compare addresses.
+                raise AssertionError(
+                    "expr_to_cpp_str: StrCmpOp has no C++ content-comparison "
+                    "lowering yet -- naive '==' on a char*/const char* buffer "
+                    "compares addresses, not contents"
+                )
             case (
                 arith.AddiOp() | arith.SubiOp()
                 | arith.MuliOp() | arith.DivSIOp() | arith.DivUIOp()
@@ -186,16 +261,38 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                 | arith.AddfOp() | arith.SubfOp() | arith.MulfOp() | arith.DivfOp()
             ):
                 return render_binop(o, o.lhs, o.rhs, _CPP_BINOPS[o.name])
-            case math.PowFOp() | math.IPowIOp() | math.FPowIOp():
+            case math.PowFOp() | math.FPowIOp():
                 # C++ has no native ** operator -- std::pow() instead.
-                return f"std::pow({render(o.lhs.owner)}, {render(o.rhs.owner)})"
+                # Safe for these two: both are float-result ops already.
+                return f"std::pow({render_value(o.lhs)}, {render_value(o.rhs)})"
+            case math.IPowIOp():
+                # std::pow always returns a floating-point value, which
+                # would silently lose IPowIOp's integer result semantics
+                # (e.g. under a later integer division) -- reject rather
+                # than silently truncate/convert. Not exercised by any
+                # real call site yet.
+                raise AssertionError(
+                    "expr_to_cpp_str: math.IPowIOp (integer power) has no "
+                    "C++ lowering yet -- std::pow always returns a "
+                    "floating-point result, losing IPowIOp's integer "
+                    "semantics"
+                )
             case StringLiteralExprOp():
-                return f'"{o.text.data}"'
+                return _cpp_string_literal(o.text.data)
             case VarRefExprOp():
                 return o.var_name.data
             case StringConcatExprOp():
-                pieces = [render(p) for p in o.pieces.block.ops]
-                return " + ".join(pieces)
+                # Two StringLiteralExprOp/char*-buffer pieces joined with
+                # '+' is not valid C++ (neither operand is a string
+                # object); needs a chosen string representation
+                # (std::string vs. raw buffer) before this can lower
+                # correctly. Not exercised by any real call site yet --
+                # reject rather than emit invalid C++.
+                raise AssertionError(
+                    "expr_to_cpp_str: StringConcatExprOp has no C++ lowering "
+                    "yet -- naive '+' on string-literal/char* pieces is not "
+                    "valid C++"
+                )
             case MemberAccessExprOp():
                 base_str = render_base(o.base)
                 sep = "->" if (o.via is not None and o.via.data == "pointer") else "."
