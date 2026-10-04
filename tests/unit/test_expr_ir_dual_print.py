@@ -23,6 +23,7 @@ from io import StringIO
 
 from xdsl.dialects import arith
 from xdsl.dialects.builtin import FloatAttr, f64, i1, i32
+from xdsl.ir import Block
 
 from xdsl_ccpp.backend.print_cpp_header import expr_to_cpp_str
 from xdsl_ccpp.backend.print_ftn import ftnPrintContext
@@ -82,13 +83,24 @@ class TestUnitConvertRegionShape:
     lhs operand is the same SSA value as UnitConvertOp's own source."""
 
     def test_conversion_region_references_source(self):
+        # source stands in for UnitConvertOp's own real operand -- in
+        # production this is already attached somewhere in the
+        # enclosing function (e.g. a block argument), so it must NOT be
+        # pulled into the nested conversion region (that would make it
+        # invisible to UnitConvertOp's own outer `source` operand);
+        # simulate that by attaching it to a throwaway Block here.
         source = arith.ConstantOp(FloatAttr(300.0, f64))
+        Block([source])
         offset = arith.ConstantOp(FloatAttr(273.15, f64))
         conversion = arith.AddfOp(source.result, offset.result)
         uc = UnitConvertOp(source, conversion_op=conversion, result_type=f64)
 
-        (conv_op,) = uc.conversion.block.ops
-        assert conv_op is conversion
+        ops_in_region = list(uc.conversion.block.ops)
+        # offset is genuinely fresh (never attached) -- it must be
+        # flattened into the region alongside conversion itself, with
+        # conversion (the root) last.
+        assert ops_in_region == [offset, conversion]
+        assert source not in ops_in_region
         assert conversion.lhs.owner is source
 
     def test_legacy_and_structured_forms_are_mutually_exclusive(self):

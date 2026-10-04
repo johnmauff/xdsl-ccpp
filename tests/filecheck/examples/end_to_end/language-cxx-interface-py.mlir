@@ -395,7 +395,7 @@
 // CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
 // CHECK-NEXT:        allocate(const_prop, stat=errcode)
-// CHECK-NEXT:        if (errcode /= 0) then
+// CHECK-NEXT:        if (errcode .ne. 0) then
 // CHECK-NEXT:          errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:          return
 // CHECK-NEXT:        end if
@@ -472,7 +472,7 @@
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), errcode=errflg, errmsg=errmsg)
-// CHECK-NEXT:      if (errflg /= 0 .or. index <= 0) then
+// CHECK-NEXT:      if (errflg .ne. 0 .or. index .le. 0) then
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:      end if

@@ -575,14 +575,14 @@
 // CHECK-NEXT:      errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
-// CHECK-NEXT:      if (any(cam_model_const_stdnames == std_name)) then
+// CHECK-NEXT:      if (any(cam_model_const_stdnames .eq. std_name)) then
 // CHECK-NEXT:        is_const = .true.
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
 // CHECK-NEXT:        do lc_idx = 1, size(lc_dyn_const)
 // CHECK-NEXT:          call lc_dyn_const(lc_idx)%standard_name(lc_std_name)
-// CHECK-NEXT:          if (trim(lc_std_name) == trim(std_name)) then
+// CHECK-NEXT:          if (trim(lc_std_name) .eq. trim(std_name)) then
 // CHECK-NEXT:            is_const = .true.
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -591,7 +591,7 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
 // CHECK-NEXT:        do lc_idx = 1, size(lc_dyn_const_ice)
 // CHECK-NEXT:          call lc_dyn_const_ice(lc_idx)%standard_name(lc_std_name)
-// CHECK-NEXT:          if (trim(lc_std_name) == trim(std_name)) then
+// CHECK-NEXT:          if (trim(lc_std_name) .eq. trim(std_name)) then
 // CHECK-NEXT:            is_const = .true.
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -626,7 +626,7 @@
 // CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
 // CHECK-NEXT:        allocate(const_prop, stat=errcode)
-// CHECK-NEXT:        if (errcode /= 0) then
+// CHECK-NEXT:        if (errcode .ne. 0) then
 // CHECK-NEXT:          errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:          return
 // CHECK-NEXT:        end if
@@ -638,7 +638,7 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const)
 // CHECK-NEXT:          allocate(const_prop, stat=errcode)
-// CHECK-NEXT:          if (errcode /= 0) then
+// CHECK-NEXT:          if (errcode .ne. 0) then
 // CHECK-NEXT:            errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -651,7 +651,7 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const_ice)
 // CHECK-NEXT:          allocate(const_prop, stat=errcode)
-// CHECK-NEXT:          if (errcode /= 0) then
+// CHECK-NEXT:          if (errcode .ne. 0) then
 // CHECK-NEXT:            errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -662,7 +662,7 @@
 // CHECK-NEXT:        end do
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      allocate(const_prop, stat=errcode)
-// CHECK-NEXT:      if (errcode /= 0) then
+// CHECK-NEXT:      if (errcode .ne. 0) then
 // CHECK-NEXT:        errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
@@ -674,7 +674,7 @@
 // CHECK-NEXT:      nullify(const_prop)
 // CHECK-NEXT:      if (errcode /= 0) return
 // CHECK-NEXT:      allocate(const_prop, stat=errcode)
-// CHECK-NEXT:      if (errcode /= 0) then
+// CHECK-NEXT:      if (errcode .ne. 0) then
 // CHECK-NEXT:        errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
@@ -778,7 +778,7 @@
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), errcode=errflg, errmsg=errmsg)
-// CHECK-NEXT:      if (errflg /= 0 .or. index <= 0) then
+// CHECK-NEXT:      if (errflg .ne. 0 .or. index .le. 0) then
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:      end if

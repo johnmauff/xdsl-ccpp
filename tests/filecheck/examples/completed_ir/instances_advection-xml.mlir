@@ -497,16 +497,42 @@
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_is_scheme_constituent", is_function = false, args = ["std_name", "is_const", "errflg", "errmsg", "instance"], use_stmts = [], arg_decls = ["character(len=*), intent(in) :: std_name", "logical, intent(out) :: is_const", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg", "integer, intent(in) :: instance"], local_decls = ["integer :: lc_idx", "character(len=256) :: lc_std_name"]}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nis_const = .false."}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_instances)"}> ({
-// CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "any(lc_instances(instance)%cam_model_const_stdnames == std_name)"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.if_then"() ({
+// CHECK-NEXT:              "ccpp_utils.call_expr"() <{callee = "any"}> ({
+// CHECK-NEXT:                %0 = "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances(instance)%cam_model_const_stdnames"}> : () -> i32
+// CHECK-NEXT:                %1 = "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> i32
+// CHECK-NEXT:                %2 = arith.cmpi eq, %0, %1 : i32
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_instances)"}> ({
-// CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_instances(instance)%lc_dyn_const)"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.if_then"() ({
+// CHECK-NEXT:              "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances(instance)%lc_dyn_const"}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_idx", upper_expr = "size(lc_instances(instance)%lc_dyn_const)"}> ({
 // CHECK-NEXT:                "ccpp_utils.ddt_method_call"() <{obj_expr = "lc_instances(instance)%lc_dyn_const(lc_idx)", method = "standard_name", args = ["lc_std_name"], kwargs = []}> : () -> ()
-// CHECK-NEXT:                "ccpp_utils.if_then"() <{condition_expr = "trim(lc_std_name) == trim(std_name)"}> ({
+// CHECK-NEXT:                "ccpp_utils.if_then"() ({
+// CHECK-NEXT:                  %3 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
+// CHECK-NEXT:                  }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:                  %4 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
+// CHECK-NEXT:                  }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:                  %5 = arith.cmpi eq, %3, %4 : i32
+// CHECK-NEXT:                }, {
 // CHECK-NEXT:                  "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }) : () -> ()
@@ -525,7 +551,13 @@
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_register_constituents", is_function = false, args = ["host_constituents", "errmsg", "errcode", "instance", "ninstances"], use_stmts = ["use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t", "use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents"], arg_decls = ["type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)", "character(len=512), intent(out) :: errmsg", "integer, intent(out) :: errcode", "integer, intent(in) :: instance", "integer, intent(in) :: ninstances"], local_decls = ["integer :: lc_i, lc_num_consts, field_ind", "type(ccpp_constituent_properties_t), pointer :: const_prop", "type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)"]}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = ".not. allocated(lc_instances)"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            %6 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:            %7 = arith.constant true
+// CHECK-NEXT:            %8 = arith.xori %6, %7 : i1
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(lc_instances(ninstances))"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_num_consts = size(host_constituents)"}> : () -> ()
@@ -534,7 +566,11 @@
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "lc_instances(instance)%cam_constituents_obj", method = "initialize_table", args = ["lc_num_consts"], kwargs = []}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
 // CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:            "ccpp_utils.if_then"() ({
+// CHECK-NEXT:              %9 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:              %10 = arith.constant 0 : i32
+// CHECK-NEXT:              %11 = arith.cmpi ne, %9, %10 : i32
+// CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = host_constituents(lc_i)"}> : () -> ()
@@ -542,10 +578,18 @@
 // CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "allocated(lc_instances(instance)%lc_dyn_const)"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances(instance)%lc_dyn_const"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(lc_instances(instance)%lc_dyn_const)"}> ({
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:              "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:              "ccpp_utils.if_then"() ({
+// CHECK-NEXT:                %12 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:                %13 = arith.constant 0 : i32
+// CHECK-NEXT:                %14 = arith.cmpi ne, %12, %13 : i32
+// CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = lc_instances(instance)%lc_dyn_const(lc_i)"}> : () -> ()
@@ -555,7 +599,11 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            %15 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:            %16 = arith.constant 0 : i32
+// CHECK-NEXT:            %17 = arith.cmpi ne, %15, %16 : i32
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "const_prop", method = "instantiate", args = [], kwargs = ["std_name='cloud_liquid_dry_mixing_ratio'", "long_name='Cloud liquid dry mixing ratio'", "diag_name='cld_liq_array'", "units='kg kg-1'", "vertical_dim='vertical_layer_dimension'", "advected=.true.", "errcode=errcode", "errmsg=errmsg"]}> : () -> ()
@@ -624,7 +672,15 @@
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_instances)", errmsg_text = "const_get_index: constituents not registered"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_instances(instance)%lc_all_constituents)", errmsg_text = "const_get_index: constituents not registered"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "lc_instances(instance)%cam_constituents_obj", method = "const_index", args = ["index", "to_lower(std_name)"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errflg /= 0 .or. index <= 0"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            %18 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:            %19 = arith.constant 0 : i32
+// CHECK-NEXT:            %20 = arith.cmpi ne, %18, %19 : i32
+// CHECK-NEXT:            %21 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
+// CHECK-NEXT:            %22 = arith.constant 0 : i32
+// CHECK-NEXT:            %23 = arith.cmpi sle, %21, %22 : i32
+// CHECK-NEXT:            %24 = arith.ori %20, %23 : i1
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()

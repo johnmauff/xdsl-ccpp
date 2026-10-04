@@ -13,6 +13,7 @@ from xdsl.dialects.builtin import (
 from xdsl.dialects.llvm import LLVMArrayType
 from xdsl.ir import (
     Dialect,
+    Operation,
     ParametrizedAttribute,
     SSAValue,
     TypeAttribute,
@@ -35,6 +36,7 @@ from xdsl.irdl import (
     result_def,
     traits_def,
     var_operand_def,
+    var_region_def,
     var_result_def,
 )
 from xdsl.traits import NoTerminator
@@ -69,6 +71,40 @@ def _coerce_str_list_attr(value: "list[str] | ArrayAttr") -> ArrayAttr:
     return ArrayAttr([StringAttr(e) for e in value]) if isinstance(value, list) else value
 
 
+def _flatten_floating_deps(root: Operation) -> "list[Operation]":
+    """Return [*dependencies, root] in dependency order.
+
+    When root is a freshly-built arith/math op tree (e.g. an
+    arith.CmpiOp whose operands are a brand-new VarRefExprOp and
+    arith.ConstantOp, built just for this one expression and never
+    inserted into any block), every op it transitively depends on via a
+    real SSA operand must be an explicit sibling in the same block as
+    root -- xDSL's IsolatedFromAbove verifier rejects a region
+    referencing a value whose defining op isn't itself a proper member
+    of that same region (real MLIR semantics: an SSA edge alone isn't
+    enough, the defining op must actually be placed in the IR tree).
+    Already-attached operand providers (e.g. a block argument, or an op
+    already inserted elsewhere in the real function body -- such as
+    UnitConvertOp's own `source` operand) are left alone; only ops with
+    no parent block get collected and placed alongside root.
+    """
+    seen: set[int] = set()
+    order: list[Operation] = []
+
+    def visit(op: Operation) -> None:
+        if id(op) in seen:
+            return
+        seen.add(id(op))
+        for operand in op.operands:
+            owner = operand.owner
+            if isinstance(owner, Operation) and owner.parent is None:
+                visit(owner)
+        order.append(op)
+
+    visit(root)
+    return order
+
+
 def _single_op_region(ops: "list | None", *, required: bool = True) -> "Region":
     """Build a Region containing exactly one op (or zero, if required=False
     and ops is empty) -- the shared 'expression slot' shape for the new
@@ -78,6 +114,12 @@ def _single_op_region(ops: "list | None", *, required: bool = True) -> "Region":
     Precedent for enforcing "exactly one op" despite IRDL enforcing
     nothing about region cardinality: CppStructDefOp.__init__ already
     raises ValueError for an invariant IRDL can't express.
+
+    The single op given may itself be the root of a freshly-built
+    arith/math expression tree (e.g. IfThenOp's new `condition_op` or
+    UnitConvertOp's `conversion_op`) -- see _flatten_floating_deps for
+    why its unattached operand-providing ops must also become block
+    siblings here, not just the root itself.
     """
     from xdsl.ir import Block, Region
 
@@ -86,7 +128,10 @@ def _single_op_region(ops: "list | None", *, required: bool = True) -> "Region":
         raise ValueError(f"expected exactly one op in expression slot, got {len(ops)}")
     if not required and len(ops) > 1:
         raise ValueError(f"expected at most one op in expression slot, got {len(ops)}")
-    return Region([Block(ops)])
+    if not ops:
+        return Region([Block()])
+    (root,) = ops
+    return Region([Block(_flatten_floating_deps(root))])
 
 
 @irdl_attr_definition
@@ -1309,19 +1354,42 @@ class IfThenOp(IRDLOperation):
     ``if`` and an ``else`` branch -- forcing a body through either of those
     with an empty ``without_body_ops`` would print a stray empty ``else``
     this op avoids entirely.
+
+    lang-neutral-expr-ir Stage 3a adds a structured alternative to the
+    opaque ``condition_expr`` text: pass ``condition_op`` (any
+    print_expr-dispatchable expression op -- e.g. a ``CallExprOp``, or an
+    ``arith.CmpiOp``/``OrIOp`` tree built over ``VarRefExprOp``/
+    ``MemberAccessExprOp`` leaves) instead. Exactly one of the two must
+    be given; the opaque-text form remains fully supported so every
+    existing caller (this file's own multi-instance guards, and
+    cpp_interop.py's chost cap) is unaffected.
     """
 
     name = "ccpp_utils.if_then"
-    condition_expr = prop_def(StringAttr)
+    condition_expr = opt_prop_def(StringAttr)
+    condition = opt_region_def("single_block")
     body = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, condition_expr: str, body_ops: list):
+    def __init__(
+        self, condition_expr: "str | None" = None, body_ops: "list | None" = None,
+        *, condition_op=None,
+    ):
+        if (condition_expr is None) == (condition_op is None):
+            raise ValueError(
+                "IfThenOp: pass exactly one of condition_expr or condition_op"
+            )
         from xdsl.ir import Block, Region
+        props: dict = {}
+        cond_region = None
+        if condition_expr is not None:
+            props["condition_expr"] = _coerce_str_attr(condition_expr)
+        else:
+            cond_region = _single_op_region([condition_op])
         super().__init__(
-            properties={"condition_expr": StringAttr(condition_expr)},
-            regions=[Region([Block(body_ops)])],
+            properties=props,
+            regions=[cond_region, Region([Block(body_ops or [])])],
         )
 
 
@@ -2294,17 +2362,22 @@ class StringConcatExprOp(IRDLOperation):
     """
 
     name = "ccpp_utils.string_concat_expr"
-    pieces = region_def("single_block")
+    # One region per piece (not one shared region holding N sibling
+    # ops): a piece can itself be a freshly-built arith/math sub-tree
+    # (e.g. a CallExprOp wrapping comparison ops), whose own floating
+    # operand dependencies must be flattened into ITS OWN region via
+    # _single_op_region -- sharing one region/block across all pieces
+    # would make the printer unable to tell a flattened dependency op
+    # apart from a genuine sibling piece.
+    pieces = var_region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
     def __init__(self, piece_ops: "list"):
-        from xdsl.ir import Block, Region
-
         piece_ops = list(piece_ops)
         if len(piece_ops) < 2:
             raise ValueError("StringConcatExprOp needs at least 2 pieces")
-        super().__init__(regions=[Region([Block(piece_ops)])])
+        super().__init__(regions=[[_single_op_region([p]) for p in piece_ops]])
 
 
 @irdl_op_definition
@@ -2396,19 +2469,24 @@ class IndexExprOp(IRDLOperation):
 
     name = "ccpp_utils.index_expr"
     base = region_def("single_block")
-    indices = region_def("single_block")
+    # One region per subscript (see StringConcatExprOp.pieces's own
+    # comment for why: a subscript can itself be a freshly-built
+    # arith/math sub-tree whose floating dependencies need their own
+    # region, not a shared block mixed in with sibling subscripts).
+    indices = var_region_def("single_block")
     res = opt_result_def()
 
     traits = traits_def(NoTerminator())
 
     def __init__(self, base_op, index_ops: "list", result_type=None):
-        from xdsl.ir import Block, Region
-
         index_ops = list(index_ops)
         if not index_ops:
             raise ValueError("IndexExprOp needs at least one index")
         super().__init__(
-            regions=[_single_op_region([base_op]), Region([Block(index_ops)])],
+            regions=[
+                _single_op_region([base_op]),
+                [_single_op_region([i]) for i in index_ops],
+            ],
             result_types=[result_type] if result_type is not None else [None],
         )
 
@@ -2483,24 +2561,28 @@ class CallExprOp(IRDLOperation):
 
     name = "ccpp_utils.call_expr"
     callee = prop_def(StringAttr)
-    args = region_def("single_block")  # positional argument expr ops
-    kwargs = region_def("single_block")  # KeywordArgExprOp children
+    # One region per positional/keyword arg (see StringConcatExprOp.pieces's
+    # own comment for why): an arg can itself be a freshly-built
+    # arith/math sub-tree (e.g. CallExprOp("any", [a_cmpi_tree])), whose
+    # floating operand dependencies need their own region, not a shared
+    # block mixed in with sibling args.
+    args = var_region_def("single_block")  # positional argument expr ops
+    kwargs = var_region_def("single_block")  # KeywordArgExprOp children
     res = opt_result_def()
 
+    irdl_options = [AttrSizedRegionSegments()]
     traits = traits_def(NoTerminator())
 
     def __init__(
         self, callee: str, arg_ops: "list | None" = None, kwarg_ops: "list | None" = None,
         result_type=None,
     ):
-        from xdsl.ir import Block, Region
-
         super().__init__(
             properties={"callee": StringAttr(callee)},
             result_types=[result_type] if result_type is not None else [None],
             regions=[
-                Region([Block(list(arg_ops or []))]),
-                Region([Block(list(kwarg_ops or []))]),
+                [_single_op_region([a]) for a in (arg_ops or [])],
+                [_single_op_region([k]) for k in (kwarg_ops or [])],
             ],
         )
 
@@ -2515,18 +2597,19 @@ class ArrayConstructorExprOp(IRDLOperation):
 
     name = "ccpp_utils.array_constructor_expr"
     elem_type = opt_prop_def(StringAttr)
-    elements = region_def("single_block")
+    # One region per element (see StringConcatExprOp.pieces's own
+    # comment for why).
+    elements = var_region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
     def __init__(self, element_ops: "list", elem_type: "str | None" = None):
-        from xdsl.ir import Block, Region
-
         props: dict = {}
         if elem_type is not None:
             props["elem_type"] = StringAttr(elem_type)
         super().__init__(
-            properties=props, regions=[Region([Block(list(element_ops))])]
+            properties=props,
+            regions=[[_single_op_region([e]) for e in element_ops]],
         )
 
 

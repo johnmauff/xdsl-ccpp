@@ -438,7 +438,11 @@
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "initialize_table", args = ["lc_num_consts"], kwargs = []}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
 // CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:            "ccpp_utils.if_then"() ({
+// CHECK-NEXT:              %0 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:              %1 = arith.constant 0 : i32
+// CHECK-NEXT:              %2 = arith.cmpi ne, %0, %1 : i32
+// CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = host_constituents(lc_i)"}> : () -> ()
@@ -483,7 +487,15 @@
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nindex = -1"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_all_constituents)", errmsg_text = "const_get_index: constituents not registered"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "const_index", args = ["index", "to_lower(std_name)"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errflg /= 0 .or. index <= 0"}> ({
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            %3 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:            %4 = arith.constant 0 : i32
+// CHECK-NEXT:            %5 = arith.cmpi ne, %3, %4 : i32
+// CHECK-NEXT:            %6 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
+// CHECK-NEXT:            %7 = arith.constant 0 : i32
+// CHECK-NEXT:            %8 = arith.cmpi sle, %6, %7 : i32
+// CHECK-NEXT:            %9 = arith.ori %5, %8 : i1
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()

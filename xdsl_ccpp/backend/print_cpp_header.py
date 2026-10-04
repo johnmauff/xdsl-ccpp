@@ -194,7 +194,7 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
         return f"{lhs_str} {token} {rhs_str}"
 
     def render_base(region) -> str:
-        (base_op,) = region.block.ops
+        base_op = region.block.last_op
         return expr_precedence.parenthesize(
             render(base_op), expr_precedence.level_of(base_op),
             expr_precedence.ATOM_LEVEL, "lhs", "left",
@@ -300,7 +300,8 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
             case IndexExprOp():
                 base_str = render_base(o.base)
                 idx_strs = []
-                for i in o.indices.block.ops:
+                for r in o.indices:
+                    i = r.block.last_op
                     if isa(i, SliceExprOp):
                         raise AssertionError(
                             "expr_to_cpp_str: array slicing is unsupported in C++"
@@ -308,14 +309,14 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                     idx_strs.append(render(i))
                 return base_str + "".join(f"[{s}]" for s in idx_strs)
             case CallExprOp():
-                if any(True for _ in o.kwargs.block.ops):
+                if any(True for _ in o.kwargs):
                     raise AssertionError(
                         "expr_to_cpp_str: C++ has no keyword-argument call syntax"
                     )
-                pos = [render(a) for a in o.args.block.ops]
+                pos = [render(r.block.last_op) for r in o.args]
                 return f"{o.callee.data}({', '.join(pos)})"
             case ArrayConstructorExprOp():
-                elems = [render(e) for e in o.elements.block.ops]
+                elems = [render(r.block.last_op) for r in o.elements]
                 return "{ " + ", ".join(elems) + " }"
             case _:
                 raise AssertionError(f"Unhandled op in expr_to_cpp_str: {type(o)}")

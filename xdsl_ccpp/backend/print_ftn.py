@@ -556,7 +556,7 @@ class ftnPrintContext:
         """
         if to_expr_attr is not None:
             return to_expr_attr.data
-        (conv_op,) = conversion_region.block.ops
+        conv_op = conversion_region.block.last_op
         return f"{self._binops[conv_op.name]} {self._render_expr(conv_op.rhs.owner)}"
 
     def _ftn_dim_suffix(self, type_attr: Attribute) -> str:
@@ -710,12 +710,15 @@ class ftnPrintContext:
         return f"{lhs_str} {token} {rhs_str}"
 
     def _render_base_expr(self, base_region: Region) -> str:
-        """Render a single-op 'base' region (MemberAccessExprOp/IndexExprOp),
-        parenthesizing it if its own precedence is looser than the atomic
-        postfix access binding to it (e.g. a member access on a binary-op
-        result -- not exercised by any real call site yet, but structurally
-        possible once this op composes with arith ops)."""
-        (base_op,) = base_region.block.ops
+        """Render a 'base' region (MemberAccessExprOp/IndexExprOp/
+        SliceExprOp.lower/upper/stride): its last op is the root/value
+        (any earlier ops are flattened-in floating dependencies -- see
+        _flatten_floating_deps), parenthesized if its own precedence is
+        looser than the atomic postfix access binding to it (e.g. a
+        member access on a binary-op result -- not exercised by any real
+        call site yet, but structurally possible once this op composes
+        with arith ops)."""
+        base_op = base_region.block.last_op
         return expr_precedence.parenthesize(
             self._render_expr(base_op), expr_precedence.level_of(base_op),
             expr_precedence.ATOM_LEVEL, "lhs", "left",
@@ -818,24 +821,24 @@ class ftnPrintContext:
             case CCPPVarRefExprOp():
                 return op.var_name.data
             case CCPPStringConcatExprOp():
-                pieces = [self._render_expr(p) for p in op.pieces.block.ops]
+                pieces = [self._render_expr(r.block.last_op) for r in op.pieces]
                 return " // ".join(pieces)
             case CCPPMemberAccessExprOp():
                 base_str = self._render_base_expr(op.base)
                 return f"{base_str}%{op.member.data}"
             case CCPPIndexExprOp():
                 base_str = self._render_base_expr(op.base)
-                idx_strs = [self._render_index_piece(i) for i in op.indices.block.ops]
+                idx_strs = [self._render_index_piece(r.block.last_op) for r in op.indices]
                 return f"{base_str}({', '.join(idx_strs)})"
             case CCPPCallExprOp():
-                pos = [self._render_expr(a) for a in op.args.block.ops]
-                kw = [self._render_expr(k) for k in op.kwargs.block.ops]
+                pos = [self._render_expr(r.block.last_op) for r in op.args]
+                kw = [self._render_expr(r.block.last_op) for r in op.kwargs]
                 return f"{op.callee.data}({', '.join(pos + kw)})"
             case CCPPKeywordArgExprOp():
-                (value_op,) = op.value.block.ops
+                value_op = op.value.block.last_op
                 return f"{op.arg_name.data}={self._render_expr(value_op)}"
             case CCPPArrayConstructorExprOp():
-                elems = [self._render_expr(e) for e in op.elements.block.ops]
+                elems = [self._render_expr(r.block.last_op) for r in op.elements]
                 prefix = f"{op.elem_type.data} :: " if op.elem_type is not None else ""
                 return f"[ {prefix}{', '.join(elems)} ]"
             case _:
@@ -1207,7 +1210,11 @@ class ftnPrintContext:
                     inner.print("return")
                 self.print("end if")
             case CCPPIfThenOp():
-                self.print(f"if ({op.condition_expr.data}) then")
+                if op.condition_expr is not None:
+                    cond_str = op.condition_expr.data
+                else:
+                    cond_str = self._render_expr(op.condition.block.last_op)
+                self.print(f"if ({cond_str}) then")
                 with self.descend() as inner:
                     inner.print_block(op.body.block)
                 self.print("end if")
