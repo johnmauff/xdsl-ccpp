@@ -488,31 +488,9 @@ header, the C++ wrapper, and the regular Fortran-host `_cpp_type` path all
 passing). The cost is purely maintenance drift risk: a future type-mapping
 fix applied to one function but not the other.
 
-### `cpp-dual-print-pipeline`: Fortran and C++ header printers each re-run the whole pipeline independently
-
-ID: `cpp-dual-print-pipeline`
-
-**File**: `xdsl_ccpp/transforms/ccpp_dsl.py` (`run_opt`/`generate_cpp_headers`).
-**Added 2026-09-30**, confirmed still out of scope while finishing the
-chost cap's raw-string-to-typed-IR conversion.
-
-`ccpp_dsl.py` invokes `ccpp_opt.py` as two fully separate subprocesses —
-one producing the `.F90` output (`-t ftn`), one producing the C++ header
-output (`-t cpp_header`) — each re-running the *entire* pipeline
-independently from the original frontend IR, including rebuilding every
-`CHostCapOp` from scratch twice. Now that `CHostCapOp`'s full payload
-(`ftn_body`/`cpp_body`/`wrapper_body`) has been converted to typed IR
-rather than raw text, printing both targets from one shared in-memory
-module after a single pipeline run becomes natural — the underlying
-reason this was awkward before (text blobs built by two independent code
-paths, hard to guarantee a single build produced both) no longer applies.
-
-**The right fix**: run the pipeline once, then call both
-`print_to_ftn`/`print_to_cpp_headers` against the same resulting module,
-replacing the current two-subprocess invocation in `ccpp_dsl.py`.
-
-**Risk of leaving as-is**: low correctness risk (output is identical
-either way, confirmed throughout the chost cap conversion's own
-verification) — purely a performance/efficiency cost (the whole
-frontend+transform pipeline runs twice per generation instead of once),
-worth fixing but not urgent.
+**Resolved, removed from the list above** (matching every other resolved
+item in this file): `ccpp_dsl.py` now runs the pipeline once and prints
+both the `.F90` and C++ header output from the same in-memory module via
+a new combined `ftn_and_cpp_header` pipeline target, instead of two
+fully independent subprocess re-runs — full history in `CHANGELOG.md`,
+"`cpp-dual-print-pipeline` resolution" (L9423).

@@ -113,7 +113,16 @@ _EXPECTED_CHOST_CPP_FILES = {
 def test_ccpp_xdsl_generates_both_ftn_and_cpp_headers_in_one_run(tmp_path):
     """A single ccpp_xdsl run against a C++ host (language = c++ in its
     own host meta, auto-detected -- no --bind-c flag needed) writes both
-    the .F90 caps and the C++ .h/.hpp files, all from one pipeline run."""
+    the .F90 caps and the C++ .h/.hpp files, all from one pipeline run.
+
+    --verbose 2 so run_pipeline_stage's own command echo lets this test
+    assert there was exactly ONE ccpp_opt subprocess invocation -- the
+    PR's own defining claim (cpp-dual-print-pipeline). Just checking the
+    output files isn't enough: the old two-subprocess implementation
+    produced the identical set of files, so a files-only assertion would
+    pass unchanged even if this regressed back to two subprocesses
+    (Copilot PR #110 review, 2026-10-05).
+    """
     tempdir = tmp_path / "tmp"
     tempdir.mkdir()
 
@@ -127,7 +136,7 @@ def test_ccpp_xdsl_generates_both_ftn_and_cpp_headers_in_one_run(tmp_path):
                 str(_TINYDDT_HOST_CPP / "tinyddt_host_sub.meta"),
             ]),
             "--host-name",    "tinyddt_host",
-            "--verbose",      "0",
+            "--verbose",      "2",
             "--tempdir",      str(tempdir),
             "-o",             str(tmp_path),
         ],
@@ -139,6 +148,13 @@ def test_ccpp_xdsl_generates_both_ftn_and_cpp_headers_in_one_run(tmp_path):
         f"ccpp_xdsl exited {result.returncode}:\n"
         f"stdout: {result.stdout}\n"
         f"stderr: {result.stderr}"
+    )
+
+    optimizer_invocations = result.stdout.count("xdsl_ccpp.tools.ccpp_opt")
+    assert optimizer_invocations == 1, (
+        f"Expected exactly one ccpp_opt subprocess invocation (single "
+        f"combined pipeline pass), found {optimizer_invocations}:\n"
+        f"stdout: {result.stdout}"
     )
 
     generated_ftn = {f.name for f in tmp_path.glob("*.F90")}

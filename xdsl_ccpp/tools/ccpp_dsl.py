@@ -763,15 +763,25 @@ class ccppMain:
         return ",".join(passes)
 
     def run_opt(self, tmp_dir, mlir_in, target: str = "ftn"):
-        """Run the pipeline once and print `target` ("ftn", "cpp_header",
-        or "ftn_and_cpp_header" -- the combined target that prints both
-        from the same already-transformed module in one process, used by
+        """Run the pipeline once and print `target` -- "ftn" (default) or
+        "ftn_and_cpp_header" (the combined target that prints both from
+        the same already-transformed module in one process, used by
         apply() below instead of a second full independent re-parse+
         re-transform subprocess; see ccpp_opt.py's own
         _output_ftn_and_cpp_header for why this is safe). ccpp_prebuild.py
         calls this with the default "ftn" only -- it never wants C++
         header output, so that caller is intentionally unaffected by the
         combined-target path.
+
+        Do NOT call this with target="cpp_header" alone: this method's
+        own post_stage_check below unconditionally requires non-empty
+        output, but a cpp_header-only run legitimately produces nothing
+        when there's no BIND(C)/CHostCapOp content -- a valid, expected
+        outcome, not a failure (the old, now-deleted generate_cpp_headers
+        handled that case explicitly; this method doesn't, and nothing
+        here actually needs "cpp_header" standalone -- only the FileCheck
+        goldens invoke that target directly, via ccpp_opt's own CLI, not
+        through this method). Copilot PR #110 review, 2026-10-05.
         """
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         pipeline = self._build_pipeline()
