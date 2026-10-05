@@ -228,116 +228,89 @@ from raw-string assembly to typed IR — full history in `CHANGELOG.md`,
 
 ID: `lang-neutral-expr-ir`
 
-**File**: repo-wide — `xdsl_ccpp/dialects/ccpp_utils.py` (most op
-definitions), `xdsl_ccpp/transforms/{suite_cap,run_dispatch,constituent_cap,
-lifecycle_cap,cpp_interop}.py`. **Added 2026-09-30**, surfaced while
-converting `constituent_cap.py`'s raw-string assembly to typed IR and
-discussed directly with the project owner, whose long-term goal is full
-multi-language support in xdsl_ccpp (both C++ as a host model and C++ as
-a scheme implementation).
+**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (op definitions),
+`xdsl_ccpp/backend/{print_ftn,print_cpp_header,expr_precedence}.py`
+(printers), `xdsl_ccpp/transforms/{constituent_cap,cpp_interop,
+suite_cap}.py` (retrofitted). **Added 2026-09-30**; **design + full
+propagation (Stages 0-5) DONE 2026-10-04** — see `CHANGELOG.md`'s
+"`lang-neutral-expr-ir` Stages 0-4" and "Stage 5" entries for full
+detail. **Not fully resolved** — kept open here, not archived, because
+one sub-item (Stage 3c) remains deliberately deferred.
 
-**The gap, precisely**: that conversion turned `constituent_cap.py`'s raw
-Fortran-string *statement bodies* into typed ops (`IfThenOp`,
-`DdtMethodCallOp`, `PointerAssignOp`, etc.), so a second-language printer
-could in principle decide how to render an `if`/`then`/`else`, a type-bound
-call, or a pointer assignment in its own target syntax. But confirmed
-directly: every one of those ops' *expression-bearing* properties —
-`IfThenOp.condition_expr`, `ActiveCheckOp`/`PresentCheckOp`'s condition
-text, `ErrorGuardOp.errmsg_text`, `DdtMethodCallOp.args`/`.kwargs`,
-`PointerAssignOp.rhs_expr`, `AllocateOp.dims`, `ModuleVarOp.init_value` —
-still hold raw Fortran-syntax *text* (`.or.`/`/=` operators, `errcode=errcode`
-keyword-arg syntax, `[ character(len=8) :: 'foo' ]` array-constructor
-literals, `.true.`/`''` literal spellings). This isn't specific to
-`constituent_cap.py` or to that conversion's new ops — it's the same
-pattern in every op this codebase already treats as "converted"
-(`LazyAllocOp`, `SafeDeallocOp`, `ArraySectionOp`'s bounds,
-`CamDirectCallOp`'s args, and so on, going back to the original "Eliminate
-text strings" work, and confirmed true again for `cpp_interop.py`'s own
-later conversion). A hypothetical C++ printer can't render `.or.` as `||`
-or `.true.` as `true` without re-parsing Fortran syntax out of a string
-first — which defeats the entire purpose of routing everything through a
-printer abstraction. So today's IR genericizes *statement shape* (if/else,
-do-loop, call) but not *expression content* — and expression content is
-exactly what differs between Fortran and any other target language.
+**The gap, precisely** (unchanged from when this was first written):
+converting a file's raw Fortran-string *statement bodies* into typed ops
+(`IfThenOp`, `DdtMethodCallOp`, `PointerAssignOp`, etc.) lets a
+second-language printer decide how to render an `if`/`then`/`else`, a
+type-bound call, or a pointer assignment in its own target syntax. But
+those ops' *expression-bearing* properties — `IfThenOp.condition_expr`,
+`DdtMethodCallOp.args`/`.kwargs`, `PointerAssignOp.rhs_expr`,
+`AllocateOp.dims`, `ModuleVarOp.init_value`, and more — held raw
+Fortran-syntax *text* (`.or.`/`/=` operators, `errcode=errcode`
+keyword-arg syntax, array-constructor literals). A C++ printer can't
+render `.or.` as `||` without re-parsing Fortran syntax out of a string
+first — which defeats the point of a printer abstraction.
 
-**Why this is the real prerequisite for the stated long-term goal**: the
-multi-language direction this session settled on (convert
-`constituent_cap.py`, then `cpp_interop.py`, to typed IR, then eventually
-a second-language printer) cannot actually reach a second language until
-expression content stops being baked into the IR as Fortran-syntax text at
-construction time. That statement-shape conversion work was necessary
-groundwork (it at least stopped hand-building whole statements as joined
-strings) but isn't sufficient on its own — flagged here explicitly so the
-gap doesn't get rediscovered as a surprise now that both conversions are
-done.
+**What's done (Stages 0-5, see `CHANGELOG.md` for the full writeup)**:
+- A language-neutral expression vocabulary exists and is proven: `arith`/
+  `math` reused directly for arithmetic/logical/comparison/numeric
+  literals (completing `print_ftn.py`'s own previously-unused
+  `_binops`/`_cmp_ops` scaffolding rather than inventing a parallel
+  system), plus 7 new custom ops for what those dialects can't express
+  (`StringLiteralExprOp`, `StringConcatExprOp`, `VarRefExprOp`,
+  `MemberAccessExprOp`, `IndexExprOp`/`SliceExprOp`, `CallExprOp`/
+  `KeywordArgExprOp`, `ArrayConstructorExprOp`).
+- Both a Fortran printer path (`print_ftn.py`'s completed `print_expr`)
+  and a brand-new C++ expression printer (`print_cpp_header.py`'s
+  `expr_to_cpp_str`) render the *same* IR tree in each language's own
+  syntax, with a shared precedence/parenthesization module
+  (`expr_precedence.py`) — this is the item's real proof-of-concept.
+- Piloted on two independent real files, then propagated to a third
+  (Stage 5): `constituent_cap.py` (all 7 targeted op kinds:
+  `IfThenOp.condition_expr`, `ActiveCheckOp.condition_expr`,
+  `ErrorGuardOp.condition`, `DdtMethodCallOp.obj_expr/args/kwargs`,
+  `PointerAssignOp.rhs_expr`, `AllocateOp.dims`, `ModuleVarOp.
+  init_value`), `cpp_interop.py` (`CppBraceInitCallOp.field_values`,
+  `CppCallStatementOp.call_args`, `CppFieldDeclOp.init_expr`), and
+  `suite_cap.py` (`LazyAllocOp.init_value`, `ModuleVarOp.init_value`,
+  `SubcycleLoopOp.loop_count`, `KeywordCallOp.overrides`). Every
+  retrofitted op kept its legacy text form fully supported alongside
+  the new structured form (additive, not a breaking change) — any
+  other real caller of these ops is unaffected.
+- `run_dispatch.py` and `lifecycle_cap.py` were audited directly
+  (every call site read, not just grepped) and confirmed to have **no
+  real retrofit candidates at all** — their only expression-bearing-op
+  usages either never populate the raw-text property in question, or
+  carry static literal fragments with no internal structure to extract.
+  Stage 5's "propagate to 3 remaining files" therefore resolved to real
+  work in `suite_cap.py` only.
+- A real architecture gap was found and fixed along the way
+  (`_flatten_floating_deps`, needed because a freshly-built `arith`/
+  custom-op tree wrapped only at its root fails `module.verify()`'s
+  `IsolatedFromAbove` check) — this also retroactively fixed the same
+  latent bug in `UnitConvertOp`/`UnitWriteBackOp`.
 
-**The right fix, staged**:
+**Stage 3c deferred** (not abandoned): retrofitting one real
+`UnitConvertOp`/`UnitWriteBackOp` K↔°C call site was attempted and found
+genuinely blocked — every real `unit_convert` call site operates on this
+dialect's own `RealKindType` (a Fortran generic-kind placeholder), and
+`arith.AddfOp`/`SubfOp`'s operand constraint only accepts builtin
+`Float16/32/64Type` (confirmed directly against xDSL's source). Needs new
+`RealKindType`-compatible constant/binary-op vocabulary first if
+revisited — real additional scope, not a quick fix. This is now the
+item's **only remaining open thread**.
 
-1. **Small, immediate, low-risk cleanup piece** (can land on its own,
-   doesn't depend on anything else here): `constituent_cap.py` still has a
-   handful of genuine one-off `RawFortranLinesOp` leaves (plain scalar
-   assignments like `errflg = 0`; one `write(errmsg, ...)` call; a few
-   `#ifdef USE_GPU`/`!$acc` directive blocks; `allocate(x,
-   stat=errcode)`'s STAT-clause form, which doesn't match `AllocateOp`'s
-   plain shape). Add three small dedicated ops for these (`AssignOp` —
-   already landed, reused by `cpp_interop.py`'s own conversion —
-   `WriteStmtOp`, `PreprocDirectiveOp`), matching the established
-   op-design conventions from that earlier conversion exactly. This
-   doesn't solve the expression-content problem (these ops would still
-   hold Fortran-syntax text for their RHS/format-string content) but it
-   does get `constituent_cap.py` itself to zero raw-string leaves, and
-   gives a few more small, real precedents before attempting the bigger
-   design below.
-2. **Design a small core expression-IR vocabulary**: literal ops
-   (int/bool/string), a variable/member-reference op (covers both Fortran's
-   `%` and a future C++ printer's `.`/`->`), a binary/unary-op op
-   (parameterized by a language-neutral operator kind enum — `eq`/`ne`/
-   `and`/`or`/`add`/... — not a pre-rendered token), a call-as-expression
-   op (distinct from today's statement-level call ops), and an
-   array-constructor op. Deliberately small and proven on one file first
-   rather than designed in the abstract for the whole codebase at once.
-3. **Retrofit one already-converted file's expression properties** to use
-   the new vocabulary instead of `StringAttr`/`ArrayAttr[StringAttr]` —
-   `constituent_cap.py` is the natural pilot (freshly converted, well
-   covered by both unit tests and FileCheck goldens, including the new
-   multi-instance golden). Expect this to reveal real gaps in the stage 2
-   vocabulary; iterate.
-4. **Prove the abstraction actually holds** before committing to the full
-   retrofit: sketch (doesn't need to be production-quality) how a second
-   printer would render the same expression IR in a different target
-   syntax. This is the real validation step — if the vocabulary can't
-   cleanly support even a sketch of a second printer, stage 2's design
-   needs another pass before stage 5 below begins.
-5. **Propagate incrementally, file by file**, not a single rewrite:
-   `suite_cap.py`, `run_dispatch.py`, `lifecycle_cap.py`, and
-   `cpp_interop.py`'s own new ops (its own raw-string-to-typed-IR
-   conversion is done, so this is now actionable, not blocked on anything)
-   all need the same retrofit eventually. Each file's own existing
-   test/golden coverage is the regression net, same discipline used
-   throughout both earlier conversions.
+**Effort**: the design-and-pilot phase (Stages 0-4) took roughly 2 weeks
+of nominal effort; Stage 5's propagation (once correctly scoped down to
+`suite_cap.py` only) took a single sitting — the real per-file cost
+turned out far smaller than the original "comparable to the pilot
+phase" estimate, since `run_dispatch.py`/`lifecycle_cap.py` needed zero
+changes and `suite_cap.py` itself had only 4 distinct op kinds with a
+handful of call sites each.
 
-**Sequencing, now resolved**: this item was deliberately held until
-`cpp_interop.py`'s own raw-string conversion finished (done, 2026-09-30 —
-see `CHANGELOG.md`'s "TDB-003 resolution"), since Fortran-only patterns
-from `constituent_cap.py` alone risked under-designing the vocabulary for
-C++ interop's own needs; that conversion is now a second, independent real
-data point this item can draw on. No longer blocked — actionable whenever
-picked up.
-
-**Effort**: large — likely the single biggest item in this backlog,
-bigger than either of the two earlier statement-shape conversions
-combined, given its breadth (every expression-bearing property on every
-op in `ccpp_utils.py`, across five transform files). Treat stages 1-4
-above as a multi-week design-and-pilot phase on their own, with stage 5's
-full propagation as further, separately-scoped follow-on work per file,
-not one PR.
-
-**Risk of leaving as-is**: unlike the two earlier statement-shape
-conversions ("low short-term, correct output today"), this one is
-different in kind — it's not a code-quality cost that accumulates
-quietly, it's a hard blocker on the stated multi-language goal. No
-second-language printer is achievable at all until this lands, regardless
-of how much statement-shape conversion work happens first.
+**Risk of leaving as-is**: none, for the 3 files now covered — a
+second-language printer is achievable for all of their expression
+content today. The only remaining risk is scoped entirely to Stage 3c's
+`UnitConvertOp`/`UnitWriteBackOp` gap.
 
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 

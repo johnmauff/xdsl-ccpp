@@ -201,7 +201,7 @@ class TestConstituentApiSubroutinesAreInstanceAware:
         assert "instance" in _unwrapped(
             fortran.split("subroutine Test_ccpp_register_constituents(")[1].split(")")[0]
         )
-        assert "if (.not. allocated(lc_instances)) then allocate(lc_instances(ninstances))" in body
+        assert "if (.NOT. (allocated(lc_instances))) then allocate(lc_instances(ninstances))" in body
         assert "lc_instances(instance)%lc_all_constituents" in body
 
     def test_every_constituent_subroutine_gains_instance_arg(self, run_host_match, ccpp_context):

@@ -47,7 +47,7 @@
 // CHECK-NEXT:  #endif
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_shadow_cld_ice_array(:, :)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_shadow_ncols(:)
-// CHECK-NEXT:    integer :: lc_const_indices(2) = [1, 2]
+// CHECK-NEXT:    integer :: lc_const_indices(2) = [ 1, 2 ]
 // CHECK-NEXT:    public :: cld_suite_register
 // CHECK-NEXT:    public :: cld_suite_initialize
 // CHECK-NEXT:    public :: cld_suite_finalize
@@ -575,14 +575,14 @@
 // CHECK-NEXT:      errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
-// CHECK-NEXT:      if (any(cam_model_const_stdnames == std_name)) then
+// CHECK-NEXT:      if (any(cam_model_const_stdnames .eq. std_name)) then
 // CHECK-NEXT:        is_const = .true.
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
 // CHECK-NEXT:        do lc_idx = 1, size(lc_dyn_const)
 // CHECK-NEXT:          call lc_dyn_const(lc_idx)%standard_name(lc_std_name)
-// CHECK-NEXT:          if (trim(lc_std_name) == trim(std_name)) then
+// CHECK-NEXT:          if (trim(lc_std_name) .eq. trim(std_name)) then
 // CHECK-NEXT:            is_const = .true.
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -591,7 +591,7 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
 // CHECK-NEXT:        do lc_idx = 1, size(lc_dyn_const_ice)
 // CHECK-NEXT:          call lc_dyn_const_ice(lc_idx)%standard_name(lc_std_name)
-// CHECK-NEXT:          if (trim(lc_std_name) == trim(std_name)) then
+// CHECK-NEXT:          if (trim(lc_std_name) .eq. trim(std_name)) then
 // CHECK-NEXT:            is_const = .true.
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -626,7 +626,7 @@
 // CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
 // CHECK-NEXT:        allocate(const_prop, stat=errcode)
-// CHECK-NEXT:        if (errcode /= 0) then
+// CHECK-NEXT:        if (errcode .ne. 0) then
 // CHECK-NEXT:          errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:          return
 // CHECK-NEXT:        end if
@@ -638,7 +638,7 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const)
 // CHECK-NEXT:          allocate(const_prop, stat=errcode)
-// CHECK-NEXT:          if (errcode /= 0) then
+// CHECK-NEXT:          if (errcode .ne. 0) then
 // CHECK-NEXT:            errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -651,7 +651,7 @@
 // CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
 // CHECK-NEXT:        do lc_i = 1, size(lc_dyn_const_ice)
 // CHECK-NEXT:          allocate(const_prop, stat=errcode)
-// CHECK-NEXT:          if (errcode /= 0) then
+// CHECK-NEXT:          if (errcode .ne. 0) then
 // CHECK-NEXT:            errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:            return
 // CHECK-NEXT:          end if
@@ -662,7 +662,7 @@
 // CHECK-NEXT:        end do
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      allocate(const_prop, stat=errcode)
-// CHECK-NEXT:      if (errcode /= 0) then
+// CHECK-NEXT:      if (errcode .ne. 0) then
 // CHECK-NEXT:        errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
@@ -674,7 +674,7 @@
 // CHECK-NEXT:      nullify(const_prop)
 // CHECK-NEXT:      if (errcode /= 0) return
 // CHECK-NEXT:      allocate(const_prop, stat=errcode)
-// CHECK-NEXT:      if (errcode /= 0) then
+// CHECK-NEXT:      if (errcode .ne. 0) then
 // CHECK-NEXT:        errmsg = 'ERROR allocating const_prop'
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
@@ -702,7 +702,7 @@
 // CHECK-NEXT:        call cam_constituents_obj%const_index(field_ind, cam_model_const_stdnames(lc_i),            &
 // CHECK-NEXT:          errcode=errcode, errmsg=errmsg)
 // CHECK-NEXT:        if (errcode /= 0) return
-// CHECK-NEXT:        if (field_ind > 0) then
+// CHECK-NEXT:        if (field_ind .gt. 0) then
 // CHECK-NEXT:          cam_model_const_indices(lc_i) = field_ind
 // CHECK-NEXT:        else
 // CHECK-NEXT:          errcode = 1
@@ -748,7 +748,7 @@
 // CHECK-NEXT:        nullify(lc_cld_liq_tend)
 // CHECK-NEXT:        call cam_constituents_obj%const_index(lc_tend_idx, 'cloud_liquid_dry_mixing_ratio',         &
 // CHECK-NEXT:          errcode=errflg, errmsg=lc_tend_errmsg)
-// CHECK-NEXT:        if (errflg == 0 .and. lc_tend_idx > 0) then
+// CHECK-NEXT:        if (errflg .eq. 0 .and. lc_tend_idx .gt. 0) then
 // CHECK-NEXT:          lc_cld_liq_tend => lc_const_tend(:, :, lc_tend_idx)
 // CHECK-NEXT:        else
 // CHECK-NEXT:          errflg = 0
@@ -778,7 +778,7 @@
 // CHECK-NEXT:        return
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      call cam_constituents_obj%const_index(index, to_lower(std_name), errcode=errflg, errmsg=errmsg)
-// CHECK-NEXT:      if (errflg /= 0 .or. index <= 0) then
+// CHECK-NEXT:      if (errflg .ne. 0 .or. index .le. 0) then
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:      end if
