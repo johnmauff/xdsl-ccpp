@@ -402,17 +402,24 @@ class ftnPrintContext:
                     "oge": ">=",
                     "olt": "<",
                     "ole": "<=",
-                    # Fortran has no "!=" (C/C++ only) -- "/=" is the
-                    # correct not-equal spelling. Fixed alongside the
-                    # AndIOp/OrIOp entries above, same reasoning: this
-                    # whole table was unread before Stage 1a.
-                    "one": "/=",
+                    # "one" (ordered not-equal) must be FALSE for a NaN
+                    # operand, but Fortran's "/=" is always TRUE for NaN --
+                    # mapping it there silently changes NaN semantics.
+                    # Same reasoning for "ueq"/unordered relational
+                    # predicates below: they must be TRUE for a NaN
+                    # operand, but the mapped ordinary comparison tokens
+                    # are always FALSE for NaN. Only "une" (unordered
+                    # not-equal) actually matches Fortran "/=" (true
+                    # whenever the values differ OR either is NaN).
+                    # Reject rather than silently change NaN semantics
+                    # (Copilot PR #109 review, 2026-10-05).
+                    "one": None,
                     "ord": None,
-                    "ueq": "==",
-                    "ugt": ">",
-                    "uge": ">=",
-                    "ult": "<",
-                    "ule": "<=",
+                    "ueq": None,
+                    "ugt": None,
+                    "uge": None,
+                    "ult": None,
+                    "ule": None,
                     "une": "/=",
                     "uno": None,
                     "true": None,
@@ -672,12 +679,29 @@ class ftnPrintContext:
         if not isa(owner, arith.ConstantOp):
             return False
         match owner.value:
+            # i1 (logical) constants are never "negative" -- xDSL stores
+            # a 1-bit True as the signed bit pattern -1, which would
+            # otherwise misclassify every .true. literal as negative
+            # once this helper started being used more broadly than
+            # math.Pow*'s own numeric-only lhs (Copilot PR #109 review,
+            # 2026-10-05 generalization of _render_binop surfaced this).
+            case IntegerAttr(type=IntegerType(width=IntAttr(data=1))):
+                return False
             case IntegerAttr(value=v):
                 return v.data < 0
             case FloatAttr(value=v):
                 return v.data < 0
             case _:
                 return False
+
+    def _is_i1(self, val: SSAValue) -> bool:
+        """True if val's type is i1 -- AndIOp/OrIOp only have a valid
+        Fortran rendering (.and./.or.) when both operands are logical
+        (i1); for a wider integer type, Fortran's .and./.or. are invalid
+        between integers (the bitwise intrinsics iand/ior are needed
+        instead, not yet implemented here -- Copilot PR #109 review,
+        2026-10-05)."""
+        return isa(val.type, IntegerType) and val.type.width.data == 1
 
     def _cmp_token(self, op: Operation, predicate_name: str) -> str:
         """Look up op's Fortran comparison token for predicate_name,
@@ -696,6 +720,18 @@ class ftnPrintContext:
         """Render `{lhs} {token} {rhs}`, wrapping either side in parens
         when its own precedence/associativity requires it relative to
         `op`'s (shared xdsl_ccpp/backend/expr_precedence.py table).
+
+        A negative-literal RIGHT operand gets an extra forced paren
+        regardless of precedence: a bare literal is always ATOM_LEVEL, so
+        the generic precedence mechanism alone never parenthesizes it,
+        but a negative literal sitting directly next to `token` (e.g.
+        "x * -2") is a nonstandard consecutive-operator sequence some
+        Fortran compilers reject outright -- same reasoning as
+        math.Pow*'s own existing negative-base handling below,
+        generalized here instead of being special-cased to just that one
+        op (Copilot PR #109 review, 2026-10-05). Only the right operand
+        needs this: a negative literal on the left has no preceding
+        operator token to collide with.
         """
         my_level = expr_precedence.level_of(op)
         my_assoc = expr_precedence.assoc_of(op)
@@ -707,6 +743,8 @@ class ftnPrintContext:
             self._render_value(r), expr_precedence.level_of(r.owner),
             my_level, "rhs", my_assoc,
         )
+        if self._is_negative_numeric_literal(r):
+            rhs_str = f"({rhs_str})"
         return f"{lhs_str} {token} {rhs_str}"
 
     def _render_base_expr(self, base_region: Region) -> str:
@@ -779,10 +817,23 @@ class ftnPrintContext:
                     lhs_name = self._get_variable_name_for(op.lhs)
                     rhs_name = self._get_variable_name_for(op.rhs)
                     return f"{lhs_name} .eq. {rhs_name}"
+            case arith.AndIOp() | arith.OrIOp():
+                # .and./.or. are only valid Fortran between LOGICAL (i1)
+                # operands -- a wider integer AndIOp/OrIOp (real bitwise
+                # AND/OR) would need the iand/ior intrinsics instead, not
+                # implemented here. Reject rather than silently emit
+                # invalid Fortran (Copilot PR #109 review, 2026-10-05).
+                if not (self._is_i1(op.lhs) and self._is_i1(op.rhs)):
+                    raise AssertionError(
+                        f"print_expr: {op.name} on non-i1 operands has no "
+                        "Fortran rendering -- .and./.or. are logical-only; "
+                        "integer bitwise and/or needs iand/ior, not "
+                        "implemented"
+                    )
+                return self._render_binop(op, op.lhs, op.rhs, self._binops[op.name])
             case (
                 arith.AddiOp() | arith.SubiOp()
                 | arith.MuliOp() | arith.DivSIOp() | arith.DivUIOp()
-                | arith.AndIOp() | arith.OrIOp()
                 | arith.AddfOp() | arith.SubfOp() | arith.MulfOp() | arith.DivfOp()
             ):
                 # Table-driven: every op here reads its Fortran token from
@@ -812,6 +863,14 @@ class ftnPrintContext:
                     self._render_value(op.rhs), expr_precedence.level_of(op.rhs.owner),
                     expr_precedence.LEVEL_POW, "rhs", "right",
                 )
+                if self._is_negative_numeric_literal(op.rhs):
+                    # "2.0 ** -3.0" is the same nonstandard consecutive-
+                    # operator sequence _render_binop's own rhs fix
+                    # addresses -- needed here too since this branch
+                    # builds its own lhs/rhs strings directly rather than
+                    # going through _render_binop (Copilot PR #109
+                    # review, 2026-10-05).
+                    rhs_str = f"({rhs_str})"
                 return f"{lhs_str} ** {rhs_str}"
             case CCPPStringLiteralExprOp():
                 # Fortran escapes an embedded single quote by doubling it
@@ -1233,7 +1292,21 @@ class ftnPrintContext:
                 if op.condition is not None:
                     cond_str = op.condition.data
                 else:
-                    cond_str = self._render_expr(op.condition_region.block.last_op)
+                    cond_root = op.condition_region.block.last_op
+                    cond_str = self._render_expr(cond_root)
+                    # Fortran's .not. binds TIGHTER than .and./.or./
+                    # .eqv./.neqv. (but looser than relational/concat/
+                    # arithmetic) -- "if (.not. a .or. b)" parses as
+                    # "(.not. a) .or. b", not the intended ".not. (a .or.
+                    # b)", silently inverting the guard for any compound
+                    # condition at this level. A bare comparison/call/
+                    # var-ref needs no parens (those bind tighter than
+                    # .not. already). Not yet exercised by any real
+                    # constituent_cap.py call site (all use a single
+                    # CallExprOp today), but a real bug in the general
+                    # mechanism (Copilot PR #109 review, 2026-10-05).
+                    if expr_precedence.level_of(cond_root) < expr_precedence.LEVEL_CMP:
+                        cond_str = f"({cond_str})"
                 self.print(f"if (.not. {cond_str}) then")
                 with self.descend() as inner:
                     inner.print(f"{errflg_var} = 1")

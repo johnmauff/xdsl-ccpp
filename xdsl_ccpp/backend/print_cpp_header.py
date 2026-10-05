@@ -123,6 +123,15 @@ def _is_true_literal(const_op: object) -> bool:
             return False
 
 
+def _is_i1(val: "SSAValue") -> bool:
+    """True if val's type is i1 -- AndIOp/OrIOp only have a valid C++
+    rendering (&&/||) when both operands are logical (i1); for a wider
+    integer type, &&/|| would silently treat it as a logical-truthiness
+    check instead of the real bitwise AND/OR a wider-int AndIOp/OrIOp
+    means (Copilot PR #109 review, 2026-10-05)."""
+    return isa(val.type, IntegerType) and val.type.width.data == 1
+
+
 def _cpp_literal_str(attr: object) -> str:
     """Render an arith.ConstantOp's value attribute as a C++ literal --
     C++ sibling of print_ftn.py's attribute_value_to_str, minus the
@@ -132,6 +141,15 @@ def _cpp_literal_str(attr: object) -> str:
             return "true" if bool(val.data) else "false"
         case IntegerAttr(value=val):
             return str(val.data)
+        # Float32Type needs an "f" suffix -- without it, C++ treats the
+        # literal as `double`, silently promoting surrounding f32
+        # arithmetic and changing its rounding result (e.g. the f32 tree
+        # (16777216 + 1) - 16777216 should be 0, not 1) (Copilot PR #109
+        # review, 2026-10-05).
+        case FloatAttr(value=val, type=Float32Type()) if val.data == 0:
+            return "0.0f"
+        case FloatAttr(value=val, type=Float32Type()):
+            return f"{val.data}f"
         case FloatAttr(value=val) if val.data == 0:
             return "0.0"
         case FloatAttr(value=val):
@@ -224,10 +242,25 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                     return f"!({render_value(r)})" if _is_true_literal(l.owner) else render_value(r)
                 else:
                     # General XOR -- C++'s logical-inequality spelling is
-                    # "!=" between bools, now precedence-aware via
-                    # render_binop (mirrors print_ftn._render_expr's own
-                    # ".neqv." sibling case).
-                    return render_binop(o, l, r, "!=")
+                    # "!=" between bools. NOT rendered via the shared
+                    # render_binop/expr_precedence table: that table's
+                    # LEVEL_EQV entry for XOrIOp is correct for Fortran's
+                    # ".neqv." (binds loosest of all logical operators),
+                    # but C++'s "!=" binds TIGHTER than &&/|| -- the
+                    # opposite. Using LEVEL_EQV as "my_level" here would
+                    # leave a compound AND/OR child unparenthesized
+                    # (XOR(AND(a,b), c) -> "a && b != c", which C++ parses
+                    # as "a && (b != c)" instead of the intended "(a && b)
+                    # != c"). Parenthesize any non-atomic child
+                    # unconditionally instead -- always correct, since
+                    # "!=" binds tighter than every other operator this
+                    # renderer emits (Copilot PR #109 review, 2026-10-05).
+                    def _paren_if_compound(val: SSAValue) -> str:
+                        text = render_value(val)
+                        if expr_precedence.level_of(val.owner) < expr_precedence.ATOM_LEVEL:
+                            return f"({text})"
+                        return text
+                    return f"{_paren_if_compound(l)} != {_paren_if_compound(r)}"
             case TrimOp():
                 # Fortran trim() strips trailing blanks from a fixed-
                 # width character buffer -- that is NOT the same thing as
@@ -254,10 +287,23 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                     "lowering yet -- naive '==' on a char*/const char* buffer "
                     "compares addresses, not contents"
                 )
+            case arith.AndIOp() | arith.OrIOp():
+                # &&/|| are only valid C++ between LOGICAL (i1) operands
+                # -- a wider integer AndIOp/OrIOp (real bitwise AND/OR)
+                # needs &/| instead, not implemented here. Reject rather
+                # than silently emit a logical-truthiness check instead
+                # of the real bitwise result (Copilot PR #109 review,
+                # 2026-10-05).
+                if not (_is_i1(o.lhs) and _is_i1(o.rhs)):
+                    raise AssertionError(
+                        f"expr_to_cpp_str: {o.name} on non-i1 operands has "
+                        "no C++ lowering yet -- &&/|| are logical-only; "
+                        "integer bitwise and/or needs &/|, not implemented"
+                    )
+                return render_binop(o, o.lhs, o.rhs, _CPP_BINOPS[o.name])
             case (
                 arith.AddiOp() | arith.SubiOp()
                 | arith.MuliOp() | arith.DivSIOp() | arith.DivUIOp()
-                | arith.AndIOp() | arith.OrIOp()
                 | arith.AddfOp() | arith.SubfOp() | arith.MulfOp() | arith.DivfOp()
             ):
                 return render_binop(o, o.lhs, o.rhs, _CPP_BINOPS[o.name])
