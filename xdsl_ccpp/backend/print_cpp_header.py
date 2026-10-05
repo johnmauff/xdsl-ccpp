@@ -706,7 +706,12 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
     elif isinstance(op, CppFieldDeclOp):
         suffix = op.array_suffix.data if op.array_suffix is not None else ""
         width = op.type_width.value.data if op.type_width is not None else 8
-        init = f" = {op.init_expr.data}" if op.init_expr is not None else ""
+        if op.init_expr is not None:
+            init = f" = {op.init_expr.data}"
+        elif op.init_expr_region is not None:
+            init = f" = {expr_to_cpp_str(op.init_expr_region.block.last_op)}"
+        else:
+            init = ""
         output.write(f"    {op.cpp_type.data:<{width}} {op.field_name.data}{suffix}{init};\n")
     elif isinstance(op, CppIncludeOp):
         if op.local is not None and op.local.value.data:
@@ -722,7 +727,10 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
             _print_cpp_op(child, output)
         output.write(f"}} // namespace {op.ns_name.data}\n")
     elif isinstance(op, CppCallStatementOp):
-        call_args = [a.data for a in op.call_args.data]
+        if op.call_args is not None:
+            call_args = [a.data for a in op.call_args.data]
+        else:
+            call_args = [expr_to_cpp_str(r.block.last_op) for r in op.call_args_region]
         lines = wrap_paren_list(
             f"    {op.callee.data}(", call_args, ");", 80, "        ", cont_marker="",
         )
@@ -730,8 +738,12 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
             output.write(line + "\n")
     elif isinstance(op, CppBraceInitCallOp):
         output.write(f"    return {op.callee.data}({{\n")
-        for name, value in zip(op.field_names.data, op.field_values.data):
-            output.write(f"        .{name.data}={value.data},\n")
+        if op.field_values is not None:
+            values = [v.data for v in op.field_values.data]
+        else:
+            values = [expr_to_cpp_str(r.block.last_op) for r in op.field_values_region]
+        for name, value in zip(op.field_names.data, values):
+            output.write(f"        .{name.data}={value},\n")
         output.write("    });\n")
     else:
         raise NotImplementedError(

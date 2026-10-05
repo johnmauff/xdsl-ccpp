@@ -2108,10 +2108,12 @@ class CppFieldDeclOp(IRDLOperation):
     separating space for any type name >= 9 chars, never triggered
     before Stage 3 passes wider type strings).
 
-    ``array_suffix`` (e.g. ``"[129]"``) and ``init_expr`` (e.g.
-    ``"nullptr"``, ``"0"``, for a default member initializer) are opaque
-    text, same declaration-stays-text convention used everywhere else in
-    this codebase for this kind of trailing shape annotation.
+    ``array_suffix`` (e.g. ``"[129]"``) is opaque text, same
+    declaration-stays-text convention used everywhere else in this
+    codebase for this kind of trailing shape annotation. ``init_expr``
+    (e.g. ``"nullptr"``, ``"0"``, for a default member initializer) has
+    the same lang-neutral-expr-ir Stage 3b structured alternative as
+    the other ops in this round -- pass ``init_expr_op`` instead.
     """
 
     name = "ccpp_utils.cpp_field_decl"
@@ -2119,21 +2121,31 @@ class CppFieldDeclOp(IRDLOperation):
     cpp_type     = prop_def(StringAttr)
     array_suffix = opt_prop_def(StringAttr)
     init_expr    = opt_prop_def(StringAttr)
+    init_expr_region = opt_region_def("single_block")
     type_width   = opt_prop_def(IntegerAttr)
+
+    traits = traits_def(NoTerminator())
 
     def __init__(
         self, field_name: str, cpp_type: str,
         array_suffix: "str | None" = None, init_expr: "str | None" = None,
-        type_width: "int | None" = None,
+        type_width: "int | None" = None, *, init_expr_op=None,
     ):
+        if init_expr is not None and init_expr_op is not None:
+            raise ValueError(
+                "CppFieldDeclOp: pass at most one of init_expr or init_expr_op"
+            )
         props: dict = {"field_name": StringAttr(field_name), "cpp_type": StringAttr(cpp_type)}
         if array_suffix is not None:
             props["array_suffix"] = StringAttr(array_suffix)
+        init_region = None
         if init_expr is not None:
             props["init_expr"] = StringAttr(init_expr)
+        elif init_expr_op is not None:
+            init_region = _single_op_region([init_expr_op])
         if type_width is not None:
             props["type_width"] = IntegerAttr.from_int_and_width(type_width, 32)
-        super().__init__(properties=props)
+        super().__init__(properties=props, regions=[init_region])
 
 
 @irdl_op_definition
@@ -2238,13 +2250,28 @@ class CppCallStatementOp(IRDLOperation):
     name = "ccpp_utils.cpp_call_statement"
 
     callee    = prop_def(StringAttr)
-    call_args = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    call_args = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr]
+    # lang-neutral-expr-ir Stage 3b: structured alternative to call_args,
+    # pass call_arg_ops= instead.
+    call_args_region = var_region_def("single_block")
 
-    def __init__(self, callee: str, call_args: "list[str]"):
-        super().__init__(properties={
-            "callee":    StringAttr(callee),
-            "call_args": ArrayAttr([StringAttr(a) for a in call_args]),
-        })
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, callee: str, call_args: "list[str] | None" = None,
+        *, call_arg_ops: "list | None" = None,
+    ):
+        if call_args is not None and call_arg_ops is not None:
+            raise ValueError(
+                "CppCallStatementOp: pass at most one of call_args or call_arg_ops"
+            )
+        props: dict = {"callee": StringAttr(callee)}
+        if call_arg_ops is not None:
+            call_args_regions = [_single_op_region([a]) for a in call_arg_ops]
+        else:
+            props["call_args"] = ArrayAttr([StringAttr(a) for a in (call_args or [])])
+            call_args_regions = []
+        super().__init__(properties=props, regions=[call_args_regions])
 
 
 @irdl_op_definition
@@ -2267,15 +2294,32 @@ class CppBraceInitCallOp(IRDLOperation):
     name = "ccpp_utils.cpp_brace_init_call"
 
     callee        = prop_def(StringAttr)
-    field_names   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    field_values  = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    field_names   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] -- struct member names, not exprs
+    field_values  = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr]
+    # lang-neutral-expr-ir Stage 3b: structured alternative to
+    # field_values, pass field_value_ops= instead.
+    field_values_region = var_region_def("single_block")
 
-    def __init__(self, callee: str, field_names: "list[str]", field_values: "list[str]"):
-        super().__init__(properties={
-            "callee":       StringAttr(callee),
-            "field_names":  ArrayAttr([StringAttr(n) for n in field_names]),
-            "field_values": ArrayAttr([StringAttr(v) for v in field_values]),
-        })
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, callee: str, field_names: "list[str]",
+        field_values: "list[str] | None" = None, *, field_value_ops: "list | None" = None,
+    ):
+        if field_values is not None and field_value_ops is not None:
+            raise ValueError(
+                "CppBraceInitCallOp: pass at most one of field_values or field_value_ops"
+            )
+        props: dict = {
+            "callee":      StringAttr(callee),
+            "field_names": ArrayAttr([StringAttr(n) for n in field_names]),
+        }
+        if field_value_ops is not None:
+            field_values_regions = [_single_op_region([v]) for v in field_value_ops]
+        else:
+            props["field_values"] = ArrayAttr([StringAttr(v) for v in (field_values or [])])
+            field_values_regions = []
+        super().__init__(properties=props, regions=[field_values_regions])
 
 
 @irdl_op_definition
