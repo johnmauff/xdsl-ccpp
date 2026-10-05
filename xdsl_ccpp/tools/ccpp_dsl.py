@@ -332,12 +332,15 @@ class ccppMain:
     def run_pipeline_stage(self, cmd, out_path, label):
         """Run one pipeline subprocess, redirecting its stdout to out_path.
 
-        cmd -- an argv list, never a shell string: the four
-        pipeline stages this backs (run_frontend/run_py_frontend/run_opt/
-        generate_cpp_headers) used to build an interpolated shell command
-        string for os.system(), which breaks on any path containing quotes
-        or shell metacharacters and duplicated the same "build cmd ->
-        verbose-log -> execute" shape four times. subprocess.run([...])
+        cmd -- an argv list, never a shell string: the pipeline stages
+        this backs (run_frontend/run_py_frontend/run_opt -- the latter
+        now also covers what used to be a separate generate_cpp_headers
+        stage, folded into one combined "ftn_and_cpp_header" pipeline
+        target instead of a second subprocess, see cpp-dual-print-
+        pipeline) used to build an interpolated shell command string for
+        os.system(), which breaks on any path containing quotes or shell
+        metacharacters and duplicated the same "build cmd -> verbose-log
+        -> execute" shape repeatedly. subprocess.run([...])
         with an explicit stdout redirect closes both gaps at once, matching
         the pattern ccpp_validate_fir.py/fir2meta.py/flang_utils.py already
         use elsewhere in this same tools/ directory.
@@ -359,8 +362,9 @@ class ccppMain:
         migration) captured neither case, so a failing stage could leave
         out_path holding partial/corrupted content that a downstream
         os.path.getsize(out_path) > 0 check (post_stage_check, or
-        generate_cpp_headers' own "no BIND(C) functions found" check)
-        would wrongly treat as success, and a missing executable would
+        apply()'s own "no BIND(C) functions found" check after
+        split_fortran_output) would wrongly treat as success, and a
+        missing executable would
         surface as an uncaught FileNotFoundError instead -- os.system()
         never raised that, it always went through a shell that printed
         its own "command not found" and returned a status this code
@@ -370,11 +374,13 @@ class ccppMain:
         Does not itself validate out_path's own content beyond the
         command's exit status -- callers that expect out_path to always
         be non-empty on success call self.post_stage_check(out_path)
-        afterward; generate_cpp_headers deliberately doesn't, since an
-        empty header output on a *successful* (exit 0) run is an
-        expected, non-error outcome for it (no BIND(C) functions found)
-        -- distinct from empty output because the command failed, which
-        this method itself already catches and raises on before returning.
+        afterward. run_opt always does this unconditionally now (for
+        either the "ftn" or combined "ftn_and_cpp_header" target): the
+        Fortran sections are always present even when there is no
+        BIND(C) content, so the combined output is never empty on a
+        successful run -- "no BIND(C) functions found" is reported
+        separately by apply(), after split_fortran_output, not treated
+        as a stage failure here.
         """
         self.print_verbose_message(
             label,
@@ -756,27 +762,43 @@ class ccppMain:
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
 
-    def run_opt(self, tmp_dir, mlir_in):
+    def run_opt(self, tmp_dir, mlir_in, target: str = "ftn"):
+        """Run the pipeline once and print `target` ("ftn", "cpp_header",
+        or "ftn_and_cpp_header" -- the combined target that prints both
+        from the same already-transformed module in one process, used by
+        apply() below instead of a second full independent re-parse+
+        re-transform subprocess; see ccpp_opt.py's own
+        _output_ftn_and_cpp_header for why this is safe). ccpp_prebuild.py
+        calls this with the default "ftn" only -- it never wants C++
+        header output, so that caller is intentionally unaffected by the
+        combined-target path.
+        """
         ftn_out = os.path.join(tmp_dir, "ccpp.ftn")
         pipeline = self._build_pipeline()
         cmd = [
             sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
-            "-p", pipeline, "-t", "ftn",
+            "-p", pipeline, "-t", target,
         ]
         self.run_pipeline_stage(cmd, ftn_out, "Running CCPP optimizer")
         self.post_stage_check(ftn_out)
         return ftn_out
 
-    def split_fortran_output(self, ftn_file, out_dir):
-        """Split the combined Fortran printer output into individual .F90 files.
+    def split_fortran_output(self, ftn_file, out_dir) -> list:
+        """Split the combined Fortran/C++-header printer output into
+        individual files.
 
         The printer emits sections separated by '// -----', each preceded by a
-        '// FILE: <name>.F90' marker.  This method writes each section as a
-        separate file in out_dir, or prints to stdout when --stdout is set.
+        '// FILE: <name>' marker (.F90 for Fortran, .h/.hpp for the
+        ftn_and_cpp_header combined target's C++ sections). This method
+        writes each section as a separate file in out_dir, or prints to
+        stdout when --stdout is set. Returns the list of section
+        filenames found either way, so a caller can tell whether any of
+        a particular kind (e.g. ".h") was actually produced.
         """
         with open(ftn_file) as f:
             content = f.read()
 
+        written: list = []
         sections = content.split("// -----")
         for section in sections:
             section = section.strip()
@@ -787,6 +809,7 @@ class ccppMain:
                 continue
             filename = lines[0][len("// FILE:") :].strip()
             body = "\n".join(lines[1:]).lstrip("\n") + "\n"
+            written.append(filename)
 
             if self.options_db["stdout"]:
                 print(body)
@@ -798,31 +821,7 @@ class ccppMain:
                     f"  -> Written '{out_path}'",
                     f"  -> Written '{out_path}' ({len(body)} bytes)",
                 )
-
-    def generate_cpp_headers(self, tmp_dir: str, mlir_in: str, out_dir: str) -> None:
-        """Run the cpp_header target and write the resulting .h files.
-
-        Runs the same pass pipeline as run_opt but with ``-t cpp_header`` to
-        emit C++ header sections, then splits them into individual .h files in
-        *out_dir* (or stdout when --stdout is set).
-        """
-        hdr_out = os.path.join(tmp_dir, "ccpp.h")
-        pipeline = self._build_pipeline()
-        cmd = [
-            sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", mlir_in,
-            "-p", pipeline, "-t", "cpp_header",
-        ]
-        self.run_pipeline_stage(cmd, hdr_out, "Generating C++ headers")
-        if not os.path.exists(hdr_out) or os.path.getsize(hdr_out) == 0:
-            self.print_verbose_message(
-                "  -> No BIND(C) functions found; no C++ headers written",
-            )
-            if os.path.exists(hdr_out):
-                os.remove(hdr_out)
-            return
-        self.split_fortran_output(hdr_out, out_dir)
-        if not self.options_db.get("debug"):
-            self.remove_file_if_exists(hdr_out)
+        return written
 
     def _run_datatable(self, mlir_file: str, caps_dir: str, datatable_path: str) -> None:
         """Generate datatable.xml (and optionally HTML) from *mlir_file*."""
@@ -886,11 +885,15 @@ class ccppMain:
             self.merge_meta(mlir_file)
         self.validate_fortran_sources()
         self._check_memory_space_mismatch(mlir_file)
-        ftn_file = self.run_opt(tmp_dir, mlir_file)
-        self.split_fortran_output(ftn_file, out_dir)
+        wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())
+        target = "ftn_and_cpp_header" if wants_cpp else "ftn"
+        ftn_file = self.run_opt(tmp_dir, mlir_file, target=target)
+        written = self.split_fortran_output(ftn_file, out_dir)
 
-        if self.options_db.get("bind_c") or self._host_lang_cpp():
-            self.generate_cpp_headers(tmp_dir, mlir_file, out_dir)
+        if wants_cpp and not any(f.endswith(".h") for f in written):
+            self.print_verbose_message(
+                "  -> No BIND(C) functions found; no C++ headers written",
+            )
 
         datatable_path = self.options_db.get("emit_datatable")
         if datatable_path:

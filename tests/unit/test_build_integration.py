@@ -84,6 +84,80 @@ def test_ccpp_xdsl_generates_caps(tmp_path):
     )
 
 
+_TINYDDT = _EXAMPLES / "tinyddt"
+_TINYDDT_HOST_CPP = _TINYDDT / "host_cpp"
+
+# Files that must be present after a successful chost (C++ host) run --
+# both the .F90 caps AND the C++ header/wrapper files, all from a SINGLE
+# ccpp_xdsl invocation (cpp-dual-print-pipeline: regression coverage for
+# the combined "ftn_and_cpp_header" pipeline target -- no other test
+# exercises this through the real CLI entry point end to end).
+_EXPECTED_CHOST_FTN_CAPS = {
+    "ccpp_kinds.F90",
+    "tinyddt_suite_cap.F90",
+    "tinyddt_host_ccpp_cap.F90",
+    "tinyddt_host_ccpp_chost_cap.F90",
+}
+_EXPECTED_CHOST_CPP_FILES = {
+    "ccpp_kinds.h",
+    "tinyddt_host_ccpp_cap.h",
+    "tinyddt_host_ccpp_chost_cap.h",
+    "tinyddt_host_chost.hpp",
+}
+
+
+@pytest.mark.skipif(
+    shutil.which("ccpp_xdsl") is None,
+    reason="ccpp_xdsl not on PATH — skipping CLI integration test",
+)
+def test_ccpp_xdsl_generates_both_ftn_and_cpp_headers_in_one_run(tmp_path):
+    """A single ccpp_xdsl run against a C++ host (language = c++ in its
+    own host meta, auto-detected -- no --bind-c flag needed) writes both
+    the .F90 caps and the C++ .h/.hpp files, all from one pipeline run."""
+    tempdir = tmp_path / "tmp"
+    tempdir.mkdir()
+
+    result = subprocess.run(
+        [
+            "ccpp_xdsl",
+            "--suites",       str(_TINYDDT / "tinyddt_suite.xml"),
+            "--scheme-files", str(_TINYDDT / "tinyddt.meta"),
+            "--host-files",   ",".join([
+                str(_TINYDDT_HOST_CPP / "tinyddt_host_mod.meta"),
+                str(_TINYDDT_HOST_CPP / "tinyddt_host_sub.meta"),
+            ]),
+            "--host-name",    "tinyddt_host",
+            "--verbose",      "0",
+            "--tempdir",      str(tempdir),
+            "-o",             str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, (
+        f"ccpp_xdsl exited {result.returncode}:\n"
+        f"stdout: {result.stdout}\n"
+        f"stderr: {result.stderr}"
+    )
+
+    generated_ftn = {f.name for f in tmp_path.glob("*.F90")}
+    missing_ftn = _EXPECTED_CHOST_FTN_CAPS - generated_ftn
+    assert not missing_ftn, (
+        f"Expected .F90 cap files not generated: {sorted(missing_ftn)}\n"
+        f"Files found: {sorted(generated_ftn)}"
+    )
+
+    generated_cpp = {f.name for f in tmp_path.glob("*.h")} | {
+        f.name for f in tmp_path.glob("*.hpp")
+    }
+    missing_cpp = _EXPECTED_CHOST_CPP_FILES - generated_cpp
+    assert not missing_cpp, (
+        f"Expected C++ header/wrapper files not generated: {sorted(missing_cpp)}\n"
+        f"Files found: {sorted(generated_cpp)}"
+    )
+
+
 @pytest.mark.skipif(
     shutil.which("ccpp_xdsl") is None,
     reason="ccpp_xdsl not on PATH — skipping CLI integration test",
