@@ -9244,3 +9244,178 @@ discovered after the fact. (Note: both were given `TDB-NNN` numeric IDs
 at the time this entry was first written; renamed to stable kebab-case
 slugs shortly after, matching every other item in `BACKLOG.md` — see that
 file's Technical Debt section intro.)
+
+## `lang-neutral-expr-ir` Stages 0-4: expression IR designed and piloted on two real files (2026-10-04)
+
+**Not a full resolution** — kept in `BACKLOG.md`'s Tier 1, re-scoped
+rather than archived here, since the item's own Stage 5 (propagate to
+every remaining file) is real, separately-scoped future work. This entry
+records what Stages 0-4 (the design-and-pilot phase) actually delivered.
+
+**File**: `xdsl_ccpp/dialects/ccpp_utils.py`, `xdsl_ccpp/backend/
+print_ftn.py`, `xdsl_ccpp/backend/print_cpp_header.py` (new
+`expr_to_cpp_str`, its first-ever expression printer), new
+`xdsl_ccpp/backend/expr_precedence.py`, `xdsl_ccpp/transforms/
+constituent_cap.py`, `xdsl_ccpp/transforms/cpp_interop.py`. Committed
+across 8 commits on branch `lang-neutral-expr-ir` (not yet merged):
+`37ae6cc` Stage 0, `ec68e87` Stage 1a, `856847e`/`82db811` Stage 1b+2,
+`4cdbd75` PR #109 Copilot review fixes, `e24da85`/`bd07875` Stage 3a,
+`cf405c2` Stage 3b.
+
+**Central decision**: reuse xDSL's own `arith`/`math` dialects directly
+for arithmetic/logical/comparison/numeric-literal expressions (confirmed,
+by reading xDSL's installed dialect source, that an earlier draft
+proposing brand-new `BinaryExprOp`/`UnaryExprOp`/`LiteralExprOp` ops
+would have reinvented machinery that already exists) — completing
+`print_ftn.py`'s own existing-but-unused `register_binops`/`_binops`/
+`_cmp_ops` scaffolding instead of building a parallel system next to it.
+Seven genuinely new custom ops were added only for what `arith`/`math`
+cannot express: `StringLiteralExprOp`, `StringConcatExprOp`,
+`VarRefExprOp`, `MemberAccessExprOp`, `IndexExprOp`/`SliceExprOp`,
+`CallExprOp`/`KeywordArgExprOp`, `ArrayConstructorExprOp`.
+
+**What shipped**:
+- **Stage 0**: `WriteStmtOp`, `PreprocDirectiveOp`, `AllocateOp.stat_var` —
+  closed `constituent_cap.py`'s last few raw-string leaves.
+- **Stage 1a**: completed `print_expr`'s `arith`/`math` coverage
+  (`MuliOp`/`DivSIOp`/`DivUIOp`/`AndIOp`/`OrIOp`/`AddfOp`/`SubfOp`/
+  `MulfOp`/`DivfOp`/`CmpfOp`/`math.Pow*`, i1-aware boolean literals) —
+  byte-identical output confirmed for every existing real call site
+  (pure extension of dead scaffolding, zero new op definitions).
+- **Stage 1b+2**: the 7 new ops above, `expr_precedence.py` (precedence/
+  parenthesization, shared by both printers), `print_cpp_header.py`'s
+  first expression printer (`expr_to_cpp_str`). A real architecture gap
+  was found and fixed along the way: building a fresh `arith`/custom-op
+  tree and wrapping only its root in a region crashes `module.verify()`'s
+  real `IsolatedFromAbove` check — fixed via `_flatten_floating_deps`
+  (walks an op's operand tree, attaches every unattached dependency into
+  the same region, root last) plus converting 4 ops' shared-sibling
+  regions to one-region-per-item (`var_region_def`); this also
+  retroactively fixed the same latent bug in `UnitConvertOp`/
+  `UnitWriteBackOp`. 15 GitHub Copilot review comments on PR #109 (the
+  Stage 1b+2 PR) triaged and fixed: precedence-table gaps, NaN-unsafe
+  C++ comparison predicates, negative-literal `**` parenthesization,
+  block-argument operand handling in both printers, and 6 cases where
+  the new C++ printer now explicitly raises (`TrimOp`, `StrCmpOp`,
+  `math.IPowIOp`, `StringConcatExprOp`, two-literal concatenation) rather
+  than silently emitting wrong C++ for shapes no real call site exercises
+  yet.
+- **Stage 3a** (pilot 1, `constituent_cap.py`): all 7 targeted op kinds
+  converted from raw text to the new IR, one at a time, full `pytest`
+  green between each — `IfThenOp.condition_expr`, `ActiveCheckOp.
+  condition_expr`, `ErrorGuardOp.condition`, `DdtMethodCallOp.obj_expr/
+  args/kwargs` (the largest, 13 call sites), `PointerAssignOp.rhs_expr`,
+  `AllocateOp.dims`, `ModuleVarOp.init_value`. Every op kept an additive
+  shape (legacy `StringAttr`/`ArrayAttr` text form fully preserved
+  alongside the new structured form) even where nothing else in the
+  codebase still used the legacy form, for consistency. A handful of
+  real call sites deliberately stayed on the legacy text form where
+  structuring would buy nothing (trivial/empty cases) or actively
+  regress output (one array-constructor initializer whose Fortran
+  line-continuation formatting the generic printer doesn't replicate) —
+  each documented inline at its call site.
+- **Stage 3b** (pilot 2, `cpp_interop.py`): `CppBraceInitCallOp.
+  field_values`, `CppCallStatementOp.call_args`, `CppFieldDeclOp.
+  init_expr` converted, proving `MemberAccessExprOp`'s `.`-access through
+  the new C++ `expr_to_cpp_str` path specifically (this item's own
+  stated acceptance bar for this slice).
+- **Stage 3c** (one concrete `UnitConvertOp`/`UnitWriteBackOp` K↔°C
+  retrofit): attempted, found genuinely blocked, deferred rather than
+  forced — every real `unit_convert` call site operates on this dialect's
+  own `RealKindType` (a Fortran generic-kind placeholder), and `arith.
+  AddfOp`/`SubfOp`'s operand constraint only accepts builtin
+  `Float16/32/64Type`, confirmed directly against xDSL's source. Revisiting
+  this needs new `RealKindType`-compatible constant/binary-op vocabulary
+  first — real additional scope, not a quick fix, so left for later
+  rather than invented under pressure to close out this pilot.
+- **Stage 4**: full local `pytest tests/` green throughout every single
+  increment above (722 passed, 1 xfailed, unchanged count end to end);
+  every FileCheck golden diff touched was regenerated and manually
+  diff-reviewed before accepting (never blanket-trusted — the
+  auto-updater silently reformatted unrelated, untouched content twice
+  during this work, caught both times by hunk-size review and
+  hand-patched instead). Final `/cam-sima-regression` run (test ID
+  `xdsl36g`, gnu, 31 cases): 30/31 pass, 1 known pre-existing unrelated
+  failure (`F2000_C7`/`se_cslam_analy_ic` `MODEL_BUILD`, same root cause
+  tracked since earlier items, not a regression from this work).
+
+**Remaining work, now unblocked rather than blocked**: Stage 5 (propagate
+the same retrofit to `suite_cap.py`, `run_dispatch.py`, `lifecycle_cap.py`)
+and the deferred Stage 3c both stay open in `BACKLOG.md`'s
+`lang-neutral-expr-ir` entry — the vocabulary and both printers are now
+proven against two real, independent files, so neither is a design
+question anymore, just incremental follow-on effort.
+
+## `lang-neutral-expr-ir` Stage 5: propagated to `suite_cap.py`, done in one sitting (2026-10-04)
+
+Direct follow-on to the "Stages 0-4" entry above, same day. Planned as
+"propagate to 3 remaining files" per `BACKLOG.md`'s own item text;
+turned out to be real work in exactly one of them.
+
+**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (3 op shape changes),
+`xdsl_ccpp/backend/print_ftn.py` (3 printer updates),
+`xdsl_ccpp/transforms/suite_cap.py` (the actual call-site conversions).
+
+**Scope correction before starting**: a background-agent survey
+suggested meaningful retrofit work existed in all 3 remaining files
+(`suite_cap.py`, `run_dispatch.py`, `lifecycle_cap.py`). Direct
+line-by-line verification (every call site actually read) found this
+overstated the scope: `lifecycle_cap.py`'s one `LazyAllocOp` call never
+passes `init_value` at all, and `run_dispatch.py`'s one `KeywordCallOp`
+always passes an empty override dict while its one `WriteErrMsgOp` has
+static literal message fragments with no sub-structure to extract. Both
+files needed zero code changes. The entire real scope was 4 op kinds in
+`suite_cap.py`.
+
+**Converted, one op kind at a time, full `pytest` green between each**:
+- `LazyAllocOp.init_value` (3 real call sites) — one hardcoded string
+  literal -> `StringLiteralExprOp`; two `.meta`-sourced `default_value`
+  sites (unknown lexical shape, could be `"0.0_kind_phys"`, `".true."`,
+  a bare number, ...) -> verbatim `VarRefExprOp` atom, same judgment
+  call as Stage 3a's text-atom leaves.
+- `ModuleVarOp.init_value` (`lc_const_indices`, 1 site) — the structured
+  form already existed from Stage 3a; this was a pure call-site
+  conversion (`ArrayConstructorExprOp` of `arith.ConstantOp` ints), zero
+  `ccpp_utils.py` changes. Surfaced one benign formatting difference:
+  the structured printer's canonical `[ 1, 2 ]` spacing vs. the legacy
+  `f"[{init_vals}]"` -> `[1, 2]` (no spaces) — same category as Stage
+  1a's operator-spelling normalizations, 2 `end_to_end` goldens updated.
+- `SubcycleLoopOp.loop_count` (1 site, 2 branches) — literal branch ->
+  real `arith.ConstantOp`; resolved-standard-name branch -> `VarRefExprOp`.
+  Self-caught the same dict-insertion-order bug as the "Stages 0-4"
+  entry's `ErrorGuardOp` incident (building `is_literal` before
+  `loop_count` in the new `props` dict, reversed from the original
+  order) — caught by the shape-change-alone `pytest` step before
+  touching the call site, fixed immediately.
+- `KeywordCallOp.overrides` (1 site with real values) — reused the
+  already-existing `KeywordArgExprOp` as the per-entry representation
+  rather than inventing a new dict-shaped op. **Caught a real
+  implementation bug via the verification discipline itself, before it
+  reached the user**: an initial version unconditionally built
+  `override_ops=[]` whenever the Python-side dict was empty, which takes
+  the "structured but empty" branch instead of the legacy `overrides =
+  {}` property — broke every `KeywordCallOp` call site across 8
+  goldens (not just the 1 with real overrides), since every no-override
+  site silently lost its `overrides = {}` property. The call-site
+  conversion's own `pytest` run caught this immediately (9 failures
+  instead of the expected 1); fixed by only using the structured path
+  when the override dict is actually non-empty, re-verified down to the
+  single expected golden.
+
+**Verification**: full `pytest tests/` green after every shape-change
+and every call-site conversion — **722 passed, 1 xfailed** throughout,
+unchanged from every increment since Stage 1a. 5 `completed_ir` goldens
+and 2 `end_to_end` goldens touched in total, every one diff-reviewed
+before accepting (one of the `end_to_end` diffs was the intentional
+array-constructor spacing normalization noted above; the rest were pure
+structural StringAttr-to-region expansions). No new
+`/cam-sima-regression` run — not requested for this slice, and
+`suite_cap.py`'s own existing coverage (every real suite exercises it)
+plus clean `pytest` stands on its own, same reasoning as the "Stages
+0-4" entry's Stage 3b discussion.
+
+**Item status after this entry**: `lang-neutral-expr-ir`'s only
+remaining open thread is the deferred Stage 3c (`RealKindType` vs.
+`arith`'s float-only operand constraint, documented in the "Stages 0-4"
+entry) — design, the two-file pilot, and full propagation to every
+file with real retrofit candidates are all done.

@@ -10,10 +10,11 @@ generate-ccpp-cap in the pipeline.
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import builtin, func
+from xdsl.dialects import arith, builtin, func
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     Float32Type,
+    IntegerAttr,
     IntegerType,
     MemRefType,
 )
@@ -40,10 +41,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ExternCGuardOp,
     FortranToCStringCopyOp,
     IfThenOp,
+    MemberAccessExprOp,
     RawCppLinesOp,
     RawFortranLinesOp,
     RealKindType,
     TextBoundedDoLoopOp,
+    VarRefExprOp,
 )
 from xdsl_ccpp.transforms.ccpp_cap import _collect_public_suite_functions
 from xdsl_ccpp.transforms.util.cap_shared import (
@@ -1641,17 +1644,22 @@ class CPPInteropCap(ModulePass):
                 fn_body_ops.append(RawCppLinesOp("    int    errflg           = 0;"))
 
             # ── C function call ────────────────────────────────────────────────
-            call_args = []
+            call_arg_ops = []
             for ai in visible:
                 if ai["is_errmsg"]:
-                    call_args.append("errmsg")
+                    call_arg_ops.append(VarRefExprOp("errmsg"))
                 elif ai["is_errflg"]:
-                    call_args.append("&errflg")
+                    # "&errflg" (address-of) has no dedicated expr op --
+                    # a one-off C++-only unary prefix, not worth a new op
+                    # for a single call site -- stays a verbatim-text
+                    # VarRefExprOp atom (same judgment call as other
+                    # Stage 3a/3b text-atom leaves).
+                    call_arg_ops.append(VarRefExprOp("&errflg"))
                 elif ai["is_sname"]:
-                    call_args.append("scheme_name")
+                    call_arg_ops.append(VarRefExprOp("scheme_name"))
                 else:
-                    call_args.append(f"a.{ai['host']}")
-            fn_body_ops.append(CppCallStatementOp(callee=cfn, call_args=call_args))
+                    call_arg_ops.append(MemberAccessExprOp(VarRefExprOp("a"), ai["host"]))
+            fn_body_ops.append(CppCallStatementOp(callee=cfn, call_arg_ops=call_arg_ops))
 
             # ── Return ─────────────────────────────────────────────────────────
             if has_errflg and has_errmsg:
@@ -1690,10 +1698,16 @@ class CPPInteropCap(ModulePass):
             member_ops = []
             for ai in state_fields:
                 # Host owns the memory — strip const so allocate() and init can write
-                cpp_t   = _chost_cpp_type(ai).replace("const ", "")
-                init    = "nullptr" if cpp_t.endswith("*") else "0"
+                cpp_t = _chost_cpp_type(ai).replace("const ", "")
+                # "nullptr" has no arith/math analog (a C++-only pointer
+                # literal) -- stays a verbatim-text VarRefExprOp atom,
+                # same judgment call as CppCallStatementOp's "&errflg".
+                init_op = (
+                    VarRefExprOp("nullptr") if cpp_t.endswith("*")
+                    else arith.ConstantOp(IntegerAttr.from_int_and_width(0, 32))
+                )
                 member_ops.append(CppFieldDeclOp(
-                    field_name=ai["host"], cpp_type=cpp_t, type_width=16, init_expr=init,
+                    field_name=ai["host"], cpp_type=cpp_t, type_width=16, init_expr_op=init_op,
                 ))
 
             # Constructor: initialise ncol and all is_nz scalars; other fields
@@ -1776,23 +1790,23 @@ class CPPInteropCap(ModulePass):
                     param_names = ["s"]
                     param_types = ["const State&"]
 
-                field_names  = []
-                field_values = []
+                field_names    = []
+                field_value_ops = []
                 for ai in sargs:
                     field_names.append(ai["host"])
                     if ai["is_col_start"]:
-                        field_values.append("col_start")
+                        field_value_ops.append(VarRefExprOp("col_start"))
                     elif ai["is_col_end"]:
-                        field_values.append("col_end")
+                        field_value_ops.append(VarRefExprOp("col_end"))
                     else:
-                        field_values.append(f"s.{ai['host']}")
+                        field_value_ops.append(MemberAccessExprOp(VarRefExprOp("s"), ai["host"]))
 
                 emit(CFunctionSigOp(
                     fn_name=cpp_fn, return_type="Status", is_inline=True,
                     param_names=param_names, param_types=param_types,
                     param_comments=[""] * len(param_names),
                     body_ops=[CppBraceInitCallOp(
-                        callee=cpp_fn, field_names=field_names, field_values=field_values,
+                        callee=cpp_fn, field_names=field_names, field_value_ops=field_value_ops,
                     )],
                 ))
 

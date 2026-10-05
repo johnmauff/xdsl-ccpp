@@ -6,12 +6,14 @@ a registered pass) -- called directly from generate-ccpp-cap's final
 module assembly.
 """
 
-from xdsl.dialects import llvm
-from xdsl.dialects.builtin import StringAttr, i8
+from xdsl.dialects import arith, llvm
+from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
 
 from xdsl_ccpp.dialects.ccpp_utils import (
     ActiveCheckOp,
     AllocateOp,
+    AssignOp,
+    CallExprOp,
     CamDirectCallOp,
     CamHostConstituentApiOp,
     ConstituentFunctionOp,
@@ -21,6 +23,9 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ErrorGuardOp,
     ErrorPropagateOp,
     IfThenOp,
+    IndexExprOp,
+    KeywordArgExprOp,
+    MemberAccessExprOp,
     ModuleVarOp,
     NonCamHostConstituentApiOp,
     NullifyPointerOp,
@@ -29,12 +34,65 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     RawFortranLinesOp,
     SafeDeallocOp,
     ScopedBlockOp,
+    StringLiteralExprOp,
     TextBoundedDoLoopOp,
+    VarRefExprOp,
+    WriteStmtOp,
     ZeroFillOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import _CCPP_CONSTITUENT_MOD, _bare
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN
+
+
+# ── lang-neutral-expr-ir Stage 3a: small IfThenOp.condition_op builders ──
+# This file has no SSA values for its locals at all (see
+# TextBoundedDoLoopOp's own docstring) -- every name here is opaque text
+# wrapped in a VarRefExprOp leaf, same declaration-stays-text convention
+# used throughout this file. A VarRefExprOp/CallExprOp only needs a real
+# result_type when it composes as an operand of an arith op below (a
+# condition used directly as a whole, e.g. a bare allocated(x), needs no
+# result at all).
+
+def _allocated_cond(name_expr: str) -> CallExprOp:
+    """allocated(name_expr), for direct use as an IfThenOp condition_op."""
+    return CallExprOp("allocated", [VarRefExprOp(name_expr)])
+
+
+def _not_allocated_cond(name_expr: str) -> arith.XOrIOp:
+    """.not. allocated(name_expr), via the established XOrIOp-as-NOT
+    idiom (print_expr/expr_to_cpp_str both already special-case an
+    arith.XOrIOp whose other operand is a boolean-true constant)."""
+    call = CallExprOp("allocated", [VarRefExprOp(name_expr)], result_type=i1)
+    true_const = arith.ConstantOp(IntegerAttr.from_int_and_width(1, 1))
+    return arith.XOrIOp(call, true_const)
+
+
+def _int_var_cmp_zero(name_expr: str, predicate: str) -> arith.CmpiOp:
+    """{name_expr} <predicate> 0, e.g. _int_var_cmp_zero("errcode", "ne")
+    for "errcode /= 0"."""
+    var = VarRefExprOp(name_expr, result_type=i32)
+    zero = arith.ConstantOp(IntegerAttr.from_int_and_width(0, 32))
+    return arith.CmpiOp(var, zero, predicate)
+
+
+def _trim_eq_cond(lhs_name: str, rhs_name: str) -> arith.CmpiOp:
+    """trim(lhs_name) == trim(rhs_name)."""
+    lhs = CallExprOp("trim", [VarRefExprOp(lhs_name)], result_type=i32)
+    rhs = CallExprOp("trim", [VarRefExprOp(rhs_name)], result_type=i32)
+    return arith.CmpiOp(lhs, rhs, "eq")
+
+
+def _errcode_errmsg_kwargs(
+    errcode_name: str = "errcode", errmsg_name: str = "errmsg"
+) -> "list[KeywordArgExprOp]":
+    """The recurring errcode=<errcode_name>, errmsg=<errmsg_name> trailing
+    keyword-arg pair shared by almost every DdtMethodCallOp in this
+    module."""
+    return [
+        KeywordArgExprOp("errcode", VarRefExprOp(errcode_name)),
+        KeywordArgExprOp("errmsg", VarRefExprOp(errmsg_name)),
+    ]
 
 
 def _collect_constituent_info(meta_data):
@@ -227,6 +285,17 @@ def _generate_constituent_api(
             return f"lc_instances({instance_local_name})%{name}"
         return name
 
+    def _ref_expr(name: str):
+        """Structured counterpart of ref(name): a plain VarRefExprOp when
+        not multi-instance, else a MemberAccessExprOp chained on a fresh
+        lc_instances(instance) IndexExprOp -- used for DdtMethodCallOp's
+        obj_expr_op (Stage 3a), not for the still-raw-text ref() call
+        sites elsewhere in this function."""
+        if multi_instance:
+            idx = IndexExprOp(VarRefExprOp("lc_instances"), [VarRefExprOp(instance_local_name)])
+            return MemberAccessExprOp(idx, name)
+        return VarRefExprOp(name)
+
     # ── Module-level variable declarations ──────────────────────────────
     # Non-multi-instance: unchanged -- one plain ModuleVarOp per array.
     # Multi-instance: every one of these becomes a DdtComponentDeclOp
@@ -286,7 +355,7 @@ def _generate_constituent_api(
             module_var_ops.append(ModuleVarOp(
                 "cam_model_const_indices", "integer",
                 fixed_dim=n_fixed,
-                init_value="-1",
+                init_value_op=arith.ConstantOp(IntegerAttr.from_int_and_width(-1, 32)),
             ))
     else:
         # cam_constituents_obj as a non-pointer, non-target DDT component.
@@ -367,34 +436,43 @@ def _generate_constituent_api(
         RawFortranLinesOp("errflg = 0\nerrmsg = ''\nis_const = .false."),
     ]
     if n_fixed > 0:
+        any_eq = arith.CmpiOp(
+            VarRefExprOp(ref("cam_model_const_stdnames"), result_type=i32),
+            VarRefExprOp("std_name", result_type=i32),
+            "eq",
+        )
         fixed_check = IfThenOp(
-            f"any({ref('cam_model_const_stdnames')} == std_name)",
-            [RawFortranLinesOp("is_const = .true.\nreturn")],
+            condition_op=CallExprOp("any", [any_eq]),
+            body_ops=[RawFortranLinesOp("is_const = .true.\nreturn")],
         )
         # ref() expands to lc_instances(instance)%... — guard allocated(lc_instances)
         # before dereferencing, matching the same guard the dynamic-name loops use.
         isc_body_ops.append(
-            IfThenOp("allocated(lc_instances)", [fixed_check]) if multi_instance
-            else fixed_check
+            IfThenOp(condition_op=_allocated_cond("lc_instances"), body_ops=[fixed_check])
+            if multi_instance else fixed_check
         )
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
         dyn_check = IfThenOp(
-            f"allocated({dyn_ref})",
-            [TextBoundedDoLoopOp(
+            condition_op=_allocated_cond(dyn_ref),
+            body_ops=[TextBoundedDoLoopOp(
                 "lc_idx", f"size({dyn_ref})",
                 [
-                    DdtMethodCallOp(f"{dyn_ref}(lc_idx)", "standard_name", args=["lc_std_name"]),
+                    DdtMethodCallOp(
+                        obj_expr_op=IndexExprOp(_ref_expr(f"lc_{n}"), [VarRefExprOp("lc_idx")]),
+                        method="standard_name",
+                        arg_ops=[VarRefExprOp("lc_std_name")],
+                    ),
                     IfThenOp(
-                        "trim(lc_std_name) == trim(std_name)",
-                        [RawFortranLinesOp("is_const = .true.\nreturn")],
+                        condition_op=_trim_eq_cond("lc_std_name", "std_name"),
+                        body_ops=[RawFortranLinesOp("is_const = .true.\nreturn")],
                     ),
                 ],
             )],
         )
         isc_body_ops.append(
-            IfThenOp("allocated(lc_instances)", [dyn_check]) if multi_instance
-            else dyn_check
+            IfThenOp(condition_op=_allocated_cond("lc_instances"), body_ops=[dyn_check])
+            if multi_instance else dyn_check
         )
     isc_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_is_scheme_constituent",
@@ -477,8 +555,8 @@ def _generate_constituent_api(
     rc_body_ops: list = [RawFortranLinesOp("errcode = 0\nerrmsg = ''")]
     if multi_instance:
         rc_body_ops.append(IfThenOp(
-            ".not. allocated(lc_instances)",
-            [RawFortranLinesOp(f"allocate(lc_instances({ninstances_local_name}))")],
+            condition_op=_not_allocated_cond("lc_instances"),
+            body_ops=[RawFortranLinesOp(f"allocate(lc_instances({ninstances_local_name}))")],
         ))
     # Count total constituents (upper bound for initialize_table)
     rc_body_ops.append(RawFortranLinesOp("lc_num_consts = size(host_constituents)"))
@@ -488,20 +566,25 @@ def _generate_constituent_api(
             f"if (allocated({dyn_ref})) lc_num_consts = lc_num_consts + size({dyn_ref})"
         ))
     rc_body_ops.append(RawFortranLinesOp(f"lc_num_consts = lc_num_consts + {n_fixed}"))
-    rc_body_ops.append(DdtMethodCallOp(_cam_obj, "initialize_table", args=["lc_num_consts"]))
+    rc_body_ops.append(DdtMethodCallOp(
+        obj_expr_op=_ref_expr("cam_constituents_obj"), method="initialize_table",
+        arg_ops=[VarRefExprOp("lc_num_consts")],
+    ))
 
     def _new_field_from(const_prop_expr: str) -> list:
         """The recurring 'allocate const_prop, copy in, register, nullify'
         idiom -- identical across host constituents, each dynamic array,
         and each fixed-advected constituent below."""
         return [
-            RawFortranLinesOp("allocate(const_prop, stat=errcode)"),
-            IfThenOp("errcode /= 0", [
+            AllocateOp("const_prop", [], stat_var="errcode"),
+            IfThenOp(condition_op=_int_var_cmp_zero("errcode", "ne"), body_ops=[
                 RawFortranLinesOp("errmsg = 'ERROR allocating const_prop'\nreturn"),
             ]),
             RawFortranLinesOp(f"const_prop = {const_prop_expr}"),
-            DdtMethodCallOp(_cam_obj, "new_field", args=["const_prop"],
-                            kwargs=["errcode=errcode", "errmsg=errmsg"]),
+            DdtMethodCallOp(
+                obj_expr_op=_ref_expr("cam_constituents_obj"), method="new_field",
+                arg_ops=[VarRefExprOp("const_prop")], kwarg_ops=_errcode_errmsg_kwargs(),
+            ),
             NullifyPointerOp("const_prop"),
             ErrorPropagateOp("errcode"),
         ]
@@ -514,42 +597,58 @@ def _generate_constituent_api(
     for n in dynamic_array_names:
         dyn_ref = ref(f"lc_{n}")
         rc_body_ops.append(IfThenOp(
-            f"allocated({dyn_ref})",
-            [TextBoundedDoLoopOp(
+            condition_op=_allocated_cond(dyn_ref),
+            body_ops=[TextBoundedDoLoopOp(
                 "lc_i", f"size({dyn_ref})", _new_field_from(f"{dyn_ref}(lc_i)"),
             )],
         ))
     # Fixed advected constituents
     for std_name_f, units_f, default_val_f, local_name_f in fixed_advected:
         long_name_f = std_name_f.replace('_', ' ').capitalize()
-        extra = f", default_value={default_val_f}" if default_val_f is not None else ""
+        instantiate_kwargs = [
+            KeywordArgExprOp("std_name", StringLiteralExprOp(std_name_f)),
+            KeywordArgExprOp("long_name", StringLiteralExprOp(long_name_f)),
+            KeywordArgExprOp("diag_name", StringLiteralExprOp(local_name_f)),
+            KeywordArgExprOp("units", StringLiteralExprOp(units_f)),
+            KeywordArgExprOp("vertical_dim", StringLiteralExprOp("vertical_layer_dimension")),
+            KeywordArgExprOp("advected", arith.ConstantOp(IntegerAttr.from_int_and_width(1, 1))),
+        ]
+        if default_val_f is not None:
+            instantiate_kwargs.append(
+                KeywordArgExprOp("default_value", VarRefExprOp(default_val_f))
+            )
+        instantiate_kwargs += _errcode_errmsg_kwargs()
         rc_body_ops += [
-            RawFortranLinesOp("allocate(const_prop, stat=errcode)"),
-            IfThenOp("errcode /= 0", [
+            AllocateOp("const_prop", [], stat_var="errcode"),
+            IfThenOp(condition_op=_int_var_cmp_zero("errcode", "ne"), body_ops=[
                 RawFortranLinesOp("errmsg = 'ERROR allocating const_prop'\nreturn"),
             ]),
-            DdtMethodCallOp("const_prop", "instantiate", kwargs=[
-                f"std_name='{std_name_f}'",
-                f"long_name='{long_name_f}'",
-                f"diag_name='{local_name_f}'",
-                f"units='{units_f}'",
-                "vertical_dim='vertical_layer_dimension'",
-                f"advected=.true.{extra}",
-                "errcode=errcode",
-                "errmsg=errmsg",
-            ]),
+            DdtMethodCallOp(
+                obj_expr_op=VarRefExprOp("const_prop"), method="instantiate",
+                kwarg_ops=instantiate_kwargs,
+            ),
             ErrorPropagateOp("errcode"),
-            DdtMethodCallOp(_cam_obj, "new_field", args=["const_prop"],
-                            kwargs=["errcode=errcode", "errmsg=errmsg"]),
+            DdtMethodCallOp(
+                obj_expr_op=_ref_expr("cam_constituents_obj"), method="new_field",
+                arg_ops=[VarRefExprOp("const_prop")], kwarg_ops=_errcode_errmsg_kwargs(),
+            ),
             NullifyPointerOp("const_prop"),
             ErrorPropagateOp("errcode"),
         ]
     rc_body_ops += [
-        DdtMethodCallOp(_cam_obj, "lock_table", kwargs=["errcode=errcode", "errmsg=errmsg"]),
+        DdtMethodCallOp(
+            obj_expr_op=_ref_expr("cam_constituents_obj"), method="lock_table",
+            kwarg_ops=_errcode_errmsg_kwargs(),
+        ),
         ErrorPropagateOp("errcode"),
-        PointerAssignOp("lc_props_ptr", f"{_cam_obj}%constituent_props_ptr()"),
+        PointerAssignOp(
+            "lc_props_ptr",
+            rhs_expr_op=MemberAccessExprOp(
+                _ref_expr("cam_constituents_obj"), "constituent_props_ptr()"
+            ),
+        ),
         SafeDeallocOp(_lc_props),
-        AllocateOp(_lc_props, ["size(lc_props_ptr)"]),
+        AllocateOp(_lc_props, dim_ops=[CallExprOp("size", [VarRefExprOp("lc_props_ptr")])]),
         RawFortranLinesOp(f"{_lc_props} = lc_props_ptr"),
         NullifyPointerOp("lc_props_ptr"),
     ]
@@ -558,11 +657,13 @@ def _generate_constituent_api(
     else:
         rc_body_ops.append(CamDirectCallOp("ccpp_scheme_utils_set_constituents", [_lc_props]))
     rc_body_ops += [
-        DdtMethodCallOp(_cam_obj, "num_constituents", args=["lc_num_consts"],
-                        kwargs=["errcode=errcode", "errmsg=errmsg"]),
+        DdtMethodCallOp(
+            obj_expr_op=_ref_expr("cam_constituents_obj"), method="num_constituents",
+            arg_ops=[VarRefExprOp("lc_num_consts")], kwarg_ops=_errcode_errmsg_kwargs(),
+        ),
         ErrorPropagateOp("errcode"),
         SafeDeallocOp(_lc_all),
-        AllocateOp(_lc_all, ["lc_num_consts"]),
+        AllocateOp(_lc_all, dim_ops=[VarRefExprOp("lc_num_consts")]),
     ]
     if n_fixed > 0:
         _cmi = ref("cam_model_const_indices")
@@ -570,13 +671,19 @@ def _generate_constituent_api(
         rc_body_ops.append(TextBoundedDoLoopOp(
             "lc_i", f"size({_cmi})",
             [
-                DdtMethodCallOp(_cam_obj, "const_index", args=["field_ind", f"{_cms}(lc_i)"],
-                                kwargs=["errcode=errcode", "errmsg=errmsg"]),
+                DdtMethodCallOp(
+                    obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
+                    arg_ops=[
+                        VarRefExprOp("field_ind"),
+                        IndexExprOp(_ref_expr("cam_model_const_stdnames"), [VarRefExprOp("lc_i")]),
+                    ],
+                    kwarg_ops=_errcode_errmsg_kwargs(),
+                ),
                 ErrorPropagateOp("errcode"),
                 ActiveCheckOp(
-                    "field_ind > 0",
-                    [RawFortranLinesOp(f"{_cmi}(lc_i) = field_ind")],
-                    [RawFortranLinesOp(
+                    condition_op=_int_var_cmp_zero("field_ind", "sgt"),
+                    with_body_ops=[RawFortranLinesOp(f"{_cmi}(lc_i) = field_ind")],
+                    without_body_ops=[RawFortranLinesOp(
                         f"errcode = 1\nerrmsg = 'No field index for '//trim({_cms}(lc_i))\nreturn"
                     )],
                 ),
@@ -627,14 +734,18 @@ def _generate_constituent_api(
         "integer, intent(out) :: errcode",
         "logical, optional, intent(in) :: advected",
     ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
-    _nc_call = DdtMethodCallOp(_cam_obj, "num_constituents", args=["num_advected"],
-                               kwargs=["advected=advected", "errcode=errcode", "errmsg=errmsg"])
+    _nc_call = DdtMethodCallOp(
+        obj_expr_op=_ref_expr("cam_constituents_obj"), method="num_constituents",
+        arg_ops=[VarRefExprOp("num_advected")],
+        kwarg_ops=[KeywordArgExprOp("advected", VarRefExprOp("advected"))]
+        + _errcode_errmsg_kwargs(),
+    )
     nc_body_ops: list = [RawFortranLinesOp("errcode = 0\nerrmsg = ''")]
     if multi_instance:
         nc_body_ops.append(ActiveCheckOp(
-            "allocated(lc_instances)",
-            [_nc_call],
-            [RawFortranLinesOp("num_advected = 0")],
+            condition_op=_allocated_cond("lc_instances"),
+            with_body_ops=[_nc_call],
+            without_body_ops=[RawFortranLinesOp("num_advected = 0")],
         ))
     else:
         nc_body_ops.append(_nc_call)
@@ -662,19 +773,27 @@ def _generate_constituent_api(
     ic_body_ops: list = [RawFortranLinesOp("errflg = 0\nerrmsg = ''")]
     if multi_instance:
         ic_body_ops.append(ErrorGuardOp(
-            "allocated(lc_instances)",
-            "ccpp_initialize_constituents: register_constituents not called",
+            condition_op=_allocated_cond("lc_instances"),
+            errmsg_text="ccpp_initialize_constituents: register_constituents not called",
         ))
     ic_body_ops.append(ErrorGuardOp(
-        f"allocated({_lc_all})",
-        "ccpp_initialize_constituents: register_constituents not called",
+        condition_op=_allocated_cond(_lc_all),
+        errmsg_text="ccpp_initialize_constituents: register_constituents not called",
     ))
     # lock_data allocates the internal data array and applies defaults.
     ic_body_ops += [
-        DdtMethodCallOp(_cam_obj, "lock_data", args=["ncols", "pver"],
-                        kwargs=["errcode=errflg", "errmsg=errmsg"]),
+        DdtMethodCallOp(
+            obj_expr_op=_ref_expr("cam_constituents_obj"), method="lock_data",
+            arg_ops=[VarRefExprOp("ncols"), VarRefExprOp("pver")],
+            kwarg_ops=_errcode_errmsg_kwargs("errflg", "errmsg"),
+        ),
         ErrorPropagateOp("errflg"),
-        PointerAssignOp(ref('lc_constituent_array'), f"{_cam_obj}%field_data_ptr()"),
+        PointerAssignOp(
+            ref('lc_constituent_array'),
+            rhs_expr_op=MemberAccessExprOp(
+                _ref_expr("cam_constituents_obj"), "field_data_ptr()"
+            ),
+        ),
     ]
     if framework_var_residency.get("lc_constituent_array"):
         ic_body_ops.append(RawFortranLinesOp(
@@ -683,7 +802,10 @@ def _generate_constituent_api(
     if needs_const_tend:
         ic_body_ops += [
             SafeDeallocOp(ref('lc_const_tend')),
-            AllocateOp(ref('lc_const_tend'), ["ncols", "pver", f"size({_lc_all})"]),
+            AllocateOp(ref('lc_const_tend'), dim_ops=[
+                VarRefExprOp("ncols"), VarRefExprOp("pver"),
+                CallExprOp("size", [_ref_expr("lc_all_constituents")]),
+            ]),
             ZeroFillOp(ref('lc_const_tend')),
         ]
         if framework_var_residency.get("lc_const_tend"):
@@ -699,13 +821,18 @@ def _generate_constituent_api(
                 ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"],
                 [
                     NullifyPointerOp(lc_ref),
-                    DdtMethodCallOp(_cam_obj, "const_index",
-                                    args=["lc_tend_idx", f"'{_cst_std}'"],
-                                    kwargs=["errcode=errflg", "errmsg=lc_tend_errmsg"]),
+                    DdtMethodCallOp(
+                        obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
+                        arg_ops=[VarRefExprOp("lc_tend_idx"), StringLiteralExprOp(_cst_std)],
+                        kwarg_ops=_errcode_errmsg_kwargs("errflg", "lc_tend_errmsg"),
+                    ),
                     ActiveCheckOp(
-                        "errflg == 0 .and. lc_tend_idx > 0",
-                        [PointerSliceAssignOp(lc_ref, ref('lc_const_tend'), "lc_tend_idx")],
-                        [RawFortranLinesOp("errflg = 0")],
+                        condition_op=arith.AndIOp(
+                            _int_var_cmp_zero("errflg", "eq"),
+                            _int_var_cmp_zero("lc_tend_idx", "sgt"),
+                        ),
+                        with_body_ops=[PointerSliceAssignOp(lc_ref, ref('lc_const_tend'), "lc_tend_idx")],
+                        without_body_ops=[RawFortranLinesOp("errflg = 0")],
                     ),
                 ],
             ))
@@ -718,7 +845,14 @@ def _generate_constituent_api(
             alloc_str = alloc_dims.replace("lc_num", f"size({_lc_all})")
             ic_body_ops += [
                 SafeDeallocOp(lc_ref),
-                AllocateOp(lc_ref, [alloc_str]),
+                # alloc_str is a single already-comma-joined dims string
+                # from the external scratch_vars data (may itself contain
+                # multiple dims) -- not safely splittable into separate
+                # dim expressions here, so it stays one verbatim-text
+                # VarRefExprOp atom (prints identically either way, same
+                # as the legacy single-ArrayAttr-element idiom it
+                # replaces).
+                AllocateOp(lc_ref, dim_ops=[VarRefExprOp(alloc_str)]),
                 ZeroFillOp(lc_ref),
             ]
             if needs_gpu:
@@ -746,7 +880,7 @@ def _generate_constituent_api(
         local_decls=[],
         result_name="ptr",
         result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        body_ops=[PointerAssignOp("ptr", ref('lc_constituent_array'))],
+        body_ops=[PointerAssignOp("ptr", rhs_expr_op=_ref_expr("lc_constituent_array"))],
     )
 
     # ── 6b. advected_constituents_array ──────────────────────────────────
@@ -774,7 +908,12 @@ def _generate_constituent_api(
         local_decls=[],
         result_name="ptr",
         result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        body_ops=[PointerAssignOp("ptr", f"{ref('cam_constituents_obj')}%advected_constituents_ptr()")],
+        body_ops=[PointerAssignOp(
+            "ptr",
+            rhs_expr_op=MemberAccessExprOp(
+                _ref_expr("cam_constituents_obj"), "advected_constituents_ptr()"
+            ),
+        )],
     )
 
     # ── 7. const_get_index ───────────────────────────────────────────────
@@ -789,21 +928,35 @@ def _generate_constituent_api(
     ci_body_ops: list = [RawFortranLinesOp("errflg = 0\nerrmsg = ''\nindex = -1")]
     if multi_instance:
         ci_body_ops.append(ErrorGuardOp(
-            "allocated(lc_instances)",
-            "const_get_index: constituents not registered",
+            condition_op=_allocated_cond("lc_instances"),
+            errmsg_text="const_get_index: constituents not registered",
         ))
     ci_body_ops.append(ErrorGuardOp(
-        f"allocated({ref('lc_all_constituents')})",
-        "const_get_index: constituents not registered",
+        condition_op=_allocated_cond(ref('lc_all_constituents')),
+        errmsg_text="const_get_index: constituents not registered",
     ))
     ci_body_ops += [
-        DdtMethodCallOp(ref('cam_constituents_obj'), "const_index",
-                        args=["index", "to_lower(std_name)"],
-                        kwargs=["errcode=errflg", "errmsg=errmsg"]),
-        IfThenOp("errflg /= 0 .or. index <= 0", [RawFortranLinesOp(
-            "errflg = 1\n"
-            "write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'"
-        )]),
+        DdtMethodCallOp(
+            obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
+            arg_ops=[
+                VarRefExprOp("index"),
+                CallExprOp("to_lower", [VarRefExprOp("std_name")]),
+            ],
+            kwarg_ops=_errcode_errmsg_kwargs("errflg", "errmsg"),
+        ),
+        IfThenOp(
+            condition_op=arith.OrIOp(
+                _int_var_cmp_zero("errflg", "ne"),
+                _int_var_cmp_zero("index", "sle"),
+            ),
+            body_ops=[
+                AssignOp(lhs_expr="errflg", rhs_expr="1"),
+                WriteStmtOp(
+                    dest="errmsg", format_spec="(3a)",
+                    items=["'const_get_index: constituent '", "trim(std_name)", "' not found'"],
+                ),
+            ],
+        ),
     ]
     ci_op = ConstituentFunctionOp(
         fn_name=f"{h}_const_get_index",
@@ -826,7 +979,7 @@ def _generate_constituent_api(
         local_decls=[],
         result_name="ptr",
         result_decl="type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
-        body_ops=[PointerAssignOp("ptr", ref('lc_const_props'))],
+        body_ops=[PointerAssignOp("ptr", rhs_expr_op=_ref_expr("lc_const_props"))],
     )
 
     # ── 9. gather_constituents / 10. update_constituents (cam_host only) ──
@@ -846,8 +999,10 @@ def _generate_constituent_api(
                 f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             ],
             local_decls=[],
-            body_ops=[DdtMethodCallOp(_cam_obj_ref, "copy_in", args=["const_array"],
-                                      kwargs=["errcode=errcode", "errmsg=errmsg"])],
+            body_ops=[DdtMethodCallOp(
+                obj_expr_op=VarRefExprOp(_cam_obj_ref), method="copy_in",
+                arg_ops=[VarRefExprOp("const_array")], kwarg_ops=_errcode_errmsg_kwargs(),
+            )],
         )
         uc_op = ConstituentFunctionOp(
             fn_name=f"{h}_ccpp_update_constituents",
@@ -860,8 +1015,10 @@ def _generate_constituent_api(
                 f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
             ],
             local_decls=[],
-            body_ops=[DdtMethodCallOp(_cam_obj_ref, "copy_out", args=["const_array"],
-                                      kwargs=["errcode=errcode", "errmsg=errmsg"])],
+            body_ops=[DdtMethodCallOp(
+                obj_expr_op=VarRefExprOp(_cam_obj_ref), method="copy_out",
+                arg_ops=[VarRefExprOp("const_array")], kwarg_ops=_errcode_errmsg_kwargs(),
+            )],
         )
 
     public_names_list = [

@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import IO, cast
 
-from xdsl.dialects import arith, builtin, func, llvm, memref, scf
+from xdsl.dialects import arith, builtin, func, llvm, math, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     DenseIntOrFPElementsAttr,
@@ -19,7 +19,7 @@ from xdsl.dialects.builtin import (
     ModuleOp,
     StringAttr,
 )
-from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Attribute, Block, BlockArgument, Operation, OpResult, Region, SSAValue
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
@@ -70,6 +70,15 @@ from xdsl_ccpp.dialects.ccpp_utils import RankReducingSliceOp as CCPPRankReducin
 from xdsl_ccpp.dialects.ccpp_utils import RealKindType as CCPPRealKindType
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorConvertOp as CCPPRowMajorConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import RowMajorWriteBackOp as CCPPRowMajorWriteBackOp
+from xdsl_ccpp.dialects.ccpp_utils import ArrayConstructorExprOp as CCPPArrayConstructorExprOp
+from xdsl_ccpp.dialects.ccpp_utils import CallExprOp as CCPPCallExprOp
+from xdsl_ccpp.dialects.ccpp_utils import IndexExprOp as CCPPIndexExprOp
+from xdsl_ccpp.dialects.ccpp_utils import KeywordArgExprOp as CCPPKeywordArgExprOp
+from xdsl_ccpp.dialects.ccpp_utils import MemberAccessExprOp as CCPPMemberAccessExprOp
+from xdsl_ccpp.dialects.ccpp_utils import SliceExprOp as CCPPSliceExprOp
+from xdsl_ccpp.dialects.ccpp_utils import StringConcatExprOp as CCPPStringConcatExprOp
+from xdsl_ccpp.dialects.ccpp_utils import StringLiteralExprOp as CCPPStringLiteralExprOp
+from xdsl_ccpp.dialects.ccpp_utils import VarRefExprOp as CCPPVarRefExprOp
 from xdsl_ccpp.dialects.ccpp_utils import AllocateOp as CCPPAllocateOp
 from xdsl_ccpp.dialects.ccpp_utils import DdtMethodCallOp as CCPPDdtMethodCallOp
 from xdsl_ccpp.dialects.ccpp_utils import ErrorGuardOp as CCPPErrorGuardOp
@@ -119,6 +128,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     VerticalFlipWriteBackOp as CCPPVerticalFlipWriteBackOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
+from xdsl_ccpp.dialects.ccpp_utils import WriteStmtOp as CCPPWriteStmtOp
+from xdsl_ccpp.backend import expr_precedence
 
 _MAX_LINE_LEN = 99
 
@@ -358,8 +369,16 @@ class ftnPrintContext:
                 arith.RemSIOp.name: "%",
                 arith.RemUIOp.name: "%",
                 arith.ShLIOp.name: "<<",
-                arith.AndIOp.name: "&",
-                arith.OrIOp.name: "|",
+                # Fortran logical .and./.or., not C-style bitwise & / | --
+                # this codebase's only real use of AndIOp/OrIOp is on i1
+                # (boolean) operands (the XOrIOp-as-NOT idiom's siblings),
+                # never wide-integer bitwise ops, so the Fortran-valid
+                # logical spelling is correct here. (This table was unread
+                # by any code before Stage 1a of lang-neutral-expr-ir, so
+                # these entries were never exercised/verified -- fixed as
+                # part of actually wiring the table up for the first time.)
+                arith.AndIOp.name: ".and.",
+                arith.OrIOp.name: ".or.",
             }
         )
         self._cmp_ops.update(
@@ -383,14 +402,25 @@ class ftnPrintContext:
                     "oge": ">=",
                     "olt": "<",
                     "ole": "<=",
-                    "one": "!=",
+                    # "one" (ordered not-equal) must be FALSE for a NaN
+                    # operand, but Fortran's "/=" is always TRUE for NaN --
+                    # mapping it there silently changes NaN semantics.
+                    # Same reasoning for "ueq"/unordered relational
+                    # predicates below: they must be TRUE for a NaN
+                    # operand, but the mapped ordinary comparison tokens
+                    # are always FALSE for NaN. Only "une" (unordered
+                    # not-equal) actually matches Fortran "/=" (true
+                    # whenever the values differ OR either is NaN).
+                    # Reject rather than silently change NaN semantics
+                    # (Copilot PR #109 review, 2026-10-05).
+                    "one": None,
                     "ord": None,
-                    "ueq": "==",
-                    "ugt": ">",
-                    "uge": ">=",
-                    "ult": "<",
-                    "ule": "<=",
-                    "une": "!=",
+                    "ueq": None,
+                    "ugt": None,
+                    "uge": None,
+                    "ult": None,
+                    "ule": None,
+                    "une": "/=",
                     "uno": None,
                     "true": None,
                 },
@@ -522,6 +552,20 @@ class ftnPrintContext:
             return f"{parts[0]} {parts[1]}_{kind}"
         return expr
 
+    def _unit_conversion_suffix(self, to_expr_attr, conversion_region) -> str:
+        """Return the opaque Fortran suffix fragment (e.g. "+ 273.15") for
+        a CCPPUnitConvertOp/CCPPUnitWriteBackOp, from whichever of its two
+        mutually exclusive shapes this instance actually carries: the
+        legacy StringAttr text (`to_expr_attr`), or lang-neutral-expr-ir
+        Stage 1b's structured `conversion` region holding a real
+        arith.AddfOp/SubfOp whose lhs is the op's own source/conv_result
+        operand -- see UnitConvertOp/UnitWriteBackOp's own docstrings.
+        """
+        if to_expr_attr is not None:
+            return to_expr_attr.data
+        conv_op = conversion_region.block.last_op
+        return f"{self._binops[conv_op.name]} {self._render_expr(conv_op.rhs.owner)}"
+
     def _ftn_dim_suffix(self, type_attr: Attribute) -> str:
         """Return the Fortran assumed-shape array suffix for a memref type.
 
@@ -560,8 +604,12 @@ class ftnPrintContext:
             case IntAttr():
                 return str(cast(IntAttr[int], attr).data)
             case IntegerAttr(value=val, type=IntegerType(width=IntAttr(data=1))):
-                # i1 values are printed as Fortran logical literals
-                return str(bool(val.data)).lower()
+                # i1 values are printed as Fortran logical literals --
+                # ".true."/".false.", not bare "true"/"false" (not valid
+                # Fortran; fixed as part of Stage 1a of lang-neutral-expr-ir,
+                # since nothing previously exercised an i1 arith.ConstantOp
+                # reaching this specific rendering path to catch the bug)
+                return f".{bool(val.data)}.".lower()
             case IntegerAttr(value=val):
                 return str(val.data)
             case FloatAttr(value=val) if val.data == 0:
@@ -574,12 +622,6 @@ class ftnPrintContext:
                 return f"{self.mlir_type_to_ftn_type(attr.get_type())} {{ {', '.join(self.attribute_value_to_str(a) for a in attr.iter_attrs())} }}"  # noqa: E501
             case _:
                 return f"<!unknown value {attr}>"
-
-    def _print_or_promote_to_inline_expr(
-        self, var: OpResult, value_expr: str, brackets: bool = False
-    ):
-        """Print value_expr directly as an inline expression (no newline)."""
-        self.print(f"{value_expr}", end="", use_prefix=False)
 
     def _value_to_expr_str(self, val: SSAValue) -> str:
         """Return the Fortran expression string for an SSA value without printing.
@@ -604,60 +646,272 @@ class ftnPrintContext:
         """Recursively print op as an inline Fortran expression (no newline).
 
         Only operations that can appear as sub-expressions are handled here.
+        Statement-level operations are handled by print_op instead. Thin
+        wrapper over _render_expr (lang-neutral-expr-ir Stage 2): the whole
+        expression is rendered to a string first so that precedence-correct
+        parenthesization can be applied, then printed in one shot -- same
+        final output as printing incrementally, since nothing here ever
+        needs a newline mid-expression.
+        """
+        self.print(self._render_expr(op), end="", use_prefix=False)
+
+    def _render_value(self, val: SSAValue) -> str:
+        """Render an SSA value used as an operand: resolve it by name
+        first (covers function block arguments, whose owner is a Block,
+        not an Operation -- _render_expr's own match must never recurse
+        into val.owner blindly for those), falling back to recursively
+        rendering its defining operation."""
+        if val in self.variables:
+            return self.variables[val]
+        if isinstance(val, BlockArgument):
+            return self._get_variable_name_for(val)
+        return self._render_expr(val.owner)
+
+    def _is_negative_numeric_literal(self, val: SSAValue) -> bool:
+        """True if val is an arith.ConstantOp holding a negative int/float
+        value -- needed because math.Pow*'s lhs must be parenthesized when
+        negative: Fortran's ** binds tighter than unary minus, so
+        "-2.0 ** 2.0" parses as "-(2.0 ** 2.0)" == -4.0, not
+        "(-2.0) ** 2.0" == 4.0, and the generic atom/precedence mechanism
+        alone never parenthesizes a bare literal (ATOM_LEVEL never needs
+        outer parens)."""
+        owner = val.owner
+        if not isa(owner, arith.ConstantOp):
+            return False
+        match owner.value:
+            # i1 (logical) constants are never "negative" -- xDSL stores
+            # a 1-bit True as the signed bit pattern -1, which would
+            # otherwise misclassify every .true. literal as negative
+            # once this helper started being used more broadly than
+            # math.Pow*'s own numeric-only lhs (Copilot PR #109 review,
+            # 2026-10-05 generalization of _render_binop surfaced this).
+            case IntegerAttr(type=IntegerType(width=IntAttr(data=1))):
+                return False
+            case IntegerAttr(value=v):
+                return v.data < 0
+            case FloatAttr(value=v):
+                return v.data < 0
+            case _:
+                return False
+
+    def _is_i1(self, val: SSAValue) -> bool:
+        """True if val's type is i1 -- AndIOp/OrIOp only have a valid
+        Fortran rendering (.and./.or.) when both operands are logical
+        (i1); for a wider integer type, Fortran's .and./.or. are invalid
+        between integers (the bitwise intrinsics iand/ior are needed
+        instead, not yet implemented here -- Copilot PR #109 review,
+        2026-10-05)."""
+        return isa(val.type, IntegerType) and val.type.width.data == 1
+
+    def _cmp_token(self, op: Operation, predicate_name: str) -> str:
+        """Look up op's Fortran comparison token for predicate_name,
+        raising instead of silently rendering a literal "None" when the
+        predicate has no Fortran-safe rendering (e.g. CmpfOp's
+        NaN-unordered predicates)."""
+        tok = self._cmp_ops[op.name][predicate_name]
+        if tok is None:
+            raise AssertionError(
+                f"print_expr: predicate {predicate_name!r} on {op.name} has "
+                "no Fortran rendering"
+            )
+        return tok
+
+    def _render_binop(self, op: Operation, l: SSAValue, r: SSAValue, token: str) -> str:
+        """Render `{lhs} {token} {rhs}`, wrapping either side in parens
+        when its own precedence/associativity requires it relative to
+        `op`'s (shared xdsl_ccpp/backend/expr_precedence.py table).
+
+        A negative-literal RIGHT operand gets an extra forced paren
+        regardless of precedence: a bare literal is always ATOM_LEVEL, so
+        the generic precedence mechanism alone never parenthesizes it,
+        but a negative literal sitting directly next to `token` (e.g.
+        "x * -2") is a nonstandard consecutive-operator sequence some
+        Fortran compilers reject outright -- same reasoning as
+        math.Pow*'s own existing negative-base handling below,
+        generalized here instead of being special-cased to just that one
+        op (Copilot PR #109 review, 2026-10-05). Only the right operand
+        needs this: a negative literal on the left has no preceding
+        operator token to collide with.
+        """
+        my_level = expr_precedence.level_of(op)
+        my_assoc = expr_precedence.assoc_of(op)
+        lhs_str = expr_precedence.parenthesize(
+            self._render_value(l), expr_precedence.level_of(l.owner),
+            my_level, "lhs", my_assoc,
+        )
+        rhs_str = expr_precedence.parenthesize(
+            self._render_value(r), expr_precedence.level_of(r.owner),
+            my_level, "rhs", my_assoc,
+        )
+        if self._is_negative_numeric_literal(r):
+            rhs_str = f"({rhs_str})"
+        return f"{lhs_str} {token} {rhs_str}"
+
+    def _render_base_expr(self, base_region: Region) -> str:
+        """Render a 'base' region (MemberAccessExprOp/IndexExprOp/
+        SliceExprOp.lower/upper/stride): its last op is the root/value
+        (any earlier ops are flattened-in floating dependencies -- see
+        _flatten_floating_deps), parenthesized if its own precedence is
+        looser than the atomic postfix access binding to it (e.g. a
+        member access on a binary-op result -- not exercised by any real
+        call site yet, but structurally possible once this op composes
+        with arith ops)."""
+        base_op = base_region.block.last_op
+        return expr_precedence.parenthesize(
+            self._render_expr(base_op), expr_precedence.level_of(base_op),
+            expr_precedence.ATOM_LEVEL, "lhs", "left",
+        )
+
+    def _render_expr(self, op: Operation) -> str:
+        """Recursively render op as a Fortran expression string.
+
+        Only operations that can appear as sub-expressions are handled here.
         Statement-level operations are handled by print_op instead.
         """
         match op:
-            case arith.ConstantOp(value=v, result=r):
+            case arith.ConstantOp(value=v):
                 # Emit the literal value of the constant
-                self._print_or_promote_to_inline_expr(r, self.attribute_value_to_str(v))
+                return self.attribute_value_to_str(v)
             case memref.LoadOp(memref=arr):
                 # A load from a memref is represented by the variable name itself
-                self.print(self._get_variable_name_for(arr), end="", use_prefix=False)
+                return self._get_variable_name_for(arr)
             case arith.CmpiOp(predicate=v, lhs=l, rhs=r):
                 # Emit lhs <op> rhs using the Fortran comparison operator
                 str_pred = arith.CMPI_COMPARISON_OPERATIONS[v.value.data]
-                self.print_expr(l.owner)
-                self.print(
-                    f" {self._cmp_ops[op.name][str_pred]} ", end="", use_prefix=False
-                )
-                self.print_expr(r.owner)
+                return self._render_binop(op, l, r, self._cmp_token(op, str_pred))
+            case arith.CmpfOp(predicate=v, lhs=l, rhs=r):
+                # Float-comparison sibling of the CmpiOp case above -- same
+                # shape, arith's own float predicate table instead of the
+                # int one.
+                str_pred = arith.CMPF_COMPARISON_OPERATIONS[v.value.data]
+                return self._render_binop(op, l, r, self._cmp_token(op, str_pred))
             case arith.XOrIOp():
-                # XOrI(x, 1_i1) is a logical NOT; detect which operand is the constant
+                # XOrI(x, 1_i1) is a logical NOT; detect which operand is
+                # the constant. NOTE: this detection is constant-VALUE-
+                # blind (any constant operand, true or false, triggers the
+                # NOT shortcut) -- a pre-existing latent bug that predates
+                # lang-neutral-expr-ir, deliberately not fixed here since it
+                # would change already-shipped Fortran output for a
+                # currently-passing real call site; flagged separately as
+                # its own backlog item, not touched by this change.
                 l, r = op.lhs, op.rhs
                 if isa(r.owner, arith.ConstantOp):
-                    self.print(".NOT. (", end="", use_prefix=False)
-                    self.print_expr(l.owner)
-                    self.print(")", end="", use_prefix=False)
+                    return f".NOT. ({self._render_value(l)})"
                 elif isa(l.owner, arith.ConstantOp):
-                    self.print(".NOT. (", end="", use_prefix=False)
-                    self.print_expr(r.owner)
-                    self.print(")", end="", use_prefix=False)
+                    return f".NOT. ({self._render_value(r)})"
                 else:
-                    # General XOR — emit as logical inequality
-                    self.print_expr(l.owner)
-                    self.print(" .neqv. ", end="", use_prefix=False)
-                    self.print_expr(r.owner)
+                    # General XOR, now precedence-aware via the shared
+                    # expr_precedence table: .eqv./.neqv. bind looser than
+                    # .and./.or. in Fortran, so a nested AndIOp/OrIOp child
+                    # now gets correctly parenthesized (previously this
+                    # branch printed flat, unparenthesized text
+                    # unconditionally).
+                    return self._render_binop(op, l, r, ".neqv.")
             case CCPPTrimOp():
                 lhs_name = self._get_variable_name_for(op.lhs)
-                self.print(f"trim({lhs_name})", end="", use_prefix=False)
+                return f"trim({lhs_name})"
             case CCPPStrCmpOp():
                 if op.literal is not None:
-                    self.print_expr(op.lhs.owner)
-                    self.print(f" .eq. '{op.literal.data}'", end="", use_prefix=False)
+                    return f"{self._render_expr(op.lhs.owner)} .eq. '{op.literal.data}'"
                 else:
                     lhs_name = self._get_variable_name_for(op.lhs)
                     rhs_name = self._get_variable_name_for(op.rhs)
-                    self.print(f"{lhs_name} .eq. {rhs_name}", end="", use_prefix=False)
-            case arith.AddiOp():
-                self.print_expr(op.lhs.owner)
-                self.print(" + ", end="", use_prefix=False)
-                self.print_expr(op.rhs.owner)
-            case arith.SubiOp():
-                self.print_expr(op.lhs.owner)
-                self.print(" - ", end="", use_prefix=False)
-                self.print_expr(op.rhs.owner)
+                    return f"{lhs_name} .eq. {rhs_name}"
+            case arith.AndIOp() | arith.OrIOp():
+                # .and./.or. are only valid Fortran between LOGICAL (i1)
+                # operands -- a wider integer AndIOp/OrIOp (real bitwise
+                # AND/OR) would need the iand/ior intrinsics instead, not
+                # implemented here. Reject rather than silently emit
+                # invalid Fortran (Copilot PR #109 review, 2026-10-05).
+                if not (self._is_i1(op.lhs) and self._is_i1(op.rhs)):
+                    raise AssertionError(
+                        f"print_expr: {op.name} on non-i1 operands has no "
+                        "Fortran rendering -- .and./.or. are logical-only; "
+                        "integer bitwise and/or needs iand/ior, not "
+                        "implemented"
+                    )
+                return self._render_binop(op, op.lhs, op.rhs, self._binops[op.name])
+            case (
+                arith.AddiOp() | arith.SubiOp()
+                | arith.MuliOp() | arith.DivSIOp() | arith.DivUIOp()
+                | arith.AddfOp() | arith.SubfOp() | arith.MulfOp() | arith.DivfOp()
+            ):
+                # Table-driven: every op here reads its Fortran token from
+                # the shared _binops table (populated by register_binops)
+                # and is parenthesized against its neighbors via the shared
+                # xdsl_ccpp/backend/expr_precedence table -- lang-neutral-
+                # expr-ir Stage 2 unifies AddiOp/SubiOp (previously
+                # hand-written, unparenthesized) with the rest of this group.
+                return self._render_binop(op, op.lhs, op.rhs, self._binops[op.name])
+            case math.PowFOp() | math.IPowIOp() | math.FPowIOp():
+                # Fortran has a native ** operator (unlike C++, which needs
+                # std::pow) -- first real use of the math dialect in this
+                # project. ** is right-associative and binds tighter than
+                # unary minus, so a negative-literal base needs a forced
+                # paren the generic atom/precedence mechanism alone can't
+                # supply (a bare literal is always ATOM_LEVEL, so
+                # parenthesize() alone never wraps it): "-2.0 ** 2.0"
+                # parses as "-(2.0 ** 2.0)" == -4.0 in Fortran, not
+                # "(-2.0) ** 2.0" == 4.0.
+                lhs_str = expr_precedence.parenthesize(
+                    self._render_value(op.lhs), expr_precedence.level_of(op.lhs.owner),
+                    expr_precedence.LEVEL_POW, "lhs", "right",
+                )
+                if self._is_negative_numeric_literal(op.lhs):
+                    lhs_str = f"({lhs_str})"
+                rhs_str = expr_precedence.parenthesize(
+                    self._render_value(op.rhs), expr_precedence.level_of(op.rhs.owner),
+                    expr_precedence.LEVEL_POW, "rhs", "right",
+                )
+                if self._is_negative_numeric_literal(op.rhs):
+                    # "2.0 ** -3.0" is the same nonstandard consecutive-
+                    # operator sequence _render_binop's own rhs fix
+                    # addresses -- needed here too since this branch
+                    # builds its own lhs/rhs strings directly rather than
+                    # going through _render_binop (Copilot PR #109
+                    # review, 2026-10-05).
+                    rhs_str = f"({rhs_str})"
+                return f"{lhs_str} ** {rhs_str}"
+            case CCPPStringLiteralExprOp():
+                # Fortran escapes an embedded single quote by doubling it
+                # inside a '...'-delimited literal.
+                escaped = op.text.data.replace("'", "''")
+                return f"'{escaped}'"
+            case CCPPVarRefExprOp():
+                return op.var_name.data
+            case CCPPStringConcatExprOp():
+                pieces = [self._render_expr(r.block.last_op) for r in op.pieces]
+                return " // ".join(pieces)
+            case CCPPMemberAccessExprOp():
+                base_str = self._render_base_expr(op.base)
+                return f"{base_str}%{op.member.data}"
+            case CCPPIndexExprOp():
+                base_str = self._render_base_expr(op.base)
+                idx_strs = [self._render_index_piece(r.block.last_op) for r in op.indices]
+                return f"{base_str}({', '.join(idx_strs)})"
+            case CCPPCallExprOp():
+                pos = [self._render_expr(r.block.last_op) for r in op.args]
+                kw = [self._render_expr(r.block.last_op) for r in op.kwargs]
+                return f"{op.callee.data}({', '.join(pos + kw)})"
+            case CCPPKeywordArgExprOp():
+                value_op = op.value.block.last_op
+                return f"{op.arg_name.data}={self._render_expr(value_op)}"
+            case CCPPArrayConstructorExprOp():
+                elems = [self._render_expr(r.block.last_op) for r in op.elements]
+                prefix = f"{op.elem_type.data} :: " if op.elem_type is not None else ""
+                return f"[ {prefix}{', '.join(elems)} ]"
             case _:
                 raise AssertionError(f"Unhandled op in print_expr: {type(op)}")
+
+    def _render_index_piece(self, op: Operation) -> str:
+        """Render one child of an IndexExprOp.indices region: either a
+        plain expression op, or a SliceExprOp (Fortran range syntax)."""
+        if isa(op, CCPPSliceExprOp):
+            lower = self._render_base_expr(op.lower) if op.lower is not None else ""
+            upper = self._render_base_expr(op.upper) if op.upper is not None else ""
+            stride = f":{self._render_base_expr(op.stride)}" if op.stride is not None else ""
+            return f"{lower}:{upper}{stride}"
+        return self._render_expr(op)
 
     def _print_guarded_alloc_and_assign(
         self, src_name: str, result_name: str, sizes: list, is_optional_array: bool,
@@ -863,6 +1117,9 @@ class ftnPrintContext:
                 self.print(f"write({dest_name}, '(3a)') \"{op.prefix.data}\", ", end="")
                 self.print_expr(op.var.owner)
                 self.print(f', "{op.suffix.data}"', use_prefix=False)
+            case CCPPWriteStmtOp():
+                items = ", ".join(i.data for i in op.items.data)
+                self.print(f"write({op.dest.data}, '{op.format_spec.data}') {items}")
             case CCPPArraySectionOp():
                 # Register the full Fortran array-section expression as the
                 # result's variable name so call-site printing emits it inline.
@@ -954,6 +1211,12 @@ class ftnPrintContext:
                 vname = op.var_name.data
                 dim_names = [self._get_variable_name_for(v) for v in op.dim_vars]
                 dim_str = ", ".join(dim_names)
+                if op.init_value is not None:
+                    init_value_str = op.init_value.data
+                elif op.init_value_region is not None:
+                    init_value_str = self._render_expr(op.init_value_region.block.last_op)
+                else:
+                    init_value_str = None
                 _is_run_local = (
                     op.is_run_local is not None
                     and bool(op.is_run_local.value.data)
@@ -963,15 +1226,15 @@ class ftnPrintContext:
                     # Declared as a local allocatable in the subroutine spec section;
                     # a matching SafeDeallocOp is injected at end of the subroutine.
                     self.print(f"allocate({vname}({dim_str}))")
-                    if op.init_value is not None:
-                        self.print(f"{vname} = {op.init_value.data}")
+                    if init_value_str is not None:
+                        self.print(f"{vname} = {init_value_str}")
                 else:
                     self.print(f"if (.not. allocated({vname})) then")
                     with self.descend() as inner:
                         inner.print(f"allocate({vname}({dim_str}))")
-                        if op.init_value is not None:
+                        if init_value_str is not None:
                             inner.print(
-                                f"{vname} = {op.init_value.data}"
+                                f"{vname} = {init_value_str}"
                             )
                         if op.needs_device_residency is not None and bool(op.needs_device_residency.value.data):
                             inner.print("#ifdef USE_GPU", use_prefix=False)
@@ -984,8 +1247,15 @@ class ftnPrintContext:
             case CCPPNullifyPointerOp():
                 self.print(f"nullify({op.ptr_name.data})")
             case CCPPAllocateOp():
-                dims = ", ".join(d.data for d in op.dims.data)
-                self.print(f"allocate({op.var_name.data}({dims}))")
+                if op.dims is not None:
+                    dims = ", ".join(d.data for d in op.dims.data)
+                else:
+                    dims = ", ".join(
+                        self._render_expr(r.block.last_op) for r in op.dims_region
+                    )
+                target = f"{op.var_name.data}({dims})" if dims else op.var_name.data
+                stat = f", stat={op.stat_var.data}" if op.stat_var is not None else ""
+                self.print(f"allocate({target}{stat})")
             case CCPPZeroFillOp():
                 self.print(f"{op.var_name.data} = 0.0_kind_phys")
             case CCPPPointerSliceAssignOp():
@@ -994,23 +1264,61 @@ class ftnPrintContext:
                     f"{op.array_name.data}(:, :, {op.index_var.data})"
                 )
             case CCPPPointerAssignOp():
-                self.print(f"{op.ptr_name.data} => {op.rhs_expr.data}")
+                if op.rhs_expr is not None:
+                    rhs_str = op.rhs_expr.data
+                else:
+                    rhs_str = self._render_expr(op.rhs_expr_region.block.last_op)
+                self.print(f"{op.ptr_name.data} => {rhs_str}")
             case CCPPAssignOp():
                 self.print(f"{op.lhs_expr.data} = {op.rhs_expr.data}")
             case CCPPDdtMethodCallOp():
-                all_args = [a.data for a in op.args.data] + [k.data for k in op.kwargs.data]
-                self.print(f"call {op.obj_expr.data}%{op.method.data}({', '.join(all_args)})")
+                if op.obj_expr is not None:
+                    obj_str = op.obj_expr.data
+                else:
+                    obj_str = self._render_expr(op.obj_expr_region.block.last_op)
+                if op.args is not None:
+                    arg_strs = [a.data for a in op.args.data]
+                else:
+                    arg_strs = [self._render_expr(r.block.last_op) for r in op.args_region]
+                if op.kwargs is not None:
+                    kwarg_strs = [k.data for k in op.kwargs.data]
+                else:
+                    kwarg_strs = [self._render_expr(r.block.last_op) for r in op.kwargs_region]
+                all_args = arg_strs + kwarg_strs
+                self.print(f"call {obj_str}%{op.method.data}({', '.join(all_args)})")
             case CCPPErrorGuardOp():
                 errflg_var = op.errflg_var.data if op.errflg_var is not None else "errflg"
                 errmsg_var = op.errmsg_var.data if op.errmsg_var is not None else "errmsg"
-                self.print(f"if (.not. {op.condition.data}) then")
+                if op.condition is not None:
+                    cond_str = op.condition.data
+                else:
+                    cond_root = op.condition_region.block.last_op
+                    cond_str = self._render_expr(cond_root)
+                    # Fortran's .not. binds TIGHTER than .and./.or./
+                    # .eqv./.neqv. (but looser than relational/concat/
+                    # arithmetic) -- "if (.not. a .or. b)" parses as
+                    # "(.not. a) .or. b", not the intended ".not. (a .or.
+                    # b)", silently inverting the guard for any compound
+                    # condition at this level. A bare comparison/call/
+                    # var-ref needs no parens (those bind tighter than
+                    # .not. already). Not yet exercised by any real
+                    # constituent_cap.py call site (all use a single
+                    # CallExprOp today), but a real bug in the general
+                    # mechanism (Copilot PR #109 review, 2026-10-05).
+                    if expr_precedence.level_of(cond_root) < expr_precedence.LEVEL_CMP:
+                        cond_str = f"({cond_str})"
+                self.print(f"if (.not. {cond_str}) then")
                 with self.descend() as inner:
                     inner.print(f"{errflg_var} = 1")
                     inner.print(f"{errmsg_var} = '{op.errmsg_text.data}'")
                     inner.print("return")
                 self.print("end if")
             case CCPPIfThenOp():
-                self.print(f"if ({op.condition_expr.data}) then")
+                if op.condition_expr is not None:
+                    cond_str = op.condition_expr.data
+                else:
+                    cond_str = self._render_expr(op.condition.block.last_op)
+                self.print(f"if ({cond_str}) then")
                 with self.descend() as inner:
                     inner.print_block(op.body.block)
                 self.print("end if")
@@ -1220,7 +1528,10 @@ class ftnPrintContext:
                     inner.print_block(op.without_body.blocks[0])
                 self.print("end if")
             case CCPPActiveCheckOp():
-                condition_expr = op.condition_expr.data
+                if op.condition_expr is not None:
+                    condition_expr = op.condition_expr.data
+                else:
+                    condition_expr = self._render_expr(op.condition.block.last_op)
                 self.print(f"if ({condition_expr}) then")
                 with self.descend() as inner:
                     inner.print_block(op.with_body.blocks[0])
@@ -1237,7 +1548,11 @@ class ftnPrintContext:
                 self.print("end do")
             case CCPPSubcycleLoopOp():
                 loop_name = self._get_variable_name_for(op.loop_var)
-                self.print(f"do {loop_name} = 1, {op.loop_count.data}")
+                if op.loop_count is not None:
+                    loop_count_str = op.loop_count.data
+                else:
+                    loop_count_str = self._render_expr(op.loop_count_region.block.last_op)
+                self.print(f"do {loop_name} = 1, {loop_count_str}")
                 with self.descend() as inner:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
@@ -1382,7 +1697,10 @@ class ftnPrintContext:
                 src_name    = self._get_variable_name_for(op.source)
                 result_name = self._get_variable_name_for(op.res)
                 scheme_kind = self._elem_kind_name(op.res.type)
-                to_expr = self._suffix_kind_in_expr(op.to_scheme_expr.data, scheme_kind)
+                to_expr = self._suffix_kind_in_expr(
+                    self._unit_conversion_suffix(op.to_scheme_expr, op.conversion),
+                    scheme_kind,
+                )
                 dim_suffix = self._ftn_dim_suffix(op.res.type)
                 if dim_suffix:
                     rank = dim_suffix.count(":")
@@ -1406,7 +1724,10 @@ class ftnPrintContext:
                 conv_name = self._get_variable_name_for(op.conv_result)
                 dest_name = self._get_variable_name_for(op.original_dest)
                 host_kind = self._elem_kind_name(op.original_dest.type)
-                to_expr = self._suffix_kind_in_expr(op.to_host_expr.data, host_kind)
+                to_expr = self._suffix_kind_in_expr(
+                    self._unit_conversion_suffix(op.to_host_expr, op.conversion),
+                    host_kind,
+                )
                 dim_suffix = self._ftn_dim_suffix(op.conv_result.type)
                 # Mirror CCPPUnitConvertOp's own presence gating: an absent
                 # optional array was never allocated/converted, so there is
@@ -1739,7 +2060,12 @@ class ftnPrintContext:
                 is_ptr   = op.is_pointer is not None and op.is_pointer.value.data
                 if op.fixed_dim is not None:
                     dim = op.fixed_dim.value.data
-                    init_part = f" = {op.init_value.data}" if op.init_value else ""
+                    if op.init_value is not None:
+                        init_part = f" = {op.init_value.data}"
+                    elif op.init_value_region is not None:
+                        init_part = f" = {self._render_expr(op.init_value_region.block.last_op)}"
+                    else:
+                        init_part = ""
                     self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="  ")
                 elif rank == 0:
                     self.print(f"{ftn_type} :: {var_name}", prefix="  ")
@@ -1902,12 +2228,21 @@ class ftnPrintContext:
         idx = 0
         seen: set[str] = set()
         printed_operand_values: set[str] = set()
-        for name, val_attr in op.overrides.data.items():
-            if idx > 0:
-                self.print(", ", end="", use_prefix=False)
-            self.print(f"{name}={val_attr.data}", end="", use_prefix=False)
-            seen.add(name)
-            idx += 1
+        if op.overrides is not None:
+            for name, val_attr in op.overrides.data.items():
+                if idx > 0:
+                    self.print(", ", end="", use_prefix=False)
+                self.print(f"{name}={val_attr.data}", end="", use_prefix=False)
+                seen.add(name)
+                idx += 1
+        else:
+            for r in op.override_ops_region:
+                kw_op = r.block.last_op
+                if idx > 0:
+                    self.print(", ", end="", use_prefix=False)
+                self.print(self._render_expr(kw_op), end="", use_prefix=False)
+                seen.add(kw_op.arg_name.data)
+                idx += 1
         for name_attr, arg in zip(op.operand_names.data, op.args):
             name = name_attr.data
             if name not in seen:

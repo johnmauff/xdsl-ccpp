@@ -209,21 +209,27 @@
 // CHECK-NEXT:        %ccpp_loop_cnt_1 = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %ccpp_loop_cnt_2 = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %ccpp_loop_cnt_3 = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:        "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_2) <{loop_count = "num_subcycles", is_literal = false}> ({
+// CHECK-NEXT:        "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_2) <{is_literal = false}> ({
+// CHECK-NEXT:          "ccpp_utils.var_ref_expr"() <{var_name = "num_subcycles"}> : () -> ()
+// CHECK-NEXT:        }, {
 // CHECK-NEXT:          %10 = arith.constant 0 : i32
 // CHECK-NEXT:          %11 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:          %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:          scf.if %12 {
 // CHECK-NEXT:            "ccpp_utils.kw_call"(%effrr_inout, %scalar_varA, %errmsg, %errflg) <{callee = "effr_pre_run", operand_names = ["effrr_inout", "scalar_var", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:          }
-// CHECK-NEXT:          "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_1) <{loop_count = "2", is_literal = true}> ({
-// CHECK-NEXT:            "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt) <{loop_count = "2", is_literal = true}> ({
+// CHECK-NEXT:          "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_1) <{is_literal = true}> ({
+// CHECK-NEXT:            %13 = arith.constant 2 : i32
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt) <{is_literal = true}> ({
+// CHECK-NEXT:              %14 = arith.constant 2 : i32
+// CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.active_check"() <{condition_expr = "(has_graupel)"}> ({
 // CHECK-NEXT:                "ccpp_utils.active_check"() <{condition_expr = "(has_ice)"}> ({
-// CHECK-NEXT:                  %13 = arith.constant 0 : i32
-// CHECK-NEXT:                  %14 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:                  %15 = arith.cmpi eq, %14, %13 : i32
-// CHECK-NEXT:                  scf.if %15 {
+// CHECK-NEXT:                  %15 = arith.constant 0 : i32
+// CHECK-NEXT:                  %16 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:                  %17 = arith.cmpi eq, %16, %15 : i32
+// CHECK-NEXT:                  scf.if %17 {
 // CHECK-NEXT:                    %effrr_in_unit_conv = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrr_in_vert_flip = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrs_inout_kind_cast = "ccpp_utils.kind_cast"(%effrs_inout) <{target_kind = "8"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
@@ -235,10 +241,10 @@
 // CHECK-NEXT:                    "ccpp_utils.kind_write_back"(%effrs_inout_kind_cast, %effrs_inout) <{original_kind = "kind_phys"}> : (memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:                  }
 // CHECK-NEXT:                }, {
-// CHECK-NEXT:                  %16 = arith.constant 0 : i32
-// CHECK-NEXT:                  %17 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:                  %18 = arith.cmpi eq, %17, %16 : i32
-// CHECK-NEXT:                  scf.if %18 {
+// CHECK-NEXT:                  %18 = arith.constant 0 : i32
+// CHECK-NEXT:                  %19 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:                  %20 = arith.cmpi eq, %19, %18 : i32
+// CHECK-NEXT:                  scf.if %20 {
 // CHECK-NEXT:                    %effrr_in_unit_conv_1 = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrr_in_vert_flip_1 = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv_1) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrs_inout_kind_cast_1 = "ccpp_utils.kind_cast"(%effrs_inout) <{target_kind = "8"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
@@ -252,10 +258,10 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.active_check"() <{condition_expr = "(has_ice)"}> ({
-// CHECK-NEXT:                  %19 = arith.constant 0 : i32
-// CHECK-NEXT:                  %20 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:                  %21 = arith.cmpi eq, %20, %19 : i32
-// CHECK-NEXT:                  scf.if %21 {
+// CHECK-NEXT:                  %21 = arith.constant 0 : i32
+// CHECK-NEXT:                  %22 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:                  %23 = arith.cmpi eq, %22, %21 : i32
+// CHECK-NEXT:                  scf.if %23 {
 // CHECK-NEXT:                    %effrr_in_unit_conv_2 = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrr_in_vert_flip_2 = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv_2) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrs_inout_kind_cast_2 = "ccpp_utils.kind_cast"(%effrs_inout) <{target_kind = "8"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
@@ -267,10 +273,10 @@
 // CHECK-NEXT:                    "ccpp_utils.kind_write_back"(%effrs_inout_kind_cast_2, %effrs_inout) <{original_kind = "kind_phys"}> : (memref<?x?x!ccpp_utils.real_kind<"8">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:                  }
 // CHECK-NEXT:                }, {
-// CHECK-NEXT:                  %22 = arith.constant 0 : i32
-// CHECK-NEXT:                  %23 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:                  %24 = arith.cmpi eq, %23, %22 : i32
-// CHECK-NEXT:                  scf.if %24 {
+// CHECK-NEXT:                  %24 = arith.constant 0 : i32
+// CHECK-NEXT:                  %25 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:                  %26 = arith.cmpi eq, %25, %24 : i32
+// CHECK-NEXT:                  scf.if %26 {
 // CHECK-NEXT:                    %effrr_in_unit_conv_3 = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrr_in_vert_flip_3 = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv_3) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:                    %effrs_inout_kind_cast_3 = "ccpp_utils.kind_cast"(%effrs_inout) <{target_kind = "8"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"8">>
@@ -285,39 +291,41 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }) : (memref<i32>) -> ()
 // CHECK-NEXT:          }) : (memref<i32>) -> ()
-// CHECK-NEXT:          %25 = arith.constant 0 : i32
-// CHECK-NEXT:          %26 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:          %27 = arith.cmpi eq, %26, %25 : i32
-// CHECK-NEXT:          scf.if %27 {
+// CHECK-NEXT:          %27 = arith.constant 0 : i32
+// CHECK-NEXT:          %28 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:          %29 = arith.cmpi eq, %28, %27 : i32
+// CHECK-NEXT:          scf.if %29 {
 // CHECK-NEXT:            "ccpp_utils.kw_call"(%effrr_inout, %scalar_varB, %errmsg, %errflg) <{callee = "effr_post_run", operand_names = ["effrr_inout", "scalar_var", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_3) <{loop_count = "num_subcycles", is_literal = false}> ({
-// CHECK-NEXT:          %28 = arith.constant 0 : i32
-// CHECK-NEXT:          %29 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:          %30 = arith.cmpi eq, %29, %28 : i32
-// CHECK-NEXT:          scf.if %30 {
+// CHECK-NEXT:        "ccpp_utils.subcycle_loop"(%ccpp_loop_cnt_3) <{is_literal = false}> ({
+// CHECK-NEXT:          "ccpp_utils.var_ref_expr"() <{var_name = "num_subcycles"}> : () -> ()
+// CHECK-NEXT:        }, {
+// CHECK-NEXT:          %30 = arith.constant 0 : i32
+// CHECK-NEXT:          %31 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:          %32 = arith.cmpi eq, %31, %30 : i32
+// CHECK-NEXT:          scf.if %32 {
 // CHECK-NEXT:            "ccpp_utils.kw_call"(%effrs_inout, %errmsg, %errflg) <{callee = "effrs_calc_run", operand_names = ["effrs_inout", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:          }
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %31 = arith.constant 0 : i32
-// CHECK-NEXT:        %32 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        %33 = arith.cmpi eq, %32, %31 : i32
-// CHECK-NEXT:        scf.if %33 {
+// CHECK-NEXT:        %33 = arith.constant 0 : i32
+// CHECK-NEXT:        %34 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %35 = arith.cmpi eq, %34, %33 : i32
+// CHECK-NEXT:        scf.if %35 {
 // CHECK-NEXT:          %effrr_in_unit_conv_4 = "ccpp_utils.unit_convert"(%effrr_inout) <{to_scheme_expr = "* 1.0E6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %effrr_in_vert_flip_4 = "ccpp_utils.vertical_flip"(%effrr_in_unit_conv_4) <{vertical_dim = 2 : i64}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%effrr_in_vert_flip_4, %scalar_varC, %errmsg, %errflg) <{callee = "effr_diag_run", operand_names = ["effrr_in", "scalar_var", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %34 = arith.constant 0 : i32
-// CHECK-NEXT:        %35 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        %36 = arith.cmpi eq, %35, %34 : i32
-// CHECK-NEXT:        scf.if %36 {
+// CHECK-NEXT:        %36 = arith.constant 0 : i32
+// CHECK-NEXT:        %37 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %38 = arith.cmpi eq, %37, %36 : i32
+// CHECK-NEXT:        scf.if %38 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %fluxLW, %errmsg, %errflg) <{callee = "rad_lw_run", operand_names = ["ncol", "fluxLW", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<?x!ccpp_utils.derived_type<"ty_rad_lw">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %37 = arith.constant 0 : i32
-// CHECK-NEXT:        %38 = memref.load %errflg[] : memref<i32>
-// CHECK-NEXT:        %39 = arith.cmpi eq, %38, %37 : i32
-// CHECK-NEXT:        scf.if %39 {
+// CHECK-NEXT:        %39 = arith.constant 0 : i32
+// CHECK-NEXT:        %40 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %41 = arith.cmpi eq, %40, %39 : i32
+// CHECK-NEXT:        scf.if %41 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %sfc_up_sw, %sfc_down_sw, %errmsg, %errflg) <{callee = "rad_sw_run", operand_names = ["ncol", "sfc_up_sw", "sfc_down_sw", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        "ccpp_utils.unit_write_back"(%effrl_inout_unit_conv, %effrl_inout) <{to_host_expr = "* 1.0E-6"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
@@ -683,60 +691,189 @@
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_num_consts = size(host_constituents)"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_num_consts = lc_num_consts + 0"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "initialize_table", args = ["lc_num_consts"], kwargs = []}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "initialize_table", kwargs = []}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 0>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
-// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "allocate(const_prop, stat=errcode)"}> : () -> ()
-// CHECK-NEXT:            "ccpp_utils.if_then"() <{condition_expr = "errcode /= 0"}> ({
+// CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.if_then"() ({
+// CHECK-NEXT:              %0 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:              %1 = arith.constant 0 : i32
+// CHECK-NEXT:              %2 = arith.cmpi ne, %0, %1 : i32
+// CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = host_constituents(lc_i)"}> : () -> ()
-// CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "new_field", args = ["const_prop"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "const_prop"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1, 2>} : () -> ()
 // CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "lock_table", args = [], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_table", args = []}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0, 2>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_props_ptr", rhs_expr = "cam_constituents_obj%constituent_props_ptr()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_props_ptr"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "constituent_props_ptr()"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_props"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_const_props", dims = ["size(lc_props_ptr)"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_const_props"}> ({
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "size"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_props_ptr"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "lc_const_props = lc_props_ptr"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_props_ptr"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.cam_direct_call"() <{callee = "ccpp_scheme_utils_set_constituents", call_args = ["lc_const_props"]}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "num_constituents", args = ["lc_num_consts"], kwargs = ["errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 2>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_all_constituents"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_all_constituents", dims = ["lc_num_consts"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_all_constituents"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_ccpp_number_constituents", is_function = false, args = ["num_advected", "errmsg", "errcode", "advected"], use_stmts = [], arg_decls = ["integer, intent(out) :: num_advected", "character(len=512), intent(out) :: errmsg", "integer, intent(out) :: errcode", "logical, optional, intent(in) :: advected"], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errcode = 0\nerrmsg = ''"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "num_constituents", args = ["num_advected"], kwargs = ["advected=advected", "errcode=errcode", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "num_advected"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "advected"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "advected"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 3>} : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_ccpp_initialize_constituents", is_function = false, args = ["ncols", "pver", "errflg", "errmsg"], use_stmts = [], arg_decls = ["integer, intent(in) :: ncols", "integer, intent(in) :: pver", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_all_constituents)", errmsg_text = "ccpp_initialize_constituents: register_constituents not called"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "lock_data", args = ["ncols", "pver"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "ccpp_initialize_constituents: register_constituents not called"}> ({
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_data"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "pver"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errflg"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_constituent_array", rhs_expr = "cam_constituents_obj%field_data_ptr()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_constituent_array"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "field_data_ptr()"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_ncl_out"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_ncl_out", dims = ["ncols, pver"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_ncl_out"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols, pver"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_ncl_out"}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_constituents_array", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "real(kind=kind_phys), pointer :: ptr(:, :, :)"}> ({
-// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr", rhs_expr = "lc_constituent_array"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_constituent_array"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_advected_constituents_array", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "real(kind=kind_phys), pointer :: ptr(:, :, :)"}> ({
-// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr", rhs_expr = "cam_constituents_obj%advected_constituents_ptr()"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "advected_constituents_ptr()"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_const_get_index", is_function = false, args = ["std_name", "index", "errflg", "errmsg"], use_stmts = ["use ccpp_constituent_prop_mod, only: to_lower"], arg_decls = ["character(len=*), intent(in) :: std_name", "integer, intent(out) :: index", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nindex = -1"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.error_guard"() <{condition = "allocated(lc_all_constituents)", errmsg_text = "const_get_index: constituents not registered"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{obj_expr = "cam_constituents_obj", method = "const_index", args = ["index", "to_lower(std_name)"], kwargs = ["errcode=errflg", "errmsg=errmsg"]}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() <{condition_expr = "errflg /= 0 .or. index <= 0"}> ({
-// CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 1\nwrite(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "const_get_index: constituents not registered"}> ({
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "to_lower"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.if_then"() ({
+// CHECK-NEXT:            %3 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:            %4 = arith.constant 0 : i32
+// CHECK-NEXT:            %5 = arith.cmpi ne, %3, %4 : i32
+// CHECK-NEXT:            %6 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
+// CHECK-NEXT:            %7 = arith.constant 0 : i32
+// CHECK-NEXT:            %8 = arith.cmpi sle, %6, %7 : i32
+// CHECK-NEXT:            %9 = arith.ori %5, %8 : i1
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "VarCompatibility_model_const_properties", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)"}> ({
-// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr", rhs_expr = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-LABEL:     func.func private @var_compatibility_suite_register() -> (memref<i32>, memref<512xi8>) attributes {module = "var_compatibility_suite_cap"}
