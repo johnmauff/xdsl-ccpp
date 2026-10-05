@@ -230,14 +230,12 @@ ID: `lang-neutral-expr-ir`
 
 **File**: `xdsl_ccpp/dialects/ccpp_utils.py` (op definitions),
 `xdsl_ccpp/backend/{print_ftn,print_cpp_header,expr_precedence}.py`
-(printers), `xdsl_ccpp/transforms/{constituent_cap,cpp_interop}.py`
-(the two files retrofitted so far) — remaining:
-`xdsl_ccpp/transforms/{suite_cap,run_dispatch,lifecycle_cap}.py`.
-**Added 2026-09-30**; **design + two-file pilot (Stages 0-4) DONE
-2026-10-04** — see `CHANGELOG.md`'s "`lang-neutral-expr-ir` Stages 0-4"
-entry for full detail. **Not fully resolved** — kept open here, not
-archived, because Stage 5 (full propagation) and Stage 3c (one deferred
-sub-item) remain.
+(printers), `xdsl_ccpp/transforms/{constituent_cap,cpp_interop,
+suite_cap}.py` (retrofitted). **Added 2026-09-30**; **design + full
+propagation (Stages 0-5) DONE 2026-10-04** — see `CHANGELOG.md`'s
+"`lang-neutral-expr-ir` Stages 0-4" and "Stage 5" entries for full
+detail. **Not fully resolved** — kept open here, not archived, because
+one sub-item (Stage 3c) remains deliberately deferred.
 
 **The gap, precisely** (unchanged from when this was first written):
 converting a file's raw Fortran-string *statement bodies* into typed ops
@@ -252,7 +250,7 @@ keyword-arg syntax, array-constructor literals). A C++ printer can't
 render `.or.` as `||` without re-parsing Fortran syntax out of a string
 first — which defeats the point of a printer abstraction.
 
-**What's done (Stages 0-4, see `CHANGELOG.md` for the full writeup)**:
+**What's done (Stages 0-5, see `CHANGELOG.md` for the full writeup)**:
 - A language-neutral expression vocabulary exists and is proven: `arith`/
   `math` reused directly for arithmetic/logical/comparison/numeric
   literals (completing `print_ftn.py`'s own previously-unused
@@ -266,16 +264,25 @@ first — which defeats the point of a printer abstraction.
   `expr_to_cpp_str`) render the *same* IR tree in each language's own
   syntax, with a shared precedence/parenthesization module
   (`expr_precedence.py`) — this is the item's real proof-of-concept.
-- Piloted on two independent real files: `constituent_cap.py` (all 7
-  targeted op kinds: `IfThenOp.condition_expr`, `ActiveCheckOp.
-  condition_expr`, `ErrorGuardOp.condition`, `DdtMethodCallOp.obj_expr/
-  args/kwargs`, `PointerAssignOp.rhs_expr`, `AllocateOp.dims`,
-  `ModuleVarOp.init_value`) and `cpp_interop.py` (`CppBraceInitCallOp.
-  field_values`, `CppCallStatementOp.call_args`, `CppFieldDeclOp.
-  init_expr`). Every retrofitted op kept its legacy text form fully
-  supported alongside the new structured form (additive, not a breaking
-  change) — real production callers of these ops outside the two piloted
-  files are unaffected.
+- Piloted on two independent real files, then propagated to a third
+  (Stage 5): `constituent_cap.py` (all 7 targeted op kinds:
+  `IfThenOp.condition_expr`, `ActiveCheckOp.condition_expr`,
+  `ErrorGuardOp.condition`, `DdtMethodCallOp.obj_expr/args/kwargs`,
+  `PointerAssignOp.rhs_expr`, `AllocateOp.dims`, `ModuleVarOp.
+  init_value`), `cpp_interop.py` (`CppBraceInitCallOp.field_values`,
+  `CppCallStatementOp.call_args`, `CppFieldDeclOp.init_expr`), and
+  `suite_cap.py` (`LazyAllocOp.init_value`, `ModuleVarOp.init_value`,
+  `SubcycleLoopOp.loop_count`, `KeywordCallOp.overrides`). Every
+  retrofitted op kept its legacy text form fully supported alongside
+  the new structured form (additive, not a breaking change) — any
+  other real caller of these ops is unaffected.
+- `run_dispatch.py` and `lifecycle_cap.py` were audited directly
+  (every call site read, not just grepped) and confirmed to have **no
+  real retrofit candidates at all** — their only expression-bearing-op
+  usages either never populate the raw-text property in question, or
+  carry static literal fragments with no internal structure to extract.
+  Stage 5's "propagate to 3 remaining files" therefore resolved to real
+  work in `suite_cap.py` only.
 - A real architecture gap was found and fixed along the way
   (`_flatten_floating_deps`, needed because a freshly-built `arith`/
   custom-op tree wrapped only at its root fails `module.verify()`'s
@@ -289,26 +296,21 @@ dialect's own `RealKindType` (a Fortran generic-kind placeholder), and
 `arith.AddfOp`/`SubfOp`'s operand constraint only accepts builtin
 `Float16/32/64Type` (confirmed directly against xDSL's source). Needs new
 `RealKindType`-compatible constant/binary-op vocabulary first if
-revisited — real additional scope, not a quick fix.
-
-**Remaining work — Stage 5, propagate file by file**: `suite_cap.py`,
-`run_dispatch.py`, `lifecycle_cap.py` still need the same retrofit. No
-longer a design question — the vocabulary and both printers are proven
-against two independent real files — just incremental, per-file effort
-with the same discipline used for the pilot (one op kind at a time, full
-`pytest` green between each, every regenerated FileCheck golden manually
-diff-reviewed, never blanket-trusted).
+revisited — real additional scope, not a quick fix. This is now the
+item's **only remaining open thread**.
 
 **Effort**: the design-and-pilot phase (Stages 0-4) took roughly 2 weeks
-of nominal effort. Stage 5's full propagation is further, separately-
-scoped follow-on work per file, not one PR — likely comparable in total
-scope to the pilot phase, spread across 3 more files.
+of nominal effort; Stage 5's propagation (once correctly scoped down to
+`suite_cap.py` only) took a single sitting — the real per-file cost
+turned out far smaller than the original "comparable to the pilot
+phase" estimate, since `run_dispatch.py`/`lifecycle_cap.py` needed zero
+changes and `suite_cap.py` itself had only 4 distinct op kinds with a
+handful of call sites each.
 
-**Risk of leaving as-is**: no second-language printer is achievable for
-`suite_cap.py`/`run_dispatch.py`/`lifecycle_cap.py`'s own expression
-content until Stage 5 lands for each — same hard-blocker character as
-before, just now scoped to the 3 remaining files instead of the whole
-codebase.
+**Risk of leaving as-is**: none, for the 3 files now covered — a
+second-language printer is achievable for all of their expression
+content today. The only remaining risk is scoped entirely to Stage 3c's
+`UnitConvertOp`/`UnitWriteBackOp` gap.
 
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 

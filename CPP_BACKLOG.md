@@ -28,7 +28,7 @@ tooling enforces this):
   reference would otherwise go unnoticed).
 
 Last synchronized with `BACKLOG.md`: 2026-10-04 (after
-`lang-neutral-expr-ir`'s Stages 0-4 design-and-pilot phase landed).
+`lang-neutral-expr-ir`'s Stages 0-5 landed, Stage 3c still deferred).
 
 ## Recommended near-term path
 
@@ -40,20 +40,18 @@ for it.
 
 ## Tier 1 — foundational, blocks everything else in this direction
 
-1. **`lang-neutral-expr-ir`** — the real architectural blocker. Statement
-   *shape* is typed IR now (both the constituent-API and chost-cap
-   conversions proved the pattern). **Expression content is no longer an
-   open design question** (2026-10-04): a language-neutral expression
-   vocabulary (reused `arith`/`math` plus 7 new custom ops) now exists,
-   with both a Fortran printer and a brand-new C++ expression printer
+1. **`lang-neutral-expr-ir`** — the real architectural blocker, now
+   **effectively done** (2026-10-04). A language-neutral expression
+   vocabulary (reused `arith`/`math` plus 7 new custom ops) exists, with
+   both a Fortran printer and a brand-new C++ expression printer
    (`expr_to_cpp_str`) rendering the same IR tree in each language's own
-   syntax — proven on two independent real files, `constituent_cap.py`
-   and `cpp_interop.py`. What remains is propagation (Stage 5): the same
-   retrofit still needs to land in `suite_cap.py`/`run_dispatch.py`/
-   `lifecycle_cap.py`, plus one deferred sub-item (`UnitConvertOp`'s
+   syntax — propagated to all 3 files with real retrofit work
+   (`constituent_cap.py`, `cpp_interop.py`, `suite_cap.py`;
+   `run_dispatch.py`/`lifecycle_cap.py` audited and confirmed to need
+   none). Only one deferred sub-item remains: `UnitConvertOp`'s
    structured form can't yet handle this dialect's own `RealKindType` —
-   needs new vocabulary first). See `BACKLOG.md`'s entry and
-   `CHANGELOG.md`'s "Stages 0-4" writeup for full detail.
+   needs new vocabulary first, not a quick fix. See `BACKLOG.md`'s entry
+   and `CHANGELOG.md`'s "Stages 0-4"/"Stage 5" writeups for full detail.
 
 ## Tier 2 — cheap, low-risk wins directly in the C++ codepath
 

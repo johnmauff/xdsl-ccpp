@@ -6,6 +6,7 @@ from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
     DictionaryAttr,
+    IntegerAttr,
     MemRefType,
     StringAttr,
     i8,
@@ -28,10 +29,12 @@ from xdsl_ccpp.dialects import ccpp, ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
     ActiveCheckOp,
+    ArrayConstructorExprOp,
     ArraySectionOp,
     ClearStringOp,
     ConstituentIndexLookupOp,
     ConstituentSyncOp,
+    KeywordArgExprOp,
     KeywordCallOp,
     KindCastOp,
     KindWriteBackOp,
@@ -43,9 +46,11 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     PromotionLoopOp,
     RankReducingSliceOp,
     SafeDeallocOp,
+    StringLiteralExprOp,
     SubcycleLoopOp,
     UnitConvertOp,
     UnitWriteBackOp,
+    VarRefExprOp,
     VerticalFlipOp,
     VerticalFlipWriteBackOp,
 )
@@ -539,7 +544,7 @@ def _build_suite_state_lazy_alloc(ninstances_ssa) -> "LazyAllocOp":
         var_name="ccpp_suite_state",
         kind_name="character",
         dim_var_refs=[ninstances_ssa],
-        init_value="'uninitialized'",
+        init_value_op=StringLiteralExprOp("uninitialized"),
     )
 
 
@@ -2156,9 +2161,22 @@ class GenerateSuiteSubroutine(RewritePattern):
             subroutine_name,
             ArrayAttr([StringAttr(n) for n in in_names]),
             ArrayAttr([]),
-            DictionaryAttr({k: StringAttr(v) for k, v in overrides.items()}),
+            None if overrides else DictionaryAttr({}),
             in_ssa,
             [],
+            # Override values are arbitrary compile-time literals of
+            # unknown lexical shape (str(v) of whatever the frontend
+            # passed -- int, bool, str, ...), same ambiguity as
+            # LazyAllocOp.init_value's .meta default_value -- stay a
+            # verbatim-text VarRefExprOp atom rather than guessing a type.
+            # Only used when overrides is actually non-empty -- an empty
+            # override_ops=[] would take the structured-but-empty branch
+            # instead of the legacy overrides={} one, changing every
+            # existing no-override call site's printed property shape.
+            override_ops=(
+                [KeywordArgExprOp(k, VarRefExprOp(v)) for k, v in overrides.items()]
+                if overrides else None
+            ),
         )
 
         # Guard the call: only execute when errflg == 0
@@ -2664,7 +2682,10 @@ class GenerateSuiteSubroutine(RewritePattern):
                         var_name=_pending.var_name,
                         kind_name=_pending.kind_name,
                         dim_var_refs=_dim_var_refs,
-                        init_value=_pending.init_value,
+                        init_value_op=(
+                            VarRefExprOp(_pending.init_value)
+                            if _pending.init_value is not None else None
+                        ),
                         needs_device_residency=_pending.needs_device_residency,
                         is_run_local=_pending.is_run_local,
                     )
@@ -2830,8 +2851,13 @@ class GenerateSuiteSubroutine(RewritePattern):
                         f"integer."
                     )
                 printed_loop_count = resolved.name
+            loop_count_op = (
+                arith.ConstantOp(IntegerAttr.from_int_and_width(int(printed_loop_count), 32))
+                if is_literal
+                else VarRefExprOp(printed_loop_count)
+            )
             return [SubcycleLoopOp(
-                loop_count=printed_loop_count,
+                loop_count_op=loop_count_op,
                 loop_var=sc_alloc.memref,
                 body_ops=body_ops,
                 is_literal=is_literal,
@@ -3190,7 +3216,9 @@ class GenerateSuiteSubroutine(RewritePattern):
                     var_name=var_name,
                     kind_name=kind,
                     dim_var_refs=dim_var_refs,
-                    init_value=init_val,
+                    init_value_op=(
+                        VarRefExprOp(init_val) if init_val is not None else None
+                    ),
                     needs_device_residency=(
                         suite_entry.needs_device_residency
                         if suite_entry is not None
@@ -4810,11 +4838,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
         if fixed_adv:
             n = len(fixed_adv)
-            init_vals = ", ".join(str(i) for i in range(1, n + 1))
             allocatable_mod_vars.append(ModuleVarOp(
                 "lc_const_indices", "integer",
                 fixed_dim=n,
-                init_value=f"[{init_vals}]",
+                init_value_op=ArrayConstructorExprOp([
+                    arith.ConstantOp(IntegerAttr.from_int_and_width(i, 32))
+                    for i in range(1, n + 1)
+                ]),
                 rank=1,
             ))
             ci_stub_key = ("ccpp_constituent_indices", "ccpp_scheme_utils")

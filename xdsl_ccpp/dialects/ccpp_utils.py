@@ -470,6 +470,13 @@ class KeywordCallOp(IRDLOperation):
 
     The printer deduplicates inout arguments (which appear in both operands
     and results) using a seen-names set.
+
+    lang-neutral-expr-ir Stage 5 adds a structured alternative to
+    ``overrides``: pass ``override_ops`` (a list of ``KeywordArgExprOp``,
+    reusing that existing op rather than inventing a new dict-shaped one --
+    each entry's ``arg_name``/value region carries exactly the same
+    information as one ``overrides`` dict entry) instead. At most one of
+    the two may be given.
     """
 
     name = "ccpp_utils.kw_call"
@@ -477,29 +484,44 @@ class KeywordCallOp(IRDLOperation):
     callee = prop_def(StringAttr)
     operand_names = prop_def(ArrayAttr)
     result_names = prop_def(ArrayAttr)
-    overrides = prop_def(DictionaryAttr)
+    overrides = opt_prop_def(DictionaryAttr)
+    override_ops_region = var_region_def("single_block")
 
     args = var_operand_def()
     res = var_result_def()
+
+    traits = traits_def(NoTerminator())
 
     def __init__(
         self,
         callee: str | StringAttr,
         operand_names: ArrayAttr,
         result_names: ArrayAttr,
-        overrides: DictionaryAttr,
+        overrides: "DictionaryAttr | None",
         args: list,
         out_types: list,
+        *,
+        override_ops: "list | None" = None,
     ):
+        if overrides is not None and override_ops is not None:
+            raise ValueError(
+                "KeywordCallOp: pass at most one of overrides or override_ops"
+            )
         callee = _coerce_str_attr(callee)
+        props: dict = {
+            "callee": callee,
+            "operand_names": operand_names,
+            "result_names": result_names,
+        }
+        if override_ops is not None:
+            override_regions = [_single_op_region([o]) for o in override_ops]
+        else:
+            props["overrides"] = overrides if overrides is not None else DictionaryAttr({})
+            override_regions = []
         super().__init__(
             operands=[args],
-            properties={
-                "callee": callee,
-                "operand_names": operand_names,
-                "result_names": result_names,
-                "overrides": overrides,
-            },
+            properties=props,
+            regions=[override_regions],
             result_types=[out_types],
         )
 
@@ -879,25 +901,37 @@ class LazyAllocOp(IRDLOperation):
     var_name   = prop_def(StringAttr)
     kind_name  = prop_def(StringAttr)
     init_value = opt_prop_def(StringAttr)  # Fortran literal, e.g. "0.0_kind_phys"
+    # lang-neutral-expr-ir Stage 5: structured alternative to init_value,
+    # pass init_value_op= instead. At most one of the two may be given.
+    init_value_region = opt_region_def("single_block")
     needs_device_residency = opt_prop_def(BoolAttr)
     is_run_local = opt_prop_def(BoolAttr)  # when True: plain allocate(), no lazy guard
     dim_vars   = var_operand_def()          # SSA values giving dimension sizes
 
+    traits = traits_def(NoTerminator())
+
     def __init__(self, var_name: str, kind_name: str, dim_var_refs: list,
                  init_value: str | None = None,
                  needs_device_residency: bool = False,
-                 is_run_local: bool = False):
+                 is_run_local: bool = False, *, init_value_op=None):
+        if init_value is not None and init_value_op is not None:
+            raise ValueError("LazyAllocOp: pass at most one of init_value or init_value_op")
         props: dict = {
             "var_name":  StringAttr(var_name),
             "kind_name": StringAttr(kind_name),
         }
+        init_region = None
         if init_value is not None:
             props["init_value"] = StringAttr(init_value)
+        elif init_value_op is not None:
+            init_region = _single_op_region([init_value_op])
         if needs_device_residency:
             props["needs_device_residency"] = BoolAttr.from_bool(needs_device_residency)
         if is_run_local:
             props["is_run_local"] = BoolAttr.from_bool(True)
-        super().__init__(operands=[dim_var_refs], properties=props)
+        super().__init__(
+            operands=[dim_var_refs], properties=props, regions=[init_region]
+        )
 
 
 @irdl_op_definition
@@ -1037,7 +1071,10 @@ class SubcycleLoopOp(IRDLOperation):
 
     name = "ccpp_utils.subcycle_loop"
 
-    loop_count = prop_def(StringAttr)
+    loop_count = opt_prop_def(StringAttr)
+    # lang-neutral-expr-ir Stage 5: structured alternative to loop_count,
+    # pass loop_count_op= instead. Exactly one of the two must be given.
+    loop_count_region = opt_region_def("single_block")
     is_literal = prop_def(BoolAttr)
     loop_var   = operand_def(MemRefType)
 
@@ -1045,20 +1082,28 @@ class SubcycleLoopOp(IRDLOperation):
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, loop_count: "int | str", loop_var, body_ops,
-                 is_literal: bool = True):
+    def __init__(self, loop_count: "int | str | None" = None, loop_var=None,
+                 body_ops=None, is_literal: bool = True, *, loop_count_op=None):
+        if (loop_count is None) == (loop_count_op is None):
+            raise ValueError(
+                "SubcycleLoopOp: pass exactly one of loop_count or loop_count_op"
+            )
         if isinstance(body_ops, list):
             from xdsl.ir import Block, Region
             body = Region([Block(body_ops)])
         else:
             body = body_ops
+        props: dict = {}
+        count_region = None
+        if loop_count is not None:
+            props["loop_count"] = StringAttr(str(loop_count))
+        else:
+            count_region = _single_op_region([loop_count_op])
+        props["is_literal"] = BoolAttr.from_bool(is_literal)
         super().__init__(
             operands=[loop_var],
-            properties={
-                "loop_count": StringAttr(str(loop_count)),
-                "is_literal": BoolAttr.from_bool(is_literal),
-            },
-            regions=[body],
+            properties=props,
+            regions=[count_region, body],
         )
 
 

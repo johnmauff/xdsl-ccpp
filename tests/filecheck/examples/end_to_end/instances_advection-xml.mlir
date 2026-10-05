@@ -29,7 +29,7 @@
 // CHECK-NEXT:    real(kind=kind_phys) :: tcld
 // CHECK-NEXT:    real(kind=kind_phys), pointer :: cld_liq_array(:, :) => null()
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_liq_tend(:, :)
-// CHECK-NEXT:    integer :: lc_const_indices(1) = [1]
+// CHECK-NEXT:    integer :: lc_const_indices(1) = [ 1 ]
 // CHECK-NEXT:    public :: cld_suite_register
 // CHECK-NEXT:    public :: cld_suite_initialize
 // CHECK-NEXT:    public :: cld_suite_finalize

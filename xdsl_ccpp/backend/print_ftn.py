@@ -1152,6 +1152,12 @@ class ftnPrintContext:
                 vname = op.var_name.data
                 dim_names = [self._get_variable_name_for(v) for v in op.dim_vars]
                 dim_str = ", ".join(dim_names)
+                if op.init_value is not None:
+                    init_value_str = op.init_value.data
+                elif op.init_value_region is not None:
+                    init_value_str = self._render_expr(op.init_value_region.block.last_op)
+                else:
+                    init_value_str = None
                 _is_run_local = (
                     op.is_run_local is not None
                     and bool(op.is_run_local.value.data)
@@ -1161,15 +1167,15 @@ class ftnPrintContext:
                     # Declared as a local allocatable in the subroutine spec section;
                     # a matching SafeDeallocOp is injected at end of the subroutine.
                     self.print(f"allocate({vname}({dim_str}))")
-                    if op.init_value is not None:
-                        self.print(f"{vname} = {op.init_value.data}")
+                    if init_value_str is not None:
+                        self.print(f"{vname} = {init_value_str}")
                 else:
                     self.print(f"if (.not. allocated({vname})) then")
                     with self.descend() as inner:
                         inner.print(f"allocate({vname}({dim_str}))")
-                        if op.init_value is not None:
+                        if init_value_str is not None:
                             inner.print(
-                                f"{vname} = {op.init_value.data}"
+                                f"{vname} = {init_value_str}"
                             )
                         if op.needs_device_residency is not None and bool(op.needs_device_residency.value.data):
                             inner.print("#ifdef USE_GPU", use_prefix=False)
@@ -1469,7 +1475,11 @@ class ftnPrintContext:
                 self.print("end do")
             case CCPPSubcycleLoopOp():
                 loop_name = self._get_variable_name_for(op.loop_var)
-                self.print(f"do {loop_name} = 1, {op.loop_count.data}")
+                if op.loop_count is not None:
+                    loop_count_str = op.loop_count.data
+                else:
+                    loop_count_str = self._render_expr(op.loop_count_region.block.last_op)
+                self.print(f"do {loop_name} = 1, {loop_count_str}")
                 with self.descend() as inner:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
@@ -2145,12 +2155,21 @@ class ftnPrintContext:
         idx = 0
         seen: set[str] = set()
         printed_operand_values: set[str] = set()
-        for name, val_attr in op.overrides.data.items():
-            if idx > 0:
-                self.print(", ", end="", use_prefix=False)
-            self.print(f"{name}={val_attr.data}", end="", use_prefix=False)
-            seen.add(name)
-            idx += 1
+        if op.overrides is not None:
+            for name, val_attr in op.overrides.data.items():
+                if idx > 0:
+                    self.print(", ", end="", use_prefix=False)
+                self.print(f"{name}={val_attr.data}", end="", use_prefix=False)
+                seen.add(name)
+                idx += 1
+        else:
+            for r in op.override_ops_region:
+                kw_op = r.block.last_op
+                if idx > 0:
+                    self.print(", ", end="", use_prefix=False)
+                self.print(self._render_expr(kw_op), end="", use_prefix=False)
+                seen.add(kw_op.arg_name.data)
+                idx += 1
         for name_attr, arg in zip(op.operand_names.data, op.args):
             name = name_attr.data
             if name not in seen:
