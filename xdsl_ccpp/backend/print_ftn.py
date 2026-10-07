@@ -1031,7 +1031,9 @@ class ftnPrintContext:
             case func.FuncOp(sym_name=name, body=bdy, function_type=ftyp):
                 # Skip external declarations; only print subroutine definitions
                 if not op.is_declaration:
-                    self._print_fn(name, bdy, ftyp, bind_c="bind_c" in op.attributes)
+                    self._print_fn(
+                        name, bdy, ftyp, bind_c="bind_c" in op.attributes, fn_op=op,
+                    )
             case func.CallOp(callee=tgt, arguments=args, res=results):
                 self._print_call(tgt, args, results)
             case CCPPKeywordCallOp():
@@ -2303,13 +2305,25 @@ class ftnPrintContext:
         return ftn_type
 
     def _bind_c_arg_decl_line(
-        self, arg_type: Attribute, arg_name: str, intent: str, is_opt: bool = False
+        self, arg_type: Attribute, arg_name: str, intent: str, is_opt: bool = False,
+        explicit_dims: "list[str] | None" = None,
     ) -> str:
         """Return a BIND(C)-compatible Fortran argument declaration line.
 
         Character types are mapped to ``character(kind=c_char, len=1), dimension(*)``.
         Integer scalars with ``intent(in)`` use the ``VALUE`` attribute (pass by value).
         All real kinds default to ``real(c_double)`` (CCPP physics kinds are 64-bit).
+
+        explicit_dims -- when given (a resolved per-dimension Fortran
+        expression list, e.g. ["col_end - col_start + 1", "nz"] -- see
+        run_dispatch.py's resolve_dim_exprs/bind_c_dim_exprs), an array
+        argument is declared with EXPLICIT shape + target instead of flat
+        assumed-size (*) -- chost-rank3-bindc: assumed-size (*) cannot be
+        passed to the suite cap's own assumed-shape (:,...) dummy for any
+        rank (confirmed via gfortran), the same fix already proven in the
+        chost path's own ftn_decl. None (unresolved) keeps today's exact
+        (*) output -- Fortran's explicit-shape declarator has no partial
+        form, so a partially-resolved dimension list is never passed here.
         """
         opt_clause = ", optional" if is_opt else ""
         ftn_type = self.mlir_type_to_ftn_type(arg_type)
@@ -2330,7 +2344,17 @@ class ftnPrintContext:
                 return f"{c_type}, value, intent(in){opt_clause} :: {arg_name}"
             return f"{c_type}, intent({intent}){opt_clause} :: {arg_name}"
 
-        # Array: use assumed-size (*) — C side passes a raw pointer
+        if explicit_dims:
+            dims_str = ", ".join(explicit_dims)
+            return (
+                f"{c_type}, target, intent({intent}){opt_clause}"
+                f" :: {arg_name}({dims_str})"
+            )
+
+        # Fallback: dimension resolution unavailable -- assumed-size (*),
+        # C side passes a raw pointer (known-broken for rank >= 1 when
+        # forwarded to the suite cap's assumed-shape dummy, but strictly
+        # no worse than today's output).
         return f"{c_type}, intent({intent}){opt_clause} :: {arg_name}(*)"
 
     def _print_cxx_interface_blocks(self, cxx_fns: list) -> None:
@@ -2515,15 +2539,30 @@ class ftnPrintContext:
 
     def _declare_fn_arguments(
         self, inner: ftnPrintContext, bdy: Region, analysis: _FnBodyAnalysis, bind_c: bool,
+        fn_op: "object | None" = None,
     ) -> None:
         """Print the subroutine's own dummy-argument declarations: intent(in)/
-        intent(inout) for inputs, intent(out) for outputs (always scalars)."""
+        intent(inout) for inputs, intent(out) for outputs (always scalars).
+
+        fn_op -- when given and bind_c is set, its own bind_c_dim_exprs
+        attribute (stamped by run_dispatch.py's _generate_run_fn, one entry
+        per block arg in order, "" meaning "no override") supplies an
+        explicit-shape dimension list for an array argument instead of
+        today's flat assumed-size (*) (chost-rank3-bindc). Absent/missing/
+        empty falls straight back to the existing (*) behavior -- additive,
+        every other caller of this function (there are none besides
+        _print_fn's own single call site) and every non-array/non-bind_c
+        case is completely unaffected.
+        """
+        dim_exprs_attr = (
+            fn_op.attributes.get("bind_c_dim_exprs") if fn_op is not None else None
+        )
         # Declare input arguments with intent(in) or intent(inout).
         # Array block args (dynamic memref) are always intent(inout): the host
         # provides the buffer and the scheme may write to it in-place.
         # Exception: memref<memref<?xi8>> is an allocatable character array
         # passed intent(out) — the callee allocates and fills it.
-        for arg, arg_name in zip(bdy.block.args, analysis.input_names):
+        for idx, (arg, arg_name) in enumerate(zip(bdy.block.args, analysis.input_names)):
             # Check the original name_hint for the __alloc / __opt / __in suffix
             is_alloc = (arg.name_hint is not None
                         and arg.name_hint.endswith("__alloc"))
@@ -2544,7 +2583,14 @@ class ftnPrintContext:
             if is_allocatable_char or is_alloc:
                 type_str = type_str + ", allocatable"
             if bind_c:
-                inner.print(inner._bind_c_arg_decl_line(arg.type, arg_name, intent, is_opt))
+                explicit_dims = None
+                if dim_exprs_attr is not None and idx < len(dim_exprs_attr.data):
+                    raw = dim_exprs_attr.data[idx].data
+                    if raw:
+                        explicit_dims = raw.split(",")
+                inner.print(inner._bind_c_arg_decl_line(
+                    arg.type, arg_name, intent, is_opt, explicit_dims=explicit_dims,
+                ))
             else:
                 if is_opt:
                     type_str = type_str + ", optional"
@@ -2746,6 +2792,7 @@ class ftnPrintContext:
         bdy: Region,
         ftyp: FunctionType,
         bind_c: bool = False,
+        fn_op: "object | None" = None,
     ):
         """Print a func.FuncOp definition as a Fortran subroutine.
 
@@ -2756,6 +2803,11 @@ class ftnPrintContext:
         actual body print (print_block) with the BIND(C) character
         marshaling loops (_print_c_to_f_char_conversions/
         _print_f_to_c_char_conversions).
+
+        fn_op -- the owning func.FuncOp itself (not just its decomposed
+        name/body/type), so _declare_fn_arguments can read its own
+        bind_c_dim_exprs attribute (chost-rank3-bindc) -- optional, so
+        every other existing concern stays unaffected.
         """
         analysis = self._analyze_fn_body(bdy)
 
@@ -2782,7 +2834,7 @@ class ftnPrintContext:
                 inner, bdy, analysis, bind_c
             )
 
-            self._declare_fn_arguments(inner, bdy, analysis, bind_c)
+            self._declare_fn_arguments(inner, bdy, analysis, bind_c, fn_op)
             self._declare_fn_locals(inner, bdy, analysis, bind_c_char_conversions)
 
             inner.print("")

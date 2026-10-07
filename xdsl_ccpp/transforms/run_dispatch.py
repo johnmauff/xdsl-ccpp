@@ -55,6 +55,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_member_subscripts,
     build_ncol_compute_ops,
     classify_host_table_vars,
+    resolve_dim_exprs,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
@@ -101,6 +102,7 @@ class _RunBlockSignature:
     errflg_alloc: "object"        # HostVarRefOp | None
     ccpp_info_block_arg: "object" # BlockArgument | None
     ccpp_info_type: "object"      # memref type or None
+    union_dim_names: dict         # canonical_arg_name -> dim_std_names list
 
 
 @dataclass
@@ -268,6 +270,22 @@ def _build_per_suite_run_info(
                     fn_arg.getAttr("model_module_name"),
                     fn_arg.hasAttr("model_var_is_ddt"),
                 )
+                # dim_names, carried alongside host_info through the exact
+                # same collision-renaming keys below -- chost-rank3-bindc
+                # (Copilot PR #112 review): local_to_dim_names must follow
+                # suite_cap.py's own _build_block_and_name_hints renaming
+                # (every host-matched collision gets printed under its
+                # model_var_name, not its shared bare local name), or a
+                # renamed array's dimensions are silently unresolvable (or,
+                # worse, a sibling's dim_names could be misattributed to it)
+                # -- same keying bug local_to_host_info already had to solve.
+                dim_names = (
+                    [d.strip().lower() for d in fn_arg.getAttr("dim_names")]
+                    if fn_arg.hasAttr("dim_names")
+                    and fn_arg.hasAttr("dimensions")
+                    and fn_arg.getAttr("dimensions") >= 1
+                    else None
+                )
                 std_key = (
                     fn_arg.getAttr("standard_name").lower()
                     if fn_arg.hasAttr("standard_name")
@@ -275,17 +293,21 @@ def _build_per_suite_run_info(
                 )
                 group = _by_bare_name.setdefault(_bare(fn_arg.name), {})
                 if std_key not in group:
-                    group[std_key] = host_info
+                    group[std_key] = (host_info, dim_names)
 
         local_to_host_info: dict = {}
+        local_to_dim_names: dict = {}
         for bare_name, std_key_group in _by_bare_name.items():
-            host_infos = list(std_key_group.values())
-            if len(host_infos) == 1:
+            entries = list(std_key_group.values())
+            if len(entries) == 1:
                 # No local-name collision for this bare name within the
                 # current scheme group -- suite_cap.py prints this dummy
                 # argument under its own original (unrenamed) name, so the
                 # bare local name is the correct lookup key.
-                local_to_host_info[bare_name] = host_infos[0]
+                host_info, dim_names = entries[0]
+                local_to_host_info[bare_name] = host_info
+                if dim_names is not None:
+                    local_to_dim_names[bare_name] = dim_names
             else:
                 # Two or more schemes reused the same local argument name for
                 # genuinely different standard_names (a real collision).
@@ -295,8 +317,10 @@ def _build_per_suite_run_info(
                 # index each sibling by its own host-matched canonical name,
                 # which is what actually appears in the printed suite-callee
                 # signature for that sibling.
-                for host_info in host_infos:
+                for host_info, dim_names in entries:
                     local_to_host_info[host_info[0]] = host_info
+                    if dim_names is not None:
+                        local_to_dim_names[host_info[0]] = dim_names
 
         # Fold in DDT-table matches found above for callee args with no
         # scheme-declared arg at all (e.g. a synthesized dynamic subcycle
@@ -312,6 +336,15 @@ def _build_per_suite_run_info(
         # Build bare_name → (dim_std_names, intent) for rank≥2 row_major args.
         # These will be transposed via RowMajorConvertOp in the dispatch chain.
         local_to_array_layout: dict = {}
+        # local_to_dim_names was already seeded above (keyed collision-
+        # aware, same keys as local_to_host_info) for every host-matched
+        # (model_var_name-bearing) array. This second pass fills in the
+        # remaining, non-host-matched arrays (SuiteOwned/CapScratch/plain
+        # block-arg arrays) under their own bare local name -- safe, since
+        # suite_cap.py's own _build_block_and_name_hints hard-errors on any
+        # bare-name collision that lacks a model_var_name to disambiguate
+        # with, so a non-host-matched array can never actually collide (if
+        # it did, generation would already have failed before reaching here).
         for scheme_name in scheme_names:
             table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, phase_postfix)
             if table_name is None:
@@ -334,6 +367,30 @@ def _build_per_suite_run_info(
                         fn_arg.getAttr("dim_names"),
                         fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in",
                     )
+                if (
+                    not fn_arg.hasAttr("model_var_name")
+                    and bare_name not in local_to_dim_names
+                    and fn_arg.hasAttr("dim_names")
+                    and fn_arg.hasAttr("dimensions")
+                    and fn_arg.getAttr("dimensions") >= 1
+                ):
+                    local_to_dim_names[bare_name] = [
+                        d.strip().lower() for d in fn_arg.getAttr("dim_names")
+                    ]
+                    # fn_arg.getAttr("dim_names") is already a parsed list
+                    # here (unlike ccpp_cap.py's own raw-property access,
+                    # which needs .data.split(",")) -- confirmed via
+                    # local_to_array_layout's own identical direct use just
+                    # above. Deliberately NOT filtering out bare colons/
+                    # integer literals here (unlike ccpp_cap.py's own all_dim_names,
+                    # which builds an unordered SET and can safely drop
+                    # non-name entries) -- this list's POSITION must match
+                    # the array's real rank 1:1 for resolve_dim_exprs to
+                    # build a correct explicit-shape declaration. A
+                    # non-standard-name entry (":", a numeric literal) will
+                    # simply fail every lookup in resolve_dim_exprs and
+                    # correctly fall the whole array back to today's
+                    # assumed-size (*) -- safe, just not maximally complete.
 
         # Classify each callee input arg using match pass results as primary source.
         resolved_arg_ops = []
@@ -493,6 +550,7 @@ def _build_per_suite_run_info(
                 "std_name_of": std_name_of,
                 "scheme_names": scheme_names,
                 "local_to_array_layout": local_to_array_layout,
+                "local_to_dim_names": local_to_dim_names,
             }
         )
 
@@ -540,7 +598,11 @@ def _build_run_block_signature(
     seen_non_host_std_names: dict = {}  # std_name → canonical_arg_name
     # Also build a rename map for per-suite block_arg_map construction below.
     non_host_std_to_canonical: dict = {}  # suite-level std_name → canonical name
+    # canonical_arg_name → dim_std_names list, array args only -- feeds the
+    # plain-bind_c explicit-shape fix (chost-rank3-bindc) via resolve_dim_exprs.
+    union_dim_names: dict = {}
     for info in per_suite:
+        _dim_map = info.get("local_to_dim_names", {})
         for arg_name, arg_type, std_name in info["non_host_args"]:
             if std_name and std_name in seen_non_host_std_names:
                 # Same standard_name seen before — record the rename
@@ -548,9 +610,15 @@ def _build_run_block_signature(
                 non_host_std_to_canonical[std_name] = canonical
             elif arg_name not in union_non_host_args:
                 union_non_host_args[arg_name] = arg_type
+                canonical = arg_name
                 if std_name:
                     seen_non_host_std_names[std_name] = arg_name
                     non_host_std_to_canonical[std_name] = arg_name
+            else:
+                canonical = arg_name
+            _bare_arg_name = _bare(arg_name)
+            if canonical not in union_dim_names and _bare_arg_name in _dim_map:
+                union_dim_names[canonical] = _dim_map[_bare_arg_name]
 
     # Bare names of args filtered out below because their own declared type
     # IS the ccpp_info_t DDT (not one of its member fields) -- populated
@@ -758,6 +826,7 @@ def _build_run_block_signature(
         errflg_alloc=errflg_alloc,
         ccpp_info_block_arg=ccpp_info_block_arg,
         ccpp_info_type=ccpp_info_type,
+        union_dim_names=union_dim_names,
     )
 
 def _build_run_chain_preamble(
@@ -1939,6 +2008,27 @@ def _generate_run_fn(
     cap_fn = _assemble_run_fn(
         fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type,
         wrapper_inout_echo_args,
+    )
+    # Stamp a per-dummy-argument resolved explicit-shape expression list onto
+    # cap_fn, keyed by position (one entry per sig.new_block.args, "" meaning
+    # "no override, keep today's assumed-size (*)") -- consumed by
+    # print_ftn.py's _bind_c_arg_decl_line only when bind_c mode is active;
+    # inert, harmless metadata otherwise. Stamped unconditionally (same as
+    # arg_names/arg_intents elsewhere), not gated on a bind_c flag here --
+    # chost-rank3-bindc. Iterating sig.new_block.args directly (rather than
+    # counting leading/trailing fixed args) is robust to either signature
+    # shape (ccpp_info_t-bundled vs. plain errmsg/errflg trailing) since
+    # every block arg already has its own canonical name_hint set above.
+    bind_c_dim_exprs: list = []
+    for arg in _sig.new_block.args:
+        dim_names = _sig.union_dim_names.get(arg.name_hint)
+        resolved = (
+            resolve_dim_exprs(dim_names, non_host_std_to_canonical)
+            if dim_names else None
+        )
+        bind_c_dim_exprs.append(",".join(resolved) if resolved is not None else "")
+    cap_fn.attributes["bind_c_dim_exprs"] = ArrayAttr(
+        [StringAttr(s) for s in bind_c_dim_exprs]
     )
     return cap_fn, all_decls, all_host_global_ops, non_host_std_to_canonical
 
