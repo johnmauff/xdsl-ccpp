@@ -51,8 +51,34 @@ class CCPPOptMain(xDSLOptMain):
 
             print_to_cpp_headers(prog, output)
 
+        def _output_ftn_and_cpp_header(prog: ModuleOp, output: IO[str]):
+            # Combined target: print both from the SAME already-
+            # transformed `prog`, one process/pipeline run instead of
+            # the two full independent re-parses+re-transforms
+            # ccpp_dsl.py used to pay for (cpp-dual-print-pipeline).
+            # print_to_ftn/print_to_cpp_headers are each a pure,
+            # read-only traversal of `prog` -- safe to call twice on the
+            # same module. Neither function knows about the other's
+            # output when called back-to-back, so the cpp_header section
+            # is buffered first to detect whether it wrote anything
+            # (nothing, when there's no BIND(C) content) before deciding
+            # whether a "// -----" divider is needed between the two.
+            import io
+
+            from xdsl_ccpp.backend.print_cpp_header import print_to_cpp_headers
+            from xdsl_ccpp.backend.print_ftn import print_to_ftn
+
+            print_to_ftn(prog, output)
+            cpp_buf = io.StringIO()
+            print_to_cpp_headers(prog, cpp_buf)
+            cpp_text = cpp_buf.getvalue()
+            if cpp_text:
+                output.write("// -----\n")
+                output.write(cpp_text)
+
         self.available_targets["ftn"] = _output_ftn
         self.available_targets["cpp_header"] = _output_cpp_header
+        self.available_targets["ftn_and_cpp_header"] = _output_ftn_and_cpp_header
 
     def register_all_dialects(self):
         super().register_all_dialects()
