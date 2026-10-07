@@ -9696,3 +9696,83 @@ path specifically. The one remaining residual item is the bind_c+GPU
 combination's lack of real-hardware verification, tracked separately
 alongside `chost-gpu-memory` (not a regression from this fix -- that
 combination was never verified either way).
+
+## `chost-identity-collision`/`chost-dim-collision` resolution: cross-scheme bare-name collisions fixed in chost argument resolution (2026-10-07)
+
+**Problem**: found during a reflective code-reuse audit of `cpp_interop.py`
+(the chost/C++-host cap generator), prompted by noticing xdsl_ccpp's
+C++-specific code volume was surprisingly comparable to its Fortran-
+specific volume -- traced partly to `cpp_interop.py` carrying real
+duplication tax instead of fully reusing the shared middle pipeline.
+`_chost_build_maps` resolved every chost BIND(C) argument's identity
+(`local_to_std`) and dimension shape (`local_to_dim_names`) via flat,
+global, unscoped scans across *all* schemes in the whole build --
+first-occurrence-wins, zero collision handling. `local_to_std` in
+particular drives essentially an argument's entire identity
+(`is_col_start`/`is_col_end`/`is_ncol`/`is_nz`/`is_errmsg`/`is_errflg`/
+`is_sname`, and transitively `intent`) -- a collision here risks a chost
+wrapper argument being completely misclassified, not just mis-shaped.
+
+This is the same bug class the `chost-rank3-bindc` PR #112 Copilot
+review already found and fixed once, in a different file
+(`run_dispatch.py`'s `local_to_host_info`): if two different schemes
+declare the same bare local argument name for genuinely different
+standard_names -- the real, already-proven `var_compat` pattern
+(`effr_pre`/`effr_post`/`effr_diag` all reusing the literal name
+`"scalar_var"`) -- the old flat scan would silently keep only the first
+mapping seen.
+
+**Resolution**: ported the same proven collision-aware pattern.
+`_suite_fn_groups_for` (new, `_suite_fns_for` re-expressed as a thin
+projection of it) identifies exactly which XML group -- and therefore
+which schemes, via the already-shared `_iter_schemes` helper -- feed one
+particular suite-cap function. `_chost_scan_scheme_phase_args` (new)
+scans only those schemes' own phase-matched arg table (reusing
+`cpp_interop.py`'s own existing `_LC_TO_ENTRY_SUFFIX` lifecycle-to-
+table-suffix convention), grouping by bare local name, deduped by
+standard_name. `_chost_resolve_scheme_arg_identities` (new, a pure dict
+transform, directly unit-testable with no metadata dependency) then
+keys a non-colliding bare name by itself, but keys a genuinely colliding
+one by each sibling's own `model_var_name` -- precisely what
+`suite_cap.py`'s own `_build_block_and_name_hints` already renamed that
+sibling's *real, compiled* dummy argument to, eliminating the ambiguity
+by construction rather than guessing at lookup time.
+
+`local_to_dim_names` (tracked as the separate `chost-dim-collision`
+backlog item) gets the identical fix in the same implementation pass,
+since it needs the exact same new scoping infrastructure
+`chost-identity-collision`'s fix already had to build -- folding both in
+avoided writing that infrastructure once now and redoing it nearly
+identically later, the same reasoning `chost-rank3-bindc`'s own PR #112
+fix used when it folded `run_dispatch.py`'s `local_to_dim_names` fix
+into the same pass as `local_to_host_info`. Tracked as two separate
+backlog entries throughout, by deliberate choice, despite the shared
+implementation.
+
+`std_to_host` (host/module-owned variable naming) is untouched --
+confirmed exempt: it's inherently suite/scheme-independent (a host
+`.meta` file's own local names don't come from any scheme), with no
+`model_var_name`-equivalent second name to disambiguate via even if a
+collision somehow occurred there.
+
+**Verification**: full `pytest tests/`: **743 passed** (up from 737 --
+6 new unit tests), zero regressions, byte-identical output on every
+existing fixture (`examples/kessler`, `examples/tinyddt`,
+`examples/ddthost`, `examples/chost_r3` -- none has a true cross-scheme
+bare-name collision in a chost-enabled suite today; `var_compat`'s own
+real `scalar_var` collision never reaches `cpp_interop.py` at all, since
+its host `.meta` declares no `language = "c++"`). New
+`tests/unit/test_chost_identity_collision.py` (mirroring the already-
+proven `tests/unit/test_run_dispatch_host_wrapper_resolution.py`
+template) directly proves the fix: demonstrates the old scan would have
+misclassified two of three colliding arguments entirely under the wrong
+standard_name, confirms `dim_names` follows the identical resolution
+keys as `local_to_std`, and proves scoping itself -- not just the
+resolve step's own correctness in isolation -- is what prevents an
+unrelated scheme group's reused name from ever being treated as a
+collision in the first place.
+
+**Risk of leaving as-is**: none -- fully resolved, byte-identical output
+confirmed on every real fixture. Purely additive scoping logic; no
+existing caller or behavior changed outside the (previously nonexistent)
+collision-handling path.
