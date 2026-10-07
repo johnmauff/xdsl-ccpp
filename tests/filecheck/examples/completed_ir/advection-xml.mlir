@@ -609,20 +609,18 @@
 // CHECK-NEXT:      "ccpp_utils.non_cam_host_constituent_api"() <{public_names = ["Cld_ccpp_is_scheme_constituent", "Cld_ccpp_deallocate_dynamic_constituents", "Cld_ccpp_register_constituents", "Cld_ccpp_number_constituents", "Cld_ccpp_initialize_constituents", "Cld_constituents_array", "Cld_advected_constituents_array", "Cld_const_get_index", "Cld_model_const_properties"]}> ({
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_is_scheme_constituent", is_function = false, args = ["std_name", "is_const", "errflg", "errmsg"], use_stmts = [], arg_decls = ["character(len=*), intent(in) :: std_name", "logical, intent(out) :: is_const", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = ["integer :: lc_idx", "character(len=256) :: lc_std_name"]}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nis_const = .false."}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "any"}> ({
-// CHECK-NEXT:              %1 = "ccpp_utils.var_ref_expr"() <{var_name = "cam_model_const_stdnames"}> : () -> i32
-// CHECK-NEXT:              %2 = "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> i32
-// CHECK-NEXT:              %3 = arith.cmpi eq, %1, %2 : i32
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          %1 = "ccpp_utils.call_expr"() <{callee = "any"}> ({
+// CHECK-NEXT:            %2 = "ccpp_utils.var_ref_expr"() <{var_name = "cam_model_const_stdnames"}> : () -> i32
+// CHECK-NEXT:            %3 = "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> i32
+// CHECK-NEXT:            %4 = arith.cmpi eq, %2, %3 : i32
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %1 {
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const"}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          }
+// CHECK-NEXT:          %5 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %5 {
 // CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_idx", upper_expr = "size(lc_dyn_const)"}> ({
 // CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{method = "standard_name", kwargs = []}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
@@ -633,24 +631,22 @@
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
 // CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1, 0>} : () -> ()
-// CHECK-NEXT:              "ccpp_utils.if_then"() ({
-// CHECK-NEXT:                %4 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
-// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
-// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
-// CHECK-NEXT:                %5 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
-// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
-// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
-// CHECK-NEXT:                %6 = arith.cmpi eq, %4, %5 : i32
-// CHECK-NEXT:              }, {
+// CHECK-NEXT:              %6 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:              %7 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:              %8 = arith.cmpi eq, %6, %7 : i32
+// CHECK-NEXT:              scf.if %8 {
 // CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }
 // CHECK-NEXT:            }) : () -> ()
-// CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const_ice"}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          }
+// CHECK-NEXT:          %9 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const_ice"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %9 {
 // CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_idx", upper_expr = "size(lc_dyn_const_ice)"}> ({
 // CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{method = "standard_name", kwargs = []}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
@@ -661,19 +657,18 @@
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
 // CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1, 0>} : () -> ()
-// CHECK-NEXT:              "ccpp_utils.if_then"() ({
-// CHECK-NEXT:                %7 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
-// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
-// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
-// CHECK-NEXT:                %8 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
-// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
-// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
-// CHECK-NEXT:                %9 = arith.cmpi eq, %7, %8 : i32
-// CHECK-NEXT:              }, {
+// CHECK-NEXT:              %10 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_std_name"}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:              %11 = "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:              %12 = arith.cmpi eq, %10, %11 : i32
+// CHECK-NEXT:              scf.if %12 {
 // CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "is_const = .true.\nreturn"}> : () -> ()
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }
 // CHECK-NEXT:            }) : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_deallocate_dynamic_constituents", is_function = false, args = [], use_stmts = [], arg_decls = [], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_dyn_const"}> : () -> ()
@@ -698,13 +693,12 @@
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 0>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
 // CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:            "ccpp_utils.if_then"() ({
-// CHECK-NEXT:              %10 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
-// CHECK-NEXT:              %11 = arith.constant 0 : i32
-// CHECK-NEXT:              %12 = arith.cmpi ne, %10, %11 : i32
-// CHECK-NEXT:            }, {
+// CHECK-NEXT:            %13 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:            %14 = arith.constant 0 : i32
+// CHECK-NEXT:            %15 = arith.cmpi ne, %13, %14 : i32
+// CHECK-NEXT:            scf.if %15 {
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
-// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:            }
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = host_constituents(lc_i)"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
@@ -722,20 +716,18 @@
 // CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const"}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          %16 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %16 {
 // CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(lc_dyn_const)"}> ({
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:              "ccpp_utils.if_then"() ({
-// CHECK-NEXT:                %13 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
-// CHECK-NEXT:                %14 = arith.constant 0 : i32
-// CHECK-NEXT:                %15 = arith.cmpi ne, %13, %14 : i32
-// CHECK-NEXT:              }, {
+// CHECK-NEXT:              %17 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:              %18 = arith.constant 0 : i32
+// CHECK-NEXT:              %19 = arith.cmpi ne, %17, %18 : i32
+// CHECK-NEXT:              scf.if %19 {
 // CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = lc_dyn_const(lc_i)"}> : () -> ()
 // CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
@@ -753,21 +745,19 @@
 // CHECK-NEXT:              "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:              "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
-// CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const_ice"}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          }
+// CHECK-NEXT:          %20 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const_ice"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %20 {
 // CHECK-NEXT:            "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(lc_dyn_const_ice)"}> ({
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:              "ccpp_utils.if_then"() ({
-// CHECK-NEXT:                %16 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
-// CHECK-NEXT:                %17 = arith.constant 0 : i32
-// CHECK-NEXT:                %18 = arith.cmpi ne, %16, %17 : i32
-// CHECK-NEXT:              }, {
+// CHECK-NEXT:              %21 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:              %22 = arith.constant 0 : i32
+// CHECK-NEXT:              %23 = arith.cmpi ne, %21, %22 : i32
+// CHECK-NEXT:              scf.if %23 {
 // CHECK-NEXT:                "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "const_prop = lc_dyn_const_ice(lc_i)"}> : () -> ()
 // CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
@@ -785,15 +775,14 @@
 // CHECK-NEXT:              "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:              "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }
 // CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            %19 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
-// CHECK-NEXT:            %20 = arith.constant 0 : i32
-// CHECK-NEXT:            %21 = arith.cmpi ne, %19, %20 : i32
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          %24 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:          %25 = arith.constant 0 : i32
+// CHECK-NEXT:          %26 = arith.cmpi ne, %24, %25 : i32
+// CHECK-NEXT:          scf.if %26 {
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "instantiate", args = []}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:          }, {
@@ -818,7 +807,7 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "advected"}> ({
-// CHECK-NEXT:              %22 = arith.constant true
+// CHECK-NEXT:              %27 = arith.constant true
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
@@ -846,13 +835,12 @@
 // CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            %23 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
-// CHECK-NEXT:            %24 = arith.constant 0 : i32
-// CHECK-NEXT:            %25 = arith.cmpi ne, %23, %24 : i32
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          %28 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:          %29 = arith.constant 0 : i32
+// CHECK-NEXT:          %30 = arith.cmpi ne, %28, %29 : i32
+// CHECK-NEXT:          scf.if %30 {
 // CHECK-NEXT:            "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = 'ERROR allocating const_prop'\nreturn"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "instantiate", args = []}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:          }, {
@@ -877,7 +865,7 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "advected"}> ({
-// CHECK-NEXT:              %26 = arith.constant true
+// CHECK-NEXT:              %31 = arith.constant true
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "default_value"}> ({
@@ -974,9 +962,9 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
 // CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.active_check"() ({
-// CHECK-NEXT:              %27 = "ccpp_utils.var_ref_expr"() <{var_name = "field_ind"}> : () -> i32
-// CHECK-NEXT:              %28 = arith.constant 0 : i32
-// CHECK-NEXT:              %29 = arith.cmpi sgt, %27, %28 : i32
+// CHECK-NEXT:              %32 = "ccpp_utils.var_ref_expr"() <{var_name = "field_ind"}> : () -> i32
+// CHECK-NEXT:              %33 = arith.constant 0 : i32
+// CHECK-NEXT:              %34 = arith.cmpi sgt, %32, %33 : i32
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "cam_model_const_indices(lc_i) = field_ind"}> : () -> ()
 // CHECK-NEXT:            }, {
@@ -1007,9 +995,9 @@
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_ccpp_initialize_constituents", is_function = false, args = ["ncols", "pver", "errflg", "errmsg"], use_stmts = [], arg_decls = ["integer, intent(in) :: ncols", "integer, intent(in) :: pver", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "ccpp_initialize_constituents: register_constituents not called"}> ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            %35 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_data"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
@@ -1062,13 +1050,13 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
 // CHECK-NEXT:            "ccpp_utils.active_check"() ({
-// CHECK-NEXT:              %30 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
-// CHECK-NEXT:              %31 = arith.constant 0 : i32
-// CHECK-NEXT:              %32 = arith.cmpi eq, %30, %31 : i32
-// CHECK-NEXT:              %33 = "ccpp_utils.var_ref_expr"() <{var_name = "lc_tend_idx"}> : () -> i32
-// CHECK-NEXT:              %34 = arith.constant 0 : i32
-// CHECK-NEXT:              %35 = arith.cmpi sgt, %33, %34 : i32
-// CHECK-NEXT:              %36 = arith.andi %32, %35 : i1
+// CHECK-NEXT:              %36 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:              %37 = arith.constant 0 : i32
+// CHECK-NEXT:              %38 = arith.cmpi eq, %36, %37 : i32
+// CHECK-NEXT:              %39 = "ccpp_utils.var_ref_expr"() <{var_name = "lc_tend_idx"}> : () -> i32
+// CHECK-NEXT:              %40 = arith.constant 0 : i32
+// CHECK-NEXT:              %41 = arith.cmpi sgt, %39, %40 : i32
+// CHECK-NEXT:              %42 = arith.andi %38, %41 : i1
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.pointer_slice_assign"() <{ptr_name = "lc_cld_liq_tend", array_name = "lc_const_tend", index_var = "lc_tend_idx"}> : () -> ()
 // CHECK-NEXT:            }, {
@@ -1091,9 +1079,9 @@
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_const_get_index", is_function = false, args = ["std_name", "index", "errflg", "errmsg"], use_stmts = ["use ccpp_constituent_prop_mod, only: to_lower"], arg_decls = ["character(len=*), intent(in) :: std_name", "integer, intent(out) :: index", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg"], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nindex = -1"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "const_get_index: constituents not registered"}> ({
-// CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            %43 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
@@ -1112,18 +1100,17 @@
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
-// CHECK-NEXT:          "ccpp_utils.if_then"() ({
-// CHECK-NEXT:            %37 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
-// CHECK-NEXT:            %38 = arith.constant 0 : i32
-// CHECK-NEXT:            %39 = arith.cmpi ne, %37, %38 : i32
-// CHECK-NEXT:            %40 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
-// CHECK-NEXT:            %41 = arith.constant 0 : i32
-// CHECK-NEXT:            %42 = arith.cmpi sle, %40, %41 : i32
-// CHECK-NEXT:            %43 = arith.ori %39, %42 : i1
-// CHECK-NEXT:          }, {
+// CHECK-NEXT:          %44 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:          %45 = arith.constant 0 : i32
+// CHECK-NEXT:          %46 = arith.cmpi ne, %44, %45 : i32
+// CHECK-NEXT:          %47 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
+// CHECK-NEXT:          %48 = arith.constant 0 : i32
+// CHECK-NEXT:          %49 = arith.cmpi sle, %47, %48 : i32
+// CHECK-NEXT:          %50 = arith.ori %46, %49 : i1
+// CHECK-NEXT:          scf.if %50 {
 // CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_model_const_properties", is_function = true, args = [], use_stmts = [], arg_decls = [], local_decls = [], result_name = "ptr", result_decl = "type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)"}> ({
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({

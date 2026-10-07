@@ -41,7 +41,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     DerivedType,
     ExternCGuardOp,
     FortranToCStringCopyOp,
-    IfThenOp,
     MemberAccessExprOp,
     RawCppLinesOp,
     RawFortranLinesOp,
@@ -55,8 +54,11 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _CONSTITUENT_DDT_NAME,
     _PHASE_SUFFIXES,
     SUITE_FN_INFIX,
+    _allocated_cond,
     _bare,
+    _int_var_cmp,
     _iter_schemes,
+    _scf_if,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -1321,7 +1323,7 @@ class CPPInteropCap(ModulePass):
         per-lifecycle subroutine body, and the two constituent-query
         functions, are built from real statement ops
         (AssignOp/CallStatementOp/CToFortranStringCopyOp/
-        FortranToCStringCopyOp/IfThenOp/TextBoundedDoLoopOp/AllocateOp).
+        FortranToCStringCopyOp/scf.IfOp/TextBoundedDoLoopOp/AllocateOp).
 
         ``fn_ctxs``/``ncol_var``/``nz_var`` are computed once in
         ``_generate_chost_cap_module`` and shared with
@@ -1593,9 +1595,9 @@ class CPPInteropCap(ModulePass):
         if all_constituent_vars:
             nc_body: list = [AssignOp(lhs_expr="n", rhs_expr="0_c_int")]
             for cv in all_constituent_vars:
-                nc_body.append(IfThenOp(
-                    condition_expr=f"allocated(_chost_{cv})",
-                    body_ops=[AssignOp(
+                nc_body.extend(_scf_if(
+                    _allocated_cond(f"_chost_{cv}"),
+                    [AssignOp(
                         lhs_expr="n", rhs_expr=f"n + int(size(_chost_{cv}), c_int)"
                     )],
                 ))
@@ -1612,9 +1614,9 @@ class CPPInteropCap(ModulePass):
             for cv in all_constituent_vars:
                 inner_do_body: list = [
                     AssignOp(lhs_expr="_chost_idx", rhs_expr="_chost_idx + 1"),
-                    IfThenOp(
-                        condition_expr="_chost_idx > n",
-                        body_ops=[RawFortranLinesOp("return")],
+                    *_scf_if(
+                        _int_var_cmp("_chost_idx", "n", "sgt"),
+                        [RawFortranLinesOp("return")],
                     ),
                 ]
                 for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
@@ -1643,9 +1645,9 @@ class CPPInteropCap(ModulePass):
                         inner_do_body.append(AssignOp(
                             lhs_expr=dst, rhs_expr=f"logical({src}, c_bool)"
                         ))
-                gci_body.append(IfThenOp(
-                    condition_expr=f"allocated(_chost_{cv})",
-                    body_ops=[TextBoundedDoLoopOp(
+                gci_body.extend(_scf_if(
+                    _allocated_cond(f"_chost_{cv}"),
+                    [TextBoundedDoLoopOp(
                         loop_var="_chost_i", upper_expr=f"size(_chost_{cv})",
                         body_ops=inner_do_body,
                     )],

@@ -9,7 +9,7 @@ ccpp_cap.py itself).
 """
 
 from xdsl.dialects import arith, llvm, memref, scf
-from xdsl.dialects.builtin import StringAttr, i8
+from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
@@ -18,8 +18,10 @@ from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, ArgOwnershipOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
+    CallExprOp,
     OmpTargetUpdateFromOp,
     OmpTargetUpdateToOp,
+    VarRefExprOp,
     WriteErrMsgOp,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
@@ -33,6 +35,75 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_EXTENT_STD_NAME,
     is_dispatch_scalar_std_name,
 )
+
+
+# ── lang-neutral-expr-ir Stage 3a / ifthenop-scf-unify: small condition
+# builders shared by constituent_cap.py and cpp_interop.py. Every result
+# here feeds an scf.IfOp's `cond` operand directly, so each one must carry
+# a real result_type=i1 (constituent_cap.py's own locals have no SSA
+# values at all -- see TextBoundedDoLoopOp's docstring -- every name here
+# is still just opaque text wrapped in a VarRefExprOp leaf; result_type
+# is set purely so the whole expression composes as a typed i1 operand).
+
+def _allocated_cond(name_expr: str) -> CallExprOp:
+    """allocated(name_expr), for direct use as an scf.IfOp cond."""
+    return CallExprOp("allocated", [VarRefExprOp(name_expr)], result_type=i1)
+
+
+def _not_allocated_cond(name_expr: str) -> arith.XOrIOp:
+    """.not. allocated(name_expr), via the established XOrIOp-as-NOT
+    idiom (print_expr/expr_to_cpp_str both already special-case an
+    arith.XOrIOp whose other operand is a boolean-true constant)."""
+    call = CallExprOp("allocated", [VarRefExprOp(name_expr)], result_type=i1)
+    true_const = arith.ConstantOp(IntegerAttr.from_int_and_width(1, 1))
+    return arith.XOrIOp(call, true_const)
+
+
+def _int_var_cmp_zero(name_expr: str, predicate: str) -> arith.CmpiOp:
+    """{name_expr} <predicate> 0, e.g. _int_var_cmp_zero("errcode", "ne")
+    for "errcode /= 0"."""
+    var = VarRefExprOp(name_expr, result_type=i32)
+    zero = arith.ConstantOp(IntegerAttr.from_int_and_width(0, 32))
+    return arith.CmpiOp(var, zero, predicate)
+
+
+def _int_var_cmp(lhs_name: str, rhs_name: str, predicate: str) -> arith.CmpiOp:
+    """{lhs_name} <predicate> {rhs_name}, both i32, e.g.
+    _int_var_cmp("_chost_idx", "n", "sgt") for "_chost_idx > n"."""
+    lhs = VarRefExprOp(lhs_name, result_type=i32)
+    rhs = VarRefExprOp(rhs_name, result_type=i32)
+    return arith.CmpiOp(lhs, rhs, predicate)
+
+
+def _trim_eq_cond(lhs_name: str, rhs_name: str) -> arith.CmpiOp:
+    """trim(lhs_name) == trim(rhs_name)."""
+    lhs = CallExprOp("trim", [VarRefExprOp(lhs_name)], result_type=i32)
+    rhs = CallExprOp("trim", [VarRefExprOp(rhs_name)], result_type=i32)
+    return arith.CmpiOp(lhs, rhs, "eq")
+
+
+def _scf_if(condition_op, body_ops: list) -> list:
+    """Convert an (condition_op, body_ops) pair -- the exact call shape
+    the retired IfThenOp took -- into the flat list of explicit sibling
+    ops a real scf.IfOp needs: [*condition_op's floating dependencies,
+    scf.IfOp(cond, [], [*body_ops, scf.YieldOp()])].
+
+    scf.IfOp's `cond` is a real typed i1 SSA operand (unlike IfThenOp's
+    condition, which was only ever rendered as text), so every op
+    condition_op transitively depends on via a real (not region-wrapped)
+    operand must be an explicit block sibling for xDSL's IsolatedFromAbove
+    verifier -- exactly what _flatten_floating_deps already computes (see
+    its own docstring in ccpp_utils.py). The caller splices this
+    function's returned list into whatever block previously held the
+    single IfThenOp(...) call (e.g. via list unpacking: `*_scf_if(...)`),
+    since condition_op's own dependency ops must land in that same block,
+    not be hidden inside a sub-region the way IfThenOp's condition region
+    used to hide them.
+    """
+    from xdsl_ccpp.dialects.ccpp_utils import _flatten_floating_deps
+
+    cond_ops = _flatten_floating_deps(condition_op)
+    return [*cond_ops, scf.IfOp(cond_ops[-1].results[0], [], [*body_ops, scf.YieldOp()])]
 
 
 def iter_arg_tables(ccpp_mod, table_type=None, table_name_in=None):

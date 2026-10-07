@@ -82,7 +82,6 @@ from xdsl_ccpp.dialects.ccpp_utils import VarRefExprOp as CCPPVarRefExprOp
 from xdsl_ccpp.dialects.ccpp_utils import AllocateOp as CCPPAllocateOp
 from xdsl_ccpp.dialects.ccpp_utils import DdtMethodCallOp as CCPPDdtMethodCallOp
 from xdsl_ccpp.dialects.ccpp_utils import ErrorGuardOp as CCPPErrorGuardOp
-from xdsl_ccpp.dialects.ccpp_utils import IfThenOp as CCPPIfThenOp
 from xdsl_ccpp.dialects.ccpp_utils import NullifyPointerOp as CCPPNullifyPointerOp
 from xdsl_ccpp.dialects.ccpp_utils import AssignOp as CCPPAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import PointerAssignOp as CCPPPointerAssignOp
@@ -1314,15 +1313,6 @@ class ftnPrintContext:
                     inner.print(f"{errflg_var} = 1")
                     inner.print(f"{errmsg_var} = '{op.errmsg_text.data}'")
                     inner.print("return")
-                self.print("end if")
-            case CCPPIfThenOp():
-                if op.condition_expr is not None:
-                    cond_str = op.condition_expr.data
-                else:
-                    cond_str = self._render_expr(op.condition.block.last_op)
-                self.print(f"if ({cond_str}) then")
-                with self.descend() as inner:
-                    inner.print_block(op.body.block)
                 self.print("end if")
             case CCPPTextBoundedDoLoopOp():
                 self.print(f"do {op.loop_var.data} = 1, {op.upper_expr.data}")
