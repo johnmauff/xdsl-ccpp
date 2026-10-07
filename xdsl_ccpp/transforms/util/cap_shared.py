@@ -27,6 +27,10 @@ from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_STD_NAMES,
     CCPP_FRAMEWORK_STD_NAMES,
+    CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_LOOP_BEGIN_STD_NAME,
+    CCPP_LOOP_END_STD_NAME,
+    CCPP_LOOP_EXTENT_STD_NAME,
     is_dispatch_scalar_std_name,
 )
 
@@ -253,6 +257,73 @@ def build_ncol_compute_ops(col_start_ref, col_end_ref, name_hint: str = "ncol") 
         [ncol_alloc, load_col_start, load_col_end, sub_op, one_const, add_op, store_ncol],
         ncol_alloc,
     )
+
+
+def resolve_dim_exprs(
+    dim_std_names: "list", non_host_std_to_canonical: dict,
+) -> "list[str] | None":
+    """Resolve a rank-N array's own per-dimension standard_names to Fortran
+    expression strings usable as an EXPLICIT-SHAPE dimension list in a
+    BIND(C) dummy-argument declaration (e.g. ["col_end - col_start + 1",
+    "nz"] for a (horizontal_dimension, vertical_layer_dimension) array).
+
+    For each dimension, in order:
+      1. A direct sibling lookup: non_host_std_to_canonical.get(std_name) --
+         another scalar dummy argument already present in the SAME
+         subroutine's own signature (e.g. a scheme's own "nz" arg, or a
+         literal "ncol" arg that survived the col-chunking replacement
+         untouched). Generalizes the dim-resolution logic
+         run_dispatch.py's own _build_row_major_convert_ops already has
+         for a different purpose (row-major transpose).
+      2. ONLY if that fails AND this is one of the two horizontal
+         standard names (CCPP_HORIZ_DIM_STD_NAME/CCPP_LOOP_EXTENT_STD_NAME):
+         synthesize "col_end - col_start + 1" from col_start/col_end's own
+         canonical sibling names -- the BIND(C) boundary's own loop-
+         chunking convention never carries a bare "ncol" identifier once a
+         scheme's ncol-replacement has fired, so this is the only way to
+         express a chunk-sized horizontal extent at this layer.
+
+    Deliberately tries the general lookup BEFORE the horizontal-specific
+    synthesis (opposite order from _build_row_major_convert_ops's own,
+    narrower-purpose copy): a scheme that still declares its own literal
+    ncol-equivalent scalar (e.g. a --legacy-mode fixture) should use that
+    directly rather than recomputing an equivalent but less direct
+    expression -- matches the chost path's own ncol_var resolution, which
+    never recomputes col_end - col_start + 1 at all.
+
+    Deliberately does NOT fall back to a MODULE-type host variable's own
+    bare name (Copilot PR #112 review): resolving a dimension that way
+    doesn't guarantee that variable is actually visible in the generated
+    cap module -- _build_per_suite_run_info only emits a `use ..., only:`
+    stub for a host variable that is ITSELF a resolved callee argument;
+    a variable appearing only inside another array's own dimensions
+    metadata (never itself a callee arg) gets no such stub, so the
+    resulting explicit-shape declaration would reference an unimported
+    identifier and fail to compile under `implicit none`. Safer to leave
+    this case unresolved (falls back to today's assumed-size (*)) than to
+    silently emit an invalid declaration -- revisit only alongside a real
+    plan for threading the needed USE stub through to this call site.
+
+    Returns None if ANY one dimension is unresolvable -- callers should
+    treat this as "fall back to assumed-size (*) for the whole array":
+    Fortran's explicit-shape declarator has no partial form (every
+    dimension must be given, or none).
+    """
+    dim_exprs: list = []
+    for dim_sn in dim_std_names:
+        sn_lower = dim_sn.strip().lower()
+        canonical = non_host_std_to_canonical.get(sn_lower)
+        if canonical:
+            dim_exprs.append(_bare(canonical))
+            continue
+        if sn_lower in (CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME):
+            col_begin = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
+            col_end = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
+            if col_begin and col_end:
+                dim_exprs.append(f"{_bare(col_end)} - {_bare(col_begin)} + 1")
+                continue
+        return None
+    return dim_exprs
 
 
 def _bare(name: str) -> str:

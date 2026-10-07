@@ -37,6 +37,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _collect_ddt_use_stubs,
     _iter_schemes,
     _rank_of,
+    resolve_dim_exprs,
     split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -303,3 +304,83 @@ class TestSplitSchemeTableNameFinalAlias:
 
     def test_lifecycle_postfix_aliases_maps_finalize_to_final(self):
         assert LIFECYCLE_POSTFIX_ALIASES["_finalize"] == "_final"
+
+
+class TestResolveDimExprs:
+    """resolve_dim_exprs: per-dimension standard_name -> Fortran expression
+    resolution for the plain --bind-c explicit-shape fix (chost-rank3-bindc).
+    Pipeline-free -- exercises the function directly against constructed
+    dicts, matching each of the 3 real shapes found in this session's
+    investigation."""
+
+    def test_kessler_shaped_horizontal_dim_falls_back_to_synthesis(self):
+        """kessler's own ncol gets absorbed into the col-chunking convention
+        before ccpp_physics_run's signature is built, so no literal sibling
+        ever exists for horizontal_loop_extent -- must synthesize
+        col_end - col_start + 1 from the always-present col_start/col_end
+        siblings."""
+        non_host_std_to_canonical = {
+            "horizontal_loop_begin": "col_start",
+            "horizontal_loop_end": "col_end",
+            "vertical_layer_dimension": "nz",
+        }
+        assert resolve_dim_exprs(
+            ["horizontal_loop_extent", "vertical_layer_dimension"],
+            non_host_std_to_canonical,
+        ) == ["col_end - col_start + 1", "nz"]
+
+    def test_chost_r3_shaped_direct_sibling_preferred_over_synthesis(self):
+        """A --legacy-mode scheme that still declares its own literal
+        ncol-equivalent scalar (chost_r3's own tiny_r3_scheme.meta) must use
+        that sibling directly, not recompute an equivalent-but-less-direct
+        col_end - col_start + 1 expression -- matches the chost path's own
+        ncol_var resolution, which never recomputes that expression at all."""
+        non_host_std_to_canonical = {
+            "horizontal_loop_extent": "ncol",
+            "horizontal_loop_begin": "col_start",
+            "horizontal_loop_end": "col_end",
+            "vertical_layer_dimension": "nz",
+            "number_of_spectral_bands": "nbands",
+        }
+        assert resolve_dim_exprs(
+            ["horizontal_loop_extent", "vertical_layer_dimension",
+             "number_of_spectral_bands"],
+            non_host_std_to_canonical,
+        ) == ["ncol", "nz", "nbands"]
+
+    def test_unresolvable_dimension_returns_none(self):
+        """No sibling, no host var, not a horizontal std_name -- the whole
+        array must fall back to assumed-size (*); Fortran's explicit-shape
+        declarator has no partial form."""
+        assert resolve_dim_exprs(
+            ["some_unresolvable_extra_dim"],
+            {"horizontal_loop_begin": "col_start", "horizontal_loop_end": "col_end"},
+        ) is None
+
+    def test_one_unresolvable_dimension_fails_the_whole_array(self):
+        """Even when the first N-1 dimensions resolve fine, one failure
+        anywhere in the list must still return None for the whole array."""
+        assert resolve_dim_exprs(
+            ["vertical_layer_dimension", "some_unresolvable_extra_dim"],
+            {"vertical_layer_dimension": "nz"},
+        ) is None
+
+    def test_host_module_variable_not_resolved(self):
+        """A dimension provided only by a host MODULE variable (never
+        itself a sibling callee argument) must NOT resolve -- Copilot PR
+        #112 review: _build_per_suite_run_info only emits a USE stub for a
+        host variable that is itself a resolved callee argument, so
+        resolving via a bare host-var lookup here could reference an
+        unimported identifier. Falling back to None (-> assumed-size (*))
+        is the safe choice."""
+        assert resolve_dim_exprs(["number_of_tracers"], {}) is None
+
+    def test_suffix_stripped_from_resolved_sibling_name(self):
+        """non_host_std_to_canonical's values can carry a __alloc/__opt/__in
+        suffix (the raw callee_input_names form) -- the resolved expression
+        must use the bare, suffix-stripped name, matching what's actually
+        printed as the Fortran dummy-argument name."""
+        assert resolve_dim_exprs(
+            ["number_of_model_times"],
+            {"number_of_model_times": "ntimes__alloc"},
+        ) == ["ntimes"]
