@@ -18,7 +18,6 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.backend import expr_precedence
 from xdsl_ccpp.backend.print_ftn import classify_arg_intent, wrap_paren_list
-from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
 from xdsl_ccpp.dialects.ccpp_utils import (
     ArrayConstructorExprOp,
     CallExprOp,
@@ -43,6 +42,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     TrimOp,
     VarRefExprOp,
 )
+from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
 
 # op.name -> C++ infix token, paralleling print_ftn.py's _binops. Built
 # independently (not derived from print_ftn's own table) since this file

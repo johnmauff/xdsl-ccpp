@@ -9526,7 +9526,7 @@ table doesn't cover (character buffers, bool/logical, and chost's own
 ncol/nz/errflg/scheme-name special cases -- genuinely different problems
 each file solves only for its own domain, not duplicated logic).
 
-Two real, pre-existing behavioral quirks were found while doing this --
+Three real, pre-existing behavioral quirks were found while doing this --
 each preserved exactly, as an explicit, documented adapter-level choice
 rather than silently folded into the shared table (the BACKLOG item's
 own explicit caution: "reconciling the edge cases ... needs to be done

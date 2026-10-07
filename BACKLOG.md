@@ -468,7 +468,7 @@ item in this file): both functions now adapt onto one new shared pure
 function, `cpp_numeric_type` in a new `xdsl_ccpp/util/cpp_type_table.py`,
 for their int/real cases, keeping only genuinely file-specific handling
 (character buffers, bool/logical, chost's own ncol/nz/errflg/scheme-name
-cases) outside it. Two real pre-existing quirks (an array-const-policy
+cases) outside it. Three real pre-existing quirks (an array-const-policy
 divergence, and `_chost_cpp_type`'s rank-0-real-always-by-value and
 int-always-bare-`int` conventions) were preserved exactly as explicit,
 documented adapter-level choices, not silently unified away — full

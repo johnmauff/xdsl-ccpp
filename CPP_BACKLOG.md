@@ -58,11 +58,11 @@ for it.
 
 **`cpp-type-table-unify` — RESOLVED 2026-10-07**: `_chost_cpp_type`/
 `_cpp_type` now both adapt onto one new shared `cpp_numeric_type`
-decision table (`xdsl_ccpp/util/cpp_type_table.py`), with their two real
-pre-existing quirks preserved as explicit, documented parameters/
+decision table (`xdsl_ccpp/util/cpp_type_table.py`), with their three
+real pre-existing quirks preserved as explicit, documented parameters/
 overrides rather than silently unified away. Byte-identical output
-confirmed (730/1 passed, zero FileCheck goldens touched), plus new
-direct unit coverage neither function had before. See `BACKLOG.md`'s
+confirmed (730 passed, 1 xfailed, zero FileCheck goldens touched), plus
+new direct unit coverage neither function had before. See `BACKLOG.md`'s
 entry and `CHANGELOG.md`'s resolution writeup for full detail; removed
 from the numbered list below (renumbered accordingly) — this tier is
 now fully resolved.
