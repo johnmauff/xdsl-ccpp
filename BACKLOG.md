@@ -406,7 +406,7 @@ links here as a "Future direction" callout.
 
 Full detail, resolved-item history, and usage guidance stay in
 `multilanguage_limitations.md` (kept standalone — it's live chost usage
-reference, not backlog noise). These 5 items are its only open ones as
+reference, not backlog noise). These 3 items are its only open ones as
 of 2026-10-07 (11 of its 14 numbered items are now resolved); pointer
 entries here so they surface in a backlog sweep too.
 
@@ -420,49 +420,22 @@ each dimension from a sibling scalar argument already in scope. See
 detail, including a PR #112 Copilot review round (2 real findings, both
 fixed) and real end-to-end gfortran compile verification.
 
-- `chost-dim-collision` — **`cpp_interop.py`'s own `local_to_dim_names` has the same
-  collision bug `chost-rank3-bindc`'s PR #112 review just fixed in
-  `run_dispatch.py`** — found 2026-10-07 during a reflective code-reuse
-  audit, not yet fixed. `_chost_fn_contexts` (`cpp_interop.py:838-848`)
-  independently builds its own bare-local-name → `dim_names` map for
-  the chost explicit-shape declaration path: it scans `meta_data.values()`
-  unconditionally (not phase-scoped to the function being built), keys
-  by the raw `var.name` (no `_bare()` suffix-stripping), and has no
-  collision handling at all — if two schemes in a chost-enabled suite
-  reuse the same bare local array name for genuinely different
-  standard_names, one array's dimensions could silently get attributed
-  to another's explicit-shape declaration. `run_dispatch.py`'s own
-  equivalent map was just fixed to resolve collisions via the same
-  `model_var_name`-renaming scheme `local_to_host_info` already uses
-  (see `CHANGELOG.md`'s "`chost-rank3-bindc` resolution"); this one
-  wasn't. No comment anywhere documents an intentional reason the two
-  evolved independently — looks like a real gap, not a design split.
-  Moderate-size fix: needs the same collision-aware logic (plus
-  phase-scoping) threaded into `_chost_fn_contexts`'s own call site, or
-  — better — unifying the two maps into one shared helper, since they
-  solve the identical sub-problem for two different printers.
-- `chost-identity-collision` — **the same collision bug, but for an argument's whole identity, not
-  just its dimension shape** — found 2026-10-07 in the same reflective
-  audit as `chost-dim-collision` above, and genuinely more consequential
-  than it. `cpp_interop.py`'s `_chost_build_maps` (lines 154-177)
-  independently re-derives `std_to_host`/`local_to_std` by scanning raw
-  `meta_data` directly — bare-name-keyed, first-occurrence-wins, no
-  collision handling at all — instead of consulting
-  `host_var_match_pass.py`'s already-computed host-matching result or
-  `run_dispatch.py`'s own (now collision-aware, post-PR #112)
-  equivalent resolution. These two maps drive essentially all of
-  `_chost_arg_info`'s own classification (`host`, `is_ncol`/`is_nz`/
-  `is_errmsg`, `intent` — an argument's entire identity, not just one
-  dimension's shape expression). If two schemes reuse the same bare
-  local arg name for genuinely different standard_names (the exact
-  collision shape PR #112 already fixed elsewhere), this silently keeps
-  only the first-seen mapping — risking a chost wrapper argument being
-  misclassified entirely, not just mis-shaped. Logged as its own
-  separate item (not folded into `chost-dim-collision`) since it's a
-  different map, a different call site, and — per the user's own
-  judgment — distinct enough to track independently, even though the
-  eventual fix shape (collision-aware resolution via `model_var_name`)
-  is likely the same for both.
+**`chost-identity-collision`/`chost-dim-collision` — RESOLVED 2026-10-07**:
+`cpp_interop.py`'s `_chost_build_maps` resolved every chost argument's
+identity (`local_to_std`) and dimension shape (`local_to_dim_names`) via
+flat, global, unscoped scans across all schemes in the build — the same
+collision bug class `chost-rank3-bindc`'s PR #112 review already fixed
+once in `run_dispatch.py`. Fixed by scoping the scan to exactly the
+schemes feeding one suite-cap function (new `_suite_fn_groups_for`/
+`_chost_scan_scheme_phase_args`), keying a genuine collision by each
+sibling's own `model_var_name` — precisely what `suite_cap.py`'s own
+renaming already assigns it (new `_chost_resolve_scheme_arg_identities`).
+Both items fixed in one implementation pass (identical new scoping
+infrastructure needed for both), tracked as two separate entries by
+deliberate choice. See `CHANGELOG.md`'s
+"`chost-identity-collision`/`chost-dim-collision` resolution" (L9700)
+for full detail.
+
 - `chost-gpu-memory` — **GPU memory management** — the chost cap is a CPU BIND(C) wrapper; a
   C++ host driving GPU physics is entirely on its own for device-pointer
   placement across the boundary (Kokkos `CudaSpace` invisible to OpenACC,
