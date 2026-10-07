@@ -2,7 +2,12 @@
 // Verifies that the ccpp_cap module subroutines carry BIND(C) signatures,
 // use iso_c_binding at module scope, and declare arguments with C-compatible
 // types.  Also verifies the physics run subroutine maps scalar intent(in)
-// arguments with VALUE and real arrays as c_double assumed-size.
+// arguments with VALUE and real arrays as c_double EXPLICIT shape (with
+// target) -- resolving each array's own per-dimension size from a sibling
+// scalar argument already in this same signature (here, the directly
+// available "ncol"/"nz"), not flat assumed-size (*) -- chost-rank3-bindc:
+// an assumed-size actual cannot be passed to the suite cap's own
+// assumed-shape (:,...) dummy, for any rank, confirmed via gfortran.
 // Utility subroutines (ccpp_physics_suite_list, ccpp_physics_suite_part_list)
 // must NOT be marked BIND(C).
 //
@@ -35,9 +40,9 @@
 // CHECK:           integer(c_int), value, intent(in) :: col_end
 // CHECK:           integer(c_int), value, intent(in) :: nz
 // CHECK:           real(c_double), value, intent(in) :: dt
-// CHECK:           real(c_double), intent(in) :: cpair(*)
-// CHECK:           real(c_double), intent(inout) :: theta(*)
-// CHECK:           real(c_double), intent(inout) :: precl(*)
+// CHECK:           real(c_double), target, intent(in) :: cpair(ncol, nz)
+// CHECK:           real(c_double), target, intent(inout) :: theta(ncol, nz)
+// CHECK:           real(c_double), target, intent(inout) :: precl(ncol)
 // CHECK:           character(kind=c_char, len=1), intent(inout) :: errmsg(*)
 // CHECK:           integer(c_int), intent(inout) :: errflg
 
