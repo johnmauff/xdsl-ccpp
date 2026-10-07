@@ -28,20 +28,22 @@ tooling enforces this):
   reference would otherwise go unnoticed).
 
 Last synchronized with `BACKLOG.md`: 2026-10-07 (after `chost-rank3-bindc`
-resolved and `chost-dim-collision` added, found during a reflective
-code-reuse audit; following `cpp-type-table-unify` and
-`cpp-dual-print-pipeline`; `lang-neutral-expr-ir`'s Stages 0-5 landed,
-Stage 3c still deferred).
+resolved and both `chost-identity-collision`/`chost-dim-collision` added,
+found during a reflective code-reuse audit; following
+`cpp-type-table-unify` and `cpp-dual-print-pipeline`;
+`lang-neutral-expr-ir`'s Stages 0-5 landed, Stage 3c still deferred).
 
 ## Recommended near-term path
 
-**1 → 2 → 3 → 4/5** is the highest-value sequence right now: Tier 1's
+**1 → 2/3 → 4 → 5/6** is the highest-value sequence right now: Tier 1's
 architectural blocker and all of Tier 2's cheap wins are done, and the
-rank/shape bug in Tier 3 is fixed, so next is the newly-found
-`chost-dim-collision` bug (same class, quick to confirm/fix while the
-context is fresh), then the `cxx-scheme` end-to-end test gap, then the
-two most concrete remaining chost limitations — without committing to
-Tier 4's large Phase C investment until there's real pull for it.
+rank/shape bug in Tier 3 is fixed, so next are the two newly-found
+collision bugs (same root-cause class, likely the same fix shape, quick
+to confirm/fix while the context is fresh — `chost-identity-collision`
+is the more consequential of the two), then the `cxx-scheme` end-to-end
+test gap, then the two most concrete remaining chost limitations —
+without committing to Tier 4's large Phase C investment until there's
+real pull for it.
 
 ## Tier 1 — foundational, blocks everything else in this direction
 
@@ -91,47 +93,58 @@ end-to-end gfortran compile verification. See `BACKLOG.md`'s entry and
 `CHANGELOG.md`'s resolution writeup for full detail; removed from the
 numbered list below (renumbered accordingly).
 
-2. **`chost-dim-collision`** — a real, unfixed correctness bug: `cpp_interop.py`'s
+2. **`chost-identity-collision`** — a real, unfixed correctness bug, more consequential than
+   #3 below: `cpp_interop.py`'s `_chost_build_maps` independently
+   re-derives `std_to_host`/`local_to_std` by scanning raw metadata
+   directly — bare-name-keyed, no collision handling at all — instead of
+   consulting `host_var_match_pass.py`'s or `run_dispatch.py`'s own
+   (collision-aware, post-PR #112) equivalent resolution. These two maps
+   drive an argument's entire identity (`host`, `is_ncol`/`is_nz`/
+   `is_errmsg`, `intent`), not just one dimension's shape — a collision
+   here risks a chost wrapper argument being misclassified entirely.
+   Found 2026-10-07, same reflective audit as #3.
+3. **`chost-dim-collision`** — a real, unfixed correctness bug: `cpp_interop.py`'s
    own `local_to_dim_names` map (feeding the chost explicit-shape
    declaration path) has the same bare-name collision bug `chost-rank3-bindc`'s
    PR #112 review just fixed in `run_dispatch.py`'s equivalent map — no
    `_bare()` stripping, no phase-scoping, no collision handling at all.
    Found 2026-10-07 during a reflective code-reuse audit. Moderate-size
    fix (thread the same collision-aware logic in, or unify the two maps
-   into one shared helper).
-3. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
+   into one shared helper) — likely the same fix shape as #2 above,
+   logged separately since they're different maps/call sites.
+4. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
    host calling a C++ scheme implementation) has zero compiled
    end-to-end test, only static FileCheck fixtures. The cap-generation
    side is already done and verified correct — this is a real confidence
    gap, not a design gap.
-4. **`chost-gpu-memory`** — no device-pointer contract for a C++ host
+5. **`chost-gpu-memory`** — no device-pointer contract for a C++ host
    driving GPU physics across the BIND(C) boundary. The most
    consequential of the "known limitations" for real HPC adoption of the
    chost path. Note: `chost-rank3-bindc`'s resolution confirmed `--bind-c`
    + `--directive acc/omp` together is still completely untested in this
    repo — relevant context for whoever picks this item up.
-5. **`chost-column-major`** — C++ callers must manually match Fortran's
+6. **`chost-column-major`** — C++ callers must manually match Fortran's
    column-major layout with no detection or alternative; a silent-wrong-
    numerical-result footgun, not an active failure.
-6. **`chost-thread-safety`** — concurrent C++ threads race on the
+7. **`chost-thread-safety`** — concurrent C++ threads race on the
    module-level `ccpp_suite_state` variable; safe today only because the
-   one real driver is single-threaded. Lower urgency than 4/5 — no known
+   one real driver is single-threaded. Lower urgency than 5/6 — no known
    real caller is multi-threaded yet.
 
 ## Tier 4 — bigger downstream investment (EAMxx C++ bridge)
 
-7. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
+8. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
    deviceptr` host-meta property for zero-staging GPU pointer passing.
    Directly resolves `chost-gpu-memory` above — doing this closes two
    backlog items for the cost of one.
-8. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
+9. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
    generator changes), catches a real class of silent coverage gaps.
    Worth doing opportunistically any time, independent of the phased
    work below.
-9. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
+10. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
     tag so a scheme can declare separate CPU/GPU argument lists. A loose
     prerequisite for Phase C below.
-10. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
+11. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
     `AtmosphereProcess` class, not just the BIND(C) layer. An order of
     magnitude more effort than everything above combined; only worth
     starting once the groundwork above has landed and real EAMxx

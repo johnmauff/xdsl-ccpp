@@ -406,7 +406,7 @@ links here as a "Future direction" callout.
 
 Full detail, resolved-item history, and usage guidance stay in
 `multilanguage_limitations.md` (kept standalone — it's live chost usage
-reference, not backlog noise). These 4 items are its only open ones as
+reference, not backlog noise). These 5 items are its only open ones as
 of 2026-10-07 (11 of its 14 numbered items are now resolved); pointer
 entries here so they surface in a backlog sweep too.
 
@@ -441,6 +441,28 @@ fixed) and real end-to-end gfortran compile verification.
   phase-scoping) threaded into `_chost_fn_contexts`'s own call site, or
   — better — unifying the two maps into one shared helper, since they
   solve the identical sub-problem for two different printers.
+- `chost-identity-collision` — **the same collision bug, but for an argument's whole identity, not
+  just its dimension shape** — found 2026-10-07 in the same reflective
+  audit as `chost-dim-collision` above, and genuinely more consequential
+  than it. `cpp_interop.py`'s `_chost_build_maps` (lines 154-177)
+  independently re-derives `std_to_host`/`local_to_std` by scanning raw
+  `meta_data` directly — bare-name-keyed, first-occurrence-wins, no
+  collision handling at all — instead of consulting
+  `host_var_match_pass.py`'s already-computed host-matching result or
+  `run_dispatch.py`'s own (now collision-aware, post-PR #112)
+  equivalent resolution. These two maps drive essentially all of
+  `_chost_arg_info`'s own classification (`host`, `is_ncol`/`is_nz`/
+  `is_errmsg`, `intent` — an argument's entire identity, not just one
+  dimension's shape expression). If two schemes reuse the same bare
+  local arg name for genuinely different standard_names (the exact
+  collision shape PR #112 already fixed elsewhere), this silently keeps
+  only the first-seen mapping — risking a chost wrapper argument being
+  misclassified entirely, not just mis-shaped. Logged as its own
+  separate item (not folded into `chost-dim-collision`) since it's a
+  different map, a different call site, and — per the user's own
+  judgment — distinct enough to track independently, even though the
+  eventual fix shape (collision-aware resolution via `model_var_name`)
+  is likely the same for both.
 - `chost-gpu-memory` — **GPU memory management** — the chost cap is a CPU BIND(C) wrapper; a
   C++ host driving GPU physics is entirely on its own for device-pointer
   placement across the boundary (Kokkos `CudaSpace` invisible to OpenACC,
