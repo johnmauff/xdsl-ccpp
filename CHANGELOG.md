@@ -9565,3 +9565,134 @@ independent of any particular example suite.
 confirmed. The one remaining latent gap (the DDT-member int-array case
 above) is pre-existing and unexercised, not introduced or worsened by
 this pass.
+
+## `chost-rank3-bindc` resolution: plain `--bind-c` array arguments fixed for every rank, not just rank > 2 (2026-10-07)
+
+**Problem**: `multilanguage_limitations.md` §5 described this as "Rank > 2
+arrays, plain `--bind-c` path -- likely still broken, not verified
+against an actual compiler." Investigation this session, using the
+gfortran now confirmed available on Derecho, found the real scope is
+broader: the plain `--bind-c` BIND(C) cap-generation path (no chost/
+C++-host layer) was non-functional for **every** array rank, confirmed
+via direct gfortran compilation of a minimal reproduction matching the
+real generated code's shape:
+
+- rank 1: `Error: Actual argument for 'flux' cannot be an assumed-size array`
+- rank 2: `Error: Rank mismatch in argument 'flux' at (1) (rank-2 and rank-1)`
+- rank 3: `Error: Rank mismatch in argument 'flux' at (1) (rank-3 and rank-1)`
+
+Root cause: `print_ftn.py`'s `_bind_c_arg_decl_line` always declared
+every array argument in the BIND(C) subroutine as flat assumed-size
+`flux(*)`, regardless of rank, while `suite_cap.py` always declares its
+own corresponding dummy as assumed-shape `flux(:,...)`, also regardless
+of rank. Fortran forbids passing an assumed-size actual to an
+assumed-shape dummy, for any rank -- not a rank>2-specific quirk.
+
+**Resolution**: ported the pattern the chost (C++-host) path already
+uses successfully (`cpp_interop.py`'s `ftn_decl`) -- declare the BIND(C)
+wrapper's array arguments with **explicit shape + `target`** instead
+(e.g. `flux(col_end - col_start + 1, nz, nbands)`), resolving each
+dimension's size from a sibling scalar argument already in the same
+subroutine's own signature.
+
+- New `resolve_dim_exprs` helper in `cap_shared.py`: per-dimension
+  standard-name resolution -- tries a direct sibling-argument lookup
+  first (generalizing dimension-resolution logic `run_dispatch.py`'s own
+  `_build_row_major_convert_ops` already had for a different purpose),
+  and only synthesizes `col_end - col_start + 1` for the horizontal
+  dimension as a last resort when no sibling scalar exists (deliberately
+  the opposite order from `_build_row_major_convert_ops`'s own narrower
+  copy -- a scheme with its own literal `ncol`-equivalent scalar should
+  use it directly, not a recomputed-but-equivalent expression, matching
+  the chost path's own `ncol_var` resolution).
+- `run_dispatch.py`: threads each array's per-dimension standard names
+  through the existing per-suite scan, stamps a resolved
+  `bind_c_dim_exprs` attribute onto the BIND(C) FuncOp (inert unless
+  bind_c mode is active, same unconditional-stamping convention already
+  used for `arg_names`/`arg_intents` elsewhere).
+- `print_ftn.py`: `_bind_c_arg_decl_line` consumes that attribute,
+  emitting explicit-shape + `target` when resolved, falling back to
+  today's exact `(*)` output when it isn't -- fully additive, zero
+  behavior change for every other caller or unresolvable case.
+
+**Safety invariant** (raised directly by the project owner before this
+landed, a real Fortran+OpenACC gotcha): this only applies at the
+BIND(C)-wrapper-to-suite-cap call site, where the array is forwarded
+*whole*, never sliced -- confirmed no slicing happens at that boundary
+(slicing happens one layer deeper, inside `suite_cap.py`/
+`run_dispatch.py`'s own scheme-call sites, which stay assumed-shape
+throughout, untouched by this fix). Passing an array *section* to a
+non-assumed-shape dummy can force a silent compiler-generated copy,
+which could break OpenACC `present()` matching -- not a risk here since
+nothing is sliced at this boundary.
+
+**GPU/OpenACC note**: `gpu_ccpp_cap_pass.py`'s directive-wrapping does
+touch this exact call site when `--directive acc/omp` is active, and
+`--bind-c` + `--directive` together is confirmed untested anywhere in
+this repo today (zero FileCheck/unit tests combine them). This fix
+doesn't make that worse -- today `--bind-c` doesn't even compile, GPU or
+not -- but real-hardware verification of that specific combination is
+still recommended before relying on it in production. Cross-referenced
+with `chost-gpu-memory` in `multilanguage_limitations.md`.
+
+**Copilot review round (PR #112, 2 comments, both real, both fixed)**:
+1. `local_to_dim_names` was keyed purely by a scheme's bare local
+   argument name, but `suite_cap.py`'s own `_build_block_and_name_hints`
+   renames any array whose bare name collides across schemes with a
+   different `standard_name` to its `model_var_name` instead -- a
+   renaming `local_to_host_info` already correctly handled, but the new
+   `local_to_dim_names` didn't, so a renamed colliding array's
+   dimensions would silently fail to resolve (or, worse, inherit a
+   sibling's dimensions). Fixed by building `local_to_dim_names` through
+   the exact same collision-aware two-pass logic as `local_to_host_info`
+   (bare name when no collision, `model_var_name` when one exists),
+   merged into the same loop. Non-host-matched arrays (which structurally
+   can't collide -- `suite_cap.py` hard-errors on an unresolvable
+   collision before generation even reaches this point) still resolve via
+   a simpler bare-name scan.
+2. `resolve_dim_exprs`'s `host_var_map_lc` fallback resolved a dimension
+   from a host MODULE variable's bare name, but `_build_per_suite_run_info`
+   only emits the `use ..., only:` stub for variables that are themselves
+   resolved callee arguments -- a variable appearing only inside another
+   array's own `dimensions` metadata gets no such stub, so this could
+   emit an explicit-shape declaration referencing an unimported
+   identifier (`implicit none` compile failure). Confirmed this exact
+   scenario was already live, unprinted, in two of this session's own
+   already-landed goldens (`capgen-xml`/`ddthost-xml`'s `"num_model_times"`
+   resolution). Fixed by removing the fallback entirely, per the
+   reviewer's own suggested safe option -- falls back to `(*)` instead of
+   guessing.
+
+**Verification**: full `pytest tests/`: **737 passed, 0 xfailed**
+throughout (up from the 730 passed/1 xfailed baseline -- the long-
+standing `chost-r3-ftn.mlir` XFAIL is now resolved, plus 6 new unit
+tests directly against `resolve_dim_exprs`). 9 `completed_ir` goldens
++ 2 `end_to_end` goldens (`kessler-bindC.mlir`, `chost-r3-ftn.mlir`)
+updated, each diff manually reviewed line-by-line against predictions
+or backups before accepting -- zero unrelated reformatting. One real bug
+self-caught during implementation: `fn_arg.getAttr("dim_names")` already
+returns a parsed `list`, not a comma-joined string (differs from a
+sibling raw-property-access pattern elsewhere in the codebase) -- fixed
+before it reached any golden.
+
+**Real end-to-end gfortran compile verification**: extracted the actual
+generated code (not a synthetic repro) for all 4 modules in the
+`chost_r3` fixture (`ccpp_kinds`, `tiny_r3_suite_cap`, the plain-bind_c
+`TinyR3_ccpp_cap`, and the chost `TinyR3_ccpp_chost_cap`), added a
+minimal scheme stub for the one hand-written dependency
+(`tiny_r3_scheme_run`, not generated code), and compiled the full chain
+with the real gfortran on Derecho -- clean compile, zero errors. CI
+(`tests.yml`, `compile-tests-cmake.yml`) confirmed green, including the
+`kessler` CMake job, which compiles and runs this exact code path with
+the real kessler scheme implementation linked in (stronger than the
+local stub-based check). `constadv_cxx_host`/`constprop_cxx_host`'s
+expected CI failures are a separate, already-tracked, unrelated issue
+(GitHub issue #4) -- confirmed no code-path overlap with this fix (those
+targets exercise `cpp_interop.py`'s own independent chost array-
+declaration machinery, not `print_ftn.py`'s plain-bind_c path).
+
+**Risk of leaving as-is**: none -- fully resolved for the plain `--bind-c`
+path specifically. The one remaining residual item is the bind_c+GPU
+combination's lack of real-hardware verification, tracked separately
+alongside `chost-gpu-memory` (not a regression from this fix -- that
+combination was never verified either way).

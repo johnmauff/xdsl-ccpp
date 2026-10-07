@@ -393,7 +393,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>, %model_times__alloc : memref<?xi32>) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_dim_exprs = ["", "", "", "num_model_times"]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>, %model_times__alloc : memref<?xi32>) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_dim_exprs = ["", "", "", ""]} {
 // CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_start"} : () -> memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_end"} : () -> memref<i32>
 // CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>

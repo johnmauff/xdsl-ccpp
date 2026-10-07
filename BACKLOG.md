@@ -353,18 +353,20 @@ links here as a "Future direction" callout.
 
 Full detail, resolved-item history, and usage guidance stay in
 `multilanguage_limitations.md` (kept standalone — it's live chost usage
-reference, not backlog noise). These 4 items are its only open ones as
-of 2026-09-29 (10 of its 14 numbered items are already resolved); pointer
+reference, not backlog noise). These 3 items are its only open ones as
+of 2026-10-07 (11 of its 14 numbered items are now resolved); pointer
 entries here so they surface in a backlog sweep too.
 
-- `chost-rank3-bindc` — **Rank > 2 arrays, plain `--bind-c` path (no chost layer)** — a
-  suspected assumed-size→assumed-shape rank mismatch between
-  `ccpp_cap.py`'s flat `flux(*)` declaration and the suite cap's
-  assumed-shape `(:,:,:)` dummy. Confirmed still unverified against a real
-  Fortran compiler (the `chost-r3-ftn.mlir` golden test is still `XFAIL`ed
-  for exactly this reason). This session ran on Derecho with real
-  compilers throughout — worth actually verifying now rather than staying
-  theoretical. `multilanguage_limitations.md` §5.
+**`chost-rank3-bindc` — RESOLVED 2026-10-07**: the plain `--bind-c` path
+(no chost layer) was non-functional for *every* array rank, not just
+"rank > 2" as previously scoped here — confirmed via real gfortran
+compilation. Fixed by declaring the BIND(C) wrapper's array arguments
+with explicit shape + `target` instead of flat assumed-size, resolving
+each dimension from a sibling scalar argument already in scope. See
+`CHANGELOG.md`'s "`chost-rank3-bindc` resolution" (L9569) for full
+detail, including a PR #112 Copilot review round (2 real findings, both
+fixed) and real end-to-end gfortran compile verification.
+
 - `chost-gpu-memory` — **GPU memory management** — the chost cap is a CPU BIND(C) wrapper; a
   C++ host driving GPU physics is entirely on its own for device-pointer
   placement across the boundary (Kokkos `CudaSpace` invisible to OpenACC,

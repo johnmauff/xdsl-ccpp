@@ -261,7 +261,6 @@ def build_ncol_compute_ops(col_start_ref, col_end_ref, name_hint: str = "ncol") 
 
 def resolve_dim_exprs(
     dim_std_names: "list", non_host_std_to_canonical: dict,
-    host_var_map_lc: "dict | None" = None,
 ) -> "list[str] | None":
     """Resolve a rank-N array's own per-dimension standard_names to Fortran
     expression strings usable as an EXPLICIT-SHAPE dimension list in a
@@ -276,8 +275,7 @@ def resolve_dim_exprs(
          untouched). Generalizes the dim-resolution logic
          run_dispatch.py's own _build_row_major_convert_ops already has
          for a different purpose (row-major transpose).
-      2. A MODULE-type host variable's own bare name, via host_var_map_lc.
-      3. ONLY if both above fail AND this is one of the two horizontal
+      2. ONLY if that fails AND this is one of the two horizontal
          standard names (CCPP_HORIZ_DIM_STD_NAME/CCPP_LOOP_EXTENT_STD_NAME):
          synthesize "col_end - col_start + 1" from col_start/col_end's own
          canonical sibling names -- the BIND(C) boundary's own loop-
@@ -293,21 +291,30 @@ def resolve_dim_exprs(
     expression -- matches the chost path's own ncol_var resolution, which
     never recomputes col_end - col_start + 1 at all.
 
+    Deliberately does NOT fall back to a MODULE-type host variable's own
+    bare name (Copilot PR #112 review): resolving a dimension that way
+    doesn't guarantee that variable is actually visible in the generated
+    cap module -- _build_per_suite_run_info only emits a `use ..., only:`
+    stub for a host variable that is ITSELF a resolved callee argument;
+    a variable appearing only inside another array's own dimensions
+    metadata (never itself a callee arg) gets no such stub, so the
+    resulting explicit-shape declaration would reference an unimported
+    identifier and fail to compile under `implicit none`. Safer to leave
+    this case unresolved (falls back to today's assumed-size (*)) than to
+    silently emit an invalid declaration -- revisit only alongside a real
+    plan for threading the needed USE stub through to this call site.
+
     Returns None if ANY one dimension is unresolvable -- callers should
     treat this as "fall back to assumed-size (*) for the whole array":
     Fortran's explicit-shape declarator has no partial form (every
     dimension must be given, or none).
     """
-    host_var_map_lc = host_var_map_lc or {}
     dim_exprs: list = []
     for dim_sn in dim_std_names:
         sn_lower = dim_sn.strip().lower()
         canonical = non_host_std_to_canonical.get(sn_lower)
         if canonical:
             dim_exprs.append(_bare(canonical))
-            continue
-        if sn_lower in host_var_map_lc:
-            dim_exprs.append(host_var_map_lc[sn_lower][0])
             continue
         if sn_lower in (CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME):
             col_begin = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)

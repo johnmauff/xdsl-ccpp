@@ -365,15 +365,15 @@ class TestResolveDimExprs:
             {"vertical_layer_dimension": "nz"},
         ) is None
 
-    def test_host_module_variable_fallback(self):
-        """A dimension provided by a host MODULE variable (not a sibling
-        block arg) resolves via host_var_map_lc, using its bare name
-        directly."""
-        assert resolve_dim_exprs(
-            ["number_of_tracers"],
-            {},
-            host_var_map_lc={"number_of_tracers": ("ntracers", "host_mod")},
-        ) == ["ntracers"]
+    def test_host_module_variable_not_resolved(self):
+        """A dimension provided only by a host MODULE variable (never
+        itself a sibling callee argument) must NOT resolve -- Copilot PR
+        #112 review: _build_per_suite_run_info only emits a USE stub for a
+        host variable that is itself a resolved callee argument, so
+        resolving via a bare host-var lookup here could reference an
+        unimported identifier. Falling back to None (-> assumed-size (*))
+        is the safe choice."""
+        assert resolve_dim_exprs(["number_of_tracers"], {}) is None
 
     def test_suffix_stripped_from_resolved_sibling_name(self):
         """non_host_std_to_canonical's values can carry a __alloc/__opt/__in

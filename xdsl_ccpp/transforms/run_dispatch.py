@@ -270,6 +270,22 @@ def _build_per_suite_run_info(
                     fn_arg.getAttr("model_module_name"),
                     fn_arg.hasAttr("model_var_is_ddt"),
                 )
+                # dim_names, carried alongside host_info through the exact
+                # same collision-renaming keys below -- chost-rank3-bindc
+                # (Copilot PR #112 review): local_to_dim_names must follow
+                # suite_cap.py's own _build_block_and_name_hints renaming
+                # (every host-matched collision gets printed under its
+                # model_var_name, not its shared bare local name), or a
+                # renamed array's dimensions are silently unresolvable (or,
+                # worse, a sibling's dim_names could be misattributed to it)
+                # -- same keying bug local_to_host_info already had to solve.
+                dim_names = (
+                    [d.strip().lower() for d in fn_arg.getAttr("dim_names")]
+                    if fn_arg.hasAttr("dim_names")
+                    and fn_arg.hasAttr("dimensions")
+                    and fn_arg.getAttr("dimensions") >= 1
+                    else None
+                )
                 std_key = (
                     fn_arg.getAttr("standard_name").lower()
                     if fn_arg.hasAttr("standard_name")
@@ -277,17 +293,21 @@ def _build_per_suite_run_info(
                 )
                 group = _by_bare_name.setdefault(_bare(fn_arg.name), {})
                 if std_key not in group:
-                    group[std_key] = host_info
+                    group[std_key] = (host_info, dim_names)
 
         local_to_host_info: dict = {}
+        local_to_dim_names: dict = {}
         for bare_name, std_key_group in _by_bare_name.items():
-            host_infos = list(std_key_group.values())
-            if len(host_infos) == 1:
+            entries = list(std_key_group.values())
+            if len(entries) == 1:
                 # No local-name collision for this bare name within the
                 # current scheme group -- suite_cap.py prints this dummy
                 # argument under its own original (unrenamed) name, so the
                 # bare local name is the correct lookup key.
-                local_to_host_info[bare_name] = host_infos[0]
+                host_info, dim_names = entries[0]
+                local_to_host_info[bare_name] = host_info
+                if dim_names is not None:
+                    local_to_dim_names[bare_name] = dim_names
             else:
                 # Two or more schemes reused the same local argument name for
                 # genuinely different standard_names (a real collision).
@@ -297,8 +317,10 @@ def _build_per_suite_run_info(
                 # index each sibling by its own host-matched canonical name,
                 # which is what actually appears in the printed suite-callee
                 # signature for that sibling.
-                for host_info in host_infos:
+                for host_info, dim_names in entries:
                     local_to_host_info[host_info[0]] = host_info
+                    if dim_names is not None:
+                        local_to_dim_names[host_info[0]] = dim_names
 
         # Fold in DDT-table matches found above for callee args with no
         # scheme-declared arg at all (e.g. a synthesized dynamic subcycle
@@ -314,11 +336,15 @@ def _build_per_suite_run_info(
         # Build bare_name → (dim_std_names, intent) for rank≥2 row_major args.
         # These will be transposed via RowMajorConvertOp in the dispatch chain.
         local_to_array_layout: dict = {}
-        # Build bare_name → dim_std_names (any rank >= 1, ungated on layout) --
-        # feeds the plain-bind_c explicit-shape fix (chost-rank3-bindc):
-        # resolve_dim_exprs needs each array's own per-dimension standard
-        # names regardless of row-major/rank>=2 status.
-        local_to_dim_names: dict = {}
+        # local_to_dim_names was already seeded above (keyed collision-
+        # aware, same keys as local_to_host_info) for every host-matched
+        # (model_var_name-bearing) array. This second pass fills in the
+        # remaining, non-host-matched arrays (SuiteOwned/CapScratch/plain
+        # block-arg arrays) under their own bare local name -- safe, since
+        # suite_cap.py's own _build_block_and_name_hints hard-errors on any
+        # bare-name collision that lacks a model_var_name to disambiguate
+        # with, so a non-host-matched array can never actually collide (if
+        # it did, generation would already have failed before reaching here).
         for scheme_name in scheme_names:
             table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, phase_postfix)
             if table_name is None:
@@ -342,7 +368,8 @@ def _build_per_suite_run_info(
                         fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in",
                     )
                 if (
-                    bare_name not in local_to_dim_names
+                    not fn_arg.hasAttr("model_var_name")
+                    and bare_name not in local_to_dim_names
                     and fn_arg.hasAttr("dim_names")
                     and fn_arg.hasAttr("dimensions")
                     and fn_arg.getAttr("dimensions") >= 1
@@ -1996,7 +2023,7 @@ def _generate_run_fn(
     for arg in _sig.new_block.args:
         dim_names = _sig.union_dim_names.get(arg.name_hint)
         resolved = (
-            resolve_dim_exprs(dim_names, non_host_std_to_canonical, host_var_map)
+            resolve_dim_exprs(dim_names, non_host_std_to_canonical)
             if dim_names else None
         )
         bind_c_dim_exprs.append(",".join(resolved) if resolved is not None else "")
