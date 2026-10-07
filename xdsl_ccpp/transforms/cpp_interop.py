@@ -74,6 +74,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_VERT_DIM_STD_NAME,
     CCPP_VERTICAL_DIMENSIONS,
 )
+from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
 
 # Field descriptors for ccpp_constituent_properties_t.
 # Each entry: (fortran_field_name, kind, char_len_or_None)
@@ -706,18 +707,33 @@ def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
 
 
 def _chost_cpp_type(ai: dict) -> str:
-    """Map a chost arg descriptor to its C++ type string."""
+    """Map a chost arg descriptor to its C++ type string.
+
+    Numeric (int/real) cases go through the shared `cpp_numeric_type`
+    decision table (`cpp_type_table.py`) that `print_cpp_header.py`'s
+    `_cpp_type` also adapts onto (BACKLOG.md's `cpp-type-table-unify`).
+    """
     if ai["is_ncol"] or ai["is_nz"]:
         return "int"
     if ai["is_int"] and not ai["is_errflg"]:
-        return "int"
+        # Always rank-0/intent(in) by this call site's own convention --
+        # every _chost_arg_info-constructed int arg is scalar (rank is
+        # never advanced for is_int there). A DDT-member int ARRAY
+        # (rank>0, via _chost_expand_ddt_arg) also reaches this branch
+        # and, as today, still renders as plain "int" rather than "int*"
+        # -- a pre-existing, unexercised gap this unification pass
+        # preserves rather than silently changes.
+        return cpp_numeric_type(kind="int", width=64, rank=0, intent="in")
     if ai["is_real"]:
-        cpp_real = "float" if ai.get("real_width", 64) == 32 else "double"
-        if ai["rank"] == 0:
-            return cpp_real
-        if ai["intent"] == "in":
-            return f"const {cpp_real}*"
-        return f"{cpp_real}*"
+        # Rank-0 real chost args are always passed by value, intent(in),
+        # regardless of the scheme's own declared intent -- an existing
+        # Fortran-generator convention, forced here rather than baked
+        # into the shared table itself.
+        real_intent = "in" if ai["rank"] == 0 else ai["intent"]
+        return cpp_numeric_type(
+            kind="real", width=ai.get("real_width", 64), rank=ai["rank"],
+            intent=real_intent,
+        )
     if ai.get("is_logical"):
         return "bool"
     if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:

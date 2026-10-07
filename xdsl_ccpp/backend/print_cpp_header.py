@@ -42,6 +42,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     TrimOp,
     VarRefExprOp,
 )
+from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
 
 # op.name -> C++ infix token, paralleling print_ftn.py's _binops. Built
 # independently (not derived from print_ftn's own table) since this file
@@ -455,33 +456,28 @@ def _is_scalar_memref(mlir_type: object) -> bool:
 def _cpp_type(mlir_type: object, intent: str) -> str:
     """Map an MLIR type and intent string to a C++ type.
 
-    Character memrefs and scalar memrefs with intent(in) map to pass-by-value
-    types matching the Fortran BIND(C) VALUE attribute; all other memrefs and
-    output scalars map to pointer types.
+    Character memrefs map to pass-by-value types matching the Fortran
+    BIND(C) VALUE attribute for char buffers; numeric memrefs/scalars go
+    through the shared `cpp_numeric_type` decision table
+    (`cpp_type_table.py`) that `_chost_cpp_type` also adapts onto.
     """
     if isinstance(mlir_type, MemRefType):
-        elem = mlir_type.element_type
         if _is_char_memref(mlir_type):
             return "const char*" if intent == "in" else "char*"
-        # Scalar (no dynamic dims) with intent(in) → Fortran VALUE → C++ by-value
-        if _is_scalar_memref(mlir_type) and intent == "in":
-            if isinstance(elem, IntegerType):
-                return "int"
-            if isinstance(elem, Float32Type):
-                return "float"
-            return "double"
-        # Array or non-in scalar → by pointer
-        if isinstance(elem, IntegerType):
-            return "int*"
-        if isinstance(elem, Float32Type):
-            return "float*"
-        return "double*"
+        elem = mlir_type.element_type
+        kind = "int" if isinstance(elem, IntegerType) else "real"
+        width = 32 if isinstance(elem, Float32Type) else 64
+        rank = 0 if _is_scalar_memref(mlir_type) else 1
+        return cpp_numeric_type(
+            kind=kind, width=width, rank=rank, intent=intent,
+            const_in_arrays=False,
+        )
     if isinstance(mlir_type, IntegerType):
-        return "int" if intent == "in" else "int*"
+        return cpp_numeric_type(kind="int", width=64, rank=0, intent=intent)
     if isinstance(mlir_type, Float32Type):
-        return "float" if intent == "in" else "float*"
+        return cpp_numeric_type(kind="real", width=32, rank=0, intent=intent)
     # Float64Type, CCPPRealKindType, etc.
-    return "double" if intent == "in" else "double*"
+    return cpp_numeric_type(kind="real", width=64, rank=0, intent=intent)
 
 
 def _rank_comment(mlir_type: object) -> str:
