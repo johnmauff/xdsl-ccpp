@@ -312,6 +312,59 @@ second-language printer is achievable for all of their expression
 content today. The only remaining risk is scoped entirely to Stage 3c's
 `UnitConvertOp`/`UnitWriteBackOp` gap.
 
+### `ifthenop-scf-unify`: `IfThenOp` reinvents `scf.IfOp`
+
+ID: `ifthenop-scf-unify`
+
+**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (`IfThenOp`); printer support in
+`xdsl_ccpp/backend/print_ftn.py`. **Added 2026-10-07**, found during a
+reflective code-reuse audit prompted by the same kind of discovery that
+shaped `lang-neutral-expr-ir` above (xDSL's own `arith`/`math` dialects
+turning out to already cover ops this project was about to reinvent).
+
+`IfThenOp` emits a plain `if (cond) then ... end if` (no else) — a
+condition (opaque text, or a region-wrapped expr-op tree) plus one body
+region, `NoTerminator()`. xDSL's real `scf.IfOp` already covers exactly
+this shape: constructing it with no `false_region` defaults to an empty
+one, needs no results for a statement-only if, and uses a bare
+`scf.YieldOp()` terminator. The one structural difference —
+`IfThenOp`'s condition can be opaque text or a region-wrapped expr tree,
+vs. `scf.IfOp`'s plain `i1` SSA operand — is itself the tell: building
+the condition's `arith.CmpiOp`/etc. tree as ordinary preceding SSA ops
+and wiring the result straight into `scf.IfOp`'s own condition operand
+is the idiomatic MLIR approach, and would eliminate the "condition
+region" special-casing (and its `_single_op_region`/
+`_flatten_floating_deps` workaround, built specifically for
+`lang-neutral-expr-ir`) for this one op entirely.
+
+Confirmed this isn't theoretical: `scf.IfOp` is already pervasively used
+elsewhere in this same codebase (suite-name/suite-part dispatch chains)
+with full, working printer support already in place
+(`print_ftn.py`'s `case scf.IfOp(...)` match arm, and its own "Print an
+scf.IfOp as a Fortran if/else/end if block" printer function) — so the
+infrastructure to consume `scf.IfOp` directly already exists and is
+proven elsewhere; `IfThenOp` is a parallel, narrower reimplementation of
+a strict subset of it.
+
+**The right fix**: retire `IfThenOp`, converting its real call sites
+(`constituent_cap.py`'s `IfThenOp.condition_expr` — already the
+`lang-neutral-expr-ir` Stage 3a retrofit target, so its condition is
+already a real `arith`/custom-op tree in every real call site today, not
+opaque text) to build a real `scf.IfOp` directly instead, with the
+condition tree's ops inserted as ordinary preceding block members and
+the tree's root SSA value wired into `scf.IfOp`'s own condition operand.
+Bounded, mechanical retrofit — similar shape and risk profile to this
+item's own Stage 3a/3b/5 increments (one op kind, full `pytest` green
+between each, byte-identical goldens expected since this is a pure
+internal-representation change).
+
+**Risk of leaving as-is**: low — `IfThenOp` works correctly today, this
+is a cleanliness/consolidation opportunity, not a bug. The only real
+cost is the `_single_op_region`/`_flatten_floating_deps` workaround
+staying load-bearing for one more op than necessary, and a second-
+language printer needing its own `IfThenOp` match arm instead of
+getting `scf.IfOp` support "for free."
+
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 
 Not scheduled, not started (unchanged status since first logged
@@ -353,7 +406,7 @@ links here as a "Future direction" callout.
 
 Full detail, resolved-item history, and usage guidance stay in
 `multilanguage_limitations.md` (kept standalone — it's live chost usage
-reference, not backlog noise). These 3 items are its only open ones as
+reference, not backlog noise). These 4 items are its only open ones as
 of 2026-10-07 (11 of its 14 numbered items are now resolved); pointer
 entries here so they surface in a backlog sweep too.
 
@@ -367,6 +420,27 @@ each dimension from a sibling scalar argument already in scope. See
 detail, including a PR #112 Copilot review round (2 real findings, both
 fixed) and real end-to-end gfortran compile verification.
 
+- `chost-dim-collision` — **`cpp_interop.py`'s own `local_to_dim_names` has the same
+  collision bug `chost-rank3-bindc`'s PR #112 review just fixed in
+  `run_dispatch.py`** — found 2026-10-07 during a reflective code-reuse
+  audit, not yet fixed. `_chost_fn_contexts` (`cpp_interop.py:838-848`)
+  independently builds its own bare-local-name → `dim_names` map for
+  the chost explicit-shape declaration path: it scans `meta_data.values()`
+  unconditionally (not phase-scoped to the function being built), keys
+  by the raw `var.name` (no `_bare()` suffix-stripping), and has no
+  collision handling at all — if two schemes in a chost-enabled suite
+  reuse the same bare local array name for genuinely different
+  standard_names, one array's dimensions could silently get attributed
+  to another's explicit-shape declaration. `run_dispatch.py`'s own
+  equivalent map was just fixed to resolve collisions via the same
+  `model_var_name`-renaming scheme `local_to_host_info` already uses
+  (see `CHANGELOG.md`'s "`chost-rank3-bindc` resolution"); this one
+  wasn't. No comment anywhere documents an intentional reason the two
+  evolved independently — looks like a real gap, not a design split.
+  Moderate-size fix: needs the same collision-aware logic (plus
+  phase-scoping) threaded into `_chost_fn_contexts`'s own call site, or
+  — better — unifying the two maps into one shared helper, since they
+  solve the identical sub-problem for two different printers.
 - `chost-gpu-memory` — **GPU memory management** — the chost cap is a CPU BIND(C) wrapper; a
   C++ host driving GPU physics is entirely on its own for device-pointer
   placement across the boundary (Kokkos `CudaSpace` invisible to OpenACC,

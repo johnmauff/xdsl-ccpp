@@ -28,17 +28,20 @@ tooling enforces this):
   reference would otherwise go unnoticed).
 
 Last synchronized with `BACKLOG.md`: 2026-10-07 (after `chost-rank3-bindc`
-resolved, following `cpp-type-table-unify` and `cpp-dual-print-pipeline`;
-`lang-neutral-expr-ir`'s Stages 0-5 landed, Stage 3c still deferred).
+resolved and `chost-dim-collision` added, found during a reflective
+code-reuse audit; following `cpp-type-table-unify` and
+`cpp-dual-print-pipeline`; `lang-neutral-expr-ir`'s Stages 0-5 landed,
+Stage 3c still deferred).
 
 ## Recommended near-term path
 
-**1 → 2 → 3/4** is the highest-value sequence right now: Tier 1's
+**1 → 2 → 3 → 4/5** is the highest-value sequence right now: Tier 1's
 architectural blocker and all of Tier 2's cheap wins are done, and the
-rank/shape bug in Tier 3 is fixed, so next is the `cxx-scheme`
-end-to-end test gap, then the two most concrete remaining chost
-limitations — without committing to Tier 4's large Phase C investment
-until there's real pull for it.
+rank/shape bug in Tier 3 is fixed, so next is the newly-found
+`chost-dim-collision` bug (same class, quick to confirm/fix while the
+context is fresh), then the `cxx-scheme` end-to-end test gap, then the
+two most concrete remaining chost limitations — without committing to
+Tier 4's large Phase C investment until there's real pull for it.
 
 ## Tier 1 — foundational, blocks everything else in this direction
 
@@ -88,39 +91,47 @@ end-to-end gfortran compile verification. See `BACKLOG.md`'s entry and
 `CHANGELOG.md`'s resolution writeup for full detail; removed from the
 numbered list below (renumbered accordingly).
 
-2. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
+2. **`chost-dim-collision`** — a real, unfixed correctness bug: `cpp_interop.py`'s
+   own `local_to_dim_names` map (feeding the chost explicit-shape
+   declaration path) has the same bare-name collision bug `chost-rank3-bindc`'s
+   PR #112 review just fixed in `run_dispatch.py`'s equivalent map — no
+   `_bare()` stripping, no phase-scoping, no collision handling at all.
+   Found 2026-10-07 during a reflective code-reuse audit. Moderate-size
+   fix (thread the same collision-aware logic in, or unify the two maps
+   into one shared helper).
+3. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
    host calling a C++ scheme implementation) has zero compiled
    end-to-end test, only static FileCheck fixtures. The cap-generation
    side is already done and verified correct — this is a real confidence
    gap, not a design gap.
-3. **`chost-gpu-memory`** — no device-pointer contract for a C++ host
+4. **`chost-gpu-memory`** — no device-pointer contract for a C++ host
    driving GPU physics across the BIND(C) boundary. The most
    consequential of the "known limitations" for real HPC adoption of the
    chost path. Note: `chost-rank3-bindc`'s resolution confirmed `--bind-c`
    + `--directive acc/omp` together is still completely untested in this
    repo — relevant context for whoever picks this item up.
-4. **`chost-column-major`** — C++ callers must manually match Fortran's
+5. **`chost-column-major`** — C++ callers must manually match Fortran's
    column-major layout with no detection or alternative; a silent-wrong-
    numerical-result footgun, not an active failure.
-5. **`chost-thread-safety`** — concurrent C++ threads race on the
+6. **`chost-thread-safety`** — concurrent C++ threads race on the
    module-level `ccpp_suite_state` variable; safe today only because the
-   one real driver is single-threaded. Lower urgency than 3/4 — no known
+   one real driver is single-threaded. Lower urgency than 4/5 — no known
    real caller is multi-threaded yet.
 
 ## Tier 4 — bigger downstream investment (EAMxx C++ bridge)
 
-6. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
+7. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
    deviceptr` host-meta property for zero-staging GPU pointer passing.
    Directly resolves `chost-gpu-memory` above — doing this closes two
    backlog items for the cost of one.
-7. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
+8. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
    generator changes), catches a real class of silent coverage gaps.
    Worth doing opportunistically any time, independent of the phased
    work below.
-8. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
+9. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
     tag so a scheme can declare separate CPU/GPU argument lists. A loose
     prerequisite for Phase C below.
-9. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
+10. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
     `AtmosphereProcess` class, not just the BIND(C) layer. An order of
     magnitude more effort than everything above combined; only worth
     starting once the groundwork above has landed and real EAMxx
