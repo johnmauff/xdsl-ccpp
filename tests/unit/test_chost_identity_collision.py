@@ -17,9 +17,11 @@ that replaced that flat scan: a per-suite-fn-group scoped scan
 step (_chost_resolve_scheme_arg_identities).
 """
 
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.cpp_interop import (
     _chost_resolve_scheme_arg_identities,
     _chost_scan_scheme_phase_args,
+    _chost_scheme_phase_suffixes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
@@ -234,3 +236,185 @@ class TestScopingPreventsCrossGroupCollision:
         )
         local_to_std, _ = _chost_resolve_scheme_arg_identities(by_bare)
         assert local_to_std == {"host_a": "std_a"}
+
+
+# ---------------------------------------------------------------------------
+# Copilot PR #113 review, finding 1: an excluded scheme arg (SuiteOwned, or
+# a scalar intent(out) value) must never participate in collision detection
+# at all -- suite_cap.py's own input_arg_list (suite_cap.py:2341-2357)
+# never includes either, so a bare name shared between one of these and a
+# real surviving input is NOT a real collision from suite_cap.py's own
+# point of view, even though a naive unfiltered scan would see 2 entries.
+# ---------------------------------------------------------------------------
+
+
+class TestSuiteOwnedArgExcludedFromCollisionDetection:
+    """scheme_a's "x" is SuiteOwned (becomes a module-level variable, never
+    a suite-cap dummy argument at all); scheme_b's "x" is a real surviving
+    input. Before the Copilot PR #113 fix, the raw scan would have seen 2
+    entries for bare name "x" and (wrongly) treated this as a real
+    collision, keying scheme_b's own real input by its model_var_name even
+    though suite_cap.py itself never renamed it (no collision from its own
+    point of view, since the SuiteOwned entry was excluded before its own
+    collision detection ever ran) -- causing the real lookup (still under
+    the plain bare name "x") to miss entirely."""
+
+    def _meta_data(self):
+        return {
+            "scheme_a": _make_scheme_props("scheme_a", [
+                _make_arg(
+                    "x", standard_name="suite_owned_std", model_var_name="host_a",
+                    ownership_kind=ArgOwnershipKind.SuiteOwned,
+                ),
+            ]),
+            "scheme_b": _make_scheme_props("scheme_b", [
+                _make_arg("x", standard_name="std_b", model_var_name="x"),
+            ]),
+        }
+
+    def test_suite_owned_entry_does_not_cause_a_false_collision(self):
+        by_bare = _chost_scan_scheme_phase_args(
+            ["scheme_a", "scheme_b"], self._meta_data(), ("_run",),
+        )
+        local_to_std, _ = _chost_resolve_scheme_arg_identities(by_bare)
+        # Only scheme_b's real input participates -- resolves via the
+        # plain bare name, exactly as suite_cap.py itself would (no
+        # collision, since the SuiteOwned entry was never a candidate).
+        assert local_to_std == {"x": "std_b"}
+
+
+class TestScalarIntentOutArgExcludedFromCollisionDetection:
+    """Same shape, but the excluded sibling is a scalar intent(out) value
+    (goes to suite_cap.py's own output_arg_list, never input_arg_list)
+    instead of a SuiteOwned one."""
+
+    def _meta_data(self):
+        return {
+            "scheme_a": _make_scheme_props("scheme_a", [
+                _make_arg("x", standard_name="scalar_out_std", model_var_name="host_a",
+                          intent="out"),
+            ]),
+            "scheme_b": _make_scheme_props("scheme_b", [
+                _make_arg("x", standard_name="std_b", model_var_name="x"),
+            ]),
+        }
+
+    def test_scalar_out_entry_does_not_cause_a_false_collision(self):
+        by_bare = _chost_scan_scheme_phase_args(
+            ["scheme_a", "scheme_b"], self._meta_data(), ("_run",),
+        )
+        local_to_std, _ = _chost_resolve_scheme_arg_identities(by_bare)
+        assert local_to_std == {"x": "std_b"}
+
+    def test_array_intent_out_is_not_excluded(self):
+        """An intent(out) arg WITH dims is a real input (suite_cap.py's own
+        _has_dims check) -- must NOT be filtered out just for being
+        intent(out)."""
+        meta_data = {
+            "scheme_a": _make_scheme_props("scheme_a", [
+                _make_arg("y", standard_name="array_out_std", model_var_name="y",
+                          intent="out", dimensions=1),
+            ]),
+        }
+        by_bare = _chost_scan_scheme_phase_args(["scheme_a"], meta_data, ("_run",))
+        local_to_std, _ = _chost_resolve_scheme_arg_identities(by_bare)
+        assert local_to_std == {"y": "array_out_std"}
+
+
+class TestPfnHintsCrossCheckCatchesUnfilteredExclusions:
+    """The ncol -> col_start/col_end replacement (or any other
+    suite_cap.py exclusion this module's own explicit filters don't know
+    about) is caught by the pfn_hints cross-check safety net instead:
+    scheme_a's "ncol" (standard horizontal_loop_extent) never reaches the
+    real compiled signature at all once replaced, so it must not
+    participate in a collision with scheme_b's unrelated real "ncol"
+    input even though the raw scan sees 2 entries."""
+
+    def _meta_data(self):
+        return {
+            "scheme_a": _make_scheme_props("scheme_a", [
+                _make_arg("ncol", standard_name="horizontal_loop_extent",
+                          model_var_name="ncol"),
+            ]),
+            "scheme_b": _make_scheme_props("scheme_b", [
+                _make_arg("ncol", standard_name="std_b", model_var_name="ncol"),
+            ]),
+        }
+
+    def test_without_pfn_hints_both_would_collide(self):
+        """Confirms the raw scan really does see 2 entries here -- the
+        cross-check in the next test is doing real work, not a no-op."""
+        by_bare = _chost_scan_scheme_phase_args(
+            ["scheme_a", "scheme_b"], self._meta_data(), ("_run",),
+        )
+        local_to_std, _ = _chost_resolve_scheme_arg_identities(by_bare)
+        # Both share model_var_name "ncol" -- the second to resolve wins
+        # (a real build can't actually produce this; it's here only to
+        # show the raw, unfiltered result before the cross-check applies).
+        assert local_to_std == {"ncol": "std_b"}
+
+    def test_with_pfn_hints_the_replaced_entry_is_dropped(self):
+        """pfn_hints reflects what the real signature actually contains
+        after the ncol replacement -- no "ncol" at all (col_start/col_end
+        instead) -- so scheme_a's entry is dropped entirely, leaving
+        scheme_b's real "ncol" input correctly resolved alone."""
+        by_bare = _chost_scan_scheme_phase_args(
+            ["scheme_a", "scheme_b"], self._meta_data(), ("_run",),
+        )
+        local_to_std, _ = _chost_resolve_scheme_arg_identities(
+            by_bare, pfn_hints=["col_start", "col_end", "ncol", "errmsg", "errflg"],
+        )
+        assert local_to_std == {"ncol": "std_b"}
+
+
+# ---------------------------------------------------------------------------
+# Copilot PR #113 review, finding 2: _LC_TO_ENTRY_SUFFIX alone only records
+# one accepted spelling for several lifecycles -- _chost_scheme_phase_suffixes
+# must return every spelling cap_shared.py's own authoritative
+# _PHASE_SUFFIXES (split_scheme_table_name) accepts too.
+# ---------------------------------------------------------------------------
+
+
+class TestChostSchemePhaseSuffixesIncludesEveryAcceptedSpelling:
+    def test_timestep_initial_includes_both_spellings(self):
+        suffixes = _chost_scheme_phase_suffixes("timestep_initial")
+        assert "_timestep_initialize" in suffixes
+        assert "_timestep_init" in suffixes
+
+    def test_timestep_final_includes_both_spellings(self):
+        suffixes = _chost_scheme_phase_suffixes("timestep_final")
+        assert "_timestep_finalize" in suffixes
+        assert "_timestep_final" in suffixes
+
+    def test_finalize_includes_both_spellings(self):
+        suffixes = _chost_scheme_phase_suffixes("finalize")
+        assert "_finalize" in suffixes
+        assert "_final" in suffixes
+
+    def test_physics_final_reuses_finalize_spellings(self):
+        """physics_final has no originating scheme-table phase of its own
+        -- it reuses "finalize"'s own scheme-table suffixes."""
+        suffixes = _chost_scheme_phase_suffixes("physics_final")
+        assert "_finalize" in suffixes
+        assert "_final" in suffixes
+
+    def test_a_real_short_form_scheme_table_is_now_found(self):
+        """kessler_update-shaped real example: a scheme using the short
+        "_timestep_init" form (atmospheric_physics/kessler_update
+        convention) for a "timestep_initial" lifecycle. Before the fix,
+        _chost_scheme_phase_suffixes's predecessor (a plain
+        _LC_TO_ENTRY_SUFFIX.get(lc, ...) lookup) only tried
+        "_timestep_initial" -- a spelling no real scheme table uses at
+        all -- so this scheme's own args were never found, silently
+        losing their standard-name/dimension classification."""
+        meta_data = {
+            "kessler_update": _make_scheme_props(
+                "kessler_update",
+                [_make_arg("temp", standard_name="air_temperature", model_var_name="temp")],
+                phase_suffix="_timestep_init",
+            ),
+        }
+        suffixes = _chost_scheme_phase_suffixes("timestep_initial")
+        by_bare = _chost_scan_scheme_phase_args(["kessler_update"], meta_data, suffixes)
+        local_to_std, _ = _chost_resolve_scheme_arg_identities(by_bare)
+        assert local_to_std == {"temp": "air_temperature"}

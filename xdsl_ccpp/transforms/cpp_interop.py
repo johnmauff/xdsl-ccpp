@@ -22,6 +22,7 @@ from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
     AllocateOp,
     AssignOp,
@@ -52,6 +53,7 @@ from xdsl_ccpp.transforms.ccpp_cap import _collect_public_suite_functions
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _CONSTITUENT_DDT_NAME,
+    _PHASE_SUFFIXES,
     SUITE_FN_INFIX,
     _bare,
     _iter_schemes,
@@ -741,14 +743,26 @@ def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
 
 def _chost_scan_scheme_phase_args(scheme_names, meta_data, phase_suffixes) -> dict:
     """Scan scheme_names' own arg table for the given lifecycle's
-    phase_suffixes (from _LC_TO_ENTRY_SUFFIX), grouping by bare local
-    name, deduplicated by standard_name -- chost-identity-collision/
-    chost-dim-collision: mirrors run_dispatch.py's _by_bare_name
-    (_build_per_suite_run_info, the chost-rank3-bindc PR #112 fix)
-    exactly, generalized to record EVERY entry, not just host-matched
-    ones, since the caller's local_to_std drives full argument
-    classification for CapScratch/SuiteOwned args too, not just host-var
-    naming.
+    phase_suffixes, grouping by bare local name, deduplicated by
+    standard_name -- chost-identity-collision/chost-dim-collision:
+    mirrors run_dispatch.py's _by_bare_name (_build_per_suite_run_info,
+    the chost-rank3-bindc PR #112 fix) exactly, generalized to record
+    EVERY entry, not just host-matched ones, since the caller's
+    local_to_std drives full argument classification for CapScratch/
+    SuiteOwned args too, not just host-var naming.
+
+    Only considers arguments that could actually survive into
+    suite_cap.py's own final suite-cap INPUT signature (Copilot PR #113
+    review): excludes SuiteOwned args (ownership_kind) and scalar
+    intent(out) args, mirroring suite_cap.py's own input_arg_list filter
+    (suite_cap.py:2341-2357) exactly -- those never reach the real
+    compiled signature at all (SuiteOwned becomes a module-level
+    variable; a scalar intent(out) goes to output_arg_list instead), so
+    they must never participate in this collision calculus. This still
+    doesn't cover every possible exclusion reason (e.g. the ncol ->
+    col_start/col_end replacement) -- see
+    _chost_resolve_scheme_arg_identities's own pfn_hints cross-check,
+    which catches those.
 
     Returns {bare_name: {std_key: (model_var_name_or_None, dim_names_or_None)}}.
     """
@@ -766,6 +780,13 @@ def _chost_scan_scheme_phase_args(scheme_names, meta_data, phase_suffixes) -> di
         for fn_arg in meta_data[scheme_name].getArgTable(table_name).getFunctionArguments():
             if not fn_arg.hasAttr("standard_name"):
                 continue
+            if (fn_arg.hasAttr("ownership_kind")
+                    and fn_arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned):
+                continue
+            has_dims = fn_arg.hasAttr("dimensions") and fn_arg.getAttr("dimensions") > 0
+            if (fn_arg.hasAttr("intent") and fn_arg.getAttr("intent") == "out"
+                    and not has_dims):
+                continue
             std_key = fn_arg.getAttr("standard_name").lower()
             model_name = (
                 fn_arg.getAttr("model_var_name") if fn_arg.hasAttr("model_var_name") else None
@@ -780,17 +801,30 @@ def _chost_scan_scheme_phase_args(scheme_names, meta_data, phase_suffixes) -> di
     return by_bare
 
 
-def _chost_resolve_scheme_arg_identities(by_bare: dict) -> "tuple[dict, dict]":
-    """Pure dict transform (no metadata dependency) -- resolve
-    _chost_scan_scheme_phase_args's grouped output into
-    (local_to_std, local_to_dim_names), collision-aware: a bare name
-    backed by exactly one distinct standard_name keeps its plain
-    bare-name key (the common, non-colliding case); a bare name
-    genuinely shared by 2+ distinct standard_names is instead keyed by
-    each sibling's own model_var_name -- precisely what suite_cap.py's
-    own _build_block_and_name_hints renamed that sibling's dummy
-    argument to (mirrors run_dispatch.py's _build_per_suite_run_info /
-    chost-rank3-bindc PR #112 fix exactly).
+def _chost_resolve_scheme_arg_identities(by_bare: dict, pfn_hints=None) -> "tuple[dict, dict]":
+    """Pure dict transform (metadata-independent; pfn_hints, when given,
+    is just a plain name list) -- resolve _chost_scan_scheme_phase_args's
+    grouped output into (local_to_std, local_to_dim_names),
+    collision-aware: a bare name backed by exactly one distinct
+    standard_name keeps its plain bare-name key (the common, non-
+    colliding case); a bare name genuinely shared by 2+ distinct
+    standard_names is instead keyed by each sibling's own model_var_name
+    -- precisely what suite_cap.py's own _build_block_and_name_hints
+    renamed that sibling's dummy argument to (mirrors
+    run_dispatch.py's _build_per_suite_run_info / chost-rank3-bindc
+    PR #112 fix exactly).
+
+    pfn_hints -- the REAL compiled suite-cap function's own block-arg
+    name_hints, used as a cross-check safety net (Copilot PR #113
+    review): an entry whose own identity (neither its bare name nor its
+    model_var_name) appears anywhere in the real signature was excluded
+    from suite_cap.py's own input_arg_list for some reason not covered
+    by _chost_scan_scheme_phase_args's own explicit filters (e.g. the
+    ncol -> col_start/col_end replacement) -- dropped here before
+    deciding whether a bare name's group is a genuine collision, so it
+    can never masquerade as one. Optional (defaults to no filtering) so
+    this function stays usable as a pure, pipeline-free unit-test target
+    without needing a real compiled signature on hand.
 
     An entry with no model_var_name inside a real (len > 1) collision
     group is unreachable in a successful build -- suite_cap.py's own
@@ -799,10 +833,27 @@ def _chost_resolve_scheme_arg_identities(by_bare: dict) -> "tuple[dict, dict]":
     invariant run_dispatch.py's own fix already relies on) -- so it's
     skipped defensively rather than mis-keyed.
     """
+    real_identities = None
+    if pfn_hints is not None:
+        real_identities = set()
+        for h in pfn_hints:
+            if h:
+                real_identities.add(h)
+                real_identities.add(_bare(h))
+
     local_to_std: dict = {}
     local_to_dim_names: dict = {}
     for bare_name, group in by_bare.items():
         entries = list(group.items())
+        if real_identities is not None:
+            entries = [
+                (std_key, (model_name, dim_names))
+                for std_key, (model_name, dim_names) in entries
+                if bare_name in real_identities
+                or (model_name is not None and model_name in real_identities)
+            ]
+        if not entries:
+            continue
         if len(entries) == 1:
             std_key, (_model_name, dim_names) = entries[0]
             local_to_std[bare_name] = std_key
@@ -877,6 +928,36 @@ _LC_TO_ENTRY_SUFFIX = {
     "physics_initial":  ("_init", "_initialize"),
     "physics_final":    ("_finalize",),
 }
+
+# physics_initial/physics_final have no originating scheme-table phase of
+# their own (see _LC_TO_ENTRY_SUFFIX's own comment above) -- they reuse
+# "initialize"/"finalize"'s own scheme-table suffixes.
+_CHOST_SCHEME_LC_ALIASES = {"physics_initial": "initialize", "physics_final": "finalize"}
+
+
+def _chost_scheme_phase_suffixes(lc: str) -> tuple:
+    """All accepted scheme-table-name suffixes for a given chost lifecycle
+    -- chost-identity-collision/chost-dim-collision (Copilot PR #113
+    review): _LC_TO_ENTRY_SUFFIX alone only records ONE spelling for
+    several lifecycles (e.g. "_timestep_final" but not the also-accepted
+    "_timestep_finalize"), which is fine for _ddt_arg_intent/_ddt_out_name
+    below (an endswith scan across ALL scheme tables, with no fallback
+    needed if one spelling is missed -- a different table might still
+    match), but is NOT fine for _chost_scan_scheme_phase_args's own exact
+    per-scheme table-name lookup, newly the ONLY path resolving a
+    scheme-sourced bare name (the old flat global scan this replaced had
+    no suffix filtering at all, so an incomplete list was never a
+    problem before). Union _LC_TO_ENTRY_SUFFIX's own list with
+    cap_shared.py's authoritative _PHASE_SUFFIXES (already used by
+    split_scheme_table_name for the identical underlying problem) so no
+    accepted spelling is missed.
+    """
+    scheme_lc = _CHOST_SCHEME_LC_ALIASES.get(lc, lc)
+    merged = list(_LC_TO_ENTRY_SUFFIX.get(lc, ()))
+    for sfx, phase in _PHASE_SUFFIXES:
+        if phase == scheme_lc and sfx not in merged:
+            merged.append(sfx)
+    return tuple(merged) if merged else (f"_{lc}",)
 
 
 def _ddt_arg_intent(std_name: str, lc: str, meta_data: dict) -> str:
@@ -1007,19 +1088,23 @@ def _chost_fn_contexts(
                 for grp in suite_descriptions.get(suite_name, [])
                 for s in _iter_schemes(grp)
             ]
-        phase_suffixes = _LC_TO_ENTRY_SUFFIX.get(lc, (f"_{lc}",))
+        _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
+        phase_suffixes = _chost_scheme_phase_suffixes(lc)
         _by_bare = (
             _chost_scan_scheme_phase_args(scheme_names_for_fn, meta_data, phase_suffixes)
             if meta_data is not None else {}
         )
+        # pfn_hints: cross-check safety net (Copilot PR #113 review) --
+        # drops any scheme arg whose identity never actually reaches the
+        # real compiled signature (e.g. the ncol -> col_start/col_end
+        # replacement), so it can never masquerade as a false collision.
         local_to_std_scoped, local_to_dim_names_scoped = (
-            _chost_resolve_scheme_arg_identities(_by_bare)
+            _chost_resolve_scheme_arg_identities(_by_bare, pfn_hints=pfn_hints)
         )
         # Scoped (scheme-sourced) entries always win over the flat
         # fallback for the same key -- strictly more precise for this fn.
         local_to_std = {**local_to_std_fallback, **local_to_std_scoped}
         local_to_dim_names = {**local_to_dim_names_fallback, **local_to_dim_names_scoped}
-        _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
 
         infos = []
         ddt_locals: dict = {}
