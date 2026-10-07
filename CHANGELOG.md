@@ -9500,3 +9500,68 @@ unchanged (verified byte-identical above); this was purely a
 process-count/performance fix. `ccpp_prebuild.py`'s own `run_opt()` call
 site is unaffected (still defaults to "ftn" only, never requests C++
 headers, matching its pre-existing behavior exactly).
+
+## `cpp-type-table-unify` resolution: `_chost_cpp_type`/`_cpp_type` now adapt onto one shared decision table (2026-10-07)
+
+**Problem**: `cpp_interop.py`'s `_chost_cpp_type` (reads a resolved
+`ChostArgInfo` descriptor) and `print_cpp_header.py`'s `_cpp_type` (reads
+an MLIR type directly) independently solved the same problem -- map a
+real/int base kind + width + rank + intent to a C++ type string -- from
+two structurally different inputs, each having accreted its own edge
+cases over time with no shared source of truth. Pure maintenance-drift
+risk (BACKLOG.md's own framing): a future type-mapping fix applied to one
+function but not the other.
+
+**Resolution**: extracted the actual common decision rule -- a scalar
+(rank 0) with intent "in" passes by value (matching the Fortran BIND(C)
+VALUE attribute); every other case (any array, or a non-"in" scalar)
+passes by pointer -- into one new shared pure function,
+`cpp_numeric_type(kind, width, rank, intent, const_in_arrays=True)` in a
+new `xdsl_ccpp/util/cpp_type_table.py` (the project's existing shared-
+conventions location, alongside `ccpp_conventions.py`, reachable from
+both `transforms/` and `backend/` without a new cross-layer dependency).
+Both `_chost_cpp_type` and `_cpp_type` now call this table for their
+int/real cases, keeping their own independent handling only for what the
+table doesn't cover (character buffers, bool/logical, and chost's own
+ncol/nz/errflg/scheme-name special cases -- genuinely different problems
+each file solves only for its own domain, not duplicated logic).
+
+Two real, pre-existing behavioral quirks were found while doing this --
+each preserved exactly, as an explicit, documented adapter-level choice
+rather than silently folded into the shared table (the BACKLOG item's
+own explicit caution: "reconciling the edge cases ... needs to be done
+carefully, not as a side effect"):
+- **The one genuine divergence between the two functions**: `_cpp_type`
+  never emits `const` on an array pointer, regardless of intent;
+  `_chost_cpp_type` does, for an intent(in) array. Kept as the new
+  `const_in_arrays` parameter (`_cpp_type` passes `False`, `_chost_cpp_type`
+  keeps the `True` default) -- now a single visible flag instead of two
+  silently different implementations.
+- **`_chost_cpp_type`'s rank-0 real quirk**: a scalar real chost arg
+  always renders as a bare value type (`double`/`float`), even when its
+  own declared intent is "out"/"inout" -- an existing Fortran-generator
+  convention (every real chost scalar is passed by value regardless of
+  Fortran intent). Preserved by forcing `intent="in"` into the shared
+  table only when `rank == 0`, not by changing the table's own rule.
+- **`_chost_cpp_type`'s int quirk**: every non-errflg int arg renders as
+  plain `int`, never `int*`, regardless of its actual rank -- true for
+  every real call site today (the main construction site,
+  `_chost_arg_info`, never advances `rank` for an int arg), but a
+  DDT-member int *array* (`_chost_expand_ddt_arg`, rank can be > 0 there)
+  would also hit this branch and still render as `int`, not `int*` -- a
+  pre-existing, unexercised gap, flagged inline at the call site and
+  left alone (not fixed in this pass; no real suite exercises it today).
+
+**Verification**: full `pytest tests/`: 730 passed (723 + 7 new unit
+tests), 1 xfailed -- zero FileCheck goldens touched, confirming the
+refactor is behavior-preserving everywhere any real suite/example
+exercises it. New `tests/unit/test_cpp_type_table.py` adds the first
+direct unit coverage either function has ever had (previously only
+exercised indirectly through end-to-end FileCheck fixtures) -- pins down
+the shared table's core rule plus both preserved quirks above,
+independent of any particular example suite.
+
+**Risk of leaving as-is**: none -- fully resolved, byte-identical output
+confirmed. The one remaining latent gap (the DDT-member int-array case
+above) is pre-existing and unexercised, not introduced or worsened by
+this pass.

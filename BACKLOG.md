@@ -463,30 +463,21 @@ ID: `cpp-type-table-unify`
 deferred out of the chost cap's own C-header conversion rather than
 rushed.
 
-Both functions solve the same problem — "map a type + intent to a C++
-type string" — but from structurally different inputs: `_chost_cpp_type`
-reads a resolved `ChostArgInfo` dict (booleans like `is_real`/`is_char`,
-an explicit `real_width`), while `_cpp_type` reads an MLIR type directly
-(`MemRefType`/`IntegerType`/`Float32Type`) plus a separate intent string.
-Each has accreted its own edge cases independently: `_chost_cpp_type`
-special-cases `is_ncol`/`is_nz` to `"int"` with no MLIR-type analog;
-`_cpp_type` has no equivalent for the Fortran-generator convention that
-rank-0 real args are always `value, intent(in)` regardless of the
-scheme's actual declared intent.
+**Resolved, removed from the list above** (matching every other resolved
+item in this file): both functions now adapt onto one new shared pure
+function, `cpp_numeric_type` in a new `xdsl_ccpp/util/cpp_type_table.py`,
+for their int/real cases, keeping only genuinely file-specific handling
+(character buffers, bool/logical, chost's own ncol/nz/errflg/scheme-name
+cases) outside it. Two real pre-existing quirks (an array-const-policy
+divergence, and `_chost_cpp_type`'s rank-0-real-always-by-value and
+int-always-bare-`int` conventions) were preserved exactly as explicit,
+documented adapter-level choices, not silently unified away — full
+history, including one flagged-but-unfixed pre-existing latent gap, in
+`CHANGELOG.md`, "`cpp-type-table-unify` resolution" (L9504).
 
-**The right fix**: extract the actual decision table (base kind / width /
-rank / intent → C++ type string) into one small shared pure function,
-with each of the two existing functions becoming a thin adapter that
-maps its own input shape onto that table's parameters. Do this as its own
-focused pass — reconciling the edge cases above needs to be done
-carefully, not as a side effect of unrelated work (this is exactly why it
-was deferred rather than attempted inline).
+### `cpp-dual-print-pipeline`: two fully independent subprocess re-runs to print Fortran and C++ header output
 
-**Risk of leaving as-is**: low — both functions are independently correct
-today, confirmed by the chost cap conversion's own verification (the C
-header, the C++ wrapper, and the regular Fortran-host `_cpp_type` path all
-passing). The cost is purely maintenance drift risk: a future type-mapping
-fix applied to one function but not the other.
+ID: `cpp-dual-print-pipeline`
 
 **Resolved, removed from the list above** (matching every other resolved
 item in this file): `ccpp_dsl.py` now runs the pipeline once and prints
