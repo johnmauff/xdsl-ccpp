@@ -54,6 +54,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _CONSTITUENT_DDT_NAME,
     SUITE_FN_INFIX,
     _bare,
+    _iter_schemes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -152,7 +153,22 @@ def _real_width_from_iso(kind_name: str, kind_entry: "tuple[str, str] | None") -
 
 
 def _chost_build_maps(meta_data):
-    """Build std→host and local→std name maps from metadata for chost arg classification."""
+    """Build std_to_host (host/module-owned naming, global) and a
+    HOST/MODULE/DDT-only local_to_std_fallback (used for synthesized/
+    non-scheme-sourced bare names like col_start/col_end/ncol/nz) from
+    metadata for chost arg classification.
+
+    local_to_std_fallback deliberately EXCLUDES SCHEME tables --
+    chost-identity-collision: a scheme-declared bare local name must be
+    resolved per-suite-fn-group instead (see
+    _chost_scan_scheme_phase_args/_chost_resolve_scheme_arg_identities,
+    wired in by _chost_fn_contexts), since the same bare name can mean
+    different standard_names in different schemes/groups, and this flat,
+    cross-suite, cross-group scan (scheme tables included) was exactly
+    chost-identity-collision's root cause. HOST/MODULE/DDT names are
+    host-owned and suite/scheme-independent (same reasoning as
+    std_to_host below), so keeping those flat here is safe.
+    """
     std_to_host: dict = {}
     for props in meta_data.values():
         if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
@@ -164,17 +180,19 @@ def _chost_build_maps(meta_data):
                     if sn not in std_to_host:
                         std_to_host[sn] = var.name
 
-    local_to_std: dict = {}
+    local_to_std_fallback: dict = {}
     for props in meta_data.values():
+        if props.getAttr("type") == CCPPType.SCHEME:
+            continue
         for atbl in props.arg_tables.values():
             for var in atbl.getFunctionArguments():
-                if var.hasAttr("standard_name") and var.name not in local_to_std:
-                    local_to_std[var.name] = var.getAttr("standard_name").lower()
+                if var.hasAttr("standard_name") and var.name not in local_to_std_fallback:
+                    local_to_std_fallback[var.name] = var.getAttr("standard_name").lower()
 
     ncol_var = (std_to_host.get(CCPP_HORIZ_DIM_STD_NAME)
                 or std_to_host.get(CCPP_LOOP_EXTENT_STD_NAME) or "ncol")
     nz_var = std_to_host.get(CCPP_VERT_DIM_STD_NAME, "nz")
-    return std_to_host, local_to_std, ncol_var, nz_var
+    return std_to_host, local_to_std_fallback, ncol_var, nz_var
 
 
 @dataclass
@@ -661,49 +679,143 @@ def _chost_fn_name(camel_name: str, lc: str) -> str:
     return f"{camel_name}_chost_physics_{lc}"
 
 
-def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
-    """Return the list of suite cap function names for a given lifecycle.
+def _suite_fn_groups_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
+    """Return [(suite_fn_name, group_or_None), ...] for a given lifecycle.
 
     "run", "timestep_initial"/"timestep_final", and "physics_initial"/
-    "physics_final" are all group-scoped -- one
-    suite cap function per XML group, named suite_cap.py's own
-    generated_subroutine_posfix convention (f"_{group_name}" for run,
-    f"_timestep_init_{group_name}" for timestep_initial,
-    f"_timestep_final_{group_name}" for timestep_final,
-    f"_init_{group_name}" for physics_initial, f"_final_{group_name}" for
-    physics_final). Every other lifecycle stays a single flat function --
-    "physics_initial"/"physics_final" are net-new lifecycles, not a moved
-    "initialize"/"finalize" (those stay flat, unchanged, and no longer
-    emit any scheme calls at all -- see suite_cap.py's emit_scheme_calls).
-    This is the same "run is special, everything else is flat" assumption
-    already found and fixed in gpu_data_pass.py/gpu_ccpp_cap_pass.py.
+    "physics_final" are all group-scoped -- one suite cap function per
+    XML group, named suite_cap.py's own generated_subroutine_posfix
+    convention (f"_{group_name}" for run, f"_timestep_init_{group_name}"
+    for timestep_initial, f"_timestep_final_{group_name}" for
+    timestep_final, f"_init_{group_name}" for physics_initial,
+    f"_final_{group_name}" for physics_final). group_or_None is the
+    originating XML group node for these -- chost-identity-collision:
+    needed so a caller can resolve exactly which schemes feed this one
+    suite cap function, instead of a flat, cross-suite, cross-group scan.
+    Every other lifecycle stays a single flat function with no single
+    originating group at all ("physics_initial"/"physics_final" are
+    net-new lifecycles, not a moved "initialize"/"finalize" -- those stay
+    flat, unchanged, and no longer emit any scheme calls at all -- see
+    suite_cap.py's emit_scheme_calls). This is the same "run is special,
+    everything else is flat" assumption already found and fixed in
+    gpu_data_pass.py/gpu_ccpp_cap_pass.py.
     """
+    groups = suite_descriptions.get(suite_name, [])
     if lc == "run":
         return [
-            f"{suite_name}{SUITE_FN_INFIX}_{grp.attributes['name']}"
-            for grp in suite_descriptions.get(suite_name, [])
+            (f"{suite_name}{SUITE_FN_INFIX}_{grp.attributes['name']}", grp)
+            for grp in groups
         ]
     if lc == "timestep_initial":
         return [
-            f"{suite_name}{SUITE_FN_INFIX}_timestep_init_{grp.attributes['name']}"
-            for grp in suite_descriptions.get(suite_name, [])
+            (f"{suite_name}{SUITE_FN_INFIX}_timestep_init_{grp.attributes['name']}", grp)
+            for grp in groups
         ]
     if lc == "timestep_final":
         return [
-            f"{suite_name}{SUITE_FN_INFIX}_timestep_final_{grp.attributes['name']}"
-            for grp in suite_descriptions.get(suite_name, [])
+            (f"{suite_name}{SUITE_FN_INFIX}_timestep_final_{grp.attributes['name']}", grp)
+            for grp in groups
         ]
     if lc == "physics_initial":
         return [
-            f"{suite_name}{SUITE_FN_INFIX}_init_{grp.attributes['name']}"
-            for grp in suite_descriptions.get(suite_name, [])
+            (f"{suite_name}{SUITE_FN_INFIX}_init_{grp.attributes['name']}", grp)
+            for grp in groups
         ]
     if lc == "physics_final":
         return [
-            f"{suite_name}{SUITE_FN_INFIX}_final_{grp.attributes['name']}"
-            for grp in suite_descriptions.get(suite_name, [])
+            (f"{suite_name}{SUITE_FN_INFIX}_final_{grp.attributes['name']}", grp)
+            for grp in groups
         ]
-    return [f"{suite_name}{SUITE_FN_INFIX}_{lc}"]
+    return [(f"{suite_name}{SUITE_FN_INFIX}_{lc}", None)]
+
+
+def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
+    """Return the list of suite cap function names for a given lifecycle.
+
+    Unchanged signature/behavior from before chost-identity-collision --
+    now a thin projection of _suite_fn_groups_for so the two name-
+    building rules can never drift apart.
+    """
+    return [name for name, _grp in _suite_fn_groups_for(lc, suite_name, suite_descriptions)]
+
+
+def _chost_scan_scheme_phase_args(scheme_names, meta_data, phase_suffixes) -> dict:
+    """Scan scheme_names' own arg table for the given lifecycle's
+    phase_suffixes (from _LC_TO_ENTRY_SUFFIX), grouping by bare local
+    name, deduplicated by standard_name -- chost-identity-collision/
+    chost-dim-collision: mirrors run_dispatch.py's _by_bare_name
+    (_build_per_suite_run_info, the chost-rank3-bindc PR #112 fix)
+    exactly, generalized to record EVERY entry, not just host-matched
+    ones, since the caller's local_to_std drives full argument
+    classification for CapScratch/SuiteOwned args too, not just host-var
+    naming.
+
+    Returns {bare_name: {std_key: (model_var_name_or_None, dim_names_or_None)}}.
+    """
+    by_bare: dict = {}
+    for scheme_name in scheme_names:
+        if scheme_name not in meta_data:
+            continue
+        table_name = next(
+            (scheme_name + sfx for sfx in phase_suffixes
+             if (scheme_name + sfx) in meta_data[scheme_name].arg_tables),
+            None,
+        )
+        if table_name is None:
+            continue
+        for fn_arg in meta_data[scheme_name].getArgTable(table_name).getFunctionArguments():
+            if not fn_arg.hasAttr("standard_name"):
+                continue
+            std_key = fn_arg.getAttr("standard_name").lower()
+            model_name = (
+                fn_arg.getAttr("model_var_name") if fn_arg.hasAttr("model_var_name") else None
+            )
+            dim_names = (
+                [d.strip().lower() for d in fn_arg.getAttr("dim_names")]
+                if fn_arg.hasAttr("dim_names") else None
+            )
+            group = by_bare.setdefault(_bare(fn_arg.name), {})
+            if std_key not in group:
+                group[std_key] = (model_name, dim_names)
+    return by_bare
+
+
+def _chost_resolve_scheme_arg_identities(by_bare: dict) -> "tuple[dict, dict]":
+    """Pure dict transform (no metadata dependency) -- resolve
+    _chost_scan_scheme_phase_args's grouped output into
+    (local_to_std, local_to_dim_names), collision-aware: a bare name
+    backed by exactly one distinct standard_name keeps its plain
+    bare-name key (the common, non-colliding case); a bare name
+    genuinely shared by 2+ distinct standard_names is instead keyed by
+    each sibling's own model_var_name -- precisely what suite_cap.py's
+    own _build_block_and_name_hints renamed that sibling's dummy
+    argument to (mirrors run_dispatch.py's _build_per_suite_run_info /
+    chost-rank3-bindc PR #112 fix exactly).
+
+    An entry with no model_var_name inside a real (len > 1) collision
+    group is unreachable in a successful build -- suite_cap.py's own
+    _build_block_and_name_hints hard-errors first on a bare-name
+    collision lacking a model_var_name to disambiguate with (same
+    invariant run_dispatch.py's own fix already relies on) -- so it's
+    skipped defensively rather than mis-keyed.
+    """
+    local_to_std: dict = {}
+    local_to_dim_names: dict = {}
+    for bare_name, group in by_bare.items():
+        entries = list(group.items())
+        if len(entries) == 1:
+            std_key, (_model_name, dim_names) = entries[0]
+            local_to_std[bare_name] = std_key
+            if dim_names is not None:
+                local_to_dim_names[bare_name] = dim_names
+        else:
+            for std_key, (model_name, dim_names) in entries:
+                if model_name is None:
+                    continue
+                local_to_std[model_name] = std_key
+                if dim_names is not None:
+                    local_to_dim_names[model_name] = dim_names
+    return local_to_std, local_to_dim_names
 
 
 def _chost_cpp_type(ai: dict) -> str:
@@ -821,7 +933,7 @@ def _ddt_out_name(ddt_type_name: str, lc: str, meta_data: dict) -> "str | None":
 
 def _chost_fn_contexts(
     camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
-    ncol_var, local_to_std, std_to_host, kind_iso_map,
+    ncol_var, local_to_std_fallback, std_to_host, kind_iso_map,
     meta_data=None, ddt_source_module=None, nz_var="nz",
 ):
     """Yield per-function context dicts for chost cap generation.
@@ -837,15 +949,32 @@ def _chost_fn_contexts(
     pfn_hints, recording what to pass in the suite cap call for each arg.
 
     Functions with no recognised lifecycle or no matching suite cap are skipped.
+
+    local_to_std/local_to_dim_names are resolved per-function below (scoped
+    to exactly the schemes feeding that one suite cap function, collision-
+    aware) rather than once globally -- chost-identity-collision/
+    chost-dim-collision: a flat, cross-suite, cross-group scan risked
+    silently misclassifying (or mis-shaping) an argument whenever two
+    different schemes anywhere in the build reused the same bare local
+    name for genuinely different standard_names. local_to_std_fallback/
+    (HOST/MODULE/DDT-only, built once in _chost_build_maps) covers
+    synthesized/non-scheme-sourced bare names (col_start/col_end/ncol/nz);
+    a scheme-sourced bare name is always resolved by the per-function
+    scoped pass instead, which takes priority when both would apply.
     """
-    # Build local_name → [dim_std_name, ...] for correct vertical-dim resolution.
-    local_to_dim_names: dict = {}
+    # HOST/MODULE/DDT-only dim_names fallback (mirrors local_to_std_fallback's
+    # own SCHEME-table exclusion in _chost_build_maps, same reasoning --
+    # a scheme-declared bare name's dim_names must come from the
+    # per-function scoped pass below, not this flat global scan).
+    local_to_dim_names_fallback: dict = {}
     if meta_data is not None:
         for props in meta_data.values():
+            if props.getAttr("type") == CCPPType.SCHEME:
+                continue
             for atbl in props.arg_tables.values():
                 for var in atbl.getFunctionArguments():
-                    if var.hasAttr("dim_names") and var.name not in local_to_dim_names:
-                        local_to_dim_names[var.name] = var.getAttr("dim_names")
+                    if var.hasAttr("dim_names") and var.name not in local_to_dim_names_fallback:
+                        local_to_dim_names_fallback[var.name] = var.getAttr("dim_names")
 
     contexts = []
     for fn in bind_c_fns:
@@ -853,10 +982,43 @@ def _chost_fn_contexts(
         lc = _lc_of(fn_name)
         if lc is None:
             continue
-        sfns = _suite_fns_for(lc, suite_name, suite_descriptions)
-        suite_fn = next((s for s in sfns if s in public_fns), None)
+        sfn_groups = _suite_fn_groups_for(lc, suite_name, suite_descriptions)
+        sfns = [name for name, _grp in sfn_groups]
+        suite_fn, matched_group = next(
+            ((name, grp) for name, grp in sfn_groups if name in public_fns),
+            (None, None),
+        )
         if suite_fn is None:
             continue
+        # chost-identity-collision/chost-dim-collision: the exact schemes
+        # feeding THIS suite cap function, used below to resolve
+        # local_to_std/local_to_dim_names scoped+collision-aware instead
+        # of via a flat, cross-suite, cross-group scan.
+        if matched_group is not None:
+            scheme_names_for_fn = [s.attributes["name"] for s in _iter_schemes(matched_group)]
+        else:
+            # Flat lifecycle (register/initialize/finalize): no single
+            # originating group, and suite_cap.py emits no scheme calls
+            # for these -- scope to every scheme in the suite (a safe
+            # superset; no scheme-declared bare name should reach
+            # pfn_hints here anyway).
+            scheme_names_for_fn = [
+                s.attributes["name"]
+                for grp in suite_descriptions.get(suite_name, [])
+                for s in _iter_schemes(grp)
+            ]
+        phase_suffixes = _LC_TO_ENTRY_SUFFIX.get(lc, (f"_{lc}",))
+        _by_bare = (
+            _chost_scan_scheme_phase_args(scheme_names_for_fn, meta_data, phase_suffixes)
+            if meta_data is not None else {}
+        )
+        local_to_std_scoped, local_to_dim_names_scoped = (
+            _chost_resolve_scheme_arg_identities(_by_bare)
+        )
+        # Scoped (scheme-sourced) entries always win over the flat
+        # fallback for the same key -- strictly more precise for this fn.
+        local_to_std = {**local_to_std_fallback, **local_to_std_scoped}
+        local_to_dim_names = {**local_to_dim_names_fallback, **local_to_dim_names_scoped}
         _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
 
         infos = []
@@ -1036,12 +1198,12 @@ class CPPInteropCap(ModulePass):
         # builders below -- previously each independently recomputed the
         # same std_to_host/local_to_std/ncol_var/nz_var/kind_iso_map maps
         # and called _chost_fn_contexts on identical inputs.
-        std_to_host, local_to_std, ncol_var, nz_var = _chost_build_maps(meta_data)
+        std_to_host, local_to_std_fallback, ncol_var, nz_var = _chost_build_maps(meta_data)
         kind_iso_map = _chost_kind_iso_map(ccpp_mod) if ccpp_mod is not None else {}
         suite_name = next(iter(suite_descriptions), "")
         fn_ctxs = _chost_fn_contexts(
             camel_name, bind_c_fns, suite_name, suite_descriptions, public_fns,
-            ncol_var, local_to_std, std_to_host, kind_iso_map,
+            ncol_var, local_to_std_fallback, std_to_host, kind_iso_map,
             meta_data=meta_data, ddt_source_module=ddt_source_module, nz_var=nz_var,
         )
 
