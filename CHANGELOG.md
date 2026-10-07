@@ -9419,3 +9419,84 @@ remaining open thread is the deferred Stage 3c (`RealKindType` vs.
 `arith`'s float-only operand constraint, documented in the "Stages 0-4"
 entry) — design, the two-file pilot, and full propagation to every
 file with real retrofit candidates are all done.
+
+## `cpp-dual-print-pipeline` resolution: Fortran and C++ header printers now run from one pipeline pass (2026-10-05)
+
+Archived from `BACKLOG.md`'s open-items list on resolution, matching this
+repo's standard practice of moving resolved items out of the open-items
+list and into this file, with only a short pointer left behind.
+
+**File**: `xdsl_ccpp/tools/ccpp_opt.py`, `xdsl_ccpp/tools/ccpp_dsl.py`,
+`tests/unit/test_build_integration.py`. **Added 2026-09-30** (confirmed
+out of scope while the chost cap's raw-string-to-typed-IR conversion and
+`lang-neutral-expr-ir` were still in progress); **RESOLVED 2026-10-05.**
+PR github.com/johnmauff/xdsl-ccpp/pull/110.
+
+**Original problem**: `ccpp_dsl.py` generated a C++ host's `.F90` caps
+and C++ headers by invoking `ccpp_opt` as two fully independent
+subprocesses — one for `-t ftn`, one for `-t cpp_header` — each
+re-parsing the frontend IR and re-running the *entire* pass pipeline
+from scratch, including rebuilding every `CHostCapOp` from scratch
+twice, just to print two different views of what was otherwise the same
+transformed module. `CHostCapOp`'s payload being typed IR now (not raw
+text, since the chost-cap conversion/`lang-neutral-expr-ir`) made this
+tractable to fix: both printers can safely run against the same
+in-memory module from one pipeline run.
+
+**Resolution**:
+- `ccpp_opt.py` gained a new `ftn_and_cpp_header` pipeline target —
+  calls `print_to_ftn` then `print_to_cpp_headers` against the same
+  `prog`. The C++ section is buffered into an `io.StringIO` first so the
+  `// -----` divider between sections is only emitted when there's
+  actually C++ content to follow, matching each printer's own existing
+  "no content, no FILE marker" convention (needed since neither printer
+  knows about the other's output when called back-to-back).
+- `ccpp_dsl.py`'s `run_opt()` gained a `target: str = "ftn"` parameter.
+  The default preserves `ccpp_prebuild.py`'s own existing Fortran-only
+  call site exactly (that caller never wants C++ header output, so it's
+  deliberately unaffected by the combined-target path). `apply()` now
+  picks `ftn_and_cpp_header` instead of `ftn` when a C++ host is
+  detected (`language = c++` in a host `.meta`, or `--bind-c`), instead
+  of making a second `generate_cpp_headers()` subprocess call.
+  `generate_cpp_headers()` itself was deleted (folded into the combined
+  target); its "no BIND(C) functions found" diagnostic was preserved,
+  now derived from `split_fortran_output()`'s return value (the list of
+  section filenames it found, which that method's own signature was
+  extended to return) instead of checking a separate intermediate
+  file's size.
+- **Copilot review round (2 comments, both real, both fixed)**:
+  (1) `run_opt`'s own docstring initially over-claimed support for
+  `target="cpp_header"` as a standalone value — nothing in the codebase
+  actually calls it that way, but if something did, `post_stage_check`'s
+  unconditional non-empty-output check would wrongly reject a
+  cpp_header-only run's legitimate empty output (no BIND(C) content) as
+  a failure, a case the old, deleted `generate_cpp_headers` had handled
+  explicitly. Fixed by narrowing the docstring to only document the two
+  values actually used ("ftn"/"ftn_and_cpp_header") and explicitly
+  warning against the standalone cpp_header case, rather than adding
+  unneeded special-case branching for a value nothing calls.
+  (2) The new integration test initially only asserted the output files
+  existed — which the OLD two-subprocess implementation would also
+  produce unchanged, so the test gave no real regression coverage for
+  the PR's own defining single-pipeline claim. Fixed by running with
+  `--verbose 2` and asserting the `ccpp_opt` subprocess string appears
+  in stdout exactly once.
+
+**Verification**: full `pytest tests/`: 723 passed (722 + 1 new
+integration test), 1 xfailed — zero FileCheck goldens touched, since
+none of them exercise `ccpp_dsl.py`'s orchestration (they invoke
+`ccpp_opt` directly with a single `-t`, bypassing this entirely). New
+end-to-end CLI test (`test_ccpp_xdsl_generates_both_ftn_and_cpp_headers_
+in_one_run`, using the `tinyddt` C++-host example) covers the combined
+path through the real `ccpp_xdsl` entry point for the first time.
+Manually confirmed the combined target's output is byte-for-byte
+identical to `(old -t ftn output) + "// -----\n" + (old -t cpp_header
+output)`. Measured wall time on that example: ~1.04s (two subprocesses)
+-> ~0.54s (one subprocess), roughly 2x -- savings scale with
+suite/scheme count for real builds.
+
+**Risk of leaving as-is**: none -- fully resolved. Output content is
+unchanged (verified byte-identical above); this was purely a
+process-count/performance fix. `ccpp_prebuild.py`'s own `run_opt()` call
+site is unaffected (still defaults to "ftn" only, never requests C++
+headers, matching its pre-existing behavior exactly).
