@@ -1,0 +1,54 @@
+[ccpp-table-properties]
+  name = ddt_redef
+  type = scheme
+
+[ccpp-arg-table]
+  name = ddt_redef_register
+  type = scheme
+[ dyn_const ]
+  standard_name = dynamic_constituents_for_ddt_redef
+  long_name = constituent properties for ddt_redef
+  dimensions = (:)
+  type = ccpp_constituent_properties_t
+  intent = out
+  allocatable = true
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+
+[ccpp-arg-table]
+  name = ddt_redef_run
+  type = scheme
+[ const_ptr ]
+  standard_name = pointer_to_one_constituent_property_for_ddt_redef
+  long_name = pointer to one constituent's properties
+  dimensions = ()
+  type = ccpp_constituent_prop_ptr_t
+  intent = out
+[ errmsg ]
+  standard_name = ccpp_error_message
+  long_name = error message for error handling in CCPP
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  long_name = error code for error handling in CCPP
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out

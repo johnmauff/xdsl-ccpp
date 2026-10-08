@@ -342,7 +342,7 @@ class ccppMain:
         metacharacters and duplicated the same "build cmd -> verbose-log
         -> execute" shape repeatedly. subprocess.run([...])
         with an explicit stdout redirect closes both gaps at once, matching
-        the pattern ccpp_validate_fir.py/fir2meta.py/flang_utils.py already
+        the pattern ccpp_validate_source.py/fir2meta.py/flang_utils.py already
         use elsewhere in this same tools/ directory.
 
         label -- short, human-readable stage name (e.g. "Running CCPP

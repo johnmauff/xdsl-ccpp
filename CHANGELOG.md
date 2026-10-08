@@ -10125,3 +10125,115 @@ ifx) -- `constadv_cxx_host`/`constprop_cxx_host` compile cleanly and pass
 their CTest checks; full repo build is clean; CI (`compile-tests-cmake.yml`)
 fully green on all matrix entries, including these two, with no
 `continue-on-error` left masking either.
+
+## `ddt-redef-filecheck` resolution: permanent regression test for the DDT-redefinition bug (2026-10-08)
+
+**Problem**: the DDT-redefinition bug fix (this file's own "Workstream 2:
+Fix the DDT redefinition bug" entry, resolved earlier) had no permanent
+regression test -- only the original manual MLIR-inspection verification
+and a real CAM-SIMA fixture (`test_simple_reg_constituent_write_init`)
+external to this repo. `ccpp_cap.py`'s `_generate_ccpp_cap_module` has two
+independent DDT-use-stub-emission paths for a suite sharing a DDT between
+host and scheme (`ccpp_constituent_prop_ptr_t`/`ccpp_constituent_properties_t`):
+`_generate_constituent_api()`'s unconditional hardcoded stubs, and a
+generic `_collect_ddt_use_stubs` scan driven by `ddt_source_module`. Before
+the fix, the generic scan used its own unshared `seen` set and never
+checked the constituent-API path's output, so both could independently
+emit a same-named `llvm.GlobalOp`, producing a "Redefinition of symbol"
+IR-verifier failure whenever a suite both generated a host cap and used
+constituents.
+
+**Investigation**: confirmed via direct code read that the fix itself
+(both paths keyed through one shared `shared_seen_host_globals` set) is
+intact in `ccpp_cap.py`. Confirmed, by checking every example in the repo
+that references `ccpp_constituent_properties_t`/`_prop_ptr_t`
+(`constprop`/`constadv`/`constituents_dim`/`instances`/
+`instances_advection`/`var_compat`), that **none** reaches both
+stub-emission paths for the same DDT simultaneously -- `ddt_source_module`
+(consulted by the generic scan) is only populated for a DDT with a
+*locally-declared* `[ccpp-table-properties] type = ddt` block in the
+parsed `.meta` inputs, and no existing example declares
+`ccpp_constituent_prop_ptr_t` that way; every one only ever references it
+as a plain arg `type =` attribute. So a new, minimal fixture had to be
+authored from scratch to actually exercise the collision, exactly as this
+bug's own original "Remaining follow-up" note anticipated.
+
+**Resolution**: new fixture directory `tests/filecheck/fixtures/ddt_redef/`
+(mirroring the existing `ddt_intent_in/` standalone-fixture convention),
+purpose-built to force the collision: `ccpp_constituent_prop_mod.meta`
+declares `ccpp_constituent_prop_ptr_t` as a local `ddt` table (its file
+stem, `ccpp_constituent_prop_mod`, exactly matches the constituent-API
+path's hardcoded module tag, since `source_module` is set from the
+parsing file's stem); `scheme.meta`'s `_register` table has a `dyn_const`
+(`ccpp_constituent_properties_t`, allocatable, intent=out) to trigger the
+constituent-API path, and its `_run` table has `const_ptr`
+(`ccpp_constituent_prop_ptr_t`, intent=out, no host match -- the same
+"DDT interstitial" shape proven by this session's own
+`test_ddt_interstitial_declaration.py`) to trigger the generic scan for
+the identical type/module pair. New end-to-end test:
+`tests/filecheck/examples/end_to_end/ddt-redef-dedup-xml.mlir`, reusing
+the standard constituent-API-exercising 9-pass pipeline already used by
+`instances_advection-xml.mlir`/`var_compat-xml.mlir`.
+
+**Verification**: confirmed the raw pipeline runs cleanly against the new
+fixture and produces exactly one `use ccpp_constituent_prop_mod, only:
+...` line per constituent-related DDT in the generated host cap (not
+two). Proved this is a real regression guard, not just a passing
+snapshot: temporarily reverted the `shared_seen_host_globals` dedup for
+the generic-scan path only (an unconditional `all_globals.append(stub)`,
+matching the pre-fix shape) and confirmed the pipeline fails with the
+exact original error, `VerifyException: Redefinition of symbol
+"ccpp_constituent_prop_ptr_t"`, and the new FileCheck test fails
+accordingly (`filecheck error: '<stdin>' is empty`); restored the fix and
+confirmed both pass again, with zero diff against the pre-revert state of
+`ccpp_cap.py`. Full `pytest tests/`: 772 passed (up from 771 -- 1 new
+test), 0 failed.
+
+## `task71-validate-fir` resolution: deleted the redundant `ccpp_validate_fir.py` (2026-10-08)
+
+**Problem**: `ccpp_validate_fir.py` (142 lines) and `ccpp_validate_source.py`
+(259 lines) both validate a `.meta` file's argument metadata against the
+real Fortran source (via Flang FIR + the `fir-to-meta` pass), but the
+latter's `--backend flang` path reuses the exact same extraction
+(`flang_utils.find_flang`/`run_flang`, the shared `_run_fir_to_meta`
+helper) and the exact same comparison function (`validate_fir.compare_modules`)
+-- task #37 (2026-08-18) had already unified the Flang-invocation layer
+across both tools (plus `fir2meta.py`), and task #44 the shared
+`make_ccpp_context()`, but the two full CLI tools themselves were never
+consolidated. `ccpp_validate_source.py` is a strict superset: an
+`fparser2` fallback backend when Flang isn't installed, `--host-files`
+dimension-name cross-validation (`check_dimension_names`), and smarter
+non-scheme `.meta` filtering -- none of which contradicts or changes
+`ccpp_validate_fir.py`'s own behavior under the Flang backend.
+
+**Investigation**: the one apparent behavioral difference -- `ccpp_validate_source.py`
+pre-filters out non-scheme-type `.meta` files (host/module-only tables)
+before comparing, while `ccpp_validate_fir.py` doesn't -- turned out to be
+purely cosmetic (a "Skipping..." message vs. a "Validating... OK" message
+with nothing to compare), not a real difference in validation results:
+`compare_modules` itself already only compares arg tables present in
+*both* the `.meta` and FIR-extracted modules, silently ignoring any
+`.meta`-only table (its own docstring says so explicitly: "Tables that
+exist only in the .meta module ... are skipped"). So for the common case
+-- a scheme `.F90`/`.meta` pair, Flang backend -- the two tools produce
+identical validation results.
+
+**Decision**: project owner confirmed `--backend flang` (on
+`ccpp_validate_source.py`) stays indefinitely, settling the real open
+question -- not "which tool survives" but "is `ccpp_validate_fir.py`
+worth keeping at all, given it adds nothing `--backend flang` doesn't
+already do." Decided: delete it.
+
+**Resolution**: removed `xdsl_ccpp/tools/ccpp_validate_fir.py`. Confirmed
+via a repo-wide reference sweep that nothing else depends on it --  no
+console-script entry point, no test file, no import from any other
+module; only `DEVELOPERS.md`'s tool table and three code comments
+(`ccpp_dsl.py`, `ctx_utils.py`, `flang_utils.py`) named it as one of the
+original Flang-invocation duplication sites `flang_utils.py`/`ctx_utils.py`
+were extracted to fix. Updated `DEVELOPERS.md`'s `fir-to-meta` pass
+description to drop the dead reference; updated the three code comments
+to reference `ccpp_validate_source.py` instead (or note the deletion
+where the comment was itself a historical "why this file exists" note).
+
+**Verification**: full `pytest tests/`: 772 passed, 0 failed (no test
+coverage existed for the deleted tool, so none was lost).
