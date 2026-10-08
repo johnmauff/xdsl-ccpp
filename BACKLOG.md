@@ -132,9 +132,20 @@ separate item.
   decide the shape of the returned object and whether the JSON artifact
   stays as the CLI-facing contract with the object return as an
   in-process-only addition, or something else. Size TBD.
-- `optionsdb-list-format` — Also still open: `options_db` takes comma-joined **strings** for
-  file-list arguments where capgen-v1 takes plain Python lists — a real
-  format mismatch (CHANGELOG.md L8267), separate from the above.
+
+**Resolved since last verification (2026-10-08), removed from the list
+above**: `optionsdb-list-format` — `ccpp_dsl.py`'s and `ccpp_xml.py`'s
+own independent `build_options_db_from_args` implementations each
+unconditionally called `.split(",")` on `suites`/`scheme_files`/
+`host_files`/`preproc_defs`, crashing (`AttributeError`) on a real Python
+list instead of accepting it like capgen-v1 does. Confirmed the
+downstream pipeline already fully supported native lists (proven by
+`ccpp_prebuild.py`'s own direct `options_db` list assignment, bypassing
+`build_options_db_from_args` entirely) — the gap was isolated to that one
+function. Fixed via a new shared `coerce_list_option()`
+(`xdsl_ccpp/util/options_db.py`), used at all 7 call sites: accepts a
+comma-joined string (unchanged CLI contract) or a real list/tuple
+(passed through). CHANGELOG.md L10241.
 
 ## From `capgen_v1_parity_backlog.md` (merged 2026-09-29)
 
