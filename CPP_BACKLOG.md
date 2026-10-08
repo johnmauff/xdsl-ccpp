@@ -31,7 +31,8 @@ Last synchronized with `BACKLOG.md`: 2026-10-08 (after `chost-rank3-bindc`
 and both `chost-identity-collision`/`chost-dim-collision` resolved;
 following `cpp-type-table-unify` and `cpp-dual-print-pipeline`;
 `lang-neutral-expr-ir` (including Stage 3c, now fully done) resolved;
-new `chost-real-width-fallback` item found during that work).
+`chost-real-width-fallback`, found during that work, resolved the same
+day).
 
 ## Recommended near-term path
 
@@ -126,29 +127,34 @@ numbered list below (renumbered accordingly).
    module-level `ccpp_suite_state` variable; safe today only because the
    one real driver is single-threaded. Lower urgency than 2/3 — no known
    real caller is multi-threaded yet.
-5. **`chost-real-width-fallback`** — found 2026-10-08 during
-   `lang-neutral-expr-ir` Stage 3c's work above: `cpp_interop.py`'s
-   `_real_width_from_iso` silently defaults to 64-bit for any kind it
-   can't resolve via the ISO-name map, including an unresolved bare-digit
-   kind (a hypothetical `kind = 4` would be silently mis-widened).
-   Latent only — no real fixture currently declares `kind = 4`. Fix:
-   consult the new Fortran-side `real_kind_width` helper before falling
-   back to 64. Low effort, low urgency.
+
+**`chost-real-width-fallback` — RESOLVED 2026-10-08**: `cpp_interop.py`'s
+`_real_width_from_iso` silently defaulted to 64-bit for any kind it
+couldn't resolve via the ISO-name map, including an unresolved
+bare-digit kind (a `kind = 4` field would have been silently mis-widened
+to double instead of float across the C++/BIND(C) boundary). Confirmed
+this was a genuinely reachable gap, not made moot by `lang-neutral-expr-ir`
+Stage 3c's own Fortran-side reclassification: a DDT member's width is
+inferred directly from its own raw metadata `kind` string, independent of
+the suite-cap block-arg MLIR type Stage 3c touches. Fixed by consulting
+the Fortran-side `real_kind_width` helper before falling back to 64. See
+`BACKLOG.md`'s entry and `CHANGELOG.md`'s resolution writeup for full
+detail; removed from the numbered list above (renumbered accordingly).
 
 ## Tier 4 — bigger downstream investment (EAMxx C++ bridge)
 
-6. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
+5. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
    deviceptr` host-meta property for zero-staging GPU pointer passing.
    Directly resolves `chost-gpu-memory` above — doing this closes two
    backlog items for the cost of one.
-7. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
+6. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
    generator changes), catches a real class of silent coverage gaps.
    Worth doing opportunistically any time, independent of the phased
    work below.
-8. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
+7. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
     tag so a scheme can declare separate CPU/GPU argument lists. A loose
     prerequisite for Phase C below.
-9. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
+8. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
     `AtmosphereProcess` class, not just the BIND(C) layer. An order of
     magnitude more effort than everything above combined; only worth
     starting once the groundwork above has landed and real EAMxx
