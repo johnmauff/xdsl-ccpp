@@ -17,6 +17,7 @@ from xdsl.dialects.builtin import (
     IntegerAttr,
     IntegerType,
     MemRefType,
+    i1,
 )
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
@@ -113,10 +114,17 @@ _CONSTITUENT_STRUCT_FIELDS = [
 # into the BIND(C) buffer. "mix_ratio_type" has no real 1:1 accessor (the
 # real module decomposes it into separate is_mass_mixing_ratio/
 # is_volume_mixing_ratio/is_number_concentration/is_dry/is_moist/is_wet
-# boolean predicates instead of one combined field) -- left as a blank
-# string (accessor=None), matching the pre-2026-09-07 simplified stub's
-# own default value for this field, and confirmed neither
-# driver_constprop_chost.cpp nor driver_constadv_chost.cpp ever reads it.
+# boolean predicates instead of one combined field) -- its entry here
+# (accessor=None) is a sentinel the generator below special-cases,
+# deriving the same 'dry'/'wet'/'moist' string the pre-2026-09-07
+# simplified stub stored directly, via is_dry/is_wet/is_moist (mutually
+# exclusive per ccp_is_dry/ccp_is_wet/ccp_is_moist's own single-enum
+# comparison against this%const_water -- confirmed by direct read of
+# ccpp_constituent_prop_mod.F90). Reviewed in PR #118 (Copilot): blanking
+# this field unconditionally would have silently contradicted
+# multilanguage_limitations.md's own documented full-metadata query
+# promise, even though neither driver_constprop_chost.cpp nor
+# driver_constadv_chost.cpp currently reads it.
 _CONSTITUENT_ACCESSORS = {
     "std_name":         ("standard_name",     "character(len=128)"),
     "long_name":        ("long_name",         "character(len=128)"),
@@ -125,7 +133,7 @@ _CONSTITUENT_ACCESSORS = {
     "min_val":          ("minimum",           "real(kind=kind_phys)"),
     "is_advected_flag": ("is_advected",       "logical"),
     "is_water":         ("is_water_species",  "logical"),
-    "mix_ratio_type":   (None,                "character(len=32)"),
+    "mix_ratio_type":   (None,                "character(len=32)"),  # derived, see comment above
     "vert_dim":         ("vertical_dimension", "character(len=64)"),
     "default_val_set":  ("has_default",       "logical"),
     "molar_mass_val":   ("molar_mass",        "real(kind=kind_phys)"),
@@ -1706,7 +1714,23 @@ class CPPInteropCap(ModulePass):
                     accessor, _decl = _CONSTITUENT_ACCESSORS[fname]
                     src = f"chost_v_{fname}"
                     dst = f"buf(chost_idx)%{fname}"
-                    if accessor is None:
+                    if fname == "mix_ratio_type":
+                        # No 1:1 accessor -- derive 'dry'/'wet'/'moist' from
+                        # the three mutually-exclusive predicates instead
+                        # (see _CONSTITUENT_ACCESSORS' own comment).
+                        inner_do_body.append(AssignOp(lhs_expr=src, rhs_expr="''"))
+                        for _pred, _label in (
+                            ("is_dry", "dry"), ("is_wet", "wet"), ("is_moist", "moist"),
+                        ):
+                            inner_do_body.append(DdtMethodCallOp(
+                                obj_expr=f"chost_{cv}(chost_i)", method=_pred,
+                                args=["chost_v_mix_pred", "chost_errcode", "chost_errmsg"],
+                            ))
+                            inner_do_body.extend(_scf_if(
+                                VarRefExprOp("chost_v_mix_pred", result_type=i1),
+                                [AssignOp(lhs_expr=src, rhs_expr=f"'{_label}'")],
+                            ))
+                    elif accessor is None:
                         inner_do_body.append(AssignOp(lhs_expr=src, rhs_expr="''"))
                     else:
                         inner_do_body.append(DdtMethodCallOp(
@@ -1758,6 +1782,7 @@ class CPPInteropCap(ModulePass):
                     "integer :: chost_idx, chost_j, chost_slen, chost_i",
                     "integer :: chost_errcode",
                     "character(len=512) :: chost_errmsg",
+                    "logical :: chost_v_mix_pred",
                     *_field_temp_decls,
                 ],
                 body_ops=gci_body,
