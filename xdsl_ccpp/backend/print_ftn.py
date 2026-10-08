@@ -532,6 +532,14 @@ class ftnPrintContext:
                 return rk.kind_name.data
             case CCPPRealKindType() as rk:
                 return rk.kind_name.data
+            case MemRefType(element_type=Float32Type()):
+                return "4"
+            case MemRefType(element_type=Float64Type()):
+                return "8"
+            case Float32Type():
+                return "4"
+            case Float64Type():
+                return "8"
             case _:
                 return None
 

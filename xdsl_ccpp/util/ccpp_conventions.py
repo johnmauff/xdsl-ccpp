@@ -323,6 +323,22 @@ CCPP_KIND_TO_ISO: dict = {
     "kind_phys": "REAL64",
 }
 
+
+def real_kind_width(kind: str) -> "int | None":
+    """Return 4 or 8 if `kind` is a bare numeric Fortran KIND literal
+    (e.g. "8", "4"), else None (a named/symbolic kind like "kind_phys").
+
+    A bare digit is already valid, self-contained Fortran (`real(kind=8)`)
+    with no portable kind-name meaning to preserve -- unlike a named kind,
+    whose own symbolic name must stay intact in the generated declaration
+    (see RealKindType's own docstring). This is intentionally separate
+    from suite_kinds.py's own `isdigit()` check, which answers a different
+    question (whether a kind needs a `public ::` export), not a width.
+    """
+    if kind.isdigit():
+        return int(kind)
+    return None
+
 #: ``kind_spec`` value in a ``[ccpp-table-properties]`` block -- matches real
 #: capgen-v1's own syntax (``metadata/metadata_table.py``'s ``_KIND_SPEC_RE``).
 #: Two accepted forms:
