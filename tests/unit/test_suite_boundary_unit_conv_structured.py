@@ -33,7 +33,7 @@ _ONE_SCHEME_SUITE_XML = """\
 """
 
 
-def _scheme_meta(kind: str, dimensions: str) -> str:
+def _scheme_meta(kind: str, dimensions: str, units: str = "cm") -> str:
     return f"""\
 [ccpp-table-properties]
   name = scheme_a
@@ -43,7 +43,7 @@ def _scheme_meta(kind: str, dimensions: str) -> str:
   type = scheme
 [ x ]
   standard_name = shared_var
-  units = cm
+  units = {units}
   type = real
   kind = {kind}
   dimensions = {dimensions}
@@ -52,7 +52,7 @@ def _scheme_meta(kind: str, dimensions: str) -> str:
 """
 
 
-def _host_meta(kind: str, dimensions: str) -> str:
+def _host_meta(kind: str, dimensions: str, units: str = "m") -> str:
     return f"""\
 [ccpp-table-properties]
   name = test_host_mod
@@ -62,17 +62,20 @@ def _host_meta(kind: str, dimensions: str) -> str:
   type = module
 [ host_x ]
   standard_name = shared_var
-  units = m
+  units = {units}
   type = real
   kind = {kind}
   dimensions = {dimensions}
 """
 
 
-def _run(run_host_match, ccpp_context, scheme_kind: str, host_kind: str, dimensions: str):
+def _run(
+    run_host_match, ccpp_context, scheme_kind: str, host_kind: str, dimensions: str,
+    scheme_units: str = "cm", host_units: str = "m",
+):
     module = run_host_match(
-        scheme_metas=[_scheme_meta(scheme_kind, dimensions)],
-        host_metas=[_host_meta(host_kind, dimensions)],
+        scheme_metas=[_scheme_meta(scheme_kind, dimensions, scheme_units)],
+        host_metas=[_host_meta(host_kind, dimensions, host_units)],
         suite_xml=_ONE_SCHEME_SUITE_XML,
     )
     ArgOwnershipPass().apply(ccpp_context, module)
@@ -128,6 +131,32 @@ class TestNamedKindStaysOnOpaquePath:
         )
         assert unit_convert_op.to_scheme_expr is not None
         assert unit_convert_op.conversion is None
+
+
+class TestExponentFormLiteralStaysOnOpaquePath:
+    """(um, m) uses exponent-form literals ("* 1.0E6" / "* 1.0E-6") whose
+    spelling Python's float-to-str round trip can't reproduce exactly
+    ("1.0E6" -> "1000000.0", "1.0E-6" -> "1e-06") -- _parse_unit_conversion
+    must recognize this and stay on the opaque-text path rather than
+    silently emitting a differently-spelled (if numerically equal)
+    literal (Copilot PR #115 review)."""
+
+    def test_builds_opaque_text_not_a_conversion_region(self, run_host_match, ccpp_context):
+        unit_convert_op, _fortran = _run(
+            run_host_match, ccpp_context, scheme_kind="8", host_kind="8", dimensions="()",
+            scheme_units="um", host_units="m",
+        )
+        assert unit_convert_op.to_scheme_expr is not None
+        assert unit_convert_op.conversion is None
+
+    def test_printed_fortran_keeps_the_original_literal_spelling(self, run_host_match, ccpp_context):
+        _unit_convert_op, fortran = _run(
+            run_host_match, ccpp_context, scheme_kind="8", host_kind="8", dimensions="()",
+            scheme_units="um", host_units="m",
+        )
+        fn = _fn_body(fortran, "test_suite_physics")
+        unit_conv_line = next(l for l in fn.splitlines() if "x_unit_conv = " in l)
+        assert "x * 1.0E6_8" in unit_conv_line
 
 
 class TestArrayShapedArgStaysOnOpaquePath:

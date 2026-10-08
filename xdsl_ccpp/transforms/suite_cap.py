@@ -924,13 +924,25 @@ def _build_block_and_name_hints(input_arg_list) -> tuple:
 _UNIT_CONV_OP_MAP = {"+": arith.AddfOp, "-": arith.SubfOp, "*": arith.MulfOp}
 
 
-def _parse_unit_conversion(expr: str) -> tuple:
+def _parse_unit_conversion(expr: str) -> "tuple | None":
     """Split a UNIT_CONVERSIONS value ("<op> <value>", e.g. "+ 273.15")
-    into (arith op class, float value). No '/' entry exists in
-    UNIT_CONVERSIONS today (reciprocal multiply is used instead) -- fail
-    loudly rather than silently mis-parse one if that ever changes."""
+    into (arith op class, float value), or None if the literal's own
+    text isn't reproduced exactly by Python's float-to-str round trip
+    (e.g. "1.0E6" prints back as "1000000.0", "1.0E-6" as "1e-06" --
+    confirmed via the (um, m)/(m, um) UNIT_CONVERSIONS entries; Copilot
+    PR #115 review). The structured path must print byte-identically to
+    the opaque-text path, so an entry whose spelling can't be guaranteed
+    to round-trip stays on the opaque path instead of silently emitting
+    a differently-spelled (if numerically equal) literal. No '/' entry
+    exists in UNIT_CONVERSIONS today (reciprocal multiply is used
+    instead) -- fail loudly rather than silently mis-parse one if that
+    ever changes.
+    """
     op_str, value_str = expr.split(" ", 1)
-    return _UNIT_CONV_OP_MAP[op_str], float(value_str)
+    value = float(value_str)
+    if str(value) != value_str:
+        return None
+    return _UNIT_CONV_OP_MAP[op_str], value
 
 
 def _apply_kind_and_unit_casts(
@@ -1017,6 +1029,7 @@ def _apply_kind_and_unit_casts(
             # when the top-level kind_cast_ops list is later inserted into
             # the real function body -- a chained kind+unit mismatch stays
             # on the opaque-text path for now.
+            structured_conv = None
             if (
                 kind_str is not None
                 and real_kind_width(kind_str) is not None
@@ -1024,7 +1037,9 @@ def _apply_kind_and_unit_casts(
                 and intent != "out"
                 and isinstance(cur, BlockArgument)
             ):
-                op_cls, value = _parse_unit_conversion(to_scheme_expr)
+                structured_conv = _parse_unit_conversion(to_scheme_expr)
+            if structured_conv is not None:
+                op_cls, value = structured_conv
                 load_op = memref.LoadOp.get(cur, [])
                 const_op = arith.ConstantOp(FloatAttr(value, arg_type.element_type))
                 conv_arith_op = op_cls(load_op, const_op)
