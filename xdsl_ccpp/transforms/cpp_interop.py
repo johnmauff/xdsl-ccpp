@@ -38,6 +38,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CppNamespaceOp,
     CppStructDefOp,
     CToFortranStringCopyOp,
+    DdtMethodCallOp,
     DerivedType,
     ExternCGuardOp,
     FortranToCStringCopyOp,
@@ -100,6 +101,36 @@ _CONSTITUENT_STRUCT_FIELDS = [
     ("molar_mass_val",   "real",    None),
     ("thermo_active",    "logical", None),
 ]
+
+# Maps each _CONSTITUENT_STRUCT_FIELDS field name to (real bound-procedure
+# name on ccpp_constituent_properties_t, Fortran declaration for a local
+# temp to hold its output). Every field's data is `private` on the real
+# module (xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90) -- direct
+# `%fname` component access (this code's own behavior before this fix)
+# does not compile; every accessor is a *subroutine*
+# `(this, out_arg, errcode, errmsg)`, not a plain function, so each field
+# needs its own call plus a temp var to receive the result before copying
+# into the BIND(C) buffer. "mix_ratio_type" has no real 1:1 accessor (the
+# real module decomposes it into separate is_mass_mixing_ratio/
+# is_volume_mixing_ratio/is_number_concentration/is_dry/is_moist/is_wet
+# boolean predicates instead of one combined field) -- left as a blank
+# string (accessor=None), matching the pre-2026-09-07 simplified stub's
+# own default value for this field, and confirmed neither
+# driver_constprop_chost.cpp nor driver_constadv_chost.cpp ever reads it.
+_CONSTITUENT_ACCESSORS = {
+    "std_name":         ("standard_name",     "character(len=128)"),
+    "long_name":        ("long_name",         "character(len=128)"),
+    "units":            ("units",             "character(len=32)"),
+    "default_val":      ("default_value",     "real(kind=kind_phys)"),
+    "min_val":          ("minimum",           "real(kind=kind_phys)"),
+    "is_advected_flag": ("is_advected",       "logical"),
+    "is_water":         ("is_water_species",  "logical"),
+    "mix_ratio_type":   (None,                "character(len=32)"),
+    "vert_dim":         ("vertical_dimension", "character(len=64)"),
+    "default_val_set":  ("has_default",       "logical"),
+    "molar_mass_val":   ("molar_mass",        "real(kind=kind_phys)"),
+    "thermo_active":    ("is_thermo_active",  "logical"),
+}
 
 
 # _emit_subr_header/_emit_call (hand-rolled column-wrap loops) removed:
@@ -1141,7 +1172,7 @@ def _chost_fn_contexts(
                 constituent_vars.append(bare)
                 suite_call_pieces.append({
                     "kind": "constituent_mod_var",
-                    "name": f"_chost_{bare}",
+                    "name": f"chost_{bare}",
                 })
                 continue
 
@@ -1200,6 +1231,35 @@ def _chost_fn_contexts(
                 infos.extend(member_ais)
                 ddt_locals[prefix] = local_info
                 ddt_out_locals.append(local_info["local_name"])
+
+        # Resolve rank-3 arrays whose 3rd dimension has no HOST/MODULE-table
+        # standard_name -- _chost_arg_info's own dim_n3 resolution only checks
+        # std_to_host (chost-rank3-bindc's fix, HOST/MODULE tables only), so a
+        # dimension declared ONLY on a SCHEME table (e.g. constadv's `q`'s 3rd
+        # dim, number_of_ccpp_constituents, declared solely via the scheme's own
+        # `ncnst` arg) is left unresolved there. That dimension's value is still
+        # available here, though: a sibling scalar scheme arg in this exact
+        # suite call already carries that same standard_name (resolved into
+        # `infos` above via the per-function scoped local_to_std) -- reuse ITS
+        # host name as the explicit-shape bound instead of falling back to
+        # assumed-size, the same rank/class mismatch chost-rank3-bindc fixed
+        # for the plain --bind-c path.
+        for _ai in infos:
+            if _ai["rank"] >= 3 and _ai["is_real"] and not _ai.get("dim_n3"):
+                _dim_names = local_to_dim_names.get(_ai["bare"], [])
+                for _d in _dim_names:
+                    _d_lo = _d.lower()
+                    if (_d_lo in CCPP_HORIZONTAL_DIMENSIONS
+                            or _d_lo in CCPP_VERTICAL_DIMENSIONS):
+                        continue
+                    _sibling = next(
+                        (s for s in infos
+                         if s["is_int"] and s["rank"] == 0 and s["std"] == _d_lo),
+                        None,
+                    )
+                    if _sibling is not None:
+                        _ai["dim_n3"] = _sibling["host"]
+                        break
 
         # Mark scalar ints that provide the 3rd dimension of a rank-3 array.
         # Reuses is_dim_scalar so they land in the State constructor automatically.
@@ -1443,7 +1503,7 @@ class CPPInteropCap(ModulePass):
             HA("  end type chost_constituent_info_t")
             HA("")
             for cv in all_constituent_vars:
-                HA(f"  type({_CONSTITUENT_DDT_NAME}), allocatable, save :: _chost_{cv}(:)")
+                HA(f"  type({_CONSTITUENT_DDT_NAME}), allocatable, save :: chost_{cv}(:)")
         HA("")
         HA("contains")
 
@@ -1605,13 +1665,23 @@ class CPPInteropCap(ModulePass):
             ))
 
         # ── Constituent query functions ──────────────────────────────────────────
+        # Every local/module variable name built below must NOT start with a
+        # leading underscore ("chost_", not "_chost_") -- a bare identifier
+        # beginning with "_" is invalid Fortran (names must start with a
+        # letter; confirmed directly against gfortran, which rejects it
+        # unconditionally as "Invalid character in name", not a style
+        # preference or GNU-extension-gated restriction). This constituent-
+        # query code is the only place in the whole chost cap generator that
+        # ever uses "_chost_"-prefixed names as *bare* identifiers rather
+        # than as part of a longer, letter-led name -- confirmed the sole
+        # root cause of constadv/constprop's compile failures.
         if all_constituent_vars:
             nc_body: list = [AssignOp(lhs_expr="n", rhs_expr="0_c_int")]
             for cv in all_constituent_vars:
                 nc_body.extend(_scf_if(
-                    _allocated_cond(f"_chost_{cv}"),
+                    _allocated_cond(f"chost_{cv}"),
                     [AssignOp(
-                        lhs_expr="n", rhs_expr=f"n + int(size(_chost_{cv}), c_int)"
+                        lhs_expr="n", rhs_expr=f"n + int(size(chost_{cv}), c_int)"
                     )],
                 ))
             module_ops.append(BindCSubroutineOp(
@@ -1623,31 +1693,39 @@ class CPPInteropCap(ModulePass):
                 result_decl="integer(c_int) :: n",
             ))
 
-            gci_body: list = [AssignOp(lhs_expr="_chost_idx", rhs_expr="0")]
+            gci_body: list = [AssignOp(lhs_expr="chost_idx", rhs_expr="0")]
             for cv in all_constituent_vars:
                 inner_do_body: list = [
-                    AssignOp(lhs_expr="_chost_idx", rhs_expr="_chost_idx + 1"),
+                    AssignOp(lhs_expr="chost_idx", rhs_expr="chost_idx + 1"),
                     *_scf_if(
-                        _int_var_cmp("_chost_idx", "n", "sgt"),
+                        _int_var_cmp("chost_idx", "n", "sgt"),
                         [RawFortranLinesOp("return")],
                     ),
                 ]
                 for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
-                    src = f"_chost_{cv}(_chost_i)%{fname}"
-                    dst = f"buf(_chost_idx)%{fname}"
+                    accessor, _decl = _CONSTITUENT_ACCESSORS[fname]
+                    src = f"chost_v_{fname}"
+                    dst = f"buf(chost_idx)%{fname}"
+                    if accessor is None:
+                        inner_do_body.append(AssignOp(lhs_expr=src, rhs_expr="''"))
+                    else:
+                        inner_do_body.append(DdtMethodCallOp(
+                            obj_expr=f"chost_{cv}(chost_i)", method=accessor,
+                            args=[src, "chost_errcode", "chost_errmsg"],
+                        ))
                     if fkind == "char":
                         inner_do_body.append(AssignOp(
-                            lhs_expr="_chost_slen", rhs_expr=f"min(len_trim({src}), {flen})"
+                            lhs_expr="chost_slen", rhs_expr=f"min(len_trim({src}), {flen})"
                         ))
                         inner_do_body.append(TextBoundedDoLoopOp(
-                            loop_var="_chost_j", upper_expr="_chost_slen",
+                            loop_var="chost_j", upper_expr="chost_slen",
                             body_ops=[AssignOp(
-                                lhs_expr=f"{dst}(_chost_j)",
-                                rhs_expr=f"{src}(_chost_j:_chost_j)",
+                                lhs_expr=f"{dst}(chost_j)",
+                                rhs_expr=f"{src}(chost_j:chost_j)",
                             )],
                         ))
                         inner_do_body.append(AssignOp(
-                            lhs_expr=f"{dst}(min(_chost_slen+1,{flen+1}))",
+                            lhs_expr=f"{dst}(min(chost_slen+1,{flen+1}))",
                             rhs_expr="c_null_char",
                         ))
                     elif fkind == "real":
@@ -1659,12 +1737,15 @@ class CPPInteropCap(ModulePass):
                             lhs_expr=dst, rhs_expr=f"logical({src}, c_bool)"
                         ))
                 gci_body.extend(_scf_if(
-                    _allocated_cond(f"_chost_{cv}"),
+                    _allocated_cond(f"chost_{cv}"),
                     [TextBoundedDoLoopOp(
-                        loop_var="_chost_i", upper_expr=f"size(_chost_{cv})",
+                        loop_var="chost_i", upper_expr=f"size(chost_{cv})",
                         body_ops=inner_do_body,
                     )],
                 ))
+            _field_temp_decls = [
+                f"{decl} :: chost_v_{fname}" for fname, (_a, decl) in _CONSTITUENT_ACCESSORS.items()
+            ]
             module_ops.append(BindCSubroutineOp(
                 fn_name=f"{mod_name}_get_constituent_info",
                 bind_name=f"{mod_name}_get_constituent_info",
@@ -1673,7 +1754,12 @@ class CPPInteropCap(ModulePass):
                     "type(chost_constituent_info_t), intent(out) :: buf(n)",
                     "integer(c_int), value, intent(in) :: n",
                 ],
-                local_decls=["integer :: _chost_idx, _chost_j, _chost_slen, _chost_i"],
+                local_decls=[
+                    "integer :: chost_idx, chost_j, chost_slen, chost_i",
+                    "integer :: chost_errcode",
+                    "character(len=512) :: chost_errmsg",
+                    *_field_temp_decls,
+                ],
                 body_ops=gci_body,
             ))
 
