@@ -316,10 +316,10 @@ Full detail, resolved-item history, and usage guidance stay in
 `multilanguage_limitations.md` (kept standalone — it's live chost usage
 reference, not backlog noise). These 3 items are its only open ones as
 of 2026-10-07 (11 of its 14 numbered items are now resolved); pointer
-entries here so they surface in a backlog sweep too. A 4th, new, smaller
-item (`chost-real-width-fallback`, below) was found 2026-10-08 and is
-tracked here only — not yet folded into `multilanguage_limitations.md`'s
-own numbering.
+entries here so they surface in a backlog sweep too. A 4th item
+(`chost-real-width-fallback`), found and resolved the next day, was
+tracked here only — never folded into `multilanguage_limitations.md`'s
+own numbering, since it was closed before that was needed.
 
 **`chost-rank3-bindc` — RESOLVED 2026-10-07**: the plain `--bind-c` path
 (no chost layer) was non-functional for *every* array rank, not just
@@ -371,22 +371,23 @@ for full detail.
   Low-Medium effort; multi-instance support (see above) is one viable
   fix path, now that its own reference to the removed `--num-instances`
   flag has been corrected. `multilanguage_limitations.md` §6.
-- `chost-real-width-fallback` — **Bare-digit real kind silently mis-widens to 64-bit** —
-  found 2026-10-08 during `lang-neutral-expr-ir` Stage 3c's narrow
-  classification work (see above). `cpp_interop.py`'s
-  `_real_width_from_iso` (C++ chost-interop width inference) silently
-  defaults to 64-bit for *any* kind it can't resolve via the ISO-name map
-  — including an unresolved bare-digit kind like a hypothetical
-  `kind = 4` (single precision), since `suite_kinds.py`'s own `MetaKind`
-  pass deliberately never creates a `ccpp.kind` entry for a bare-digit
-  kind in the first place (correctly so, for its own, different decision
-  — whether a `public ::` export is needed). No real `.meta` fixture
-  currently declares `kind = 4` (only `kind = 8`, which happens to match
-  the 64-bit default by luck), so this is latent, not yet observed in
-  practice. Fix: have `_real_width_from_iso`'s `kind_entry is None`
-  branch consult the new Fortran-side `real_kind_width`
-  (`ccpp_conventions.py`) before falling back to 64. Low effort, low
-  urgency (latent only).
+
+**`chost-real-width-fallback` — RESOLVED 2026-10-08**: `cpp_interop.py`'s
+`_real_width_from_iso` silently defaulted to 64-bit for any kind it
+couldn't resolve via the ISO-name map — including an unresolved
+bare-digit kind like `kind = 4` (single precision), since
+`suite_kinds.py`'s own `MetaKind` pass deliberately never creates a
+`ccpp.kind` entry for a bare-digit kind. Fixed by consulting the
+Fortran-side `real_kind_width` (`ccpp_conventions.py`) before falling
+back to 64 — note `real_kind_width` returns a byte count (4/8), not a
+bit width, so the fix multiplies by 8. Confirmed this path is genuinely
+reachable (not made moot by `lang-neutral-expr-ir` Stage 3c's own
+Fortran-side `TypeConversions.convert` reclassification): a DDT member's
+real width is inferred directly from the member's own raw metadata
+`kind` string (`_chost_expand_ddt_arg`), independent of the suite-cap
+block-arg MLIR type Stage 3c touches. 4 new unit tests in
+`tests/unit/test_cpp_interop_kind_width.py`. See `CHANGELOG.md`'s
+resolution writeup for full detail.
 
 ## Fortran host → C++ scheme: no compiled end-to-end test
 
