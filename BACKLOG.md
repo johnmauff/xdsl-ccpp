@@ -316,54 +316,22 @@ content today. The only remaining risk is scoped entirely to Stage 3c's
 
 ID: `ifthenop-scf-unify`
 
-**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (`IfThenOp`); printer support in
-`xdsl_ccpp/backend/print_ftn.py`. **Added 2026-10-07**, found during a
-reflective code-reuse audit prompted by the same kind of discovery that
-shaped `lang-neutral-expr-ir` above (xDSL's own `arith`/`math` dialects
-turning out to already cover ops this project was about to reinvent).
+**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (`IfThenOp`, now removed);
+printer support in `xdsl_ccpp/backend/print_ftn.py`. **Added 2026-10-07**,
+found during a reflective code-reuse audit.
 
-`IfThenOp` emits a plain `if (cond) then ... end if` (no else) — a
-condition (opaque text, or a region-wrapped expr-op tree) plus one body
-region, `NoTerminator()`. xDSL's real `scf.IfOp` already covers exactly
-this shape: constructing it with no `false_region` defaults to an empty
-one, needs no results for a statement-only if, and uses a bare
-`scf.YieldOp()` terminator. The one structural difference —
-`IfThenOp`'s condition can be opaque text or a region-wrapped expr tree,
-vs. `scf.IfOp`'s plain `i1` SSA operand — is itself the tell: building
-the condition's `arith.CmpiOp`/etc. tree as ordinary preceding SSA ops
-and wiring the result straight into `scf.IfOp`'s own condition operand
-is the idiomatic MLIR approach, and would eliminate the "condition
-region" special-casing (and its `_single_op_region`/
-`_flatten_floating_deps` workaround, built specifically for
-`lang-neutral-expr-ir`) for this one op entirely.
-
-Confirmed this isn't theoretical: `scf.IfOp` is already pervasively used
-elsewhere in this same codebase (suite-name/suite-part dispatch chains)
-with full, working printer support already in place
-(`print_ftn.py`'s `case scf.IfOp(...)` match arm, and its own "Print an
-scf.IfOp as a Fortran if/else/end if block" printer function) — so the
-infrastructure to consume `scf.IfOp` directly already exists and is
-proven elsewhere; `IfThenOp` is a parallel, narrower reimplementation of
-a strict subset of it.
-
-**The right fix**: retire `IfThenOp`, converting its real call sites
-(`constituent_cap.py`'s `IfThenOp.condition_expr` — already the
-`lang-neutral-expr-ir` Stage 3a retrofit target, so its condition is
-already a real `arith`/custom-op tree in every real call site today, not
-opaque text) to build a real `scf.IfOp` directly instead, with the
-condition tree's ops inserted as ordinary preceding block members and
-the tree's root SSA value wired into `scf.IfOp`'s own condition operand.
-Bounded, mechanical retrofit — similar shape and risk profile to this
-item's own Stage 3a/3b/5 increments (one op kind, full `pytest` green
-between each, byte-identical goldens expected since this is a pure
-internal-representation change).
-
-**Risk of leaving as-is**: low — `IfThenOp` works correctly today, this
-is a cleanliness/consolidation opportunity, not a bug. The only real
-cost is the `_single_op_region`/`_flatten_floating_deps` workaround
-staying load-bearing for one more op than necessary, and a second-
-language printer needing its own `IfThenOp` match arm instead of
-getting `scf.IfOp` support "for free."
+**Resolved, removed from the list above** (matching every other resolved
+item in this file): `IfThenOp` is retired entirely. All 13 real
+construction sites (10 in `constituent_cap.py`, 3 in `cpp_interop.py`)
+now build a real `scf.IfOp` directly, reusing the exact construction
+pattern already proven elsewhere in this codebase (`run_dispatch.py`/
+`suite_cap.py`/`lifecycle_cap.py`'s own suite-name/suite-part dispatch
+chains) and `print_ftn.py`'s existing `scf.IfOp` printer support
+unchanged. The `IfThenOp` class, its dialect registration entry, and its
+one printer arm are deleted; `_single_op_region`/`_flatten_floating_deps`
+remain load-bearing for ~26 other op kinds. Full history, including the
+per-site conversion recipe and FileCheck golden diff-review, in
+`CHANGELOG.md`, "`ifthenop-scf-unify` resolution" (L9780).
 
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 
