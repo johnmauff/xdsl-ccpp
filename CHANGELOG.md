@@ -9990,3 +9990,75 @@ host exactly, no mismatch at all) is unaffected. Full `pytest tests/`:
 existing-golden impact. With both real call sites now covered,
 `lang-neutral-expr-ir` is fully resolved -- see `BACKLOG.md`'s own entry,
 now condensed to a resolved-item pointer.
+
+## `chost-real-width-fallback` resolution: bare-digit real kind no longer silently mis-widens to 64-bit (2026-10-08)
+
+**Problem**: found while investigating `lang-neutral-expr-ir` Stage 3c.
+`cpp_interop.py`'s `_real_width_from_iso` (decides `float` vs. `double`
+for chost/BIND(C) struct fields across the C++ boundary) silently
+defaulted to 64-bit for any kind it couldn't resolve via the ISO-name
+map -- including an unresolved bare-digit kind like `kind = 4` (single
+precision), which would have been silently mis-widened to `double`
+instead of `float`. Root cause: `suite_kinds.py`'s `MetaKind` pass
+deliberately never creates a `ccpp.kind` entry for a bare-digit kind
+(correct for its own unrelated decision -- whether a `public ::` Fortran
+export is needed), so `_real_width_from_iso` always saw `kind_entry is
+None` for this case, with no way to distinguish "genuinely unknown kind"
+from "known bare-digit kind that was simply never exported."
+
+Confirmed this is a real, independently-reachable gap, not made moot by
+Stage 3c's own Fortran-side fix: a DDT member's real width is inferred
+directly from the member's own raw metadata `kind` string
+(`_chost_expand_ddt_arg`), bypassing the suite-cap block-arg MLIR type
+Stage 3c's `TypeConversions.convert` reclassification touches.
+
+**Resolution**: consult the Fortran-side `real_kind_width()` helper
+(added for Stage 3c) before falling back to 64. `real_kind_width`
+returns a byte count (4/8), not a bit width -- the fix multiplies by 8,
+a unit mismatch caught and corrected before landing.
+
+**Verification**: 4 new unit tests in
+`tests/unit/test_cpp_interop_kind_width.py`: `kind="4"` now correctly
+resolves to 32 (previously 64), `kind="8"` still resolves to 64, an
+unsupported bare-digit kind (e.g. `"16"`, quad precision) still defaults
+to 64 unchanged, and the existing named-kind-unseen case is unaffected.
+Full `pytest tests/`: 765 passed, 0 failed -- no existing fixture
+currently declares `kind = 4`, so this is a latent-bug fix with no
+visible behavior change for any real case today.
+
+## `task65-interstitial-tests` resolution: DDT-typed and non-`real` interstitial test coverage (2026-10-08)
+
+**Problem**: two narrow test-coverage gaps left over from task #65's own
+2026-08-20 "honest downgrade" (see this file's own "Task #65 scoping,
+revisited" entry above) -- confirmed to need zero code changes, only new
+tests proving already-correct existing behavior.
+
+**Resolution**:
+1. **DDT-typed interstitial declaration coverage**: `suite_cap.py`'s
+   `_build_module_vars` has an `entry.is_ddt` branch, confirmed
+   genuinely untested -- no example or existing test constructed the one
+   shape that reaches it (a non-allocatable, `intent=out`, DDT-typed
+   scheme arg with no host-table match). New
+   `tests/unit/test_ddt_interstitial_declaration.py` proves: the
+   variable is declared as a plain `type(...)` module-scope scalar with
+   no `allocatable` qualifier, and no lazy-allocation guard
+   (`allocate(...)`/`allocated(...)`) is ever emitted for it --
+   confirming `SuiteVariableModel.needs_allocation()`'s `is_ddt`
+   exemption holds end-to-end.
+2. **Non-`real` interstitial array verification**: confirmed by direct
+   reading that the allocation scheduler (`LazyAllocOp`) is already
+   fully kind-agnostic -- neither its construction nor its printer
+   (`print_ftn.py`'s `CCPPLazyAllocOp` case) ever reads a kind name at
+   all; declaration-type formatting is handled entirely by
+   `_build_module_vars`, which already branches generically on
+   `entry.fortran_type`. Found that `integer` array coverage already
+   existed (`tests/unit/test_interstitial_variable.py`, pre-dating this
+   item) -- only `logical` and `character` arrays were genuinely
+   unexercised through this path (confirmed via repo-wide grep, zero
+   hits for either). New `tests/unit/test_interstitial_array_nonreal_kinds.py`
+   mirrors the existing `integer` test's exact producer/consumer/host
+   fixture shape for both.
+
+**Verification**: full `pytest tests/`: 771 passed (up from 765 -- 6 new
+tests), zero FileCheck golden impact (no generator code touched, pure
+test-only addition).
