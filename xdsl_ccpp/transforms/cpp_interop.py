@@ -78,6 +78,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SCHEME_NAME_LEN,
     CCPP_VERT_DIM_STD_NAME,
     CCPP_VERTICAL_DIMENSIONS,
+    real_kind_width,
 )
 from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
 
@@ -131,6 +132,17 @@ def _real_width_from_iso(kind_name: str, kind_entry: "tuple[str, str] | None") -
     """Return 32 or 64 for real kind *kind_name*, given its (value, module)
     entry from _chost_kind_iso_map (None if the kind was never seen there).
 
+    A bare numeric KIND literal (e.g. "4", "8") is never seen in
+    _chost_kind_iso_map at all -- suite_kinds.py's MetaKind pass
+    deliberately never creates a ccpp.kind entry for one (it's already
+    valid, self-contained Fortran with no ccpp_kinds dependency to
+    export). kind_entry is None therefore does not mean "unknown width";
+    check real_kind_width(kind_name) first (chost-real-width-fallback)
+    before falling back to the historical 64-bit default, which would
+    otherwise silently mis-widen a real kind_name="4" (single precision)
+    to 64-bit. real_kind_width returns a Fortran KIND byte count (4/8),
+    not a bit width -- multiply by 8 before returning it here.
+
     Raises ValueError if the kind was resolved via a metadata kind_spec
     (module != 'iso_fortran_env') rather than the hardcoded ISO_FORTRAN_ENV
     table: kind_spec only names a symbol (e.g. 'temp_r8'), not a width, so
@@ -141,7 +153,8 @@ def _real_width_from_iso(kind_name: str, kind_entry: "tuple[str, str] | None") -
     explicit width mapping here if/when it's actually needed.
     """
     if kind_entry is None:
-        return 64
+        byte_width = real_kind_width(kind_name)
+        return byte_width * 8 if byte_width is not None else 64
     value, module = kind_entry
     if module != "iso_fortran_env":
         raise ValueError(

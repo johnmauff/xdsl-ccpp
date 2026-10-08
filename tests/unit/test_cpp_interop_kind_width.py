@@ -26,10 +26,29 @@ class TestRealWidthFromIso:
     def test_iso_real64(self):
         assert _real_width_from_iso("kind_phys", ("REAL64", "iso_fortran_env")) == 64
 
-    def test_unseen_kind_defaults_to_64(self):
-        """No entry at all (kind never reached _chost_kind_iso_map) -- same
-        fallback as before this fix, unrelated to kind_spec."""
+    def test_unseen_named_kind_defaults_to_64(self):
+        """No entry at all, and the kind name isn't a bare digit either --
+        same fallback as before this fix, unrelated to kind_spec."""
         assert _real_width_from_iso("kind_phys", None) == 64
+
+    def test_bare_digit_kind_4_resolves_to_32_not_64(self):
+        """chost-real-width-fallback: a bare-digit real kind is never seen
+        in _chost_kind_iso_map at all (suite_kinds.py's MetaKind pass
+        deliberately excludes it), so kind_entry is always None here --
+        real_kind_width must be consulted instead of blindly defaulting to
+        64, or this would silently mis-widen a real kind=4 (single
+        precision) field to 64-bit/double across the C++/BIND(C) boundary."""
+        assert _real_width_from_iso("4", None) == 32
+
+    def test_bare_digit_kind_8_resolves_to_64(self):
+        assert _real_width_from_iso("8", None) == 64
+
+    def test_unsupported_bare_digit_kind_still_defaults_to_64(self):
+        """A bare-digit kind outside the two supported widths (e.g. "16",
+        quad precision) isn't classified by real_kind_width either --
+        same historical fallback, unchanged, not a regression target of
+        chost-real-width-fallback."""
+        assert _real_width_from_iso("16", None) == 64
 
     def test_kind_spec_resolved_kind_raises(self):
         """A kind resolved via a real host/scheme module (not
