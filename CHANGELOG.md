@@ -10062,3 +10062,66 @@ tests proving already-correct existing behavior.
 **Verification**: full `pytest tests/`: 771 passed (up from 765 -- 6 new
 tests), zero FileCheck golden impact (no generator code touched, pure
 test-only addition).
+
+## `constadv`/`constprop` chost compile-test fix (closes issue #4) (2026-10-08)
+
+**Problem**: `examples/constadv`/`examples/constprop`'s C++ host compile
+targets (`constadv_cxx_host`/`constprop_cxx_host`) had failed since
+introduction, tracked since 2026-07-17 as GitHub issue #4 with no root
+cause ever recorded and `expected_failure: true` set on both matrix
+entries in `.github/workflows/compile-tests-cmake.yml` to keep CI green
+around it. Re-investigated fresh, since a lot of chost machinery
+(`chost-rank3-bindc`, `chost-identity-collision`/`chost-dim-collision`,
+`chost-real-width-fallback`) had changed since the issue was opened,
+none of it verified against these two examples specifically.
+
+Two independent bugs in `cpp_interop.py`'s chost generator, both stale
+relative to recent `ccpp_constituent_properties_t`/chost work:
+
+1. **Invalid Fortran identifiers**: the constituent-query function
+   generator emitted bare `_chost_`-prefixed local names (e.g.
+   `_chost_idx`) -- Fortran identifiers can't begin with an underscore
+   (confirmed via an isolated minimal gfortran test), which cascaded
+   into a wall of unrelated-looking parser errors (`Invalid character in
+   name`, `Expected array subscript`, etc.). Renamed every such local to
+   a `chost_`-prefixed name.
+2. **Private/renamed struct-field access**: the same generator accessed
+   `ccpp_constituent_properties_t` fields via direct component syntax
+   (`%std_name`, `%is_advected_flag`, etc.), matching an old public-field
+   stub that was replaced by the real, ~2700-line, private-field module
+   (commit `cec55e3`) -- the generator was never updated for that swap.
+   Replaced direct access with calls to the module's real bound-procedure
+   accessors (`standard_name`, `units`, `is_advected`, etc.) via
+   `DdtMethodCallOp`, routed through new local temp variables (added
+   `_CONSTITUENT_ACCESSORS`, mapping each of the 12
+   `_CONSTITUENT_STRUCT_FIELDS` to its real accessor name);
+   `mix_ratio_type` has no 1:1 accessor equivalent and falls back to a
+   blank string, matching what the C++ test driver already tolerates (it
+   never checks that field).
+3. **(`constadv` only) Rank-3 scheme-only dimension**: `constadv`'s
+   `q(ncol, nz, ncnst)` has its 3rd dimension's standard_name
+   (`number_of_ccpp_constituents`) declared only on a SCHEME table, not a
+   HOST/MODULE table, so `_chost_arg_info`'s existing `dim_n3`
+   resolution (host-table-only, from the earlier `chost-rank3-bindc`
+   fix) left it unresolved and fell back to an assumed-size `(*)`
+   declaration, mismatching the suite cap's assumed-shape `(:,:,:)`
+   dummy -- the same rank/class mismatch `chost-rank3-bindc` already
+   fixed once, for the plain `--bind-c` path only. Added a per-function
+   fallback in `_chost_fn_contexts`: when a rank-3 real array's 3rd
+   dimension has no host variable, resolve it instead from a sibling
+   scalar scheme arg with the matching standard_name in the same suite
+   call (already present in `infos`). This also fixed the generated C++
+   `State` struct, which previously had no `allocate()`/3-arg
+   constructor for `q` at all (`alloc_fields`'s own rank-3 gate already
+   required `dim_n3`, so it was simply never populated).
+
+**Resolution**: both bugs fixed in `xdsl_ccpp/transforms/cpp_interop.py`.
+`expected_failure: true` removed from both matrix entries in
+`.github/workflows/compile-tests-cmake.yml`, along with their now-stale
+explanatory comments.
+
+**Verification**: fresh from-scratch CMake builds (both gfortran and
+ifx) -- `constadv_cxx_host`/`constprop_cxx_host` compile cleanly and pass
+their CTest checks; full repo build is clean; CI (`compile-tests-cmake.yml`)
+fully green on all matrix entries, including these two, with no
+`continue-on-error` left masking either.
