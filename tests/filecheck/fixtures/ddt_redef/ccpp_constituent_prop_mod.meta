@@ -1,0 +1,12 @@
+[ccpp-table-properties]
+  name = ccpp_constituent_prop_ptr_t
+  type = ddt
+[ccpp-arg-table]
+  name = ccpp_constituent_prop_ptr_t
+  type = ddt
+[ const_idx ]
+  standard_name = constituent_index_for_test_pointer
+  long_name = index of the referenced constituent
+  units = count
+  dimensions = ()
+  type = integer
