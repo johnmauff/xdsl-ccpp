@@ -10188,3 +10188,52 @@ accordingly (`filecheck error: '<stdin>' is empty`); restored the fix and
 confirmed both pass again, with zero diff against the pre-revert state of
 `ccpp_cap.py`. Full `pytest tests/`: 772 passed (up from 771 -- 1 new
 test), 0 failed.
+
+## `task71-validate-fir` resolution: deleted the redundant `ccpp_validate_fir.py` (2026-10-08)
+
+**Problem**: `ccpp_validate_fir.py` (142 lines) and `ccpp_validate_source.py`
+(259 lines) both validate a `.meta` file's argument metadata against the
+real Fortran source (via Flang FIR + the `fir-to-meta` pass), but the
+latter's `--backend flang` path reuses the exact same extraction
+(`flang_utils.find_flang`/`run_flang`, the shared `_run_fir_to_meta`
+helper) and the exact same comparison function (`validate_fir.compare_modules`)
+-- task #37 (2026-08-18) had already unified the Flang-invocation layer
+across both tools (plus `fir2meta.py`), and task #44 the shared
+`make_ccpp_context()`, but the two full CLI tools themselves were never
+consolidated. `ccpp_validate_source.py` is a strict superset: an
+`fparser2` fallback backend when Flang isn't installed, `--host-files`
+dimension-name cross-validation (`check_dimension_names`), and smarter
+non-scheme `.meta` filtering -- none of which contradicts or changes
+`ccpp_validate_fir.py`'s own behavior under the Flang backend.
+
+**Investigation**: the one apparent behavioral difference -- `ccpp_validate_source.py`
+pre-filters out non-scheme-type `.meta` files (host/module-only tables)
+before comparing, while `ccpp_validate_fir.py` doesn't -- turned out to be
+purely cosmetic (a "Skipping..." message vs. a "Validating... OK" message
+with nothing to compare), not a real difference in validation results:
+`compare_modules` itself already only compares arg tables present in
+*both* the `.meta` and FIR-extracted modules, silently ignoring any
+`.meta`-only table (its own docstring says so explicitly: "Tables that
+exist only in the .meta module ... are skipped"). So for the common case
+-- a scheme `.F90`/`.meta` pair, Flang backend -- the two tools produce
+identical validation results.
+
+**Decision**: project owner confirmed `--backend flang` (on
+`ccpp_validate_source.py`) stays indefinitely, settling the real open
+question -- not "which tool survives" but "is `ccpp_validate_fir.py`
+worth keeping at all, given it adds nothing `--backend flang` doesn't
+already do." Decided: delete it.
+
+**Resolution**: removed `xdsl_ccpp/tools/ccpp_validate_fir.py`. Confirmed
+via a repo-wide reference sweep that nothing else depends on it --  no
+console-script entry point, no test file, no import from any other
+module; only `DEVELOPERS.md`'s tool table and three code comments
+(`ccpp_dsl.py`, `ctx_utils.py`, `flang_utils.py`) named it as one of the
+original Flang-invocation duplication sites `flang_utils.py`/`ctx_utils.py`
+were extracted to fix. Updated `DEVELOPERS.md`'s `fir-to-meta` pass
+description to drop the dead reference; updated the three code comments
+to reference `ccpp_validate_source.py` instead (or note the deletion
+where the comment was itself a historical "why this file exists" note).
+
+**Verification**: full `pytest tests/`: 772 passed, 0 failed (no test
+coverage existed for the deleted tool, so none was lost).

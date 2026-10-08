@@ -74,7 +74,17 @@ separately), CHANGELOG.md L5850.
 | `type-control-gap` | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `task70-arraysection` | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | M, real refactor — `ArraySectionOp` is actively used across 5 files including the highest-risk dispatch code in the repo, not dead code | L6593 |
-| `task71-validate-fir` | Task #71: decide fate of `ccpp_validate_fir.py` | S-M — project owner has decided `ccpp_validate_source.py --backend flang` stays indefinitely (2026-10-08), not up for removal; the real remaining question is narrower than originally framed — just whether `ccpp_validate_fir.py` itself is worth keeping as a separate tool given the evidence of redundancy, needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting deletion | L6593 |
+
+**Resolved since last verification (2026-10-08), removed from the list
+above**: `task71-validate-fir` — confirmed via direct code read that
+`ccpp_validate_source.py --backend flang` is a strict superset of
+`ccpp_validate_fir.py` (same `find_flang`/`run_flang`/`fir-to-meta`
+extraction, same `compare_modules` comparison — the one apparent
+difference, non-scheme `.meta` filtering, turned out to be cosmetic only,
+since `compare_modules` itself already silently skips meta-only tables).
+Deleted `ccpp_validate_fir.py`; updated `DEVELOPERS.md`'s tool table and
+the `ctx_utils.py`/`flang_utils.py`/`ccpp_dsl.py` comments that named it
+as one of the original duplication sites. CHANGELOG.md L10192.
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 "Move examples' build system from per-example Makefiles to CMake" — fully

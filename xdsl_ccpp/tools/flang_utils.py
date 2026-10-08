@@ -13,6 +13,10 @@ the search + invocation here means the three tools can no longer re-diverge
 this way; each tool keeps its own "no Flang found" messaging, since that
 wording is genuinely call-site-specific (e.g. `--backend flang` requested
 vs. Flang preferred-but-optional).
+
+(`ccpp_validate_fir.py` was later deleted as redundant with
+`ccpp_validate_source.py --backend flang` -- task #71 -- leaving two
+users of this module, `ccpp_validate_source.py` and `fir2meta.py`.)
 """
 
 from __future__ import annotations
