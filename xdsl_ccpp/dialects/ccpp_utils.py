@@ -116,8 +116,8 @@ def _single_op_region(ops: "list | None", *, required: bool = True) -> "Region":
     raises ValueError for an invariant IRDL can't express.
 
     The single op given may itself be the root of a freshly-built
-    arith/math expression tree (e.g. IfThenOp's new `condition_op` or
-    UnitConvertOp's `conversion_op`) -- see _flatten_floating_deps for
+    arith/math expression tree (e.g. UnitConvertOp's `conversion_op`) --
+    see _flatten_floating_deps for
     why its unattached operand-providing ops must also become block
     siblings here, not just the root itself.
     """
@@ -1165,10 +1165,9 @@ class ActiveCheckOp(IRDLOperation):
     arg(s). ``without_body`` contains the scheme call that omits them.
 
     lang-neutral-expr-ir Stage 3a adds a structured alternative to the
-    opaque ``condition_expr`` text, same shape as ``IfThenOp``'s own:
-    pass ``condition_op`` instead. Exactly one of the two must be given;
-    the opaque-text form remains fully supported so suite_cap.py's own
-    caller is unaffected.
+    opaque ``condition_expr`` text: pass ``condition_op`` instead.
+    Exactly one of the two must be given; the opaque-text form remains
+    fully supported so suite_cap.py's own caller is unaffected.
     """
 
     name = "ccpp_utils.active_check"
@@ -1473,8 +1472,8 @@ class ErrorGuardOp(IRDLOperation):
     which built exactly this 5-line block as a joined string.
 
     lang-neutral-expr-ir Stage 3a adds a structured alternative to the
-    opaque ``condition`` text (same shape as ``IfThenOp``'s own): pass
-    ``condition_op`` instead. Exactly one of the two must be given.
+    opaque ``condition`` text: pass ``condition_op`` instead. Exactly one
+    of the two must be given.
     ``errmsg_text`` stays a plain string in both cases -- every real call
     site uses a static literal message, never a computed expression, so
     there is nothing for a structured form to buy here.
@@ -1509,59 +1508,6 @@ class ErrorGuardOp(IRDLOperation):
         if errmsg_var != "errmsg":
             props["errmsg_var"] = StringAttr(errmsg_var)
         super().__init__(properties=props, regions=[cond_region])
-
-
-@irdl_op_definition
-class IfThenOp(IRDLOperation):
-    """A single-branch Fortran conditional, no ``else``.
-
-    Emits::
-
-        if ({condition_expr}) then
-          {body}
-        end if
-
-    Distinct from PresentCheckOp/ActiveCheckOp, which always emit both an
-    ``if`` and an ``else`` branch -- forcing a body through either of those
-    with an empty ``without_body_ops`` would print a stray empty ``else``
-    this op avoids entirely.
-
-    lang-neutral-expr-ir Stage 3a adds a structured alternative to the
-    opaque ``condition_expr`` text: pass ``condition_op`` (any
-    print_expr-dispatchable expression op -- e.g. a ``CallExprOp``, or an
-    ``arith.CmpiOp``/``OrIOp`` tree built over ``VarRefExprOp``/
-    ``MemberAccessExprOp`` leaves) instead. Exactly one of the two must
-    be given; the opaque-text form remains fully supported so every
-    existing caller (this file's own multi-instance guards, and
-    cpp_interop.py's chost cap) is unaffected.
-    """
-
-    name = "ccpp_utils.if_then"
-    condition_expr = opt_prop_def(StringAttr)
-    condition = opt_region_def("single_block")
-    body = region_def("single_block")
-
-    traits = traits_def(NoTerminator())
-
-    def __init__(
-        self, condition_expr: "str | None" = None, body_ops: "list | None" = None,
-        *, condition_op=None,
-    ):
-        if (condition_expr is None) == (condition_op is None):
-            raise ValueError(
-                "IfThenOp: pass exactly one of condition_expr or condition_op"
-            )
-        from xdsl.ir import Block, Region
-        props: dict = {}
-        cond_region = None
-        if condition_expr is not None:
-            props["condition_expr"] = _coerce_str_attr(condition_expr)
-        else:
-            cond_region = _single_op_region([condition_op])
-        super().__init__(
-            properties=props,
-            regions=[cond_region, Region([Block(body_ops or [])])],
-        )
 
 
 @irdl_op_definition
@@ -2855,7 +2801,7 @@ class UnitConvertOp(IRDLOperation):
     real ``arith.AddfOp``/``SubfOp`` whose ``lhs`` operand is this op's
     own ``source`` operand -- ordinary MLIR semantics, since nested
     regions in this dialect are not isolated-from-above, same as
-    e.g. IfThenOp's body) instead of ``to_scheme_expr``. Exactly one of
+    e.g. TextBoundedDoLoopOp's body) instead of ``to_scheme_expr``. Exactly one of
     the two must be given. The structured form has no real call site yet
     (retrofitting one is Stage 3c); the opaque-text form remains fully
     supported so every existing caller is unaffected.
@@ -3552,7 +3498,6 @@ CCPPUtils = Dialect(
         AssignOp,
         DdtMethodCallOp,
         ErrorGuardOp,
-        IfThenOp,
         TextBoundedDoLoopOp,
         ScopedBlockOp,
         RawFortranLinesOp,
