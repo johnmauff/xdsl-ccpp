@@ -30,6 +30,7 @@ but all three would previously have failed silently or confusingly:
 All three fixed by adding a .strip() at the point the raw text is taken.
 """
 
+import argparse
 import xml.etree.ElementTree as ET
 
 from xdsl_ccpp.frontend.ccpp_xml import XMLScheme, XMLSubcycle, ccppXML
@@ -102,3 +103,64 @@ class TestCommaSeparatedCliArgsStripped:
             "examples/helloworld/hello_world_host.meta",
             "examples/helloworld/hello_world_mod.meta",
         ]
+
+
+class TestListValuedOptionsAccepted:
+    """optionsdb-list-format: a caller building options_db programmatically
+    (e.g. constructing an argparse.Namespace directly, bypassing the CLI)
+    should be able to pass real Python lists for scheme_files/host_files/
+    suites/preproc_defs directly -- capgen-v1's own contract for these
+    fields -- instead of being forced to pre-join them into a comma string
+    only to have it immediately re-split. Previously this crashed with
+    AttributeError: 'list' object has no attribute 'split'.
+    """
+
+    def test_ccpp_xml_frontend_accepts_real_lists(self):
+        frontend = ccppXML()
+        args = argparse.Namespace(
+            scheme_files=["a.meta", "b.meta"],
+            host_files=["c.meta", "d.meta"],
+            suites=["e.xml", "f.xml"],
+        )
+        options_db = frontend.build_options_db_from_args(args)
+        assert options_db["scheme_files"] == ["a.meta", "b.meta"]
+        assert options_db["host_files"] == ["c.meta", "d.meta"]
+        assert options_db["suites"] == ["e.xml", "f.xml"]
+
+    def test_ccpp_dsl_tool_accepts_real_lists(self):
+        main = ccppMain()
+        args = argparse.Namespace(
+            suites=["examples/helloworld/hello_world_suite.xml"],
+            scheme_files=[
+                "examples/helloworld/hello_scheme.meta",
+                "examples/helloworld/temp_adjust.meta",
+            ],
+            host_files=[
+                "examples/helloworld/hello_world_host.meta",
+                "examples/helloworld/hello_world_mod.meta",
+            ],
+            preproc_defs=["SPMD", "NP=4"],
+        )
+        options_db = main.build_options_db_from_args(args)
+        assert options_db["suites"] == ["examples/helloworld/hello_world_suite.xml"]
+        assert options_db["scheme_files"] == [
+            "examples/helloworld/hello_scheme.meta",
+            "examples/helloworld/temp_adjust.meta",
+        ]
+        assert options_db["host_files"] == [
+            "examples/helloworld/hello_world_host.meta",
+            "examples/helloworld/hello_world_mod.meta",
+        ]
+        assert options_db["preproc_defs"] == ["SPMD", "NP=4"]
+
+    def test_falsy_values_still_default_to_empty_list(self):
+        main = ccppMain()
+        args = argparse.Namespace(
+            suites=["examples/helloworld/hello_world_suite.xml"],
+            scheme_files=["examples/helloworld/hello_scheme.meta"],
+            host_files=None,
+            preproc_defs=None,
+        )
+        options_db = main.build_options_db_from_args(args)
+        assert options_db["host_files"] == []
+        assert options_db["preproc_defs"] == []

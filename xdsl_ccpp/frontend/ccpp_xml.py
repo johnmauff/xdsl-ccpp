@@ -17,6 +17,7 @@ from xdsl_ccpp.dialects.ccpp import (
 )
 from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value, set_legacy_mode
 from xdsl_ccpp.util.ccpp_item import CCPPArgument, CCPPItem, CCPPType
+from xdsl_ccpp.util.options_db import coerce_list_option
 
 
 class MetaData:
@@ -556,39 +557,23 @@ class ccppXML:
         """Normalise parsed CLI args into a plain dict with list values.
 
         Each multi-value argument (``--scheme-files``, ``--host-files``,
-        ``--suites``) accepts a comma-separated string on the command line and
-        is split into a Python list here.  Missing arguments default to ``[]``.
+        ``--suites``) accepts either a comma-separated string on the command
+        line (``.strip()``ped per entry -- a space after a comma, e.g.
+        "a.meta, b.meta", would otherwise silently become a path with a
+        leading space, failing to open with a confusing error rather than
+        being tolerated the way most CLI tools handle incidental whitespace)
+        or an already-real Python list (capgen-v1's own contract for these
+        fields, for a caller building options_db programmatically rather
+        than through argparse). Missing/falsy arguments default to ``[]``.
 
         Returns:
             A dict with keys ``scheme_files``, ``host_files``, and ``suites``.
         """
         options_db = args.__dict__
 
-        # Split comma-separated scheme file paths into a list. .strip() each
-        # entry: a space after a comma (e.g. "a.meta, b.meta") would
-        # otherwise silently become a path with a leading space, failing to
-        # open with a confusing error rather than being tolerated the way
-        # most CLI tools handle incidental whitespace.
-        if "scheme_files" in options_db and options_db["scheme_files"] is not None:
-            options_db["scheme_files"] = [
-                p.strip() for p in options_db["scheme_files"].split(",")
-            ]
-        else:
-            options_db["scheme_files"] = []
-
-        # Split comma-separated host file paths into a list
-        if "host_files" in options_db and options_db["host_files"] is not None:
-            options_db["host_files"] = [
-                p.strip() for p in options_db["host_files"].split(",")
-            ]
-        else:
-            options_db["host_files"] = []
-
-        # Split comma-separated suite XML paths into a list
-        if "suites" in options_db and options_db["suites"] is not None:
-            options_db["suites"] = [p.strip() for p in options_db["suites"].split(",")]
-        else:
-            options_db["suites"] = []
+        options_db["scheme_files"] = coerce_list_option(options_db.get("scheme_files"))
+        options_db["host_files"] = coerce_list_option(options_db.get("host_files"))
+        options_db["suites"] = coerce_list_option(options_db.get("suites"))
 
         return options_db
 
