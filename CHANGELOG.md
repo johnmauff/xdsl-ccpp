@@ -9776,3 +9776,93 @@ collision in the first place.
 confirmed on every real fixture. Purely additive scoping logic; no
 existing caller or behavior changed outside the (previously nonexistent)
 collision-handling path.
+
+## `ifthenop-scf-unify` resolution: `IfThenOp` retired in favor of xDSL's native `scf.IfOp` (2026-10-07)
+
+**Problem**: found during this session's reflective code-reuse audit of
+`xdsl_ccpp`'s use of xDSL. `IfThenOp` (a custom op in the `ccpp_utils`
+dialect) emitted a plain `if (cond) then ... end if` (no else) -- a
+condition (opaque text, or a region-wrapped expr-op tree) plus one body
+region, `NoTerminator()`. xDSL's own builtin `scf.IfOp` already covers
+exactly this shape (an empty `false_region` default, a bare `i1` SSA
+condition operand, a `scf.YieldOp()` terminator), and is already
+pervasively used elsewhere in this same codebase (`run_dispatch.py`'s/
+`suite_cap.py`'s/`lifecycle_cap.py`'s own suite-name/suite-part dispatch
+chains) with full, working `print_ftn.py` printer support already in
+place -- `IfThenOp` was a parallel, narrower reimplementation of a
+strict subset of it.
+
+**Resolution**: retired `IfThenOp` entirely, in 4 verified stages.
+
+*Stage 0*: relocated its 4 condition-builder helpers
+(`_allocated_cond`/`_not_allocated_cond`/`_int_var_cmp_zero`/
+`_trim_eq_cond`) from `constituent_cap.py` to the shared
+`cap_shared.py` (the established home for helpers shared across
+transform modules), adding a new `_int_var_cmp` helper and a small
+`_scf_if(condition_op, body_ops) -> list` convenience that flattens a
+condition op's floating dependencies (via the existing
+`_flatten_floating_deps`, already proven -- `_single_op_region` has
+always called it internally, just hidden inside a throwaway region) into
+explicit block siblings and wraps the result in a real `scf.IfOp` +
+`scf.YieldOp()`. Also fixed `_allocated_cond` (and one inline
+`CallExprOp("any", ...)` call) to carry an explicit `result_type=i1`,
+since `scf.IfOp.cond` is a real typed `operand_def(IntegerType(1))`
+where `IfThenOp`'s condition only ever needed text rendering --
+`CallExprOp`'s own IRDL (`opt_result_def()`, no operands at all, args
+stored via nested regions) meant this had silently defaulted to zero
+results. This stage's fixes changed the printed *IR-dump* FileCheck
+goldens one stage earlier than planned (previously-resultless ops now
+show a typed result), confirmed benign and deferred to the final
+diff-review stage rather than reverted.
+
+*Stage 1*: converted all 10 `constituent_cap.py` call sites to
+`scf.IfOp` via `_scf_if`, in one pass (all already used the structured
+`condition_op=` form from this session's earlier `lang-neutral-expr-ir`
+Stage 3a retrofit, so there was no mixed legacy-string complexity).
+Includes two nested if-in-if pairs and one if nested inside a do-loop
+body, each handled by passing one site's `_scf_if(...)` output list as
+another's `body_ops` -- already production-proven elsewhere
+(`run_dispatch.py`'s own by-hand nesting of `scf.IfOp` inside another's
+`true_region`).
+
+*Stage 2*: built new real condition-op trees for `cpp_interop.py`'s 3
+remaining call sites, which still used the legacy opaque-string
+`condition_expr=` form (`"allocated(_chost_{cv})"`, `"_chost_idx > n"`)
+-- two reuse the now-shared `_allocated_cond`, the third uses the new
+`_int_var_cmp("_chost_idx", "n", "sgt")` helper -- then converted all 3
+to `scf.IfOp` the same way.
+
+*Stage 3*: deleted the `IfThenOp` class (`ccpp_utils.py`), its entry in
+the dialect's op-registration list, its sole printer arm in
+`print_ftn.py` plus the now-dead import, and all now-dead imports/stale
+docstring references across `ccpp_utils.py`/`constituent_cap.py`/
+`cpp_interop.py`/`print_ftn.py`. `_single_op_region`/
+`_flatten_floating_deps` are untouched -- confirmed still load-bearing
+for ~26 other op kinds in `ccpp_utils.py` (`UnitConvertOp`, `CallExprOp`,
+`StringConcatExprOp`, etc.).
+
+*Stage 4*: regenerated and manually diff-reviewed the 5 FileCheck
+IR-dump goldens affected (`advection-xml`, `ddthost-py`,
+`instances_advection-xml`, `kw-override-py`, `var_compat-xml`) --
+confirmed the only diff anywhere is `"ccpp_utils.if_then"() ({cond},
+{body}) : () -> ()` replaced by the condition's ops exposed as explicit
+typed-result siblings followed by `scf.if %N { body }`, including the
+nested if-in-if site correctly producing nested `scf.if` blocks; no
+reordering, renamed variables, or unrelated diffs anywhere.
+
+**Verification**: full `pytest tests/` run after every stage; **753
+passed** at the end (up from 748 immediately after Stage 0's inert
+`result_type=i1` fix, which is itself up from the pre-existing 748 base
+-- no unit test count changed, only the 5 FileCheck IR-dump goldens
+tracked through expected-affected-then-regenerated). Generated Fortran
+output is unaffected throughout: `scf.IfOp`'s printer (`_print_if`)
+resolves its condition via `self.print_expr`, a trivial wrapper over the
+exact same `_render_expr` function `IfThenOp`'s own printer called for
+its `condition_op` sites -- byte-identical condition text by
+construction, not by coincidence.
+
+**Risk of leaving as-is**: none -- fully resolved. `ErrorGuardOp` has a
+similar condition/condition_op shape but encodes negated-condition
+early-return-with-error-state semantics with no one-op `scf.IfOp`
+equivalent; left untouched, explicitly out of scope, flagged as a
+candidate for a possible future separate audit.
