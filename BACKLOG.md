@@ -13,9 +13,8 @@ backticks, e.g. `` `hle-vocab-retire` ``, not a plain integer — integers
 were found to reshuffle depending on how the list gets presented/derived).
 Where an item already had an established numeric identity elsewhere in the
 repo/history (`Task #NN`, `TDB-NNN`), the slug incorporates it (e.g.
-`task70-arraysection`) or the original ID is kept as-is (`tdb-001`). Use
-these IDs, not position in the list, when referring to an item across
-sessions.
+`task70-arraysection`). Use these IDs, not position in the list, when
+referring to an item across sessions.
 
 **`CPP_BACKLOG.md`** is a priority-ordered subset of this file, filtered
 and reordered around the multi-language (C++) support goal specifically —
@@ -43,7 +42,6 @@ later narrative entries:
 
 | ID | Item | Notes | Archive |
 |---|---|---|---|
-| `task65-interstitial-tests` | Task #65 (downgraded, 2026-08-20): DDT-typed interstitial-declaration test coverage; non-`real` interstitial-array test coverage | Small, no design work — opportunistic test-writing only. The other 2 sub-items (cross-phase `already_scheduled_allocs` unification; cross-phase ordering validation) are deferred indefinitely, folded into task #61, no open action | L5326 |
 | `cmake-dep-manifest` | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
 | `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | **Re-scoped 2026-09-29: deferred indefinitely, not a schedulable near-term task.** Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already, but the 2026-07-27 premise that the legacy code path was "provably dead for every example" was found false by the 2026-08-24 investigation (real CAM-SIMA still declares `horizontal_loop_extent` directly, e.g. `temp_adjust.meta`/`temp_adjust_scalar.meta`) and reconfirmed by this session's own `/cam-sima-regression` run (`xdsl43g`) against real CAM-SIMA test cases. The code path must be retained for as long as `--legacy-mode` itself is supported — deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent` upstream, an external dependency this repo can't resolve on its own. `ccpp.py`'s `is_legacy_mode()` gate is still called; not scheduled for removal | L5679 |
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
@@ -162,117 +160,6 @@ context remain untested — every real case's `CAM_CONFIG_OPTS` declares exactly
 `--physics-suites` name, even though both CAM-SIMA's CLI and xdsl_ccpp's generator support more.
 CHANGELOG.md L8406.
 
-## Technical debt (merged from `technical_debt.md` and
-`ir_cleanup_and_lifecycle_dedup_plan.md`, 2026-09-29)
-
-**Update 2026-09-30, ID-scheme cleanup**: `TDB-002` and `TDB-003` are both
-now resolved and, per this file's normal convention for resolved items
-(full history archived in `CHANGELOG.md`, nothing lingers here), have been
-removed rather than kept as RESOLVED pointer entries — a prior version of
-this cleanup kept them visible on the reasoning that their `TDB-NNN`
-numbers were "cited by number in source code," but that citation was
-self-inserted during this session's own implementation work, not a real
-pre-existing external constraint, so it didn't actually justify an
-exception to the normal resolved-item treatment; those source comments
-have been rewritten to drop the numeric references. The three items that
-were sequenced after `TDB-003` (one still open, two new follow-ons from
-`TDB-003`'s own closeout) are kept but renamed to stable kebab-case
-slugs, matching every other item in this file — the `TDB-NNN` scheme
-itself has no real claim to permanence for items invented during this
-session, unlike `TDB-001` below, whose number is cited by an actual
-pre-existing source comment (`ccpp_cap.py`) that predates this cleanup and
-was deliberately left untouched pending confirmation it should change too.
-`CHANGELOG.md`'s own archived section titles still say "TDB-002"/"TDB-003"
-— that's fine, left as the real historical name those pieces of work went
-by, not something retroactively renamed.
-
-### TDB-001: Constituent API always generated for CAM host builds
-
-ID: `tdb-001`
-
-**File**: `xdsl_ccpp/transforms/ccpp_cap.py`, `_generate_ccpp_cap_module`
-(the `or self.cam_host` condition gating the call to
-`_generate_constituent_api`). **Added 2026-09-06.**
-
-`_generate_constituent_api` is called unconditionally whenever
-`cam_host=True`, even for suites with no CCPP constituents at all (no
-dynamic arrays, no fixed-advected constituents, no scratch vars, no
-`number_of_ccpp_constituents` references) — because CAM-SIMA's
-`write_init_files.py` unconditionally imports `cam_constituents_array`/
-`cam_model_const_properties` from `cam_ccpp_cap` and calls them in
-`physics_read_data`/`physics_check_data`, regardless of whether the suite
-actually has constituents (written to match capgen's own always-generate
-behavior). Rather than make `write_init_files.py` constituent-aware
-(non-trivial surgery, in CAM-SIMA's own repo), xdsl_ccpp was patched to
-always emit the constituent API for CAM builds, producing empty stubs
-when the suite has none.
-
-**The right fix**: make `write_init_files.py` constituent-aware — gate
-the `cam_constituents_array`/`cam_model_const_properties` `USE` imports,
-call sites, and local declarations on `bool(constituent_set)` /
-`bool(registry_constituents)`. Would let xdsl_ccpp revert the `cam_host`
-guard and keep `_generate_constituent_api` conditional on actual
-constituent presence.
-
-**Risk of leaving as-is**: low. Generated empty stubs are harmless at
-runtime (empty arrays, no-op register calls) — the only cost is a small
-amount of dead code in `cam_ccpp_cap.F90` for constituent-free suites.
-
-**Resolved, removed from the list above** (matching every other resolved
-item in this file): the constituent API (`constituent_cap.py`) and the
-chost cap generator (`cpp_interop.py`/`CHostCapOp`) were both converted
-from raw-string assembly to typed IR — full history in `CHANGELOG.md`,
-"TDB-002 resolution" (L9016) and "TDB-003 resolution" (L9083).
-
-### `lang-neutral-expr-ir`: No language-neutral expression IR — blocks real multi-language support
-
-ID: `lang-neutral-expr-ir`
-
-**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (op definitions),
-`xdsl_ccpp/backend/{print_ftn,print_cpp_header,expr_precedence}.py`
-(printers), `xdsl_ccpp/transforms/{constituent_cap,cpp_interop,
-suite_cap}.py` (retrofitted). **Added 2026-09-30**.
-
-**Resolved 2026-10-08, removed from the list above** (matching every
-other resolved item in this file): a language-neutral expression
-vocabulary (reused `arith`/`math` plus 7 new custom ops) exists, with
-both a Fortran printer and a C++ expression printer (`expr_to_cpp_str`)
-rendering the same IR tree in each language's own syntax — propagated to
-all 3 files with real retrofit work (`constituent_cap.py`,
-`cpp_interop.py`, `suite_cap.py`; `run_dispatch.py`/`lifecycle_cap.py`
-audited and confirmed to need none). Stage 3c (`UnitConvertOp`'s
-structured conversion form) is now also done for its full safe scope: a
-bare numeric real kind (`kind = 8`/`4`) builds a real `arith` conversion
-tree at both of `suite_cap.py`'s real call sites
-(`_apply_kind_and_unit_casts` and `_apply_divergent_marshaling`); a named
-kind (e.g. `kind_phys`) stays on the opaque-text path permanently, by
-design — reclassifying it would silently change generated declaration
-text for ~190+ existing real arguments. See `CHANGELOG.md`'s
-"`lang-neutral-expr-ir` Stages 0-4", "Stage 5", and "Stage 3c" entries
-(L9870) for full detail, including a PR #115 Copilot review round (2
-real findings, both fixed).
-
-### `ifthenop-scf-unify`: `IfThenOp` reinvents `scf.IfOp`
-
-ID: `ifthenop-scf-unify`
-
-**File**: `xdsl_ccpp/dialects/ccpp_utils.py` (`IfThenOp`, now removed);
-printer support in `xdsl_ccpp/backend/print_ftn.py`. **Added 2026-10-07**,
-found during a reflective code-reuse audit.
-
-**Resolved, removed from the list above** (matching every other resolved
-item in this file): `IfThenOp` is retired entirely. All 13 real
-construction sites (10 in `constituent_cap.py`, 3 in `cpp_interop.py`)
-now build a real `scf.IfOp` directly, reusing the exact construction
-pattern already proven elsewhere in this codebase (`run_dispatch.py`/
-`suite_cap.py`/`lifecycle_cap.py`'s own suite-name/suite-part dispatch
-chains) and `print_ftn.py`'s existing `scf.IfOp` printer support
-unchanged. The `IfThenOp` class, its dialect registration entry, and its
-one printer arm are deleted; `_single_op_region`/`_flatten_floating_deps`
-remain load-bearing for ~26 other op kinds. Full history, including the
-per-site conversion recipe and FileCheck golden diff-review, in
-`CHANGELOG.md`, "`ifthenop-scf-unify` resolution" (L9780).
-
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 
 Not scheduled, not started (unchanged status since first logged
@@ -387,7 +274,7 @@ real width is inferred directly from the member's own raw metadata
 `kind` string (`_chost_expand_ddt_arg`), independent of the suite-cap
 block-arg MLIR type Stage 3c touches. 4 new unit tests in
 `tests/unit/test_cpp_interop_kind_width.py`. See `CHANGELOG.md`'s
-resolution writeup for full detail.
+"`chost-real-width-fallback` resolution" (L9994) for full detail.
 
 ## Fortran host → C++ scheme: no compiled end-to-end test
 
@@ -453,34 +340,3 @@ changes at all, would have mechanically caught a real silent gap found
 during this analysis. CHANGELOG.md's merged section, "A cheaper,
 higher-value piece of tooling."
 
-### `cpp-type-table-unify`: `_chost_cpp_type`/`_cpp_type` type-decision tables aren't unified
-
-ID: `cpp-type-table-unify`
-
-**File**: `xdsl_ccpp/transforms/cpp_interop.py` (`_chost_cpp_type`),
-`xdsl_ccpp/backend/print_cpp_header.py` (`_cpp_type`). **Added 2026-09-30**,
-deferred out of the chost cap's own C-header conversion rather than
-rushed.
-
-**Resolved, removed from the list above** (matching every other resolved
-item in this file): both functions now adapt onto one new shared pure
-function, `cpp_numeric_type` in a new `xdsl_ccpp/util/cpp_type_table.py`,
-for their int/real cases, keeping only genuinely file-specific handling
-(character buffers, bool/logical, chost's own ncol/nz/errflg/scheme-name
-cases) outside it. Three real pre-existing quirks (an array-const-policy
-divergence, and `_chost_cpp_type`'s rank-0-real-always-by-value and
-int-always-bare-`int` conventions) were preserved exactly as explicit,
-documented adapter-level choices, not silently unified away — full
-history, including one flagged-but-unfixed pre-existing latent gap, in
-`CHANGELOG.md`, "`cpp-type-table-unify` resolution" (L9504).
-
-### `cpp-dual-print-pipeline`: two fully independent subprocess re-runs to print Fortran and C++ header output
-
-ID: `cpp-dual-print-pipeline`
-
-**Resolved, removed from the list above** (matching every other resolved
-item in this file): `ccpp_dsl.py` now runs the pipeline once and prints
-both the `.F90` and C++ header output from the same in-memory module via
-a new combined `ftn_and_cpp_header` pipeline target, instead of two
-fully independent subprocess re-runs — full history in `CHANGELOG.md`,
-"`cpp-dual-print-pipeline` resolution" (L9423).
