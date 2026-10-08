@@ -10125,3 +10125,66 @@ ifx) -- `constadv_cxx_host`/`constprop_cxx_host` compile cleanly and pass
 their CTest checks; full repo build is clean; CI (`compile-tests-cmake.yml`)
 fully green on all matrix entries, including these two, with no
 `continue-on-error` left masking either.
+
+## `ddt-redef-filecheck` resolution: permanent regression test for the DDT-redefinition bug (2026-10-08)
+
+**Problem**: the DDT-redefinition bug fix (this file's own "Workstream 2:
+Fix the DDT redefinition bug" entry, resolved earlier) had no permanent
+regression test -- only the original manual MLIR-inspection verification
+and a real CAM-SIMA fixture (`test_simple_reg_constituent_write_init`)
+external to this repo. `ccpp_cap.py`'s `_generate_ccpp_cap_module` has two
+independent DDT-use-stub-emission paths for a suite sharing a DDT between
+host and scheme (`ccpp_constituent_prop_ptr_t`/`ccpp_constituent_properties_t`):
+`_generate_constituent_api()`'s unconditional hardcoded stubs, and a
+generic `_collect_ddt_use_stubs` scan driven by `ddt_source_module`. Before
+the fix, the generic scan used its own unshared `seen` set and never
+checked the constituent-API path's output, so both could independently
+emit a same-named `llvm.GlobalOp`, producing a "Redefinition of symbol"
+IR-verifier failure whenever a suite both generated a host cap and used
+constituents.
+
+**Investigation**: confirmed via direct code read that the fix itself
+(both paths keyed through one shared `shared_seen_host_globals` set) is
+intact in `ccpp_cap.py`. Confirmed, by checking every example in the repo
+that references `ccpp_constituent_properties_t`/`_prop_ptr_t`
+(`constprop`/`constadv`/`constituents_dim`/`instances`/
+`instances_advection`/`var_compat`), that **none** reaches both
+stub-emission paths for the same DDT simultaneously -- `ddt_source_module`
+(consulted by the generic scan) is only populated for a DDT with a
+*locally-declared* `[ccpp-table-properties] type = ddt` block in the
+parsed `.meta` inputs, and no existing example declares
+`ccpp_constituent_prop_ptr_t` that way; every one only ever references it
+as a plain arg `type =` attribute. So a new, minimal fixture had to be
+authored from scratch to actually exercise the collision, exactly as this
+bug's own original "Remaining follow-up" note anticipated.
+
+**Resolution**: new fixture directory `tests/filecheck/fixtures/ddt_redef/`
+(mirroring the existing `ddt_intent_in/` standalone-fixture convention),
+purpose-built to force the collision: `ccpp_constituent_prop_mod.meta`
+declares `ccpp_constituent_prop_ptr_t` as a local `ddt` table (its file
+stem, `ccpp_constituent_prop_mod`, exactly matches the constituent-API
+path's hardcoded module tag, since `source_module` is set from the
+parsing file's stem); `scheme.meta`'s `_register` table has a `dyn_const`
+(`ccpp_constituent_properties_t`, allocatable, intent=out) to trigger the
+constituent-API path, and its `_run` table has `const_ptr`
+(`ccpp_constituent_prop_ptr_t`, intent=out, no host match -- the same
+"DDT interstitial" shape proven by this session's own
+`test_ddt_interstitial_declaration.py`) to trigger the generic scan for
+the identical type/module pair. New end-to-end test:
+`tests/filecheck/examples/end_to_end/ddt-redef-dedup-xml.mlir`, reusing
+the standard constituent-API-exercising 9-pass pipeline already used by
+`instances_advection-xml.mlir`/`var_compat-xml.mlir`.
+
+**Verification**: confirmed the raw pipeline runs cleanly against the new
+fixture and produces exactly one `use ccpp_constituent_prop_mod, only:
+...` line per constituent-related DDT in the generated host cap (not
+two). Proved this is a real regression guard, not just a passing
+snapshot: temporarily reverted the `shared_seen_host_globals` dedup for
+the generic-scan path only (an unconditional `all_globals.append(stub)`,
+matching the pre-fix shape) and confirmed the pipeline fails with the
+exact original error, `VerifyException: Redefinition of symbol
+"ccpp_constituent_prop_ptr_t"`, and the new FileCheck test fails
+accordingly (`filecheck error: '<stdin>' is empty`); restored the fix and
+confirmed both pass again, with zero diff against the pre-revert state of
+`ccpp_cap.py`. Full `pytest tests/`: 772 passed (up from 771 -- 1 new
+test), 0 failed.

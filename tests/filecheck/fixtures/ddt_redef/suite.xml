@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+Minimal suite for the ddt-redef-filecheck regression test: a scheme that
+both registers a dynamic constituent (ccpp_constituent_properties_t,
+triggering constituent_cap.py's hardcoded DDT-use-stub path) and declares
+a plain scheme arg typed ccpp_constituent_prop_ptr_t, a DDT locally
+declared as a ddt table in ccpp_constituent_prop_mod.meta, so the
+generic ddt_source_module driven stub scan (ccpp_cap.py's
+_collect_ddt_use_stubs) also fires for the same type name/module.
+-->
+<suite name="ddt_redef_suite" version="1.0">
+  <group name="physics">
+    <scheme>ddt_redef</scheme>
+  </group>
+</suite>

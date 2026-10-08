@@ -74,7 +74,7 @@ separately), CHANGELOG.md L5850.
 | `type-control-gap` | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `task70-arraysection` | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | M, real refactor — `ArraySectionOp` is actively used across 5 files including the highest-risk dispatch code in the repo, not dead code | L6593 |
-| `task71-validate-fir` | Task #71: decide fate of `ccpp_validate_fir.py` vs `ccpp_validate_source.py --backend flang` | S-M — strong evidence of redundancy, but needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting deletion | L6593 |
+| `task71-validate-fir` | Task #71: decide fate of `ccpp_validate_fir.py` | S-M — project owner has decided `ccpp_validate_source.py --backend flang` stays indefinitely (2026-10-08), not up for removal; the real remaining question is narrower than originally framed — just whether `ccpp_validate_fir.py` itself is worth keeping as a separate tool given the evidence of redundancy, needs a real diff + a `DEVELOPERS.md` update decision, not a same-sitting deletion | L6593 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 "Move examples' build system from per-example Makefiles to CMake" — fully
@@ -133,17 +133,24 @@ Two workstreams: the `ResolvedVar`/`cam_autogen.py` integration
 (Workstream 2, resolved). Nearly everything in that doc turned out to
 already be done or superseded by this session's own extensive
 `/cam-sima-regression` testing — see CHANGELOG.md's merged section for the
-full history. Two small items survive as genuinely open:
+full history. One small item survives as genuinely open:
 
-- `ddt-redef-filecheck` — Add a permanent filecheck regression test under `tests/filecheck/`
-  covering host-cap + suite-cap + constituent-variable generation
-  together, so the DDT-redefinition bug (Workstream 2) doesn't silently
-  regress. (CHANGELOG.md L8254)
 - `constituent-ddt-stub-unify` — Consider whether `_generate_constituent_api`'s hardcoded DDT stub list
   should eventually be unified with the generic `ddt_source_module`
   mechanism rather than living as a second parallel path — today's fix
   makes the two paths coexist safely, it doesn't merge them. (CHANGELOG.md
   L8254)
+
+**Resolved since last verification (2026-10-08), removed from the list
+above**: `ddt-redef-filecheck` — added
+`tests/filecheck/examples/end_to_end/ddt-redef-dedup-xml.mlir`, backed by
+a new minimal fixture (`tests/filecheck/fixtures/ddt_redef/`) built
+specifically to trigger both of `_generate_ccpp_cap_module`'s DDT-use-stub
+paths for the same type (`ccpp_constituent_prop_ptr_t`) in one run —
+confirmed no existing example reached this shape. Verified as a real
+regression guard: fails with the original "Redefinition of symbol" error
+when the `shared_seen_host_globals` dedup fix is locally reverted, passes
+again once restored. CHANGELOG.md L10129.
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 `camsima-untested-confirm` — checked each of the four distinct "Untested" sub-claims
