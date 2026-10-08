@@ -2113,13 +2113,31 @@ class GenerateSuiteSubroutine(RewritePattern):
             if arg.hasAttr("model_var_unit_mismatch"):
                 scheme_units, host_units = arg.getAttr("model_var_unit_mismatch").split(":", 1)
                 to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+                kind_str = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 arg_type = TypeConversions.convert(
-                    arg.getAttr("type"),
-                    arg.getAttr("kind") if arg.hasAttr("kind") else None,
-                    _arg_dims(arg),
+                    arg.getAttr("type"), kind_str, _arg_dims(arg),
                 )
                 pre_expr = "" if intent == "out" else to_scheme_expr
-                conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+                # lang-neutral-expr-ir Stage 3c, same gate as
+                # _apply_kind_and_unit_casts above: see its own comment
+                # for why each condition is required.
+                structured_conv = None
+                if (
+                    kind_str is not None
+                    and real_kind_width(kind_str) is not None
+                    and _arg_dims(arg) == 0
+                    and intent != "out"
+                    and isinstance(cur, BlockArgument)
+                ):
+                    structured_conv = _parse_unit_conversion(to_scheme_expr)
+                if structured_conv is not None:
+                    op_cls, value = structured_conv
+                    load_op = memref.LoadOp.get(cur, [])
+                    const_op = arith.ConstantOp(FloatAttr(value, arg_type.element_type))
+                    conv_arith_op = op_cls(load_op, const_op)
+                    conv_op = UnitConvertOp(cur, result_type=arg_type, conversion_op=conv_arith_op)
+                else:
+                    conv_op = UnitConvertOp(cur, pre_expr, arg_type)
                 conv_op.res.name_hint = f"{arg.name}_unit_conv"
                 cast_ops.append(conv_op)
                 chain.append(("unit", conv_op.res, cur, to_host_expr))

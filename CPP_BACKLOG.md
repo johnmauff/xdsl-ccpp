@@ -27,34 +27,39 @@ tooling enforces this):
   ID-stability policy — this file is exactly the kind of place a stale ID
   reference would otherwise go unnoticed).
 
-Last synchronized with `BACKLOG.md`: 2026-10-07 (after `chost-rank3-bindc`
+Last synchronized with `BACKLOG.md`: 2026-10-08 (after `chost-rank3-bindc`
 and both `chost-identity-collision`/`chost-dim-collision` resolved;
 following `cpp-type-table-unify` and `cpp-dual-print-pipeline`;
-`lang-neutral-expr-ir`'s Stages 0-5 landed, Stage 3c still deferred).
+`lang-neutral-expr-ir` (including Stage 3c, now fully done) resolved;
+new `chost-real-width-fallback` item found during that work).
 
 ## Recommended near-term path
 
-**1 → 2 → 3/4** is the highest-value sequence right now: Tier 1's
-architectural blocker, all of Tier 2's cheap wins, and all of Tier 3's
-correctness bugs are done, so next is the `cxx-scheme` end-to-end test
-gap, then the two most concrete remaining chost limitations — without
-committing to Tier 4's large Phase C investment until there's real pull
-for it.
+**1 → 2/3** is the highest-value sequence right now: Tier 1's
+architectural blocker and all of Tier 2's cheap wins are done, so next is
+the `cxx-scheme` end-to-end test gap, then the two most concrete
+remaining chost limitations — without committing to Tier 4's large Phase
+C investment until there's real pull for it.
 
 ## Tier 1 — foundational, blocks everything else in this direction
 
-1. **`lang-neutral-expr-ir`** — the real architectural blocker, now
-   **effectively done** (2026-10-04). A language-neutral expression
-   vocabulary (reused `arith`/`math` plus 7 new custom ops) exists, with
-   both a Fortran printer and a brand-new C++ expression printer
-   (`expr_to_cpp_str`) rendering the same IR tree in each language's own
-   syntax — propagated to all 3 files with real retrofit work
-   (`constituent_cap.py`, `cpp_interop.py`, `suite_cap.py`;
-   `run_dispatch.py`/`lifecycle_cap.py` audited and confirmed to need
-   none). Only one deferred sub-item remains: `UnitConvertOp`'s
-   structured form can't yet handle this dialect's own `RealKindType` —
-   needs new vocabulary first, not a quick fix. See `BACKLOG.md`'s entry
-   and `CHANGELOG.md`'s "Stages 0-4"/"Stage 5" writeups for full detail.
+**`lang-neutral-expr-ir` — RESOLVED 2026-10-08**: the real architectural
+blocker is fully done, including Stage 3c (`UnitConvertOp`'s own
+deferred structured-conversion sub-item). A language-neutral expression
+vocabulary (reused `arith`/`math` plus 7 new custom ops) exists, with
+both a Fortran printer and a C++ expression printer (`expr_to_cpp_str`)
+rendering the same IR tree in each language's own syntax — propagated to
+all 3 files with real retrofit work (`constituent_cap.py`,
+`cpp_interop.py`, `suite_cap.py`; `run_dispatch.py`/`lifecycle_cap.py`
+audited and confirmed to need none). Stage 3c: a bare numeric real kind
+(`kind = 8`/`4`) builds a real `arith` conversion tree at both of
+`suite_cap.py`'s real call sites (`_apply_kind_and_unit_casts` and
+`_apply_divergent_marshaling`); a named kind (e.g. `kind_phys`) stays on
+the opaque-text path permanently, by design. See `BACKLOG.md`'s entry and
+`CHANGELOG.md`'s "Stages 0-4"/"Stage 5"/"Stage 3c" writeups for full
+detail, including a PR #115 Copilot review round (2 real findings, both
+fixed); removed from the numbered list below (renumbered accordingly) —
+this tier is now fully resolved.
 
 ## Tier 2 — cheap, low-risk wins directly in the C++ codepath
 
@@ -103,24 +108,32 @@ separate entries by deliberate choice. See `BACKLOG.md`'s entry and
 `CHANGELOG.md`'s resolution writeup for full detail; removed from the
 numbered list below (renumbered accordingly).
 
-2. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
+1. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
    host calling a C++ scheme implementation) has zero compiled
    end-to-end test, only static FileCheck fixtures. The cap-generation
    side is already done and verified correct — this is a real confidence
    gap, not a design gap.
-3. **`chost-gpu-memory`** — no device-pointer contract for a C++ host
+2. **`chost-gpu-memory`** — no device-pointer contract for a C++ host
    driving GPU physics across the BIND(C) boundary. The most
    consequential of the "known limitations" for real HPC adoption of the
    chost path. Note: `chost-rank3-bindc`'s resolution confirmed `--bind-c`
    + `--directive acc/omp` together is still completely untested in this
    repo — relevant context for whoever picks this item up.
-4. **`chost-column-major`** — C++ callers must manually match Fortran's
+3. **`chost-column-major`** — C++ callers must manually match Fortran's
    column-major layout with no detection or alternative; a silent-wrong-
    numerical-result footgun, not an active failure.
-5. **`chost-thread-safety`** — concurrent C++ threads race on the
+4. **`chost-thread-safety`** — concurrent C++ threads race on the
    module-level `ccpp_suite_state` variable; safe today only because the
-   one real driver is single-threaded. Lower urgency than 3/4 — no known
+   one real driver is single-threaded. Lower urgency than 2/3 — no known
    real caller is multi-threaded yet.
+5. **`chost-real-width-fallback`** — found 2026-10-08 during
+   `lang-neutral-expr-ir` Stage 3c's work above: `cpp_interop.py`'s
+   `_real_width_from_iso` silently defaults to 64-bit for any kind it
+   can't resolve via the ISO-name map, including an unresolved bare-digit
+   kind (a hypothetical `kind = 4` would be silently mis-widened).
+   Latent only — no real fixture currently declares `kind = 4`. Fix:
+   consult the new Fortran-side `real_kind_width` helper before falling
+   back to 64. Low effort, low urgency.
 
 ## Tier 4 — bigger downstream investment (EAMxx C++ bridge)
 

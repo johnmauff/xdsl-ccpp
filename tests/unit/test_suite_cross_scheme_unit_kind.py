@@ -34,6 +34,7 @@ from io import StringIO
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS
 from xdsl_ccpp.backend.print_ftn import print_to_ftn
+from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
@@ -93,6 +94,17 @@ def _fortran_output(run_host_match, ccpp_context, scheme_metas, host_metas) -> s
     out = StringIO()
     print_to_ftn(module, out)
     return out.getvalue()
+
+
+def _module_and_fortran_output(run_host_match, ccpp_context, scheme_metas, host_metas):
+    module = run_host_match(
+        scheme_metas=scheme_metas, host_metas=host_metas, suite_xml=_TWO_SCHEME_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    return module, out.getvalue()
 
 
 def _fn_body(fortran: str, fn_name: str) -> str:
@@ -188,6 +200,49 @@ class TestDivergentUnitsHostMatchesNeither:
         assert len(declared) == len(set(declared)), (
             f"duplicate dummy-argument declaration(s): {declared}"
         )
+
+
+class TestDivergentBareDigitKindUnitMismatchTakesStructuredPath:
+    """lang-neutral-expr-ir Stage 3c, _apply_divergent_marshaling's own
+    retrofit: scheme_a matches the host exactly (kind=8, meters); scheme_b
+    shares scheme_a's kind (8, no kind mismatch at all) but diverges on
+    units alone (centimeters) -- the exact shape _apply_kind_and_unit_casts'
+    own structured path already covers, now proven here for the per-call-
+    site divergent-marshaling analog too."""
+
+    def test_scheme_b_call_builds_a_conversion_region_not_opaque_text(
+        self, run_host_match, ccpp_context,
+    ):
+        module, _fortran = _module_and_fortran_output(
+            run_host_match, ccpp_context,
+            [_scheme_meta("scheme_a", "m", kind="8"), _scheme_meta("scheme_b", "cm", kind="8")],
+            [_host_meta("m", kind="8")],
+        )
+        (unit_convert_op,) = [op for op in module.walk() if isinstance(op, UnitConvertOp)]
+        assert unit_convert_op.to_scheme_expr is None
+        assert unit_convert_op.conversion is not None
+
+    def test_scheme_b_call_printed_fortran_matches_opaque_path_text_exactly(
+        self, run_host_match, ccpp_context,
+    ):
+        _module, fortran = _module_and_fortran_output(
+            run_host_match, ccpp_context,
+            [_scheme_meta("scheme_a", "m", kind="8"), _scheme_meta("scheme_b", "cm", kind="8")],
+            [_host_meta("m", kind="8")],
+        )
+        fn = _fn_body(fortran, "test_suite_physics")
+        unit_conv_line = next(l for l in fn.splitlines() if "x_unit_conv = " in l)
+        assert "x * 100.0_8" in unit_conv_line
+
+    def test_scheme_a_call_unaffected(self, run_host_match, ccpp_context):
+        _module, fortran = _module_and_fortran_output(
+            run_host_match, ccpp_context,
+            [_scheme_meta("scheme_a", "m", kind="8"), _scheme_meta("scheme_b", "cm", kind="8")],
+            [_host_meta("m", kind="8")],
+        )
+        fn = _fn_body(fortran, "test_suite_physics")
+        call_a = next(line for line in fn.splitlines() if "call scheme_a_run" in line)
+        assert "_unit_conv" not in call_a
 
 
 class TestDivergentKindAndUnitsChain:

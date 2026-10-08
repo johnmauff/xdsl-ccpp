@@ -231,86 +231,26 @@ ID: `lang-neutral-expr-ir`
 **File**: `xdsl_ccpp/dialects/ccpp_utils.py` (op definitions),
 `xdsl_ccpp/backend/{print_ftn,print_cpp_header,expr_precedence}.py`
 (printers), `xdsl_ccpp/transforms/{constituent_cap,cpp_interop,
-suite_cap}.py` (retrofitted). **Added 2026-09-30**; **design + full
-propagation (Stages 0-5) DONE 2026-10-04** — see `CHANGELOG.md`'s
-"`lang-neutral-expr-ir` Stages 0-4" and "Stage 5" entries for full
-detail. **Not fully resolved** — kept open here, not archived, because
-one sub-item (Stage 3c) remains deliberately deferred.
+suite_cap}.py` (retrofitted). **Added 2026-09-30**.
 
-**The gap, precisely** (unchanged from when this was first written):
-converting a file's raw Fortran-string *statement bodies* into typed ops
-(`IfThenOp`, `DdtMethodCallOp`, `PointerAssignOp`, etc.) lets a
-second-language printer decide how to render an `if`/`then`/`else`, a
-type-bound call, or a pointer assignment in its own target syntax. But
-those ops' *expression-bearing* properties — `IfThenOp.condition_expr`,
-`DdtMethodCallOp.args`/`.kwargs`, `PointerAssignOp.rhs_expr`,
-`AllocateOp.dims`, `ModuleVarOp.init_value`, and more — held raw
-Fortran-syntax *text* (`.or.`/`/=` operators, `errcode=errcode`
-keyword-arg syntax, array-constructor literals). A C++ printer can't
-render `.or.` as `||` without re-parsing Fortran syntax out of a string
-first — which defeats the point of a printer abstraction.
-
-**What's done (Stages 0-5, see `CHANGELOG.md` for the full writeup)**:
-- A language-neutral expression vocabulary exists and is proven: `arith`/
-  `math` reused directly for arithmetic/logical/comparison/numeric
-  literals (completing `print_ftn.py`'s own previously-unused
-  `_binops`/`_cmp_ops` scaffolding rather than inventing a parallel
-  system), plus 7 new custom ops for what those dialects can't express
-  (`StringLiteralExprOp`, `StringConcatExprOp`, `VarRefExprOp`,
-  `MemberAccessExprOp`, `IndexExprOp`/`SliceExprOp`, `CallExprOp`/
-  `KeywordArgExprOp`, `ArrayConstructorExprOp`).
-- Both a Fortran printer path (`print_ftn.py`'s completed `print_expr`)
-  and a brand-new C++ expression printer (`print_cpp_header.py`'s
-  `expr_to_cpp_str`) render the *same* IR tree in each language's own
-  syntax, with a shared precedence/parenthesization module
-  (`expr_precedence.py`) — this is the item's real proof-of-concept.
-- Piloted on two independent real files, then propagated to a third
-  (Stage 5): `constituent_cap.py` (all 7 targeted op kinds:
-  `IfThenOp.condition_expr`, `ActiveCheckOp.condition_expr`,
-  `ErrorGuardOp.condition`, `DdtMethodCallOp.obj_expr/args/kwargs`,
-  `PointerAssignOp.rhs_expr`, `AllocateOp.dims`, `ModuleVarOp.
-  init_value`), `cpp_interop.py` (`CppBraceInitCallOp.field_values`,
-  `CppCallStatementOp.call_args`, `CppFieldDeclOp.init_expr`), and
-  `suite_cap.py` (`LazyAllocOp.init_value`, `ModuleVarOp.init_value`,
-  `SubcycleLoopOp.loop_count`, `KeywordCallOp.overrides`). Every
-  retrofitted op kept its legacy text form fully supported alongside
-  the new structured form (additive, not a breaking change) — any
-  other real caller of these ops is unaffected.
-- `run_dispatch.py` and `lifecycle_cap.py` were audited directly
-  (every call site read, not just grepped) and confirmed to have **no
-  real retrofit candidates at all** — their only expression-bearing-op
-  usages either never populate the raw-text property in question, or
-  carry static literal fragments with no internal structure to extract.
-  Stage 5's "propagate to 3 remaining files" therefore resolved to real
-  work in `suite_cap.py` only.
-- A real architecture gap was found and fixed along the way
-  (`_flatten_floating_deps`, needed because a freshly-built `arith`/
-  custom-op tree wrapped only at its root fails `module.verify()`'s
-  `IsolatedFromAbove` check) — this also retroactively fixed the same
-  latent bug in `UnitConvertOp`/`UnitWriteBackOp`.
-
-**Stage 3c deferred** (not abandoned): retrofitting one real
-`UnitConvertOp`/`UnitWriteBackOp` K↔°C call site was attempted and found
-genuinely blocked — every real `unit_convert` call site operates on this
-dialect's own `RealKindType` (a Fortran generic-kind placeholder), and
-`arith.AddfOp`/`SubfOp`'s operand constraint only accepts builtin
-`Float16/32/64Type` (confirmed directly against xDSL's source). Needs new
-`RealKindType`-compatible constant/binary-op vocabulary first if
-revisited — real additional scope, not a quick fix. This is now the
-item's **only remaining open thread**.
-
-**Effort**: the design-and-pilot phase (Stages 0-4) took roughly 2 weeks
-of nominal effort; Stage 5's propagation (once correctly scoped down to
-`suite_cap.py` only) took a single sitting — the real per-file cost
-turned out far smaller than the original "comparable to the pilot
-phase" estimate, since `run_dispatch.py`/`lifecycle_cap.py` needed zero
-changes and `suite_cap.py` itself had only 4 distinct op kinds with a
-handful of call sites each.
-
-**Risk of leaving as-is**: none, for the 3 files now covered — a
-second-language printer is achievable for all of their expression
-content today. The only remaining risk is scoped entirely to Stage 3c's
-`UnitConvertOp`/`UnitWriteBackOp` gap.
+**Resolved 2026-10-08, removed from the list above** (matching every
+other resolved item in this file): a language-neutral expression
+vocabulary (reused `arith`/`math` plus 7 new custom ops) exists, with
+both a Fortran printer and a C++ expression printer (`expr_to_cpp_str`)
+rendering the same IR tree in each language's own syntax — propagated to
+all 3 files with real retrofit work (`constituent_cap.py`,
+`cpp_interop.py`, `suite_cap.py`; `run_dispatch.py`/`lifecycle_cap.py`
+audited and confirmed to need none). Stage 3c (`UnitConvertOp`'s
+structured conversion form) is now also done for its full safe scope: a
+bare numeric real kind (`kind = 8`/`4`) builds a real `arith` conversion
+tree at both of `suite_cap.py`'s real call sites
+(`_apply_kind_and_unit_casts` and `_apply_divergent_marshaling`); a named
+kind (e.g. `kind_phys`) stays on the opaque-text path permanently, by
+design — reclassifying it would silently change generated declaration
+text for ~190+ existing real arguments. See `CHANGELOG.md`'s
+"`lang-neutral-expr-ir` Stages 0-4", "Stage 5", and "Stage 3c" entries
+(L9870) for full detail, including a PR #115 Copilot review round (2
+real findings, both fixed).
 
 ### `ifthenop-scf-unify`: `IfThenOp` reinvents `scf.IfOp`
 
@@ -376,7 +316,10 @@ Full detail, resolved-item history, and usage guidance stay in
 `multilanguage_limitations.md` (kept standalone — it's live chost usage
 reference, not backlog noise). These 3 items are its only open ones as
 of 2026-10-07 (11 of its 14 numbered items are now resolved); pointer
-entries here so they surface in a backlog sweep too.
+entries here so they surface in a backlog sweep too. A 4th, new, smaller
+item (`chost-real-width-fallback`, below) was found 2026-10-08 and is
+tracked here only — not yet folded into `multilanguage_limitations.md`'s
+own numbering.
 
 **`chost-rank3-bindc` — RESOLVED 2026-10-07**: the plain `--bind-c` path
 (no chost layer) was non-functional for *every* array rank, not just
@@ -428,6 +371,22 @@ for full detail.
   Low-Medium effort; multi-instance support (see above) is one viable
   fix path, now that its own reference to the removed `--num-instances`
   flag has been corrected. `multilanguage_limitations.md` §6.
+- `chost-real-width-fallback` — **Bare-digit real kind silently mis-widens to 64-bit** —
+  found 2026-10-08 during `lang-neutral-expr-ir` Stage 3c's narrow
+  classification work (see above). `cpp_interop.py`'s
+  `_real_width_from_iso` (C++ chost-interop width inference) silently
+  defaults to 64-bit for *any* kind it can't resolve via the ISO-name map
+  — including an unresolved bare-digit kind like a hypothetical
+  `kind = 4` (single precision), since `suite_kinds.py`'s own `MetaKind`
+  pass deliberately never creates a `ccpp.kind` entry for a bare-digit
+  kind in the first place (correctly so, for its own, different decision
+  — whether a `public ::` export is needed). No real `.meta` fixture
+  currently declares `kind = 4` (only `kind = 8`, which happens to match
+  the 64-bit default by luck), so this is latent, not yet observed in
+  practice. Fix: have `_real_width_from_iso`'s `kind_entry is None`
+  branch consult the new Fortran-side `real_kind_width`
+  (`ccpp_conventions.py`) before falling back to 64. Low effort, low
+  urgency (latent only).
 
 ## Fortran host → C++ scheme: no compiled end-to-end test
 
