@@ -6,13 +6,14 @@ from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
     DictionaryAttr,
+    FloatAttr,
     IntegerAttr,
     MemRefType,
     StringAttr,
     i8,
     i32,
 )
-from xdsl.ir import Block, Region, SSAValue
+from xdsl.ir import Block, BlockArgument, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     GreedyRewritePatternApplier,
@@ -101,6 +102,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     is_dispatch_scalar_std_name,
     is_vertical_dimension,
     normalize_units,
+    real_kind_width,
 )
 from xdsl_ccpp.util.visitor import Visitor
 
@@ -919,6 +921,30 @@ def _build_block_and_name_hints(input_arg_list) -> tuple:
     return new_block, input_arg_types, data_ops, final_values
 
 
+_UNIT_CONV_OP_MAP = {"+": arith.AddfOp, "-": arith.SubfOp, "*": arith.MulfOp}
+
+
+def _parse_unit_conversion(expr: str) -> "tuple | None":
+    """Split a UNIT_CONVERSIONS value ("<op> <value>", e.g. "+ 273.15")
+    into (arith op class, float value), or None if the literal's own
+    text isn't reproduced exactly by Python's float-to-str round trip
+    (e.g. "1.0E6" prints back as "1000000.0", "1.0E-6" as "1e-06" --
+    confirmed via the (um, m)/(m, um) UNIT_CONVERSIONS entries; Copilot
+    PR #115 review). The structured path must print byte-identically to
+    the opaque-text path, so an entry whose spelling can't be guaranteed
+    to round-trip stays on the opaque path instead of silently emitting
+    a differently-spelled (if numerically equal) literal. No '/' entry
+    exists in UNIT_CONVERSIONS today (reciprocal multiply is used
+    instead) -- fail loudly rather than silently mis-parse one if that
+    ever changes.
+    """
+    op_str, value_str = expr.split(" ", 1)
+    value = float(value_str)
+    if str(value) != value_str:
+        return None
+    return _UNIT_CONV_OP_MAP[op_str], value
+
+
 def _apply_kind_and_unit_casts(
     input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
 ) -> tuple:
@@ -983,13 +1009,43 @@ def _apply_kind_and_unit_casts(
         if fn_arg.hasAttr("model_var_unit_mismatch"):
             scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
             to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+            kind_str = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
             arg_type = TypeConversions.convert(
-                fn_arg.getAttr("type"),
-                fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None,
-                _arg_dims(fn_arg),
+                fn_arg.getAttr("type"), kind_str, _arg_dims(fn_arg),
             )
             pre_expr = "" if intent == "out" else to_scheme_expr
-            conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+            # lang-neutral-expr-ir Stage 3c: build a real arith conversion
+            # tree instead of opaque text, but only when it's actually safe
+            # to -- a bare-digit kind (real_kind_width) resolves arg_type's
+            # element to a real arith-compatible float type (see
+            # TypeConversions.convert), and only a scalar can be
+            # represented by one arith op (an array-wide "+ 273.15"
+            # assignment has no single-op equivalent). Every other real
+            # kind (e.g. kind_phys) keeps the opaque-text path permanently.
+            # Also require `cur` to be a plain block argument (not a prior
+            # KindCastOp's result): _single_op_region's floating-deps walk
+            # would otherwise pull that still-unattached KindCastOp into
+            # this op's own private conversion region, double-attaching it
+            # when the top-level kind_cast_ops list is later inserted into
+            # the real function body -- a chained kind+unit mismatch stays
+            # on the opaque-text path for now.
+            structured_conv = None
+            if (
+                kind_str is not None
+                and real_kind_width(kind_str) is not None
+                and _arg_dims(fn_arg) == 0
+                and intent != "out"
+                and isinstance(cur, BlockArgument)
+            ):
+                structured_conv = _parse_unit_conversion(to_scheme_expr)
+            if structured_conv is not None:
+                op_cls, value = structured_conv
+                load_op = memref.LoadOp.get(cur, [])
+                const_op = arith.ConstantOp(FloatAttr(value, arg_type.element_type))
+                conv_arith_op = op_cls(load_op, const_op)
+                conv_op = UnitConvertOp(cur, result_type=arg_type, conversion_op=conv_arith_op)
+            else:
+                conv_op = UnitConvertOp(cur, pre_expr, arg_type)
             conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
             unit_convert_ops.append(conv_op)
             chain.append(("unit", conv_op.res, cur, to_host_expr))
@@ -2057,13 +2113,31 @@ class GenerateSuiteSubroutine(RewritePattern):
             if arg.hasAttr("model_var_unit_mismatch"):
                 scheme_units, host_units = arg.getAttr("model_var_unit_mismatch").split(":", 1)
                 to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+                kind_str = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 arg_type = TypeConversions.convert(
-                    arg.getAttr("type"),
-                    arg.getAttr("kind") if arg.hasAttr("kind") else None,
-                    _arg_dims(arg),
+                    arg.getAttr("type"), kind_str, _arg_dims(arg),
                 )
                 pre_expr = "" if intent == "out" else to_scheme_expr
-                conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+                # lang-neutral-expr-ir Stage 3c, same gate as
+                # _apply_kind_and_unit_casts above: see its own comment
+                # for why each condition is required.
+                structured_conv = None
+                if (
+                    kind_str is not None
+                    and real_kind_width(kind_str) is not None
+                    and _arg_dims(arg) == 0
+                    and intent != "out"
+                    and isinstance(cur, BlockArgument)
+                ):
+                    structured_conv = _parse_unit_conversion(to_scheme_expr)
+                if structured_conv is not None:
+                    op_cls, value = structured_conv
+                    load_op = memref.LoadOp.get(cur, [])
+                    const_op = arith.ConstantOp(FloatAttr(value, arg_type.element_type))
+                    conv_arith_op = op_cls(load_op, const_op)
+                    conv_op = UnitConvertOp(cur, result_type=arg_type, conversion_op=conv_arith_op)
+                else:
+                    conv_op = UnitConvertOp(cur, pre_expr, arg_type)
                 conv_op.res.name_hint = f"{arg.name}_unit_conv"
                 cast_ops.append(conv_op)
                 chain.append(("unit", conv_op.res, cur, to_host_expr))
