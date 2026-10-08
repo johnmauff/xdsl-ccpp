@@ -17,97 +17,25 @@ give: a priority ranking specific to the multi-language goal, and a short
 
 **Keeping this synchronized with `BACKLOG.md`** (manual, by design — no
 tooling enforces this):
-- When a C++-relevant item here resolves, changes scope, or gets
-  renamed/re-prioritized in `BACKLOG.md`, update the corresponding line
-  here in the same sitting.
+- When a C++-relevant item here resolves, remove it from this file
+  entirely in the same sitting (full history lives in `BACKLOG.md`/
+  `CHANGELOG.md` — nothing lingers here, open items only).
 - When a new item lands in `BACKLOG.md` that bears on this same goal, add
   it here too, at whatever tier its priority warrants.
 - IDs here must always match `BACKLOG.md`'s current ID for that item
-  exactly (see `BACKLOG.md`'s own Technical Debt section for the
-  ID-stability policy — this file is exactly the kind of place a stale ID
-  reference would otherwise go unnoticed).
+  exactly.
 
-Last synchronized with `BACKLOG.md`: 2026-10-08 (after `chost-rank3-bindc`
-and both `chost-identity-collision`/`chost-dim-collision` resolved;
-following `cpp-type-table-unify` and `cpp-dual-print-pipeline`;
-`lang-neutral-expr-ir` (including Stage 3c, now fully done) resolved;
-`chost-real-width-fallback`, found during that work, resolved the same
-day).
+Last synchronized with `BACKLOG.md`: 2026-10-08.
 
 ## Recommended near-term path
 
-**1 → 2/3** is the highest-value sequence right now: Tier 1's
-architectural blocker and all of Tier 2's cheap wins are done, so next is
-the `cxx-scheme` end-to-end test gap, then the two most concrete
-remaining chost limitations — without committing to Tier 4's large Phase
-C investment until there's real pull for it.
+**1 → 2/3** is the highest-value sequence right now: the architectural
+blocker and all cheap wins are done, so next is the `cxx-scheme`
+end-to-end test gap, then the two most concrete remaining chost
+limitations — without committing to Tier 2's large Phase C investment
+until there's real pull for it.
 
-## Tier 1 — foundational, blocks everything else in this direction
-
-**`lang-neutral-expr-ir` — RESOLVED 2026-10-08**: the real architectural
-blocker is fully done, including Stage 3c (`UnitConvertOp`'s own
-deferred structured-conversion sub-item). A language-neutral expression
-vocabulary (reused `arith`/`math` plus 7 new custom ops) exists, with
-both a Fortran printer and a C++ expression printer (`expr_to_cpp_str`)
-rendering the same IR tree in each language's own syntax — propagated to
-all 3 files with real retrofit work (`constituent_cap.py`,
-`cpp_interop.py`, `suite_cap.py`; `run_dispatch.py`/`lifecycle_cap.py`
-audited and confirmed to need none). Stage 3c: a bare numeric real kind
-(`kind = 8`/`4`) builds a real `arith` conversion tree at both of
-`suite_cap.py`'s real call sites (`_apply_kind_and_unit_casts` and
-`_apply_divergent_marshaling`); a named kind (e.g. `kind_phys`) stays on
-the opaque-text path permanently, by design. See `BACKLOG.md`'s entry and
-`CHANGELOG.md`'s "Stages 0-4"/"Stage 5"/"Stage 3c" writeups for full
-detail, including a PR #115 Copilot review round (2 real findings, both
-fixed); removed from the numbered list below (renumbered accordingly) —
-this tier is now fully resolved.
-
-## Tier 2 — cheap, low-risk wins directly in the C++ codepath
-
-**`cpp-type-table-unify` — RESOLVED 2026-10-07**: `_chost_cpp_type`/
-`_cpp_type` now both adapt onto one new shared `cpp_numeric_type`
-decision table (`xdsl_ccpp/util/cpp_type_table.py`), with their three
-real pre-existing quirks preserved as explicit, documented parameters/
-overrides rather than silently unified away. Byte-identical output
-confirmed (730 passed, 1 xfailed, zero FileCheck goldens touched), plus
-new direct unit coverage neither function had before. See `BACKLOG.md`'s
-entry and `CHANGELOG.md`'s resolution writeup for full detail; removed
-from the numbered list below (renumbered accordingly) — this tier is
-now fully resolved.
-
-**`cpp-dual-print-pipeline` — RESOLVED 2026-10-05**: `ccpp_dsl.py` now
-runs the pipeline once and prints both the `.F90` and C++ header output
-from the same in-memory module (a new `ftn_and_cpp_header` pipeline
-target), instead of two fully independent subprocess re-runs — ~2x
-faster on a small example, verified byte-identical output. See
-`BACKLOG.md`'s entry and `CHANGELOG.md`'s resolution writeup for full
-detail; removed from the numbered list below (renumbered accordingly).
-
-## Tier 3 — close real gaps in the C++ host support that exists today
-
-**`chost-rank3-bindc` — RESOLVED 2026-10-07**: the plain `--bind-c` path
-was non-functional for *every* array rank (not just "rank > 2" as
-previously scoped), confirmed via real gfortran compilation and fixed by
-declaring explicit shape + `target` instead of flat assumed-size,
-resolving each dimension from a sibling scalar already in scope. Includes
-a PR #112 Copilot review round (2 real findings, both fixed) and real
-end-to-end gfortran compile verification. See `BACKLOG.md`'s entry and
-`CHANGELOG.md`'s resolution writeup for full detail; removed from the
-numbered list below (renumbered accordingly).
-
-**`chost-identity-collision`/`chost-dim-collision` — RESOLVED 2026-10-07**:
-`cpp_interop.py`'s `_chost_build_maps` resolved every chost argument's
-identity and dimension shape via flat, global, unscoped scans across all
-schemes — the same collision bug class `chost-rank3-bindc`'s PR #112
-review already fixed once in `run_dispatch.py`. Fixed by scoping the scan
-to exactly the schemes feeding one suite-cap function, keying a genuine
-collision by each sibling's own `model_var_name` (new
-`_suite_fn_groups_for`/`_chost_scan_scheme_phase_args`/
-`_chost_resolve_scheme_arg_identities`). Both items fixed in one pass
-(identical new scoping infrastructure needed for both), tracked as two
-separate entries by deliberate choice. See `BACKLOG.md`'s entry and
-`CHANGELOG.md`'s resolution writeup for full detail; removed from the
-numbered list below (renumbered accordingly).
+## Tier 1 — close real gaps in the C++ host support that exists today
 
 1. **`cxx-scheme-no-e2e-test`** — the *other* C++ direction (a Fortran
    host calling a C++ scheme implementation) has zero compiled
@@ -128,20 +56,7 @@ numbered list below (renumbered accordingly).
    one real driver is single-threaded. Lower urgency than 2/3 — no known
    real caller is multi-threaded yet.
 
-**`chost-real-width-fallback` — RESOLVED 2026-10-08**: `cpp_interop.py`'s
-`_real_width_from_iso` silently defaulted to 64-bit for any kind it
-couldn't resolve via the ISO-name map, including an unresolved
-bare-digit kind (a `kind = 4` field would have been silently mis-widened
-to double instead of float across the C++/BIND(C) boundary). Confirmed
-this was a genuinely reachable gap, not made moot by `lang-neutral-expr-ir`
-Stage 3c's own Fortran-side reclassification: a DDT member's width is
-inferred directly from its own raw metadata `kind` string, independent of
-the suite-cap block-arg MLIR type Stage 3c touches. Fixed by consulting
-the Fortran-side `real_kind_width` helper before falling back to 64. See
-`BACKLOG.md`'s entry and `CHANGELOG.md`'s resolution writeup for full
-detail; removed from the numbered list above (renumbered accordingly).
-
-## Tier 4 — bigger downstream investment (EAMxx C++ bridge)
+## Tier 2 — bigger downstream investment (EAMxx C++ bridge)
 
 5. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
    deviceptr` host-meta property for zero-staging GPU pointer passing.
