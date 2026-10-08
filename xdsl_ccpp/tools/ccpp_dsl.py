@@ -273,7 +273,7 @@ class ccppMain:
                 raise ValueError("--scheme-files is required (or provide --meta-file)")
 
         # coerce_list_option() accepts either a comma-joined string (the
-        # CLI contract -- .strip()ping each entry so a space after a comma,
+        # CLI contract -- stripping each entry so a space after a comma,
         # e.g. "a.meta, b.meta", doesn't silently become a path with a
         # leading space, failing to open with a confusing error rather than
         # being tolerated the way most CLI tools handle incidental
