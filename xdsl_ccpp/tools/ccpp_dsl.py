@@ -17,6 +17,7 @@ from xdsl_ccpp.dialects.ccpp import (
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
 from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
+from xdsl_ccpp.util.options_db import coerce_list_option
 
 
 class CcppDslError(Exception):
@@ -271,32 +272,20 @@ class ccppMain:
             if not options_db.get("scheme_files") and not options_db.get("meta_file"):
                 raise ValueError("--scheme-files is required (or provide --meta-file)")
 
-        # .strip() each entry: a space after a comma (e.g. "a.meta, b.meta")
-        # would otherwise silently become a path with a leading space,
-        # failing to open with a confusing error rather than being
-        # tolerated the way most CLI tools handle incidental whitespace.
-        if options_db.get("suites"):
-            options_db["suites"] = [p.strip() for p in options_db["suites"].split(",")]
-        else:
-            options_db["suites"] = []
-        if options_db["scheme_files"]:
-            options_db["scheme_files"] = [
-                p.strip() for p in options_db["scheme_files"].split(",")
-            ]
-        else:
-            options_db["scheme_files"] = []
-        if options_db["host_files"]:
-            options_db["host_files"] = [
-                p.strip() for p in options_db["host_files"].split(",")
-            ]
-        else:
-            options_db["host_files"] = []
-        if options_db.get("preproc_defs"):
-            options_db["preproc_defs"] = [
-                p.strip() for p in options_db["preproc_defs"].split(",") if p.strip()
-            ]
-        else:
-            options_db["preproc_defs"] = []
+        # coerce_list_option() accepts either a comma-joined string (the
+        # CLI contract -- .strip()ping each entry so a space after a comma,
+        # e.g. "a.meta, b.meta", doesn't silently become a path with a
+        # leading space, failing to open with a confusing error rather than
+        # being tolerated the way most CLI tools handle incidental
+        # whitespace) or an already-real Python list (capgen-v1's own
+        # contract for these fields, for a caller building options_db
+        # programmatically rather than through argparse).
+        options_db["suites"] = coerce_list_option(options_db.get("suites"))
+        options_db["scheme_files"] = coerce_list_option(options_db["scheme_files"])
+        options_db["host_files"] = coerce_list_option(options_db["host_files"])
+        options_db["preproc_defs"] = [
+            p for p in coerce_list_option(options_db.get("preproc_defs")) if p
+        ]
 
         all_inputs = (
             options_db["suites"] + options_db["scheme_files"] + options_db["host_files"]

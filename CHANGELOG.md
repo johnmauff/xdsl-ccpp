@@ -10237,3 +10237,51 @@ where the comment was itself a historical "why this file exists" note).
 
 **Verification**: full `pytest tests/`: 772 passed, 0 failed (no test
 coverage existed for the deleted tool, so none was lost).
+
+## `optionsdb-list-format` resolution: `options_db` now accepts native Python lists (2026-10-08)
+
+**Problem**: `ccpp_dsl.py`'s and `ccpp_xml.py`'s own, fully independent
+`build_options_db_from_args` implementations each turned a CLI-supplied
+comma-joined string (`suites`/`scheme_files`/`host_files`, plus
+`preproc_defs` in `ccpp_dsl.py` only) into a list via an unconditional
+`.split(",")`. Real capgen-v1 takes plain Python lists for these fields;
+an in-process Python caller (e.g. CAM-SIMA's own `cam_autogen.py`/
+`resolved_var_xdsl_ccpp.py` adapter) had to pre-join its own native lists
+into strings just to call into this tool, and passing a real list
+directly crashed with `AttributeError: 'list' object has no attribute
+'split'`.
+
+**Investigation**: confirmed `options_db` is literally `args.__dict__` in
+both places, and the two implementations don't share any pipeline --
+`ccpp_dsl.py`'s `run_frontend` re-joins its own already-split lists back
+into a comma string to hand to `ccpp_xml.py` as subprocess argv, which
+`ccpp_xml.py` then re-splits itself; that round-trip is inherent to the
+subprocess boundary (argv is always text) and was left alone. Critically,
+confirmed via `ccpp_prebuild.py` (lines 291-296) that the *downstream*
+pipeline (`run_frontend`, `run_opt`, etc.) already fully supports native
+lists today -- it builds `tool.options_db` by `.update()`-ing real
+Python lists directly, bypassing `build_options_db_from_args` entirely,
+and this already works. So the gap was isolated to
+`build_options_db_from_args` itself not tolerating list input, for a
+caller who'd naturally reach for it (e.g. building an
+`argparse.Namespace`-like object programmatically) rather than
+hand-rolling the whole `options_db` dict from scratch the way
+`ccpp_prebuild.py` does.
+
+**Resolution**: new `xdsl_ccpp/util/options_db.py::coerce_list_option()`
+-- accepts a comma-joined string (split and `.strip()`ped per entry,
+unchanged CLI behavior) or a list/tuple (passed through unchanged,
+trusting the caller the same way `ccpp_prebuild.py`'s own direct
+assignment already does). Used at all 7 call sites across both files'
+`build_options_db_from_args`. `preproc_defs`'s empty-entry filter is now
+applied uniformly to both input forms rather than only the string path.
+
+**Verification**: 3 new unit tests in
+`tests/unit/test_frontend_whitespace_tolerance.py` (`TestListValuedOptionsAccepted`)
+-- passing real lists through both implementations, and confirming a
+falsy/`None` value still defaults to `[]`; existing comma-string tests
+unchanged. Full `pytest tests/`: 775 passed (up from 772 -- 3 new tests),
+0 failed. Real end-to-end smoke test: generated
+`examples/helloworld`'s cap once via the traditional comma-joined-string
+CLI invocation and once via an in-process call passing real Python lists
+directly into `options_db` -- `diff -rq` confirmed byte-identical output.

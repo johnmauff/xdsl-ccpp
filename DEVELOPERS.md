@@ -70,7 +70,7 @@ python3 examples/helloworld/helloworld_py.py \
 | `generate-gpu-data` | Insert OpenACC/OpenMP directives at the suite_cap level for unmatched device variables |
 | `generate-gpu-debug-prints` | Opt-in GPU-residency debug prints (only emitted with `--gpu-debug-prints`) — reports whether a variable/slice is actually present and correctly sized on the device at a given point in a run |
 | `strip-ccpp` | Remove CCPP dialect ops, leaving standard MLIR |
-| `fir-to-meta` | Generate CCPP metadata (`table_properties`/`arg_table`/`arg`) from Flang FIR MLIR — an alternative to parsing `.meta` files, used standalone by `xdsl_ccpp/tools/fir2meta.py` and the `ccpp_validate_fir.py`/`ccpp_validate_source.py` tools, not part of the `ccpp_xdsl` generation pipeline |
+| `fir-to-meta` | Generate CCPP metadata (`table_properties`/`arg_table`/`arg`) from Flang FIR MLIR — an alternative to parsing `.meta` files, used standalone by `xdsl_ccpp/tools/fir2meta.py` and the `ccpp_validate_source.py` tool, not part of the `ccpp_xdsl` generation pipeline |
 | `lower-ccpp-utils` | Lower remaining `ccpp_utils` dialect ops (`strcmp`, `set_string`, `write_errmsg`, `host_var_ref`, etc.) to plain `arith`/`memref`/`llvm`, for consumers needing fully-lowered standard MLIR rather than printed Fortran text |
 
 Pass options are set with `{key=value}` syntax, e.g. `generate-ccpp-cap{bind_c=true}`.
