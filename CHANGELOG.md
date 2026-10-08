@@ -9866,3 +9866,127 @@ similar condition/condition_op shape but encodes negated-condition
 early-return-with-error-state semantics with no one-op `scf.IfOp`
 equivalent; left untouched, explicitly out of scope, flagged as a
 candidate for a possible future separate audit.
+
+## `lang-neutral-expr-ir` Stage 3c: real `arith` conversions for bare-digit real kinds (2026-10-08)
+
+**Problem**: Stage 3c (retrofitting a real `UnitConvertOp`/`UnitWriteBackOp`
+call site to build a real `arith.AddfOp`/`SubfOp`/`MulfOp` conversion tree
+instead of an opaque `to_scheme_expr`/`to_host_expr` text fragment, e.g.
+`"+ 273.15"`) had been deferred as "needs new `RealKindType`-compatible
+constant/binary-op vocabulary first — real additional scope," since
+`RealKindType` (this dialect's Fortran generic-kind placeholder, carrying
+no numeric width) can't satisfy `arith`'s builtin-float-only operand
+constraint. User pushback on this framing ("there are only two possible
+values, a 32-bit and a 64-bit... what is so unknown about that?") led to
+a closer look: is *every* real kind actually unresolvable, or only some?
+
+**What's actually resolvable, and what isn't**: a *named* kind (e.g.
+`kind_phys`) already has a known width via the existing
+`CCPP_KIND_TO_ISO` table, but reclassifying it to a concrete float type
+would be unsafe -- `print_ftn.py`'s printer emits `real(kind=kind_phys)`
+for a `RealKindType("kind_phys")` but `real(kind=8)` for a plain
+`Float64Type`, so doing this for `kind_phys` would silently change
+generated Fortran declaration text for ~190+ existing real arguments
+across the codebase, defeating `RealKindType`'s entire purpose (keeping
+the host's own portable kind name intact). A **bare numeric KIND literal**
+(`kind = 8`/`4`, confirmed to appear directly in real `.meta` files, e.g.
+`examples/var_compat/effr_calc.meta:106`) is different: it already has
+an unambiguous concrete width with no portable name to preserve, and
+`mlir_type_to_ftn_type` already has parallel `CCPPRealKindType()`/
+`Float64Type()` cases that print *identically* (`"real(kind=8)"`) for
+this one case -- confirmed directly before relying on it.
+
+**Resolution** (in 4 stages, full `pytest tests/` after each):
+
+- **Stage 0**: new `real_kind_width(kind)` helper
+  (`xdsl_ccpp/util/ccpp_conventions.py`) classifies a bare-digit kind
+  string into a width, kept deliberately separate from `suite_kinds.py`'s
+  own `isdigit()` check (a different decision -- whether a kind needs a
+  `public ::` export, not a width). `print_ftn.py`'s `_elem_kind_name`
+  gained the missing `Float32Type`/`Float64Type` cases (it previously
+  returned `None` for a plain float type, which would have silently
+  dropped the `_{kind}` suffix `UnitConvertOp`/`UnitWriteBackOp`'s
+  literal-suffixing needs). Zero behavior change by itself.
+- **Stage 1**: `TypeConversions.convert` now emits a concrete
+  `Float32Type`/`Float64Type` for a bare-digit real kind only -- the
+  named-kind branch (`kind_phys` and friends) is untouched. One FileCheck
+  golden (`tests/filecheck/examples/completed_ir/var_compat-xml.mlir`)
+  needed regeneration -- manually diff-reviewed, confirmed the only
+  change is `!ccpp_utils.real_kind<"8">` to `f64` in the IR-dump text
+  (5 occurrences across 4 structurally-repeated call-site variants in
+  that file); generated Fortran text is unaffected, confirmed by the
+  rest of the suite staying green.
+- **Stage 2**: `suite_cap.py`'s `_apply_kind_and_unit_casts` (one of 2
+  real `UnitConvertOp`/`UnitWriteBackOp` call sites; the other,
+  `_apply_divergent_marshaling`, is a trivial structural repeat left for
+  a follow-on) now conditionally builds a real `arith` tree via a new
+  `_parse_unit_conversion`/`_UNIT_CONV_OP_MAP` helper, gated on: kind
+  classifies as bare-digit, arg is scalar (one `arith` op can't represent
+  an array-wide conversion), intent isn't `out`, and `cur` is a plain
+  block argument. A real bug surfaced during implementation: when `cur`
+  is a prior `KindCastOp`'s result (a chained kind+unit mismatch, not yet
+  attached to any block -- `kind_cast_ops` are collected into a list and
+  inserted in bulk later), `UnitConvertOp`'s own
+  `_single_op_region`/`_flatten_floating_deps` machinery incorrectly
+  pulled that still-unattached `KindCastOp` into the new conversion
+  tree's private region, double-attaching it when `kind_cast_ops` was
+  later inserted into the real function body -- caught by a real,
+  pre-existing unit test (`test_suite_boundary_kind_and_unit_chain.py`)
+  crashing, not by inspection. Fixed by adding `isinstance(cur,
+  BlockArgument)` to the gate; a chained kind+unit mismatch keeps the
+  opaque-text path. New `tests/unit/test_suite_boundary_unit_conv_structured.py`
+  proves the eligible case builds a real `conversion` region (not
+  `to_scheme_expr`) with the correct `arith` op and constant, and that
+  its printed Fortran is byte-identical to what the opaque path would
+  produce; both ineligible cases (named kind, array shape) are proven to
+  still take the opaque-text path.
+- **Stage 3**: this backlog/changelog update.
+
+**PR #115 Copilot review** (2 real findings in this implementation, both
+fixed):
+1. `real_kind_width` accepted *any* digit-only kind, but
+   `TypeConversions.convert`'s mapping only covers width 4 and 8 --
+   `kind = 16` (quad precision; no real fixture uses it, but valid
+   Fortran syntax) would have been silently misclassified as 64-bit
+   double instead of staying symbolic. Fixed by restricting
+   `real_kind_width` to exactly `"4"`/`"8"`.
+2. `_parse_unit_conversion` converted a `UNIT_CONVERSIONS` literal
+   through Python's `float()`, discarding its original spelling --
+   `"1.0E6"`/`"1.0E-6"` (the `(um, m)`/`(m, um)` pair) round-trip back
+   through `str()` as `"1000000.0"`/`"1e-06"`, not byte-identical to the
+   opaque path as the implementation claimed. Fixed by verifying
+   `str(float(value_str)) == value_str` before taking the structured
+   path -- an entry whose spelling can't be guaranteed to round-trip
+   exactly now stays on the opaque-text path instead. New regression
+   test added covering the exponent-form pair specifically, per the
+   review's own request.
+
+**Verification**: full `pytest tests/`: **759 passed** (up from 753 --
+6 new unit tests), zero regressions. One FileCheck golden diff-reviewed
+and regenerated (Stage 1 only); Stage 2 produces zero existing-golden
+diff (the one real bare-digit-kind fixture, `effrs_inout` in
+`var_compat`/`nested_suite`, is a 2-D array and so is excluded by the
+scalar-only gate).
+
+**Still open (at the time of the above)**: `_apply_divergent_marshaling`'s
+identical retrofit, the chained-kind-cast case, and a related latent
+C++-side bug found along the way (`cpp_interop.py`'s
+`_real_width_from_iso` silently defaults to 64-bit for any unresolved
+kind, including an unresolved bare-digit one) -- tracked as
+`chost-real-width-fallback`, a new, separate, low-urgency backlog item.
+
+**Addendum, same day**: `_apply_divergent_marshaling` (`suite_cap.py`'s
+per-call-site analog of `_apply_kind_and_unit_casts`, used for
+cross-scheme divergent `standard_name`s) now has the identical gated
+conditional retrofit applied -- same gate, same
+`_parse_unit_conversion`/`_UNIT_CONV_OP_MAP` helpers reused as-is. New
+tests in `tests/unit/test_suite_cross_scheme_unit_kind.py`
+(`TestDivergentBareDigitKindUnitMismatchTakesStructuredPath`) prove a
+divergent scheme sharing the host's own bare-digit kind but diverging
+only in units builds a real `conversion` region with byte-identical
+printed output, while the other scheme's own call (which matches the
+host exactly, no mismatch at all) is unaffected. Full `pytest tests/`:
+**762 passed** (up from 759 -- 3 new tests), zero regressions, zero
+existing-golden impact. With both real call sites now covered,
+`lang-neutral-expr-ir` is fully resolved -- see `BACKLOG.md`'s own entry,
+now condensed to a resolved-item pointer.

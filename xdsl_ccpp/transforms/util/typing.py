@@ -2,7 +2,7 @@ from xdsl.dialects import builtin, memref
 from xdsl.dialects.builtin import DYNAMIC_INDEX
 
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType, RealKindType
-from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN
+from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN, real_kind_width
 
 
 class TypeConversions:
@@ -70,9 +70,24 @@ class TypeConversions:
         """
         shape = []
         if text_type == "real" and kind is not None and "len=" not in kind:
-            # Named kind qualifier (e.g. kind_phys) — use RealKindType to carry
-            # the kind name through the IR for Fortran code generation.
-            base_type = RealKindType(kind)
+            width = real_kind_width(kind)
+            if width is not None:
+                # Bare numeric KIND literal (e.g. "8") -- already valid,
+                # self-contained Fortran with no portable kind-name meaning
+                # to preserve, so classify it as a concrete MLIR float type
+                # directly (see real_kind_width's own docstring). A *named*
+                # kind (e.g. kind_phys) is deliberately NOT reclassified
+                # here even though its width is also known (CCPP_KIND_TO_ISO)
+                # -- RealKindType exists specifically to keep emitting
+                # real(kind=kind_phys) textually verbatim, and reclassifying
+                # it would silently change the generated Fortran declaration
+                # text for every existing real arg using that kind.
+                base_type = builtin.f32 if width == 4 else builtin.f64
+            else:
+                # Named kind qualifier (e.g. kind_phys) — use RealKindType to
+                # carry the kind name through the IR for Fortran code
+                # generation.
+                base_type = RealKindType(kind)
         else:
             base_type = cls.getBaseType(text_type)
         if kind is not None and "len=" in kind:
