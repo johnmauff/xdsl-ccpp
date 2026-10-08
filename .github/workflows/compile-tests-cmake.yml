@@ -12,12 +12,15 @@ name: Compile Examples (CMake)
 # explicit `--target` list instead of building every wired-in example in
 # one shot. That used to be a bare `cmake --build build` -- harmless while
 # every example built cleanly, but the moment one example (constadv/
-# constprop, a known pre-existing failure -- see below) failed to build,
-# that ONE shared step failed for every OTHER matrix job too, since each
-# job's own "Build" step was building all examples' targets together, not
-# just its own. Confirmed directly: this is exactly what broke tinyddt's
-# (and every other example's) CI job once constadv/constprop were wired
-# in, despite tinyddt's own target building and passing fine on its own.
+# constprop, failing at the time -- since fixed, see issue #4) failed to
+# build, that ONE shared step failed for every OTHER matrix job too, since
+# each job's own "Build" step was building all examples' targets together,
+# not just its own. Confirmed directly: this is exactly what broke
+# tinyddt's (and every other example's) CI job once constadv/constprop
+# were wired in, despite tinyddt's own target building and passing fine
+# on its own. Kept even after the fix, since per-job target isolation is
+# still the right structure regardless of whether every example builds
+# cleanly.
 
 on:
   pull_request:
@@ -56,16 +59,8 @@ jobs:
             targets: chararg_cxx_host
           - example: constadv
             targets: constadv_cxx_host
-            # Known-failing -- same root cause as compile-tests.yml's own
-            # identical override (tracked in
-            # https://github.com/johnmauff/xdsl-ccpp/issues/4). This CMake
-            # build runs the exact same generated/compiled code, just
-            # through a different build system, so the same
-            # not-yet-diagnosed issue applies equally. Remove once fixed.
-            expected_failure: true
           - example: constprop
             targets: constprop_cxx_host
-            expected_failure: true
           - example: ddthost
             targets: ddthost_ftn_host.exe ddthost_cxx_host.exe
           - example: capgen
