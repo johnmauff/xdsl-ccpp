@@ -1,9 +1,9 @@
 [ccpp-table-properties]
   name = hello_world_sub
-  type = host
+  type = control
 [ccpp-arg-table]
   name = hello_world_sub
-  type = host
+  type = control
 [ col_start ]
   standard_name = horizontal_loop_begin
   type = integer

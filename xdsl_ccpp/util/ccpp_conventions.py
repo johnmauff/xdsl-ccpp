@@ -65,9 +65,8 @@ CCPP_FRAMEWORK_STD_NAMES: frozenset = frozenset({
     "number_of_ccpp_constituents",    # count of registered constituents
 })
 
-# The full set of names the host variable match pass skips without error.
-# Includes both error-handling names and framework-internal names.
-CCPP_INTERNAL_STD_NAMES: frozenset = CCPP_ERROR_STD_NAMES | CCPP_FRAMEWORK_STD_NAMES
+# CCPP_INTERNAL_STD_NAMES is defined further below, after
+# DISPATCH_SCALAR_STD_NAMES (which it now builds on) -- see that section.
 
 # ── Dimension semantic classes ───────────────────────────────────────────────
 # Any two dimension names within the same class are considered compatible for
@@ -202,8 +201,13 @@ CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 # test_host_mod.meta's phys_state/has_graupel, ...), which is what forces
 # every HOST-type reference to be threaded as a block argument today --
 # part of the vocabulary-resolution redesign, Stage 1.
-# This is the classifier later stages use to tell the two apart; nothing
-# reads it yet (Stage 1 is classification only, no behavior change).
+# This is the classifier later stages use to tell the two apart. A real
+# `CONTROL` table type now exists (type-control-gap) for tables that are
+# properly migrated, but this name-based set stays as the authority for
+# host_var_match_pass.py's skip-list (see CCPP_INTERNAL_STD_NAMES below) --
+# it works correctly regardless of whether a given .meta file's table has
+# been migrated to CONTROL yet, a useful defense-in-depth property for an
+# only-partially-migrated corpus.
 DISPATCH_SCALAR_STD_NAMES: frozenset = frozenset(
     {CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME} | CCPP_ERROR_STD_NAMES
 )
@@ -214,6 +218,30 @@ def is_dispatch_scalar_std_name(standard_name: str) -> bool:
     scalars (loop bounds, error handling) rather than real host state.
     """
     return standard_name.lower() in DISPATCH_SCALAR_STD_NAMES
+
+
+# The full set of names the host variable match pass skips unconditionally,
+# before any model_var_index lookup -- error-handling and framework-internal
+# names only. Deliberately does NOT include the two loop-bound dispatch
+# scalars (horizontal_loop_begin/horizontal_loop_end, see
+# DISPATCH_SCALAR_STD_NAMES above): unlike errmsg/errflg, these can
+# legitimately be matched via a DDT-member chain (e.g. ddthost/capgen's
+# ccpp_info_t bundling pattern) with a real backing Fortran derived-type
+# component -- that case must still get the full match+compatibility-check
+# treatment. Only a BARE, non-DDT HOST/CONTROL-table declaration of one of
+# these two names (no real backing declaration at all) should be skipped --
+# see host_var_match_pass.py's own is_ddt check at its match-lookup site,
+# which is where that narrower distinction is actually applied
+# (type-control-gap).
+CCPP_INTERNAL_STD_NAMES: frozenset = CCPP_ERROR_STD_NAMES | CCPP_FRAMEWORK_STD_NAMES
+
+# The subset of DISPATCH_SCALAR_STD_NAMES that can be legitimately matched
+# via a DDT-member chain as well as (or instead of) a bare host table scalar
+# -- just the two loop-bound names, not the error names (which always skip
+# unconditionally above, matching their existing, unaffected behavior).
+CCPP_LOOP_BOUND_STD_NAMES: frozenset = frozenset(
+    {CCPP_LOOP_BEGIN_STD_NAME, CCPP_LOOP_END_STD_NAME}
+)
 
 
 # ── Deprecated standard names ────────────────────────────────────────────────

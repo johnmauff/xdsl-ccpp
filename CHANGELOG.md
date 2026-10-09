@@ -10606,3 +10606,234 @@ found during scoping, `cap_shared.py`'s `_CCPP_DDT_MODS` (consumed only by
 `lifecycle_cap.py` for a different generation stage, SuiteOwned DDT-typed
 scratch-array allocation) -- same underlying idea applied independently a
 third time, noted but not touched here.
+
+## `type-control-gap` resolution: a real `CONTROL` table type (2026-10-09)
+
+**Problem**: real capgen-v1 distinguishes `control` tables
+(framework-injected call-site scalars -- `col_start`/`col_end`/`errmsg`/
+`errflg` -- with no backing Fortran declaration, silently skipped by
+source cross-validation) from `host` tables (real host-model state, a
+genuine declaration). xdsl-ccpp's `CCPPType`/`TableTypeKind` enums only
+had SCHEME/MODULE/DDT/HOST; the original var_compat port changed real
+capgen-v1's `type = control` to `type = host` to dodge a parser crash
+(documented in `var_compat/README.md`, the same shape of workaround
+`module_name` was). Confirmed corpus-wide: 25 `.meta` files across
+`examples/`+`tests/` declared this same collapsed pattern. This wasn't
+just a modeling nicety -- `host_var_match_pass.py` was treating
+`col_start`/`col_end` (`horizontal_loop_begin`/`horizontal_loop_end`) as
+genuine host-matchable variables, unlike `errmsg`/`errflg` (already
+correctly skipped), so they got `_check_compatibility`-checked against a
+declaration with nothing real behind it.
+
+**Resolution, staged in two parts with an explicit check-in between them**:
+
+**Stage 1 (code only)**: added `CONTROL`/`Control` to both enums; `type =
+control` now parses. Updated 6 table-type-scan sites to include CONTROL
+alongside HOST (confirmed each a pure, behavior-preserving union against
+the pre-migration corpus) plus 2 `ccpp_info_t` DDT-bundling lockstep
+sites. The real bug fix in `host_var_match_pass.py` required real care,
+not a blanket name-skip: a loop-bound standard_name matched via a **DDT
+member chain** (e.g. `ddthost`/`capgen`'s `ccpp_info_t` bundling pattern)
+has a genuine backing derived-type component and must still get full
+validation; only a **bare, non-DDT** HOST/CONTROL-table match is
+fictitious and should bypass it. A first attempt (`not is_ddt` as the
+proxy) broke `ddthost`'s real example -- caught by the full-suite run,
+not by reasoning alone -- and was replaced with an explicit per-source
+check. A Copilot review on PR #125 found this still wasn't quite right:
+the proxy also failed to distinguish MODULE from the bare case (a
+MODULE-sourced loop-bound match would have been incorrectly skipped too,
+no live case today but the logic was wrong) and `CONTROL` wasn't even in
+`_build_model_var_index`'s scan tuple, so a bare CONTROL var outside the
+two hardcoded names would still hard-error. Fixed by threading an
+explicit `is_control_table` flag through the index and scanning CONTROL
+tables too: **any** CONTROL-sourced match now bypasses host-matching
+(CONTROL is by definition never backed, for any standard_name it
+declares), while HOST only bypasses for the two specific transitional
+loop-bound names; MODULE and DDT-member matches always get full
+validation. 6 new regression tests, each verified by reverting its
+fix and confirming failure. Full `pytest tests/`: 795 passed, 0 failed.
+
+**Stage 2 (`.meta` migration + goldens, after explicit user check-in)**:
+21 files were a clean `type = host` -> `type = control` two-line swap;
+1 (`capgen/host_cpp/capgen_host_sub.meta`) needed no split (no genuine
+state present); 3 needed physical block-splitting because they mixed
+control scalars with genuine state or distinct host data in the same
+table (`instances`/`instances_advection`'s `instance_number`/
+`number_of_instances`, kept HOST per their own documented "real host
+state, not a dispatch scalar" semantics; `ddthost/host_cpp/ddthost_host_sub.meta`'s
+`O3`/`HNO3`, split into a new `ddthost_host_state` HOST table). Confirmed
+safe to split (no real compiled argument-order dependency on `.meta`
+declaration order for any of them). Reverted `var_compat/README.md`'s
+now-obsolete "changed to type = host" note, keeping the still-real,
+still-out-of-scope `suite_name`/`group_name`/`thread_num` adaptation.
+
+**Two more real regressions found via the full-suite run after migrating
+the `.meta` corpus, both missed by the original 3-investigation scoping
+pass**:
+1. `ccpp_cap.py`'s `host_std_names`/`protected_std_names` scans (feeding
+   `ccpp_physics_suite_variables()`) only scanned `("module", "host",
+   "ddt")`. `col_start`/`col_end` are declared `protected = True` in their
+   `.meta`, and `protected_std_names` is the actual mechanism that keeps
+   protected vars out of the suite's reported input/output variable list
+   -- moving them to CONTROL silently dropped that protection, and they
+   newly appeared in `capgen-xml.mlir`'s generated var_list where they
+   never had before. The original Stage-1 "conscious no-op" reasoning for
+   this site was backwards: omitting CONTROL from the scan didn't keep
+   CONTROL vars invisible, it stopped them from being recognized as
+   protected at all. Fixed by adding `"control"` to both scans.
+2. `cpp_interop.py`'s `GenerateCPPCap.apply()` gated the entire chost cap
+   generation on `tbl_op.table_type.data in ("host", "module")` with a
+   `language = "c++"` check -- migrating a chost host's own table (e.g.
+   `tiny_r3_host_sub.meta`) from HOST to CONTROL silently stopped it being
+   recognized as the C++ host at all, and the whole `TinyR3_ccpp_chost_cap`
+   module vanished from generated output entirely (not a text diff, a
+   missing module) -- caught by `chost-r3-ftn.mlir`'s FileCheck golden.
+   Fixed by adding `"control"` to the tuple.
+
+Both were found by running the full test suite after the `.meta`
+migration, not by static analysis -- a direct demonstration of why the
+plan's own staged, test-at-every-step approach mattered for a corpus-wide
+change like this.
+
+**Verification**: full `pytest tests/`: 795 passed, 0 failed, 0 skipped
+(same count as end-of-Stage-1 -- Stage 2 was migration + regression
+fixes, no new tests added). 7 `frontend` FileCheck goldens regenerated via
+`update-filecheck-test.py`, diff-reviewed -- each is exactly a
+`host`->`control` keyword swap (plus the `instances_advection` split's
+new second table block), with two regeneration artifacts caught and
+fixed by hand (the `dependencies_path` FileCheck wildcard `{{.*}}`
+overwritten with a literal machine-specific path, and a spurious blank
+line after a `RUN:` line -- both the same known regen-script quirks found
+during the earlier `table-props-module-name`/`var_compat` revert). Every
+`completed_ir`/`end_to_end` golden for every affected example family
+passed with zero diff once the two regressions above were fixed,
+confirming byte-identical generated output everywhere except the 7
+frontend goldens' literal IR type-keyword text.
+
+**Confirmed via real CAM-SIMA regression** (`/cam-sima-regression`, test ID
+`xdsl51g`, gnu, 2026-10-09): 28/31 aux_sima cases PASS, 1 known
+pre-existing unrelated failure (`F2000_C7`/cam7 `MODEL_BUILD`, tracked
+separately -- same signature as prior regression baselines, not something
+this change touches), 2 cases still pending at time of recording. gnu
+only -- this change touches no GPU-specific code path directly (no file
+under `gpu_*.py` modified), and the `.meta` migration only affects
+xdsl-ccpp's own `examples/`, never real CAM-SIMA host files, so nvhpc was
+judged unnecessary for this one.
+
+## Fresh capgen-v1 vs. xdsl-ccpp gap hunt (2026-10-09): 4 new findings, 2 false positives, 1 methodology correction
+
+Prompted by `type-control-gap`/`table-props-module-name` both having been
+invisible until a README documented the workaround: swept every `.meta`
+file in xdsl-ccpp's ported `examples/` against the real capgen-v1 source,
+looking for other silently-dropped capabilities, documented or not.
+
+**Methodology correction (important, applies to any future repeat of this
+exercise)**: the standalone reference checkout at
+`/glade/derecho/scratch/dennis/Claude.CAM-SIMA/ccpp-framework` was
+initially used as-is, checked out at tag `sima_2026-07-15` -- a different,
+older lineage. That checkout's own `test/*_test/` and
+`test_prebuild/test_*/` directories are **not** real capgen-v1 fixtures;
+they use an entirely different legacy toolchain
+(`scripts/mkstatic.py`/`scripts/ccpp_prebuild.py`, `CCPP_BLOCK_NUMBER`-style
+constants real capgen-v1 never carried forward) and don't exist at all on
+the real branch (`git show` on `test/` against `origin/feature/capgen-v1`
+fails outright). The real fixtures live at `end-to-end-tests/` on
+`origin/feature/capgen-v1`. Nothing about the directory names
+distinguishes the two, and a lot of content is shared/similar between the
+lineages, so a diff against the wrong tree doesn't fail loudly -- it
+quietly produces findings that look exactly like real gaps. Two of three
+parallel investigation passes fell into this trap; every finding below
+was independently re-verified by hand against `origin/feature/capgen-v1`
+before being recorded here. **The reference checkout has now been
+switched to `origin/feature/capgen-v1` directly** (`git checkout
+origin/feature/capgen-v1`, confirmed clean working tree beforehand) so
+`end-to-end-tests/` is directly browsable without `git show` gymnastics --
+future sessions landing on this same path get the real fixtures by
+default.
+
+**Confirmed false positives** (do not re-report): `var_compat`'s schemes
+being dimensioned by `horizontal_dimension` rather than `horizontal_loop_extent`
+is **not** a bug -- real capgen-v1's own `end-to-end-tests/var_compat/effr_calc.meta`
+already uses `horizontal_dimension`; the port and its own README's
+rationale were correct all along. `var_compat`/`nested_suite`'s
+`test_host_data.meta` commented-out module-level `dependencies =
+module_rad_ddt.F90` table is **also not a gap** -- real capgen-v1's own
+`end-to-end-tests/var_compat/test_host_data.meta` already has this exact
+block commented out (`#type = host`, matching the port verbatim); the
+port faithfully preserved an already-dead block. A claimed dropped
+`state_variable = true` on `temp_adjust.meta`'s `ps` was also checked and
+found false -- neither side has it.
+
+**`capgen-nested-ddt-dropped`**: real capgen-v1's `end-to-end-tests/capgen/make_ddt.F90`
+declares `vmr_type` with two fields completely invisible to its own
+`.meta` table: `error_maybe` (`type(ty_ddt2)`, from a separate module via
+`use ddt2, only: ty_ddt2`) and `burma_shave` (`type(ty_ddt3)`, an inline
+nested DDT defined in the same file). The real `.meta` also carries
+`dependencies = ddt2.F90`. The ported `examples/capgen/scheme/make_ddt.F90`
+has neither field, no `use ddt2`, and `ddt2.F90` was never copied into the
+example at all; the ported `.meta` drops the `dependencies` key entirely.
+`examples/capgen` has no README at all, so this is completely
+undocumented -- confirmed directly against `end-to-end-tests/capgen/`,
+not the stale tree.
+
+**`scheme-registered-dimension-gap`**: real capgen-v1's
+`end-to-end-tests/capgen/temp_calc_adjust.meta` has a
+`temp_calc_adjust_register` entry point producing `dim_inter`
+(`standard_name = dimension_for_interstitial_variable`, `intent = out`),
+and `end-to-end-tests/capgen/temp_adjust.meta` -- a **different** scheme --
+uses that same standard_name directly as a `dimensions =
+(dimension_for_interstitial_variable)` bound for `interstitial_var` in two
+of its own entry points (`_run` and `_timestep_final`/`_finalize`). The
+port deleted `temp_calc_adjust`'s register entry point entirely (no
+`dim_inter`, no `dimension_for_interstitial_variable` anywhere), rewrote
+every use in `temp_adjust.meta` to the already-working
+`horizontal_dimension` instead, and separately invented an unrelated
+`temp_adjust_register` entry point on `temp_adjust` itself producing a
+different variable (`configuration_variable`) -- not a simplification,
+a wholesale capability swap. No evidence found anywhere in `xdsl_ccpp/`
+that "a scheme's register-phase output becomes a framework-wide usable
+`dimensions=` identifier for a different scheme" is supported today.
+Likely the most architecturally significant finding of this pass --
+needs its own scoping investigation (does the generator's dimension-
+resolution machinery have any hook for this at all?) before it can be
+sized.
+
+**`capgen-source-path-untested`**: real capgen-v1's
+`end-to-end-tests/capgen/environ_conditions.meta` (`source_path =
+source_dir1`) and `temp_set.meta` (`source_path = source_dir2`,
+`dependencies_path = adjust`) both declare these keys; the ported
+versions drop them (directory structure flattened into one `scheme/`
+dir). Confirmed `source_path`/`dependencies_path` are fully parsed and
+IR-forwarded by xdsl-ccpp today (`ccpp_descriptors.py`/`ccpp_xml.py`
+docstrings call them out as the real capgen-v1 key names,
+`ccpp_datatable.py` reads them off `TablePropertiesOp`) -- but `grep -rn
+"source_path\s*=\|dependencies_path\s*=" examples/` across the entire
+tree returns zero hits. Not a parser gap, a test-coverage gap: the one
+real fixture that would have exercised these two keys end-to-end had
+them stripped during porting.
+
+**`nested-suite-module-name-finish`**: `examples/nested_suite/effr_pre.meta`
+and `module_rad_ddt.meta` are still missing `module_name = mod_effr_pre`/
+`mod_rad_ddt` -- confirmed present in real
+`end-to-end-tests/nested_suite/effr_pre.meta`/`module_rad_ddt.meta`.
+`nested_suite`'s own README still documents the module-rename workaround
+as currently necessary; that's now stale -- `var_compat` already got this
+exact fix this session (`table-props-module-name`). Lowest-risk item of
+the batch: apply the identical already-proven revert to one more example.
+
+**Other things worth separate attention, not added as backlog items**:
+- `capgen_v1_vocabulary.md` (this project's own canonical "what capgen-v1
+  supports" reference) cites specific files/line numbers in a
+  `ccpp-framework-fresh` checkout that no longer exists anywhere on this
+  machine, and the cited symbols don't exist in the real checkout that
+  does exist. This document has shaped real scoping decisions (e.g.
+  `hle-vocab-retire`) -- worth a sanity pass against the now-correctly-
+  checked-out reference.
+- `examples/atmospheric_physics` contains real CAM-SIMA production suite
+  definitions (not a capgen-v1 test fixture at all) with no README
+  distinguishing it from the synthetic/onboarding examples -- worth a
+  short README.
+- `test_prebuild/test_blocked_data` and `test_prebuild/test_track_variables`
+  (on the old `sima_2026-07-15` tag, not relevant now that the checkout
+  points at `feature/capgen-v1`) have no capgen-v1 descendant at all --
+  noted here so no future session wastes time looking for one.

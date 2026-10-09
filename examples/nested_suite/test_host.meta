@@ -7,10 +7,10 @@
 
 [ccpp-table-properties]
   name = test_host
-  type = host
+  type = control
 [ccpp-arg-table]
   name = test_host
-  type = host
+  type = control
 [ col_start ]
   standard_name = horizontal_loop_begin
   type = integer

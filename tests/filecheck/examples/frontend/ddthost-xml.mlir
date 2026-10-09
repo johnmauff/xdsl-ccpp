@@ -115,8 +115,8 @@
 // CHECK-NEXT:      ^bb0:
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) {source_module = "test_host"} : () -> ()
-// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host", type = #ccpp<table_type_kind host>}> ({
-// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host", type = #ccpp<table_type_kind host>}> ({
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host", type = #ccpp<table_type_kind control>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host", type = #ccpp<table_type_kind control>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ccpp", type = "ccpp_info_t", standard_name = "host_standard_ccpp_type"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) {source_module = "test_host"} : () -> ()

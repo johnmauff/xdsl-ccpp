@@ -209,10 +209,10 @@ def _real_width_from_iso(kind_name: str, kind_entry: "tuple[str, str] | None") -
 
 
 def _chost_build_maps(meta_data):
-    """Build std_to_host (host/module-owned naming, global) and a
-    HOST/MODULE/DDT-only local_to_std_fallback (used for synthesized/
-    non-scheme-sourced bare names like col_start/col_end/ncol/nz) from
-    metadata for chost arg classification.
+    """Build std_to_host (host/module/control-owned naming, global) and a
+    HOST/MODULE/DDT/CONTROL-only local_to_std_fallback (used for
+    synthesized/non-scheme-sourced bare names like col_start/col_end/ncol/nz)
+    from metadata for chost arg classification.
 
     local_to_std_fallback deliberately EXCLUDES SCHEME tables --
     chost-identity-collision: a scheme-declared bare local name must be
@@ -227,7 +227,7 @@ def _chost_build_maps(meta_data):
     """
     std_to_host: dict = {}
     for props in meta_data.values():
-        if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
+        if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE, CCPPType.CONTROL):
             continue
         for atbl in props.arg_tables.values():
             for var in atbl.getFunctionArguments():
@@ -2209,10 +2209,15 @@ class CPPInteropCap(ModulePass):
         assert ccpp_mod is not None
 
         # Same condition CCPPCAP.apply() used to check inline: only generate
-        # the chost cap when a host/module table declares language = "c++".
+        # the chost cap when a host/module/control table declares
+        # language = "c++". Includes "control" (type-control-gap): a chost
+        # host's own table (e.g. tiny_r3_host_sub.meta) migrated from HOST
+        # to CONTROL must not silently stop being recognized as the C++
+        # host -- caught by chost-r3-ftn.mlir's own FileCheck golden going
+        # from "whole chost cap module present" to "entirely missing".
         host_lang_cpp = any(
             isa(tbl_op, ccpp.TablePropertiesOp)
-            and tbl_op.table_type.data in ("host", "module")
+            and tbl_op.table_type.data in ("host", "module", "control")
             and "language" in tbl_op.attributes
             and tbl_op.attributes["language"].data == "c++"
             for tbl_op in ccpp_mod.body.ops

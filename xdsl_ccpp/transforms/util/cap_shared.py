@@ -699,17 +699,19 @@ def _build_host_var_map(meta_data, include_host: bool = True) -> dict:
 
     Args:
         meta_data:    descriptor dict from BuildMetaDataDescriptions.
-        include_host: when True (default) includes both MODULE and HOST type
-                      tables.  When False, only MODULE type tables are scanned.
-                      HOST-type variables are ephemeral values passed directly
-                      by the host caller; MODULE-type variables are accessible
-                      via USE statements.
+        include_host: when True (default) includes MODULE, HOST, and
+                      CONTROL type tables.  When False, only MODULE type
+                      tables are scanned. HOST/CONTROL-type variables are
+                      ephemeral values passed directly by the host caller;
+                      MODULE-type variables are accessible via USE
+                      statements.
 
     Returns:
         dict mapping lowercase standard_name → (local_var_name, table_name).
     """
     table_types = (
-        (CCPPType.MODULE, CCPPType.HOST) if include_host else (CCPPType.MODULE,)
+        (CCPPType.MODULE, CCPPType.HOST, CCPPType.CONTROL) if include_host
+        else (CCPPType.MODULE,)
     )
     result: dict = {}
     for tbl_name, props in meta_data.items():
@@ -790,7 +792,12 @@ def _build_ddt_resolution_maps(meta_data) -> "tuple[dict, dict]":
     }
     ddt_instance_map: dict = {}
     for tbl_name, props in meta_data.items():
-        if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST):
+        # CONTROL included: a CONTROL-type table can hold the bundling
+        # instance variable of a DDT like ccpp_info_t (see ddthost/capgen's
+        # host_standard_ccpp_type pattern) -- without this, DDT-chain
+        # resolution for its members silently breaks the moment its
+        # containing table migrates from HOST to CONTROL.
+        if props.getAttr("type") not in (CCPPType.MODULE, CCPPType.HOST, CCPPType.CONTROL):
             continue
         if tbl_name not in props.arg_tables:
             continue
@@ -825,7 +832,7 @@ def _build_ddt_resolution_maps(meta_data) -> "tuple[dict, dict]":
 
 
 def _host_table_names(meta_data) -> set:
-    """Return the set of table names whose type is CCPPType.HOST.
+    """Return the set of table names whose type is CCPPType.HOST or CONTROL.
 
     Used alongside _build_ddt_resolution_maps's own ddt_instance_map: that
     map deliberately includes DDT instances declared in either MODULE or
@@ -843,7 +850,7 @@ def _host_table_names(meta_data) -> set:
     return {
         tbl_name
         for tbl_name, props in meta_data.items()
-        if props.getAttr("type") == CCPPType.HOST
+        if props.getAttr("type") in (CCPPType.HOST, CCPPType.CONTROL)
     }
 
 
@@ -1083,20 +1090,26 @@ def _get_suite_leading_inout_ret_info(scheme_names, meta_data, table_postfix):
 
 
 def _collect_host_block_std_names(meta_data) -> set:
-    """Standard names declared in HOST-type (not MODULE-type) metadata tables --
-    caller-provided-each-call values with no persisted host module storage, so
-    they stay a genuine passthrough block argument rather than being promoted
-    to a cap-owned module variable.
+    """Standard names declared in HOST/CONTROL-type (not MODULE-type)
+    metadata tables -- caller-provided-each-call values with no persisted
+    host module storage, so they stay a genuine passthrough block argument
+    rather than being promoted to a cap-owned module variable.
 
     Shared by ccpp_cap.py's _build_cap_var_map and classify_arg_ownership
     below -- previously computed inline only inside _build_cap_var_map; full
     IR unification needs the
     identical set independently, at the same early point ownership
     classification runs, before any suite's subroutine signature exists.
+
+    Includes CONTROL as well as HOST: today this function doesn't
+    distinguish genuine host state from framework-injected dispatch
+    scalars within a HOST-type table (both get identical Block treatment),
+    so adding CONTROL is a pure extension matching that existing behavior,
+    not a new redesign.
     """
     host_block_std: set = set()
     for tbl_name, props in meta_data.items():
-        if props.getAttr("type") != CCPPType.HOST:
+        if props.getAttr("type") not in (CCPPType.HOST, CCPPType.CONTROL):
             continue
         if tbl_name not in props.arg_tables:
             continue

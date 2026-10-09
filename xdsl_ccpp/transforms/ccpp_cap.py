@@ -1344,14 +1344,17 @@ class CCPPCAP(ModulePass):
             meta_data, suite_descriptions, public_fns, instance_local_name=instance_local_name,
         )
 
-        # Detect the ccpp_info_t pattern: HOST table contains a variable with
-        # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
-        # lifecycle and run functions accept a single ccpp_info_t inout arg that
-        # bundles errmsg/errflg and (for run) col_start/col_end.
+        # Detect the ccpp_info_t pattern: a HOST or CONTROL table contains a
+        # variable with standard_name = host_standard_ccpp_type (e.g.
+        # ddthost). When present, lifecycle and run functions accept a
+        # single ccpp_info_t inout arg that bundles errmsg/errflg and (for
+        # run) col_start/col_end. CONTROL is included alongside HOST since
+        # the bundling variable itself is exactly as synthesized/call-site
+        # as its own members are.
         ccpp_info_type = None
         ccpp_info_module_name = None
         for _tbl, _props in meta_data.items():
-            if _props.getAttr("type") != CCPPType.HOST:
+            if _props.getAttr("type") not in (CCPPType.HOST, CCPPType.CONTROL):
                 continue
             if _tbl not in _props.arg_tables:
                 continue
@@ -1680,9 +1683,13 @@ class CCPPCAP(ModulePass):
         # Used in _build_suite_variables_fn to check for unit conversions on
         # state_variable args (a unit mismatch means the suite cap rewrites the
         # value in-place, so it should not be listed as an output variable).
+        # Includes "control": a CONTROL-table var (e.g. col_start/col_end)
+        # still has a declared units value, same as it did back when its
+        # table was HOST-typed -- dropping it here would be a pure net loss
+        # of information, not a correctness improvement.
         host_std_names: dict[str, str | None] = {}
         for _tbl_op, arg_table_op in iter_arg_tables(
-            ccpp_mod, table_type=("module", "host", "ddt")
+            ccpp_mod, table_type=("module", "host", "ddt", "control")
         ):
             for arg_op in arg_table_op.body.ops:
                 if not isa(arg_op, ccpp.ArgumentOp):
@@ -1695,9 +1702,18 @@ class CCPPCAP(ModulePass):
         # Build set of protected host-variable standard_names.
         # Protected variables (e.g. vertical_layer_dimension, horizontal_dimension)
         # are framework-managed and excluded from ccpp_physics_suite_variables lists.
+        # Includes "control": this is the actual mechanism that keeps
+        # col_start/col_end (protected=True in their .meta declaration) out
+        # of ccpp_physics_suite_variables() -- type-control-gap's Stage 2
+        # .meta migration moved them from HOST to CONTROL, and omitting
+        # "control" from this scan silently dropped that exclusion (a real
+        # regression caught by the completed_ir/end_to_end FileCheck
+        # goldens: horizontal_loop_begin/_end newly appeared in the
+        # generated input_vars/output_vars var_list). CONTROL vars must
+        # still never appear there, matching real capgen-v1.
         protected_std_names: set[str] = set()
         for _tbl_op, arg_table_op in iter_arg_tables(
-            ccpp_mod, table_type=("module", "host", "ddt")
+            ccpp_mod, table_type=("module", "host", "ddt", "control")
         ):
             for arg_op in arg_table_op.body.ops:
                 if not isa(arg_op, ccpp.ArgumentOp):

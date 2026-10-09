@@ -1,10 +1,10 @@
 [ccpp-table-properties]
   name = ddthost_host_sub
-  type = host
+  type = control
   language = c++
 [ccpp-arg-table]
   name = ddthost_host_sub
-  type = host
+  type = control
 [ ccpp_info ]
   standard_name = host_standard_ccpp_type
   long_name = CCPP info DDT (col_start, col_end, errmsg, errflg)
@@ -22,18 +22,6 @@
   units = count
   dimensions = ()
   type = integer
-[ O3 ]
-  standard_name = ozone
-  long_name = ozone volume mixing ratio
-  units = ppmv
-  dimensions = (horizontal_dimension)
-  type = real | kind = kind_phys
-[ HNO3 ]
-  standard_name = nitric_acid
-  long_name = nitric acid volume mixing ratio
-  units = ppmv
-  dimensions = (horizontal_dimension)
-  type = real | kind = kind_phys
 [ errmsg ]
   standard_name = ccpp_error_message
   long_name = error message for error handling in CCPP
@@ -46,3 +34,23 @@
   units = 1
   dimensions = ()
   type = integer
+
+[ccpp-table-properties]
+  name = ddthost_host_state
+  type = host
+  language = c++
+[ccpp-arg-table]
+  name = ddthost_host_state
+  type = host
+[ O3 ]
+  standard_name = ozone
+  long_name = ozone volume mixing ratio
+  units = ppmv
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
+[ HNO3 ]
+  standard_name = nitric_acid
+  long_name = nitric acid volume mixing ratio
+  units = ppmv
+  dimensions = (horizontal_dimension)
+  type = real | kind = kind_phys
