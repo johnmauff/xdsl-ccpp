@@ -75,6 +75,17 @@ separately), CHANGELOG.md L5850.
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 
 **Resolved since last verification (2026-10-09), removed from the list
+above**: `dsl-inprocess-api` — `ccppMain.run()` now accepts an optional
+`options_db` (skipping `argparse`/`sys.argv` entirely when given — also
+fixes a real latent bug, since `run()` previously always parsed the host
+process's own argv) and returns a new frozen `CcppDslResult(written,
+datatable_path, resolved_vars)` dataclass on success instead of `None`;
+`resolved_vars` is the exact `--emit-resolved-vars` JSON dict, read back
+in-process, `None` when not configured. No subprocess-architecture
+changes, no CAM-SIMA-repo changes (deliberately out of scope). Full
+`pytest tests/`: 779 passed, 0 failed, 0 skipped. CHANGELOG.md L10381.
+
+**Resolved since last verification (2026-10-09), removed from the list
 above**: `task70-arraysection` — `ArraySectionOp` consolidated into
 `RankReducingSliceOp` and deleted; 3 real bugs found and fixed along the
 way (not just a mechanical rename). CHANGELOG.md L10289.
@@ -103,39 +114,6 @@ was added since), and found the same bug had also been causing a related
 indentation glitch in the pretty-printer, fixed as a side effect. Full
 suite green: 711 passed, 1 xfailed. CHANGELOG.md L5968.
 
-## New: in-process, object-returning API for `ccpp_dsl.py`
-
-Added 2026-09-29, postdates the archive narrative entirely. `ccpp_dsl.py`'s
-pipeline recently stopped calling `sys.exit()` internally (`CcppDslError`
-now carries every failure up to `main()`, the only place that still exits
-the process; currently uncommitted on this repo's `main` branch). That
-makes `ccppMain().run()` safely callable in-process, but it still returns
-nothing useful on success — a caller like CAM-SIMA's `cam_autogen.py` still
-has to invoke it as a subprocess and re-derive everything it needs
-(resolved vars, etc.) from the `--emit-resolved-vars` JSON artifact on
-disk, rather than getting live Python objects back directly.
-
-This closes out two older, related gaps merged in from
-`capgen_v1_parity_backlog.md` (now archived in CHANGELOG.md): its "No
-`CCPPError`-equivalent exception type" complaint is exactly what
-`CcppDslError` above fixes, and its "multi-step manual pipeline
-(`run_frontend` -> `run_opt` -> `split_fortran_output` -> ...) vs.
-capgen-v1's single `capgen()` call" ergonomics note (CHANGELOG.md L8267) is
-the same convenience-wrapper idea as the scope below — not tracked as a
-separate item.
-
-- `dsl-inprocess-api` —
-  **Scope**: design and implement a return value for `ccppMain().run()` (or
-  a thin wrapper) that hands back the in-memory resolved-variable data
-  (and whatever else a caller like CAM-SIMA's `resolved_var_xdsl_ccpp.py`
-  adapter currently has to reconstruct from JSON) as real Python objects,
-  as an alternative to writing the JSON file. A single-call convenience
-  wrapper around the current `run_frontend` -> `run_opt` ->
-  `split_fortran_output` manual pipeline is part of the same scope.
-- **Not started.** Not obviously a pure win — needs its own design pass to
-  decide the shape of the returned object and whether the JSON artifact
-  stays as the CLI-facing contract with the object return as an
-  in-process-only addition, or something else. Size TBD.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `optionsdb-list-format` — `ccpp_dsl.py`'s and `ccpp_xml.py`'s

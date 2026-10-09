@@ -1,4 +1,6 @@
 import argparse
+import dataclasses
+import json
 import os
 import shlex
 import subprocess
@@ -28,6 +30,28 @@ class CcppDslError(Exception):
     def __init__(self, message, returncode=1):
         super().__init__(message)
         self.returncode = returncode
+
+
+@dataclasses.dataclass(frozen=True)
+class CcppDslResult:
+    """Return value of `ccppMain.run()` on success.
+
+    written -- list[str], the per-file section names `split_fortran_output`
+    produced (its own existing return value, unchanged).
+
+    datatable_path -- str | None, set iff `--emit-datatable`/
+    options_db["emit_datatable"] was configured; None otherwise.
+
+    resolved_vars -- dict | None, the exact {"phases": ..., optionally
+    "host_vars": ...} dict suite_cap.py's `_write_resolved_vars` already
+    serializes to the `--emit-resolved-vars` JSON file, read back
+    in-process -- iff emit_resolved_vars was configured; None otherwise.
+    Never an empty dict: None unambiguously means "caller didn't ask".
+    """
+
+    written: list
+    datatable_path: "str | None" = None
+    resolved_vars: "dict | None" = None
 
 
 class ccppMain:
@@ -856,13 +880,23 @@ class ccppMain:
             for path in written:
                 self.print_verbose_message(f"  -> Wrote HTML: {path}")
 
-    def run(self):
-        parser = self.initialise_argument_parser()
-        args = parser.parse_args()
-        try:
-            self.options_db = self.build_options_db_from_args(args)
-        except (ValueError, FileNotFoundError) as e:
-            raise CcppDslError(str(e)) from e
+    def run(self, options_db=None):
+        """Run the full frontend -> optimizer -> split-output pipeline.
+
+        options_db -- if given, used as-is (e.g. from default_options_db()
+        plus an overlay, matching ccpp_prebuild.py's existing convention);
+        argv is never parsed in this case. If omitted (main()'s own CLI
+        path), parses sys.argv exactly as before.
+        """
+        if options_db is not None:
+            self.options_db = options_db
+        else:
+            parser = self.initialise_argument_parser()
+            args = parser.parse_args()
+            try:
+                self.options_db = self.build_options_db_from_args(args)
+            except (ValueError, FileNotFoundError) as e:
+                raise CcppDslError(str(e)) from e
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files/
         # merge_meta build ops in-process; run_frontend/run_py_frontend
@@ -898,10 +932,27 @@ class ccppMain:
         if datatable_path:
             self._run_datatable(mlir_file, out_dir, datatable_path)
 
+        resolved_vars = None
+        resolved_vars_path = self.options_db.get("emit_resolved_vars")
+        if resolved_vars_path:
+            # run_opt() above already returned, meaning the ccpp_opt
+            # subprocess it spawned exited 0 -- and SuiteCAP.apply()
+            # (suite_cap.py) unconditionally calls _write_resolved_vars()
+            # as the very last thing it does before that process exits,
+            # so this file is guaranteed to exist here. No polling/race.
+            with open(resolved_vars_path) as f:
+                resolved_vars = json.load(f)
+
         if not self.options_db.get("debug"):
             self.remove_file_if_exists(mlir_file, ftn_file)
             if os.path.isdir(tmp_dir) and not os.listdir(tmp_dir):
                 os.rmdir(tmp_dir)
+
+        return CcppDslResult(
+            written=written,
+            datatable_path=datatable_path,
+            resolved_vars=resolved_vars,
+        )
 
 
 def main():

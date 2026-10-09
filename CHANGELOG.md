@@ -10378,3 +10378,75 @@ test still pass), since that bug only manifests for the DDT-member shape;
 `examples/advection`'s own real goldens are that bug's actual regression
 guard. Full `pytest tests/`: 777 passed, 0 failed, both before and after
 the bug-3 fix.
+
+## `dsl-inprocess-api` resolution: `ccppMain.run()` now returns real Python objects (2026-10-09)
+
+**Problem**: `ccpp_dsl.py`'s pipeline had recently stopped calling
+`sys.exit()` internally -- `CcppDslError` now carries every failure up to
+`main()`, the only place left that still exits the process -- which made
+`ccppMain().run()` safe to call in-process for the first time. But `run()`
+still returned `None` on success, so an in-process caller had no way to
+get the resolved-variable data (or anything else `run()` computes) back
+as live Python objects; it would have had to shell out to the CLI anyway
+and re-parse the `--emit-resolved-vars` JSON artifact from disk, same as
+today's subprocess-based callers. A second, separate bug was found during
+design: `run()` unconditionally called `parser.parse_args()`, which reads
+the *host* process's own `sys.argv` -- actively wrong/dangerous for any
+in-process caller (it would have consumed e.g. pytest's or CAM-SIMA's own
+argv), independent of the missing-return-value gap.
+
+**Resolution**: `run()` now accepts an optional `options_db` parameter.
+When given, `argparse`/`sys.argv` is skipped entirely and `self.options_db`
+is set directly from the caller-supplied dict -- the same
+`default_options_db()` + `.update({...})` pattern `ccpp_prebuild.py`
+already uses in production today (confirmed via direct code read,
+`ccpp_prebuild.py:285-299`), now also usable for a full `run()` call, not
+just the three leaf methods it was previously limited to. When omitted
+(the CLI's own `main()` path, unchanged), `run()` parses `sys.argv` exactly
+as before -- fully backward compatible.
+
+On success, `run()` now returns a new frozen dataclass,
+`CcppDslResult(written, datatable_path, resolved_vars)`:
+- `written` -- the same `list[str]` `split_fortran_output` already
+  returned, previously discarded by `run()`.
+- `datatable_path` -- the `--emit-datatable` path if configured, else
+  `None`, also previously discarded.
+- `resolved_vars` -- the exact `{"phases": ..., optionally "host_vars":
+  ...}` dict `suite_cap.py`'s `_write_resolved_vars` already serializes to
+  the `--emit-resolved-vars` JSON file, read back in-process via a plain
+  `json.load()` immediately after `run_opt()` returns. No new schema was
+  invented for this -- `SuiteCAP.apply()` (the pass that actually builds
+  this data, running inside the separate `ccpp_opt` subprocess `run_opt()`
+  spawns) unconditionally calls `_write_resolved_vars()` as the very last
+  thing it does before that subprocess exits 0, so the file is guaranteed
+  to already exist by the time `run()` reads it back -- no polling, no
+  race. `resolved_vars` is `None` (never an empty dict) when
+  `emit_resolved_vars` wasn't configured, so a caller can distinguish
+  "nothing resolved" from "didn't ask."
+
+Deliberately out of scope, confirmed during design: making the
+`run_frontend`/`run_opt` subprocess calls themselves run fully in-process
+(a much larger, separate undertaking with no existing precedent in this
+codebase's pass-pipeline architecture), and updating CAM-SIMA's own
+`cam_autogen.py`/`resolved_var_xdsl_ccpp.py` to actually call this new API
+(a different repo, blocked on its own unresolved problem: that build
+environment's python isn't always guaranteed to have `xdsl_ccpp`
+importable). No new kwargs-style convenience wrapper function was added
+either -- `default_options_db()` + `.update()` was already that
+convenience layer in production use; a second, parallel way to build
+`options_db` would have fragmented the pattern for no real ergonomic gain.
+
+**Verification**: new `tests/unit/test_ccpp_dsl_run_in_process.py`, two
+tests against `examples/helloworld` (exercises both the `phases` and
+`host_vars` keys) -- confirms `result.resolved_vars` is byte-for-byte
+identical to the JSON file written to disk and contains
+`potential_temperature` in the `run` phase, and confirms `resolved_vars is
+None` when `emit_resolved_vars` isn't configured. Full `pytest tests/`:
+779 passed, 0 failed, 0 skipped (up from 777 -- the 2 new tests; an
+earlier run of this same suite misleadingly showed 51 failures and 3
+skips purely from an environment mistake -- invoking pytest via its
+absolute venv path without activating the venv, so the filecheck tests'
+own internal `python3` subprocess calls and a `shutil.which("ccpp_xdsl")`
+PATH check resolved against the system interpreter instead of the venv's;
+re-run with the venv properly activated gave the clean result above, with
+no code changes in between).
