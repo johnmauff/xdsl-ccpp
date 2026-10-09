@@ -31,7 +31,6 @@ from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.dialects.ccpp_utils import (
     ActiveCheckOp,
     ArrayConstructorExprOp,
-    ArraySectionOp,
     ClearStringOp,
     ConstituentIndexLookupOp,
     ConstituentSyncOp,
@@ -1712,7 +1711,7 @@ class GenerateSuiteSubroutine(RewritePattern):
             if arg.hasAttr("is_promoted"):
                 dim_names = arg.getAttr("dim_names") if arg.hasAttr("dim_names") else []
                 val = data_ops[arg.name]
-                # Module-level vars (HostVarRefOp, ArraySectionOp) live in the full
+                # Module-level vars (HostVarRefOp, RankReducingSliceOp) live in the full
                 # domain — slice with col_start:col_end.
                 # Block args are 1-based within the function (passed as sections from
                 # the host) — slice with 1:ncol instead.
@@ -3042,7 +3041,8 @@ class GenerateSuiteSubroutine(RewritePattern):
         different canonical local_name, under that name too). For a
         column-chunked physics-mode 1D array whose first allocation
         dimension is a horizontal std-name, additionally slices it down to
-        the current chunk via ArraySectionOp instead of using the raw ref.
+        the current chunk via RankReducingSliceOp (all-'R' pattern) instead
+        of using the raw ref.
 
         Mutates framework_ref_ops/data_ops in place. Returns
         (var_name, suite_entry) for the caller's own allocation decision.
@@ -3130,7 +3130,16 @@ class GenerateSuiteSubroutine(RewritePattern):
                     lowers.append(_one_const.result)
                     uppers.append(_dim_ssa)
                 if _extra_ok:
-                    section = ArraySectionOp(ref_op.res, lowers, uppers)
+                    # task70-arraysection: a plain, rank-preserving array
+                    # section is RankReducingSliceOp's own all-'R' case
+                    # (empty scalar_indices) -- ArraySectionOp consolidated
+                    # into it, see print_ftn.py's CCPPRankReducingSliceOp
+                    # case for the shared printer logic.
+                    section = RankReducingSliceOp(
+                        ref_op.res, dim_pattern="R" * len(lowers),
+                        range_lowers=lowers, range_uppers=uppers,
+                        scalar_indices=[],
+                    )
                     framework_ref_ops.append(section)
                     data_ops[fw_arg.name] = section
 
@@ -3541,7 +3550,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                 # bare-name key already in data_ops) entry keyed by this arg's
                 # own standard_name, set at the *end* of this arg's processing
                 # so it mirrors whatever data_ops[fw_arg.name] ends up being
-                # (e.g. the ArraySectionOp-sliced value above, not the plain
+                # (e.g. the RankReducingSliceOp-sliced value above, not the plain
                 # ref_op it started as). generateSchemeSubroutineCallOps
                 # prefers this when building THIS scheme's own call, since two
                 # different schemes in the same group can independently pick

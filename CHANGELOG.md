@@ -10285,3 +10285,96 @@ unchanged. Full `pytest tests/`: 775 passed (up from 772 -- 3 new tests),
 `examples/helloworld`'s cap once via the traditional comma-joined-string
 CLI invocation and once via an in-process call passing real Python lists
 directly into `options_db` -- `diff -rq` confirmed byte-identical output.
+
+## `task70-arraysection` resolution: consolidated `ArraySectionOp` into `RankReducingSliceOp` (2026-10-09)
+
+**Problem**: `ArraySectionOp` and `RankReducingSliceOp` were two
+independently-introduced ops (3 months apart) that turned out to be
+redundant: `ArraySectionOp`'s rank-preserving array section
+(`source(lower0:upper0, lower1:upper1, ...)`) is exactly
+`RankReducingSliceOp`'s own all-`'R'` (no scalar indices) degenerate case.
+Confirmed via two parallel investigations -- `ArraySectionOp` had 3 real
+construction sites (`suite_cap.py`'s `_build_framework_var_ref`,
+`run_dispatch.py`'s `_build_array_section_ops`, both branches) plus 2
+pure-consumer GPU passes (`gpu_ccpp_cap_pass.py`, `gpu_debug_print_pass.py`,
+pattern-matching via `isa()` to recognize an already-sliced `HostVarRefOp`);
+`RankReducingSliceOp` had exactly 1 real construction site
+(`suite_cap.py`'s `_build_promoted_call_ops`, CCPP variable promotion).
+
+**Resolution**: migrated all `ArraySectionOp` construction sites and both
+GPU-pass consumers onto `RankReducingSliceOp` (all-`'R'` pattern, empty
+`scalar_indices`), then deleted `ArraySectionOp`'s class definition,
+dialect registration, and printer case entirely.
+
+**Three real bugs found and fixed along the way, not just a mechanical
+rename**:
+1. **Operand-type gap.** `RankReducingSliceOp`'s `range_lowers`/
+   `range_uppers` were typed strictly `MemRefType`; `ArraySectionOp`'s
+   `lowers`/`uppers` allowed `MemRefType | IntegerType`. A raw
+   `arith.ConstantOp` integer result (the shared "1" lower bound for an
+   extra, non-column-chunked dimension) crashed IR verification the
+   moment a migrated call site passed one. Widened the constraint to
+   match.
+2. **Result-type gap.** `RankReducingSliceOp` computed its result rank
+   from `dim_pattern.count("R")`; `ArraySectionOp` always copied its
+   source's own type verbatim, regardless of how many bound pairs it was
+   given. These differ when `source` is already a DDT-member reference
+   whose own `member_name` carries a baked-in fixed-index subscript (e.g.
+   `"q(:, :, index_qv)"`, `examples/advection`'s real
+   `water_vapor_specific_humidity` host entry) -- found via a real
+   `xdsl.utils.exceptions.VerifyException` ("operand type mismatch...")
+   while regenerating `examples/advection`'s own IR. Root cause: the
+   printer's existing-subscript merge only consumes as many new range
+   parts as there are `':'` placeholders already in the existing
+   subscript, silently discarding any surplus -- so the true printed rank
+   can be *lower* than `len(range_lowers)` in that case.
+   `_build_array_section_ops`'s own dim-resolution over-counts dims
+   against an already-member-indexed source (a separate, pre-existing
+   latent bug, confirmed independent of this consolidation -- not fixed
+   here, deliberately out of scope for a behavior-preserving migration).
+   Fixed by making the all-`'R'` case mirror `ArraySectionOp`'s exact
+   "trust source type verbatim" semantics instead of recomputing rank,
+   preserving byte-for-byte behavior (including that pre-existing latent
+   bug's own masking) rather than silently changing or half-fixing it
+   mid-refactor.
+3. **Merge-logic gap, caught by Copilot review on PR #121 after the
+   above was already committed.** The existing-subscript merge logic in
+   `print_ftn.py` (ported from `ArraySectionOp` verbatim, including this
+   latent flaw) only recognized a bare `':'` placeholder token as
+   "replaceable" -- correct for the DDT-member case above, where the
+   existing subscript genuinely contains literal `':'` placeholders, but
+   wrong for a second, real, live chained-slice shape: `suite_cap.py`'s
+   own `_build_promoted_call_ops` explicitly anticipates taking a
+   **module-level var already sliced by a prior `RankReducingSliceOp`**
+   as its own `source` (see that function's own "Module-level vars
+   (HostVarRefOp, RankReducingSliceOp) live in the full domain" comment) --
+   whose printed text is an *already-resolved* range like
+   `"a(col_start:col_end, 1:nz)"`, not a bare placeholder. The old
+   `t == ":"` check never matched these resolved-range tokens, so they
+   were treated as "fixed" (never replaced) and the promotion op's own
+   new subscripts were never consumed -- the printer silently emitted the
+   un-reduced inner expression, discarding the outer slice entirely. Also
+   fixed a related ordering bug in the same code: fixed (non-range)
+   tokens were previously moved to the end of the subscript list instead
+   of staying in their original position (harmless only because every
+   real caller's fixed token already happened to be last). Fixed by
+   treating any range-shaped token (bare `':'` or an already-resolved
+   `lower:upper`) as replaceable, with every token -- replaced or not --
+   kept in its original position.
+
+**Verification**: every regenerated FileCheck golden (`completed_ir`:
+`advection`/`capgen`/`ddthost`/`helloworld`-py/-xml/`instances_advection`/
+`var_compat`) diffs down to *only* the op-name/`dim_pattern`-attribute/
+operand-segment-count change once normalized (confirmed via a scripted
+diff that strips exactly those three differences, not eyeballed --
+everything else, including SSA numbering, is byte-identical). GPU-directive
+IR generation (`examples/advection`, `--directive acc`) confirmed identical
+`acc_`-op counts before/after the GPU-pass migration. New
+`tests/unit/test_rank_reducing_slice_consolidation.py` adds explicit
+`module.verify()` coverage for the common all-`'R'` case (previously
+implicit only) -- deliberately verified this test alone does *not* catch
+bug 2 above (confirmed by temporarily reverting the fix and observing the
+test still pass), since that bug only manifests for the DDT-member shape;
+`examples/advection`'s own real goldens are that bug's actual regression
+guard. Full `pytest tests/`: 777 passed, 0 failed, both before and after
+the bug-3 fix.

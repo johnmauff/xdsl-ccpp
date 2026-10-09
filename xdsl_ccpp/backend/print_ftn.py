@@ -29,7 +29,6 @@ from xdsl_ccpp.dialects.ccpp_utils import AccExitDataOp as CCPPAccExitDataOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
-from xdsl_ccpp.dialects.ccpp_utils import ArraySectionOp as CCPPArraySectionOp
 from xdsl_ccpp.dialects.ccpp_utils import CamClearErrStateOp as CCPPCamClearErrStateOp
 from xdsl_ccpp.dialects.ccpp_utils import CamDirectCallOp as CCPPCamDirectCallOp
 from xdsl_ccpp.dialects.ccpp_utils import CallStatementOp as CCPPCallStatementOp
@@ -1129,46 +1128,6 @@ class ftnPrintContext:
             case CCPPWriteStmtOp():
                 items = ", ".join(i.data for i in op.items.data)
                 self.print(f"write({op.dest.data}, '{op.format_spec.data}') {items}")
-            case CCPPArraySectionOp():
-                # Register the full Fortran array-section expression as the
-                # result's variable name so call-site printing emits it inline.
-                source_name = self._value_to_expr_str(op.source)
-                parts = []
-                for lower, upper in zip(op.lowers, op.uppers):
-                    lower_str = self._value_to_expr_str(lower)
-                    upper_str = self._value_to_expr_str(upper)
-                    parts.append(f"{lower_str}:{upper_str}")
-                # If source already has subscripts (e.g. a DDT member with a
-                # constituent-index subscript like q(:,:,index_qv)), merge the
-                # section dims INTO those subscripts by replacing ':' placeholders
-                # in order, rather than appending a second set of parens.
-                # Search for that subscript's '(' only after the last '%' --
-                # source_name may ALSO have an earlier, unrelated '(' from
-                # HostVarRefOp's own index_expr (real capgen-v1's multi-instance
-                # model: arr(instance)%member), which must not be mistaken for
-                # the member's own subscript (that bug silently dropped
-                # "%member" entirely -- base ended up just "arr(instance)").
-                percent_pos = source_name.rfind("%")
-                paren_pos = source_name.find("(", percent_pos + 1 if percent_pos >= 0 else 0)
-                if paren_pos >= 0:
-                    base = source_name[:paren_pos]
-                    existing = source_name[paren_pos + 1: source_name.rfind(")")]
-                    section_iter = iter(parts)
-                    merged = []
-                    fixed = []
-                    for tok in existing.split(","):
-                        t = tok.strip()
-                        if t == ":":
-                            try:
-                                merged.append(next(section_iter))
-                            except StopIteration:
-                                merged.append(":")
-                        else:
-                            fixed.append(t)
-                    merged.extend(fixed)
-                    self.variables[op.res] = f"{base}({', '.join(merged)})"
-                else:
-                    self.variables[op.res] = f"{source_name}({', '.join(parts)})"
             case builtin.UnrealizedConversionCastOp():
                 # Type annotation cast — transparent to Fortran; map each result
                 # to the same variable name as the corresponding input operand.
@@ -1585,7 +1544,11 @@ class ftnPrintContext:
                 #   "RS" → source(lower:upper, scalar)
                 #   "SR" → source(scalar, lower:upper)
                 #   "RSS" → source(lower:upper, scalar1, scalar2)
-                source_name = self._get_variable_name_for(op.source)
+                # (task70-arraysection: an all-'R' pattern with no scalar
+                # indices is exactly the former ArraySectionOp's own case --
+                # this op absorbed it, including its existing-subscript merge
+                # behavior below, ported verbatim.)
+                source_name = self._value_to_expr_str(op.source)
                 pattern = op.dim_pattern.data
                 r_lowers = list(op.range_lowers)
                 r_uppers = list(op.range_uppers)
@@ -1604,9 +1567,55 @@ class ftnPrintContext:
                             self._get_variable_name_for(scalars[s_idx])
                         )
                         s_idx += 1
-                self.variables[op.res] = (
-                    f"{source_name}({', '.join(subscripts)})"
-                )
+                # If source already has subscripts, merge the new subscripts
+                # INTO those by replacing each range-shaped token in order,
+                # rather than appending a second set of parens. Two real
+                # shapes reach here: a DDT member with a constituent-index
+                # subscript baked in as a literal ':' placeholder (e.g.
+                # "q(:,:,index_qv)"), and -- since this op's all-'R' case
+                # absorbed ArraySectionOp -- a module-level var already
+                # sliced by a prior RankReducingSliceOp, whose own text is
+                # an already-resolved range like "a(col_start:col_end, 1:nz)"
+                # (suite_cap.py's _build_promoted_call_ops chains onto
+                # exactly this shape -- see its own "Module-level vars
+                # (HostVarRefOp, RankReducingSliceOp)" comment). A token is
+                # "replaceable" whenever it's range-shaped (contains ':'),
+                # whether a bare placeholder or an already-resolved range --
+                # checking only for a bare ':' left every already-resolved
+                # range token un-replaced and never consumed from the new
+                # subscripts, silently discarding the outer slice entirely
+                # and reprinting the unreduced inner expression (Copilot
+                # review, PR #121). A non-range (fixed-index) token is never
+                # replaced, and -- unlike an earlier version of this code,
+                # which moved every fixed token to the end -- every token
+                # (replaced or not) stays in its own original position.
+                # Search for that subscript's '(' only after the last '%' --
+                # source_name may ALSO have an earlier, unrelated '(' from
+                # HostVarRefOp's own index_expr (real capgen-v1's multi-instance
+                # model: arr(instance)%member), which must not be mistaken for
+                # the member's own subscript (that bug silently dropped
+                # "%member" entirely -- base ended up just "arr(instance)").
+                percent_pos = source_name.rfind("%")
+                paren_pos = source_name.find("(", percent_pos + 1 if percent_pos >= 0 else 0)
+                if paren_pos >= 0:
+                    base = source_name[:paren_pos]
+                    existing = source_name[paren_pos + 1: source_name.rfind(")")]
+                    section_iter = iter(subscripts)
+                    merged = []
+                    for tok in existing.split(","):
+                        t = tok.strip()
+                        if ":" in t:
+                            try:
+                                merged.append(next(section_iter))
+                            except StopIteration:
+                                merged.append(t)
+                        else:
+                            merged.append(t)
+                    self.variables[op.res] = f"{base}({', '.join(merged)})"
+                else:
+                    self.variables[op.res] = (
+                        f"{source_name}({', '.join(subscripts)})"
+                    )
             case CCPPAccUpdateSelfOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_acc_directive("update", [("self", var_names)])

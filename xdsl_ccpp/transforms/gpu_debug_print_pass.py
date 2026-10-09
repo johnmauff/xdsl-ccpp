@@ -59,11 +59,11 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AccEnterDataOp,
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
-    ArraySectionOp,
     GPUDebugPrintOp,
     HostVarRefOp,
     KeywordCallOp,
     ModuleVarOp,
+    RankReducingSliceOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import _bare, split_scheme_table_name
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
@@ -120,8 +120,9 @@ def _expr_text(value) -> "str | None":
       arg_by_name already relies on).
     - arith.ConstantOp results (a literal bound like the "1" in "1:nz"),
       rendered as the literal integer text.
-    - ArraySectionOp results (a slice, e.g. "exner(col_start:col_end,
-      1:nz)"), rendered recursively from its own source/lowers/uppers.
+    - RankReducingSliceOp results (a slice, e.g. "exner(col_start:col_end,
+      1:nz)"), rendered recursively from its own source/dim_pattern/
+      range_lowers/range_uppers/scalar_indices.
     """
     owner = value.owner
     if isa(owner, HostVarRefOp):
@@ -135,34 +136,62 @@ def _expr_text(value) -> "str | None":
         return f"{base_name}%{member.data}" if member is not None else base_name
     if isa(owner, arith.ConstantOp):
         return str(owner.value.value.data)
-    if isa(owner, ArraySectionOp):
+    if isa(owner, RankReducingSliceOp):
         source_text = _expr_text(owner.source)
         if source_text is None:
             return None
-        bounds = []
-        for lower, upper in zip(owner.lowers, owner.uppers):
-            lower_text = _expr_text(lower)
-            upper_text = _expr_text(upper)
-            if lower_text is None or upper_text is None:
-                return None
-            bounds.append(f"{lower_text}:{upper_text}")
-        return f"{source_text}({', '.join(bounds)})"
+        subscripts = _rank_reducing_slice_subscripts(owner, _expr_text)
+        if subscripts is None:
+            return None
+        return f"{source_text}({', '.join(subscripts)})"
     if value.name_hint is not None:
         return _bare(value.name_hint)
     return None
 
 
+def _rank_reducing_slice_subscripts(owner, render) -> "list[str] | None":
+    """Scan owner.dim_pattern left-to-right, consuming range pairs and
+    scalar indices (mirroring print_ftn.py's own CCPPRankReducingSliceOp
+    scan exactly) to build one subscript string per dimension, rendering
+    each bound/index via render (an _expr_text-shaped callback). Returns
+    None if any bound/index can't be rendered.
+    """
+    r_lowers = list(owner.range_lowers)
+    r_uppers = list(owner.range_uppers)
+    scalars = list(owner.scalar_indices)
+    r_idx = s_idx = 0
+    subscripts = []
+    for ch in owner.dim_pattern.data:
+        if ch == "R":
+            lower_text = render(r_lowers[r_idx])
+            upper_text = render(r_uppers[r_idx])
+            if lower_text is None or upper_text is None:
+                return None
+            subscripts.append(f"{lower_text}:{upper_text}")
+            r_idx += 1
+        else:  # 'S'
+            scalar_text = render(scalars[s_idx])
+            if scalar_text is None:
+                return None
+            subscripts.append(scalar_text)
+            s_idx += 1
+    return subscripts
+
+
 def _named_bounds(value, seen: set) -> list:
-    """Collect every named (non-literal) bound expression referenced by an
-    ArraySectionOp chain, in encounter order, de-duplicated -- these are
-    the col_start/col_end/nz-style scalars worth printing alongside a
-    slice's size, since they're exactly what determines the slice itself.
+    """Collect every named (non-literal) bound/index expression referenced
+    by a RankReducingSliceOp chain, in encounter order, de-duplicated --
+    these are the col_start/col_end/nz-style scalars worth printing
+    alongside a slice's size, since they're exactly what determines the
+    slice itself.
     """
     owner = value.owner
-    if not isa(owner, ArraySectionOp):
+    if not isa(owner, RankReducingSliceOp):
         return []
     names = []
-    for bound in list(owner.lowers) + list(owner.uppers):
+    for bound in (
+        list(owner.range_lowers) + list(owner.range_uppers) + list(owner.scalar_indices)
+    ):
         if isa(bound.owner, arith.ConstantOp):
             continue
         text = _expr_text(bound)
@@ -401,7 +430,7 @@ class GPUDebugPrintPass(ModulePass):
                     for arg, param_name in zip(_call_args(call_op), param_names):
                         if param_name not in device_names:
                             continue
-                        if not isa(arg.owner, ArraySectionOp):
+                        if not isa(arg.owner, RankReducingSliceOp):
                             continue
                         rank = _array_rank(arg)
                         if rank == 0:

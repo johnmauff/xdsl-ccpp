@@ -518,9 +518,9 @@
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %o3 = "ccpp_utils.host_var_ref"() <{var_name = "o3", module_name = ""}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:        %1 = "ccpp_utils.array_section"(%o3, %cols, %cole) {operandSegmentSizes = array<i32: 1, 1, 1>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:        %1 = "ccpp_utils.rank_reducing_slice"(%o3, %cols, %cole) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %hno3 = "ccpp_utils.host_var_ref"() <{var_name = "hno3", module_name = ""}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:        %2 = "ccpp_utils.array_section"(%hno3, %cols, %cole) {operandSegmentSizes = array<i32: 1, 1, 1>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:        %2 = "ccpp_utils.rank_reducing_slice"(%hno3, %cols, %cole) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %vmr = "ccpp_utils.host_var_ref"() <{var_name = "vmr", module_name = ""}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
 // CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -749,7 +749,7 @@
 // CHECK-NEXT:        scf.if %2 {
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:          %4 = "ccpp_utils.host_var_ref"() <{var_name = "phys_state", module_name = "test_host_mod"}> {member_name = "ps"} : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %5 = "ccpp_utils.array_section"(%4, %cols, %cole) {operandSegmentSizes = array<i32: 1, 1, 1>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %5 = "ccpp_utils.rank_reducing_slice"(%4, %cols, %cole) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %6 = "ccpp_utils.strcmp"(%3) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %6 {
 // CHECK-NEXT:            %7, %8 = func.call @ddt_suite_data_prep(%cols, %cole, %5) : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>)
@@ -796,15 +796,15 @@
 // CHECK-NEXT:            %37 = "ccpp_utils.host_var_ref"() <{var_name = "pverP", module_name = "test_host_mod"}> : () -> i32
 // CHECK-NEXT:            %38 = "ccpp_utils.host_var_ref"() <{var_name = "pver", module_name = "test_host_mod"}> : () -> i32
 // CHECK-NEXT:            %39 = "ccpp_utils.host_var_ref"() <{var_name = "pcnst", module_name = "test_host_mod"}> : () -> i32
-// CHECK-NEXT:            %40 = "ccpp_utils.array_section"(%18, %cols, %36, %cole, %37) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %41 = "ccpp_utils.array_section"(%19, %cols, %36, %cole, %38) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %42 = "ccpp_utils.array_section"(%20, %cols, %36, %36, %cole, %38, %39) {operandSegmentSizes = array<i32: 1, 3, 3>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, i32, memref<i32>, i32, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %43 = "ccpp_utils.array_section"(%21, %cols, %cole) {operandSegmentSizes = array<i32: 1, 1, 1>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %40 = "ccpp_utils.rank_reducing_slice"(%18, %cols, %36, %cole, %37) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %41 = "ccpp_utils.rank_reducing_slice"(%19, %cols, %36, %cole, %38) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %42 = "ccpp_utils.rank_reducing_slice"(%20, %cols, %36, %36, %cole, %38, %39) <{dim_pattern = "RRR"}> {operandSegmentSizes = array<i32: 1, 3, 3, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, i32, memref<i32>, i32, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %43 = "ccpp_utils.rank_reducing_slice"(%21, %cols, %cole) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:            %44 = arith.constant 1 : i32
 // CHECK-NEXT:            %45 = "ccpp_utils.host_var_ref"() <{var_name = "pverP", module_name = "test_host_mod"}> : () -> i32
-// CHECK-NEXT:            %46 = "ccpp_utils.array_section"(%29, %cols, %44, %cole, %45) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %47 = "ccpp_utils.array_section"(%31, %cols, %44, %cole, %27) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, memref<i32>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %48 = "ccpp_utils.array_section"(%32, %cols, %cole) {operandSegmentSizes = array<i32: 1, 1, 1>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %46 = "ccpp_utils.rank_reducing_slice"(%29, %cols, %44, %cole, %45) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %47 = "ccpp_utils.rank_reducing_slice"(%31, %cols, %44, %cole, %27) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, memref<i32>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %48 = "ccpp_utils.rank_reducing_slice"(%32, %cols, %cole) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:            %49 = "ccpp_utils.strcmp"(%11) <{literal = "physics1"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:            scf.if %49 {
 // CHECK-NEXT:              %50, %51 = func.call @temp_suite_physics1(%ncol, %27, %28, %46, %30, %47, %48, %33, %34, %35) : (memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>)
@@ -862,8 +862,8 @@
 // CHECK-NEXT:            %16 = "ccpp_utils.host_var_ref"() <{var_name = "temp_interfaces", module_name = "test_host_mod"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:            %17 = arith.constant 1 : i32
 // CHECK-NEXT:            %18 = "ccpp_utils.host_var_ref"() <{var_name = "pverP", module_name = "test_host_mod"}> : () -> i32
-// CHECK-NEXT:            %19 = "ccpp_utils.array_section"(%10, %col_start, %col_end) {operandSegmentSizes = array<i32: 1, 1, 1>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:            %20 = "ccpp_utils.array_section"(%16, %col_start, %17, %col_end, %18) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %19 = "ccpp_utils.rank_reducing_slice"(%10, %col_start, %col_end) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:            %20 = "ccpp_utils.rank_reducing_slice"(%16, %col_start, %17, %col_end, %18) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:            %21 = "ccpp_utils.strcmp"(%9) <{literal = "physics1"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:            scf.if %21 {
 // CHECK-NEXT:              %22, %23 = func.call @temp_suite_timestep_init_physics1(%19, %ncol, %20) : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>)
