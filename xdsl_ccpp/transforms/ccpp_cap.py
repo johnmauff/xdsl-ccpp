@@ -1578,6 +1578,7 @@ class CCPPCAP(ModulePass):
                 ninstances_local_name=ninstances_local_name,
                 cam_host=self.cam_host,
                 needs_const_tend=needs_const_tend,
+                ddt_source_module=ddt_source_module,
             )
             for var_op in const_var_ops:
                 _key = (var_op.var_name.data, "_cap_module_var")

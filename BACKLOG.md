@@ -83,16 +83,14 @@ separately), CHANGELOG.md L5850.
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 
 **Resolved since last verification (2026-10-09), removed from the list
-above**: `table-props-module-name` — `[ccpp-table-properties]`'s
-`module_name` override now supported; two related latent `suite_cap.py`
-bugs fixed along the way; `examples/var_compat`'s workaround reverted to
-real capgen-v1 module names. CHANGELOG.md L10474.
+above**: `table-props-module-name` — `module_name` override now
+supported; two latent bugs fixed, `var_compat`'s workaround reverted.
+CHANGELOG.md L10474.
 
 **Resolved since last verification (2026-10-09), removed from the list
-above**: `dsl-inprocess-api` — `ccppMain.run()` now takes an optional
-`options_db` and returns a `CcppDslResult` (resolved vars, etc.) instead of
-`None`; a Copilot review comment on PR #122 also caught a real
-`options_db`-bypass normalization bug, fixed. CHANGELOG.md L10381.
+above**: `dsl-inprocess-api` — `ccppMain.run()` now accepts `options_db`
+and returns a `CcppDslResult` instead of `None`; also fixed a
+Copilot-flagged normalization bug. CHANGELOG.md L10381.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `task70-arraysection` — `ArraySectionOp` consolidated into
@@ -145,13 +143,12 @@ Two workstreams: the `ResolvedVar`/`cam_autogen.py` integration
 (Workstream 2, resolved). Nearly everything in that doc turned out to
 already be done or superseded by this session's own extensive
 `/cam-sima-regression` testing — see CHANGELOG.md's merged section for the
-full history. One small item survives as genuinely open:
+full history. No open items remain.
 
-- `constituent-ddt-stub-unify` — Consider whether `_generate_constituent_api`'s hardcoded DDT stub list
-  should eventually be unified with the generic `ddt_source_module`
-  mechanism rather than living as a second parallel path — today's fix
-  makes the two paths coexist safely, it doesn't merge them. (CHANGELOG.md
-  L8254)
+**Resolved since last verification (2026-10-09), removed from the list
+above**: `constituent-ddt-stub-unify` — `_generate_constituent_api` now
+resolves its DDT stub module names via `ddt_source_module`, fixing a
+latent divergence bug. CHANGELOG.md L10554.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `ddt-redef-filecheck` — added

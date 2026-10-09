@@ -173,6 +173,7 @@ def _generate_constituent_api(
     ninstances_local_name: "str | None" = None,
     cam_host: bool = False,
     needs_const_tend: bool = False,
+    ddt_source_module: dict | None = None,
 ):
     """Generate constituent registration API as raw Fortran text.
 
@@ -210,6 +211,15 @@ def _generate_constituent_api(
     case), every array stays a plain module-scope variable exactly as
     before -- this whole codepath is unreachable and output is
     byte-identical to before this feature existed.
+
+    ddt_source_module -- DDT type name -> Fortran module name, from the
+    generic ddt_source_module mechanism (collect_ddt_source_modules,
+    reflecting a real .meta module_name override if the host declares
+    one). Consulted for this function's own 3 hardcoded constituent DDT
+    stub types, falling back to _CCPP_CONSTITUENT_MOD when absent/None or
+    when a given type isn't a key (e.g. ccpp_model_constituents_t, which
+    is never a parsed argument type anywhere and so never appears in this
+    dict regardless of how complete it is).
 
     Returns (module_var_ops, constituent_api_op, global_stub_ops).
     """
@@ -1020,6 +1030,14 @@ def _generate_constituent_api(
         api_op = NonCamHostConstituentApiOp(public_names_list, _nc_fn_ops)
 
     # ── USE stubs for ccpp_constituent_prop_mod ──────────────────────────
+    # Module name resolved via the generic ddt_source_module mechanism
+    # (the real .meta's module_name, if the host overrides it) when
+    # available, falling back to the historical constant otherwise --
+    # these 3 types can't be *discovered* by the generic per-arg-type scan
+    # (ccpp_model_constituents_t in particular is never a parsed argument
+    # type anywhere, only a cap-internal module variable's type), so the
+    # fixed list stays, but the module name it resolves to no longer
+    # silently diverges from reality if the backing .meta is ever renamed.
     global_stubs: list = []
     for type_name in (
         "ccpp_constituent_properties_t",
@@ -1031,7 +1049,11 @@ def _generate_constituent_api(
             type_name,
             "external",
         )
-        _g.attributes["module"] = StringAttr(_CCPP_CONSTITUENT_MOD)
+        _mod = (
+            ddt_source_module.get(type_name, _CCPP_CONSTITUENT_MOD)
+            if ddt_source_module else _CCPP_CONSTITUENT_MOD
+        )
+        _g.attributes["module"] = StringAttr(_mod)
         global_stubs.append(_g)
 
     return module_var_ops, api_op, global_stubs
