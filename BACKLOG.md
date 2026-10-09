@@ -55,6 +55,10 @@ later narrative entries:
 | `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | **Re-scoped 2026-09-29: deferred indefinitely, not a schedulable near-term task.** Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already, but the 2026-07-27 premise that the legacy code path was "provably dead for every example" was found false by the 2026-08-24 investigation (real CAM-SIMA still declares `horizontal_loop_extent` directly, e.g. `temp_adjust.meta`/`temp_adjust_scalar.meta`) and reconfirmed by this session's own `/cam-sima-regression` run (`xdsl43g`) against real CAM-SIMA test cases. The code path must be retained for as long as `--legacy-mode` itself is supported — deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent` upstream, an external dependency this repo can't resolve on its own. `ccpp.py`'s `is_legacy_mode()` gate is still called; not scheduled for removal | L5679 |
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
 | `task11-omp-thread` | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
+| `capgen-nested-ddt-dropped` | `examples/capgen`'s `make_ddt` silently dropped real capgen-v1's nested-DDT fields (`ddt2`-sourced + inline) and the `dependencies` key that builds them | S-M, undocumented, found via a fresh capgen-v1 diff (2026-10-09) | L10723 |
+| `scheme-registered-dimension-gap` | A scheme's register-phase output becoming a framework-wide `dimensions=` identifier elsewhere (`temp_calc_adjust_register`/`dimension_for_interstitial_variable`) was deleted during porting, not simplified — no evidence this mechanism is supported today | Needs its own scoping pass before sizing; found 2026-10-09, likely the most architecturally significant of this batch | L10723 |
+| `capgen-source-path-untested` | `source_path`/`dependencies_path` are fully parsed and IR-forwarded today but exercised by zero examples end-to-end — the one real fixture that would have had them stripped during porting | S, test-coverage only (not a parser gap) | L10723 |
+| `nested-suite-module-name-finish` | `examples/nested_suite` never got the `module_name` revert `var_compat` already received — still carries the pre-fix workaround | XS, mechanical — same already-proven fix, one more example | L10723 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 follow-up items spawned by `constituents_dim` (single-source migration for
@@ -84,7 +88,8 @@ separately), CHANGELOG.md L5850.
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `type-control-gap` — added a real `CONTROL` table type and
 migrated all 25 affected `.meta` files; fixed a live host-matching bug
-and 2 other real regressions found along the way. CHANGELOG.md L10610.
+and 2 other real regressions found along the way; confirmed via
+`/cam-sima-regression` (`xdsl51g`, gnu). CHANGELOG.md L10610.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `table-props-module-name` — `module_name` override now
