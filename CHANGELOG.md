@@ -10551,3 +10551,58 @@ same scheme/DDT files under the old table-name-as-module-name convention
 deliberately left as-is since the user scoped this revert to
 `var_compat` specifically. Full `pytest tests/`: 784 passed, 0 failed, 0
 skipped (same count as before -- no new tests, pure revert).
+
+## `constituent-ddt-stub-unify` resolution: narrow safe fix (2026-10-09)
+
+**Problem**: `_generate_constituent_api` (`constituent_cap.py`) hardcodes
+`use ccpp_constituent_prop_mod, only: <type>` stubs for its 3 constituent
+DDT types (`ccpp_constituent_properties_t`/`ccpp_constituent_prop_ptr_t`/
+`ccpp_model_constituents_t`), using a literal module-name constant
+(`_CCPP_CONSTITUENT_MOD`) instead of consulting the generic
+`ddt_source_module` mechanism (`collect_ddt_source_modules`/
+`_collect_ddt_use_stubs`, extended by `table-props-module-name` above to
+honor a real `.meta` `module_name` override). Scoping investigation found
+a full merge isn't possible: `ccpp_model_constituents_t` is never a parsed
+argument type anywhere in the codebase (purely a cap-internal module
+variable's type), so the generic mechanism's discovery trigger (scan
+parsed argument types) can structurally never find it -- some fixed list
+of "types the constituent API always needs" has to survive regardless of
+unification. The one real, currently-dormant finding: the hardcoded
+module name is a latent correctness gap, not just duplication -- it only
+matches reality today because the bundled
+`ccpp_constituent_prop_mod.meta`'s file stem happens to equal the
+constant's value. Already made *safe* (no crash) by the existing
+`shared_seen_host_globals` dedup from the earlier DDT-redefinition bug
+fix, but a real module-name divergence would still fail to compile.
+
+**Resolution (the narrow, safe fix, per explicit choice over a full
+merge or leaving it alone)**: `_generate_constituent_api` now takes an
+optional `ddt_source_module: dict | None = None` parameter; its stub loop
+resolves each type's module via `ddt_source_module.get(type_name,
+_CCPP_CONSTITUENT_MOD)` when the dict is given, falling back to the
+historical constant when it's `None`/empty or the type isn't a key. The
+3-type list itself is unchanged -- it can't be removed (see above), only
+now resolves its module name correctly rather than assuming it. Threaded
+through from `ccpp_cap.py`'s one call site (`_generate_ccpp_cap_module`),
+which already had `ddt_source_module` in scope as its own parameter.
+
+**Verification**: new `tests/unit/test_constituent_ddt_stub_module_name.py`
+calls `_generate_constituent_api` directly (a plain module-level
+function -- no existing test did this, all prior coverage drove it
+indirectly through `CCPPCAP`/`SuiteCAP`) -- confirms an override is
+honored for its matching type only, and that both `None` and `{}` fall
+back to the historical constant for all 3 types, identical to today's
+behavior. Confirmed a pure no-op for every real example: full
+`pytest tests/`: 787 passed, 0 failed, 0 skipped (up from 784 -- the 3
+new tests only), including byte-identical results from
+`tests/filecheck/examples/end_to_end/ddt-redef-dedup-xml.mlir` (the
+dedup-collision regression guard) and `tests/unit/test_cam_host_constituent_api.py`
+(drives this function indirectly via `CCPPCAP`) -- expected, since real
+`ddt_source_module` already agrees with the hardcoded constant for these
+exact 3 types in every build today.
+
+**Deliberately out of scope**: a third, related hardcoded DDT->module map
+found during scoping, `cap_shared.py`'s `_CCPP_DDT_MODS` (consumed only by
+`lifecycle_cap.py` for a different generation stage, SuiteOwned DDT-typed
+scratch-array allocation) -- same underlying idea applied independently a
+third time, noted but not touched here.
