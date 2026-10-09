@@ -1079,3 +1079,80 @@ class TestLoopBoundDispatchScalars:
         assert arg.model_var_name is not None
         assert arg.model_var_name.data == "col_start"
         assert arg.model_var_is_ddt is not None
+
+    def test_module_sourced_mismatch_still_raises(self, run_host_match):
+        """Copilot review on PR #125: a loop-bound standard_name declared
+        in a MODULE table (a real, genuinely backed Fortran module
+        variable, not a fictitious placeholder) must still get full
+        compatibility checking -- a real type mismatch there is a real
+        bug and must still be a hard error, same as any other MODULE var.
+        An earlier version of this fix used `not is_ddt` as a proxy for
+        'bare HOST/CONTROL table', which incorrectly also matched MODULE
+        sources."""
+        module_meta = """\
+[ccpp-table-properties]
+  name = loop_bound_mod
+  type = module
+[ccpp-arg-table]
+  name = loop_bound_mod
+  type = module
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  units = count
+  type = character
+  kind = len=16
+  dimensions = ()
+"""
+        with pytest.raises(ValueError, match="type mismatch"):
+            run_host_match(
+                scheme_metas=[_LOOP_BOUND_SCHEME_META],
+                host_metas=[module_meta],
+            )
+
+    def test_bare_control_table_non_loop_bound_var_does_not_raise(self, run_host_match):
+        """Copilot review on PR #125: CONTROL is, by definition, entirely
+        framework-injected with no backing Fortran declaration for ANY
+        standard_name it declares -- not just the two hardcoded loop-bound
+        names. A future control var outside today's known vocabulary
+        (e.g. one of real capgen-v1's suite_name/group_name/thread_num,
+        none of which this codebase's own corpus declares yet) must also
+        bypass host matching entirely, not hit the 'no matching host
+        model variable' error a bare CONTROL declaration would otherwise
+        reach (CONTROL was previously not even scanned by
+        _build_model_var_index)."""
+        scheme_with_other_control_var = """\
+[ccpp-table-properties]
+  name = other_control_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = other_control_scheme_run
+  type = scheme
+[ suite_name_arg ]
+  standard_name = ccpp_suite_name
+  units = none
+  type = character
+  kind = len=64
+  dimensions = ()
+  intent = in
+""" + CCPP_MANDATORY_ARGS
+        control_meta = """\
+[ccpp-table-properties]
+  name = test_control
+  type = control
+[ccpp-arg-table]
+  name = test_control
+  type = control
+[ suite_name ]
+  standard_name = ccpp_suite_name
+  units = none
+  type = character
+  kind = len=16
+  dimensions = ()
+"""
+        module = run_host_match(
+            scheme_metas=[scheme_with_other_control_var],
+            host_metas=[control_meta],
+        )
+        arg = _get_scheme_arg(module, "other_control_scheme", "ccpp_suite_name")
+        assert arg is not None
+        assert arg.model_var_name is None

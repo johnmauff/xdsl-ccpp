@@ -425,18 +425,23 @@ class HostVariableMatchPass(ModulePass):
         return producing
 
     def _build_model_var_index(self, ccpp_mod):
-        """Walk HOST/MODULE/DDT tables and return (model_var_index, produced_in_init).
+        """Walk HOST/MODULE/DDT/CONTROL tables and return (model_var_index,
+        produced_in_init).
 
         model_var_index: standard_name → (local_var_name, module_name,
                          memory_space|None, host_arg_op, is_ddt, array_layout,
-                         is_host_table, is_protected, active_expr|None)
+                         is_host_table, is_protected, active_expr|None,
+                         is_control_table)
         produced_in_init: standard_name → (arg_op, scheme_name, entry_point_name)
             for args produced (intent=out/inout) by any scheme _init/_run entry.
         """
         model_var_index: dict = {}
 
         for table_prop_op, arg_table_op in iter_arg_tables(
-            ccpp_mod, table_type=(TableTypeKind.Module, TableTypeKind.Host, TableTypeKind.DDT)
+            ccpp_mod, table_type=(
+                TableTypeKind.Module, TableTypeKind.Host, TableTypeKind.DDT,
+                TableTypeKind.Control,
+            )
         ):
             is_ddt = table_prop_op.table_type.data == TableTypeKind.DDT
             # True iff this variable is declared in a HOST-type table (as
@@ -446,6 +451,16 @@ class HostVariableMatchPass(ModulePass):
             # --emit-resolved-vars can expose it as is_host_table_var,
             # matching real capgen-v1's Var.host_interface_var.
             is_host_table = table_prop_op.table_type.data == TableTypeKind.Host
+            # True iff declared in a CONTROL-type table -- by definition a
+            # framework-injected, call-site-only scalar with no backing
+            # Fortran declaration at all (unlike HOST, which still mixes
+            # genuine state with not-yet-migrated dispatch-scalar
+            # placeholders) -- see _match_and_validate's own use of this
+            # flag (type-control-gap, Copilot review on PR #125: a bare
+            # CONTROL scalar outside the loop/error allowlists must still
+            # bypass host matching, not just the two hardcoded loop-bound
+            # names).
+            is_control_table = table_prop_op.table_type.data == TableTypeKind.Control
             array_layout_attr = table_prop_op.attributes.get("array_layout")
             array_layout = array_layout_attr.data if array_layout_attr is not None else None
             for arg_op in arg_table_op.body.ops:
@@ -467,6 +482,7 @@ class HostVariableMatchPass(ModulePass):
                         is_host_table,
                         arg_op.protected is not None,
                         arg_op.active.data if arg_op.active is not None else None,
+                        is_control_table,
                     )
 
         # Variables produced (intent=out/inout) by a scheme's _init or _run
@@ -660,21 +676,31 @@ class HostVariableMatchPass(ModulePass):
                     (
                         local_name, module_name, model_memory_space, host_arg_op,
                         is_ddt, array_layout, is_host_table, is_protected,
-                        active_expr,
+                        active_expr, is_control_table,
                     ) = model_var_index[std_name]
-                    if std_name in CCPP_LOOP_BOUND_STD_NAMES and not is_ddt:
-                        # A bare, non-DDT HOST/CONTROL-table declaration of
-                        # col_start/col_end (horizontal_loop_begin/_end) --
-                        # real capgen-v1 never gives these a backing Fortran
-                        # declaration, so this match is fictitious: skip the
-                        # compatibility check and HostMatched classification
-                        # entirely, same treatment as errmsg/errflg already
-                        # get unconditionally (type-control-gap). A
-                        # DDT-member-sourced match (is_ddt True, e.g.
-                        # ddthost/capgen's ccpp_info_t bundling pattern) has
-                        # a real backing derived-type component and falls
-                        # through to the normal match+compatibility-check
-                        # logic below, unchanged.
+                    if is_control_table or (
+                        is_host_table and std_name in CCPP_LOOP_BOUND_STD_NAMES
+                    ):
+                        # CONTROL-table declarations are, by definition,
+                        # framework-injected call-site scalars with NO
+                        # backing Fortran declaration at all -- bypass host
+                        # matching for ANY standard_name found there, not
+                        # just the two hardcoded loop-bound names (a future
+                        # suite_name/group_name/thread_num-style CONTROL var
+                        # must get this too). HOST is narrower: it still
+                        # mixes genuine state with not-yet-migrated
+                        # dispatch-scalar placeholders, so only the two
+                        # specific transitional loop-bound names bypass
+                        # there, matching errmsg/errflg's existing
+                        # unconditional skip. A MODULE- or DDT-sourced match
+                        # (e.g. ddthost/capgen's ccpp_info_t bundling
+                        # pattern) has a real backing declaration/derived-type
+                        # component and always falls through to the normal
+                        # match+compatibility-check logic below, unchanged
+                        # (type-control-gap; Copilot review on PR #125 caught
+                        # the original `not is_ddt` proxy incorrectly also
+                        # catching MODULE-sourced matches, and CONTROL not
+                        # being indexed at all).
                         continue
                     arg_op.properties["model_var_name"]    = StringAttr(local_name)
                     arg_op.properties["model_module_name"] = StringAttr(module_name)
