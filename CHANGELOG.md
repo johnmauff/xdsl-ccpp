@@ -10471,3 +10471,62 @@ reported crash via `_normalize_options_db` + `run_frontend()` directly,
 confirms `host_files` becomes `[]` and the frontend subprocess completes
 normally). Full `pytest tests/`: 780 passed, 0 failed, 0 skipped (up from
 779 -- the 1 new test).
+
+## `table-props-module-name` resolution: `[ccpp-table-properties]`'s `module_name` override (2026-10-09)
+
+**Problem**: real capgen-v1 lets a table's logical/suite-visible name
+(e.g. `effr_pre`, the name used in `<scheme>effr_pre</scheme>`) differ
+from the Fortran module that actually implements it (e.g. `mod_effr_pre`),
+via a `module_name` key on `[ccpp-table-properties]`. xdsl-ccpp's `.meta`
+parser rejected that key outright and assumed table name == Fortran module
+name always. First surfaced porting `examples/var_compat` (2026-07-23):
+`effr_pre.F90`'s real module `mod_effr_pre` and `module_rad_ddt.F90`'s
+real module `mod_rad_ddt` were renamed to match their table names instead
+of fixing the gap (documented in `var_compat/README.md`'s "Adaptations
+made during porting" section).
+
+**Resolution**: smaller fix than the original backlog note implied.
+`TablePropertiesOp` already carries a free-form `source_module` attribute,
+populated until now only from the `.meta` file's own filename stem, and
+every downstream consumer (DDT `use`-stub generation via
+`collect_ddt_source_modules`, `suite_cap.py`'s `_build_fn_signatures` for
+scheme calls, `print_ftn.py`'s fully generic `use <module>, only: <name>`
+emission) already reads `source_module` generically with no further
+changes needed. Added `module_name` to `CCPPTableProperties`'s allow-list
+(`ccpp_xml.py`) and made `build_meta_ir` prefer an explicit `module_name`
+declared on the table over the filename-stem default when resolving
+`source_module`.
+
+**Two related latent bugs found and fixed along the way** (same root
+cause: code written assuming table name and module name can never
+diverge, which `module_name` now makes a real, common case):
+1. `suite_cap.py`'s `_build_fn_signatures`: `self.meta_data.get(module_name)`
+   looked up the meta-data dict -- always keyed by *table* name -- using
+   the already-resolved *module* name, silently missing whenever the two
+   differ and dropping BIND(C) `language`/`arg_names`/`arg_intents`
+   stamping for a C++ scheme sharing a module with other schemes. Fixed by
+   threading the originating scheme's own metadata through a parallel
+   `sub_to_meta` dict instead of re-looking-up by the resolved module name.
+2. `suite_cap.py`'s `_find_loop_upper_bound` (`MODULE`-type host-table
+   fallback, two call sites): stamped the table name directly as the `use`
+   module, never consulting `source_module` at all -- the same gap as
+   `_build_fn_signatures`, just for `type = module` tables. Fixed to use
+   the same `source_module`-or-fallback resolution.
+
+**Verification**: new `tests/unit/test_table_props_module_name.py` --
+confirms `module_name` is accepted and stored, `build_meta_ir` prefers it
+over the filename-stem default, the fallback is unchanged when
+`module_name` is absent, and a dedicated regression test for bug #1 (two
+schemes sharing one `module_name`-overridden module, one declaring
+`language = c++`) asserting the C++ scheme still gets a BIND(C) interface
+block rather than silently falling back to a plain `use` statement --
+deliberately confirmed this test fails against the pre-fix code (reverted
+the `suite_cap.py` fix locally, re-ran, watched it fail exactly as
+expected, then restored the fix). Full `pytest tests/`: 784 passed, 0
+failed, 0 skipped (up from 780 -- the 4 new tests).
+
+**Deliberately out of scope**: reverting `examples/var_compat`'s existing
+workaround (its renamed module names, dropped `module_name` keys) --
+that's a separate, independently-reviewable change (regenerating and
+diff-reviewing every affected FileCheck golden for an already-stable
+example), suggested as a natural low-risk follow-up, not done here.
