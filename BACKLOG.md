@@ -79,8 +79,12 @@ separately), CHANGELOG.md L5850.
 | ID | Item | Notes | Archive |
 |---|---|---|---|
 | `cmake-configure-regen` | CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
-| `type-control-gap` | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
+
+**Resolved since last verification (2026-10-09), removed from the list
+above**: `type-control-gap` — added a real `CONTROL` table type and
+migrated all 25 affected `.meta` files; fixed a live host-matching bug
+and 2 other real regressions found along the way. CHANGELOG.md L10610.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `table-props-module-name` — `module_name` override now

@@ -134,8 +134,8 @@
 // CHECK-NEXT:      ^bb0:
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) {source_module = "test_host"} : () -> ()
-// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host", type = #ccpp<table_type_kind host>}> ({
-// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host", type = #ccpp<table_type_kind host>}> ({
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host", type = #ccpp<table_type_kind control>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host", type = #ccpp<table_type_kind control>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "col_start", type = "integer", standard_name = "horizontal_loop_begin", units = "count", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "col_end", type = "integer", standard_name = "horizontal_loop_end", units = "count", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", units = "none"}> : () -> ()

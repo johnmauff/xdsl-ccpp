@@ -10606,3 +10606,111 @@ found during scoping, `cap_shared.py`'s `_CCPP_DDT_MODS` (consumed only by
 `lifecycle_cap.py` for a different generation stage, SuiteOwned DDT-typed
 scratch-array allocation) -- same underlying idea applied independently a
 third time, noted but not touched here.
+
+## `type-control-gap` resolution: a real `CONTROL` table type (2026-10-09)
+
+**Problem**: real capgen-v1 distinguishes `control` tables
+(framework-injected call-site scalars -- `col_start`/`col_end`/`errmsg`/
+`errflg` -- with no backing Fortran declaration, silently skipped by
+source cross-validation) from `host` tables (real host-model state, a
+genuine declaration). xdsl-ccpp's `CCPPType`/`TableTypeKind` enums only
+had SCHEME/MODULE/DDT/HOST; the original var_compat port changed real
+capgen-v1's `type = control` to `type = host` to dodge a parser crash
+(documented in `var_compat/README.md`, the same shape of workaround
+`module_name` was). Confirmed corpus-wide: 25 `.meta` files across
+`examples/`+`tests/` declared this same collapsed pattern. This wasn't
+just a modeling nicety -- `host_var_match_pass.py` was treating
+`col_start`/`col_end` (`horizontal_loop_begin`/`horizontal_loop_end`) as
+genuine host-matchable variables, unlike `errmsg`/`errflg` (already
+correctly skipped), so they got `_check_compatibility`-checked against a
+declaration with nothing real behind it.
+
+**Resolution, staged in two parts with an explicit check-in between them**:
+
+**Stage 1 (code only)**: added `CONTROL`/`Control` to both enums; `type =
+control` now parses. Updated 6 table-type-scan sites to include CONTROL
+alongside HOST (confirmed each a pure, behavior-preserving union against
+the pre-migration corpus) plus 2 `ccpp_info_t` DDT-bundling lockstep
+sites. The real bug fix in `host_var_match_pass.py` required real care,
+not a blanket name-skip: a loop-bound standard_name matched via a **DDT
+member chain** (e.g. `ddthost`/`capgen`'s `ccpp_info_t` bundling pattern)
+has a genuine backing derived-type component and must still get full
+validation; only a **bare, non-DDT** HOST/CONTROL-table match is
+fictitious and should bypass it. A first attempt (`not is_ddt` as the
+proxy) broke `ddthost`'s real example -- caught by the full-suite run,
+not by reasoning alone -- and was replaced with an explicit per-source
+check. A Copilot review on PR #125 found this still wasn't quite right:
+the proxy also failed to distinguish MODULE from the bare case (a
+MODULE-sourced loop-bound match would have been incorrectly skipped too,
+no live case today but the logic was wrong) and `CONTROL` wasn't even in
+`_build_model_var_index`'s scan tuple, so a bare CONTROL var outside the
+two hardcoded names would still hard-error. Fixed by threading an
+explicit `is_control_table` flag through the index and scanning CONTROL
+tables too: **any** CONTROL-sourced match now bypasses host-matching
+(CONTROL is by definition never backed, for any standard_name it
+declares), while HOST only bypasses for the two specific transitional
+loop-bound names; MODULE and DDT-member matches always get full
+validation. 6 new regression tests, each verified by reverting its
+fix and confirming failure. Full `pytest tests/`: 795 passed, 0 failed.
+
+**Stage 2 (`.meta` migration + goldens, after explicit user check-in)**:
+21 files were a clean `type = host` -> `type = control` two-line swap;
+1 (`capgen/host_cpp/capgen_host_sub.meta`) needed no split (no genuine
+state present); 3 needed physical block-splitting because they mixed
+control scalars with genuine state or distinct host data in the same
+table (`instances`/`instances_advection`'s `instance_number`/
+`number_of_instances`, kept HOST per their own documented "real host
+state, not a dispatch scalar" semantics; `ddthost/host_cpp/ddthost_host_sub.meta`'s
+`O3`/`HNO3`, split into a new `ddthost_host_state` HOST table). Confirmed
+safe to split (no real compiled argument-order dependency on `.meta`
+declaration order for any of them). Reverted `var_compat/README.md`'s
+now-obsolete "changed to type = host" note, keeping the still-real,
+still-out-of-scope `suite_name`/`group_name`/`thread_num` adaptation.
+
+**Two more real regressions found via the full-suite run after migrating
+the `.meta` corpus, both missed by the original 3-investigation scoping
+pass**:
+1. `ccpp_cap.py`'s `host_std_names`/`protected_std_names` scans (feeding
+   `ccpp_physics_suite_variables()`) only scanned `("module", "host",
+   "ddt")`. `col_start`/`col_end` are declared `protected = True` in their
+   `.meta`, and `protected_std_names` is the actual mechanism that keeps
+   protected vars out of the suite's reported input/output variable list
+   -- moving them to CONTROL silently dropped that protection, and they
+   newly appeared in `capgen-xml.mlir`'s generated var_list where they
+   never had before. The original Stage-1 "conscious no-op" reasoning for
+   this site was backwards: omitting CONTROL from the scan didn't keep
+   CONTROL vars invisible, it stopped them from being recognized as
+   protected at all. Fixed by adding `"control"` to both scans.
+2. `cpp_interop.py`'s `GenerateCPPCap.apply()` gated the entire chost cap
+   generation on `tbl_op.table_type.data in ("host", "module")` with a
+   `language = "c++"` check -- migrating a chost host's own table (e.g.
+   `tiny_r3_host_sub.meta`) from HOST to CONTROL silently stopped it being
+   recognized as the C++ host at all, and the whole `TinyR3_ccpp_chost_cap`
+   module vanished from generated output entirely (not a text diff, a
+   missing module) -- caught by `chost-r3-ftn.mlir`'s FileCheck golden.
+   Fixed by adding `"control"` to the tuple.
+
+Both were found by running the full test suite after the `.meta`
+migration, not by static analysis -- a direct demonstration of why the
+plan's own staged, test-at-every-step approach mattered for a corpus-wide
+change like this.
+
+**Verification**: full `pytest tests/`: 795 passed, 0 failed, 0 skipped
+(same count as end-of-Stage-1 -- Stage 2 was migration + regression
+fixes, no new tests added). 7 `frontend` FileCheck goldens regenerated via
+`update-filecheck-test.py`, diff-reviewed -- each is exactly a
+`host`->`control` keyword swap (plus the `instances_advection` split's
+new second table block), with two regeneration artifacts caught and
+fixed by hand (the `dependencies_path` FileCheck wildcard `{{.*}}`
+overwritten with a literal machine-specific path, and a spurious blank
+line after a `RUN:` line -- both the same known regen-script quirks found
+during the earlier `table-props-module-name`/`var_compat` revert). Every
+`completed_ir`/`end_to_end` golden for every affected example family
+passed with zero diff once the two regressions above were fixed,
+confirming byte-identical generated output everywhere except the 7
+frontend goldens' literal IR type-keyword text.
+
+**Recommended before considering this fully closed**: a
+`/cam-sima-regression` run against real CAM-SIMA test cases, given the
+corpus-wide blast radius -- not done as part of this session, user's call
+on timing.

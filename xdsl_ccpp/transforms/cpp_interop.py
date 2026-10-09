@@ -2209,10 +2209,15 @@ class CPPInteropCap(ModulePass):
         assert ccpp_mod is not None
 
         # Same condition CCPPCAP.apply() used to check inline: only generate
-        # the chost cap when a host/module table declares language = "c++".
+        # the chost cap when a host/module/control table declares
+        # language = "c++". Includes "control" (type-control-gap): a chost
+        # host's own table (e.g. tiny_r3_host_sub.meta) migrated from HOST
+        # to CONTROL must not silently stop being recognized as the C++
+        # host -- caught by chost-r3-ftn.mlir's own FileCheck golden going
+        # from "whole chost cap module present" to "entirely missing".
         host_lang_cpp = any(
             isa(tbl_op, ccpp.TablePropertiesOp)
-            and tbl_op.table_type.data in ("host", "module")
+            and tbl_op.table_type.data in ("host", "module", "control")
             and "language" in tbl_op.attributes
             and tbl_op.attributes["language"].data == "c++"
             for tbl_op in ccpp_mod.body.ops
