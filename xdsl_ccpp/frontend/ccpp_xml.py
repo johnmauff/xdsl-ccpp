@@ -37,12 +37,18 @@ class CCPPTableProperties(CCPPItem):
     """Descriptor for a ``[ccpp-table-properties]`` block parsed from a ``.meta`` file.
 
     Allowed attribute keys: ``name``, ``type``, ``dependencies``, ``dependencies_path``,
-    ``source_path``, ``array_layout``, ``language``, ``kind_spec``. The ``type`` value
-    is automatically coerced to a `CCPPType` enum member. ``kind_spec`` and
-    ``dependencies`` may each be declared more than once (one table can supply
-    more than one kind, or split its dependency list across several lines);
-    each declaration is parsed and accumulated into ``kind_specs``/``dependencies``
-    rather than overwriting a single attribute slot.
+    ``source_path``, ``array_layout``, ``language``, ``kind_spec``, ``module_name``.
+    The ``type`` value is automatically coerced to a `CCPPType` enum member.
+    ``kind_spec`` and ``dependencies`` may each be declared more than once (one
+    table can supply more than one kind, or split its dependency list across
+    several lines); each declaration is parsed and accumulated into
+    ``kind_specs``/``dependencies`` rather than overwriting a single attribute slot.
+
+    ``module_name`` overrides the default assumption that a table's Fortran
+    module matches its own table/file name (e.g. a table named ``effr_pre``
+    implemented in a module actually called ``mod_effr_pre``) -- mirroring
+    real capgen-v1's own ``module_name`` key. See ``build_meta_ir``'s
+    ``source_module`` resolution for where this takes effect.
 
     ``dependencies``/``dependencies_path``/``source_path`` mirror real capgen-v1's
     own three-key convention (``metadata/metadata_table.py``'s
@@ -87,7 +93,8 @@ class CCPPTableProperties(CCPPItem):
                 if entry and entry.lower() != "none":
                     self.dependencies.append(entry)
         super().setAttr(key, value, ["name", "type", "dependencies", "dependencies_path",
-                                     "source_path", "array_layout", "language", "kind_spec"])
+                                     "source_path", "array_layout", "language", "kind_spec",
+                                     "module_name"])
 
 
 class CCPPArgumentTable(CCPPItem):
@@ -625,6 +632,13 @@ class ccppXML:
         Walks the arg-tables and their arguments, creating `ArgumentOp`s inside
         `ArgumentTableOp`s, all wrapped in a `TablePropertiesOp`.
 
+        ``source_module`` (normally the ``.meta`` file's own stem, passed in by
+        the caller) is the *default* Fortran module name, used as-is unless the
+        table itself declares an explicit ``module_name`` override -- in which
+        case that takes precedence. Either way the resolved value is stored on
+        the IR as ``source_module``; downstream consumers (``use`` statement
+        generation, DDT module lookup) never see the distinction.
+
         When ``meta_file_path`` is supplied and the table declares ``dependencies``
         without an explicit ``dependencies_path``, ``dependencies_path`` is
         automatically set to the absolute directory of the ``.meta`` file.  This
@@ -655,7 +669,12 @@ class ccppXML:
             tables.append(
                 ArgumentTableOp(table.getAttr("name"), str(table.getAttr("type")), args)
             )
-        attrs = {"source_module": StringAttr(source_module)} if source_module else {}
+        resolved_module = (
+            meta.table_properties.getAttr("module_name")
+            if meta.table_properties.hasAttr("module_name")
+            else source_module
+        )
+        attrs = {"source_module": StringAttr(resolved_module)} if resolved_module else {}
         if meta.table_properties.hasAttr("array_layout"):
             attrs["array_layout"] = StringAttr(meta.table_properties.getAttr("array_layout"))
         if meta.table_properties.hasAttr("language"):

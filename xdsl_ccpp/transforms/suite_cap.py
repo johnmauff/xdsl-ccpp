@@ -1491,7 +1491,14 @@ class GenerateSuiteSubroutine(RewritePattern):
                             llvm.LLVMArrayType.from_size_and_type(1, i8),
                             var.name, "external",
                         )
-                        stub.attributes["module"] = StringAttr(tbl_name)
+                        # module_name override, if declared; falls back to the
+                        # table name for the common case (mirrors
+                        # _build_fn_signatures's own resolution).
+                        module_name = (
+                            props.getAttr("source_module")
+                            if props.hasAttr("source_module") else tbl_name
+                        )
+                        stub.attributes["module"] = StringAttr(module_name)
                         suite_use_stubs.append(stub)
                     return data_ops[var.name]
         # Compatible fallback pass for MODULE tables.
@@ -1521,7 +1528,11 @@ class GenerateSuiteSubroutine(RewritePattern):
                             llvm.LLVMArrayType.from_size_and_type(1, i8),
                             var.name, "external",
                         )
-                        stub.attributes["module"] = StringAttr(tbl_name)
+                        module_name = (
+                            props.getAttr("source_module")
+                            if props.hasAttr("source_module") else tbl_name
+                        )
+                        stub.attributes["module"] = StringAttr(module_name)
                         suite_use_stubs.append(stub)
                     return data_ops[var.name]
 
@@ -4078,11 +4089,13 @@ class GenerateSuiteSubroutine(RewritePattern):
         declared) that still need a module_name -> use-stub mapping here.
         """
         sub_to_module: dict[str, str] = {}
+        sub_to_meta: dict[str, object] = {}
         all_scheme_names = [s for s, _ in scheme_entries] + list(extra_scheme_names or [])
         for scheme_name in all_scheme_names:
             # Use the Fortran module name recorded by the frontend (stem of the
-            # .meta file) when the scheme shares a module with other schemes.
-            # Falls back to scheme_name for the common one-scheme-per-module case.
+            # .meta file, or an explicit module_name override) when the scheme
+            # shares a module with other schemes. Falls back to scheme_name for
+            # the common one-scheme-per-module case.
             meta = self.meta_data.get(scheme_name)
             actual_module = (
                 meta.getAttr("source_module")
@@ -4093,6 +4106,7 @@ class GenerateSuiteSubroutine(RewritePattern):
                             "_timestep_initialize", "_timestep_finalize",
                             "_timestep_init", "_timestep_final"):
                 sub_to_module[scheme_name + postfix] = actual_module
+                sub_to_meta[scheme_name + postfix] = meta
 
         fn_sigs = []
         for fd in fn_sigs_by_name.values():
@@ -4102,7 +4116,11 @@ class GenerateSuiteSubroutine(RewritePattern):
             module_name = sub_to_module.get(fd.sym_name.data)
             if module_name:
                 cloned.attributes["module"] = StringAttr(module_name)
-                meta = self.meta_data.get(module_name)
+                # Look up by the scheme's own name (sub_to_meta), not by the
+                # resolved module name -- self.meta_data is always keyed by
+                # table/scheme name, so a module_name override (or any shared-
+                # module case) would otherwise silently miss here.
+                meta = sub_to_meta.get(fd.sym_name.data)
                 if meta is not None and meta.hasAttr("language"):
                     cloned.attributes["language"] = StringAttr(meta.getAttr("language"))
                     # Stamp arg names and intents so the printer can emit a

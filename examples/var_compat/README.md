@@ -704,16 +704,6 @@ more known issues:
 
 ## Adaptations made during porting (not present in the upstream capgen-v1 files)
 
-- `effr_pre.F90`'s Fortran module was renamed from `mod_effr_pre` to
-  `effr_pre`, and the corresponding `module_name = mod_effr_pre` attribute
-  was dropped from `effr_pre.meta`. `module_rad_ddt.F90`'s module was
-  similarly renamed from `mod_rad_ddt` to `module_rad_ddt` (and both
-  `module_name = mod_rad_ddt` attributes dropped from
-  `module_rad_ddt.meta`). xdsl-ccpp's `.meta` parser does not support a
-  `module_name` override on `[ccpp-table-properties]` (only `name`/`type`/
-  `dependencies`/`relative_path`/`array_layout`/`language`) — it assumes the
-  Fortran module name matches the table/file name, which these two files'
-  real capgen-v1 content didn't. Purely a naming change; no behavior change.
 - Several `.meta` files use a bracket-without-surrounding-space argument
   style (e.g. `[effrr_in]` rather than `[ effrr_in ]`), which xdsl-ccpp's
   line-oriented `.meta` parser doesn't accept (it uses the presence of a

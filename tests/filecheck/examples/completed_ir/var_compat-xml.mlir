@@ -62,7 +62,7 @@
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "const_uninitialized", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "uninitialized"}> ({
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<0 x i8>, sym_name = "ty_rad_lw", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32}> ({
-// CHECK-NEXT:      }) {module = "module_rad_ddt"} : () -> ()
+// CHECK-NEXT:      }) {module = "mod_rad_ddt"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "ncols", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "pver", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
@@ -379,11 +379,11 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func private @effr_pre_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_pre"}
+// CHECK-LABEL:     func.func private @effr_pre_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "mod_effr_pre"}
 // CHECK-LABEL:     func.func private @effr_calc_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_calc"}
 // CHECK-LABEL:     func.func private @effr_post_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_post"}
 // CHECK-LABEL:     func.func private @effr_diag_init(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_diag"}
-// CHECK-LABEL:     func.func private @effr_pre_run(memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_pre"}
+// CHECK-LABEL:     func.func private @effr_pre_run(memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "mod_effr_pre"}
 // CHECK-LABEL:     func.func private @effr_calc_run(memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?xf64>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i1>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_calc"}
 // CHECK-LABEL:     func.func private @effr_post_run(memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "effr_post"}
 // CHECK-LABEL:     func.func private @effrs_calc_run(memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "effrs_calc"}
@@ -413,9 +413,9 @@
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "ccpp_model_constituents_t", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "ccpp_constituent_prop_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<0 x i8>, sym_name = "ty_rad_lw", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32}> ({
-// CHECK-NEXT:      }) {module = "module_rad_ddt"} : () -> ()
+// CHECK-NEXT:      }) {module = "mod_rad_ddt"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<0 x i8>, sym_name = "ty_rad_sw", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32}> ({
-// CHECK-NEXT:      }) {module = "module_rad_ddt"} : () -> ()
+// CHECK-NEXT:      }) {module = "mod_rad_ddt"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<0 x i8>, sym_name = "physics_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_data"} : () -> ()
 // CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
