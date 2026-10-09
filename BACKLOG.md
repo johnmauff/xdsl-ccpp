@@ -8,6 +8,15 @@ convention the archive's own Index already uses). Historical/completed
 work — the full six-phase decomposition, Phase 7, every ✅ backlog item, and
 the codebase complexity/duplication audit — lives only in the archive now.
 
+**When an item resolves**, move it out of its open-items table/section into
+a one-line "Resolved since last verification (`<date>`)" note (see the
+examples throughout this file, e.g. `task70-arraysection`/`task71-validate-fir`):
+what was done, in a single sentence, plus a `CHANGELOG.md L<n>` pointer.
+Do **not** restate the problem, the fix mechanism, bug-by-bug detail, or
+test-count verification in that note — all of that belongs in the
+`CHANGELOG.md` entry only, which can be as thorough as needed. This file
+is a scan of remaining/recently-closed work, not a changelog recap.
+
 Every item below carries a stable ID (a short kebab-case slug in
 backticks, e.g. `` `hle-vocab-retire` ``, not a plain integer — integers
 were found to reshuffle depending on how the list gets presented/derived).
@@ -75,15 +84,10 @@ separately), CHANGELOG.md L5850.
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 
 **Resolved since last verification (2026-10-09), removed from the list
-above**: `dsl-inprocess-api` — `ccppMain.run()` now accepts an optional
-`options_db` (skipping `argparse`/`sys.argv` entirely when given — also
-fixes a real latent bug, since `run()` previously always parsed the host
-process's own argv) and returns a new frozen `CcppDslResult(written,
-datatable_path, resolved_vars)` dataclass on success instead of `None`;
-`resolved_vars` is the exact `--emit-resolved-vars` JSON dict, read back
-in-process, `None` when not configured. No subprocess-architecture
-changes, no CAM-SIMA-repo changes (deliberately out of scope). Full
-`pytest tests/`: 779 passed, 0 failed, 0 skipped. CHANGELOG.md L10381.
+above**: `dsl-inprocess-api` — `ccppMain.run()` now takes an optional
+`options_db` and returns a `CcppDslResult` (resolved vars, etc.) instead of
+`None`; a Copilot review comment on PR #122 also caught a real
+`options_db`-bypass normalization bug, fixed. CHANGELOG.md L10381.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `task70-arraysection` — `ArraySectionOp` consolidated into

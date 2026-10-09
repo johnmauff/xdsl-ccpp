@@ -284,8 +284,20 @@ class ccppMain:
                  "own --gfs-dim-aliases flag.",
         )
     def build_options_db_from_args(self, args):
-        options_db = args.__dict__
+        return self._normalize_options_db(args.__dict__)
 
+    def _normalize_options_db(self, options_db):
+        """Validate + coerce a raw options_db dict in place and return it.
+
+        Applies the same required-argument validation and list/comma-string
+        coercion `build_options_db_from_args` always has, whether the dict
+        came from argparse's own `Namespace.__dict__` or a caller-supplied
+        dict passed straight to `run(options_db=...)` -- so a programmatic
+        caller following the documented default_options_db() + overlay
+        pattern gets the exact same normalization (e.g. host_files=None,
+        a valid "I have no host files" config, becomes [] here) instead of
+        crashing downstream the moment something does `list(...)` on it.
+        """
         if options_db.get("py"):
             # --py mode: --suites and --scheme-files are not required
             if options_db.get("suites"):
@@ -883,20 +895,23 @@ class ccppMain:
     def run(self, options_db=None):
         """Run the full frontend -> optimizer -> split-output pipeline.
 
-        options_db -- if given, used as-is (e.g. from default_options_db()
-        plus an overlay, matching ccpp_prebuild.py's existing convention);
-        argv is never parsed in this case. If omitted (main()'s own CLI
-        path), parses sys.argv exactly as before.
+        options_db -- if given (e.g. from default_options_db() plus an
+        overlay, matching ccpp_prebuild.py's existing convention), argv is
+        never parsed; the dict is still run through the same validation +
+        list-coercion normalization build_options_db_from_args() applies to
+        a CLI invocation (a copy is normalized, the caller's own dict is
+        left untouched). If omitted (main()'s own CLI path), parses
+        sys.argv exactly as before.
         """
-        if options_db is not None:
-            self.options_db = options_db
-        else:
-            parser = self.initialise_argument_parser()
-            args = parser.parse_args()
-            try:
+        try:
+            if options_db is not None:
+                self.options_db = self._normalize_options_db(dict(options_db))
+            else:
+                parser = self.initialise_argument_parser()
+                args = parser.parse_args()
                 self.options_db = self.build_options_db_from_args(args)
-            except (ValueError, FileNotFoundError) as e:
-                raise CcppDslError(str(e)) from e
+        except (ValueError, FileNotFoundError) as e:
+            raise CcppDslError(str(e)) from e
 
         # Set once, before any ArgumentOp is constructed (merge_meta_files/
         # merge_meta build ops in-process; run_frontend/run_py_frontend

@@ -10450,3 +10450,24 @@ own internal `python3` subprocess calls and a `shutil.which("ccpp_xdsl")`
 PATH check resolved against the system interpreter instead of the venv's;
 re-run with the venv properly activated gave the clean result above, with
 no code changes in between).
+
+**Copilot review follow-up on PR #122**: a real bug, not a nitpick.
+`run(options_db=...)` originally assigned the caller's dict straight to
+`self.options_db` with no normalization at all. `default_options_db()`'s
+own documented contract leaves `host_files` as `None` when not overlaid
+(a deliberately valid "I have no host files" config -- only `suites` and
+`scheme_files`/`meta_file` are required), but `run_frontend()` does
+`host_files = list(self.options_db["host_files"])` -- `list(None)` raises
+`TypeError`, a crash the CLI path never hit because
+`build_options_db_from_args` always ran `coerce_list_option()` first,
+turning `None` into `[]`. **Fixed** by extracting that validation +
+coercion logic out of `build_options_db_from_args` into a new
+`_normalize_options_db(options_db)` helper, called from both the argparse
+path (unchanged behavior) and the new `options_db`-supplied path (a
+shallow copy is normalized, so the caller's own dict is never mutated).
+New regression test
+`test_run_normalizes_options_db_missing_host_files` (reproduces the exact
+reported crash via `_normalize_options_db` + `run_frontend()` directly,
+confirms `host_files` becomes `[]` and the frontend subprocess completes
+normally). Full `pytest tests/`: 780 passed, 0 failed, 0 skipped (up from
+779 -- the 1 new test).
