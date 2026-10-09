@@ -1567,10 +1567,28 @@ class ftnPrintContext:
                             self._get_variable_name_for(scalars[s_idx])
                         )
                         s_idx += 1
-                # If source already has subscripts (e.g. a DDT member with a
-                # constituent-index subscript like q(:,:,index_qv)), merge the
-                # new subscripts INTO those by replacing ':' placeholders in
-                # order, rather than appending a second set of parens.
+                # If source already has subscripts, merge the new subscripts
+                # INTO those by replacing each range-shaped token in order,
+                # rather than appending a second set of parens. Two real
+                # shapes reach here: a DDT member with a constituent-index
+                # subscript baked in as a literal ':' placeholder (e.g.
+                # "q(:,:,index_qv)"), and -- since this op's all-'R' case
+                # absorbed ArraySectionOp -- a module-level var already
+                # sliced by a prior RankReducingSliceOp, whose own text is
+                # an already-resolved range like "a(col_start:col_end, 1:nz)"
+                # (suite_cap.py's _build_promoted_call_ops chains onto
+                # exactly this shape -- see its own "Module-level vars
+                # (HostVarRefOp, RankReducingSliceOp)" comment). A token is
+                # "replaceable" whenever it's range-shaped (contains ':'),
+                # whether a bare placeholder or an already-resolved range --
+                # checking only for a bare ':' left every already-resolved
+                # range token un-replaced and never consumed from the new
+                # subscripts, silently discarding the outer slice entirely
+                # and reprinting the unreduced inner expression (Copilot
+                # review, PR #121). A non-range (fixed-index) token is never
+                # replaced, and -- unlike an earlier version of this code,
+                # which moved every fixed token to the end -- every token
+                # (replaced or not) stays in its own original position.
                 # Search for that subscript's '(' only after the last '%' --
                 # source_name may ALSO have an earlier, unrelated '(' from
                 # HostVarRefOp's own index_expr (real capgen-v1's multi-instance
@@ -1584,17 +1602,15 @@ class ftnPrintContext:
                     existing = source_name[paren_pos + 1: source_name.rfind(")")]
                     section_iter = iter(subscripts)
                     merged = []
-                    fixed = []
                     for tok in existing.split(","):
                         t = tok.strip()
-                        if t == ":":
+                        if ":" in t:
                             try:
                                 merged.append(next(section_iter))
                             except StopIteration:
-                                merged.append(":")
+                                merged.append(t)
                         else:
-                            fixed.append(t)
-                    merged.extend(fixed)
+                            merged.append(t)
                     self.variables[op.res] = f"{base}({', '.join(merged)})"
                 else:
                     self.variables[op.res] = (
