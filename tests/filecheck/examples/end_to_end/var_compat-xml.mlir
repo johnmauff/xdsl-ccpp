@@ -86,10 +86,10 @@
 // CHECK-NEXT:    use effr_diag, only: effr_diag_run
 // CHECK-NEXT:    use effr_post, only: effr_post_init
 // CHECK-NEXT:    use effr_post, only: effr_post_run
-// CHECK-NEXT:    use effr_pre, only: effr_pre_init
-// CHECK-NEXT:    use effr_pre, only: effr_pre_run
 // CHECK-NEXT:    use effrs_calc, only: effrs_calc_run
-// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
+// CHECK-NEXT:    use mod_effr_pre, only: effr_pre_init
+// CHECK-NEXT:    use mod_effr_pre, only: effr_pre_run
+// CHECK-NEXT:    use mod_rad_ddt, only: ty_rad_lw
 // CHECK-NEXT:    use rad_lw, only: rad_lw_run
 // CHECK-NEXT:    use rad_sw, only: rad_sw_run
 // CHECK-NEXT:    use test_host_mod, only: has_graupel
@@ -460,8 +460,8 @@
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_prop_ptr_t
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_model_constituents_t
-// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_lw
-// CHECK-NEXT:    use module_rad_ddt, only: ty_rad_sw
+// CHECK-NEXT:    use mod_rad_ddt, only: ty_rad_lw
+// CHECK-NEXT:    use mod_rad_ddt, only: ty_rad_sw
 // CHECK-NEXT:    use test_host_data, only: physics_state
 // CHECK-NEXT:    use test_host_mod, only: effrs
 // CHECK-NEXT:    use test_host_mod, only: has_graupel

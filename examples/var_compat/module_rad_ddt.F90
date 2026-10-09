@@ -1,4 +1,4 @@
-module module_rad_ddt
+module mod_rad_ddt
   use ccpp_kinds, only: kind_phys
   implicit none
 
@@ -20,4 +20,4 @@ module module_rad_ddt
     real(kind=kind_phys), pointer :: sfc_down_sw(:) => null()
   end type ty_rad_sw
 
-end module module_rad_ddt
+end module mod_rad_ddt
