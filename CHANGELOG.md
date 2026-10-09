@@ -10525,8 +10525,29 @@ the `suite_cap.py` fix locally, re-ran, watched it fail exactly as
 expected, then restored the fix). Full `pytest tests/`: 784 passed, 0
 failed, 0 skipped (up from 780 -- the 4 new tests).
 
-**Deliberately out of scope**: reverting `examples/var_compat`'s existing
-workaround (its renamed module names, dropped `module_name` keys) --
-that's a separate, independently-reviewable change (regenerating and
-diff-reviewing every affected FileCheck golden for an already-stable
-example), suggested as a natural low-risk follow-up, not done here.
+**Follow-up (same day): reverted `examples/var_compat`'s workaround.**
+`effr_pre.F90`'s module renamed back to its real capgen-v1 name
+`mod_effr_pre`, `module_rad_ddt.F90`'s back to `mod_rad_ddt`; both tables'
+`.meta` files regained their real `module_name` override; `README.md`'s
+"Adaptations made during porting" note for this removed entirely (no
+longer an adaptation -- the real upstream content is restored). Two real
+hand-written `.F90` files not caught by the first pass also directly
+`use module_rad_ddt` and needed updating to `use mod_rad_ddt`:
+`rad_lw.F90` and `test_host_data.F90` -- found by grepping for the old
+module name across all `.F90` sources, not just the two files the
+original workaround note named. `CMakeLists.txt` needed no changes (it
+lists schemes/hosts by filename stem, not module name; CMake's own
+Fortran module dependency scanning works from `module`/`use` statements
+regardless of filename). All 3 affected FileCheck goldens
+(`frontend`/`completed_ir`/`end_to_end` `var_compat-xml.mlir`) regenerated
+via `update-filecheck-test.py` and diff-reviewed -- each diffs down to
+*only* the expected `source_module`/`module`/`use` name changes (one
+regeneration artifact caught and fixed by hand: the `dependencies_path`
+FileCheck wildcard `{{.*}}` was overwritten with a literal
+machine-specific absolute path by the regen script; restored). Confirmed
+`examples/nested_suite/` independently carries its own copies of these
+same scheme/DDT files under the old table-name-as-module-name convention
+(no `module_name` declared there) -- self-consistent and unaffected,
+deliberately left as-is since the user scoped this revert to
+`var_compat` specifically. Full `pytest tests/`: 784 passed, 0 failed, 0
+skipped (same count as before -- no new tests, pure revert).

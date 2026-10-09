@@ -84,8 +84,9 @@ separately), CHANGELOG.md L5850.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `table-props-module-name` — `[ccpp-table-properties]`'s
-`module_name` override now supported; also fixed two related latent
-`suite_cap.py` bugs found along the way. CHANGELOG.md L10474.
+`module_name` override now supported; two related latent `suite_cap.py`
+bugs fixed along the way; `examples/var_compat`'s workaround reverted to
+real capgen-v1 module names. CHANGELOG.md L10474.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `dsl-inprocess-api` — `ccppMain.run()` now takes an optional
