@@ -205,16 +205,17 @@ def _build_per_suite_run_info(
                 ):
                     std_name_of[fn_arg.name] = fn_arg.getAttr("standard_name").lower()
 
-        # Also check HOST, MODULE, and DDT tables for suite-level args (like
-        # col_start/col_end, or a dynamic subcycle loop count synthesized by
-        # suite_cap.py's _synthesize_dynamic_loop_count_args) that don't
-        # appear directly in any scheme _run table but are part of the suite
-        # cap's signature for loop bounds / array sectioning. DDT tables are
-        # included because such a synthesized arg's host-side local name may
-        # only exist as a member of a module-level DDT instance (e.g.
-        # var_compat's num_subcycles, a member of the physics_state DDT) --
-        # scoping this to HOST/MODULE alone would silently miss it and its
-        # standard_name would never be recorded here.
+        # Also check HOST, MODULE, DDT, and CONTROL tables for suite-level
+        # args (like col_start/col_end, or a dynamic subcycle loop count
+        # synthesized by suite_cap.py's _synthesize_dynamic_loop_count_args)
+        # that don't appear directly in any scheme _run table but are part
+        # of the suite cap's signature for loop bounds / array sectioning.
+        # DDT tables are included because such a synthesized arg's
+        # host-side local name may only exist as a member of a
+        # module-level DDT instance (e.g. var_compat's num_subcycles, a
+        # member of the physics_state DDT) -- scoping this to HOST/MODULE
+        # alone would silently miss it and its standard_name would never
+        # be recorded here.
         _ddt_table_matches: dict = {}
         for callee_arg in callee_input_names:
             if _bare(callee_arg) in std_name_of:
@@ -222,7 +223,7 @@ def _build_per_suite_run_info(
             bare = _bare(callee_arg)
             for tbl_name, props in meta_data.items():
                 if props.getAttr("type") not in (
-                    CCPPType.HOST, CCPPType.MODULE, CCPPType.DDT,
+                    CCPPType.HOST, CCPPType.MODULE, CCPPType.DDT, CCPPType.CONTROL,
                 ):
                     continue
                 if tbl_name not in props.arg_tables:
@@ -445,13 +446,15 @@ def _build_per_suite_run_info(
                                     index_std_name=index_std_name,
                                 )
                             )
-                        # Skip DDT instances whose instance variable lives in a HOST-type
-                        # table (e.g. ccpp_info_t accessed through 'ccpp' in test_host).
-                        # HOST-type tables are caller-provided interfaces, not Fortran
-                        # modules — their contents become block args, not USE stubs.
+                        # Skip DDT instances whose instance variable lives in a HOST- or
+                        # CONTROL-type table (e.g. ccpp_info_t accessed through 'ccpp' in
+                        # test_host). HOST/CONTROL-type tables are caller-provided
+                        # interfaces, not Fortran modules — their contents become block
+                        # args, not USE stubs.
                         elif (
                             instance_module in meta_data
-                            and meta_data[instance_module].getAttr("type") == CCPPType.HOST
+                            and meta_data[instance_module].getAttr("type")
+                            in (CCPPType.HOST, CCPPType.CONTROL)
                         ):
                             resolved_arg_ops.append(
                                 ResolvedArgOp(arg_name, ArgSourceKind.Block)

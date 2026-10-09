@@ -958,3 +958,124 @@ class TestAdvectedConsistency:
         assert arg.advected is not None
         assert arg.is_interstitial is None
         assert arg.model_var_name is None
+
+
+# ── type-control-gap: col_start/col_end (horizontal_loop_begin/_end) ──────────
+#
+# Real capgen-v1 never gives these a backing Fortran declaration -- they're
+# framework-injected call-site scalars (its own lb/ub), silently skipped by
+# source cross-validation. xdsl-ccpp's own HOST-type table collapsed this
+# distinction, so a scheme arg declaring one of these standard_names used to
+# get spuriously _check_compatibility-checked against a HOST .meta's bare
+# placeholder declaration -- a real type mismatch there should never be a
+# hard error, since there's no real Fortran symbol behind it to validate
+# against. A DDT-member-sourced match (e.g. ddthost/capgen's ccpp_info_t
+# bundling pattern) is different -- that genuinely has a real backing
+# derived-type component, and must still get the full match+compatibility
+# treatment, unchanged.
+
+_LOOP_BOUND_SCHEME_META = """\
+[ccpp-table-properties]
+  name = loop_bound_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = loop_bound_scheme_run
+  type = scheme
+[ cols ]
+  standard_name = horizontal_loop_begin
+  units = count
+  type = integer
+  dimensions = ()
+  intent = in
+""" + CCPP_MANDATORY_ARGS
+
+_LOOP_BOUND_BARE_HOST_META_MISMATCHED = """\
+[ccpp-table-properties]
+  name = test_host
+  type = host
+[ccpp-arg-table]
+  name = test_host
+  type = host
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  units = count
+  type = character
+  kind = len=16
+  dimensions = ()
+"""
+
+_LOOP_BOUND_DDT_INSTANCE_HOST_META = """\
+[ccpp-table-properties]
+  name = test_host
+  type = host
+[ccpp-arg-table]
+  name = test_host
+  type = host
+[ ccpp_data ]
+  standard_name = ccpp_handle_instance
+  type = ccpp_info_t
+  units = DDT
+  dimensions = ()
+"""
+
+_LOOP_BOUND_DDT_MEMBER_META = """\
+[ccpp-table-properties]
+  name = ccpp_info_t
+  type = ddt
+[ccpp-arg-table]
+  name = ccpp_info_t
+  type = ddt
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  units = count
+  type = integer
+  dimensions = ()
+"""
+
+
+class TestLoopBoundDispatchScalars:
+
+    def test_bare_host_table_mismatch_does_not_raise(self, run_host_match):
+        """A bare, non-DDT HOST-table declaration of horizontal_loop_begin
+        with a deliberately incompatible type vs. the scheme's own
+        declaration (character vs. integer -- would be a hard
+        'type mismatch' error for any genuine host-matched var, see
+        TestTypeMismatch above) must not raise -- this match is fictitious,
+        there's no real Fortran symbol behind it to validate against."""
+        run_host_match(
+            scheme_metas=[_LOOP_BOUND_SCHEME_META],
+            host_metas=[_LOOP_BOUND_BARE_HOST_META_MISMATCHED],
+        )
+
+    def test_bare_host_table_match_not_classified_host_matched(self, run_host_match):
+        module = run_host_match(
+            scheme_metas=[_LOOP_BOUND_SCHEME_META],
+            host_metas=[_LOOP_BOUND_BARE_HOST_META_MISMATCHED],
+        )
+        arg = _get_scheme_arg(module, "loop_bound_scheme", "horizontal_loop_begin")
+        assert arg is not None
+        assert arg.model_var_name is None
+
+    def test_no_match_at_all_does_not_raise(self, run_host_match):
+        """col_start/col_end are a CCPP-protocol guarantee, always
+        available regardless of whether any host/DDT table happens to
+        declare them -- never a 'no matching host model variable' error."""
+        run_host_match(
+            scheme_metas=[_LOOP_BOUND_SCHEME_META],
+            host_metas=[],
+        )
+
+    def test_ddt_member_match_still_fully_resolved(self, run_host_match):
+        """A DDT-member-sourced match (ddthost/capgen's ccpp_info_t
+        bundling pattern) has a real backing derived-type component behind
+        it -- unlike the bare-table case above, it must still get a real
+        model_var_name/model_var_is_ddt, unaffected by this fix."""
+        module = run_host_match(
+            scheme_metas=[_LOOP_BOUND_SCHEME_META],
+            host_metas=[_LOOP_BOUND_DDT_INSTANCE_HOST_META, _LOOP_BOUND_DDT_MEMBER_META],
+        )
+        arg = _get_scheme_arg(module, "loop_bound_scheme", "horizontal_loop_begin")
+        assert arg is not None
+        assert arg.model_var_name is not None
+        assert arg.model_var_name.data == "col_start"
+        assert arg.model_var_is_ddt is not None

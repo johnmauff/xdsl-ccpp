@@ -1344,14 +1344,17 @@ class CCPPCAP(ModulePass):
             meta_data, suite_descriptions, public_fns, instance_local_name=instance_local_name,
         )
 
-        # Detect the ccpp_info_t pattern: HOST table contains a variable with
-        # standard_name = host_standard_ccpp_type (e.g. ddthost).  When present,
-        # lifecycle and run functions accept a single ccpp_info_t inout arg that
-        # bundles errmsg/errflg and (for run) col_start/col_end.
+        # Detect the ccpp_info_t pattern: a HOST or CONTROL table contains a
+        # variable with standard_name = host_standard_ccpp_type (e.g.
+        # ddthost). When present, lifecycle and run functions accept a
+        # single ccpp_info_t inout arg that bundles errmsg/errflg and (for
+        # run) col_start/col_end. CONTROL is included alongside HOST since
+        # the bundling variable itself is exactly as synthesized/call-site
+        # as its own members are.
         ccpp_info_type = None
         ccpp_info_module_name = None
         for _tbl, _props in meta_data.items():
-            if _props.getAttr("type") != CCPPType.HOST:
+            if _props.getAttr("type") not in (CCPPType.HOST, CCPPType.CONTROL):
                 continue
             if _tbl not in _props.arg_tables:
                 continue

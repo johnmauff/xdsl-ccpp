@@ -209,10 +209,10 @@ def _real_width_from_iso(kind_name: str, kind_entry: "tuple[str, str] | None") -
 
 
 def _chost_build_maps(meta_data):
-    """Build std_to_host (host/module-owned naming, global) and a
-    HOST/MODULE/DDT-only local_to_std_fallback (used for synthesized/
-    non-scheme-sourced bare names like col_start/col_end/ncol/nz) from
-    metadata for chost arg classification.
+    """Build std_to_host (host/module/control-owned naming, global) and a
+    HOST/MODULE/DDT/CONTROL-only local_to_std_fallback (used for
+    synthesized/non-scheme-sourced bare names like col_start/col_end/ncol/nz)
+    from metadata for chost arg classification.
 
     local_to_std_fallback deliberately EXCLUDES SCHEME tables --
     chost-identity-collision: a scheme-declared bare local name must be
@@ -227,7 +227,7 @@ def _chost_build_maps(meta_data):
     """
     std_to_host: dict = {}
     for props in meta_data.values():
-        if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE):
+        if props.getAttr("type") not in (CCPPType.HOST, CCPPType.MODULE, CCPPType.CONTROL):
             continue
         for atbl in props.arg_tables.values():
             for var in atbl.getFunctionArguments():

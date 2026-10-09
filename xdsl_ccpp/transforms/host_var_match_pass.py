@@ -15,6 +15,7 @@ from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DIMENSIONLESS_UNITS,
     CCPP_INTERNAL_STD_NAMES,
+    CCPP_LOOP_BOUND_STD_NAMES,
     UNIT_CONVERSIONS,
     dims_compatible,
     normalize_units,
@@ -661,6 +662,20 @@ class HostVariableMatchPass(ModulePass):
                         is_ddt, array_layout, is_host_table, is_protected,
                         active_expr,
                     ) = model_var_index[std_name]
+                    if std_name in CCPP_LOOP_BOUND_STD_NAMES and not is_ddt:
+                        # A bare, non-DDT HOST/CONTROL-table declaration of
+                        # col_start/col_end (horizontal_loop_begin/_end) --
+                        # real capgen-v1 never gives these a backing Fortran
+                        # declaration, so this match is fictitious: skip the
+                        # compatibility check and HostMatched classification
+                        # entirely, same treatment as errmsg/errflg already
+                        # get unconditionally (type-control-gap). A
+                        # DDT-member-sourced match (is_ddt True, e.g.
+                        # ddthost/capgen's ccpp_info_t bundling pattern) has
+                        # a real backing derived-type component and falls
+                        # through to the normal match+compatibility-check
+                        # logic below, unchanged.
+                        continue
                     arg_op.properties["model_var_name"]    = StringAttr(local_name)
                     arg_op.properties["model_module_name"] = StringAttr(module_name)
                     if model_memory_space is not None:
@@ -684,6 +699,14 @@ class HostVariableMatchPass(ModulePass):
                     all_errors.extend(errors)
                     for w in warnings:
                         print(f"Warning: {w}", file=sys.stderr)
+
+                elif std_name in CCPP_LOOP_BOUND_STD_NAMES:
+                    # Not matched anywhere at all (no bare table, no DDT
+                    # member) -- col_start/col_end are a CCPP-protocol
+                    # guarantee, always available regardless of whether any
+                    # host/DDT table happens to declare them; never an error
+                    # (type-control-gap).
+                    continue
 
                 elif arg_op.optional is None and arg_op.default_value is None:
                     if std_name in produced_in_init:
