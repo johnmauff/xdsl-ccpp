@@ -158,7 +158,7 @@ def iter_arg_tables(ccpp_mod, table_type=None, table_name_in=None):
 # number_of_ccpp_constituents resolves to an expression, not a bare
 # identifier -- safe here because CapVarRefOp's printer (print_ftn.py)
 # registers this string verbatim as the SSA result's text with no
-# accompanying Fortran declaration emitted (same mechanism ArraySectionOp
+# accompanying Fortran declaration emitted (same mechanism RankReducingSliceOp
 # uses for its own inline expressions), and every real .meta declaration of
 # this standard name is intent(in) (a count being read, never written back),
 # so it never needs to appear as an assignable lvalue.

@@ -299,8 +299,8 @@
 // CHECK-NEXT:          %12 = "ccpp_utils.host_var_ref"() <{var_name = "temp_interfaces", module_name = "hello_world_mod"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %13 = "ccpp_utils.host_var_ref"() <{var_name = "temp_midpoints", module_name = "hello_world_mod"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %14 = arith.constant 1 : i32
-// CHECK-NEXT:          %15 = "ccpp_utils.array_section"(%12, %col_start, %14, %col_end, %10) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, memref<i32>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %16 = "ccpp_utils.array_section"(%13, %col_start, %14, %col_end, %9) {operandSegmentSizes = array<i32: 1, 2, 2>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, memref<i32>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %15 = "ccpp_utils.rank_reducing_slice"(%12, %col_start, %14, %col_end, %10) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, memref<i32>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %16 = "ccpp_utils.rank_reducing_slice"(%13, %col_start, %14, %col_end, %9) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, memref<i32>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %17 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %17 {
 // CHECK-NEXT:            %18, %19 = func.call @hello_world_suite_physics(%ncol, %9, %10, %11, %15, %16) : (memref<i32>, memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>)

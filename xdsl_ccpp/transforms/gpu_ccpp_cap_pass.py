@@ -13,7 +13,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AccExitDataOp,
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
-    ArraySectionOp,
     HostVarRefOp,
     OmpTargetDataBeginOp,
     OmpTargetDataEndOp,
@@ -21,6 +20,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetExitDataOp,
     OmpTargetUpdateFromOp,
     OmpTargetUpdateToOp,
+    RankReducingSliceOp,
     StrCmpOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
@@ -695,7 +695,7 @@ class GPUCcppCapPass(ModulePass):
     def _ref_used_by_call(self, true_block, host_var, suite_call) -> bool:
         """True iff some HostVarRefOp for host_var in true_block is actually
         passed as an argument to suite_call (directly, or via its
-        ArraySectionOp).
+        RankReducingSliceOp).
 
         When a suite has more than one suite-part call site (see
         _find_suite_part_ifs), true_block is the shared, suite-level block
@@ -709,7 +709,7 @@ class GPUCcppCapPass(ModulePass):
         call_args = set(suite_call.arguments)
         section_for_ref = {}
         for op in true_block.ops:
-            if isa(op, ArraySectionOp):
+            if isa(op, RankReducingSliceOp):
                 section_for_ref[op.source] = op.res
         for op in true_block.ops:
             if not isa(op, HostVarRefOp) or self._ref_key(op) != host_var:
@@ -790,14 +790,14 @@ class GPUCcppCapPass(ModulePass):
 
     def _resolve_array_refs(self, true_block, var_names, use_sections=True):
         """For each variable name in var_names, return the best SSA value to
-        use in a data/update directive -- preferring the ArraySectionOp result
-        (which carries the full section expression) over the bare HostVarRefOp
-        result (which carries only the base variable name).
+        use in a data/update directive -- preferring the RankReducingSliceOp
+        result (which carries the full section expression) over the bare
+        HostVarRefOp result (which carries only the base variable name).
 
         For a 2D host array temp_midpoints(horizontal_dimension, vertical_layer_dimension),
         ccpp_cap.py generates:
             HostVarRefOp(temp_midpoints)  → %ref
-            ArraySectionOp(%ref, col_start, col_end, 1, pver) → %section
+            RankReducingSliceOp(%ref, col_start, col_end, 1, pver) → %section
 
         Passing %section to AccUpdateSelfOp causes the printer to emit:
             !$acc update self(temp_midpoints(col_start:col_end, 1:pver))
@@ -805,20 +805,20 @@ class GPUCcppCapPass(ModulePass):
         Passing %ref would only emit:
             !$acc update self(temp_midpoints)
 
-        For scalar variables with no ArraySectionOp, %ref is used directly.
+        For scalar variables with no RankReducingSliceOp, %ref is used directly.
         Hoisted enter/exit/passthrough references -- including hoisted
         "update" variables' single update self/device pair -- always use
         use_sections=False (called that way by _wrap_scheme_call).
-        ArraySectionOp operands (e.g. col_start/col_end) are themselves
+        RankReducingSliceOp operands (e.g. col_start/col_end) are themselves
         function-scoped and can't be reused for a synthesized reference
         cloned into a different function's block, so hoisted transfers move
         the whole declared array rather than a per-call column subrange.
         """
-        # Build map: HostVarRefOp.res → ArraySectionOp.res (if one exists)
+        # Build map: HostVarRefOp.res → RankReducingSliceOp.res (if one exists)
         section_for_ref = {}
         if use_sections:
             for op in true_block.ops:
-                if isa(op, ArraySectionOp):
+                if isa(op, RankReducingSliceOp):
                     section_for_ref[op.source] = op.res
 
         # For each variable, find its HostVarRefOp and resolve to the best SSA value.
