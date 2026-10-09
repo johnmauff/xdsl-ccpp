@@ -343,35 +343,6 @@ class WriteStmtOp(IRDLOperation):
 
 
 @irdl_op_definition
-class ArraySectionOp(IRDLOperation):
-    """Represent a Fortran array section: source(lower0:upper0, lower1:upper1, ...).
-
-    Used purely for Fortran code generation — no transformation semantics.
-    The result type matches the source type.  The Fortran printer resolves the
-    result to 'source_name(lower0:upper0, lower1:upper1)' so that downstream
-    call ops emit the correct Fortran array-section notation.
-
-    lowers and uppers must have the same length (one pair per dimension).
-    """
-
-    name = "ccpp_utils.array_section"
-
-    source = operand_def(MemRefType)
-    lowers = var_operand_def(MemRefType | IntegerType)
-    uppers = var_operand_def(MemRefType | IntegerType)
-    res = result_def(MemRefType)
-
-    irdl_options = [AttrSizedOperandSegments()]
-
-    def __init__(self, source, lowers, uppers):
-        source_val = SSAValue.get(source)
-        super().__init__(
-            operands=[source, list(lowers), list(uppers)],
-            result_types=[source_val.type],
-        )
-
-
-@irdl_op_definition
 class KindDefOp(IRDLOperation):
     """Declare a named Fortran kind parameter in the @ccpp_kinds module.
 
@@ -555,7 +526,7 @@ class AccDataEndOp(IRDLOperation):
 class AccUpdateSelfOp(IRDLOperation):
     """Emit !$acc update self(...) — copies variables from GPU to CPU."""
     name = "ccpp_utils.acc_update_self"
-    arrays = var_operand_def()   # SSA values from HostVarRefOp or ArraySectionOp
+    arrays = var_operand_def()   # SSA values from HostVarRefOp or RankReducingSliceOp
 
     def __init__(self, array_refs):
         super().__init__(operands=[list(array_refs)])
@@ -564,7 +535,7 @@ class AccUpdateSelfOp(IRDLOperation):
 class AccUpdateDeviceOp(IRDLOperation):
     """Emit !$acc update device(...) — copies variables from CPU to GPU."""
     name = "ccpp_utils.acc_update_device"
-    arrays = var_operand_def()   # SSA values from HostVarRefOp or ArraySectionOp
+    arrays = var_operand_def()   # SSA values from HostVarRefOp or RankReducingSliceOp
 
     def __init__(self, array_refs):
         super().__init__(operands=[list(array_refs)])
@@ -984,8 +955,14 @@ class RankReducingSliceOp(IRDLOperation):
     name = "ccpp_utils.rank_reducing_slice"
 
     source        = operand_def(MemRefType)
-    range_lowers  = var_operand_def(MemRefType)   # lower bound per 'R' dimension
-    range_uppers  = var_operand_def(MemRefType)   # upper bound per 'R' dimension
+    # MemRefType | IntegerType, not MemRefType alone (task70-arraysection):
+    # a bound can be a raw arith.ConstantOp result (e.g. the shared literal
+    # '1' lower bound for an extra, non-column-chunked dimension), not
+    # always a memref -- the same permissiveness the former ArraySectionOp's
+    # own lowers/uppers already had, needed once this op absorbed its
+    # all-'R' (plain array-section) case.
+    range_lowers  = var_operand_def(MemRefType | IntegerType)   # lower bound per 'R' dimension
+    range_uppers  = var_operand_def(MemRefType | IntegerType)   # upper bound per 'R' dimension
     scalar_indices = var_operand_def(MemRefType)  # scalar index per 'S' dimension
     # e.g. "RS" = first dim is range, second dim is scalar
     dim_pattern   = prop_def(StringAttr)
@@ -1003,13 +980,31 @@ class RankReducingSliceOp(IRDLOperation):
     ):
         source_val = SSAValue.get(source)
         src_type = source_val.type
-        # Result rank = number of 'R' entries; each retained dimension is dynamic.
-        result_rank = dim_pattern.count("R")
-        if isinstance(src_type, MemRefType):
-            result_type = MemRefType(
-                src_type.element_type, [DYNAMIC_INDEX] * result_rank
-            )
+        if scalar_indices:
+            # Mixed/rank-reducing case (e.g. CCPP variable promotion):
+            # result rank = number of 'R' entries, each retained dimension
+            # dynamic.
+            result_rank = dim_pattern.count("R")
+            if isinstance(src_type, MemRefType):
+                result_type = MemRefType(
+                    src_type.element_type, [DYNAMIC_INDEX] * result_rank
+                )
+            else:
+                result_type = src_type
         else:
+            # All-'R' case (task70-arraysection: the former ArraySectionOp's
+            # own case) -- mirror its exact type semantics, copying the
+            # source's own type verbatim rather than recomputing rank from
+            # dim_pattern's length. Not just equivalent: when source is
+            # already a DDT-member ref whose own member_name carries a
+            # baked-in fixed-index subscript (e.g. "q(:, :, index_qv)"),
+            # the printer's existing-subscript merge (print_ftn.py) only
+            # consumes as many range parts as there are ':' placeholders
+            # already in that subscript, silently discarding the rest --
+            # so the true printed rank can be LOWER than len(range_lowers)
+            # in that case. Trusting source's own type here, exactly as
+            # ArraySectionOp always did, keeps this degenerate case
+            # byte-for-byte behavior-preserving regardless.
             result_type = src_type
         super().__init__(
             operands=[source, list(range_lowers), list(range_uppers),
@@ -3465,7 +3460,6 @@ CCPPUtils = Dialect(
         ClearStringOp,
         WriteErrMsgOp,
         WriteStmtOp,
-        ArraySectionOp,
         KindDefOp,
         SetStringOp,
         KeywordCallOp,

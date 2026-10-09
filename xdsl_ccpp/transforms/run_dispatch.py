@@ -29,10 +29,10 @@ from xdsl.ir import Block, Region
 
 from xdsl_ccpp.dialects.ccpp import ArgSourceKind, ResolvedArgOp
 from xdsl_ccpp.dialects.ccpp_utils import (
-    ArraySectionOp,
     CapVarRefOp,
     HostVarRefOp,
     KeywordCallOp,
+    RankReducingSliceOp,
     RowMajorConvertOp,
     RowMajorWriteBackOp,
     SetStringOp,
@@ -1057,11 +1057,13 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
 def _build_array_section_ops(
     ctx, info, host_var_ref_results, host_name_to_ref_result, cap_var_std_to_dims,
 ) -> list:
-    """Build ArraySectionOps slicing host/ddt-member/cap-var input args
-    down to this call's own column chunk (and any further host-resolvable
-    dimension). Mutates host_var_ref_results in place (slicing replaces
-    the raw ref with the sliced result) and ctx.chain_global_ops/
-    ctx.seen_host_globals for any newly-discovered dimension host var.
+    """Build RankReducingSliceOps (all-'R' pattern -- task70-arraysection:
+    the former ArraySectionOp's own case) slicing host/ddt-member/cap-var
+    input args down to this call's own column chunk (and any further
+    host-resolvable dimension). Mutates host_var_ref_results in place
+    (slicing replaces the raw ref with the sliced result) and
+    ctx.chain_global_ops/ctx.seen_host_globals for any newly-discovered
+    dimension host var.
     """
     callee_input_names = info["callee_input_names"]
     callee_input_types = info["callee_input_types"]
@@ -1079,7 +1081,7 @@ def _build_array_section_ops(
         upper bound to lowers/uppers in place (lower is always the
         shared '1' constant -- these dims are never column-chunked).
 
-        Shared by both ArraySectionOp sources below (a CapVar's own
+        Shared by both RankReducingSliceOp sources below (a CapVar's own
         dim_names, and a Host/DdtMember var's dim_names) -- they were
         previously two independently-maintained copies of the same
         "resolve dim standard_name -> host var ref, dedupe the
@@ -1131,7 +1133,7 @@ def _build_array_section_ops(
         or return None if the canonical column-bound block args aren't
         available (e.g. no host declares horizontal_loop_begin/end).
 
-        Shared by all three ArraySectionOp sources below (CapVar,
+        Shared by all three RankReducingSliceOp sources below (CapVar,
         Host/DdtMember) -- previously the same 6-line lookup-and-guard
         idiom repeated independently at each site (hle-chunk-consolidate
         Stage 3, 2026-09-29).
@@ -1200,10 +1202,17 @@ def _build_array_section_ops(
             if not _resolve_extra_dim_bounds(_cv_dims[1:], lowers, uppers):
                 continue
 
-            section = ArraySectionOp(
+            # task70-arraysection: a plain, rank-preserving array section
+            # is RankReducingSliceOp's own all-'R' case (empty
+            # scalar_indices) -- ArraySectionOp consolidated into it, see
+            # print_ftn.py's CCPPRankReducingSliceOp case for the shared
+            # printer logic.
+            section = RankReducingSliceOp(
                 host_var_ref_results[arg_name],
-                lowers,
-                uppers,
+                dim_pattern="R" * len(lowers),
+                range_lowers=lowers,
+                range_uppers=uppers,
+                scalar_indices=[],
             )
             array_section_main_ops.append(section)
             host_var_ref_results[arg_name] = section.res
@@ -1267,10 +1276,14 @@ def _build_array_section_ops(
         if not valid:
             continue
 
-        section = ArraySectionOp(
+        # task70-arraysection: see the CapVar branch above for why this is
+        # RankReducingSliceOp's all-'R' case now, not ArraySectionOp.
+        section = RankReducingSliceOp(
             host_var_ref_results[arg_name],
-            lowers,
-            uppers,
+            dim_pattern="R" * len(lowers),
+            range_lowers=lowers,
+            range_uppers=uppers,
+            scalar_indices=[],
         )
         array_section_main_ops.append(section)
         host_var_ref_results[arg_name] = section.res
@@ -1280,7 +1293,7 @@ def _build_array_section_ops(
 
 def _build_row_major_convert_ops(ctx, info, host_var_ref_results) -> tuple:
     """Transpose row-major host arrays to column-major temps before
-    passing them to the suite.  ArraySectionOps are skipped for these
+    passing them to the suite.  RankReducingSliceOps are skipped for these
     args (see the local_to_array_layout check in _build_array_section_ops)
     so host_var_ref_results[arg_name] still holds the raw HostVarRefOp
     result at this point. Mutates host_var_ref_results in place. Returns

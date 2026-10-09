@@ -73,7 +73,11 @@ separately), CHANGELOG.md L5850.
 | `table-props-module-name` | `[ccpp-table-properties]`'s `module_name` override unsupported | S | L5955 |
 | `type-control-gap` | `type = control` (capgen-v1) has no xdsl-ccpp equivalent | Modeling gap, currently inconsequential | L5974 |
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
-| `task70-arraysection` | Task #70: consolidate `ArraySectionOp` into `RankReducingSliceOp` | M, real refactor — `ArraySectionOp` is actively used across 5 files including the highest-risk dispatch code in the repo, not dead code | L6593 |
+
+**Resolved since last verification (2026-10-09), removed from the list
+above**: `task70-arraysection` — `ArraySectionOp` consolidated into
+`RankReducingSliceOp` and deleted; 3 real bugs found and fixed along the
+way (not just a mechanical rename). CHANGELOG.md L10289.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `task71-validate-fir` — confirmed via direct code read that
