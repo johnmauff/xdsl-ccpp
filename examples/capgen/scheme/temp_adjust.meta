@@ -47,7 +47,7 @@
 [ interstitial_var ]
   standard_name = output_only_interstitial_variable
   units = 1
-  dimensions = (horizontal_dimension)
+  dimensions = (dimension_for_interstitial_variable)
   type = integer
   intent = out
 [ temp_prev ]
@@ -134,7 +134,7 @@
 [ interstitial_var ]
   standard_name = output_only_interstitial_variable
   units = 1
-  dimensions = (horizontal_dimension)
+  dimensions = (dimension_for_interstitial_variable)
   type = integer
   intent = in
 [ errmsg ]

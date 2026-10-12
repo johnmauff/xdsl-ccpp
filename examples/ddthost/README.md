@@ -17,7 +17,7 @@ A two-suite example demonstrating Fortran derived data types (DDTs) and optional
 |--------|-------------|-------------|
 | `setup_coeffs` | `_timestep_init` | Sets up temperature coefficients |
 | `temp_set` | `_run` | Sets initial temperatures |
-| `temp_calc_adjust` | `_run`, `_init` | Calculates adjusted temperatures |
+| `temp_calc_adjust` | `_register`, `_run`, `_init` | Calculates adjusted temperatures; `_register` produces `dim_inter` (`dimension_for_interstitial_variable`), consumed by `temp_adjust`'s `interstitial_var` |
 | `temp_adjust` | `_run`, `_init`, `_finalize` | Applies temperature adjustment |
 
 ## Files

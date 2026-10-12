@@ -10837,3 +10837,89 @@ the batch: apply the identical already-proven revert to one more example.
   (on the old `sima_2026-07-15` tag, not relevant now that the checkout
   points at `feature/capgen-v1`) have no capgen-v1 descendant at all --
   noted here so no future session wastes time looking for one.
+
+## `scheme-registered-dimension-gap` resolution: restored real capgen-v1's chained interstitial dimension (2026-10-12)
+
+Closed the gap flagged by the 2026-10-09 gap hunt above. Real capgen-v1's
+`end-to-end-tests/capgen/temp_calc_adjust.meta` has a
+`temp_calc_adjust_register` entry point producing `dim_inter`
+(`standard_name = dimension_for_interstitial_variable`, `intent = out`,
+hardcoded to `3`); `temp_adjust.meta` uses that standard_name directly as
+`interstitial_var`'s `dimensions =` in both `_run` and `_final`, with real
+assertions (`size(interstitial_var) /= 3`, `interstitial_var(1) /= 6`)
+proving the chain actually resolves to the right value.
+
+`examples/capgen`'s port had dropped `temp_calc_adjust_register` entirely
+and substituted a fixed `horizontal_dimension` for `interstitial_var`'s
+dimension in both entry points. This substitution was deliberate, not an
+oversight — `temp_adjust.F90`'s own comment and this project's
+2026-08-17 entry (restoring `interstitial_var` in the first place) both
+say it was done specifically to avoid depending on "the separately-tracked
+ordering bug." That bug is exactly what `task #30` (2026-08-19, two days
+later) fixed generically: a scheme's register-phase `intent=out` output
+becoming a persistent, cross-phase `SuiteOwned` variable, with dimension
+resolution deferred via `suite_cap.py`'s `_resolve_alloc_dim_var_refs`/
+`_PendingAlloc`/`resolved_producers` splicing until the producing call is
+actually emitted — verified at the time against a synthetic fixture
+explicitly built to mirror this exact `dim_inter`/chained-array shape.
+Nobody went back afterward to restore the real upstream text in
+`examples/capgen` once that blocker was cleared; this closes that loose
+end.
+
+Restored `examples/capgen/scheme/temp_calc_adjust.meta`/`.F90`'s
+`_register` entry point (`dim_inter = 3`) and
+`temp_adjust.meta`/`.F90`'s real `dimension_for_interstitial_variable`
+dimension and size-check assertions, byte-for-byte matching real upstream
+(module/entry-point naming conventions already established elsewhere in
+this port, e.g. `_finalize` vs. real upstream's `_final`, left untouched).
+Regeneration required zero changes to `xdsl_ccpp/` itself — the mechanism
+task #30 built handles the real shape exactly as designed. Confirmed via
+the regenerated goldens: `dim_inter` is now a module-level scalar set by
+`temp_calc_adjust_register` in `temp_suite_register`, and
+`interstitial_var`'s allocation moved from an eager, incorrectly-fixed
+`allocate(interstitial_var(ncols))` at every phase entry to a single
+`allocate(interstitial_var(dim_inter))` right where it's actually needed
+in `temp_suite_physics2`. Confirmed `dimension_for_interstitial_variable`
+does not leak into `ccpp_physics_suite_variables()`'s host-facing
+required-variable list (the one risk flagged during scoping).
+
+Also found and fixed in passing: `tests/unit/test_optional_args.py`'s own
+hand-rolled pipeline fixture (`_run_capgen_pipeline`) was missing
+`HostVariableMatchPass` entirely (and had `ArgOwnershipPass`/`MetaKind`
+in the wrong relative order) — invisible until this restoration, since
+`interstitial_var`'s old fixed `horizontal_dimension` never needed
+ownership classification to resolve. Fixed to match the real CLI pass
+order (`generate-meta-cap,generate-meta-kinds,generate-host-match,
+generate-arg-ownership,...`).
+
+New test: `tests/unit/test_chained_interstitial_allocation.py`'s
+`TestRealCapgenChainedInterstitialVariable` — exercises the real restored
+`examples/capgen` metadata directly (not another synthetic scheme_a/
+scheme_c fixture), pinning both the allocation-ordering behavior and the
+no-leak-into-host-vars property against regression.
+
+Goldens regenerated: `tests/filecheck/examples/{frontend,completed_ir,
+end_to_end}/capgen-xml.mlir`. Full `pytest tests/`: 796 passed, 0 failed.
+
+**Fast-follow (same day)**: `examples/ddthost/scheme/temp_calc_adjust.meta`/
+`.F90` and `temp_adjust.meta`/`.F90` carried an identical copy of this same
+workaround (same comment, same substitution, no `temp_calc_adjust_register`)
+— applied the identical fix there too, matching `ddthost`'s own established
+lowercase-keyword Fortran style rather than `capgen`'s uppercase one.
+`ddthost`'s `temp_suite`/`temp_calc_adjust`/`temp_adjust` aren't exercised
+by any FileCheck golden (only `ddt_suite` is — confirmed by reading both
+examples' `// RUN:` lines; no goldens needed regenerating, none changed),
+only by `examples/ddthost/CMakeLists.txt`'s real `cmake`/`make`/`ctest`
+build (both a plain Fortran-host path using both suites, and a chost C++
+path using `make_ddt` + `temp_calc_adjust` alone, no `temp_adjust`
+consumer). Verified text-only (no compiling, per standing project
+convention) by running `ccpp_xdsl` generation directly for both paths:
+both produce clean output with no errors, and the plain path's generated
+`temp_suite_cap.F90` shows the identical correct chained-allocation
+pattern confirmed in `examples/capgen` above (`dim_inter` module scalar,
+deferred `allocate(interstitial_var(dim_inter))`); the chost path (no
+`temp_adjust` consumer) just carries `dim_inter` as a harmless unused
+suite-owned scalar, as expected. Full `pytest tests/` re-run after:
+796 passed, 0 failed (ddthost's temp_suite side has no pytest coverage,
+so this count is unchanged by the fast-follow). The actual CMake build/run
+of `ddthost`'s two drivers is left for user verification.

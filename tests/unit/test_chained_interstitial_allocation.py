@@ -34,6 +34,7 @@ from pathlib import Path
 from tests.unit.helpers import CCPP_MANDATORY_ARGS
 from xdsl_ccpp.backend.print_ftn import print_to_ftn
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
+from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
 _HOST_META = """\
@@ -264,4 +265,64 @@ class TestSchemeSelfAllocatedPrimitiveViaSuiteOwnedVarsSweepSkipsPreamble:
         initialize_body = _fn_body(fortran, "ddt_suite_initialize")
         assert "allocate(model_times" not in register_body
         assert "allocate(model_times" not in initialize_body
+
+
+class TestRealCapgenChainedInterstitialVariable:
+    """Closes BACKLOG.md's `scheme-registered-dimension-gap`: real
+    capgen-v1's temp_calc_adjust_register/dim_inter ->
+    temp_adjust's interstitial_var(dimension_for_interstitial_variable)
+    chain. examples/capgen substituted a fixed horizontal_dimension for
+    this (CHANGELOG.md's 2026-08-17 entry) specifically to avoid the
+    allocation-ordering bug this file's own scheme_a/scheme_c fixture
+    above was built to fix two days later -- restored now that the
+    blocker is gone. Uses the real restored examples/capgen metadata
+    directly, not another synthetic fixture, to prove the real upstream
+    shape resolves end-to-end, not just a lookalike one."""
+
+    def test_dim_inter_and_interstitial_var_resolve(self, run_host_match, ccpp_context):
+        module_path = Path("examples/capgen/scheme")
+        host_path = Path("examples/capgen/host_ftn")
+        # setup_coeffs/temp_set (group physics1) are the real producers of
+        # to_promote/promote_pcnst, consumed by temp_adjust_run (group
+        # physics2) -- need the full suite, not just the two schemes this
+        # test is actually about.
+        setup_coeffs_meta = (module_path / "setup_coeffs.meta").read_text()
+        temp_set_meta = (module_path / "temp_set.meta").read_text()
+        temp_calc_adjust_meta = (module_path / "temp_calc_adjust.meta").read_text()
+        temp_adjust_meta = (module_path / "temp_adjust.meta").read_text()
+        test_host_data_meta = (host_path / "test_host_data.meta").read_text()
+        test_host_mod_meta = (host_path / "test_host_mod.meta").read_text()
+        test_host_meta = (host_path / "test_host.meta").read_text()
+        suite_xml = (module_path / "temp_suite.xml").read_text()
+
+        module = run_host_match(
+            scheme_metas=[
+                setup_coeffs_meta, temp_set_meta, temp_calc_adjust_meta, temp_adjust_meta,
+            ],
+            host_metas=[test_host_data_meta, test_host_mod_meta, test_host_meta],
+            suite_xml=suite_xml,
+        )
+        ArgOwnershipPass().apply(ccpp_context, module)
+        SuiteCAP().apply(ccpp_context, module)
+        CCPPCAP().apply(ccpp_context, module)
+        out = StringIO()
+        print_to_ftn(module, out)
+        fortran = out.getvalue()
+
+        # dim_inter is a persistent, suite-owned module scalar -- not a
+        # host var the ccpp cap requires.
+        assert "integer :: dim_inter" in fortran
+        register_body = _fn_body(fortran, "temp_suite_register")
+        assert "call temp_calc_adjust_register" in register_body
+
+        # interstitial_var's allocation is deferred until physics2, keyed
+        # by the register-phase output -- not a fixed host dimension.
+        physics2_body = _fn_body(fortran, "temp_suite_physics2")
+        assert "allocate(interstitial_var(dim_inter))" in physics2_body
+
+        # dimension_for_interstitial_variable must not leak into the
+        # host-facing required-variable list (risk point flagged during
+        # scoping: _classify_scheme_args_io/_add_dimension_only_names).
+        suite_vars_body = _fn_body(fortran, "ccpp_physics_suite_variables")
+        assert "dimension_for_interstitial_variable" not in suite_vars_body
         assert "num_model_times" not in register_body
