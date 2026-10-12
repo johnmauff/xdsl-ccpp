@@ -10711,13 +10711,13 @@ confirming byte-identical generated output everywhere except the 7
 frontend goldens' literal IR type-keyword text.
 
 **Confirmed via real CAM-SIMA regression** (`/cam-sima-regression`, test ID
-`xdsl51g`, gnu, 2026-10-09): 28/31 aux_sima cases PASS, 1 known
-pre-existing unrelated failure (`F2000_C7`/cam7 `MODEL_BUILD`, tracked
-separately -- same signature as prior regression baselines, not something
-this change touches), 2 cases still pending at time of recording. gnu
-only -- this change touches no GPU-specific code path directly (no file
-under `gpu_*.py` modified), and the `.meta` migration only affects
-xdsl-ccpp's own `examples/`, never real CAM-SIMA host files, so nvhpc was
+`xdsl51g`, gnu, 2026-10-09 through 2026-10-12): final result 30/31 aux_sima
+cases PASS, 1 known pre-existing unrelated failure (`F2000_C7`/cam7
+`MODEL_BUILD`, tracked separately -- same signature as prior regression
+baselines, not something this change touches). gnu only -- this change
+touches no GPU-specific code path directly (no file under `gpu_*.py`
+modified), and the `.meta` migration only affects xdsl-ccpp's own
+`examples/`, never real CAM-SIMA host files, so nvhpc was
 judged unnecessary for this one.
 
 ## Fresh capgen-v1 vs. xdsl-ccpp gap hunt (2026-10-09): 4 new findings, 2 false positives, 1 methodology correction
