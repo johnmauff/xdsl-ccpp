@@ -8,9 +8,18 @@ Fortran source and any extra files it depends on. xdsl-ccpp previously: accepted
 at all (a real upstream ``.meta`` file declaring it would crash the parser);
 and accepted a nonstandard ``relative_path`` key instead of the real
 ``dependencies_path`` name. This restores the real key names and forwards all
-three onto ``TablePropertiesOp``'s IR attributes -- deliberately *not*
-resolving them to filesystem paths (no code consumes them for that yet;
-file-path resolution is intentionally still unimplemented).
+three onto ``TablePropertiesOp``'s IR attributes. At the time this file was
+first written, none of the three were consumed anywhere for real file-path
+resolution. That's no longer true for ``dependencies_path``:
+``ccpp_datatable.py``'s ``_collect_dependencies()`` now joins it with each
+dependency via ``os.path.join`` into the generated ``datatable.xml``'s
+``<dependencies>`` section (verified against real capgen-v1's own
+``ccpp_datafile.py`` reader, and exercised end-to-end by
+``examples/capgen``'s real ``temp_set.meta``/``temp_adjust.meta``, which
+both declare ``dependencies_path = adjust`` for their shared
+``temp_kinds.F90``). ``source_path`` remains a pure IR round-trip with no
+consumer anywhere -- this file's own parsing/forwarding tests below are
+still the only thing exercising it.
 """
 
 import pytest
