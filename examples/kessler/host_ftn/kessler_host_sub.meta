@@ -1,9 +1,9 @@
 [ccpp-table-properties]
   name = kessler_host_sub
-  type = host
+  type = control
 [ccpp-arg-table]
   name = kessler_host_sub
-  type = host
+  type = control
 [ col_start ]
   standard_name = horizontal_loop_begin
   long_name = start column index for horizontal loop

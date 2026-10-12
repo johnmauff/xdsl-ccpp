@@ -41,6 +41,7 @@ class TableTypeKind(StrEnum):
     Module = auto()
     DDT = auto()
     Host = auto()
+    Control = auto()
 
 
 @irdl_attr_definition

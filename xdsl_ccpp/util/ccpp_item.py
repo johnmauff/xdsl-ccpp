@@ -24,13 +24,20 @@ class CCPPType(StrEnum):
     - ``SCHEME``  — a physics parameterisation module
     - ``MODULE``  — a host-model data module
     - ``DDT``     — a derived data type definition
-    - ``HOST``    — a host-model subroutine cap
+    - ``HOST``    — a host-model subroutine cap, with a real backing
+      Fortran declaration
+    - ``CONTROL`` — framework-injected call-site scalars (e.g.
+      col_start/col_end/errmsg/errflg) with NO backing Fortran
+      declaration -- real capgen-v1's own distinct table type, mirrored
+      here; previously collapsed into HOST (see `type-control-gap` in
+      this project's CHANGELOG.md)
     """
 
     SCHEME = auto()
     MODULE = auto()
     DDT = auto()
     HOST = auto()
+    CONTROL = auto()
 
 
 class CCPPItem:

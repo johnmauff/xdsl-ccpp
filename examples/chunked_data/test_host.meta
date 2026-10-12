@@ -1,9 +1,9 @@
 [ccpp-table-properties]
   name = test_host
-  type = host
+  type = control
 [ccpp-arg-table]
   name = test_host
-  type = host
+  type = control
 [ lb ]
   standard_name = horizontal_loop_begin
   long_name = start of horizontal range for this phase

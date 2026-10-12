@@ -51,8 +51,8 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) : () -> ()
-// CHECK-NEXT:    "ccpp.table_properties"() <{name = "hello_world_sub", type = #ccpp<table_type_kind host>}> ({
-// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_world_sub", type = #ccpp<table_type_kind host>}> ({
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "hello_world_sub", type = #ccpp<table_type_kind control>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_world_sub", type = #ccpp<table_type_kind control>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "col_start", type = "integer", standard_name = "horizontal_loop_begin", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "col_end", type = "integer", standard_name = "horizontal_loop_end", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", units = "none"}> : () -> ()
