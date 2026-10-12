@@ -56,7 +56,6 @@ later narrative entries:
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
 | `task11-omp-thread` | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
 | `capgen-nested-ddt-dropped` | `examples/capgen`'s `make_ddt` silently dropped real capgen-v1's nested-DDT fields (`ddt2`-sourced + inline) and the `dependencies` key that builds them | S-M, undocumented, found via a fresh capgen-v1 diff (2026-10-09) | L10723 |
-| `capgen-source-path-untested` | `source_path`/`dependencies_path` are fully parsed and IR-forwarded today but exercised by zero examples end-to-end — the one real fixture that would have had them stripped during porting | S, test-coverage only (not a parser gap) | L10723 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 follow-up items spawned by `constituents_dim` (single-source migration for
@@ -114,6 +113,13 @@ handled it, zero `xdsl_ccpp/` changes needed. CHANGELOG.md L10841.
 above**: `nested-suite-module-name-finish` — applied the already-proven
 `module_name` fix (`table-props-module-name`) to `examples/nested_suite`,
 matching `var_compat`'s own already-landed revert. CHANGELOG.md L10927.
+
+**Resolved since last verification (2026-10-12), removed from the list
+above**: `capgen-source-path-untested` — restored `examples/capgen`'s real
+`source_path`/`dependencies_path` subdirectory layout
+(`source_dir1`/`source_dir2`/`adjust`), matching real capgen-v1 exactly;
+also fixed a second, independently-dropped `dependencies_path` on
+`temp_adjust.meta` found via regeneration. CHANGELOG.md L10969.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `task71-validate-fir` — confirmed via direct code read that

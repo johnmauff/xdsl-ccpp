@@ -1,8 +1,9 @@
 [ccpp-table-properties]
   name = temp_adjust
   type = scheme
-  dependencies = temp_kinds.F90
   kind_spec = temp_kinds:kind_temp=>temp_r8
+  dependencies = temp_kinds.F90
+  dependencies_path = adjust
 [ccpp-arg-table]
   name = temp_adjust_register
   type = scheme
