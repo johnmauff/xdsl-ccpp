@@ -10965,3 +10965,89 @@ else changed. Full `pytest tests/`: 796 passed, 0 failed (same count as
 before — no existing test reads these files directly). The actual CMake
 build/run of `nested_suite`'s own executable is left for user
 verification.
+
+## `capgen-source-path-untested` resolution: restored `examples/capgen`'s real `source_path`/`dependencies_path` layout (2026-10-12)
+
+Real capgen-v1's `end-to-end-tests/capgen/` physically splits scheme
+sources across subdirectories (`source_dir1/`, `source_dir2/`, `adjust/`)
+and uses `[ccpp-table-properties]`'s `source_path`/`dependencies_path`
+keys to point at them. `examples/capgen`'s port flattened all three files
+into one directory and dropped both keys. Not a parser gap — both keys
+were already fully parsed and IR-forwarded — but zero real examples
+exercised them end-to-end.
+
+Investigated the two keys' actual behavioral status before committing to
+an approach, since they're not equivalent: `source_path` is a pure IR
+round-trip with **zero consumers anywhere** in `xdsl_ccpp/` (confirmed by
+direct grep of the whole tree), deliberately so per
+`tests/unit/test_dependencies_source_path.py`'s own original docstring.
+`dependencies_path` DOES have a real consumer:
+`ccpp_datatable.py`'s `_collect_dependencies()` joins it with each
+dependency via `os.path.join` into the generated `datatable.xml`'s
+`<dependencies>` section (added by a later task than the one that test
+file's docstring describes — verified at the time against real
+capgen-v1's own `ccpp_datafile.py` reader, CHANGELOG L7973-8018 — so that
+docstring was stale on this one point; corrected it rather than just
+restating it). But every example's `dependencies_path` was either absent
+(auto-populated to the `.meta` file's own directory) or trivially equal to
+it, so the real cross-directory join had never been exercised.
+
+Per user preference (confirmed when scoping): did the full fixture
+restore, not a narrower unit-test-only fix. Moved
+`environ_conditions.F90` → `scheme/source_dir1/`, `temp_set.F90` →
+`scheme/source_dir2/`, `temp_kinds.F90` → `scheme/adjust/` (`git mv`);
+added `source_path = source_dir1` to `environ_conditions.meta`;
+`source_path = source_dir2`/`dependencies_path = adjust` to
+`temp_set.meta`; updated `CMakeLists.txt`'s `capgen_ftn_host.exe` source
+list to the new paths (the only target referencing these 3 files).
+
+**Real bug found by regeneration, not by upfront reasoning**: after the
+file move, the datatable's `<dependencies>` section showed *two* entries
+for `temp_kinds.F90` — the new correct `adjust/temp_kinds.F90` from
+`temp_set.meta`, and a stale absolute path pointing at the now-nonexistent
+flat `scheme/temp_kinds.F90`, from `temp_adjust.meta` (which also declares
+`dependencies = temp_kinds.F90` but had no `dependencies_path` of its own
+and auto-populates to its own directory). Checked real upstream directly:
+`temp_adjust.meta` *does* declare `dependencies_path = adjust` too (both
+schemes share the one file) — this xdsl-ccpp port had dropped it from
+`temp_adjust.meta` independently of the `environ_conditions`/`temp_set`
+gap this task started from. Added `dependencies_path = adjust` to
+`temp_adjust.meta` as well; the datatable now correctly dedupes to one
+`adjust/temp_kinds.F90` entry.
+
+**Verification**: direct `ccpp_xdsl --emit-datatable` regeneration before
+and after confirmed the dependency path join (`adjust/temp_kinds.F90`
+vs. the old flat absolute path); frontend IR dump confirmed
+`source_path`/`dependencies_path` attributes carry their real explicit
+values on all three tables. Regenerated and diff-reviewed
+`tests/filecheck/examples/frontend/capgen-xml.mlir` (the only golden
+family affected — `completed_ir`/`end_to_end` don't carry raw
+`table_properties` attributes): diff is exactly the 3 expected attribute
+additions/changes, nothing else; `completed_ir`/`end_to_end` goldens
+confirmed byte-identical (unaffected, as expected). Corrected
+`test_dependencies_source_path.py`'s now-stale docstring claim that
+neither key has a consumer. Full `pytest tests/`: 796 passed, 0 failed.
+The actual CMake build/run of `capgen_ftn_host.exe` (the only target
+touching the 3 moved files) is left for user verification.
+
+`examples/ddthost` carries an identical flat-layout copy of these same 3
+files, not touched here (same situation as `scheme-registered-dimension-gap`'s
+fast-follow) — a likely follow-up.
+
+**Fast-follow (same day)**: applied the identical fix to `examples/ddthost`
+— `environ_conditions.F90`/`temp_set.F90`/`temp_kinds.F90` moved into
+`source_dir1/`/`source_dir2/`/`adjust/`; `environ_conditions.meta`/
+`temp_set.meta`/`temp_adjust.meta` gained their real `source_path`/
+`dependencies_path` keys (applied the `temp_adjust.meta` fix proactively
+this time, having just found that same independent gap in `examples/capgen`
+above); `CMakeLists.txt`'s `ddthost_ftn_host.exe` source list updated.
+Verified the same way: direct `ccpp_xdsl --emit-datatable` regeneration
+shows a single correct `adjust/temp_kinds.F90` entry (no duplicate/stale
+path this time); frontend IR dump confirms all three attribute sets match
+`examples/capgen`'s. One FileCheck golden needed regenerating this
+time — `frontend/ddthost-xml.mlir` — because `environ_conditions.meta` is
+shared with `ddt_suite` (the suite this golden's own `// RUN:` line
+exercises); `completed_ir`/`end_to_end` unaffected, as expected. Diff is
+the single expected `source_path` attribute addition, nothing else. Full
+`pytest tests/`: 796 passed, 0 failed. CMake build/run of
+`ddthost_ftn_host.exe` left for user verification.

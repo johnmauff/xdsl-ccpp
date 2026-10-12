@@ -69,15 +69,18 @@ if(XDSL_CCPP_HAVE_FORTRAN)
     host_ftn/test_host_data.F90
     host_ftn/test_host_mod.F90
     scheme/make_ddt.F90
-    scheme/environ_conditions.F90
+    scheme/source_dir1/environ_conditions.F90
     scheme/setup_coeffs.F90
     # temp_set/temp_adjust's own kind_spec table property (kind_temp,
     # ported verbatim from capgen-v1's own end-to-end-tests/capgen) makes
     # the generated ccpp_kinds.F90 (${PLAIN_KINDS}) itself `use temp_kinds`
     # -- CMake's own Fortran dependency scanner orders the compile
     # correctly within this one target regardless of list order here.
-    scheme/temp_kinds.F90
-    scheme/temp_set.F90
+    # Real paths (source_dir2/, adjust/) match real capgen-v1's own
+    # end-to-end-tests/capgen layout -- these two files' own .meta table
+    # properties declare source_path/dependencies_path pointing here.
+    scheme/adjust/temp_kinds.F90
+    scheme/source_dir2/temp_set.F90
     scheme/temp_calc_adjust.F90
     scheme/temp_adjust.F90
     ${PLAIN_DDT_CAP}

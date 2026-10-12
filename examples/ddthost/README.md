@@ -38,6 +38,16 @@ A two-suite example demonstrating Fortran derived data types (DDTs) and optional
 | `test_host_mod.meta` | Host module metadata |
 | `ddthost_py.py` | `ddt_suite` definition using the Python API |
 
+`environ_conditions.F90`/`temp_set.F90`/`temp_kinds.F90` live in
+`source_dir1/`, `source_dir2/`, and `adjust/` respectively, matching real
+capgen-v1's own `end-to-end-tests/capgen/` layout exactly — their `.meta`
+files declare `source_path`/`dependencies_path` to point at them:
+`environ_conditions.meta`'s `source_path = source_dir1`; `temp_set.meta`'s
+`source_path = source_dir2` and `dependencies_path = adjust`;
+`temp_adjust.meta`'s own `dependencies_path = adjust` (it shares
+`temp_kinds.F90` with `temp_set` but its own `.F90` stays alongside its
+`.meta` file, so it declares no `source_path`).
+
 ## Running with ccpp_xdsl
 
 ### XML frontend
