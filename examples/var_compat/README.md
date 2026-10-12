@@ -711,10 +711,7 @@ more known issues:
   `[ccpp-table-properties]`/`[ccpp-arg-table]` header). Normalized to the
   spaced form everywhere it appeared — a whitespace-only change, no
   standard_names/types/attributes/structure altered.
-- `test_host.meta`'s `type = control` (used for capgen-v1's own `test_host`
-  control table) isn't a recognized xdsl-ccpp table type (only `scheme`/
-  `module`/`ddt`/`host`) — changed to `type = host`, matching every other
-  xdsl-ccpp example's host-control table. Also dropped `suite_name`/
+- `test_host.meta`'s `type = control` table dropped `suite_name`/
   `group_name`/`thread_num`/`nthreads`/`nphys_threads` (capgen-v1's own
   framework threads these as extra dispatch args — see the `chunked_data`/
   `instances` backlog items for the related, separate multi-threaded-dispatch

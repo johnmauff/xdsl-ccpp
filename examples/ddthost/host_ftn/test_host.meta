@@ -7,10 +7,10 @@
 
 [ccpp-table-properties]
   name = test_host
-  type = host
+  type = control
 [ccpp-arg-table]
   name = test_host
-  type = host
+  type = control
 [ ccpp ]
   standard_name = host_standard_ccpp_type
   type = ccpp_info_t

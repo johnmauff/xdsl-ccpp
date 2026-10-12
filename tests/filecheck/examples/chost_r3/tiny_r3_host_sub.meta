@@ -1,10 +1,10 @@
 [ccpp-table-properties]
   name = tiny_r3_host_sub
-  type = host
+  type = control
   language = c++
 [ccpp-arg-table]
   name = tiny_r3_host_sub
-  type = host
+  type = control
 [ col_start ]
   standard_name = horizontal_loop_begin
   type = integer

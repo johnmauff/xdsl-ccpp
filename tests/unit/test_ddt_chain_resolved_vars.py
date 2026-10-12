@@ -128,6 +128,40 @@ _HOST_SCHEME_META = f"""\
 """
 
 
+# ── Scenario 3: DDT instance in a CONTROL table (type-control-gap) ────────
+
+_CONTROL_TABLE_META = """\
+[ccpp-table-properties]
+  name = test_control
+  type = control
+[ccpp-arg-table]
+  name = test_control
+  type = control
+[ ccpp_data ]
+  standard_name = ccpp_handle_instance
+  long_name = CCPP handle DDT instance
+  type = ccpp_info_t
+  units = DDT
+  dimensions = ()
+"""
+
+_CONTROL_SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = scheme_c
+  type = scheme
+[ccpp-arg-table]
+  name = scheme_c_run
+  type = scheme
+[ col_start ]
+  standard_name = horizontal_loop_begin
+  units = count
+  type = integer
+  dimensions = ()
+  intent = in
+{CCPP_MANDATORY_ARGS}
+"""
+
+
 def _run_phase_records(run_host_match, ccpp_context, tmp_path, scheme_meta, host_metas, scheme_name) -> list[dict]:
     module = run_host_match(
         scheme_metas=[scheme_meta],
@@ -198,5 +232,33 @@ class TestDdtChainHostTableInstance:
         """Being caller-provided rather than use-associable doesn't make
         the dotted access path itself wrong -- ccpp_data%col_start is still
         the real Fortran expression a consumer needs."""
+        record = self._record(run_host_match, ccpp_context, tmp_path)
+        assert record["call_expr"] == "ccpp_data%col_start", record
+
+
+class TestDdtChainControlTableInstance:
+    """DDT instance lives in a CONTROL table (type-control-gap) -- pins
+    cap_shared.py's _build_ddt_resolution_maps(), which must scan CONTROL
+    tables alongside MODULE/HOST or this lookup silently returns None and
+    DDT-chain resolution for the bundled col_start/col_end/errmsg/errflg
+    members breaks the moment a real .meta migrates its outer table from
+    HOST to CONTROL (e.g. ddthost's own host_ftn/test_host.meta)."""
+
+    def _record(self, run_host_match, ccpp_context, tmp_path) -> dict:
+        records = _run_phase_records(
+            run_host_match, ccpp_context, tmp_path,
+            scheme_meta=_CONTROL_SCHEME_META,
+            host_metas=[_CONTROL_TABLE_META, _HOST_DDT_META],
+            scheme_name="scheme_c",
+        )
+        return next(r for r in records if r["standard_name"] == "horizontal_loop_begin")
+
+    def test_flagged_as_host_table_var(self, run_host_match, ccpp_context, tmp_path):
+        """Same treatment as a HOST-table instance -- CONTROL tables are
+        just as caller-provided/non-use-associable as HOST ones."""
+        record = self._record(run_host_match, ccpp_context, tmp_path)
+        assert record.get("is_host_table_var") is True, record
+
+    def test_call_expr_still_correctly_resolved(self, run_host_match, ccpp_context, tmp_path):
         record = self._record(run_host_match, ccpp_context, tmp_path)
         assert record["call_expr"] == "ccpp_data%col_start", record

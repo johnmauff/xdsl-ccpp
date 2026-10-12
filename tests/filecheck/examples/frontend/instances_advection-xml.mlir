@@ -69,12 +69,16 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "phys_state", type = "physics_state", dimensions = #builtin.int<1>, dim_names = "number_of_instances", standard_name = "physics_state_derived_type", long_name = "per-instance physics state DDT", units = "none"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:    }) {source_module = "data"} : () -> ()
-// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host", type = #ccpp<table_type_kind host>}> ({
-// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host", type = #ccpp<table_type_kind host>}> ({
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host", type = #ccpp<table_type_kind control>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host", type = #ccpp<table_type_kind control>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "lb", type = "integer", standard_name = "horizontal_loop_begin", long_name = "start of horizontal range for this phase", units = "index", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ub", type = "integer", standard_name = "horizontal_loop_end", long_name = "end of horizontal range for this phase", units = "index", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", units = "none"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "errcode", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) {source_module = "test_host"} : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "test_host_instance", type = #ccpp<table_type_kind host>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "test_host_instance", type = #ccpp<table_type_kind host>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "instance", type = "integer", standard_name = "instance_number", long_name = "current model instance number", units = "index", protected}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "ninstances", type = "integer", standard_name = "number_of_instances", long_name = "number of instances for multi-instance test", units = "count", protected}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
