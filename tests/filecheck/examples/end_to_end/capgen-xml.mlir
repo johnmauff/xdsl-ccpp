@@ -14,6 +14,7 @@
 // CHECK-NEXT:    use temp_adjust, only: temp_adjust_run
 // CHECK-NEXT:    use temp_calc_adjust, only: temp_calc_adjust_finalize
 // CHECK-NEXT:    use temp_calc_adjust, only: temp_calc_adjust_init
+// CHECK-NEXT:    use temp_calc_adjust, only: temp_calc_adjust_register
 // CHECK-NEXT:    use temp_calc_adjust, only: temp_calc_adjust_run
 // CHECK-NEXT:    use temp_set, only: temp_set_finalize
 // CHECK-NEXT:    use temp_set, only: temp_set_init
@@ -29,6 +30,7 @@
 // CHECK-NEXT:    character(len=16), parameter :: const_in_time_step = 'in_time_step'
 // CHECK-NEXT:    character(len=16), parameter :: const_initialized = 'initialized'
 // CHECK-NEXT:    character(len=16), parameter :: const_uninitialized = 'uninitialized'
+// CHECK-NEXT:    integer :: dim_inter
 // CHECK-NEXT:    real(kind=kind_phys) :: temp_inc_set
 // CHECK-NEXT:    real(kind=kind_temp), allocatable :: to_promote(:, :)
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: promote_pcnst(:)
@@ -55,6 +57,9 @@
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (errflg .eq. 0) then
+// CHECK-NEXT:        call temp_calc_adjust_register(dim_inter=dim_inter, errmsg=errmsg, errflg=errflg)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call temp_adjust_register(config_var=config_var, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine temp_suite_register
@@ -71,9 +76,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(temp_calc)) then
 // CHECK-NEXT:        allocate(temp_calc(ncols, pver))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
-// CHECK-NEXT:        allocate(interstitial_var(ncols))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_uninitialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
@@ -109,9 +111,6 @@
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.not. allocated(temp_calc)) then
 // CHECK-NEXT:        allocate(temp_calc(ncols, pver))
-// CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
-// CHECK-NEXT:        allocate(interstitial_var(ncols))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
@@ -203,9 +202,6 @@
 // CHECK-NEXT:      if (.not. allocated(temp_calc)) then
 // CHECK-NEXT:        allocate(temp_calc(ncols, pver))
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
-// CHECK-NEXT:        allocate(interstitial_var(ncols))
-// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_initialized .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in temp_suite_init_physics2"
@@ -229,6 +225,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
+// CHECK-NEXT:      if (.not. allocated(interstitial_var)) then
+// CHECK-NEXT:        allocate(interstitial_var(dim_inter))
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (.NOT. (const_in_time_step .eq. ccpp_suite_state)) then
 // CHECK-NEXT:        write(errmsg, '(3a)') "Invalid initial CCPP state, '", trim(ccpp_suite_state),              &
 // CHECK-NEXT:          "' in temp_suite_physics2"
@@ -844,7 +843,7 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK:  end module Ddt_ccpp_cap
+// CHECK-NEXT:  end module Ddt_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds

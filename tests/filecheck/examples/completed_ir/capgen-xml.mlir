@@ -24,6 +24,7 @@
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "index_qv", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
+// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "dim_inter", base_type = "integer", rank = 0 : i64}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "temp_inc_set", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "to_promote", base_type = "real", rank = 2 : i64, kind = "kind_temp"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "promote_pcnst", base_type = "real", rank = 1 : i64, kind = "kind_phys"}> : () -> ()
@@ -35,10 +36,17 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
 // CHECK-NEXT:        %2 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %3 = arith.cmpi eq, %2, %1 : i32
 // CHECK-NEXT:        scf.if %3 {
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%dim_inter, %errmsg, %errflg) <{callee = "temp_calc_adjust_register", operand_names = ["dim_inter", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:        }
+// CHECK-NEXT:        %4 = arith.constant 0 : i32
+// CHECK-NEXT:        %5 = memref.load %errflg[] : memref<i32>
+// CHECK-NEXT:        %6 = arith.cmpi eq, %5, %4 : i32
+// CHECK-NEXT:        scf.if %6 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%config_var, %errmsg, %errflg) <{callee = "temp_adjust_register", operand_names = ["config_var", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i1>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
@@ -55,7 +63,6 @@
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "to_promote", kind_name = "kind_temp"}> : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%pcnst) <{var_name = "promote_pcnst", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "temp_calc", kind_name = "kind_phys"}> : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols) <{var_name = "interstitial_var", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_uninitialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -81,6 +88,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -114,7 +122,6 @@
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "to_promote", kind_name = "kind_temp"}> : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%pcnst) <{var_name = "promote_pcnst", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "temp_calc", kind_name = "kind_phys"}> : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols) <{var_name = "interstitial_var", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -142,6 +149,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %to_promote = "ccpp_utils.host_var_ref"() <{var_name = "to_promote", module_name = ""}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_temp">>
 // CHECK-NEXT:        %promote_pcnst = "ccpp_utils.host_var_ref"() <{var_name = "promote_pcnst", module_name = ""}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
@@ -172,6 +180,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
 // CHECK-NEXT:        %2 = memref.load %errflg[] : memref<i32>
@@ -197,6 +206,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -210,6 +220,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -244,7 +255,6 @@
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "to_promote", kind_name = "kind_temp"}> : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%pcnst) <{var_name = "promote_pcnst", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols, %pver) <{var_name = "temp_calc", kind_name = "kind_phys"}> : (memref<i32>, memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ncols) <{var_name = "interstitial_var", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -278,11 +288,13 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %temp_calc = "ccpp_utils.host_var_ref"() <{var_name = "temp_calc", module_name = ""}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %interstitial_var = "ccpp_utils.host_var_ref"() <{var_name = "interstitial_var", module_name = ""}> : () -> memref<?xi32>
 // CHECK-NEXT:        %to_promote = "ccpp_utils.host_var_ref"() <{var_name = "to_promote", module_name = ""}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_temp">>
 // CHECK-NEXT:        %promote_pcnst = "ccpp_utils.host_var_ref"() <{var_name = "promote_pcnst", module_name = ""}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%dim_inter) <{var_name = "interstitial_var", kind_name = "kind_phys"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -325,6 +337,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -338,6 +351,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
@@ -351,6 +365,7 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
+// CHECK-NEXT:        %dim_inter = "ccpp_utils.host_var_ref"() <{var_name = "dim_inter", module_name = ""}> : () -> memref<i32>
 // CHECK-NEXT:        %temp_inc_set = "ccpp_utils.host_var_ref"() <{var_name = "temp_inc_set", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %interstitial_var = "ccpp_utils.host_var_ref"() <{var_name = "interstitial_var", module_name = ""}> : () -> memref<?xi32>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
@@ -380,6 +395,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
+// CHECK-LABEL:     func.func private @temp_calc_adjust_register(memref<i32>, memref<512xi8>, memref<i32>) -> () attributes {module = "temp_calc_adjust"}
 // CHECK-LABEL:     func.func private @temp_adjust_register(memref<i1>, memref<512xi8>, memref<i32>) -> () attributes {module = "temp_adjust"}
 // CHECK-LABEL:     func.func private @temp_set_init(memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "temp_set"}
 // CHECK-LABEL:     func.func private @temp_set_run(memref<i32>, memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_temp">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> () attributes {module = "temp_set"}

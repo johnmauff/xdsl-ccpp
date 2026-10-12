@@ -56,7 +56,6 @@ later narrative entries:
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
 | `task11-omp-thread` | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
 | `capgen-nested-ddt-dropped` | `examples/capgen`'s `make_ddt` silently dropped real capgen-v1's nested-DDT fields (`ddt2`-sourced + inline) and the `dependencies` key that builds them | S-M, undocumented, found via a fresh capgen-v1 diff (2026-10-09) | L10723 |
-| `scheme-registered-dimension-gap` | A scheme's register-phase output becoming a framework-wide `dimensions=` identifier elsewhere (`temp_calc_adjust_register`/`dimension_for_interstitial_variable`) was deleted during porting, not simplified — no evidence this mechanism is supported today | Needs its own scoping pass before sizing; found 2026-10-09, likely the most architecturally significant of this batch | L10723 |
 | `capgen-source-path-untested` | `source_path`/`dependencies_path` are fully parsed and IR-forwarded today but exercised by zero examples end-to-end — the one real fixture that would have had them stripped during porting | S, test-coverage only (not a parser gap) | L10723 |
 | `nested-suite-module-name-finish` | `examples/nested_suite` never got the `module_name` revert `var_compat` already received — still carries the pre-fix workaround | XS, mechanical — same already-proven fix, one more example | L10723 |
 
@@ -105,6 +104,12 @@ Copilot-flagged normalization bug. CHANGELOG.md L10381.
 above**: `task70-arraysection` — `ArraySectionOp` consolidated into
 `RankReducingSliceOp` and deleted; 3 real bugs found and fixed along the
 way (not just a mechanical rename). CHANGELOG.md L10289.
+
+**Resolved since last verification (2026-10-12), removed from the list
+above**: `scheme-registered-dimension-gap` — restored real capgen-v1's
+`temp_calc_adjust_register`/`dim_inter` chained-interstitial-dimension
+shape in `examples/capgen`; the generic mechanism task #30 built already
+handled it, zero `xdsl_ccpp/` changes needed. CHANGELOG.md L10841.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `task71-validate-fir` — confirmed via direct code read that

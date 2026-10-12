@@ -83,8 +83,8 @@ def _run_capgen_pipeline(suite_xmls: list[str], scheme_metas: list[str],
             ir_ops.append(frontend.build_meta_ir(meta))
 
     module = ModuleOp(ir_ops)
-    for pass_cls in [MetaCAP, ArgOwnershipPass, MetaKind, SuiteCAP, CCPPCAP,
-                     GenerateKinds, StripCCPP]:
+    for pass_cls in [MetaCAP, MetaKind, HostVariableMatchPass, ArgOwnershipPass,
+                     SuiteCAP, CCPPCAP, GenerateKinds, StripCCPP]:
         pass_cls().apply(ctx, module)
 
     output = StringIO()

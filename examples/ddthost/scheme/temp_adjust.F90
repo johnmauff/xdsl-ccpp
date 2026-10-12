@@ -58,13 +58,12 @@ contains
     errmsg = ''
     errflg = 0
 
-    ! Ported from capgen-v1's own temp_adjust.F90 -- proves the interstitial
-    ! variable (produced here, consumed in temp_adjust_finalize) is genuinely
-    ! allocated and persists, without depending on the chained
-    ! dimension_for_interstitial_variable sizing capgen-v1's own upstream test
-    ! uses (see CHANGELOG.md's "chained-interstitial
-    ! allocation-ordering bug" entry -- a confirmed, separately-tracked gap).
     interstitial_var = 6
+    if (size(interstitial_var) /= 3) then
+       errflg = 1
+       errmsg = 'interstitial variable not allocated properly!'
+       return
+    end if
 
     if (.not. module_level_config) then
        ! do nothing
@@ -108,7 +107,11 @@ contains
 
     errmsg = ''
     errflg = 0
-
+    if (size(interstitial_var) /= 3) then
+       errflg = 1
+       errmsg = 'interstitial variable not allocated properly!'
+       return
+    end if
     if (interstitial_var(1) /= 6) then
        errflg = 1
        errmsg = 'interstitial variable not set properly!'
