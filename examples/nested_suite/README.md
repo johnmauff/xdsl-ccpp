@@ -99,11 +99,6 @@ were found porting this example (unlike `var_compat`, which surfaced
 several). The adaptations below are the same small, mechanical category
 `var_compat`'s own port already established:
 
-- `effr_pre.F90`/`module_rad_ddt.F90` module renames (`mod_effr_pre` →
-  `effr_pre`, `mod_rad_ddt` → `module_rad_ddt`, and the corresponding
-  `module_name` attribute drops from the `.meta` files) — reused
-  `var_compat`'s own already-fixed copies of these files directly, since
-  the underlying scheme/DDT content is otherwise identical.
 - `test_host_mod.meta`'s `type = host` isn't the correct xdsl-ccpp type for
   a plain Fortran data module (as opposed to the host control/dispatch
   table, `test_host.meta`, which genuinely is `type = host`) — changed to

@@ -10923,3 +10923,45 @@ suite-owned scalar, as expected. Full `pytest tests/` re-run after:
 796 passed, 0 failed (ddthost's temp_suite side has no pytest coverage,
 so this count is unchanged by the fast-follow). The actual CMake build/run
 of `ddthost`'s two drivers is left for user verification.
+
+## `nested-suite-module-name-finish` resolution: applied the already-proven `module_name` fix to `examples/nested_suite` (2026-10-12)
+
+`table-props-module-name` (L10475, 2026-10-09) reverted `examples/var_compat`'s
+pre-fix module-renaming workaround the same day the real `module_name`
+support landed. `examples/nested_suite` — ported earlier by reusing
+`var_compat`'s files "as of 2026-07-23" per its own README — never got
+that same revert, and had quietly diverged from `var_compat` since (its
+copies of `test_host_data.F90`/`rad_lw.F90` still said `use
+module_rad_ddt`, not `use mod_rad_ddt`). No new design: applied the
+identical, already-proven fix.
+
+Changed: `effr_pre.meta` gained `module_name = mod_effr_pre`;
+`effr_pre.F90`'s module renamed `effr_pre` → `mod_effr_pre`;
+`module_rad_ddt.meta` gained `module_name = mod_rad_ddt` on both its
+`ty_rad_lw`/`ty_rad_sw` table-properties blocks; `module_rad_ddt.F90`'s
+module renamed `module_rad_ddt` → `mod_rad_ddt`; `rad_lw.F90` and
+`test_host_data.F90`'s `use` statements updated to match (one line each —
+confirmed via grep these were the only two files anywhere in
+`examples/nested_suite` referencing either module by name).
+`dependencies = module_rad_ddt.F90` in `rad_lw.meta`/`test_host_data.meta`
+left unchanged — that key names the source filename, which isn't
+renamed, matching `var_compat`'s own already-fixed copies. Removed
+`README.md`'s now-stale "Adaptations made during porting" bullet
+documenting this as a known gap (it also claimed to have "reused
+`var_compat`'s own already-fixed copies," which was true in 2026-07-23
+but became false the moment `var_compat`'s copies were fixed and this
+example's weren't updated to match).
+
+**Verification**: no FileCheck golden exists for `nested_suite` at all
+(confirmed empty `find tests/filecheck -iname "*nested*"` before
+starting) — it's exercised only by its own `CMakeLists.txt` real build.
+Verified text-only instead (no compiling, per standing project
+convention): ran `ccpp_xdsl` generation directly before and after the
+change with the exact file list from `CMakeLists.txt`'s
+`SCHEME_FILES`/`HOST_FILES`, diffed the two generated `main_suite_cap.F90`
+outputs — the diff is exactly the 3 expected `use effr_pre`/`use
+module_rad_ddt` → `use mod_effr_pre`/`use mod_rad_ddt` lines, nothing
+else changed. Full `pytest tests/`: 796 passed, 0 failed (same count as
+before — no existing test reads these files directly). The actual CMake
+build/run of `nested_suite`'s own executable is left for user
+verification.
