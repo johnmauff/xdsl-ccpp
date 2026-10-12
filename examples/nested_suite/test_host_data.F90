@@ -1,7 +1,7 @@
 module test_host_data
 
   use ccpp_kinds, only: kind_phys
-  use module_rad_ddt, only: ty_rad_lw, &
+  use mod_rad_ddt, only: ty_rad_lw, &
       ty_rad_sw
 
   implicit none
