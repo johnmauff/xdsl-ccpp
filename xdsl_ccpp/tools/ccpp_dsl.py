@@ -284,6 +284,20 @@ class ccppMain:
                  "CMakeLists.txt currently predict by hand.",
         )
         parser.add_argument(
+            "--list-dependencies",
+            action="store_true",
+            default=False,
+            help="Print the comma-joined list of extra compiled dependency "
+                 "files (a scheme/host .meta's own dependencies/"
+                 "dependencies_path keys -- e.g. temp_kinds.F90) this "
+                 "invocation's arguments declare, then exit -- the same "
+                 "list --emit-datatable's own <dependencies> section would "
+                 "produce, but without running a real generation. Sibling "
+                 "to --list-outputs (cmake-configure-regen's Part B): lets "
+                 "CMake predict CCPP_DEPENDENCIES_LIST at configure time "
+                 "even once the real generation is deferred to build time.",
+        )
+        parser.add_argument(
             "--gfs-dim-aliases",
             action="store_true",
             default=False,
@@ -799,29 +813,25 @@ class ccppMain:
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
 
-    def _predict_kinds_present(self) -> bool:
-        """Return True iff the current --scheme-files/--host-files (plus the
-        same bundled ccpp_constituent_prop_mod.meta run_frontend() always
-        auto-includes) would cause generate-meta-kinds to emit a ccpp.kinds
-        op, i.e. whether ccpp_kinds.F90/.h would be produced.
-
-        Builds the same flat TablePropertiesOp/SuiteOp IR ccpp_xml.py's own
+    def _build_cheap_metadata_module(self):
+        """Build the same flat TablePropertiesOp/SuiteOp IR ccpp_xml.py's own
         CLI entry point builds, in-process (no subprocess, no MLIR text
-        round-trip) and runs the two real passes that decide this
-        (suite_meta.MetaCAP then suite_kinds.MetaKind) -- reusing their own
-        kind-scanning logic directly rather than a third hand-copied mirror
-        of it. Still far cheaper than the full pipeline: no generate-suite-
-        cap/generate-ccpp-cap, no Fortran/C++ printing.
+        round-trip) -- the shared starting point for every cheap --list-*
+        prediction that needs real IR (as opposed to pure XML/text
+        parsing): _predict_kinds_present (needs MetaCAP+MetaKind run on
+        top of this) and predict_dependencies (needs nothing further --
+        ccpp_datatable.py's own dependency-collection walkers already
+        tolerate a bare, pre-MetaCAP module, see predict_dependencies's
+        own docstring).
+
+        Always auto-includes the bundled ccpp_constituent_prop_mod.meta,
+        mirroring run_frontend()'s own unconditional behavior.
         """
         from pathlib import Path
 
         from xdsl.dialects import builtin as _builtin
-        from xdsl.utils.hints import isa
 
-        from xdsl_ccpp.dialects import ccpp
         from xdsl_ccpp.frontend.ccpp_xml import XMLSuite
-        from xdsl_ccpp.transforms.suite_kinds import MetaKind
-        from xdsl_ccpp.transforms.suite_meta import MetaCAP
 
         frontend = ccppXML()
         ir_ops = []
@@ -845,7 +855,29 @@ class ccppMain:
                 ir_ops.append(frontend.build_meta_ir(
                     meta, source_module=stem, meta_file_path=host_file))
 
-        module = _builtin.ModuleOp(ir_ops)
+        return _builtin.ModuleOp(ir_ops)
+
+    def _predict_kinds_present(self) -> bool:
+        """Return True iff the current --scheme-files/--host-files (plus the
+        same bundled ccpp_constituent_prop_mod.meta run_frontend() always
+        auto-includes) would cause generate-meta-kinds to emit a ccpp.kinds
+        op, i.e. whether ccpp_kinds.F90/.h would be produced.
+
+        Runs the two real passes that decide this (suite_meta.MetaCAP then
+        suite_kinds.MetaKind) on top of _build_cheap_metadata_module() --
+        reusing their own kind-scanning logic directly rather than a third
+        hand-copied mirror of it. Still far cheaper than the full
+        pipeline: no generate-suite-cap/generate-ccpp-cap, no Fortran/C++
+        printing.
+        """
+        from xdsl.dialects import builtin as _builtin
+        from xdsl.utils.hints import isa
+
+        from xdsl_ccpp.dialects import ccpp
+        from xdsl_ccpp.transforms.suite_kinds import MetaKind
+        from xdsl_ccpp.transforms.suite_meta import MetaCAP
+
+        module = self._build_cheap_metadata_module()
         ctx = make_ccpp_context()
         MetaCAP().apply(ctx, module)
         MetaKind().apply(ctx, module)
@@ -858,6 +890,38 @@ class ccppMain:
             ):
                 return any(isa(op, ccpp.KindsOp) for op in sub.body.ops)
         return False
+
+    def predict_dependencies(self) -> list:
+        """Predict --emit-datatable's own <dependencies> section content
+        (the exact list CCPP_DEPENDENCIES_LIST in cmake/xdsl_ccpp_capgen.cmake
+        is currently built from) cheaply, without a real generation run.
+        Powers --list-dependencies.
+
+        ccpp_datatable.py's build_datatable() already tolerates a BARE
+        top-level module with no "@ccpp"-named wrapper (confirmed by
+        direct read: "if ccpp_mod is None: ccpp_mod = module") -- so
+        unlike the ccpp_kinds.F90 gate (which genuinely needs the real
+        MetaCAP+MetaKind passes to have run), dependency collection can
+        reuse ccpp_datatable.py's own _collect_table_properties/
+        _used_scheme_names/_collect_dependencies directly against
+        _build_cheap_metadata_module()'s raw, pre-MetaCAP module, with no
+        pass execution needed at all for this one.
+
+        Does not support --py/--meta-file, matching predict_output_filenames.
+        """
+        from xdsl_ccpp.tools.ccpp_datatable import (
+            _collect_dependencies,
+            _collect_table_properties,
+        )
+
+        if self.options_db.get("py"):
+            raise CcppDslError("--list-dependencies does not support --py")
+        if self.options_db.get("meta_file"):
+            raise CcppDslError("--list-dependencies does not support --meta-file")
+
+        module = self._build_cheap_metadata_module()
+        table_props = _collect_table_properties(module)
+        return _collect_dependencies(module, table_props)
 
     def predict_output_filenames(self) -> list:
         """Predict the list of output filenames this invocation's current
@@ -1068,6 +1132,11 @@ class ccppMain:
             outputs = self.predict_output_filenames()
             print(",".join(outputs))
             return CcppDslResult(written=outputs)
+
+        if self.options_db.get("list_dependencies"):
+            deps = self.predict_dependencies()
+            print(",".join(deps))
+            return CcppDslResult(written=deps)
 
         tmp_dir = self.options_db["tempdir"]
         out_dir = self.options_db["out"]

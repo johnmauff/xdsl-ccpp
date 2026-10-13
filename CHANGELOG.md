@@ -11393,3 +11393,97 @@ only; Part B (wiring `--list-outputs` into
 touching all 20 examples' `CMakeLists.txt` plus the CI matrix) still
 needs a real `cmake --build` pass to verify and is its own separate
 effort.
+
+## `cmake-configure-regen` Part B: cap generation deferred to build time (2026-10-13)
+
+Part A (`--list-outputs`, above) made output-filename prediction cheap;
+this part uses it to actually fix the bug: `cmake/xdsl_ccpp_capgen.cmake`
+previously ran the real (heavy) generation via `execute_process()` at
+CMake *configure* time, unconditionally, for all 20 examples (24
+`xdsl_ccpp_capgen()` calls), regardless of which example a given CI job's
+`--target` actually builds. A generation failure anywhere aborted
+configure for every job.
+
+**New `--list-dependencies` flag** (`xdsl_ccpp/tools/ccpp_dsl.py`),
+sibling to `--list-outputs`: predicts `--emit-datatable`'s own
+`<dependencies>` section content (e.g. `temp_kinds.F90`) cheaply, no real
+generation needed. Reuses `ccpp_datatable.py`'s own
+`_collect_table_properties`/`_used_scheme_names`/`_collect_dependencies`
+directly against a new shared `_build_cheap_metadata_module()` helper
+(extracted from `_predict_kinds_present`'s own in-process frontend-IR
+construction) — `build_datatable()` already tolerates a bare,
+pre-`MetaCAP` module, so unlike the `ccpp_kinds.F90` gate this needs no
+pass execution at all. Verified against `capgen`/`ddthost`'s real
+dependency lists (byte-identical) plus 5 new unit tests
+(`tests/unit/test_list_dependencies.py`), including the
+scheme-not-referenced-by-any-suite filtering rule.
+
+**`cmake/xdsl_ccpp_capgen.cmake` rewrite**: the real generation now runs
+via `add_custom_command(OUTPUT ...)` at build time instead of
+`execute_process()` at configure time; `--list-outputs`/
+`--list-dependencies` (cheap) still run at configure time to populate
+`CCPP_CAPS_LIST`/`CCPP_DEPENDENCIES_LIST` with the same contracts as
+before (absolute paths, same variable names) so most examples need no
+changes. Also added: an args-fingerprint file (`file(CONFIGURE)`, only
+updates its own mtime when the real command's argument *content*
+changes) in `DEPENDS`, covering a CLI-flag-only example edit that
+touches no real input file; a sentinel file alongside the real outputs,
+touched by a second sequential `COMMAND` only once generation actually
+succeeds; `VERBATIM` (new requirement for `add_custom_command`, unlike
+`execute_process`, which never goes through a shell); the bundled
+`ccpp_constituent_prop_mod.meta` added to `DEPENDS` (every generation
+call auto-includes it, but no example's own `HOSTFILES` lists it); and a
+new `add_custom_target()` per call, exposed as `CCPP_CAPGEN_TARGET`.
+
+**Real bug found, not just theorized, by a design review before any
+code was written**: the original "zero example changes needed" framing
+was wrong. CMake's own docs are explicit that a target referencing a
+generated file *only* via `target_include_directories` (never as a
+source) has no dependency edge on a deferred `add_custom_command` and
+will hard-fail once generation is no longer eager. Swept all 20 examples
+and found 9 such targets across 8 examples (`capgen`, `ddthost`,
+`kessler` ×2, `tinyddt`, `chararg`, `nestedddt`, `constprop`,
+`constadv` — all `*_cxx_driver_check` OBJECT libraries that `#include` a
+generated chost/bind-c header but never compile a generated `.F90`);
+each now has one added `add_dependencies(<target> ${CCPP_CAPGEN_TARGET})`
+line.
+
+**Verification**: user granted scoped, task-only permission to build
+locally (a dedicated scratch build dir, never `build_debug/`), since
+Part B's whole risk profile is "can't be verified without a real
+`cmake --build`." Confirmed directly:
+- Configure no longer runs any generation (only `.capgen_args`
+  fingerprint files exist post-configure); building one target does not
+  trigger generation for unrelated examples — the actual bug, fixed.
+- The 9 `*_cxx_driver_check` targets correctly trigger their deferred
+  generation via the new `add_dependencies()` wiring and build cleanly.
+- A genuinely cold, parallel (`-j4`) build of all 4 `kessler` targets
+  (3 independent `add_custom_command` calls in one directory) built
+  correctly with no races and correct Fortran module-use ordering.
+- Partial-failure/staleness: manually deleting one declared `OUTPUT`
+  file (simulating a crash mid-generation) correctly caused the next
+  `cmake --build` to detect the staleness and fully regenerate — even
+  under GNU Make 4.2.1, below the 4.3 threshold for grouped `&:`
+  multi-output targets a design review had flagged as a risk.
+- Full matrix: all 20 examples' real CI target sets built and their
+  `ctest` entries (22 total) ran, first under Derecho's default Intel
+  `ifx`, then under `gfortran` (CI's actual compiler) at the user's
+  explicit request to confirm against the real CI toolchain —
+  **22/22 passed under gfortran**. Two failures seen only under `ifx`
+  (`examples/instances`: a pre-existing `errmsg` `character(len=256)` vs.
+  the generated cap's `len=512` mismatch, same bug class already fixed
+  in `examples/threads/main.F90`; `examples/constituents_dim`: an
+  unrelated pre-existing runtime "allocatable array not allocated"
+  crash) were confirmed compiler-strictness artifacts, not Part B
+  regressions — both pass cleanly under gfortran. Neither fixed here
+  (out of scope for this change; flagged for a separate pass).
+- Full `pytest tests/`: 825 passed (820 + 5 new), 0 failed.
+
+Considered and explicitly declined as out of scope for this change:
+deleting `cmake/xdsl_ccpp.cmake`'s seemingly-unused `xdsl_ccpp_generate()`
+— it's actually documented, intentional public-API reference material
+(README.md's own "CMake Integration" section), not dead code, despite
+having zero callers inside this repo.
+
+`cmake-configure-regen` is now fully resolved — both Part A and Part B
+are done.
