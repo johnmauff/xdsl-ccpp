@@ -53,6 +53,10 @@ set(CHOST_KINDS      "${CHOST_CAP_DIR}/ccpp_kinds.F90")
 set(CHOST_SUITE_CAP  "${CHOST_CAP_DIR}/ddthost_suite_cap.F90")
 set(CHOST_CHOST_CAP  "${CHOST_CAP_DIR}/Ddthost_ccpp_chost_cap.F90")
 set(CHOST_DEPENDENCIES "${CCPP_DEPENDENCIES_LIST}")
+# cmake-configure-regen Part B: captured immediately, same reasoning as
+# CHOST_DEPENDENCIES above (CCPP_CAPGEN_TARGET is overwritten by each
+# xdsl_ccpp_capgen() call in this scope).
+set(CHOST_CAPGEN_TARGET "${CCPP_CAPGEN_TARGET}")
 # CCPP_CAPS_LIST for this call also includes Ddthost_ccpp_cap.F90 (the
 # plain non-chost cap xdsl_ccpp generates as a matter of course even in
 # chost mode) -- not needed here and not compiled by the existing Makefile
@@ -63,6 +67,11 @@ if(XDSL_CCPP_HAVE_CXX)
   add_library(ddthost_cxx_driver_check OBJECT
     ${CMAKE_CURRENT_SOURCE_DIR}/host_cpp/driver_ddthost_chost.cpp)
   target_include_directories(ddthost_cxx_driver_check PRIVATE ${CHOST_CAP_DIR})
+  # cmake-configure-regen Part B: this target references the chost cap
+  # dir ONLY via target_include_directories -- see examples/capgen's own
+  # comment on why this needs an explicit dependency edge now that
+  # generation is deferred to build time.
+  add_dependencies(ddthost_cxx_driver_check ${CHOST_CAPGEN_TARGET})
 endif()
 
 # ── ddthost_ftn_host.exe (Fortran only) ───────────────────────────────────

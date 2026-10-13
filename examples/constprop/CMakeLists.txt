@@ -26,6 +26,11 @@ if(XDSL_CCPP_HAVE_CXX)
   add_library(constprop_cxx_driver_check OBJECT
     ${CMAKE_CURRENT_SOURCE_DIR}/host_cpp/driver_constprop_chost.cpp)
   target_include_directories(constprop_cxx_driver_check PRIVATE ${CCPP_CAP_FILES})
+  # cmake-configure-regen Part B: this target references the cap dir
+  # ONLY via target_include_directories -- see examples/capgen's own
+  # comment on why this needs an explicit dependency edge now that
+  # generation is deferred to build time.
+  add_dependencies(constprop_cxx_driver_check ${CCPP_CAPGEN_TARGET})
 endif()
 
 if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)

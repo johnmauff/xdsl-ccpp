@@ -53,6 +53,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
+    derive_camel_case_name,
     iter_arg_tables,
     resolve_capscratch_cap_var_name,
 )
@@ -793,11 +794,10 @@ class CCPPCAP(ModulePass):
 
 
     def _derive_camel_case_name(self, suite_name: str) -> str:
-        """Convert a snake_case suite name to CamelCase, stripping any '_suite' suffix."""
-        name = suite_name
-        if name.endswith("_suite"):
-            name = name[:-6]
-        return "".join(word.capitalize() for word in name.split("_"))
+        """Convert a snake_case suite name to CamelCase, stripping any
+        '_suite' suffix. Thin wrapper -- see cap_shared.py's
+        derive_camel_case_name for the real (shared) implementation."""
+        return derive_camel_case_name(suite_name)
 
     def _build_suite_variables_fn(self, suite_descriptions, ccpp_mod,
                                    host_std_names, protected_std_names) -> "SuiteVariablesOp":

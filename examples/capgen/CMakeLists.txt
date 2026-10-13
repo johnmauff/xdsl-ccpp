@@ -42,6 +42,10 @@ set(CHOST_KINDS      "${CHOST_CAP_DIR}/ccpp_kinds.F90")
 set(CHOST_SUITE_CAP  "${CHOST_CAP_DIR}/capgen_chost_suite_cap.F90")
 set(CHOST_CHOST_CAP  "${CHOST_CAP_DIR}/CapgenChost_ccpp_chost_cap.F90")
 set(CHOST_DEPENDENCIES "${CCPP_DEPENDENCIES_LIST}")
+# cmake-configure-regen Part B: captured immediately, same reasoning as
+# CHOST_DEPENDENCIES above (CCPP_CAPGEN_TARGET is overwritten by each
+# xdsl_ccpp_capgen() call in this scope).
+set(CHOST_CAPGEN_TARGET "${CCPP_CAPGEN_TARGET}")
 # CCPP_CAPS_LIST for this call also includes CapgenChost_ccpp_cap.F90 (the
 # plain non-chost cap xdsl_ccpp generates as a matter of course even in
 # chost mode) -- not needed here and not compiled by the existing Makefile
@@ -52,6 +56,14 @@ if(XDSL_CCPP_HAVE_CXX)
   add_library(capgen_cxx_driver_check OBJECT
     ${CMAKE_CURRENT_SOURCE_DIR}/host_cpp/driver_capgen_chost.cpp)
   target_include_directories(capgen_cxx_driver_check PRIVATE ${CHOST_CAP_DIR})
+  # cmake-configure-regen Part B: this target references the chost cap
+  # dir ONLY via target_include_directories (it #includes the generated
+  # header; it never lists any generated file as a source) -- generation
+  # is now deferred to build time via add_custom_command(OUTPUT ...), and
+  # CMake's own "OUTPUT used as a source auto-builds it" mechanism has no
+  # equivalent for include-directory-only consumers, so this needs an
+  # explicit dependency edge.
+  add_dependencies(capgen_cxx_driver_check ${CHOST_CAPGEN_TARGET})
 endif()
 
 # ── capgen_ftn_host.exe (Fortran only) ────────────────────────────────────
