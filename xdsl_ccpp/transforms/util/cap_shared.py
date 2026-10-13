@@ -408,6 +408,24 @@ def _bare(name: str) -> str:
     return name
 
 
+def derive_camel_case_name(suite_name: str) -> str:
+    """Convert a snake_case suite name to CamelCase, stripping any '_suite'
+    suffix.
+
+    Extracted from ccpp_cap.py's own CCPPCAP._derive_camel_case_name (a
+    pure string transform with no dependency on pass state) so a second
+    caller -- ccpp_dsl.py's --list-outputs mode, which predicts a host
+    cap's filename without running the full generation pipeline -- can
+    reuse the identical logic instead of re-deriving its own copy, which
+    would be exactly the kind of informal duplication this mode exists to
+    eliminate.
+    """
+    name = suite_name
+    if name.endswith("_suite"):
+        name = name[:-6]
+    return "".join(word.capitalize() for word in name.split("_"))
+
+
 # Alternate short-form spellings accepted alongside each canonical lifecycle
 # postfix, for schemes following the atmospheric_physics/kessler_update
 # convention (e.g. cld_ice.meta's bare "cld_ice_final" table). Single

@@ -76,7 +76,7 @@ separately), CHANGELOG.md L5850.
 
 | ID | Item | Notes | Archive |
 |---|---|---|---|
-| `cmake-configure-regen` | CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
+| `cmake-configure-regen` | CMake cap generation runs at configure time — every example regenerates on every CI job | Part A (`--list-outputs` output-filename prediction, CHANGELOG.md L11331) done; Part B (wiring into CMake) still open | L6059 |
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 
 **Resolved since last verification (2026-10-09), removed from the list

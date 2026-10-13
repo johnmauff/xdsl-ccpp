@@ -11327,3 +11327,69 @@ infrastructure this fix lives in at all (`cam_autogen.py` invokes
 `xdsl_ccpp.tools.ccpp_dsl` directly via `subprocess`, independent of
 `cmake/xdsl_ccpp_capgen.cmake`/any example `CMakeLists.txt`) — this fix
 is scoped entirely to this repo's own internal example-testing CI.
+
+## `cmake-configure-regen` Part A: `--list-outputs` output-filename prediction (2026-10-13)
+
+Cap generation runs at CMake *configure* time via `execute_process()`, so
+a single `cmake -S . -B build` regenerates all 20 wired-in examples' caps
+regardless of which `--target` a given CI job actually builds, and a
+generation failure anywhere aborts configure for every job. Fixing this
+for real (Part B: `add_custom_command(OUTPUT ...)`, deferring generation
+to build time) needs each output's filename known at CMake *configure*
+time — cheaply, without paying for the full codegen pipeline that
+deferral is meant to avoid running unconditionally. This part (Part A)
+builds that cheap prediction as a standalone, self-verifiable CLI mode;
+wiring it into CMake (Part B) is deliberately deferred to a separate pass.
+
+**New `--list-outputs` flag** (`xdsl_ccpp/tools/ccpp_dsl.py`): given the
+same `--suites`/`--scheme-files`/`--host-files`/`--host-name`/`--bind-c`
+arguments a normal generation call takes, prints the comma-joined
+predicted output filename list and exits, skipping suite-cap/ccpp-cap
+codegen and the Fortran/C++ printers entirely. Mirrors each real naming/
+gating rule instead of re-deriving it:
+- suite cap name: read directly from each suite XML's own `<suite
+  name=...>` attribute, no codegen needed.
+- host cap name: `derive_camel_case_name` (newly extracted from
+  `ccpp_cap.py`'s `_derive_camel_case_name` into `cap_shared.py` as a
+  free function, so both call sites share one implementation) from
+  `--host-name`, or the *first* `--suites` entry when omitted — order-
+  dependent, confirmed by direct read of `ccpp_cap.py`.
+- the main cap's BIND(C) `.h` header and the separate chost cap/`.h`/
+  `.hpp` triplet: gated on `--bind-c`/`_host_lang_cpp()` exactly as the
+  real pipeline gates them (`ccpp_cap.py`'s unconditional `bind_c=true`
+  marking, `cpp_interop.py`'s `CPPInteropCap.apply`'s own
+  `language = "c++"` scan) — confirmed via direct regeneration that
+  these never appear independently of their gate (e.g. the chost `.hpp`
+  wrapper is never empty when the chost gate is true, across every
+  chost-bearing example).
+- `ccpp_kinds.F90`/`.h`: the one rule that genuinely needs real IR, not
+  pure text/XML parsing — runs the actual `generate-meta-cap`
+  (`MetaCAP`) then `generate-meta-kinds` (`MetaKind`) passes in-process
+  against the parsed metadata (no subprocess, no suite-cap/ccpp-cap/
+  printing) and checks for an inserted `ccpp.KindsOp`, reusing the real
+  pass code directly rather than a third hand-copied mirror of its
+  kind-scanning logic.
+
+Does not support `--py` (python frontend) or `--meta-file` (fir2meta
+merge) mode — no wired-in example uses either, and both would require
+running arbitrary code or parsing a second MLIR file just to learn
+names this is meant to stay cheap by avoiding; both raise a clear error.
+
+**Verification**: ran `--list-outputs` against all 20 examples' real CLI
+arguments (extracted from each `examples/*/CMakeLists.txt`, including
+`list(TRANSFORM ...)`/`list(APPEND ...)`-built variable lists), covering
+all 24 `xdsl_ccpp_capgen()` calls across them (several examples call it
+twice: plain + chost/bind-c), and diffed the predicted filename set
+against each call's real, freshly-regenerated output directory listing —
+all 24 matched byte-for-byte as filename sets. 11 new unit tests added
+(`tests/unit/test_list_outputs.py`) covering each of the 4 naming/gating
+rules in isolation, including the `--host-name`-omitted ordering
+dependence on `--suites` order. Full `pytest tests/`: 820 passed (809 +
+11 new), 0 failed.
+
+`cmake-configure-regen` stays open in `BACKLOG.md` — this closes Part A
+only; Part B (wiring `--list-outputs` into
+`cmake/xdsl_ccpp_capgen.cmake` via `add_custom_command(OUTPUT ...)`,
+touching all 20 examples' `CMakeLists.txt` plus the CI matrix) still
+needs a real `cmake --build` pass to verify and is its own separate
+effort.

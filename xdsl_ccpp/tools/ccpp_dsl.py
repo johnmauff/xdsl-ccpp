@@ -272,6 +272,18 @@ class ccppMain:
                  "warn-only -- mismatches are reported, never fatal.",
         )
         parser.add_argument(
+            "--list-outputs",
+            action="store_true",
+            default=False,
+            help="Print the comma-joined list of output filenames this "
+                 "invocation's arguments would produce, then exit -- without "
+                 "running suite-cap/ccpp-cap codegen or the Fortran/C++ "
+                 "printers. Cheap enough to call once per example at CMake "
+                 "configure time (cmake-configure-regen's Part A): a single "
+                 "source of truth for the filenames several examples' "
+                 "CMakeLists.txt currently predict by hand.",
+        )
+        parser.add_argument(
             "--gfs-dim-aliases",
             action="store_true",
             default=False,
@@ -787,6 +799,140 @@ class ccppMain:
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
 
+    def _predict_kinds_present(self) -> bool:
+        """Return True iff the current --scheme-files/--host-files (plus the
+        same bundled ccpp_constituent_prop_mod.meta run_frontend() always
+        auto-includes) would cause generate-meta-kinds to emit a ccpp.kinds
+        op, i.e. whether ccpp_kinds.F90/.h would be produced.
+
+        Builds the same flat TablePropertiesOp/SuiteOp IR ccpp_xml.py's own
+        CLI entry point builds, in-process (no subprocess, no MLIR text
+        round-trip) and runs the two real passes that decide this
+        (suite_meta.MetaCAP then suite_kinds.MetaKind) -- reusing their own
+        kind-scanning logic directly rather than a third hand-copied mirror
+        of it. Still far cheaper than the full pipeline: no generate-suite-
+        cap/generate-ccpp-cap, no Fortran/C++ printing.
+        """
+        from pathlib import Path
+
+        from xdsl.dialects import builtin as _builtin
+        from xdsl.utils.hints import isa
+
+        from xdsl_ccpp.dialects import ccpp
+        from xdsl_ccpp.frontend.ccpp_xml import XMLSuite
+        from xdsl_ccpp.transforms.suite_kinds import MetaKind
+        from xdsl_ccpp.transforms.suite_meta import MetaCAP
+
+        frontend = ccppXML()
+        ir_ops = []
+        for suite_file in self.options_db["suites"]:
+            ir_ops.append(frontend.build_suite_ir(XMLSuite(suite_file)))
+        for scheme_file in self.options_db["scheme_files"]:
+            stem = Path(scheme_file).stem
+            for meta in parse_meta_file(scheme_file, True):
+                ir_ops.append(frontend.build_meta_ir(
+                    meta, source_module=stem, meta_file_path=scheme_file))
+        host_files = list(self.options_db["host_files"])
+        _const_meta = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "framework_src",
+                         "ccpp_constituent_prop_mod.meta")
+        )
+        if os.path.isfile(_const_meta) and _const_meta not in host_files:
+            host_files.append(_const_meta)
+        for host_file in host_files:
+            stem = Path(host_file).stem
+            for meta in parse_meta_file(host_file, False):
+                ir_ops.append(frontend.build_meta_ir(
+                    meta, source_module=stem, meta_file_path=host_file))
+
+        module = _builtin.ModuleOp(ir_ops)
+        ctx = make_ccpp_context()
+        MetaCAP().apply(ctx, module)
+        MetaKind().apply(ctx, module)
+
+        for sub in module.body.ops:
+            if (
+                isa(sub, _builtin.ModuleOp)
+                and sub.sym_name is not None
+                and sub.sym_name.data == "ccpp"
+            ):
+                return any(isa(op, ccpp.KindsOp) for op in sub.body.ops)
+        return False
+
+    def predict_output_filenames(self) -> list:
+        """Predict the list of output filenames this invocation's current
+        --suites/--scheme-files/--host-files/--host-name/--bind-c arguments
+        would produce, without running suite-cap/ccpp-cap codegen or the
+        Fortran/C++ printers. Powers --list-outputs.
+
+        Mirrors, rather than reimplements, each real naming/gating rule:
+        - suite cap: suite_cap.py's own "<suite_name>_cap" module-naming
+          convention (ModuleOp sym_name -> "<sym_name>.F90",
+          print_ftn.py's print_to_ftn), suite_name read directly from each
+          suite XML's own <suite name=...> attribute (XMLSuite, no codegen
+          needed).
+        - host cap: ccpp_cap.py's derive_camel_case_name (shared via
+          cap_shared.py) + "_ccpp_cap".
+        - the main cap's BIND(C) header: emitted whenever bind_c is on
+          (--bind-c or _host_lang_cpp()) -- generate-ccpp-cap marks every
+          generated lifecycle function bind_c=true unconditionally in that
+          case (ccpp_cap.py line ~1485), and a suite always contributes at
+          least one.
+        - chost cap + header + C++ wrapper: gated purely on
+          _host_lang_cpp() (cpp_interop.py's CPPInteropCap.apply has the
+          same gate, independent of --bind-c), named via the same
+          camel_name + "_ccpp_chost_cap"/"_chost" cpp_interop.py itself
+          uses (verified by direct regeneration of examples/capgen's and
+          examples/kessler's chost/--bind-c calls: both the .F90 Fortran
+          side (print_ftn.py, CCPPCHostCapOp) and the .h/.hpp C++ side
+          (print_cpp_header.py) are always produced together once that
+          gate is true -- no observed case where the wrapper .hpp is
+          independently absent).
+        - ccpp_kinds.F90/.h: see _predict_kinds_present -- the one rule
+          that genuinely needs real IR + two real passes, not pure text/
+          XML parsing, but still no suite-cap/ccpp-cap/codegen/printing.
+
+        Does not support --py (python frontend) or --meta-file (fir2meta
+        merge): no wired-in example (cmake-configure-regen's own
+        verification universe) uses either, and both would require running
+        arbitrary code / parsing a second MLIR file just to learn names
+        this prediction is meant to stay cheap by avoiding.
+        """
+        from xdsl_ccpp.frontend.ccpp_xml import XMLSuite
+        from xdsl_ccpp.transforms.util.cap_shared import derive_camel_case_name
+
+        if self.options_db.get("py"):
+            raise CcppDslError("--list-outputs does not support --py")
+        if self.options_db.get("meta_file"):
+            raise CcppDslError("--list-outputs does not support --meta-file")
+
+        suite_names = [
+            XMLSuite(f).attributes["name"] for f in self.options_db["suites"]
+        ]
+        outputs = [f"{name}_cap.F90" for name in suite_names]
+
+        camel_name = (
+            self.options_db.get("host_name")
+            or derive_camel_case_name(suite_names[0])
+        )
+        outputs.append(f"{camel_name}_ccpp_cap.F90")
+
+        bind_c = bool(self.options_db.get("bind_c")) or self._host_lang_cpp()
+        kinds_present = self._predict_kinds_present()
+        if kinds_present:
+            outputs.append("ccpp_kinds.F90")
+        if bind_c:
+            outputs.append(f"{camel_name}_ccpp_cap.h")
+            if kinds_present:
+                outputs.append("ccpp_kinds.h")
+
+        if self._host_lang_cpp():
+            outputs.append(f"{camel_name}_ccpp_chost_cap.F90")
+            outputs.append(f"{camel_name}_ccpp_chost_cap.h")
+            outputs.append(f"{camel_name}_chost.hpp")
+
+        return outputs
+
     def run_opt(self, tmp_dir, mlir_in, target: str = "ftn"):
         """Run the pipeline once and print `target` -- "ftn" (default) or
         "ftn_and_cpp_header" (the combined target that prints both from
@@ -917,6 +1063,11 @@ class ccppMain:
         # merge_meta build ops in-process; run_frontend/run_py_frontend
         # forward the flag to their own subprocess below).
         set_legacy_mode(self.options_db.get("legacy_mode", False))
+
+        if self.options_db.get("list_outputs"):
+            outputs = self.predict_output_filenames()
+            print(",".join(outputs))
+            return CcppDslResult(written=outputs)
 
         tmp_dir = self.options_db["tempdir"]
         out_dir = self.options_db["out"]
