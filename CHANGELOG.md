@@ -11487,3 +11487,62 @@ having zero callers inside this repo.
 
 `cmake-configure-regen` is now fully resolved — both Part A and Part B
 are done.
+
+## `ci-multi-compiler`: Intel coverage added, two real bugs split into their own backlog items (2026-10-13)
+
+Part B's own real-build verification (above) found that `examples/instances`
+and `examples/constituents_dim` fail under Intel `ifx` while passing
+silently under gfortran — `.github/workflows/compile-tests-cmake.yml`
+only ever built/tested with gfortran, so neither had ever been caught by
+CI. Restructured the workflow to add real Intel coverage, at the user's
+explicit request to minimize the number of CI runners used (not one job
+per example per compiler):
+
+- Replaced the single `compile-examples-cmake` job's 20-entry
+  per-example `strategy.matrix` with two single-runner jobs,
+  `compile-examples-cmake-gnu` and `compile-examples-cmake-intel`. Each
+  configures once, then builds+ctests all ~20 examples in turn via a new
+  shared driver script, `.github/workflows/build_all_examples.sh`
+  (verified its `EXAMPLES` table is byte-identical to the old matrix's
+  20 example/targets/ctest_filter entries). This trades per-example
+  dedicated PR checks for a markdown summary table written to the job's
+  `$GITHUB_STEP_SUMMARY`, in exchange for needing only 2 runners (and 2
+  toolchain installs) total instead of one per example.
+- Intel oneAPI (`ifx`/`icpx`/`icx`) installed via Intel's own apt repo
+  (free compiler-only components, no license key) in the new job, then
+  `FC=ifx CC=icx CXX=icpx` passed to the shared script's `cmake -S . -B
+  build` configure call.
+- `build_all_examples.sh` continues past a failed example (rather than
+  aborting the whole script) so one example's failure doesn't block
+  trying the rest — matching the per-example failure isolation the old
+  matrix had, just inside one job instead of many.
+
+**Investigated, then explicitly deferred as separate, larger work**
+(user's own call — these are real bugs, not CI-infrastructure work, and
+don't belong folded into this change):
+
+- **`examples/instances`** (`error #7938: Character length argument
+  mismatch`): re-examined before assuming this was the same class of bug
+  already fixed in `examples/threads/main.F90`. It is NOT — confirmed via
+  this file's own earlier entry (L11215, the `threads` CI-isolation fix)
+  that `examples/instances/main.F90`'s `character(len=256) :: errmsg`
+  (vs. the generated cap's `len=512`) is verbatim real capgen-v1 upstream content
+  (`end-to-end-tests/instances/main.F90`, `feature/capgen-v1`),
+  deliberately left as-is to faithfully exercise a known real gap in
+  capgen-v1's own `ccpp_validator.py`: it has no cross-check between a
+  host file's actual declared Fortran string length and the generated
+  cap's own dummy-argument length. xdsl-ccpp has no equivalent validator
+  at all. Editing the example to "fix" it would silently erase the gap
+  it exists to demonstrate. Filed as its own backlog item,
+  `ccpp-validator-length-check` — a real metadata/source
+  cross-validation feature, not a one-line fix.
+- **`examples/constituents_dim`** (`forrtl: severe (153): allocatable
+  array or pointer is not allocated`, at runtime, after a clean build):
+  root cause not yet identified. Filed as its own backlog item,
+  `constituents-dim-runtime-crash`.
+
+Both are marked as expected failures in `build_all_examples.sh`'s own
+`EXPECTED_FAILURES` list (reported in the summary table and the job log,
+but don't fail the job) until their respective backlog items close —
+not a blanket "known failures" mask; each entry names the specific
+backlog item tracking its fix.
