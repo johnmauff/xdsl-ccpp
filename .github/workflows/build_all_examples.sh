@@ -62,30 +62,48 @@ for entry in "${EXAMPLES[@]}"; do
   IFS="|" read -r example targets ctest_filter <<< "$entry"
   filter="${ctest_filter:-$example}"
 
+  # ::group::/::endgroup:: collapses each example's noisy cmake/ctest
+  # output into its own foldable section in the GitHub Actions log, so
+  # the one-line status printed right after (outside the group) is what
+  # actually shows up in the unfolded log stream.
+  echo "::group::Building and testing $example"
   status="PASS"
   if ! cmake --build build --target ${targets}; then
     status="BUILD_FAIL"
   elif ! ctest --test-dir build --output-on-failure -R "$filter"; then
     status="TEST_FAIL"
   fi
+  echo "::endgroup::"
+
   expected_failure=0
   for ex in "${EXPECTED_FAILURES[@]}"; do
     [ "$ex" = "$example" ] && expected_failure=1
   done
 
   if [ "$status" != "PASS" ] && [ "$expected_failure" -eq 1 ]; then
-    echo "::warning::$example: $status (expected -- see build_all_examples.sh's own EXPECTED_FAILURES comment)"
+    echo "[EXPECTED FAIL] $example: $status -- see build_all_examples.sh's own EXPECTED_FAILURES comment"
     status="${status} (expected)"
   elif [ "$status" != "PASS" ]; then
-    echo "::error::$example: $status"
+    echo "::error::[FAIL] $example: $status"
     overall_status=1
-  elif [ "$expected_failure" -eq 1 ]; then
-    echo "::notice::$example: PASS, but still listed in EXPECTED_FAILURES -- its backlog item may be fixed already, remove the entry"
+  else
+    echo "[PASS] $example"
+    if [ "$expected_failure" -eq 1 ]; then
+      echo "::notice::$example: PASS, but still listed in EXPECTED_FAILURES -- its backlog item may be fixed already, remove the entry"
+    fi
   fi
   result_lines+=("${example}|${status}")
 done
 
-summary_file="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+echo
+echo "===== Example build/test results ====="
+printf '%-22s %s\n' "Example" "Status"
+for r in "${result_lines[@]}"; do
+  IFS="|" read -r ex st <<< "$r"
+  printf '%-22s %s\n' "$ex" "$st"
+done
+echo "======================================="
+
 {
   echo "## Example build/test results"
   echo
@@ -95,6 +113,6 @@ summary_file="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
     IFS="|" read -r ex st <<< "$r"
     echo "| $ex | $st |"
   done
-} >> "$summary_file"
+} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 exit $overall_status
