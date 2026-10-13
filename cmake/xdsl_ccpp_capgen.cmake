@@ -46,13 +46,45 @@
 #                kind_phys/kind_dyn table to demonstrate cap-generation's
 #                kind-mismatch/kind-cast handling.
 #
-# Sets CCPP_CAPS_LIST in the parent scope: the list of generated Fortran
-# file paths, read back from --emit-datatable's own output. xdsl_ccpp's
-# datatable.xml uses a different XML schema than capgen-v1's own
-# datatable.xml (root element, and file paths as an attribute rather than
-# element text) -- not compatible with capgen-v1's ccpp_datafile.py, so
-# this parses it directly instead of trying to force schema compatibility
-# with the other backend's tool.
+# cmake-configure-regen (Part B): cap generation itself is deferred to
+# BUILD time via add_custom_command(OUTPUT ...) -- only --list-outputs/
+# --list-dependencies (cheap metadata-only prediction, no codegen) run at
+# configure time, so `cmake -S . -B build` no longer pays for all 20
+# examples' full generation on every configure regardless of which
+# example a given `cmake --build ... --target X` actually builds.
+#
+# Sets, in the parent scope:
+#   CCPP_CAPS_LIST         - the predicted .F90 cap file paths (same
+#                            contract as before: absolute paths, .F90
+#                            cap files only -- usable directly as an
+#                            add_executable/add_library source list, same
+#                            as when this was read back from a real
+#                            datatable.xml after an eager generation).
+#   CCPP_DEPENDENCIES_LIST - the predicted <dependencies> file paths (a
+#                            .meta's own dependencies/dependencies_path
+#                            keys, e.g. temp_kinds.F90) -- same contract
+#                            as before.
+#   CCPP_CAPGEN_TARGET     - the add_custom_target() name driving this
+#                            call's generation. Any target that
+#                            references a generated cap ONLY via
+#                            target_include_directories (never as a
+#                            source file -- e.g. a C++ "partial
+#                            verification" OBJECT library that just
+#                            #includes a generated header) MUST
+#                            add_dependencies(<that target>
+#                            ${CCPP_CAPGEN_TARGET}) itself, since CMake's
+#                            own "OUTPUT used as a source auto-builds it"
+#                            mechanism has no equivalent for
+#                            include-directory-only consumers. A target
+#                            that already lists a generated .F90/.h/.hpp
+#                            file as one of its own sources needs no such
+#                            addition -- CMake wires that automatically.
+# A caller making more than one xdsl_ccpp_capgen() call in the same
+# CMakeLists.txt (e.g. a plain + chost pair) must capture each of these
+# three PARENT_SCOPE variables into its own call-specific variable
+# immediately after each call, before the next call overwrites them --
+# the same existing convention examples/capgen and examples/ddthost
+# already follow for CCPP_CAPS_LIST/CCPP_DEPENDENCIES_LIST.
 function(xdsl_ccpp_capgen)
   set(options BIND_C)
   set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY DIRECTIVE)
@@ -65,23 +97,38 @@ function(xdsl_ccpp_capgen)
       "repo root) before calling this function -- see examples/*/CMakeLists.txt.")
   endif()
 
-  set(CCPP_XDSL_CMD "${Python3_EXECUTABLE}" -m xdsl_ccpp.tools.ccpp_dsl)
+  # Shared flags between the real generation command and the two cheap
+  # "predict" commands (--list-outputs/--list-dependencies): host/scheme/
+  # suite/host-name/bind-c, i.e. everything that affects WHAT gets
+  # generated or its filenames. DIRECTIVE/KIND_MAP affect only generated
+  # *content*, never filenames or the dependency list, so they're added
+  # only to the real command below, not to CCPP_XDSL_CMD_PREDICT.
+  set(CCPP_XDSL_CMD_PREDICT "${Python3_EXECUTABLE}" -m xdsl_ccpp.tools.ccpp_dsl)
 
   if(DEFINED arg_HOSTFILES)
     list(JOIN arg_HOSTFILES "," HOSTFILES_SEPARATED)
-    list(APPEND CCPP_XDSL_CMD "--host-files" "${HOSTFILES_SEPARATED}")
+    list(APPEND CCPP_XDSL_CMD_PREDICT "--host-files" "${HOSTFILES_SEPARATED}")
   endif()
   if(DEFINED arg_SCHEMEFILES)
     list(JOIN arg_SCHEMEFILES "," SCHEMEFILES_SEPARATED)
-    list(APPEND CCPP_XDSL_CMD "--scheme-files" "${SCHEMEFILES_SEPARATED}")
+    list(APPEND CCPP_XDSL_CMD_PREDICT "--scheme-files" "${SCHEMEFILES_SEPARATED}")
   endif()
   if(DEFINED arg_SUITES)
     list(JOIN arg_SUITES "," SUITES_SEPARATED)
-    list(APPEND CCPP_XDSL_CMD "--suites" "${SUITES_SEPARATED}")
+    list(APPEND CCPP_XDSL_CMD_PREDICT "--suites" "${SUITES_SEPARATED}")
   endif()
   if(DEFINED arg_HOST_NAME)
-    list(APPEND CCPP_XDSL_CMD "--host-name" "${arg_HOST_NAME}")
+    list(APPEND CCPP_XDSL_CMD_PREDICT "--host-name" "${arg_HOST_NAME}")
   endif()
+  if(arg_BIND_C)
+    list(APPEND CCPP_XDSL_CMD_PREDICT "--bind-c")
+  endif()
+
+  # The real generation command: CCPP_XDSL_CMD_PREDICT plus everything
+  # that affects content (DIRECTIVE/KIND_MAP) plus the output-directory/
+  # datatable flags --list-outputs/--list-dependencies don't need at all.
+  set(CCPP_XDSL_CMD ${CCPP_XDSL_CMD_PREDICT})
+
   # NOT arg_DIRECTIVE STREQUAL "", not just DEFINED: an empty string (e.g.
   # from a caller-set cache variable like -DDIRECTIVE=) still counts as
   # "defined" in CMake, which would append a bare "--directive" with an
@@ -90,9 +137,6 @@ function(xdsl_ccpp_capgen)
   # cap-generation failure instead of "no directive requested".
   if(DEFINED arg_DIRECTIVE AND NOT arg_DIRECTIVE STREQUAL "")
     list(APPEND CCPP_XDSL_CMD "--directive" "${arg_DIRECTIVE}")
-  endif()
-  if(arg_BIND_C)
-    list(APPEND CCPP_XDSL_CMD "--bind-c")
   endif()
   if(DEFINED arg_KIND_MAP)
     foreach(_kind_map_entry IN LISTS arg_KIND_MAP)
@@ -115,8 +159,6 @@ function(xdsl_ccpp_capgen)
   set(DATATABLE_PATH "${OUTPUT_ROOT_DIR}/datatable.xml")
   list(APPEND CCPP_XDSL_CMD "--emit-datatable" "${DATATABLE_PATH}")
 
-  message(STATUS "Running xdsl_ccpp's ccpp_xdsl from ${CMAKE_CURRENT_SOURCE_DIR}")
-
   # PYTHONPATH, not relying on a bare `ccpp_xdsl` console script or however
   # Python3_EXECUTABLE's own site-packages resolve xdsl_ccpp: an unrelated
   # xdsl-ccpp editable install elsewhere on the machine can otherwise
@@ -128,57 +170,108 @@ function(xdsl_ccpp_capgen)
     set(_capgen_env "PYTHONPATH=${XDSL_CCPP_ROOT}")
   endif()
 
-  # Separate stdout/stderr variables, not one shared variable for both:
-  # keeping them distinct makes a failure's actual error output
-  # unambiguous in the log, rather than an interleaved combined stream.
-  execute_process(COMMAND ${CMAKE_COMMAND} -E env "${_capgen_env}" ${CCPP_XDSL_CMD}
-                   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-                   OUTPUT_VARIABLE CAPGEN_STDOUT
-                   ERROR_VARIABLE CAPGEN_STDERR
-                   RESULT_VARIABLE RES
-                   COMMAND_ECHO STDOUT)
-  message(STATUS "xdsl_ccpp ccpp_xdsl stdout:\n${CAPGEN_STDOUT}")
-  message(STATUS "xdsl_ccpp ccpp_xdsl stderr:\n${CAPGEN_STDERR}")
+  message(STATUS "Predicting xdsl_ccpp outputs for ${CMAKE_CURRENT_SOURCE_DIR} (${OUTPUT_ROOT_DIR})")
 
-  if(NOT RES EQUAL 0)
-    message(FATAL_ERROR "xdsl_ccpp cap generation FAILED: result = ${RES}")
-  endif()
-
-  if(NOT EXISTS "${DATATABLE_PATH}")
-    message(FATAL_ERROR "xdsl_ccpp_capgen: expected datatable at ${DATATABLE_PATH}, not found")
-  endif()
-
-  set(_parse_script "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/parse_xdsl_ccpp_datatable.py")
+  # --- Cheap, configure-time prediction (no codegen) ------------------
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${_parse_script}" "${DATATABLE_PATH}"
-    OUTPUT_VARIABLE CCPP_CAPS
-    RESULT_VARIABLE RES2
+    COMMAND ${CMAKE_COMMAND} -E env "${_capgen_env}" ${CCPP_XDSL_CMD_PREDICT} --list-outputs
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE CCPP_LIST_OUTPUTS_STDOUT
+    ERROR_VARIABLE CCPP_LIST_OUTPUTS_STDERR
+    RESULT_VARIABLE RES_LIST_OUTPUTS
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
-  if(NOT RES2 EQUAL 0)
-    message(FATAL_ERROR "xdsl_ccpp_capgen: failed to read generated file list from ${DATATABLE_PATH}")
+  if(NOT RES_LIST_OUTPUTS EQUAL 0)
+    message(FATAL_ERROR
+      "xdsl_ccpp_capgen: --list-outputs failed (result = ${RES_LIST_OUTPUTS}):\n"
+      "${CCPP_LIST_OUTPUTS_STDERR}")
   endif()
 
-  string(REPLACE "," ";" CCPP_CAPS_LIST "${CCPP_CAPS}")
+  string(REPLACE "," ";" CCPP_ALL_OUTPUTS_BARE "${CCPP_LIST_OUTPUTS_STDOUT}")
+  set(CCPP_CAPS_LIST "${CCPP_ALL_OUTPUTS_BARE}")
+  list(FILTER CCPP_CAPS_LIST INCLUDE REGEX "\\.F90$")
+  list(TRANSFORM CCPP_CAPS_LIST PREPEND "${OUTPUT_ROOT_DIR}/")
   set(CCPP_CAPS_LIST "${CCPP_CAPS_LIST}" PARENT_SCOPE)
+
+  set(CCPP_ALL_OUTPUTS "${CCPP_ALL_OUTPUTS_BARE}")
+  list(TRANSFORM CCPP_ALL_OUTPUTS PREPEND "${OUTPUT_ROOT_DIR}/")
 
   # cmake-dep-manifest: the datatable's own <dependencies> section --
   # extra compiled files (e.g. temp_kinds.F90/ddt2.F90) that a table's own
   # `dependencies =`/`dependencies_path =` .meta properties declare and
   # that have no .meta of their own, so they're invisible to SCHEMEFILES/
   # HOSTFILES. Most examples declare none, in which case this is an empty
-  # list (not an error -- the Python side already tolerates a missing
-  # <dependencies> section the same way `<ccpp_files>` is required).
+  # list (not an error).
   execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${_parse_script}" "${DATATABLE_PATH}" --section dependencies
+    COMMAND ${CMAKE_COMMAND} -E env "${_capgen_env}" ${CCPP_XDSL_CMD_PREDICT} --list-dependencies
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     OUTPUT_VARIABLE CCPP_DEPENDENCIES
-    RESULT_VARIABLE RES3
+    ERROR_VARIABLE CCPP_LIST_DEPENDENCIES_STDERR
+    RESULT_VARIABLE RES_LIST_DEPENDENCIES
     OUTPUT_STRIP_TRAILING_WHITESPACE
   )
-  if(NOT RES3 EQUAL 0)
-    message(FATAL_ERROR "xdsl_ccpp_capgen: failed to read dependency file list from ${DATATABLE_PATH}")
+  if(NOT RES_LIST_DEPENDENCIES EQUAL 0)
+    message(FATAL_ERROR
+      "xdsl_ccpp_capgen: --list-dependencies failed (result = ${RES_LIST_DEPENDENCIES}):\n"
+      "${CCPP_LIST_DEPENDENCIES_STDERR}")
   endif()
 
   string(REPLACE "," ";" CCPP_DEPENDENCIES_LIST "${CCPP_DEPENDENCIES}")
   set(CCPP_DEPENDENCIES_LIST "${CCPP_DEPENDENCIES_LIST}" PARENT_SCOPE)
+
+  # --- Deferred, build-time generation ---------------------------------
+  #
+  # An args fingerprint file: file(CONFIGURE) only updates its own mtime
+  # when its CONTENT actually changes, unlike reconfiguring (which
+  # changes nothing CCPP_XDSL_CMD's own mtime-based DEPENDS tracking
+  # would notice). Covers a CLI-flag-only example edit (e.g. flipping
+  # DIRECTIVE "acc" -> "omp") that touches no real input file -- without
+  # this, such an edit would stop being picked up by `cmake --build`
+  # alone under the Makefiles generator (no command-line hashing the way
+  # Ninja has), a regression versus today's execute_process, which always
+  # reran on every single configure.
+  set(_capgen_args_fingerprint "${OUTPUT_ROOT_DIR}/.capgen_args")
+  file(CONFIGURE OUTPUT "${_capgen_args_fingerprint}" CONTENT "${CCPP_XDSL_CMD}")
+
+  # A sentinel/stamp file, in addition to every real generated file, as
+  # one more OUTPUT: split_fortran_output() (ccpp_dsl.py) writes each
+  # generated file in a loop, so a mid-generation crash can leave some
+  # declared outputs written and others missing. The sentinel is only
+  # touched by a second, sequential COMMAND (add_custom_command runs
+  # multiple COMMANDs in order) that only runs once the first COMMAND
+  # has already exited 0 -- a cheap, portable "did this fully succeed"
+  # marker that doesn't depend on which Make multi-output-rule strategy
+  # the detected Make version happens to use.
+  set(_capgen_sentinel "${OUTPUT_ROOT_DIR}/.capgen-complete")
+
+  # Real inputs this call's generation depends on, beyond the
+  # caller-supplied HOSTFILES/SCHEMEFILES/SUITES: every generation call
+  # auto-includes the bundled ccpp_constituent_prop_mod.meta
+  # (ccpp_dsl.py's run_frontend()), but no example's own HOSTFILES lists
+  # it -- without this, editing that bundled file wouldn't trigger
+  # regeneration.
+  set(_capgen_bundled_const_meta
+    "${XDSL_CCPP_ROOT}/xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.meta")
+
+  add_custom_command(
+    OUTPUT ${CCPP_ALL_OUTPUTS} "${_capgen_sentinel}"
+    COMMAND ${CMAKE_COMMAND} -E env "${_capgen_env}" ${CCPP_XDSL_CMD}
+    COMMAND ${CMAKE_COMMAND} -E touch "${_capgen_sentinel}"
+    DEPENDS
+      ${arg_HOSTFILES} ${arg_SCHEMEFILES} ${arg_SUITES}
+      "${_capgen_bundled_const_meta}"
+      "${_capgen_args_fingerprint}"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Generating CCPP caps for ${CMAKE_CURRENT_SOURCE_DIR} (${OUTPUT_ROOT_DIR})"
+    VERBATIM
+  )
+
+  # A target referencing a generated cap only via
+  # target_include_directories (never as a source) has no dependency
+  # edge on the custom command above and must add_dependencies() on this
+  # target explicitly -- see this function's own header comment.
+  string(MD5 _capgen_target_hash "${OUTPUT_ROOT_DIR}")
+  set(_capgen_target_name "xdsl_ccpp_capgen_${_capgen_target_hash}")
+  add_custom_target("${_capgen_target_name}" DEPENDS ${CCPP_ALL_OUTPUTS} "${_capgen_sentinel}")
+  set(CCPP_CAPGEN_TARGET "${_capgen_target_name}" PARENT_SCOPE)
 endfunction()

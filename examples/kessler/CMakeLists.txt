@@ -70,6 +70,10 @@ set(BINDC_SUITE_CAP  "${BINDC_CAP_DIR}/kessler_suite_cap.F90")
 set(BINDC_CCPP_CAP   "${BINDC_CAP_DIR}/Kessler_ccpp_cap.F90")
 # Kessler_ccpp_cap.h/ccpp_kinds.h also land in BINDC_CAP_DIR -- not compiled
 # sources, just an include directory for driver_kessler_cpp.cpp below.
+# cmake-configure-regen Part B: captured immediately, same reasoning as
+# the plain/chost dependency-capture comments elsewhere in this file
+# (CCPP_CAPGEN_TARGET is overwritten by each xdsl_ccpp_capgen() call).
+set(BINDC_CAPGEN_TARGET "${CCPP_CAPGEN_TARGET}")
 
 set(CHOST_CAP_DIR "${CMAKE_CURRENT_BINARY_DIR}/chost")
 xdsl_ccpp_capgen(HOSTFILES host_cpp/kessler_host_mod.meta host_cpp/kessler_host_sub.meta
@@ -86,6 +90,9 @@ set(CHOST_CHOST_CAP  "${CHOST_CAP_DIR}/Kessler_ccpp_chost_cap.F90")
 # Kessler_chost.hpp/Kessler_ccpp_chost_cap.h also land in CHOST_CAP_DIR --
 # not compiled sources, just an include directory for
 # driver_kessler_cxx_host.cpp below.
+# cmake-configure-regen Part B: captured immediately, same reasoning as
+# BINDC_CAPGEN_TARGET above.
+set(CHOST_CAPGEN_TARGET "${CCPP_CAPGEN_TARGET}")
 
 # ── GPU/CPU compile-flag helper ────────────────────────────────────────────
 # Applies the same per-target flags as the existing Makefile's own FC_GPU/
@@ -168,10 +175,16 @@ if(XDSL_CCPP_HAVE_CXX)
   add_library(kessler_cxx_driver_check OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/host_ftn/driver_kessler_cpp.cpp)
   target_include_directories(kessler_cxx_driver_check PRIVATE ${BINDC_CAP_DIR})
   kessler_apply_arch_flags(kessler_cxx_driver_check)
+  # cmake-configure-regen Part B: this target references the bindc cap
+  # dir ONLY via target_include_directories -- see examples/capgen's own
+  # comment on why this needs an explicit dependency edge now that
+  # generation is deferred to build time.
+  add_dependencies(kessler_cxx_driver_check ${BINDC_CAPGEN_TARGET})
 
   add_library(kessler_cxx_host_driver_check OBJECT ${CMAKE_CURRENT_SOURCE_DIR}/host_cpp/driver_kessler_cxx_host.cpp)
   target_include_directories(kessler_cxx_host_driver_check PRIVATE ${CHOST_CAP_DIR})
   kessler_apply_arch_flags(kessler_cxx_host_driver_check)
+  add_dependencies(kessler_cxx_host_driver_check ${CHOST_CAPGEN_TARGET})
 endif()
 
 # ── kessler_ccpp.exe / kessler_hand.exe (Fortran + C, no C++ needed) ──────

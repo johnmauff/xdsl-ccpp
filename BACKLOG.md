@@ -1,5 +1,6 @@
 # Current Plan: `ccpp_cap.py` Refactor Backlog
 
+
 Open items only. For the full narrative behind any item (why, how, what was
 tried), see the `L<n>` pointer into `CHANGELOG.md` (line
 numbers as of the split, 2026-09-29 — will drift as that file is edited; if
@@ -76,8 +77,12 @@ separately), CHANGELOG.md L5850.
 
 | ID | Item | Notes | Archive |
 |---|---|---|---|
-| `cmake-configure-regen` | CMake cap generation runs at configure time — every example regenerates on every CI job | Size TBD | L6059 |
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
+| `ci-multi-compiler` | `.github/workflows/compile-tests-cmake.yml` only builds/tests with gfortran (ubuntu-latest's default) — no Intel/other compiler coverage | M; found via `cmake-configure-regen` Part B's own real-build verification — two real pre-existing example bugs (`examples/instances`'s `errmsg` len=256/512 mismatch, `examples/constituents_dim`'s unallocated-array runtime crash) pass silently under gfortran but fail under Intel `ifx`, confirming gfortran alone is a real coverage gap, not a hypothetical one | L11397 |
+
+**Resolved since last verification (2026-10-13), removed from the list
+above**: `cmake-configure-regen` — cap generation deferred to build time
+via `add_custom_command`; verified via a real local build. CHANGELOG.md L11397.
 
 **Resolved since last verification (2026-10-09), removed from the list
 above**: `type-control-gap` — added a real `CONTROL` table type and
