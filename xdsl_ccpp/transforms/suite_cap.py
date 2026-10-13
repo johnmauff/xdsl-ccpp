@@ -95,8 +95,10 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_NUMBER_OF_INSTANCES_STD_NAME,
+    CCPP_NUMBER_OF_THREADS_STD_NAME,
     CCPP_SCALAR_INDEX_DIMS,
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
+    CCPP_THREAD_NUMBER_STD_NAME,
     UNIT_CONVERSIONS,
     dims_compatible,
     is_dispatch_scalar_std_name,
@@ -519,6 +521,45 @@ def _synthesize_number_of_instances_arg(meta_data, all_args) -> None:
     _synthesize_host_scalar_arg(
         meta_data, all_args, CCPP_NUMBER_OF_INSTANCES_STD_NAME,
         CCPP_INSTANCE_NUMBER_STD_NAME, CCPP_NUMBER_OF_INSTANCES_STD_NAME,
+    )
+
+
+def _is_multi_thread_host(meta_data) -> bool:
+    """True only when the host declares BOTH thread_number and
+    number_of_threads.
+
+    Independent of _is_multi_instance_host -- a host may be multi-instance
+    only, multi-thread only, both, or neither; these are two separate
+    registered scalar-index pairs (CCPP_SCALAR_INDEX_DIMS), not one
+    combined gate.
+    """
+    return _is_multi_scalar_index_host(
+        meta_data, CCPP_THREAD_NUMBER_STD_NAME, CCPP_NUMBER_OF_THREADS_STD_NAME
+    )
+
+
+def _synthesize_thread_number_arg(meta_data, all_args) -> None:
+    """Mutate all_args in place: synthesize the thread_number dummy arg.
+
+    Mirrors _synthesize_instance_number_arg exactly, for the thread pair.
+    Unlike instance_number, there is no ccpp_suite_state-style framework
+    state keyed on thread_number -- this exists purely so a scheme call
+    reaching into a HOST-owned per-thread container DDT (dimensioned by
+    number_of_threads) has a sibling thread_number arg in scope to index
+    it by (see run_dispatch.py's CCPP_SCALAR_INDEX_DIMS lookup).
+    """
+    _synthesize_host_scalar_arg(
+        meta_data, all_args, CCPP_THREAD_NUMBER_STD_NAME,
+        CCPP_THREAD_NUMBER_STD_NAME, CCPP_NUMBER_OF_THREADS_STD_NAME,
+    )
+
+
+def _synthesize_number_of_threads_arg(meta_data, all_args) -> None:
+    """Mutate all_args in place: companion to _synthesize_thread_number_arg,
+    for number_of_threads. Mirrors _synthesize_number_of_instances_arg."""
+    _synthesize_host_scalar_arg(
+        meta_data, all_args, CCPP_NUMBER_OF_THREADS_STD_NAME,
+        CCPP_THREAD_NUMBER_STD_NAME, CCPP_NUMBER_OF_THREADS_STD_NAME,
     )
 
 
@@ -2568,6 +2609,8 @@ class GenerateSuiteSubroutine(RewritePattern):
                     )
             _synthesize_instance_number_arg(self.meta_data, all_args)
             _synthesize_number_of_instances_arg(self.meta_data, all_args)
+            _synthesize_thread_number_arg(self.meta_data, all_args)
+            _synthesize_number_of_threads_arg(self.meta_data, all_args)
 
         # Two or more schemes sharing a standard_name can each independently
         # declare a genuinely different kind, units, or vertical-layer

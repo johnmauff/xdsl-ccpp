@@ -184,6 +184,25 @@ CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"
 # per instance.
 CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 
+# Real capgen-v1's per-thread analog of instance_number above: a scalar
+# with this standard name indexes a HOST-owned per-OpenMP-thread container
+# DDT (dimensioned by number_of_threads, see CCPP_SCALAR_INDEX_DIMS below),
+# threaded as an ordinary caller-supplied dummy argument exactly like
+# instance_number -- never use-associated. Unlike instance_number, real
+# capgen-v1's own framework reads no extra per-thread state from this pair
+# today (no per-thread equivalent of ccpp_suite_state/lc_instances): it is
+# genuinely "substitution-only," confirmed directly against capgen-v1's own
+# generator/suite_cap.py and generator/suite_data.py (zero references to
+# either name in either file, vs. 22+3 for the instance pair there).
+CCPP_THREAD_NUMBER_STD_NAME = "thread_number"
+
+# Companion to CCPP_THREAD_NUMBER_STD_NAME above: the total thread count,
+# also threaded as an ordinary caller-supplied dummy argument. Carried for
+# symmetry with number_of_instances (real capgen-v1's own
+# doc/migration.md §1.7: "kept... so the framework can size per-thread
+# state in future"), but not consumed for sizing by anything today.
+CCPP_NUMBER_OF_THREADS_STD_NAME = "number_of_threads"
+
 # Real capgen-v1's single-source-of-truth table of "registered scalar-index
 # dimensions" (capgen/metadata/registered_dimensions.py's SCALAR_INDEX_DIMS):
 # a container DDT-instance variable dimensioned by the KEY standard name gets
@@ -198,6 +217,7 @@ CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 # governs the generic container-subscript substitution, nothing else.
 CCPP_SCALAR_INDEX_DIMS: dict = {
     CCPP_NUMBER_OF_INSTANCES_STD_NAME: CCPP_INSTANCE_NUMBER_STD_NAME,
+    CCPP_NUMBER_OF_THREADS_STD_NAME: CCPP_THREAD_NUMBER_STD_NAME,
 }
 
 # ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
