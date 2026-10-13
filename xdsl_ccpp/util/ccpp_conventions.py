@@ -289,6 +289,21 @@ CCPP_LOOP_BOUND_STD_NAMES: frozenset = frozenset(
 # use the replacement instead.
 CCPP_DEPRECATED_STD_NAMES: dict = {
     CCPP_LOOP_EXTENT_STD_NAME: CCPP_HORIZ_DIM_STD_NAME,
+    # task11-omp-thread item 1: real capgen-v1's own legacy_compat.py maps
+    # this the same way, gated behind the identical --legacy-mode shim.
+    # Cosmetic only -- xdsl-ccpp's --legacy-mode gate warns-and-accepts a
+    # deprecated name but never rewrites it for downstream matching (see
+    # CCPP_LOOP_EXTENT_STD_NAME's own case: it only actually resolves
+    # because horizontal_loop_extent/horizontal_dimension are ALSO both
+    # members of CCPP_HORIZONTAL_DIMENSIONS, consulted separately by
+    # dims_compatible()). number_of_openmp_threads/number_of_threads are
+    # scalar counts, not dimension names, so there is no equivalent
+    # equivalence-class mechanism for this entry to piggyback on -- it
+    # only suppresses the reject-unknown-name error under --legacy-mode,
+    # it does not make a host declaring the old name actually resolve
+    # against a scheme/CCPP_SCALAR_INDEX_DIMS consumer expecting the new
+    # one.
+    "number_of_openmp_threads": CCPP_NUMBER_OF_THREADS_STD_NAME,
 }
 
 # Set once per process (by each frontend's CLI entry point) from --legacy-mode.

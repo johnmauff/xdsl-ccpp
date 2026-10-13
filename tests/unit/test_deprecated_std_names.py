@@ -41,6 +41,19 @@ class TestDeprecatedStdNameWarning:
     def test_unrelated_name_returns_none(self):
         assert deprecated_std_name_warning("air_temperature") is None
 
+    def test_openmp_threads_legacy_name_returns_a_warning_mentioning_the_replacement(self):
+        """task11-omp-thread item 1: number_of_openmp_threads -> number_of_threads,
+        gated behind the same --legacy-mode shim, mirroring real capgen-v1's
+        own legacy_compat.py mapping. A scalar count, not a dimension name --
+        only ever appears as a bare standard_name, never inside dimensions=."""
+        msg = deprecated_std_name_warning("number_of_openmp_threads")
+        assert msg is not None
+        assert "number_of_openmp_threads" in msg
+        assert "number_of_threads" in msg
+
+    def test_number_of_threads_itself_returns_none(self):
+        assert deprecated_std_name_warning("number_of_threads") is None
+
 
 class TestArgumentOpRejectsByDefault:
     """Without --legacy-mode, a deprecated standard_name must raise, whether
@@ -83,6 +96,15 @@ class TestArgumentOpRejectsByDefault:
         err = capsys.readouterr().err
         assert err == ""
 
+    def test_openmp_threads_current_convention_is_silent(self, capsys):
+        ArgumentOp(
+            "nthreads", "integer",
+            {"type": "integer", "standard_name": "number_of_threads",
+             "dimensions": "()", "intent": "in"},
+        )
+        err = capsys.readouterr().err
+        assert err == ""
+
     def test_no_warning_construction_does_not_crash(self):
         """Sanity check: an entirely unrelated arg must not warn or raise."""
         ArgumentOp(
@@ -90,6 +112,14 @@ class TestArgumentOpRejectsByDefault:
             {"type": "integer", "standard_name": "ccpp_error_code",
              "dimensions": "()", "intent": "out"},
         )
+
+    def test_openmp_threads_scalar_standard_name_raises(self):
+        with pytest.raises(ValueError, match="number_of_openmp_threads"):
+            ArgumentOp(
+                "nthreads", "integer",
+                {"type": "integer", "standard_name": "number_of_openmp_threads",
+                 "dimensions": "()", "intent": "in"},
+            )
 
 
 class TestArgumentOpAcceptsUnderLegacyMode:
@@ -134,6 +164,16 @@ class TestArgumentOpAcceptsUnderLegacyMode:
         )
         err = capsys.readouterr().err
         assert "horizontal_loop_extent" in err
+
+    def test_openmp_threads_scalar_standard_name_warns(self, capsys):
+        ArgumentOp(
+            "nthreads", "integer",
+            {"type": "integer", "standard_name": "number_of_openmp_threads",
+             "dimensions": "()", "intent": "in"},
+        )
+        err = capsys.readouterr().err
+        assert "number_of_openmp_threads" in err
+        assert "number_of_threads" in err
 
     def test_current_convention_is_silent(self, capsys):
         ArgumentOp(
