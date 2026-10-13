@@ -161,4 +161,24 @@ function(xdsl_ccpp_capgen)
 
   string(REPLACE "," ";" CCPP_CAPS_LIST "${CCPP_CAPS}")
   set(CCPP_CAPS_LIST "${CCPP_CAPS_LIST}" PARENT_SCOPE)
+
+  # cmake-dep-manifest: the datatable's own <dependencies> section --
+  # extra compiled files (e.g. temp_kinds.F90/ddt2.F90) that a table's own
+  # `dependencies =`/`dependencies_path =` .meta properties declare and
+  # that have no .meta of their own, so they're invisible to SCHEMEFILES/
+  # HOSTFILES. Most examples declare none, in which case this is an empty
+  # list (not an error -- the Python side already tolerates a missing
+  # <dependencies> section the same way `<ccpp_files>` is required).
+  execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${_parse_script}" "${DATATABLE_PATH}" --section dependencies
+    OUTPUT_VARIABLE CCPP_DEPENDENCIES
+    RESULT_VARIABLE RES3
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+  if(NOT RES3 EQUAL 0)
+    message(FATAL_ERROR "xdsl_ccpp_capgen: failed to read dependency file list from ${DATATABLE_PATH}")
+  endif()
+
+  string(REPLACE "," ";" CCPP_DEPENDENCIES_LIST "${CCPP_DEPENDENCIES}")
+  set(CCPP_DEPENDENCIES_LIST "${CCPP_DEPENDENCIES_LIST}" PARENT_SCOPE)
 endfunction()

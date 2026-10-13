@@ -694,9 +694,19 @@ class ccppXML:
         if meta.table_properties.hasAttr("source_path"):
             attrs["source_path"] = StringAttr(meta.table_properties.getAttr("source_path"))
         if meta.table_properties.hasAttr("dependencies_path"):
-            attrs["dependencies_path"] = StringAttr(
-                meta.table_properties.getAttr("dependencies_path")
-            )
+            _declared_dependencies_path = meta.table_properties.getAttr("dependencies_path")
+            if meta_file_path:
+                # Resolve relative to the ORIGINATING .meta file's own
+                # directory, matching real capgen-v1's own convention --
+                # previously stored verbatim, so a relative explicit value
+                # like "adjust" was meaningless to any downstream consumer
+                # (e.g. CMake's own dependency-manifest automation) that
+                # doesn't separately know which .meta file it came from.
+                attrs["dependencies_path"] = StringAttr(
+                    str((Path(meta_file_path).parent / _declared_dependencies_path).resolve())
+                )
+            else:
+                attrs["dependencies_path"] = StringAttr(_declared_dependencies_path)
         if meta.table_properties.dependencies:
             # Mirror capgen-v1: when no explicit dependencies_path is declared,
             # set it to the .meta file's own directory so bare dependency
