@@ -1,5 +1,6 @@
 # Current Plan: `ccpp_cap.py` Refactor Backlog
 
+
 Open items only. For the full narrative behind any item (why, how, what was
 tried), see the `L<n>` pointer into `CHANGELOG.md` (line
 numbers as of the split, 2026-09-29 — will drift as that file is edited; if
