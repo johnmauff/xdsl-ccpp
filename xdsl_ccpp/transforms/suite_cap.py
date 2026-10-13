@@ -95,6 +95,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_NUMBER_OF_INSTANCES_STD_NAME,
+    CCPP_SCALAR_INDEX_DIMS,
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
     dims_compatible,
@@ -405,6 +406,23 @@ def _synthesize_dynamic_loop_count_args(meta_data, call_sequence, arg_tables, al
         all_args[std_key] = new_arg
 
 
+def _is_multi_scalar_index_host(meta_data, scalar_std_name: str, count_std_name: str) -> bool:
+    """True only when the host declares BOTH members of a registered
+    scalar-index pair (see CCPP_SCALAR_INDEX_DIMS) -- e.g. both
+    instance_number and number_of_instances, or both thread_number and
+    number_of_threads.
+
+    A paired contract, not two independent optionals -- see
+    _is_multi_instance_host's own docstring for the real bug this
+    guards against (a host declaring just one of a pair enabling
+    wrapping with no matching allocation/indexing support elsewhere).
+    """
+    return (
+        _resolve_host_only_std_name(meta_data, scalar_std_name) is not None
+        and _resolve_host_only_std_name(meta_data, count_std_name) is not None
+    )
+
+
 def _is_multi_instance_host(meta_data) -> bool:
     """True only when the host declares BOTH instance_number and
     number_of_instances.
@@ -423,24 +441,26 @@ def _is_multi_instance_host(meta_data) -> bool:
     constituent_cap.py/lifecycle_cap.py pairing); this is the same bug
     class in suite_cap.py's own, separate ccpp_suite_state gating.
     """
-    return (
-        _resolve_host_only_std_name(meta_data, CCPP_INSTANCE_NUMBER_STD_NAME) is not None
-        and _resolve_host_only_std_name(meta_data, CCPP_NUMBER_OF_INSTANCES_STD_NAME) is not None
+    return _is_multi_scalar_index_host(
+        meta_data, CCPP_INSTANCE_NUMBER_STD_NAME, CCPP_NUMBER_OF_INSTANCES_STD_NAME
     )
 
 
-def _synthesize_host_scalar_arg(meta_data, all_args, std_name_const: str) -> None:
+def _synthesize_host_scalar_arg(
+    meta_data, all_args, std_name_const: str, scalar_std_name: str, count_std_name: str
+) -> None:
     """Mutate all_args in place: synthesize a HostMatched CCPPArgument for a
     host-declared scalar identified by std_name_const, if not already present.
 
-    A no-op unless the host declares BOTH instance_number and number_of_instances
-    (see _is_multi_instance_host), so ordinary (non-multi-instance) suites are
-    entirely unaffected.
+    A no-op unless the host declares BOTH scalar_std_name and count_std_name
+    (see _is_multi_scalar_index_host) -- std_name_const is one member of
+    that pair (either one), so ordinary suites not opting into that pair
+    are entirely unaffected.
     """
     std_key = std_name_const.lower()
     if std_key in all_args:
         return
-    if not _is_multi_instance_host(meta_data):
+    if not _is_multi_scalar_index_host(meta_data, scalar_std_name, count_std_name):
         return
     host_var = _resolve_host_only_std_name(meta_data, std_name_const)
     new_arg = CCPPArgument(host_var.name)
@@ -477,7 +497,10 @@ def _synthesize_instance_number_arg(meta_data, all_args) -> None:
     Called for every phase, not just physics_mode (unlike
     _synthesize_dynamic_loop_count_args).
     """
-    _synthesize_host_scalar_arg(meta_data, all_args, CCPP_INSTANCE_NUMBER_STD_NAME)
+    _synthesize_host_scalar_arg(
+        meta_data, all_args, CCPP_INSTANCE_NUMBER_STD_NAME,
+        CCPP_INSTANCE_NUMBER_STD_NAME, CCPP_NUMBER_OF_INSTANCES_STD_NAME,
+    )
 
 
 def _synthesize_number_of_instances_arg(meta_data, all_args) -> None:
@@ -493,7 +516,10 @@ def _synthesize_number_of_instances_arg(meta_data, all_args) -> None:
     generateSubroutineCall's own instance_local_name/
     _build_suite_state_lazy_alloc wiring.
     """
-    _synthesize_host_scalar_arg(meta_data, all_args, CCPP_NUMBER_OF_INSTANCES_STD_NAME)
+    _synthesize_host_scalar_arg(
+        meta_data, all_args, CCPP_NUMBER_OF_INSTANCES_STD_NAME,
+        CCPP_INSTANCE_NUMBER_STD_NAME, CCPP_NUMBER_OF_INSTANCES_STD_NAME,
+    )
 
 
 def _instance_arg_local_name(input_arg_list) -> "str | None":
@@ -687,13 +713,14 @@ def _resolve_active_condition(
         instance_var, instance_module, path_prefix, instance_array_dim = result
         member_ref = path_prefix + member_local_name
         if instance_array_dim is not None:
+            expected_index_std_name = CCPP_SCALAR_INDEX_DIMS.get(instance_array_dim)
             index_local_name = None
-            if arg_table is not None:
+            if expected_index_std_name is not None and arg_table is not None:
                 for arg in arg_table.getFunctionArguments():
                     if (
                         arg.hasAttr("standard_name")
                         and arg.getAttr("standard_name").lower()
-                            == CCPP_INSTANCE_NUMBER_STD_NAME
+                            == expected_index_std_name
                     ):
                         index_local_name = arg.name
                         break
@@ -702,7 +729,7 @@ def _resolve_active_condition(
                     f"'active = {raw_expr}' references {std_name!r}, a "
                     f"member of {instance_var!r}, a HOST-owned array of "
                     f"model instances -- but this scheme's own call has "
-                    f"no sibling {CCPP_INSTANCE_NUMBER_STD_NAME!r} arg to "
+                    f"no sibling {expected_index_std_name!r} arg to "
                     f"index it by, so there is no way to know which "
                     f"instance's value to test."
                 )

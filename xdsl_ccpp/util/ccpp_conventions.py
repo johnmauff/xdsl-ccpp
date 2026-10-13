@@ -184,6 +184,22 @@ CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"
 # per instance.
 CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 
+# Real capgen-v1's single-source-of-truth table of "registered scalar-index
+# dimensions" (capgen/metadata/registered_dimensions.py's SCALAR_INDEX_DIMS):
+# a container DDT-instance variable dimensioned by the KEY standard name gets
+# its scalar index substituted from the VALUE standard name at every scheme
+# call site that reaches into it (run_dispatch.py's sibling-arg lookup,
+# suite_cap.py's _active_expr_ddt_member_indexes). Real capgen-v1 treats
+# instance_number/number_of_instances and thread_number/number_of_threads as
+# two symmetric entries in this one table; xdsl-ccpp's own
+# ccpp_suite_state/constituent-API per-instance machinery is a SEPARATE,
+# instance_number-only concern layered on top (see
+# CCPP_NUMBER_OF_INSTANCES_STD_NAME's own comment above) -- this table only
+# governs the generic container-subscript substitution, nothing else.
+CCPP_SCALAR_INDEX_DIMS: dict = {
+    CCPP_NUMBER_OF_INSTANCES_STD_NAME: CCPP_INSTANCE_NUMBER_STD_NAME,
+}
+
 # ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
 # A small, fixed set of CCPP-protocol standard names that behave as generic,
 # call-scoped dispatch parameters rather than real host-owned state --
