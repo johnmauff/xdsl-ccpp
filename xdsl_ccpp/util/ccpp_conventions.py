@@ -184,6 +184,42 @@ CCPP_INSTANCE_NUMBER_STD_NAME = "instance_number"
 # per instance.
 CCPP_NUMBER_OF_INSTANCES_STD_NAME = "number_of_instances"
 
+# Real capgen-v1's per-thread analog of instance_number above: a scalar
+# with this standard name indexes a HOST-owned per-OpenMP-thread container
+# DDT (dimensioned by number_of_threads, see CCPP_SCALAR_INDEX_DIMS below),
+# threaded as an ordinary caller-supplied dummy argument exactly like
+# instance_number -- never use-associated. Unlike instance_number, real
+# capgen-v1's own framework reads no extra per-thread state from this pair
+# today (no per-thread equivalent of ccpp_suite_state/lc_instances): it is
+# genuinely "substitution-only," confirmed directly against capgen-v1's own
+# generator/suite_cap.py and generator/suite_data.py (zero references to
+# either name in either file, vs. 22+3 for the instance pair there).
+CCPP_THREAD_NUMBER_STD_NAME = "thread_number"
+
+# Companion to CCPP_THREAD_NUMBER_STD_NAME above: the total thread count,
+# also threaded as an ordinary caller-supplied dummy argument. Carried for
+# symmetry with number_of_instances (real capgen-v1's own
+# doc/migration.md §1.7: "kept... so the framework can size per-thread
+# state in future"), but not consumed for sizing by anything today.
+CCPP_NUMBER_OF_THREADS_STD_NAME = "number_of_threads"
+
+# Real capgen-v1's single-source-of-truth table of "registered scalar-index
+# dimensions" (capgen/metadata/registered_dimensions.py's SCALAR_INDEX_DIMS):
+# a container DDT-instance variable dimensioned by the KEY standard name gets
+# its scalar index substituted from the VALUE standard name at every scheme
+# call site that reaches into it (run_dispatch.py's sibling-arg lookup,
+# suite_cap.py's _active_expr_ddt_member_indexes). Real capgen-v1 treats
+# instance_number/number_of_instances and thread_number/number_of_threads as
+# two symmetric entries in this one table; xdsl-ccpp's own
+# ccpp_suite_state/constituent-API per-instance machinery is a SEPARATE,
+# instance_number-only concern layered on top (see
+# CCPP_NUMBER_OF_INSTANCES_STD_NAME's own comment above) -- this table only
+# governs the generic container-subscript substitution, nothing else.
+CCPP_SCALAR_INDEX_DIMS: dict = {
+    CCPP_NUMBER_OF_INSTANCES_STD_NAME: CCPP_INSTANCE_NUMBER_STD_NAME,
+    CCPP_NUMBER_OF_THREADS_STD_NAME: CCPP_THREAD_NUMBER_STD_NAME,
+}
+
 # ── Dispatch-scalar standard names (vocabulary-resolution redesign, Stage 1) ─
 # A small, fixed set of CCPP-protocol standard names that behave as generic,
 # call-scoped dispatch parameters rather than real host-owned state --
@@ -253,6 +289,21 @@ CCPP_LOOP_BOUND_STD_NAMES: frozenset = frozenset(
 # use the replacement instead.
 CCPP_DEPRECATED_STD_NAMES: dict = {
     CCPP_LOOP_EXTENT_STD_NAME: CCPP_HORIZ_DIM_STD_NAME,
+    # task11-omp-thread item 1: real capgen-v1's own legacy_compat.py maps
+    # this the same way, gated behind the identical --legacy-mode shim.
+    # Cosmetic only -- xdsl-ccpp's --legacy-mode gate warns-and-accepts a
+    # deprecated name but never rewrites it for downstream matching (see
+    # CCPP_LOOP_EXTENT_STD_NAME's own case: it only actually resolves
+    # because horizontal_loop_extent/horizontal_dimension are ALSO both
+    # members of CCPP_HORIZONTAL_DIMENSIONS, consulted separately by
+    # dims_compatible()). number_of_openmp_threads/number_of_threads are
+    # scalar counts, not dimension names, so there is no equivalent
+    # equivalence-class mechanism for this entry to piggyback on -- it
+    # only suppresses the reject-unknown-name error under --legacy-mode,
+    # it does not make a host declaring the old name actually resolve
+    # against a scheme/CCPP_SCALAR_INDEX_DIMS consumer expecting the new
+    # one.
+    "number_of_openmp_threads": CCPP_NUMBER_OF_THREADS_STD_NAME,
 }
 
 # Set once per process (by each frontend's CLI entry point) from --legacy-mode.

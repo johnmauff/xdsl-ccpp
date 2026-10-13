@@ -67,10 +67,10 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_MESSAGE,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
-    CCPP_INSTANCE_NUMBER_STD_NAME,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_SCALAR_INDEX_DIMS,
 )
 
 
@@ -417,23 +417,29 @@ def _build_per_suite_run_info(
                     if result is not None:
                         instance_var, instance_module, path_prefix, instance_array_dim = result
                         full_member = path_prefix + host_var
-                        # Real capgen-v1's multi-instance model: instance_var
-                        # is itself a HOST-owned array of DDT (one entry per
-                        # model instance) when instance_array_dim is set.
-                        # Only treat it that way when this SAME call also
-                        # resolves a sibling instance_number-standard-name
-                        # scalar arg to index it by -- otherwise there's no
-                        # runtime value to subscript with, so fall through to
-                        # the ordinary (non-indexed) resolution below exactly
-                        # as before.
+                        # Real capgen-v1's registered-scalar-index-dimension
+                        # model (CCPP_SCALAR_INDEX_DIMS): instance_var is
+                        # itself a HOST-owned array of DDT (one entry per
+                        # model instance/thread/etc.) when instance_array_dim
+                        # is a registered count std-name. Only treat it that
+                        # way when this SAME call also resolves a sibling
+                        # scalar arg matching the PAIRED index std-name to
+                        # index it by -- otherwise there's no runtime value to
+                        # subscript with, so fall through to the ordinary
+                        # (non-indexed) resolution below exactly as before.
                         index_std_name = None
-                        if instance_array_dim is not None:
+                        expected_index_std_name = (
+                            CCPP_SCALAR_INDEX_DIMS.get(instance_array_dim)
+                            if instance_array_dim is not None
+                            else None
+                        )
+                        if expected_index_std_name is not None:
                             for _callee_arg in callee_input_names:
                                 if (
                                     std_name_of.get(_bare(_callee_arg))
-                                    == CCPP_INSTANCE_NUMBER_STD_NAME
+                                    == expected_index_std_name
                                 ):
-                                    index_std_name = CCPP_INSTANCE_NUMBER_STD_NAME
+                                    index_std_name = expected_index_std_name
                                     break
                         if index_std_name is not None:
                             resolved_arg_ops.append(
