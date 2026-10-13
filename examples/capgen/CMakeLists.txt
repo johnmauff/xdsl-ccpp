@@ -27,6 +27,9 @@ set(PLAIN_KINDS       "${PLAIN_CAP_DIR}/ccpp_kinds.F90")
 set(PLAIN_DDT_CAP     "${PLAIN_CAP_DIR}/ddt_suite_cap.F90")
 set(PLAIN_TEMP_CAP    "${PLAIN_CAP_DIR}/temp_suite_cap.F90")
 set(PLAIN_CCPP_CAP    "${PLAIN_CAP_DIR}/test_host_ccpp_cap.F90")
+# cmake-dep-manifest: captured immediately, before the chost call below
+# overwrites CCPP_DEPENDENCIES_LIST with its own (different) result.
+set(PLAIN_DEPENDENCIES "${CCPP_DEPENDENCIES_LIST}")
 
 # ── Chost generation (C++ host, its own 3-scheme suite) ───────────────────
 set(CHOST_CAP_DIR "${CMAKE_CURRENT_BINARY_DIR}/chost")
@@ -38,6 +41,7 @@ xdsl_ccpp_capgen(HOSTFILES host_cpp/capgen_host_mod.meta host_cpp/capgen_host_su
 set(CHOST_KINDS      "${CHOST_CAP_DIR}/ccpp_kinds.F90")
 set(CHOST_SUITE_CAP  "${CHOST_CAP_DIR}/capgen_chost_suite_cap.F90")
 set(CHOST_CHOST_CAP  "${CHOST_CAP_DIR}/CapgenChost_ccpp_chost_cap.F90")
+set(CHOST_DEPENDENCIES "${CCPP_DEPENDENCIES_LIST}")
 # CCPP_CAPS_LIST for this call also includes CapgenChost_ccpp_cap.F90 (the
 # plain non-chost cap xdsl_ccpp generates as a matter of course even in
 # chost mode) -- not needed here and not compiled by the existing Makefile
@@ -54,7 +58,6 @@ endif()
 if(XDSL_CCPP_HAVE_FORTRAN)
   add_executable(capgen_ftn_host.exe
     ${PLAIN_KINDS}
-    scheme/ddt2.F90
     scheme/make_ddt.F90
     scheme/source_dir1/environ_conditions.F90
     scheme/setup_coeffs.F90
@@ -63,10 +66,13 @@ if(XDSL_CCPP_HAVE_FORTRAN)
     # the generated ccpp_kinds.F90 (${PLAIN_KINDS}) itself `use temp_kinds`
     # -- CMake's own Fortran dependency scanner orders the compile
     # correctly within this one target regardless of list order here.
-    # Real paths (source_dir2/, adjust/) match real capgen-v1's own
-    # end-to-end-tests/capgen layout -- these two files' own .meta table
-    # properties declare source_path/dependencies_path pointing here.
-    scheme/adjust/temp_kinds.F90
+    # cmake-dep-manifest: ${PLAIN_DEPENDENCIES} supplies ddt2.F90 (real
+    # path scheme/ddt2.F90, make_ddt.meta's own dependencies key) and
+    # temp_kinds.F90 (real path scheme/adjust/temp_kinds.F90, matching
+    # real capgen-v1's own end-to-end-tests/capgen layout -- temp_set.meta/
+    # temp_adjust.meta's own source_path/dependencies_path point here) --
+    # mechanically discovered from the datatable instead of hand-listed.
+    ${PLAIN_DEPENDENCIES}
     scheme/source_dir2/temp_set.F90
     scheme/temp_calc_adjust.F90
     scheme/temp_adjust.F90
@@ -92,7 +98,7 @@ endif()
 if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
   add_executable(capgen_cxx_host.exe
     ${CHOST_KINDS}
-    scheme/ddt2.F90
+    ${CHOST_DEPENDENCIES}
     scheme/make_ddt.F90
     scheme/setup_coeffs.F90
     scheme/temp_calc_adjust.F90

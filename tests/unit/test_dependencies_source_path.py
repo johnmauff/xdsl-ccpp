@@ -26,6 +26,7 @@ import pytest
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
+from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 
 
 def _table_properties_op(module):
@@ -146,6 +147,12 @@ class TestSourcePathAndDependenciesPath:
         assert op.attributes.get("source_path").data == "source_dir2"
 
     def test_dependencies_path_is_accepted_and_forwarded(self, build_module):
+        """build_module's own harness never passes meta_file_path through to
+        build_meta_ir (it defaults to "", falsy) -- so this deliberately
+        exercises only the parser-level acceptance of the raw declared
+        string, not real-file resolution. See
+        test_explicit_dependencies_path_resolves_against_the_real_meta_file_directory
+        below for that."""
         module = build_module(
             [
                 "[ccpp-table-properties]\n"
@@ -161,6 +168,44 @@ class TestSourcePathAndDependenciesPath:
         )
         op = _table_properties_op(module)
         assert op.attributes.get("dependencies_path").data == "adjust"
+        assert [d.data for d in op.attributes.get("dependencies").data] == ["temp_kinds.F90"]
+
+    def test_explicit_dependencies_path_resolves_against_the_real_meta_file_directory(
+        self, tmp_path
+    ):
+        """cmake-dep-manifest fix: an EXPLICIT dependencies_path (e.g.
+        real capgen-v1's own temp_set.meta: dependencies_path = adjust) was
+        previously stored verbatim -- meaningless to a downstream consumer
+        (e.g. CMake) that doesn't separately know which .meta file it came
+        from, since the raw string is relative to THAT .meta file's own
+        directory, which varies per table. Must resolve to an absolute path
+        the same way the auto-populated (implicit) case already does.
+        build_module's own shared harness never passes meta_file_path (see
+        the test above) -- call the real production entry point
+        (ccpp_dsl.py's own build_meta_ir(meta, meta_file_path=...) call
+        shape) directly against a real file on disk instead."""
+        subdir = tmp_path / "adjust"
+        subdir.mkdir()
+        (subdir / "temp_kinds.F90").write_text("module temp_kinds\nend module temp_kinds\n")
+        meta_file = tmp_path / "scheme_a.meta"
+        meta_file.write_text(
+            "[ccpp-table-properties]\n"
+            "  name = scheme_a\n"
+            "  type = scheme\n"
+            "  dependencies_path = adjust\n"
+            "  dependencies = temp_kinds.F90\n"
+            "[ccpp-arg-table]\n"
+            "  name = scheme_a_run\n"
+            "  type = scheme\n"
+        )
+        frontend = ccppXML()
+        ir_ops = [
+            frontend.build_meta_ir(m, meta_file_path=str(meta_file))
+            for m in parse_meta_file(str(meta_file), True)
+        ]
+        op = next(o for o in ir_ops if isa(o, ccpp.TablePropertiesOp))
+        resolved = op.attributes.get("dependencies_path").data
+        assert resolved == str(subdir.resolve())
         assert [d.data for d in op.attributes.get("dependencies").data] == ["temp_kinds.F90"]
 
     def test_relative_path_is_no_longer_a_valid_key(self, build_module):
