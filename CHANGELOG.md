@@ -11051,3 +11051,53 @@ exercises); `completed_ir`/`end_to_end` unaffected, as expected. Diff is
 the single expected `source_path` attribute addition, nothing else. Full
 `pytest tests/`: 796 passed, 0 failed. CMake build/run of
 `ddthost_ftn_host.exe` left for user verification.
+
+## `capgen-nested-ddt-dropped` resolution: restored `make_ddt`'s nested-DDT fields in `examples/capgen` and `examples/ddthost` (2026-10-12)
+
+Real capgen-v1's `make_ddt.F90` gives `vmr_type` two fields beyond the two
+(`nvmr`/`vmr_array`) its `.meta` arg-table documents: `error_maybe:
+type(ty_ddt2)` (from a separate `ddt2.F90` module, declared via
+`make_ddt.meta`'s `dependencies = ddt2.F90`) and `burma_shave:
+type(ty_ddt3)` (a second derived type defined inline in `make_ddt.F90`).
+Both ported examples dropped all of it — the fields, the inline type, the
+`use ddt2`, the `dependencies` key — and `ddt2.F90` was never copied in at
+all.
+
+**Confirmed before implementing that this is pure fixture fidelity, not a
+new generator capability**: `error_maybe`/`burma_shave` have no `.meta`
+arg-table entries in real upstream either, so they're genuinely invisible
+to any metadata-driven tool. Grepped `ccpp_validate_source.py` (this
+repo's own `.meta`-vs-Fortran cross-validator) directly — it only compares
+scheme subroutine argument signatures, never derived-type internals, so it
+was never going to see these fields regardless of whether they existed.
+Real capgen-v1's own comment calls this content "the predecessor for
+adding in methods and maybe nesting DDTs" — upstream's own test that extra
+undocumented Fortran type members are harmless, not a feature under active
+exercise. Expected (and confirmed) the generated output to be byte-for-byte
+unchanged by this restoration.
+
+Restored identically in both `examples/capgen/scheme/` and
+`examples/ddthost/scheme/` (scoped both from the start, matching the
+pattern from this session's prior two gap-hunt items): added `ddt2.F90`
+(real upstream content, each example's own existing keyword-case
+convention); added `use ddt2`/the inline `ty_ddt3` type/the two new
+`vmr_type` fields to `make_ddt.F90` (leaving `ddthost`'s own independent
+`ccpp_info`/`host_ccpp_ddt` fork completely untouched); added `dependencies
+= ddt2.F90` to `make_ddt.meta`'s `vmr_type` table; added `scheme/ddt2.F90`
+to both CMakeLists.txt's plain-host and chost source lists in each example
+(both targets compile `make_ddt.F90`, confirmed via grep).
+
+**Verification**: direct `ccpp_xdsl` CLI regeneration (text-only, no
+compiling) before/after for both examples confirmed **zero diff** in every
+generated `.F90`/completed-IR output — the actual signal this restoration
+was meant to produce. `--emit-datatable` confirms `ddt2.F90` now appears
+in the `<dependencies>` section for both. Only the `frontend` FileCheck
+goldens needed regenerating (one new `dependencies`/`dependencies_path`
+attribute on the `vmr_type` table in each); `completed_ir`/`end_to_end`
+confirmed byte-identical. Regen artifact caught and fixed by hand again
+(third time this session) — the update script leaked a literal
+machine-specific absolute path into `dependencies_path` instead of this
+project's `{{.*}}` FileCheck wildcard convention, since `vmr_type` (like
+real upstream) declares no explicit `dependencies_path` of its own. Full
+`pytest tests/`: 796 passed, 0 failed. CMake build/run of both examples'
+executables left for user verification.

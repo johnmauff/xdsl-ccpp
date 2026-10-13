@@ -27,6 +27,7 @@ A two-suite example combining DDT-based schemes with temperature physics schemes
 | `scheme/ddt_suite.xml` | Suite definition for `ddt_suite` |
 | `scheme/temp_suite.xml` | Suite definition for `temp_suite` |
 | `scheme/make_ddt.meta` | Metadata for `make_ddt` + `vmr_type` DDT definition |
+| `scheme/ddt2.F90` | `ty_ddt2` DDT used (undocumented) by `vmr_type`'s `error_maybe` field |
 | `scheme/environ_conditions.meta` | Metadata for `environ_conditions` |
 | `scheme/setup_coeffs.meta` | Metadata for `setup_coeffs` |
 | `scheme/temp_set.meta` | Metadata for `temp_set` |
@@ -46,6 +47,15 @@ and `dependencies_path = adjust`; `temp_adjust.meta`'s own
 `dependencies_path = adjust` (it shares `temp_kinds.F90` with `temp_set`
 but its own `.F90` stays alongside its `.meta` file, so it declares no
 `source_path`).
+
+`make_ddt.F90`'s `vmr_type` has two Fortran-only fields,
+`error_maybe: type(ty_ddt2)` (from `ddt2.F90`, declared via
+`make_ddt.meta`'s `dependencies = ddt2.F90`) and `burma_shave:
+type(ty_ddt3)` (defined inline), that intentionally have **no**
+`.meta` arg-table entries — matching real capgen-v1 exactly. This is
+real upstream's own test that a DDT can carry extra, undocumented
+Fortran members harmlessly; xdsl-ccpp (like real capgen-v1) never
+cross-checks a DDT's full Fortran member list against its `.meta` table.
 
 ## Running with ccpp_xdsl
 
