@@ -30,7 +30,7 @@ program test_thread_scheme
 
   character(len=*), parameter :: ccpp_suite = 'thread_suite'
   character(len=*), parameter :: ccpp_group = 'thread_group'
-  character(len=256) :: errmsg
+  character(len=512) :: errmsg
   integer :: errflg
   integer :: thr
 
