@@ -11487,3 +11487,114 @@ having zero callers inside this repo.
 
 `cmake-configure-regen` is now fully resolved — both Part A and Part B
 are done.
+
+## `ci-multi-compiler`: Intel coverage added, two real bugs split into their own backlog items (2026-10-13)
+
+Part B's own real-build verification (above) found that `examples/instances`
+and `examples/constituents_dim` fail under Intel `ifx` while passing
+silently under gfortran — `.github/workflows/compile-tests-cmake.yml`
+only ever built/tested with gfortran, so neither had ever been caught by
+CI. Restructured the workflow to add real Intel coverage, at the user's
+explicit request to minimize the number of CI runners used (not one job
+per example per compiler):
+
+- Replaced the single `compile-examples-cmake` job's 20-entry
+  per-example `strategy.matrix` with two single-runner jobs,
+  `compile-examples-cmake-gnu` and `compile-examples-cmake-intel`. Each
+  configures once, then builds+ctests all ~20 examples in turn via a new
+  shared driver script, `.github/workflows/build_all_examples.sh`
+  (verified its `EXAMPLES` table is byte-identical to the old matrix's
+  20 example/targets/ctest_filter entries). This trades per-example
+  dedicated PR checks for a markdown summary table written to the job's
+  `$GITHUB_STEP_SUMMARY`, in exchange for needing only 2 runners (and 2
+  toolchain installs) total instead of one per example.
+- Intel oneAPI (`ifx`/`icpx`/`icx`) installed via Intel's own apt repo
+  (free compiler-only components, no license key) in the new job, then
+  `FC=ifx CC=icx CXX=icpx` passed to the shared script's `cmake -S . -B
+  build` configure call.
+- `build_all_examples.sh` continues past a failed example (rather than
+  aborting the whole script) so one example's failure doesn't block
+  trying the rest — matching the per-example failure isolation the old
+  matrix had, just inside one job instead of many.
+
+**Investigated, then explicitly deferred as separate, larger work**
+(user's own call — these are real bugs, not CI-infrastructure work, and
+don't belong folded into this change):
+
+- **`examples/instances`** (`error #7938: Character length argument
+  mismatch`): re-examined before assuming this was the same class of bug
+  already fixed in `examples/threads/main.F90`. It is NOT — confirmed via
+  this file's own earlier entry (L11215, the `threads` CI-isolation fix)
+  that `examples/instances/main.F90`'s `character(len=256) :: errmsg`
+  (vs. the generated cap's `len=512`) is verbatim real capgen-v1 upstream content
+  (`end-to-end-tests/instances/main.F90`, `feature/capgen-v1`),
+  deliberately left as-is to faithfully exercise a known real gap in
+  capgen-v1's own `ccpp_validator.py`: it has no cross-check between a
+  host file's actual declared Fortran string length and the generated
+  cap's own dummy-argument length. xdsl-ccpp has no equivalent validator
+  at all. Editing the example to "fix" it would silently erase the gap
+  it exists to demonstrate. Filed as its own backlog item,
+  `ccpp-validator-length-check` — a real metadata/source
+  cross-validation feature, not a one-line fix.
+- **`examples/constituents_dim`** (`forrtl: severe (153): allocatable
+  array or pointer is not allocated`, at runtime, after a clean build):
+  root cause not yet identified. Filed as its own backlog item,
+  `constituents-dim-runtime-crash`.
+
+Both are marked as expected failures in `build_all_examples.sh`'s own
+`EXPECTED_FAILURES` list (reported in the summary table and the job log,
+but don't fail the job) until their respective backlog items close —
+not a blanket "known failures" mask; each entry names the specific
+backlog item tracking its fix.
+
+**Log readability follow-up**: the Intel job's raw log made it hard to
+tell which examples passed/failed/were-expected-to-fail at a glance
+(status lines were buried inside each example's verbose cmake/ctest
+output). `build_all_examples.sh` now wraps each example's build+test in
+a `::group::`/`::endgroup::` pair (collapses the noisy part in the
+GitHub Actions log UI), prints an immediate one-line `[PASS]`/
+`::error::[FAIL]`/`[EXPECTED FAIL]` status right after each example, and
+echoes the final summary table to the raw log directly (previously it
+only went to `$GITHUB_STEP_SUMMARY`, a separate tab).
+
+**Third compiler added: NVIDIA HPC SDK** (`compile-examples-cmake-nvhpc`,
+same single-runner/shared-script pattern as the Intel job). Checked
+NVIDIA's own install guide before adding it: the HPC SDK's "slim" apt
+package (`nvhpc-26-9`, not the ~20 GB `-cuda-multi` bundle) still needs
+~9.5 GB free disk space — tight against `ubuntu-latest`'s documented
+~14 GB free, once the repo checkout/pip installs/this job's own `build/`
+directory are added on top. Added a disk-cleanup step (removing several
+preinstalled toolchains this job never uses — .NET, Android SDK, GHC,
+CodeQL, the JVM) before installing the HPC SDK, a standard pattern for
+CI jobs installing CUDA/HPC-SDK-sized toolchains. Not yet run for real;
+may surface its own new example failures the same way Intel did, needing
+the same expected-failure/backlog-item treatment.
+
+**Copilot review fixes (PR #133)**: 2 real findings.
+1. `ctest -R` exits 0 by default when the filter matches zero tests, so
+   a stale/mistyped `ctest_filter` entry would silently report `PASS`
+   without running anything. Added `--no-tests=error`. Verified directly:
+   a bogus filter against a real `ctest` project exits 0 without the
+   flag, 8 with it.
+2. `EXPECTED_FAILURES` matched on example name alone, so it would have
+   also swallowed a brand-new GNU regression in `instances`/
+   `constituents_dim`, or an Intel failure in the *other* phase than the
+   one actually documented (e.g. if `instances` started failing at
+   `ctest` instead of `cmake --build`). Rescoped entries to exact
+   `compiler|example|status` triples (new `COMPILER_LABEL` env var, set
+   per job) — a result is only suppressed if it matches all three
+   fields; anything else still fails the job. Verified with 3 scripted
+   scenarios: a GNU `instances` failure, an Intel `constituents_dim`
+   failure in the wrong phase, and the two exact documented cases — only
+   the last one exits 0.
+
+**nvhpc job made manual-only**: confirmed by the user that installing
+the HPC SDK plus building/testing all ~20 examples is much slower than
+the gnu/intel jobs — too slow to run on every PR. Rather than deleting
+the job, added `workflow_dispatch` as a trigger and gated
+`compile-examples-cmake-nvhpc` on `github.event_name ==
+'workflow_dispatch'`, so it's skipped on every `pull_request`/`push` but
+can still be run by hand from the Actions tab ("Run workflow") or `gh
+workflow run` whenever nvhpc coverage is actually wanted, with no YAML
+edits needed to toggle it. `gnu`/`intel` are unaffected — still run on
+every PR/push (and also when manually triggered).
