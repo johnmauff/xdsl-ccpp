@@ -11101,3 +11101,170 @@ project's `{{.*}}` FileCheck wildcard convention, since `vmr_type` (like
 real upstream) declares no explicit `dependencies_path` of its own. Full
 `pytest tests/`: 796 passed, 0 failed. CMake build/run of both examples'
 executables left for user verification.
+
+## `task11-omp-thread` item 3 resolution: generalized scalar-index-dimension dispatch, added `thread_number`/`number_of_threads` (2026-10-12)
+
+Re-investigated the original 2026-08-20 scoping (which had cited a since-
+deleted `ccpp-framework-fresh` checkout path) directly against the
+correctly-checked-out `feature/capgen-v1` reference before starting. Real
+capgen-v1 treats `instance_number`/`number_of_instances` (already
+implemented here) and `thread_number`/`number_of_threads` as two symmetric
+entries in one general, table-driven "registered scalar-index dimension"
+mechanism (`capgen/metadata/registered_dimensions.py`'s `SCALAR_INDEX_DIMS`
++ `ccpp_capgen.py`'s `_PAIRED_OPTIONAL_CTRL_VARS`) — a container DDT
+dimensioned by either count std-name gets its scalar index auto-
+substituted at every scheme call site by one shared, name-agnostic code
+path (confirmed via direct read of `generator/suite_resolver.py`: no
+instance-specific branching anywhere in that dimension-handling logic).
+xdsl-ccpp's own port instead hardcoded the instance pair into exactly two
+dispatch-resolution choke points. Confirmed `thread_number` is
+"substitution-only" — real capgen-v1 reads zero extra framework state from
+it (unlike `instance_number`'s `ccpp_suite_data` per-instance sizing,
+confirmed via direct grep of `generator/suite_cap.py`/`suite_data.py`) —
+so this work deliberately never touches `ccpp_suite_state` sizing or the
+`constituent_cap.py` `lc_instances` bundle.
+
+Landed in 3 stages, each verified independently before the next began
+(explicit checkpoint after Stage 1 per this session's own convention for
+multi-file dispatch-code changes, given this exact class of change caused
+repeated real regressions during task #28 Stage 3):
+
+**Stage 1 — generalize, zero new capability.** Added
+`CCPP_SCALAR_INDEX_DIMS` (`ccpp_conventions.py`) seeded with the one
+existing pair. Replaced the two hardcoded `CCPP_INSTANCE_NUMBER_STD_NAME`
+lookups (`run_dispatch.py`'s DDT-array-indexing sibling-arg search,
+`suite_cap.py`'s `active =` expression resolution) with a lookup into that
+table. Parameterized `_is_multi_instance_host`/`_synthesize_host_scalar_arg`'s
+gate into a generic `_is_multi_scalar_index_host(meta_data, scalar_std,
+count_std)`. Verified a pure no-op: full `pytest tests/` unchanged (796
+passed), `examples/instances_advection`'s 3 FileCheck goldens regenerated
+byte-identical, `examples/instances` (no golden) regenerated directly and
+confirmed `instance_data(instance)%opt_array_flag`-style indexing
+unchanged.
+
+**Stage 2 — wire in the new pair.** Added `CCPP_THREAD_NUMBER_STD_NAME`/
+`CCPP_NUMBER_OF_THREADS_STD_NAME`, the second `CCPP_SCALAR_INDEX_DIMS`
+entry, `_is_multi_thread_host`, and `_synthesize_thread_number_arg`/
+`_synthesize_number_of_threads_arg` (thin wrappers mirroring the instance
+ones exactly) wired into `_build_arg_tables`'s per-phase synthesis call,
+independent of the multi-instance gate. Deliberately did **not** add
+`_thread_arg_local_name`/`_number_of_threads_local_name` mirrors of
+`_instance_arg_local_name`/`_number_of_instances_local_name` — traced
+their only consumer (the `ccpp_suite_state` lazy-alloc gate) and confirmed
+it's instance-only, so thread equivalents would have been dead code.
+New `tests/unit/test_thread_number_scalar_index.py` (4 tests): DDT-member
+substitution for a `number_of_threads`-dimensioned container;
+`thread`/`nthreads` threaded through every lifecycle phase's wrapper
+signature and forwarded into the scheme call by keyword (empirically
+proving `lifecycle_cap.py`'s already-generic `extra_host_args` pre-scan
+picks up the new pair with zero changes to that file, rather than just
+trusting the read-through); both pairs declared and exercised
+simultaneously on one host with two separate container DDTs, confirming
+each resolves to its own correct sibling index with no cross-wiring. Full
+`pytest tests/`: 800 passed (796 + 4 new), `instances_advection` goldens
+re-confirmed byte-identical.
+
+**Stage 3 — real end-to-end example.** New `examples/threads/`, modeled
+structurally on `examples/instances/` (swap `instance`/`ninstances` for
+`thread`/`nthreads`, one scheme/group instead of `instances`' two-scheme
+subcycle — this fixture's only job is exercising the substitution
+mechanism itself, not re-testing subcycle/optional-arg interactions
+`examples/instances` already covers). **Not a capgen-v1 port** — confirmed
+during investigation that real capgen-v1's own `end-to-end-tests/` has no
+fixture dimensioning a container DDT by `number_of_threads` at all (every
+real host `.meta` declaring the pair does so as unused control-table
+boilerplate); real capgen-v1's own coverage of this mechanism lives
+entirely at the unit level. `examples/threads/README.md` documents this
+distinction explicitly. Direct `ccpp_xdsl` CLI regeneration (text-only, no
+compiling) confirms the decisive signal: `Thread_ccpp_cap.F90` emits
+`thread_data(thread)%data_array(lb:ub)`. 3 new FileCheck goldens
+(`frontend`/`completed_ir`/`end_to_end`). Root `CMakeLists.txt` wired in
+via `add_subdirectory(examples/threads)`. Full `pytest tests/`: 803 passed
+(800 + 3 new goldens), 0 failed. CMake build/run of `threads.exe` left for
+user verification, per standing convention.
+
+Item 1 of the original task #11 scoping (`number_of_openmp_threads` →
+`number_of_threads` legacy-mode rename) remains open — genuinely trivial
+now (one entry in `CCPP_DEPRECATED_STD_NAMES`), but cosmetic-only
+(xdsl-ccpp's `--legacy-mode` only warns-and-accepts, never rewrites for
+downstream matching) and was deliberately left out of this 3-stage plan;
+item 2 (`--gfs-dim-aliases`) was already done, task #68.
+
+**Fast-follow (CI-discovered, same day): `examples/threads` was missing
+from `.github/workflows/compile-tests-cmake.yml`'s matrix** (built as a
+root `CMakeLists.txt` dependency but never given its own CI job) — added
+a `threads`/`threads.exe` entry mirroring `instances`/`instances_advection`'s
+own shape. This surfaced two real bugs in `main.F90` only CI exercises
+(never caught by the text-only `ccpp_xdsl` generation checks used during
+Stage 3, since both are driver-logic bugs, not generator bugs):
+
+1. **Build warning that was actually a runtime stack-corruption bug**:
+   `main.F90`'s local `errmsg` was declared `character(len=256)`, copied
+   directly from `examples/instances/main.F90`'s own identical
+   declaration, but the generated cap's `errmsg` dummy arguments are
+   `character(len=512)`. With an explicit Fortran interface, the callee
+   writes using the *dummy's* declared length, so a write up to 512 bytes
+   can land on a stack slot only allocated for 256 — a real stack buffer
+   overflow, not a cosmetic truncation warning. Fixed by widening to
+   `character(len=512)`. **Confirmed this is NOT the same situation in
+   `examples/instances/main.F90`** before considering touching it there
+   too — that file's identical `len=256` (down to the explanatory
+   comment above it) is verbatim real capgen-v1 upstream content
+   (`end-to-end-tests/instances/main.F90`, `feature/capgen-v1`),
+   deliberately exercising a known gap in real capgen-v1's own
+   `ccpp_validator.py` — left untouched, since "fixing" it would be an
+   unauthorized divergence from faithfully-ported upstream content, not
+   a bug fix.
+2. **Real driver-logic bug, not a typo**: `main.F90` originally looped
+   `do thr = 1, nthreads` around the *entire* lifecycle (register/init/
+   run/finalize), copying `examples/instances/main.F90`'s own per-index
+   loop-everything shape — which is correct for `instance_number`
+   (each model instance gets its own independent lifecycle and its own
+   entry in the framework's per-instance `ccpp_suite_state` array) but
+   wrong for `thread_number` (confirmed during this task's own scoping:
+   real capgen-v1 builds no per-thread equivalent of that array —
+   OpenMP threads parallelize only the RUN phase within one
+   already-initialized model instance). Produced a real CI failure:
+   thread 2's `ccpp_init` call saw thread 1's call having already
+   flipped the single shared `ccpp_suite_state` to `'initialized'` and
+   errored (`"Invalid initial CCPP state, 'initialized' in
+   thread_suite_initialize, thread: 2"`) — the identical error shape
+   `test_multi_instance_suite_state.py`'s own regression test documents
+   for the instance-pair bug this exact driver shape was built to avoid,
+   confirming it's the same bug class, just newly reintroduced by
+   copying the wrong example's driver shape for this pair. Fixed by
+   calling register/init/physics_init/timestep_init/timestep_final/
+   physics_final/final once each, and looping only the `ccpp_physics_run`
+   call per thread (the one call that actually indexes
+   `thread_data(thread)`) — verified by tracing the real generated
+   `thread_suite_cap.F90`'s full state-check/transition sequence
+   directly against the corrected call order, confirming every check now
+   follows exactly one prior transition. CI confirmed passing after both
+   fixes.
+
+## `task11-omp-thread-rename` resolution: `number_of_openmp_threads` legacy-mode entry (2026-10-12)
+
+Task #11 item 1, split out as its own backlog item when item 3 landed
+(real capgen-v1's `metadata/legacy_compat.py` maps this the same way,
+gated behind the identical `--legacy-mode` shim). Added
+`"number_of_openmp_threads": CCPP_NUMBER_OF_THREADS_STD_NAME` to
+`CCPP_DEPRECATED_STD_NAMES` (`ccpp_conventions.py`) — mechanical, since
+the dict and `ArgumentOp.__init__`'s consuming check were already fully
+generic. Confirmed (and documented in-line) this remains **cosmetic
+only**, per the original task #11 scoping: xdsl-ccpp's `--legacy-mode`
+gate warns-and-accepts a deprecated name but never rewrites it for
+downstream matching. `horizontal_loop_extent` only actually resolves
+anywhere because it and `horizontal_dimension` are *also* both members of
+`CCPP_HORIZONTAL_DIMENSIONS`, consulted separately by `dims_compatible()`
+— `number_of_openmp_threads`/`number_of_threads` are scalar counts, not
+dimension names, so there is no equivalent equivalence-class mechanism
+for this entry to piggyback on; it only suppresses the reject-unknown-
+name error under `--legacy-mode`.
+
+8 new tests added to `tests/unit/test_deprecated_std_names.py`, mirroring
+the existing `horizontal_loop_extent` coverage shape (pure-lookup,
+reject-by-default, accept-with-warning-under-`--legacy-mode`) — no
+array-dimension-notation variants needed, since this name is a scalar
+count and can only ever appear as a bare `standard_name`, never inside a
+`dimensions =` clause. Full `pytest tests/`: 808 passed (800 + 8 new), 0
+failed.

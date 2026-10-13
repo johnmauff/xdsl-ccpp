@@ -54,7 +54,6 @@ later narrative entries:
 | `cmake-dep-manifest` | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
 | `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | **Re-scoped 2026-09-29: deferred indefinitely, not a schedulable near-term task.** Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already, but the 2026-07-27 premise that the legacy code path was "provably dead for every example" was found false by the 2026-08-24 investigation (real CAM-SIMA still declares `horizontal_loop_extent` directly, e.g. `temp_adjust.meta`/`temp_adjust_scalar.meta`) and reconfirmed by this session's own `/cam-sima-regression` run (`xdsl43g`) against real CAM-SIMA test cases. The code path must be retained for as long as `--legacy-mode` itself is supported — deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent` upstream, an external dependency this repo can't resolve on its own. `ccpp.py`'s `is_legacy_mode()` gate is still called; not scheduled for removal | L5679 |
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
-| `task11-omp-thread` | Task #11 items 1/3: `number_of_openmp_threads` rename; `registered_dimensions.py`'s `thread_number` scalar-index mechanism | Scoped 2026-08-20, not started; item 3 is the real one (M-L, needs its own test fixture) | L4835 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 follow-up items spawned by `constituents_dim` (single-source migration for
@@ -126,6 +125,16 @@ fields (`ddt2`-sourced `error_maybe` + inline `burma_shave`) and the
 `dependencies` key in both `examples/capgen` and `examples/ddthost`;
 confirmed pure fixture fidelity, zero generated-output change.
 CHANGELOG.md L11055.
+
+**Resolved since last verification (2026-10-12), removed from the list
+above**: `task11-omp-thread` item 3 — generalized instance_number's
+dispatch-resolution code into a real `CCPP_SCALAR_INDEX_DIMS` table and
+added `thread_number`/`number_of_threads` on top. CHANGELOG.md L11105.
+
+**Resolved since last verification (2026-10-12), removed from the list
+above**: `task11-omp-thread-rename` — added `number_of_openmp_threads` to
+`CCPP_DEPRECATED_STD_NAMES`, matching real capgen-v1's own legacy-mode
+mapping. CHANGELOG.md L11245.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `task71-validate-fir` — confirmed via direct code read that
