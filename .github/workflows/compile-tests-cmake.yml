@@ -87,6 +87,8 @@ jobs:
             ctest_filter: "instances$"
           - example: instances_advection
             targets: instances_advection.exe
+          - example: threads
+            targets: threads.exe
 
     steps:
       - uses: actions/checkout@v4
