@@ -11546,3 +11546,26 @@ Both are marked as expected failures in `build_all_examples.sh`'s own
 but don't fail the job) until their respective backlog items close —
 not a blanket "known failures" mask; each entry names the specific
 backlog item tracking its fix.
+
+**Log readability follow-up**: the Intel job's raw log made it hard to
+tell which examples passed/failed/were-expected-to-fail at a glance
+(status lines were buried inside each example's verbose cmake/ctest
+output). `build_all_examples.sh` now wraps each example's build+test in
+a `::group::`/`::endgroup::` pair (collapses the noisy part in the
+GitHub Actions log UI), prints an immediate one-line `[PASS]`/
+`::error::[FAIL]`/`[EXPECTED FAIL]` status right after each example, and
+echoes the final summary table to the raw log directly (previously it
+only went to `$GITHUB_STEP_SUMMARY`, a separate tab).
+
+**Third compiler added: NVIDIA HPC SDK** (`compile-examples-cmake-nvhpc`,
+same single-runner/shared-script pattern as the Intel job). Checked
+NVIDIA's own install guide before adding it: the HPC SDK's "slim" apt
+package (`nvhpc-26-9`, not the ~20 GB `-cuda-multi` bundle) still needs
+~9.5 GB free disk space — tight against `ubuntu-latest`'s documented
+~14 GB free, once the repo checkout/pip installs/this job's own `build/`
+directory are added on top. Added a disk-cleanup step (removing several
+preinstalled toolchains this job never uses — .NET, Android SDK, GHC,
+CodeQL, the JVM) before installing the HPC SDK, a standard pattern for
+CI jobs installing CUDA/HPC-SDK-sized toolchains. Not yet run for real;
+may surface its own new example failures the same way Intel did, needing
+the same expected-failure/backlog-item treatment.

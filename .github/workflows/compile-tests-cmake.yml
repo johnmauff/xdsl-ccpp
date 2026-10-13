@@ -6,7 +6,7 @@ name: Compile Examples (CMake)
 # workflow used to coexist alongside (and the Makefile-driven
 # compile-tests.yml workflow that used to drive them) have been removed.
 #
-# Two jobs, one per compiler (ci-multi-compiler, BACKLOG.md): each job
+# Three jobs, one per compiler (ci-multi-compiler, BACKLOG.md): each job
 # configures once and then builds+ctests every wired-in example in turn
 # via build_all_examples.sh, rather than one runner per example. That
 # used to mean a failure in one example couldn't take down another
@@ -93,3 +93,66 @@ jobs:
         run: |
           source /opt/intel/oneapi/setvars.sh
           bash .github/workflows/build_all_examples.sh
+
+  compile-examples-cmake-nvhpc:
+    name: cmake compile+run (nvhpc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Free disk space (NVIDIA HPC SDK needs ~9.5 GB)
+        # ubuntu-latest's documented ~14 GB free is too tight once the
+        # HPC SDK's own footprint is added to the repo checkout, pip
+        # installs, and this job's own build/ directory (20 examples'
+        # worth of object files + executables). Removes several
+        # preinstalled toolchains this job never uses (not a general
+        # apt-get clean) to reclaim headroom -- a standard pattern for
+        # CI jobs installing CUDA/HPC-SDK-sized toolchains.
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/.ghcup
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo rm -rf /usr/lib/jvm
+          df -h /
+
+      - name: Install NVIDIA HPC SDK (nvfortran/nvc/nvc++)
+        # nvhpc-26-9 is the "slim" package (~9.5 GB installed), not the
+        # larger nvhpc-26-9-cuda-multi bundle (~20 GB) -- this repo's
+        # wired-in examples are all CPU-only, no GPU offload exercised.
+        # The package name is version-pinned (NVIDIA ships no
+        # unversioned "latest" meta-package the way Intel's oneAPI
+        # components do) -- bump this name once NVIDIA drops 26.9 from
+        # the apt index.
+        run: |
+          wget -qO- https://developer.download.nvidia.com/hpc-sdk/ubuntu/DEB-GPG-KEY-NVIDIA-HPC-SDK \
+            | gpg --dearmor | sudo tee /usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/nvidia-hpcsdk-archive-keyring.gpg] https://developer.download.nvidia.com/hpc-sdk/ubuntu/amd64 /" \
+            | sudo tee /etc/apt/sources.list.d/nvhpc.list
+          sudo apt-get update -y
+          sudo apt-get install -y nvhpc-26-9
+
+      - name: Add NVIDIA compilers to PATH
+        run: |
+          for d in /opt/nvidia/hpc_sdk/Linux_x86_64/*/compilers/bin; do
+            echo "$d" >> "$GITHUB_PATH"
+          done
+
+      - name: Install xdsl-ccpp
+        run: python -m pip install -e .
+
+      - name: Install CMake
+        run: python -m pip install cmake
+
+      - name: Build and test all examples
+        env:
+          FC: nvfortran
+          CC: nvc
+          CXX: nvc++
+        run: bash .github/workflows/build_all_examples.sh
