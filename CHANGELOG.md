@@ -11241,3 +11241,30 @@ Stage 3, since both are driver-logic bugs, not generator bugs):
    directly against the corrected call order, confirming every check now
    follows exactly one prior transition. CI confirmed passing after both
    fixes.
+
+## `task11-omp-thread-rename` resolution: `number_of_openmp_threads` legacy-mode entry (2026-10-12)
+
+Task #11 item 1, split out as its own backlog item when item 3 landed
+(real capgen-v1's `metadata/legacy_compat.py` maps this the same way,
+gated behind the identical `--legacy-mode` shim). Added
+`"number_of_openmp_threads": CCPP_NUMBER_OF_THREADS_STD_NAME` to
+`CCPP_DEPRECATED_STD_NAMES` (`ccpp_conventions.py`) — mechanical, since
+the dict and `ArgumentOp.__init__`'s consuming check were already fully
+generic. Confirmed (and documented in-line) this remains **cosmetic
+only**, per the original task #11 scoping: xdsl-ccpp's `--legacy-mode`
+gate warns-and-accepts a deprecated name but never rewrites it for
+downstream matching. `horizontal_loop_extent` only actually resolves
+anywhere because it and `horizontal_dimension` are *also* both members of
+`CCPP_HORIZONTAL_DIMENSIONS`, consulted separately by `dims_compatible()`
+— `number_of_openmp_threads`/`number_of_threads` are scalar counts, not
+dimension names, so there is no equivalent equivalence-class mechanism
+for this entry to piggyback on; it only suppresses the reject-unknown-
+name error under `--legacy-mode`.
+
+8 new tests added to `tests/unit/test_deprecated_std_names.py`, mirroring
+the existing `horizontal_loop_extent` coverage shape (pure-lookup,
+reject-by-default, accept-with-warning-under-`--legacy-mode`) — no
+array-dimension-notation variants needed, since this name is a scalar
+count and can only ever appear as a bare `standard_name`, never inside a
+`dimensions =` clause. Full `pytest tests/`: 808 passed (800 + 8 new), 0
+failed.

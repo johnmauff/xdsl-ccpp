@@ -54,7 +54,6 @@ later narrative entries:
 | `cmake-dep-manifest` | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
 | `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | **Re-scoped 2026-09-29: deferred indefinitely, not a schedulable near-term task.** Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already, but the 2026-07-27 premise that the legacy code path was "provably dead for every example" was found false by the 2026-08-24 investigation (real CAM-SIMA still declares `horizontal_loop_extent` directly, e.g. `temp_adjust.meta`/`temp_adjust_scalar.meta`) and reconfirmed by this session's own `/cam-sima-regression` run (`xdsl43g`) against real CAM-SIMA test cases. The code path must be retained for as long as `--legacy-mode` itself is supported — deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent` upstream, an external dependency this repo can't resolve on its own. `ccpp.py`'s `is_legacy_mode()` gate is still called; not scheduled for removal | L5679 |
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
-| `task11-omp-thread-rename` | Task #11 item 1: `number_of_openmp_threads` → `number_of_threads` legacy-mode rename | XS, trivial now that item 3 (`CCPP_SCALAR_INDEX_DIMS`) exists; still cosmetic-only — `--legacy-mode` only warns-and-accepts, never rewrites for downstream matching | L11105 |
 
 **Resolved since last verification (2026-09-29), removed from the list above**:
 follow-up items spawned by `constituents_dim` (single-source migration for
@@ -131,6 +130,11 @@ CHANGELOG.md L11055.
 above**: `task11-omp-thread` item 3 — generalized instance_number's
 dispatch-resolution code into a real `CCPP_SCALAR_INDEX_DIMS` table and
 added `thread_number`/`number_of_threads` on top. CHANGELOG.md L11105.
+
+**Resolved since last verification (2026-10-12), removed from the list
+above**: `task11-omp-thread-rename` — added `number_of_openmp_threads` to
+`CCPP_DEPRECATED_STD_NAMES`, matching real capgen-v1's own legacy-mode
+mapping. CHANGELOG.md L11245.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `task71-validate-fir` — confirmed via direct code read that
