@@ -21,11 +21,19 @@ name: Compile Examples (CMake)
 # here -- there is no single source of truth the two are generated from,
 # so an example's CMakeLists.txt changing its own target name(s) needs a
 # matching edit there.
+#
+# compile-examples-cmake-nvhpc only runs on a manual trigger (the
+# "Run workflow" button in the Actions tab, or `gh workflow run`) --
+# installing the NVIDIA HPC SDK plus building+testing all ~20 examples
+# takes much longer than the gnu/intel jobs, too slow to run on every PR.
+# Run it by hand occasionally instead; nothing here needs editing to do
+# that, `workflow_dispatch` is already wired up below.
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   compile-examples-cmake-gnu:
@@ -99,6 +107,10 @@ jobs:
 
   compile-examples-cmake-nvhpc:
     name: cmake compile+run (nvhpc)
+    # Manual-only (see this file's top-of-file comment) -- skipped on
+    # pull_request/push, runs when triggered via the Actions tab's "Run
+    # workflow" button or `gh workflow run compile-tests-cmake.yml`.
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

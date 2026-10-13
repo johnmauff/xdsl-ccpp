@@ -11587,3 +11587,14 @@ the same expected-failure/backlog-item treatment.
    scenarios: a GNU `instances` failure, an Intel `constituents_dim`
    failure in the wrong phase, and the two exact documented cases — only
    the last one exits 0.
+
+**nvhpc job made manual-only**: confirmed by the user that installing
+the HPC SDK plus building/testing all ~20 examples is much slower than
+the gnu/intel jobs — too slow to run on every PR. Rather than deleting
+the job, added `workflow_dispatch` as a trigger and gated
+`compile-examples-cmake-nvhpc` on `github.event_name ==
+'workflow_dispatch'`, so it's skipped on every `pull_request`/`push` but
+can still be run by hand from the Actions tab ("Run workflow") or `gh
+workflow run` whenever nvhpc coverage is actually wanted, with no YAML
+edits needed to toggle it. `gnu`/`intel` are unaffected — still run on
+every PR/push (and also when manually triggered).
