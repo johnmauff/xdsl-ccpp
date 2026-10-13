@@ -936,7 +936,13 @@ class ccppMain:
           suite XML's own <suite name=...> attribute (XMLSuite, no codegen
           needed).
         - host cap: ccpp_cap.py's derive_camel_case_name (shared via
-          cap_shared.py) + "_ccpp_cap".
+          cap_shared.py) + "_ccpp_cap" -- gated on has_host (--host-files
+          non-empty), matching _build_pipeline's own has_host gate around
+          generate-ccpp-cap: a valid host-less invocation (suites +
+          scheme-files only) produces no host cap at all. Copilot review
+          on PR #132 -- no wired-in example exercises a host-less
+          invocation, so Part A's own byte-for-byte verification against
+          all 24 real generation calls never exercised this path.
         - the main cap's BIND(C) header: emitted whenever bind_c is on
           (--bind-c or _host_lang_cpp()) -- generate-ccpp-cap marks every
           generated lifecycle function bind_c=true unconditionally in that
@@ -979,13 +985,15 @@ class ccppMain:
             self.options_db.get("host_name")
             or derive_camel_case_name(suite_names[0])
         )
-        outputs.append(f"{camel_name}_ccpp_cap.F90")
+        has_host = bool(self.options_db.get("host_files"))
+        if has_host:
+            outputs.append(f"{camel_name}_ccpp_cap.F90")
 
         bind_c = bool(self.options_db.get("bind_c")) or self._host_lang_cpp()
         kinds_present = self._predict_kinds_present()
         if kinds_present:
             outputs.append("ccpp_kinds.F90")
-        if bind_c:
+        if has_host and bind_c:
             outputs.append(f"{camel_name}_ccpp_cap.h")
             if kinds_present:
                 outputs.append("ccpp_kinds.h")

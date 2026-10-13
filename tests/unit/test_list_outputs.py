@@ -96,6 +96,42 @@ class TestHostCapNaming:
         ))
         assert "HelloWorld_ccpp_cap.F90" in outputs
 
+    def test_no_host_cap_without_host_files(self):
+        """Copilot review on PR #132: --host-files is optional (suites +
+        scheme-files alone is a valid invocation, matching
+        _normalize_options_db's own required-argument check) -- the real
+        pipeline only appends generate-ccpp-cap when has_host
+        (ccpp_dsl.py's own _build_pipeline), so a host-less invocation
+        must not predict a host cap (or its --bind-c header) at all.
+        Verified directly against a real host-less generation call: real
+        output is exactly {hello_world_suite_cap.F90, ccpp_kinds.F90},
+        matching this test's own assertions."""
+        outputs = _predict(_options_db(
+            ccppMain(),
+            suites=["examples/helloworld/hello_world_suite.xml"],
+            scheme_files=[
+                "examples/helloworld/hello_scheme.meta",
+                "examples/helloworld/temp_adjust.meta",
+            ],
+            host_files=[],
+        ))
+        assert not any("_ccpp_cap" in f for f in outputs)
+        assert outputs == ["hello_world_suite_cap.F90", "ccpp_kinds.F90"]
+
+    def test_no_host_cap_header_even_with_bind_c_and_no_host_files(self):
+        outputs = _predict(_options_db(
+            ccppMain(),
+            suites=["examples/helloworld/hello_world_suite.xml"],
+            scheme_files=[
+                "examples/helloworld/hello_scheme.meta",
+                "examples/helloworld/temp_adjust.meta",
+            ],
+            host_files=[],
+            bind_c=True,
+        ))
+        assert not any(f.endswith(".h") for f in outputs)
+        assert not any("_ccpp_cap" in f for f in outputs)
+
     def test_explicit_host_name_overrides_derivation(self):
         outputs = _predict(_options_db(
             ccppMain(),
