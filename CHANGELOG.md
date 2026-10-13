@@ -11268,3 +11268,62 @@ array-dimension-notation variants needed, since this name is a scalar
 count and can only ever appear as a bare `standard_name`, never inside a
 `dimensions =` clause. Full `pytest tests/`: 808 passed (800 + 8 new), 0
 failed.
+
+## `cmake-dep-manifest` resolution: CMake now consumes the generator's own dependency manifest (2026-10-13)
+
+CMake previously hand-listed extra compiled dependency files (e.g.
+`temp_kinds.F90`, `ddt2.F90`) directly in `examples/capgen`/
+`examples/ddthost`'s `CMakeLists.txt`, with comments explaining why. The
+generator's own `--emit-datatable` output already has a `<dependencies>`
+section meant to automate this, but nothing on the CMake side ever
+consumed it.
+
+**Real blocker found before wiring anything up**: an *explicit*
+`dependencies_path` (e.g. `temp_set.meta`'s `dependencies_path = adjust`)
+was stored as the raw string `"adjust"` verbatim in
+`xdsl_ccpp/frontend/ccpp_xml.py`'s `build_meta_ir()` — meaningless to any
+downstream consumer that doesn't separately know which `.meta` file it
+came from, since it's relative to *that* file's own directory, which
+varies per table. Fixed to resolve against the originating `.meta` file's
+own directory, the same way the implicit/auto-populated case already
+did. New regression test
+(`test_explicit_dependencies_path_resolves_against_the_real_meta_file_directory`)
+confirms this against a real file on disk, not just a synthetic fixture.
+
+**CMake side**: `cmake/parse_xdsl_ccpp_datatable.py` gained a
+`--section dependencies` mode (default behavior unchanged — verified
+byte-identical output for the existing `ccpp_files` case);
+`cmake/xdsl_ccpp_capgen.cmake` now also exposes `CCPP_DEPENDENCIES_LIST`.
+`examples/capgen/CMakeLists.txt`/`examples/ddthost/CMakeLists.txt` (each
+calling `xdsl_ccpp_capgen()` twice, plain + chost) now consume
+`${PLAIN_DEPENDENCIES}`/`${CHOST_DEPENDENCIES}` — captured immediately
+after each call, since the second call would otherwise overwrite the
+shared `CCPP_DEPENDENCIES_LIST` output variable before the first call's
+value could be read.
+
+**Verification**: self-verified directly (no `cmake` needed) — regenerated
+all 4 affected generation calls (capgen plain/chost, ddthost plain/chost)
+and confirmed the dependency lists resolve to correct, real absolute
+paths; the parser script tested directly against real datatables,
+including the "no dependencies" case (e.g. `examples/instances`)
+degrading gracefully to an empty list, not an error. One frontend
+FileCheck golden regenerated (`capgen-xml.mlir`; `ddthost-xml.mlir`
+round-tripped to byte-identical, since its own golden only exercises
+`ddt_suite`, which doesn't touch the affected tables). Full `pytest
+tests/`: 809 passed, 0 failed. **CI-confirmed**: a real `cmake -S . -B
+build` + compile for both affected examples passed, verifying the one
+part that couldn't be checked without running `cmake` directly.
+
+**Checked for real-world impact on CAM-SIMA's own regression builds**
+(`cam_autogen.py` consumes the same `<dependencies>` datatable section,
+via a different reader, `ccpp_datafile.py`'s `datatable_report()`, to
+copy dependency files into the CIME build directory): confirmed zero real
+CAM-SIMA scheme `.meta` file (`src/physics/ncar_ccpp`) declares an
+explicit `dependencies_path` today, so the `ccpp_xml.py` fix is currently
+dormant there — zero behavioral risk to CAM-SIMA regression tests from
+this change, ready for if/when a real scheme ever does declare one. Also
+confirmed CAM-SIMA's own build never touches any of the CMake
+infrastructure this fix lives in at all (`cam_autogen.py` invokes
+`xdsl_ccpp.tools.ccpp_dsl` directly via `subprocess`, independent of
+`cmake/xdsl_ccpp_capgen.cmake`/any example `CMakeLists.txt`) — this fix
+is scoped entirely to this repo's own internal example-testing CI.

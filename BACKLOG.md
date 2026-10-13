@@ -51,7 +51,6 @@ later narrative entries:
 
 | ID | Item | Notes | Archive |
 |---|---|---|---|
-| `cmake-dep-manifest` | Metadata dependency-manifest automation for CMake (Tier 2 of dependency tracking — Tier 1 parse/IR-forward is done) | Size TBD, needs its own design pass; overlaps with the CMake-configure-time item below | L5465 |
 | `hle-vocab-retire` | Retire the legacy `horizontal_loop_extent` vocabulary — actual code-path deletion | **Re-scoped 2026-09-29: deferred indefinitely, not a schedulable near-term task.** Examples migrated (2026-07-27) and `--legacy-mode` gate added (2026-08-13) already, but the 2026-07-27 premise that the legacy code path was "provably dead for every example" was found false by the 2026-08-24 investigation (real CAM-SIMA still declares `horizontal_loop_extent` directly, e.g. `temp_adjust.meta`/`temp_adjust_scalar.meta`) and reconfirmed by this session's own `/cam-sima-regression` run (`xdsl43g`) against real CAM-SIMA test cases. The code path must be retained for as long as `--legacy-mode` itself is supported — deletion is only safe once CAM-SIMA migrates off `horizontal_loop_extent` upstream, an external dependency this repo can't resolve on its own. `ccpp.py`'s `is_legacy_mode()` gate is still called; not scheduled for removal | L5679 |
 | `task28-stage5-fanout` | Stage 5 of task #28: match capgen-v1's `''`/`'all'`-group fan-out call shape exactly | S-M, cosmetic, blocks nothing | L4820 |
 
@@ -135,6 +134,12 @@ added `thread_number`/`number_of_threads` on top. CHANGELOG.md L11105.
 above**: `task11-omp-thread-rename` — added `number_of_openmp_threads` to
 `CCPP_DEPRECATED_STD_NAMES`, matching real capgen-v1's own legacy-mode
 mapping. CHANGELOG.md L11245.
+
+**Resolved since last verification (2026-10-13), removed from the list
+above**: `cmake-dep-manifest` — CMake now consumes the generator's own
+`<dependencies>` datatable section instead of hand-listed source files;
+fixed a real relative-path bug along the way; CI-confirmed. CHANGELOG.md
+L11272.
 
 **Resolved since last verification (2026-10-08), removed from the list
 above**: `task71-validate-fir` — confirmed via direct code read that
