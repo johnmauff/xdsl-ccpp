@@ -11569,3 +11569,21 @@ CodeQL, the JVM) before installing the HPC SDK, a standard pattern for
 CI jobs installing CUDA/HPC-SDK-sized toolchains. Not yet run for real;
 may surface its own new example failures the same way Intel did, needing
 the same expected-failure/backlog-item treatment.
+
+**Copilot review fixes (PR #133)**: 2 real findings.
+1. `ctest -R` exits 0 by default when the filter matches zero tests, so
+   a stale/mistyped `ctest_filter` entry would silently report `PASS`
+   without running anything. Added `--no-tests=error`. Verified directly:
+   a bogus filter against a real `ctest` project exits 0 without the
+   flag, 8 with it.
+2. `EXPECTED_FAILURES` matched on example name alone, so it would have
+   also swallowed a brand-new GNU regression in `instances`/
+   `constituents_dim`, or an Intel failure in the *other* phase than the
+   one actually documented (e.g. if `instances` started failing at
+   `ctest` instead of `cmake --build`). Rescoped entries to exact
+   `compiler|example|status` triples (new `COMPILER_LABEL` env var, set
+   per job) — a result is only suppressed if it matches all three
+   fields; anything else still fails the job. Verified with 3 scripted
+   scenarios: a GNU `instances` failure, an Intel `constituents_dim`
+   failure in the wrong phase, and the two exact documented cases — only
+   the last one exits 0.

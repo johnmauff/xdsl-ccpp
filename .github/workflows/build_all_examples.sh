@@ -12,8 +12,12 @@
 # changing its own target name(s) needs a matching edit here.
 #
 # Env vars read:
-#   FC/CC/CXX -- compiler to configure with (unset = CMake's platform
-#                default, i.e. gfortran/gcc/g++)
+#   FC/CC/CXX      -- compiler to configure with (unset = CMake's
+#                     platform default, i.e. gfortran/gcc/g++)
+#   COMPILER_LABEL -- which job is calling this script (gnu/intel/nvhpc);
+#                     used only to scope EXPECTED_FAILURES below to the
+#                     exact compiler a known bug was found under. Default
+#                     "gnu" matches the gnu job, which sets no FC/CC/CXX.
 
 set -uo pipefail
 
@@ -42,16 +46,22 @@ EXAMPLES=(
 
 # Expected failures: real, already-tracked bugs, each with its own
 # BACKLOG.md item -- found by this very script under Intel ifx (passes
-# silently under gfortran). Listed here, not silently swallowed, so a
-# failure here still shows up in the summary table and the job log; it
-# just doesn't fail the job, since fixing each is separate, larger work
-# than this CI change. Remove an entry once its backlog item is closed.
-#   instances:         ccpp-validator-length-check (CHANGELOG.md L11491)
-#   constituents_dim:  constituents-dim-runtime-crash (CHANGELOG.md L11491)
+# silently under gfortran and has never been run under nvhpc). Listed
+# here, not silently swallowed, so a failure here still shows up in the
+# summary table and the job log; it just doesn't fail the job, since
+# fixing each is separate, larger work than this CI change. Scoped to
+# the exact compiler/phase a bug was actually found under (Copilot
+# review on PR #133) -- a GNU regression in either example, or an Intel
+# failure in the OTHER phase than documented, is a NEW problem and must
+# still fail the job. Format: "compiler|example|status". Remove an
+# entry once its backlog item is closed.
+#   intel|instances|BUILD_FAIL:          ccpp-validator-length-check (CHANGELOG.md L11491)
+#   intel|constituents_dim|TEST_FAIL:    constituents-dim-runtime-crash (CHANGELOG.md L11491)
 EXPECTED_FAILURES=(
-  "instances"
-  "constituents_dim"
+  "intel|instances|BUILD_FAIL"
+  "intel|constituents_dim|TEST_FAIL"
 )
+COMPILER_LABEL="${COMPILER_LABEL:-gnu}"
 
 cmake -S . -B build
 
@@ -70,17 +80,28 @@ for entry in "${EXAMPLES[@]}"; do
   status="PASS"
   if ! cmake --build build --target ${targets}; then
     status="BUILD_FAIL"
-  elif ! ctest --test-dir build --output-on-failure -R "$filter"; then
+  # --no-tests=error: ctest's own default is to exit 0 when -R matches
+  # zero tests, so a stale/mistyped filter would otherwise silently
+  # report PASS without running anything (Copilot review on PR #133).
+  elif ! ctest --test-dir build --output-on-failure --no-tests=error -R "$filter"; then
     status="TEST_FAIL"
   fi
   echo "::endgroup::"
 
-  expected_failure=0
-  for ex in "${EXPECTED_FAILURES[@]}"; do
-    [ "$ex" = "$example" ] && expected_failure=1
+  # expected_status: the status EXPECTED_FAILURES documents for this
+  # EXACT (compiler, example) pair, if any -- not just the example name,
+  # so a GNU run of instances/constituents_dim (no matching entry) or an
+  # Intel run that fails in the OTHER phase than documented (status
+  # mismatch below) both still count as a real, job-failing result.
+  expected_status=""
+  for entry2 in "${EXPECTED_FAILURES[@]}"; do
+    IFS="|" read -r ef_compiler ef_example ef_status <<< "$entry2"
+    if [ "$ef_compiler" = "$COMPILER_LABEL" ] && [ "$ef_example" = "$example" ]; then
+      expected_status="$ef_status"
+    fi
   done
 
-  if [ "$status" != "PASS" ] && [ "$expected_failure" -eq 1 ]; then
+  if [ "$status" != "PASS" ] && [ "$status" = "$expected_status" ]; then
     echo "[EXPECTED FAIL] $example: $status -- see build_all_examples.sh's own EXPECTED_FAILURES comment"
     status="${status} (expected)"
   elif [ "$status" != "PASS" ]; then
@@ -88,8 +109,8 @@ for entry in "${EXAMPLES[@]}"; do
     overall_status=1
   else
     echo "[PASS] $example"
-    if [ "$expected_failure" -eq 1 ]; then
-      echo "::notice::$example: PASS, but still listed in EXPECTED_FAILURES -- its backlog item may be fixed already, remove the entry"
+    if [ -n "$expected_status" ]; then
+      echo "::notice::$example: PASS under $COMPILER_LABEL, but still listed in EXPECTED_FAILURES (expected $expected_status) -- its backlog item may be fixed already, remove the entry"
     fi
   fi
   result_lines+=("${example}|${status}")
