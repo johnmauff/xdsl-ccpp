@@ -18,7 +18,7 @@
 // CHECK-NEXT:        "ccpp.arg"() <{name = "nvmr", type = "integer", standard_name = "number_of_chemical_species", units = "count"}> : () -> ()
 // CHECK-NEXT:        "ccpp.arg"() <{name = "vmr_array", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,number_of_chemical_species", standard_name = "array_of_volume_mixing_ratios", kind = "kind_phys", units = "ppmv"}> : () -> ()
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-NEXT:    }) {source_module = "make_ddt"} : () -> ()
+// CHECK-NEXT:    }) {source_module = "make_ddt", dependencies_path = "{{.*}}", dependencies = ["ddt2.F90"]} : () -> ()
 // CHECK-NEXT:    "ccpp.table_properties"() <{name = "make_ddt", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:      "ccpp.arg_table"() <{name = "make_ddt_run", type = #ccpp<table_type_kind scheme>}> ({
 // CHECK-NEXT:        "ccpp.arg"() <{name = "cols", type = "integer", standard_name = "horizontal_loop_begin", intent = "in", units = "count"}> : () -> ()
