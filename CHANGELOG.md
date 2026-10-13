@@ -11189,3 +11189,55 @@ now (one entry in `CCPP_DEPRECATED_STD_NAMES`), but cosmetic-only
 (xdsl-ccpp's `--legacy-mode` only warns-and-accepts, never rewrites for
 downstream matching) and was deliberately left out of this 3-stage plan;
 item 2 (`--gfs-dim-aliases`) was already done, task #68.
+
+**Fast-follow (CI-discovered, same day): `examples/threads` was missing
+from `.github/workflows/compile-tests-cmake.yml`'s matrix** (built as a
+root `CMakeLists.txt` dependency but never given its own CI job) — added
+a `threads`/`threads.exe` entry mirroring `instances`/`instances_advection`'s
+own shape. This surfaced two real bugs in `main.F90` only CI exercises
+(never caught by the text-only `ccpp_xdsl` generation checks used during
+Stage 3, since both are driver-logic bugs, not generator bugs):
+
+1. **Build warning that was actually a runtime stack-corruption bug**:
+   `main.F90`'s local `errmsg` was declared `character(len=256)`, copied
+   directly from `examples/instances/main.F90`'s own identical
+   declaration, but the generated cap's `errmsg` dummy arguments are
+   `character(len=512)`. With an explicit Fortran interface, the callee
+   writes using the *dummy's* declared length, so a write up to 512 bytes
+   can land on a stack slot only allocated for 256 — a real stack buffer
+   overflow, not a cosmetic truncation warning. Fixed by widening to
+   `character(len=512)`. **Confirmed this is NOT the same situation in
+   `examples/instances/main.F90`** before considering touching it there
+   too — that file's identical `len=256` (down to the explanatory
+   comment above it) is verbatim real capgen-v1 upstream content
+   (`end-to-end-tests/instances/main.F90`, `feature/capgen-v1`),
+   deliberately exercising a known gap in real capgen-v1's own
+   `ccpp_validator.py` — left untouched, since "fixing" it would be an
+   unauthorized divergence from faithfully-ported upstream content, not
+   a bug fix.
+2. **Real driver-logic bug, not a typo**: `main.F90` originally looped
+   `do thr = 1, nthreads` around the *entire* lifecycle (register/init/
+   run/finalize), copying `examples/instances/main.F90`'s own per-index
+   loop-everything shape — which is correct for `instance_number`
+   (each model instance gets its own independent lifecycle and its own
+   entry in the framework's per-instance `ccpp_suite_state` array) but
+   wrong for `thread_number` (confirmed during this task's own scoping:
+   real capgen-v1 builds no per-thread equivalent of that array —
+   OpenMP threads parallelize only the RUN phase within one
+   already-initialized model instance). Produced a real CI failure:
+   thread 2's `ccpp_init` call saw thread 1's call having already
+   flipped the single shared `ccpp_suite_state` to `'initialized'` and
+   errored (`"Invalid initial CCPP state, 'initialized' in
+   thread_suite_initialize, thread: 2"`) — the identical error shape
+   `test_multi_instance_suite_state.py`'s own regression test documents
+   for the instance-pair bug this exact driver shape was built to avoid,
+   confirming it's the same bug class, just newly reintroduced by
+   copying the wrong example's driver shape for this pair. Fixed by
+   calling register/init/physics_init/timestep_init/timestep_final/
+   physics_final/final once each, and looping only the `ccpp_physics_run`
+   call per thread (the one call that actually indexes
+   `thread_data(thread)`) — verified by tracing the real generated
+   `thread_suite_cap.F90`'s full state-check/transition sequence
+   directly against the corrected call order, confirming every check now
+   follows exactly one prior transition. CI confirmed passing after both
+   fixes.
