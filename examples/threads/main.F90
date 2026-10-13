@@ -2,14 +2,26 @@
 ! capgen-v1: confirmed during scoping that real capgen-v1's own
 ! end-to-end-tests/ has no fixture exercising thread_number/
 ! number_of_threads as a container-DDT scalar index (only unused
-! control-table boilerplate declarations of the pair). Modeled directly
-! on this repo's own examples/instances/main.F90 -- the real capgen-v1
-! analog for the symmetric instance_number/number_of_instances pair --
-! with instance/ninstances swapped for thread/nthreads and a single
-! scheme/group in place of that example's two-scheme subcycle (this
-! fixture's only job is to exercise the thread_number substitution
-! mechanism itself, not re-test subcycle/optional-arg/array-section
-! behavior examples/instances already covers for the instance pair).
+! control-table boilerplate declarations of the pair).
+!
+! Deliberately NOT structured like examples/instances/main.F90's own
+! per-index loop over the WHOLE lifecycle (register/init/.../final) --
+! that shape is correct for instance_number because each model instance
+! genuinely gets its own independent lifecycle and its own entry in the
+! framework's per-instance ccpp_suite_state array. thread_number has no
+! such framework-side state: confirmed during scoping that real
+! capgen-v1 builds no per-thread equivalent of that array (OpenMP
+! threads parallelize only the RUN phase within one already-initialized
+! model instance, never separate register/init/finalize calls). A first
+! version of this driver copied examples/instances' per-index-loops-
+! everything shape directly and hit exactly the bug that shape is meant
+! to prevent for instances: thread 2's ccpp_init call saw thread 1's
+! call having already flipped the single shared ccpp_suite_state to
+! 'initialized' and errored ("Invalid initial CCPP state, 'initialized'
+! in thread_suite_initialize, thread: 2") -- a real CI failure, not a
+! hypothetical. Fixed by calling register/init/finalize ONCE and only
+! looping the RUN-phase call per thread, matching how OpenMP threads
+! actually parallelize physics work in a real host model.
 program test_thread_scheme
 
   use, intrinsic :: iso_fortran_env, only: error_unit
@@ -38,68 +50,63 @@ program test_thread_scheme
   thread_data(2)%data_array = +1.0_8
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP register step                             !
+  ! CCPP register step -- once, not per thread.    !
+  ! thread_scheme declares thread_number only on    !
+  ! its own _run entry point, so the value passed   !
+  ! here is never consumed by anything; 1 is as     !
+  ! good as any.                                    !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_register(suite_name=ccpp_suite, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_register:"
-      write(error_unit, '(a)') trim(errmsg)
-      stop 1
-    end if
-  end do
+  call ccpp_register(suite_name=ccpp_suite, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_register:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP init step                                 !
+  ! CCPP init step -- once.                        !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_init(suite_name=ccpp_suite, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_init:"
-      write(error_unit, '(a)') trim(errmsg)
-      write(error_unit, '(a,i0)') "thread: ", thr
-      stop 1
-    end if
-  end do
+  call ccpp_init(suite_name=ccpp_suite, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_init:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP physics init step                         !
+  ! CCPP physics init step -- once.                !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_physics_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
-        lb=1, ub=ncols, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_physics_init:"
-      write(error_unit, '(a)') trim(errmsg)
-      write(error_unit, '(a,i0)') "thread: ", thr
-      stop 1
-    end if
-  end do
+  call ccpp_physics_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
+      lb=1, ub=ncols, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_init:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP physics timestep init step                !
+  ! CCPP physics timestep init step -- once.       !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_physics_timestep_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
-        lb=1, ub=ncols, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_init:"
-      write(error_unit, '(a)') trim(errmsg)
-      write(error_unit, '(a,i0)') "thread: ", thr
-      stop 1
-    end if
-  end do
+  call ccpp_physics_timestep_init(suite_name=ccpp_suite, suite_part=ccpp_group, &
+      lb=1, ub=ncols, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_init:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP physics run step                          !
+  ! CCPP physics run step -- once PER THREAD. This !
+  ! is the actual mechanism under test: each call   !
+  ! indexes thread_data(thread) independently.      !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
   do thr=1,nthreads
@@ -116,51 +123,42 @@ program test_thread_scheme
   end do
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP physics timestep final step               !
+  ! CCPP physics timestep final step -- once.      !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_physics_timestep_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
-        lb=1, ub=ncols, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_final:"
-      write(error_unit, '(a)') trim(errmsg)
-      write(error_unit, '(a,i0)') "thread: ", thr
-      stop 1
-    end if
-  end do
+  call ccpp_physics_timestep_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
+      lb=1, ub=ncols, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_timestep_final:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP physics final step                        !
+  ! CCPP physics final step -- once.               !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_physics_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
-        lb=1, ub=ncols, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_physics_final:"
-      write(error_unit, '(a)') trim(errmsg)
-      write(error_unit, '(a,i0)') "thread: ", thr
-      stop 1
-    end if
-  end do
+  call ccpp_physics_final(suite_name=ccpp_suite, suite_part=ccpp_group, &
+      lb=1, ub=ncols, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_physics_final:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  ! CCPP final step                                !
+  ! CCPP final step -- once.                       !
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-  do thr=1,nthreads
-    call ccpp_final(suite_name=ccpp_suite, thread=thr, &
-        nthreads=nthreads, errmsg=errmsg, errflg=errflg)
-    if (errflg/=0) then
-      write(error_unit, '(a)') "An error occurred in ccpp_final:"
-      write(error_unit, '(a)') trim(errmsg)
-      write(error_unit, '(a,i0)') "thread: ", thr
-      stop 1
-    end if
-  end do
+  call ccpp_final(suite_name=ccpp_suite, thread=1, &
+      nthreads=nthreads, errmsg=errmsg, errflg=errflg)
+  if (errflg/=0) then
+    write(error_unit, '(a)') "An error occurred in ccpp_final:"
+    write(error_unit, '(a)') trim(errmsg)
+    stop 1
+  end if
 
   write(error_unit, '(a)') "test_thread_scheme: all checks passed"
 
