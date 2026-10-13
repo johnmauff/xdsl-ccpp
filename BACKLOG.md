@@ -78,9 +78,20 @@ separately), CHANGELOG.md L5850.
 | ID | Item | Notes | Archive |
 |---|---|---|---|
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
-| `ci-multi-compiler` | `.github/workflows/compile-tests-cmake.yml` only builds/tests with gfortran (ubuntu-latest's default) — no Intel/other compiler coverage | M; Intel (`ifx`/`icpx`/`icx`) coverage added and runs on every PR/push via a new single-runner `compile-examples-cmake-intel` job + shared `build_all_examples.sh` driver (replaces the old per-example matrix, at the user's request to minimize runner count); pending a real CI run to confirm green. NVIDIA HPC SDK (`nvfortran`/`nvc`/`nvc++`) coverage also added (`compile-examples-cmake-nvhpc`) but gated to manual trigger only (`workflow_dispatch`) — installing the HPC SDK + building all examples is too slow for every PR; run by hand occasionally instead. The 2 bugs Intel found (`examples/instances`, `examples/constituents_dim`) were split into their own items below rather than fixed here; nvhpc not yet run for real, may surface its own new findings needing the same treatment | L11491 |
 | `ccpp-validator-length-check` | xdsl-ccpp has no metadata-vs-Fortran-source cross-validation for character length mismatches (no `ccpp_validator.py` equivalent) — `examples/instances/main.F90`'s deliberately-preserved `len=256` `errmsg` (verbatim capgen-v1 upstream content, faithfully exercising this exact real upstream gap) vs. the generated cap's `len=512` dummy builds/passes silently under gfortran but fails to build under Intel `ifx` | M; found via `ci-multi-compiler`'s real-build verification; marked an expected failure in the Intel CI job pending this fix — do not edit `examples/instances/main.F90` itself, see CHANGELOG.md L11491 for why | L11491 |
-| `constituents-dim-runtime-crash` | `examples/constituents_dim` builds cleanly but crashes at RUNTIME under Intel `ifx` (`forrtl: severe (153): allocatable array or pointer is not allocated`); passes silently under gfortran | M; found via `ci-multi-compiler`'s real-build verification; root cause not yet identified — suspect the scheme-allocated constituent-dimensioned workspace (`awork`, Case 2b in `const_dim_producer.F90`/`const_dim_consumer.F90`); marked an expected failure in the Intel CI job pending this fix | L11491 |
+
+**Resolved since last verification (2026-10-13), removed from the list
+above**: `constituents-dim-runtime-crash` — root cause was a nested,
+re-entrant Fortran automatic-finalization cascade in the shared
+`ccpp_hash_table.F90` framework module (not `constituents_dim`-specific
+code), crashing only under Intel `ifx`; fixed with an explicit iterative
+chain walk; full example matrix + `pytest` confirmed no regressions.
+CHANGELOG.md L11602.
+
+**Resolved since last verification (2026-10-13), removed from the list
+above**: `ci-multi-compiler` — added Intel (every PR/push) and NVIDIA HPC
+SDK (manual-trigger-only) CI coverage; PR #133 merged, real CI run
+confirmed fully green. CHANGELOG.md L11491.
 
 **Resolved since last verification (2026-10-13), removed from the list
 above**: `cmake-configure-regen` — cap generation deferred to build time

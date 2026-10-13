@@ -104,17 +104,34 @@ contains
 
     ! Dummy argument
     type(table_entry_t), intent(inout) :: te
-    ! Local variable
+    ! Local variables
     type(table_entry_t), pointer :: temp
+    type(table_entry_t), pointer :: next_temp
 
-    if (associated(te%entry_value)) then
+    if (associated(te%entry_value) .or. associated(te%next)) then
       nullify(te%entry_value) ! We may not own the memory
       temp => te%next
       nullify(te%next)
-      if (associated(temp)) then
+      ! Walk the overflow chain iteratively, nullifying each node's own
+      ! pointer components before deallocating it -- NOT recursively via
+      ! deallocate's own automatic re-invocation of this (elemental,
+      ! FINAL-bound) subroutine on each node in turn. That recursive
+      ! pattern is what the original code relied on (a single
+      ! deallocate(temp) call here, trusting temp's own FINAL binding to
+      ! cascade down the rest of the chain), but it crashes under Intel
+      ! ifx ("allocatable array or pointer is not allocated") when this
+      ! subroutine is itself already running as part of an array's own
+      ! automatic finalization (deallocate(this%table) in
+      ! hash_table_clear_table) -- confirmed by instrumenting this
+      ! subroutine directly: every node's pointer components are valid
+      ! right up until the nested, auto-triggered recursive call.
+      do while (associated(temp))
+        next_temp => temp%next
+        nullify(temp%next)
+        nullify(temp%entry_value) ! We may not own the memory
         deallocate(temp)
-        nullify(temp)
-      end if
+        temp => next_temp
+      end do
     end if
 
   end subroutine finalize_table_entry
