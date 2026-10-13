@@ -68,6 +68,7 @@ if(XDSL_CCPP_HAVE_FORTRAN)
     scheme/host_ccpp_ddt.F90
     host_ftn/test_host_data.F90
     host_ftn/test_host_mod.F90
+    scheme/ddt2.F90
     scheme/make_ddt.F90
     scheme/source_dir1/environ_conditions.F90
     scheme/setup_coeffs.F90
@@ -104,6 +105,7 @@ if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
   add_executable(ddthost_cxx_host.exe
     ${CHOST_KINDS}
     scheme/host_ccpp_ddt.F90
+    scheme/ddt2.F90
     scheme/make_ddt.F90
     scheme/temp_calc_adjust.F90
     ${CHOST_SUITE_CAP}

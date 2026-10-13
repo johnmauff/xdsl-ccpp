@@ -54,6 +54,7 @@ endif()
 if(XDSL_CCPP_HAVE_FORTRAN)
   add_executable(capgen_ftn_host.exe
     ${PLAIN_KINDS}
+    scheme/ddt2.F90
     scheme/make_ddt.F90
     scheme/source_dir1/environ_conditions.F90
     scheme/setup_coeffs.F90
@@ -91,6 +92,7 @@ endif()
 if(XDSL_CCPP_HAVE_FORTRAN AND XDSL_CCPP_HAVE_CXX)
   add_executable(capgen_cxx_host.exe
     ${CHOST_KINDS}
+    scheme/ddt2.F90
     scheme/make_ddt.F90
     scheme/setup_coeffs.F90
     scheme/temp_calc_adjust.F90
