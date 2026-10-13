@@ -11598,3 +11598,57 @@ can still be run by hand from the Actions tab ("Run workflow") or `gh
 workflow run` whenever nvhpc coverage is actually wanted, with no YAML
 edits needed to toggle it. `gnu`/`intel` are unaffected — still run on
 every PR/push (and also when manually triggered).
+
+## `constituents-dim-runtime-crash`: root cause found and fixed (2026-10-13)
+
+User granted scoped permission to compile/debug locally on Derecho for
+this item specifically (same dedicated-scratch-dir constraint as
+`cmake-configure-regen` Part B — never touch `build_debug/`).
+
+**Root cause**: nothing to do with the physics data (`qtend`/`awork`/
+etc.) — the entire simulation (`ccpp_register` through `ccpp_final`)
+completed cleanly under Intel `ifx`; the crash was purely in cleanup,
+inside `xdsl_ccpp/framework_src/ccpp_hash_table.F90`'s
+`finalize_table_entry`, a shared framework routine (used by every
+example with constituents, not `constituents_dim`-specific code).
+Confirmed directly via instrumentation (temporary debug prints/gdb, both
+reverted before the real fix): a plain read-only traversal of every hash
+table slot (just `associated()` checks) succeeded cleanly across all 64
+slots, including the one real collision chain — ruling out data
+corruption. The crash only appeared when the real `finalize_table_entry`
+ran on that slot.
+
+The bug: `finalize_table_entry` cleans up one slot's overflow chain by
+`temp => te%next; nullify(te%next); if (associated(temp)) deallocate(temp)`.
+`table_entry_t` has a `final :: finalize_table_entry` binding, so
+`deallocate(temp)` automatically re-invokes this same subroutine on
+`temp` — a recursive cascade down the chain driven entirely by Fortran's
+own automatic finalization mechanism. That nested, re-entrant
+auto-finalization crashes specifically when it's itself already running
+*inside* another automatic finalization — exactly what happens when the
+whole hash table array is cleared via `deallocate(this%table)` in
+`hash_table_clear_table`, since that triggers the compiler's own
+automatic per-element finalization of the array. This is genuinely
+fragile/undefined-adjacent behavior, not a straightforward logic bug:
+gfortran's runtime tolerates the nested cascade silently; Intel's does
+not and aborts with a diagnostic rather than silently proceeding.
+
+**Fix**: rewrote `finalize_table_entry` to walk the overflow chain with
+an explicit iterative `do while` loop, manually nulling each node's own
+pointer components before deallocating it, instead of relying on nested
+automatic FINAL re-dispatch to cascade. Remains `elemental` (no I/O/side
+effects added, `do while` is permitted in a pure/elemental procedure).
+
+**Verification**: `constituents_dim.exe` now runs to completion and
+prints `PASS` under Intel `ifx` (previously crashed before printing
+anything). Ran the full ~20-example matrix via `build_all_examples.sh`
+under both compilers to check for regressions in this shared framework
+file: Intel — 19/20 PASS (only `instances` fails, the separate, already
+known `ccpp-validator-length-check` issue, unrelated); gfortran — 20/20
+PASS (first attempt accidentally used Intel again — unsetting
+`FC`/`CC`/`CXX` does not make CMake default to gfortran on this Cray/
+Derecho environment, had to set `FC=gfortran CC=gcc CXX=g++` explicitly,
+matching the pattern already proven in `cmake-configure-regen` Part B).
+Full `pytest tests/`: 827 passed, unaffected (pure Fortran framework
+change). Removed `constituents_dim` from `build_all_examples.sh`'s
+`EXPECTED_FAILURES` list — only `instances` remains.
