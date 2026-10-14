@@ -11652,3 +11652,78 @@ matching the pattern already proven in `cmake-configure-regen` Part B).
 Full `pytest tests/`: 827 passed, unaffected (pure Fortran framework
 change). Removed `constituents_dim` from `build_all_examples.sh`'s
 `EXPECTED_FAILURES` list — only `instances` remains.
+
+## `ccpp-validator-length-check`: new driver-convention validator (2026-10-14)
+
+The last remaining item from `ci-multi-compiler`: `examples/instances/main.F90`
+declares `character(len=256) :: errmsg`, but the generated cap's `errmsg`
+dummy is always `character(len=512)` (`CCPP_ERRMSG_LEN`,
+`ccpp_conventions.py`) — a real mismatch Intel `ifx` catches at build time,
+gfortran doesn't. Confirmed this is NOT a generator bug: the `len=512`
+convention is correct, and `main.F90`'s `len=256` is deliberately preserved
+verbatim capgen-v1 upstream content, exercising a real, documented gap in
+capgen-v1's own `ccpp_validator.py` too (it silent-skips `type = control`
+tables and only ever parses `module` blocks, never `program` blocks —
+confirmed by reading it directly). **The actual gap was a missing check,**
+not something to fix by editing the example or the generator.
+
+Investigated two existing xdsl-ccpp mechanisms for reuse before building
+anything new. The real-kind conversion pass
+(`host_var_match_pass.py`/`suite_cap.py`'s `KindCastOp`, backing
+`TypeConversions`) was not a fit — it only ever compares two `.meta` files'
+declared kinds, never parses Fortran source, and `errmsg`/`errflg` are
+unconditionally excluded from it by design (matching real capgen-v1's own
+posture on CONTROL-type variables). But `ccpp_validate_source.py`/
+`validate_fir.py`'s existing scheme-vs-`.meta` validator *is* a fit — its
+`compare_arg_tables` already does real, type-agnostic kind/length
+comparison (already proven for character length today); it just never
+extracted a bare `program`'s own local declarations, only subroutine dummy
+arguments.
+
+**Implementation**: added `extract_program_locals()` to
+`xdsl_ccpp/transforms/fparser2_to_meta.py`, factoring the existing
+declaration-parsing logic out of `_extract_subroutines` into a shared
+`_build_decl_map()` helper (parameterized by an optional name filter) reused
+by both. Walks `fparser.Fortran2003.Main_Program` specifically (`Program`
+is already a different, overloaded class in this file), scoped to the
+program's own top-level `Specification_Part` (`children[1]`) only — not the
+whole subtree, so an internal `CONTAINS`-ed subprogram's own locals aren't
+misattributed as program-level. Confirmed this children[1] indexing is safe
+by direct fparser2 experimentation (with and without an `Execution_Part`),
+and confirmed the one edge case it doesn't handle (an empty program with no
+declarations at all, where `children[1]` is the `End_Program_Stmt` instead)
+defensively, via an `isinstance` check rather than assuming the index.
+
+New tool `xdsl_ccpp/tools/ccpp_validate_driver.py` (registered as
+`ccpp_validate_driver` in `pyproject.toml`): builds a small, synthetic
+"expected" `ArgumentTableOp` in memory (`errmsg`: character,
+`kind = f"len={CCPP_ERRMSG_LEN}"`; `errflg`: integer — same in-memory
+constructor pattern `test_validate_fir.py`'s own `_make_table()` already
+uses), extracts a driver's real `errmsg`/`errflg` locals via the new
+function, and feeds both through the existing `compare_arg_tables`/
+`Mismatch` — no bespoke comparison logic written. Confirmed this also
+catches, for free via the reused comparator: wrong type (e.g. `errflg`
+declared `logical`), a missing declaration entirely, and wrong rank (e.g.
+`errmsg` declared as an array) — not just length, verified with 3 synthetic
+examples.
+
+One real wrinkle found and guarded against: `examples/capgen/host_ftn/test_utils.F90`
+and `examples/ddthost/host_ftn/test_utils.F90` *also* declare
+`character(len=256) :: errmsg`, but as an ordinary local inside a
+`module`-level function (`check_list`), never passed to a generated cap
+call — confirmed the `Main_Program`-only scoping avoids false-positiving on
+these two files specifically (they have no `program` block at all).
+
+**Verification**: 6 new unit tests
+(`tests/unit/test_validate_driver.py`) — real detection on
+`instances/main.F90`, clean pass on 2 known-good examples, no false
+positive on the 2 module-scoped lookalikes, and a full sweep of all 112
+`.F90` files under `examples/` confirming `instances/main.F90` is the
+*only* one flagged repo-wide. That sweep test doubles as the CI wiring:
+it runs in the existing `tests.yml` pytest job on every push (no new CI
+workflow needed, and no compile-matrix carve-out needed either, since this
+check needs no compiler at all) — a future new example repeating this same
+mistake will now fail CI automatically. Manually ran `ccpp_validate_driver`
+against `examples/instances/main.F90` and confirmed the printed diagnostic
+clearly identifies the exact mismatch. Full `pytest tests/`: 833 passed (827
++ 6 new), 0 failed.
