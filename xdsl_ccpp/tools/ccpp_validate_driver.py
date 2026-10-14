@@ -79,6 +79,14 @@ def _actual_table(table_name: str, args: list[dict]) -> ArgumentTableOp:
         op_attrs: dict = {"type": attrs["type"], "dimensions": _dims_attr(attrs["rank"])}
         if attrs.get("kind"):
             op_attrs["kind"] = attrs["kind"]
+        elif attrs["type"] == "character":
+            # An omitted character selector is a real declaration (Fortran's
+            # own default is len=1), not an absence of information -- compare_
+            # arg_tables only compares kind when BOTH tables supply one, so
+            # leaving this unset here would silently skip the comparison
+            # entirely for a bare `character :: errmsg`, passing it as if it
+            # matched the expected len=512.
+            op_attrs["kind"] = "len=1"
         arg_ops.append(ArgumentOp(attrs["name"], attrs["type"], op_attrs))
     return ArgumentTableOp(table_name, "scheme", arg_ops)
 

@@ -101,6 +101,8 @@ def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]
                 dim_rank_from_attr = (
                     len(walk(attr, f03.Assumed_Shape_Spec))
                     + len(walk(attr, f03.Explicit_Shape_Spec))
+                    + len(walk(attr, f03.Deferred_Shape_Spec))
+                    + len(walk(attr, f03.Assumed_Size_Spec))
                 )
 
         # Entities: name + optional inline array spec
@@ -112,6 +114,8 @@ def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]
             entity_rank = (
                 len(walk(array_spec, f03.Assumed_Shape_Spec))
                 + len(walk(array_spec, f03.Explicit_Shape_Spec))
+                + len(walk(array_spec, f03.Deferred_Shape_Spec))
+                + len(walk(array_spec, f03.Assumed_Size_Spec))
                 if array_spec
                 else 0
             )
