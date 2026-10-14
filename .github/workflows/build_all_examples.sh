@@ -55,11 +55,9 @@ EXAMPLES=(
 # failure in the OTHER phase than documented, is a NEW problem and must
 # still fail the job. Format: "compiler|example|status". Remove an
 # entry once its backlog item is closed.
-#   intel|instances|BUILD_FAIL:          ccpp-validator-length-check (CHANGELOG.md L11491)
-#   intel|constituents_dim|TEST_FAIL:    constituents-dim-runtime-crash (CHANGELOG.md L11491)
+#   intel|instances|BUILD_FAIL:  ccpp-validator-length-check (CHANGELOG.md L11491)
 EXPECTED_FAILURES=(
   "intel|instances|BUILD_FAIL"
-  "intel|constituents_dim|TEST_FAIL"
 )
 COMPILER_LABEL="${COMPILER_LABEL:-gnu}"
 
