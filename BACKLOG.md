@@ -1,5 +1,41 @@
 # Current Plan: `ccpp_cap.py` Refactor Backlog
 
+## Effort sizing reference
+
+Informal day-based sizing for open backlog items, using an
+engineer-days metric (constructed 2026-10-14 — no pre-existing formal
+scale exists in this file; most items only ever carried free-text
+effort adjectives). Size bands: XS <2 days, S 2-5, M 5-12, L 12-25,
+XL 25-50, XXL 50+.
+
+**Maintain this table whenever backlog items change**: remove a row
+when its item resolves (it already gets a one-line resolved-note
+elsewhere in this file, per the file's usual convention — don't
+duplicate that detail here); add or correct a row when an item is
+newly estimated or re-scoped. Treat every estimate here as a rough
+planning aid, not a commitment — these are judgment calls, not
+measured data, and will drift as items are reassessed.
+
+| ID | Estimate | Size |
+|---|---|---|
+| `task28-stage5-fanout` | 1-3 days | S |
+| `eamxx-suite-coverage-checker` | 1-3 days | S |
+| `chost-thread-safety` | 3-6 days | S-M |
+| `eamxx-phaseB-deviceptr` | 3-6 days | S-M |
+| `dup-suite-composition-dsl` | 4-8 days | M |
+| `dup-scheme-family-gen` | 5-10 days | M |
+| `chost-column-major` | 5-10 days | M |
+| `cxx-scheme-no-e2e-test` | 5-10 days (open-ended scope) | M |
+| `eamxx-phaseA-variant-tag` | 8-15 days | M-L |
+| `chost-gpu-memory` | 10-20 days | M-L |
+| `suite-state-full-match` | (file's own prior note: "L") | L |
+| `dup-meta-shadow-elim` — Stage 1 (`examples/` only) | 14-23 days | L |
+| `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
+| `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
+
+`hle-vocab-retire` is intentionally not sized — it's blocked on an
+external dependency (CAM-SIMA migrating off `horizontal_loop_extent`
+upstream), not a schedulable estimate.
 
 Open items only. For the full narrative behind any item (why, how, what was
 tried), see the `L<n>` pointer into `CHANGELOG.md` (line
@@ -78,7 +114,16 @@ separately), CHANGELOG.md L5850.
 | ID | Item | Notes | Archive |
 |---|---|---|---|
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
-| `ccpp-validator-length-check` | xdsl-ccpp has no metadata-vs-Fortran-source cross-validation for character length mismatches (no `ccpp_validator.py` equivalent) — `examples/instances/main.F90`'s deliberately-preserved `len=256` `errmsg` (verbatim capgen-v1 upstream content, faithfully exercising this exact real upstream gap) vs. the generated cap's `len=512` dummy builds/passes silently under gfortran but fails to build under Intel `ifx` | M; found via `ci-multi-compiler`'s real-build verification; marked an expected failure in the Intel CI job pending this fix — do not edit `examples/instances/main.F90` itself, see CHANGELOG.md L11491 for why | L11491 |
+
+**Resolved since last verification (2026-10-14), removed from the list
+above**: `ccpp-validator-length-check` — new `ccpp_validate_driver` tool
+reuses the existing `compare_arg_tables`/`Mismatch` comparator (not new
+bespoke logic) to check a driver program's `errmsg`/`errflg` locals against
+the CCPP protocol's fixed convention; confirmed it detects
+`examples/instances/main.F90`'s known mismatch and nothing else across all
+112 example `.F90` files; wired into the existing `tests.yml` CI job (a
+sweep test, no new workflow needed) so a future regression is now caught
+automatically. CHANGELOG.md L11656.
 
 **Resolved since last verification (2026-10-13), removed from the list
 above**: `constituents-dim-runtime-crash` — root cause was a nested,
