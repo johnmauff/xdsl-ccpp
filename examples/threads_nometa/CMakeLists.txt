@@ -3,7 +3,7 @@
 # threads_nometa: dup-meta-shadow-elim (BACKLOG.md) demonstration twin of
 # examples/threads -- identical functionality and host/suite files, but
 # thread_scheme.F90 carries standard_name/units/long_name/dim_names as
-# !ccpp tags instead of a hand-maintained thread_scheme.meta. No .meta for
+# !$ccpp tags instead of a hand-maintained thread_scheme.meta. No .meta for
 # the scheme is committed to this directory at all; it's generated here,
 # into the build tree, from the tagged source.
 #

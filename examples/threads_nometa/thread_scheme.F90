@@ -6,7 +6,7 @@
 !!
 !! dup-meta-shadow-elim (BACKLOG.md): this is the tag-based twin of
 !! examples/threads' own thread_scheme.F90 -- identical behavior, but
-!! standard_name/long_name/units live here as !ccpp tags instead of in a
+!! standard_name/long_name/units live here as !$ccpp tags instead of in a
 !! hand-maintained thread_scheme.meta. See examples/threads_nometa's own
 !! README.md and CMakeLists.txt for how .meta gets generated from this
 !! file at configure time instead of being committed.
@@ -30,25 +30,25 @@ contains
   !!
   subroutine thread_scheme_run(thread, data_array, errmsg, errflg)
     character(len=*), intent(out) :: errmsg
-    !ccpp [errmsg] standard_name = ccpp_error_message
-    !ccpp [errmsg] long_name = error message for error handling in CCPP
-    !ccpp [errmsg] units = none
+    !$ccpp [errmsg] standard_name = ccpp_error_message  &
+    !$ccpp          long_name = error message for error handling in CCPP &
+    !$ccpp          units = none
 
     integer, intent(out) :: errflg
-    !ccpp [errflg] standard_name = ccpp_error_code
-    !ccpp [errflg] long_name = error code for error handling in CCPP
-    !ccpp [errflg] units = 1
+    !$ccpp [errflg] standard_name = ccpp_error_code
+    !$ccpp [errflg] long_name = error code for error handling in CCPP
+    !$ccpp [errflg] units = 1
 
     integer, intent(in) :: thread
-    !ccpp [thread] standard_name = thread_number
-    !ccpp [thread] long_name = thread number for testing multi-thread support
-    !ccpp [thread] units = index
+    !$ccpp [thread] standard_name = thread_number
+    !$ccpp [thread] long_name = thread number for testing multi-thread support
+    !$ccpp [thread] units = index
 
     real(kind=kind_phys), intent(inout) :: data_array(:)
-    !ccpp [data_array] standard_name = data_array
-    !ccpp [data_array] long_name = per-thread data array
-    !ccpp [data_array] units = m
-    !ccpp [data_array] dim_names = horizontal_dimension
+    !$ccpp [data_array] standard_name = data_array
+    !$ccpp [data_array] long_name = per-thread data array
+    !$ccpp [data_array] units = m
+    !$ccpp [data_array] dim_names = horizontal_dimension
 
     ! Initialize CCPP error handling variables
     errmsg = ''
