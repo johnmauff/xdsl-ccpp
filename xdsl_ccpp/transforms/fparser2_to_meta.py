@@ -532,7 +532,24 @@ def build_meta_module_from_source(
             for arg in args:
                 attrs: dict = {"type": arg["type"]}
                 if arg["rank"] > 0:
-                    dims = ", ".join(f"dim{i + 1}" for i in range(arg["rank"]))
+                    # dim_names isn't a settable ArgumentOp property on its
+                    # own (confirmed: ccpp.py derives it FROM the
+                    # `dimensions` string itself) -- a !ccpp [name]
+                    # dim_names = ... tag's real names are substituted into
+                    # that same string instead of the synthetic
+                    # dim1/dim2/... placeholders, not forwarded separately.
+                    tag_dim_names = arg.get("dim_names")
+                    if tag_dim_names:
+                        dim_list = [d.strip() for d in tag_dim_names.split(",") if d.strip()]
+                        if len(dim_list) != arg["rank"]:
+                            raise ValueError(
+                                f"'{arg['name']}': !ccpp tag's dim_names has "
+                                f"{len(dim_list)} name(s) but the real "
+                                f"declaration has rank {arg['rank']}"
+                            )
+                        dims = ", ".join(dim_list)
+                    else:
+                        dims = ", ".join(f"dim{i + 1}" for i in range(arg["rank"]))
                     attrs["dimensions"] = f"({dims})"
                 if arg["intent"]:
                     attrs["intent"] = arg["intent"]
