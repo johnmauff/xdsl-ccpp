@@ -417,7 +417,25 @@ class ArgumentOp(IRDLOperation):
                 parsed_dims = []
                 for d in dim_parts:
                     if ":" in d:
-                        d = d.split(":")[1].strip()
+                        # Range notation (e.g.
+                        # 'ccpp_constant_one:horizontal_loop_extent') takes
+                        # the upper bound -- but a BARE ':' (no text on
+                        # either side) is a different, real convention: a
+                        # deferred/assumed-shape dimension with no standard
+                        # name at all (confirmed real: examples/advection's
+                        # own cld_liq.meta/cld_ice.meta both have a
+                        # constituent-properties array declared
+                        # `dimensions = (:)`). Splitting that the same way
+                        # as range notation silently produces an EMPTY
+                        # dim_names instead of preserving ':' -- found via
+                        # a real build failure (dup-meta-shadow-elim,
+                        # BACKLOG.md, Phase 7): meta_from_module then
+                        # treats the empty dim_names as absent and stubs in
+                        # a fake dimension name, which a real suite then
+                        # counts as a bogus extra host variable.
+                        upper = d.split(":")[1].strip()
+                        if upper:
+                            d = upper
                     parsed_dims.append(d)
                 properties["dim_names"] = StringAttr(",".join(parsed_dims))
             prop_keys.remove("dimensions")
