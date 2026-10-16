@@ -56,7 +56,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y gfortran gcc g++
 
       - name: Install xdsl-ccpp
-        run: python -m pip install -e .
+        # [validate] (fparser) is now a real, hard requirement for
+        # examples/threads_nometa's own configure-time .meta generation
+        # (dup-meta-shadow-elim, BACKLOG.md) -- not just the optional,
+        # gracefully-degrading validate_fortran_sources() checks the rest
+        # of the pipeline uses it for. Matches tests.yml's own
+        # "[dev,validate]" install (minus "dev", which this job doesn't
+        # need -- ruff/filecheck/pytest aren't used here).
+        run: python -m pip install -e ".[validate]"
 
       - name: Install CMake
         run: python -m pip install cmake
@@ -90,7 +97,14 @@ jobs:
           sudo apt-get install -y intel-oneapi-compiler-fortran intel-oneapi-compiler-dpcpp-cpp
 
       - name: Install xdsl-ccpp
-        run: python -m pip install -e .
+        # [validate] (fparser) is now a real, hard requirement for
+        # examples/threads_nometa's own configure-time .meta generation
+        # (dup-meta-shadow-elim, BACKLOG.md) -- not just the optional,
+        # gracefully-degrading validate_fortran_sources() checks the rest
+        # of the pipeline uses it for. Matches tests.yml's own
+        # "[dev,validate]" install (minus "dev", which this job doesn't
+        # need -- ruff/filecheck/pytest aren't used here).
+        run: python -m pip install -e ".[validate]"
 
       - name: Install CMake
         run: python -m pip install cmake
@@ -160,7 +174,14 @@ jobs:
           done
 
       - name: Install xdsl-ccpp
-        run: python -m pip install -e .
+        # [validate] (fparser) is now a real, hard requirement for
+        # examples/threads_nometa's own configure-time .meta generation
+        # (dup-meta-shadow-elim, BACKLOG.md) -- not just the optional,
+        # gracefully-degrading validate_fortran_sources() checks the rest
+        # of the pipeline uses it for. Matches tests.yml's own
+        # "[dev,validate]" install (minus "dev", which this job doesn't
+        # need -- ruff/filecheck/pytest aren't used here).
+        run: python -m pip install -e ".[validate]"
 
       - name: Install CMake
         run: python -m pip install cmake
