@@ -46,7 +46,12 @@ def _is_ccpp_entry(name: str) -> bool:
     return name.lower().endswith(_CCPP_ENTRY_SUFFIXES)
 
 
-def meta_from_module(module_op: builtin.ModuleOp, *, filter_entries: bool = True) -> str:
+def meta_from_module(
+    module_op: builtin.ModuleOp,
+    *,
+    filter_entries: bool = True,
+    dependencies: dict[str, list[str]] | None = None,
+) -> str:
     """Serialize a MLIR module of CCPP table ops to ``.meta`` text format.
 
     Args:
@@ -54,10 +59,29 @@ def meta_from_module(module_op: builtin.ModuleOp, *, filter_entries: bool = True
             ``fparser2_to_meta.build_meta_module_from_source``.
         filter_entries: When ``True``, only emit ``[ccpp-arg-table]`` blocks for
             subroutines matching the CCPP entry-point naming convention.
+        dependencies: Optional ``{module_name: [file_path, ...]}`` map (module
+            name matching a ``[ccpp-table-properties]`` block's own ``name``)
+            -- dup-meta-shadow-elim (BACKLOG.md), Phase 4. Mechanically
+            derived, typically via
+            ``module_dependency_resolver.resolve_scheme_dependencies``, not
+            hand-authored. When a module has no entry here, no
+            ``dependencies =`` line is emitted at all -- matching real
+            convention for a scheme with no extra dependencies (e.g. real
+            ``kessler.meta`` has no ``dependencies =`` line either).
 
     Returns:
         A string in ``.meta`` format ready to write to a file, or an empty
         string when no matching entry points are found.
+
+    ``standard_name``/``units``/``long_name``/``memory_space`` use the real
+    value already present on an ``ArgumentOp`` (from a ``!ccpp`` tag or a
+    real device-residency directive -- Phases 1-2) when one was extracted;
+    stub placeholders (``std_name_NNN``/``enter_units``) remain the
+    fallback only for ``standard_name``/``units``, the two fields real
+    ``.meta`` always requires. ``long_name``/``memory_space`` are both
+    legitimately sparse in real ``.meta`` (confirmed this session:
+    ``long_name`` present in only ~7.7% of real blocks) -- they're simply
+    omitted, not stubbed, when no real value was found.
     """
     counter = itertools.count(1)
 
@@ -89,6 +113,9 @@ def meta_from_module(module_op: builtin.ModuleOp, *, filter_entries: bool = True
         lines.append("[ccpp-table-properties]")
         lines.append(f"  name = {scheme_name}")
         lines.append(f"  type = scheme")
+        scheme_deps = (dependencies or {}).get(scheme_name)
+        if scheme_deps:
+            lines.append(f"  dependencies = {','.join(scheme_deps)}")
         lines.append("")
 
         for arg_table in entry_points:
@@ -107,10 +134,16 @@ def meta_from_module(module_op: builtin.ModuleOp, *, filter_entries: bool = True
                 dim_count = arg.dimensions.data if arg.dimensions is not None else 0
                 dim_names_raw = arg.dim_names.data if arg.dim_names is not None else ""
                 is_optional = arg.optional is not None
+                standard_name = arg.standard_name.data if arg.standard_name is not None else None
+                units = arg.units.data if arg.units is not None else None
+                long_name = arg.long_name.data if arg.long_name is not None else None
+                memory_space = arg.memory_space.data if arg.memory_space is not None else None
 
                 lines.append(f"[ {local_name} ]")
-                lines.append(f"  standard_name = {next_stub()}")
-                lines.append(f"  units = enter_units")
+                lines.append(f"  standard_name = {standard_name or next_stub()}")
+                lines.append(f"  units = {units or 'enter_units'}")
+                if long_name:
+                    lines.append(f"  long_name = {long_name}")
                 lines.append(f"  type = {arg_type}")
                 if kind:
                     lines.append(f"  kind = {kind}")
@@ -126,6 +159,8 @@ def meta_from_module(module_op: builtin.ModuleOp, *, filter_entries: bool = True
                     lines.append(f"  intent = {intent}")
                 if is_optional:
                     lines.append(f"  optional = True")
+                if memory_space:
+                    lines.append(f"  memory_space = {memory_space}")
 
             lines.append("")
 
@@ -135,8 +170,16 @@ def meta_from_module(module_op: builtin.ModuleOp, *, filter_entries: bool = True
     return "\n".join(lines) + "\n" if lines else ""
 
 
-def generate_meta_for_file(f90_path: str) -> str | None:
+def generate_meta_for_file(f90_path: str, root_dir: str | None = None) -> str | None:
     """Extract CCPP metadata from *f90_path* and return ``.meta`` text.
+
+    *root_dir*, when given, mechanically derives this scheme's own
+    ``dependencies =`` line from its real ``USE`` statements -- dup-meta-
+    shadow-elim (BACKLOG.md), Phase 4; see
+    ``module_dependency_resolver.resolve_scheme_dependencies`` for what
+    *root_dir* must be scoped to (an explicit choice, not auto-detected).
+    When omitted, no ``dependencies =`` line is emitted at all -- the same
+    as today's behavior.
 
     Returns ``None`` if fparser is not installed or extraction fails.
     """
@@ -155,7 +198,31 @@ def generate_meta_for_file(f90_path: str) -> str | None:
         print(f"Error: fparser2 failed on '{f90_path}': {exc}", file=sys.stderr)
         return None
 
-    return meta_from_module(module_op)
+    dependencies = None
+    if root_dir is not None:
+        from xdsl_ccpp.transforms.module_dependency_resolver import (
+            resolve_scheme_dependencies,
+        )
+
+        try:
+            deps = resolve_scheme_dependencies(f90_path, root_dir)
+        except ValueError as exc:
+            print(f"Error: dependency resolution failed on '{f90_path}': {exc}", file=sys.stderr)
+            return None
+        if deps:
+            # resolve_scheme_dependencies is file-level (the whole file's
+            # USE statements), so the same list applies to every table this
+            # file defines -- in practice exactly one, the file's own
+            # module. Keyed by the IR's own table name (the real Fortran
+            # module name), not a filename guess -- they can diverge (a
+            # module_name override, an unusual file-stem mismatch).
+            table_names = {
+                op.table_name.data for op in module_op.body.block.ops
+                if isa(op, TablePropertiesOp)
+            }
+            dependencies = {name: deps for name in table_names}
+
+    return meta_from_module(module_op, dependencies=dependencies)
 
 
 def main(argv=None) -> None:
@@ -188,6 +255,18 @@ def main(argv=None) -> None:
         action="store_true",
         help="Print the output path for each generated file.",
     )
+    parser.add_argument(
+        "--root-dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Mechanically derive each scheme's dependencies = line from its "
+            "own USE statements, resolved against every .F90 file under DIR "
+            "(an explicit, caller-chosen scope -- see "
+            "module_dependency_resolver.resolve_scheme_dependencies). "
+            "Omit to leave dependencies = out entirely, as before."
+        ),
+    )
     args = parser.parse_args(argv)
 
     any_errors = False
@@ -198,7 +277,7 @@ def main(argv=None) -> None:
             any_errors = True
             continue
 
-        meta_text = generate_meta_for_file(f90_file)
+        meta_text = generate_meta_for_file(f90_file, root_dir=args.root_dir)
         if meta_text is None:
             any_errors = True
             continue
