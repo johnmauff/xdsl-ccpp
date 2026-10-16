@@ -87,6 +87,26 @@ class TestArgumentOpRejectsByDefault:
                  "intent": "inout"},
             )
 
+    def test_bare_colon_dimension_is_preserved_not_emptied(self):
+        # dup-meta-shadow-elim (BACKLOG.md), Phase 7: a bare ':' is a real,
+        # different convention from range notation -- a deferred/assumed-
+        # shape dimension with no standard name at all (confirmed real:
+        # examples/advection's own cld_liq.meta/cld_ice.meta both declare a
+        # constituent-properties array as `dimensions = (:)`). The range-
+        # notation upper-bound split used to apply here too, silently
+        # producing an EMPTY dim_names instead of preserving ':' -- found
+        # via a real build failure when examples/advection_nometa's
+        # generated .meta fell back to a stub dimension name for this
+        # exact case, which a real suite then counted as a bogus extra
+        # host variable.
+        op = ArgumentOp(
+            "dyn_const", "ccpp_constituent_properties_t",
+            {"type": "ccpp_constituent_properties_t",
+             "standard_name": "dynamic_constituents_for_cld_liq",
+             "dimensions": "(:)", "intent": "out"},
+        )
+        assert op.dim_names.data == ":"
+
     def test_current_convention_is_silent(self, capsys):
         ArgumentOp(
             "ncol", "integer",
