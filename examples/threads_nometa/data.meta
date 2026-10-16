@@ -1,0 +1,37 @@
+[ccpp-table-properties]
+  name = thread_type
+  type = ddt
+  dependencies =
+
+[ccpp-arg-table]
+  name = thread_type
+  type = ddt
+[data_array]
+  standard_name = data_array
+  long_name = per-thread data array
+  units = m
+  dimensions = (horizontal_dimension)
+  type = real
+  kind = kind_phys
+
+
+[ccpp-table-properties]
+  name = data
+  type = host
+  dependencies =
+
+[ccpp-arg-table]
+  name = data
+  type = host
+[ncols]
+  standard_name = horizontal_dimension
+  long_name = horizontal dimension
+  units = count
+  dimensions = ()
+  type = integer
+[thread_data]
+  standard_name = thread_data
+  long_name = per-thread data for multi-thread test
+  units = ddt
+  dimensions = (number_of_threads)
+  type = thread_type
