@@ -506,6 +506,15 @@ def build_meta_module_from_source(
     ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
     compilation in *f90_source* before parsing -- see ``_extract_subroutines``.
 
+    ``standard_name``/``units``/``long_name`` (from ``!ccpp`` tags) and
+    ``memory_space`` (from a real ``!$acc``/``!$omp`` device-residency
+    clause) are forwarded onto the ``ArgumentOp`` whenever
+    ``_extract_subroutines`` found them -- dup-meta-shadow-elim
+    (BACKLOG.md), Phase 4. Safe to forward unconditionally: confirmed
+    ``validate_fir.compare_arg_tables`` never compares any of these four
+    fields, so this has no effect on the existing scheme-vs-.meta
+    validator even once real files start carrying tags.
+
     Raises ``ImportError`` if fparser is not installed.
     """
     subroutines = _extract_subroutines(f90_source, filename, preproc_defs)
@@ -531,6 +540,9 @@ def build_meta_module_from_source(
                     attrs["optional"] = "True"
                 if arg.get("kind"):
                     attrs["kind"] = arg["kind"]
+                for key in ("standard_name", "units", "long_name", "memory_space"):
+                    if arg.get(key):
+                        attrs[key] = arg[key]
                 arg_ops.append(ArgumentOp(arg["name"], arg["type"], attrs))
             arg_tables.append(ArgumentTableOp(proc_name, "scheme", arg_ops))
         table_props.append(TablePropertiesOp(module_name, "scheme", arg_tables))

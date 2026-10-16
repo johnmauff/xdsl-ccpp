@@ -5,7 +5,11 @@ import pytest
 from xdsl.dialects import builtin
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TablePropertiesOp
-from xdsl_ccpp.tools.ccpp_generate_meta import _is_ccpp_entry, meta_from_module
+from xdsl_ccpp.tools.ccpp_generate_meta import (
+    _is_ccpp_entry,
+    generate_meta_for_file,
+    meta_from_module,
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -176,6 +180,90 @@ class TestMetaFromModule:
         assert not out.endswith("\n\n")
 
 
+# ── Phase 4: real values override stubs when present ──────────────────────────
+# dup-meta-shadow-elim (BACKLOG.md). standard_name/units/long_name/
+# memory_space come straight from an ArgumentOp's own property (set by a
+# !ccpp tag or a real device-residency directive, Phases 1-2) when present;
+# stub fallback remains for standard_name/units only -- long_name/
+# memory_space are legitimately sparse and simply omitted otherwise.
+
+class TestMetaFromModuleRealValues:
+    def test_real_standard_name_and_units_used_instead_of_stubs(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [
+                _make_arg("qv", "real", intent="inout",
+                          standard_name="water_vapor_mixing_ratio", units="kg kg-1"),
+            ]),
+        ])
+        out = meta_from_module(module)
+        assert "  standard_name = water_vapor_mixing_ratio" in out
+        assert "  units = kg kg-1" in out
+        assert "std_name_001" not in out
+        assert "enter_units" not in out
+
+    def test_missing_standard_name_still_falls_back_to_stub(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [_make_arg("qv", "real", intent="inout")]),
+        ])
+        out = meta_from_module(module)
+        assert "  standard_name = std_name_001" in out
+        assert "  units = enter_units" in out
+
+    def test_long_name_emitted_when_present(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [
+                _make_arg("data", "real", intent="inout", long_name="per-thread data array"),
+            ]),
+        ])
+        out = meta_from_module(module)
+        assert "  long_name = per-thread data array" in out
+
+    def test_long_name_omitted_not_stubbed_when_absent(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [_make_arg("data", "real", intent="inout")]),
+        ])
+        out = meta_from_module(module)
+        assert "long_name" not in out
+
+    def test_memory_space_emitted_when_present(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [
+                _make_arg("temp", "real", intent="inout", memory_space="device"),
+            ]),
+        ])
+        out = meta_from_module(module)
+        assert "  memory_space = device" in out
+
+    def test_memory_space_omitted_not_stubbed_when_absent(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [_make_arg("temp", "real", intent="inout")]),
+        ])
+        out = meta_from_module(module)
+        assert "memory_space" not in out
+
+    def test_dependencies_emitted_for_matching_table_name(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [_make_arg("x", "real", intent="in")]),
+        ])
+        out = meta_from_module(module, dependencies={"my_scheme": ["util.F90", "other.F90"]})
+        assert "  dependencies = util.F90,other.F90" in out
+
+    def test_no_dependencies_line_when_map_omits_this_table(self):
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [_make_arg("x", "real", intent="in")]),
+        ])
+        out = meta_from_module(module, dependencies={"some_other_scheme": ["util.F90"]})
+        assert "dependencies" not in out
+
+    def test_no_dependencies_line_when_dependencies_arg_omitted(self):
+        # Default behavior, matching pre-Phase-4 output exactly.
+        module = _make_module("my_scheme", [
+            ("my_scheme_run", [_make_arg("x", "real", intent="in")]),
+        ])
+        out = meta_from_module(module)
+        assert "dependencies" not in out
+
+
 # ── integration tests (require fparser) ───────────────────────────────────────
 
 @requires_fparser
@@ -274,3 +362,66 @@ end module my_scheme
         assert "std_name_001" in out
         assert "std_name_002" in out
         assert "std_name_003" in out
+
+    def test_ccpp_tag_flows_through_to_real_standard_name_and_units(self):
+        out = self._build("""
+module my_scheme
+  implicit none
+contains
+  subroutine my_scheme_run(qv)
+    !ccpp [qv] standard_name = water_vapor_mixing_ratio
+    !ccpp [qv] units = kg kg-1
+    real, intent(inout) :: qv
+  end subroutine
+end module my_scheme
+""")
+        assert "  standard_name = water_vapor_mixing_ratio" in out
+        assert "  units = kg kg-1" in out
+        assert "std_name_001" not in out
+
+    def test_real_acc_directive_flows_through_to_memory_space(self):
+        out = self._build("""
+module my_scheme
+  implicit none
+contains
+  subroutine my_scheme_run(temp)
+    real, intent(inout) :: temp
+    !$acc parallel loop present(temp)
+  end subroutine
+end module my_scheme
+""")
+        assert "  memory_space = device" in out
+
+
+# ── Phase 4: generate_meta_for_file's --root-dir dependency wiring ────────────
+
+@requires_fparser
+class TestGenerateMetaForFileRootDir:
+    def test_no_root_dir_means_no_dependencies_line(self):
+        out = generate_meta_for_file("examples/ddthost/scheme/make_ddt.F90")
+        assert "dependencies" not in out
+
+    def test_real_root_dir_resolves_real_dependency(self):
+        # Locks in the real, already-verified result from Phase 3: ddt2.F90
+        # is a genuine dependency; host_ccpp_ddt.F90 (also USEd, but a DDT
+        # table) correctly is not.
+        out = generate_meta_for_file(
+            "examples/ddthost/scheme/make_ddt.F90", root_dir="examples/ddthost"
+        )
+        assert "  dependencies = ddt2.F90" in out
+        assert "host_ccpp_ddt" not in out
+
+    def test_unresolvable_dependency_reported_as_error_not_crash(self, tmp_path, capsys):
+        f = tmp_path / "scheme.F90"
+        f.write_text(
+            "module scheme\n"
+            "  use totally_unknown_module\n"
+            "contains\n"
+            "  subroutine scheme_run(x)\n"
+            "    real, intent(in) :: x\n"
+            "  end subroutine\n"
+            "end module scheme\n"
+        )
+        result = generate_meta_for_file(str(f), root_dir=str(tmp_path))
+        assert result is None
+        assert "totally_unknown_module" in capsys.readouterr().err
