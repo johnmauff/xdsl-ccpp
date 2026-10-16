@@ -173,20 +173,32 @@ def _construct_span(construct_node) -> tuple[int, int] | None:
 
 def _join_comment_continuations(
     source_lines: list[str], span: tuple[int, int] | None, sentinels: tuple[str, ...]
-) -> list[tuple[int, str]]:
+) -> list[tuple[int, list[str]]]:
     """Scan *source_lines* (1-indexed, inclusive *span*) for comment lines
-    whose stripped, lowercased text starts with one of *sentinels*, joining
-    a line ending in ``&`` with the next matching-sentinel line -- the
-    second line's own sentinel is stripped and its remainder concatenated
-    onto the first's (single space between), matching real ``!$acc``/
-    ``!$omp`` continuation convention (confirmed in
+    whose stripped, lowercased text starts with one of *sentinels*, chaining
+    a line ending in ``&`` with the next matching-sentinel line, matching
+    real ``!$acc``/``!$omp`` continuation convention (confirmed in
     ``examples/kessler/scheme/kessler.F90``: ``!$acc parallel loop gang
     vector &`` / ``!$acc present(...) ...``).
 
     Shared by ``_extract_ccpp_tags`` (sentinel ``!$ccpp``) and
     ``_extract_device_resident_vars`` (sentinels ``!$acc``/``!$omp``) --
-    the continuation-joining mechanics are identical regardless of which
-    sentinel is in play.
+    the chain-detection mechanics (trailing ``&``, repeated sentinel) are
+    identical regardless of which sentinel is in play. What each chained
+    line *means*, though, differs by caller, so this returns each
+    sentinel-stripped line **unjoined** -- the caller decides:
+    ``_extract_device_resident_vars`` wants one logical directive's whole
+    clause-list as a single blob (``" ".join(...)``), since a real
+    ``!$acc`` directive's own clauses genuinely span the continuation as
+    one unit. ``_extract_ccpp_tags`` wants each chained line kept
+    separate: a ``!$ccpp`` continuation line is a *complete, independent*
+    ``key = value`` pair for the same bracketed name established on the
+    chain's first line, not a fragment of one value's text -- confirmed
+    directly against a real build failure this session (concatenating
+    `` standard_name = x`` with a following ``long_name = y`` as one
+    blob produced `` standard_name = "x long_name = y"``, corrupting the
+    very name the generator relies on to recognize `errmsg` as a
+    framework-reserved variable).
 
     fparser2 strips all comments from its own parse tree, so this is the
     only way to recover them at all -- confirmed empirically this session.
@@ -196,24 +208,24 @@ def _join_comment_continuations(
     active one, with no special-casing needed (confirmed real case:
     ``examples/kessler/scheme/kessler_update.F90``).
 
-    Returns a list of ``(first_line_no, joined_remainder)`` -- one entry
-    per complete, possibly multi-line, directive; *first_line_no* is the
-    1-indexed source line the directive *started* on (useful for error
-    messages that span a continuation).
+    Returns a list of ``(first_line_no, [remainder, ...])`` -- one entry
+    per complete, possibly multi-line, chain; *first_line_no* is the
+    1-indexed source line the chain *started* on (useful for error
+    messages).
     """
     if span is None:
         return []
     start, end = span
 
-    joined: list[tuple[int, str]] = []
-    pending_text: str | None = None
+    chains: list[tuple[int, list[str]]] = []
+    pending: list[str] | None = None
     pending_line_no: int | None = None
 
     def _flush():
-        nonlocal pending_text, pending_line_no
-        if pending_text is not None:
-            joined.append((pending_line_no, pending_text))
-            pending_text = None
+        nonlocal pending, pending_line_no
+        if pending is not None:
+            chains.append((pending_line_no, pending))
+            pending = None
             pending_line_no = None
 
     for offset, line in enumerate(source_lines[start - 1:end]):
@@ -226,19 +238,23 @@ def _join_comment_continuations(
             continue
 
         body = stripped[len(sentinel):].strip()
-        if pending_text is not None:
-            body = pending_text + " " + body
-        else:
+        is_continued = body.endswith("&")
+        if is_continued:
+            body = body[:-1].strip()
+
+        if pending is None:
+            pending = [body]
             pending_line_no = line_no
-        if body.endswith("&"):
-            pending_text = body[:-1].strip()
-            continue
-        joined.append((pending_line_no, body))
-        pending_text = None
-        pending_line_no = None
+        else:
+            pending.append(body)
+
+        if not is_continued:
+            chains.append((pending_line_no, pending))
+            pending = None
+            pending_line_no = None
     _flush()
 
-    return joined
+    return chains
 
 
 _CCPP_TAG_SENTINELS = ("!$ccpp",)
@@ -252,14 +268,22 @@ def _extract_ccpp_tags(
 
     Tags are matched by bracketed name, not line position, so they may
     appear anywhere within *span* -- not necessarily adjacent to the
-    declaration they describe. A long value may continue onto further
-    lines with a trailing ``&``, matching ``!$acc``/``!$omp`` convention
-    (see ``_join_comment_continuations``) -- the continuation line repeats
-    the ``!$ccpp`` sentinel but does *not* need its own ``[name]``, since
-    it's continuing the previous line's value, e.g.::
+    declaration they describe. Several ``key = value`` pairs for the same
+    name may be chained with a trailing ``&``, matching ``!$acc``/``!$omp``
+    continuation convention (see ``_join_comment_continuations``) -- each
+    chained line is a **complete, independent assignment**, not a
+    fragment of one value's text, so a continuation line doesn't repeat
+    ``[name]`` (it's implied, from the chain's first line), e.g.::
 
-        !$ccpp [qv] long_name = a description that needs to wrap onto &
-        !$ccpp a second line for readability
+        !$ccpp [qv] standard_name = water_vapor_mixing_ratio &
+        !$ccpp      units = kg kg-1 &
+        !$ccpp      long_name = a long description
+
+    is exactly equivalent to three separate, unchained ``!$ccpp [qv] ...``
+    lines. This is *not* a mechanism for wrapping one long value across
+    lines -- concatenating chained lines into a single value was tried
+    first and is exactly what produced a real build failure (see
+    ``_join_comment_continuations``'s own docstring).
 
     Hand-written, line-oriented parser -- matching this codebase's own
     established convention for text-to-IR frontends
@@ -273,38 +297,42 @@ def _extract_ccpp_tags(
     """
     tags: dict[str, dict[str, str]] = {}
 
-    for line_no, rest in _join_comment_continuations(source_lines, span, _CCPP_TAG_SENTINELS):
-        if not rest.startswith("["):
+    for line_no, remainders in _join_comment_continuations(source_lines, span, _CCPP_TAG_SENTINELS):
+        first = remainders[0]
+        if not first.startswith("["):
             raise ValueError(
-                f"{filename}:{line_no}: '!$ccpp' tag missing '[name]': {rest!r}"
+                f"{filename}:{line_no}: '!$ccpp' tag missing '[name]': {first!r}"
             )
-        close = rest.find("]")
+        close = first.find("]")
         if close == -1:
             raise ValueError(
                 f"{filename}:{line_no}: '!$ccpp' tag has an unterminated "
-                f"'[name]': {rest!r}"
+                f"'[name]': {first!r}"
             )
-        var_name = rest[1:close].strip().lower()
+        var_name = first[1:close].strip().lower()
         if not var_name:
             raise ValueError(
                 f"{filename}:{line_no}: '!$ccpp' tag has an empty '[name]'"
             )
 
-        remainder = rest[close + 1:].strip()
-        if "=" not in remainder:
-            raise ValueError(
-                f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag is missing "
-                f"'key = value': {rest!r}"
-            )
-        key, value = remainder.split("=", 1)
-        key = key.strip().lower()
-        if not key:
-            raise ValueError(
-                f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag has an "
-                "empty key"
-            )
-
-        tags.setdefault(var_name, {})[key] = value.strip()
+        # The first chained line's own assignment (after its bracket),
+        # plus every subsequent chained line verbatim -- each is its own
+        # independent key = value pair for this same var_name.
+        segments = [first[close + 1:].strip()] + remainders[1:]
+        for seg in segments:
+            if "=" not in seg:
+                raise ValueError(
+                    f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag is "
+                    f"missing 'key = value': {seg!r}"
+                )
+            key, value = seg.split("=", 1)
+            key = key.strip().lower()
+            if not key:
+                raise ValueError(
+                    f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag has an "
+                    "empty key"
+                )
+            tags.setdefault(var_name, {})[key] = value.strip()
 
     return tags
 
@@ -342,8 +370,8 @@ def _extract_device_resident_vars(
     followed by `)`, not `(`.
     """
     var_names: set[str] = set()
-    for _line_no, logical in _join_comment_continuations(source_lines, span, _ACC_OMP_SENTINELS):
-        text = logical.lower()
+    for _line_no, remainders in _join_comment_continuations(source_lines, span, _ACC_OMP_SENTINELS):
+        text = " ".join(remainders).lower()
         for keyword in _DEVICE_RESIDENCY_CLAUSES:
             needle = keyword + "("
             pos = text.find(needle)
@@ -355,7 +383,7 @@ def _extract_device_resident_vars(
                     if close_paren == -1:
                         raise ValueError(
                             f"{filename}: '{keyword}(' clause has no closing "
-                            f"')': {logical!r}"
+                            f"')': {text!r}"
                         )
                     inner = text[open_paren + 1:close_paren]
                     for name in inner.split(","):

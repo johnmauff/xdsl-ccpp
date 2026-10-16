@@ -104,43 +104,62 @@ def test_none_span_returns_empty():
 
 
 # ── _extract_ccpp_tags: multi-line continuation ──────────────────────────────
+#
+# A trailing '&' chains multiple COMPLETE, INDEPENDENT key = value pairs for
+# the SAME bracketed name -- it is not a mechanism for wrapping one long
+# value's text across lines. Confirmed the hard way: the first
+# implementation concatenated chained lines into a single value, and a real
+# use in examples/threads_nometa/thread_scheme.F90 (chaining standard_name/
+# long_name/units for [errmsg]) corrupted errmsg's standard_name into
+# "ccpp_error_message long_name = ... units = none", which broke a real
+# build (the generator relies on errmsg's standard_name matching exactly to
+# recognize it as a framework-reserved variable).
 
-def test_continuation_line_joins_value():
+def test_continuation_chains_multiple_keys_for_same_name():
     lines = [
-        "  !$ccpp [qv] long_name = a description that needs to wrap onto &",
-        "  !$ccpp a second line for readability",
+        "  !$ccpp [qv] standard_name = water_vapor_mixing_ratio &",
+        "  !$ccpp      units = kg kg-1 &",
+        "  !$ccpp      long_name = a long description",
     ]
-    tags = _extract_ccpp_tags(lines, (1, 2))
+    tags = _extract_ccpp_tags(lines, (1, 3))
     assert tags == {
-        "qv": {"long_name": "a description that needs to wrap onto a second line for readability"}
+        "qv": {
+            "standard_name": "water_vapor_mixing_ratio",
+            "units": "kg kg-1",
+            "long_name": "a long description",
+        }
     }
 
 
 def test_continuation_line_needs_no_bracket():
-    # The whole point: a continuation line is pure value text, not a new
-    # [name] key = value assignment -- confirmed by the above test already
-    # succeeding with no bracket on the second line, this test just makes
-    # that property explicit and named.
+    # The whole point: a continuation line is its own complete key = value
+    # assignment for the name established on the chain's first line, not a
+    # new, separate tag -- so it never repeats [name].
     lines = [
         "  !$ccpp [qv] units = kg &",
-        "  !$ccpp kg-1",
+        "  !$ccpp long_name = a gas",
     ]
-    assert _extract_ccpp_tags(lines, (1, 2)) == {"qv": {"units": "kg kg-1"}}
+    assert _extract_ccpp_tags(lines, (1, 2)) == {
+        "qv": {"units": "kg", "long_name": "a gas"}
+    }
 
 
-def test_three_line_continuation():
+def test_three_line_continuation_chains_three_keys():
     lines = [
-        "  !$ccpp [qv] long_name = one &",
-        "  !$ccpp two &",
-        "  !$ccpp three",
+        "  !$ccpp [qv] standard_name = foo &",
+        "  !$ccpp      units = bar &",
+        "  !$ccpp      long_name = baz",
     ]
-    assert _extract_ccpp_tags(lines, (1, 3)) == {"qv": {"long_name": "one two three"}}
+    assert _extract_ccpp_tags(lines, (1, 3)) == {
+        "qv": {"standard_name": "foo", "units": "bar", "long_name": "baz"}
+    }
 
 
 def test_continuation_requires_matching_sentinel_on_next_line():
     # A trailing '&' with no further !$ccpp line to continue onto is not
     # an error -- it's simply the end of the scanned span; the trailing
-    # '&' just becomes part of the (otherwise terminated) value.
+    # '&' is just stripped from what's otherwise a complete, single
+    # key = value pair.
     lines = ["  !$ccpp [qv] units = kg &"]
     assert _extract_ccpp_tags(lines, (1, 1)) == {"qv": {"units": "kg"}}
 
@@ -158,25 +177,16 @@ def test_non_continuation_lines_do_not_bleed_into_next_tag():
     }
 
 
-def test_error_in_continued_tag_reports_starting_line_number():
+def test_malformed_continuation_segment_still_requires_equals():
+    # Each chained line is its own independent key = value assignment, so
+    # a chained line missing '=' is still a real error, just like a
+    # single, unchained tag line missing '=' would be.
     lines = [
-        "  real, intent(inout) :: qv",
         "  !$ccpp [qv] units = kg &",
-        "  !$ccpp missing_bracket_name] long_name = oops",
+        "  !$ccpp this_segment_has_no_equals_sign",
     ]
-    # The second physical !$ccpp line is itself a well-formed continuation
-    # of the FIRST tag (units = "kg missing_bracket_name] long_name =
-    # oops") -- there's no separate [name] on a continuation line by
-    # design, so this doesn't raise at all; it's simply an unusually long
-    # units value. Demonstrates the real, deliberate trade-off: continuing
-    # a value is indistinguishable from accidentally forgetting the '&'
-    # was meant to end a tag. Not testing an error path here -- see the
-    # next test for where errors in a genuinely malformed FIRST line of a
-    # continued tag are still reported at the right line number.
-    tags = _extract_ccpp_tags(lines, (1, 3), filename="test.F90")
-    assert tags == {
-        "qv": {"units": "kg missing_bracket_name] long_name = oops"}
-    }
+    with pytest.raises(ValueError, match=r"test\.F90:1:.*missing 'key = value'"):
+        _extract_ccpp_tags(lines, (1, 2), filename="test.F90")
 
 
 def test_malformed_first_line_of_continuation_reports_its_own_line_number():
