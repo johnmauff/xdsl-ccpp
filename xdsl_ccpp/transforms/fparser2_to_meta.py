@@ -131,6 +131,207 @@ def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]
     return decl_map
 
 
+def _construct_span(construct_node) -> tuple[int, int] | None:
+    """Return the 1-indexed, inclusive ``(start_line, end_line)`` source span
+    of *construct_node* (e.g. a ``Subroutine_Subprogram``), or ``None`` if it
+    can't be determined.
+
+    fparser2 only sets ``.item``/``.item.span`` on leaf statement nodes, not
+    on compound block nodes -- confirmed empirically this session, not
+    assumed. A block construct's own overall span is recovered from its
+    first child's (the opening stmt, e.g. ``Subroutine_Stmt``) start and its
+    last child's (the closing stmt, e.g. ``End_Subroutine_Stmt``) end.
+    """
+    if not construct_node.children:
+        return None
+    first, last = construct_node.children[0], construct_node.children[-1]
+    first_item = getattr(first, "item", None)
+    last_item = getattr(last, "item", None)
+    if first_item is None or last_item is None:
+        return None
+    return (first_item.span[0], last_item.span[1])
+
+
+def _extract_ccpp_tags(
+    source_lines: list[str], span: tuple[int, int] | None, filename: str = "<source>"
+) -> dict[str, dict[str, str]]:
+    """Scan *source_lines* (1-indexed, inclusive *span* = ``(start, end)``)
+    for ``!ccpp [name] key = value`` tag comments.
+
+    fparser2 strips all comments from its own parse tree, so these can only
+    ever be recovered from the raw source text directly, cross-referenced by
+    the enclosing construct's own line span -- confirmed empirically this
+    session (comments are gone from the tree; ``.item.span``/``.item.line``
+    on real statement nodes are not). Tags are matched by bracketed name,
+    not line position, so they may appear anywhere within *span* -- not
+    necessarily adjacent to the declaration they describe.
+
+    Hand-written, line-oriented parser -- matching this codebase's own
+    established convention for text-to-IR frontends
+    (``xdsl_ccpp/frontend/ccpp_xml.py``'s ``parse_meta_file``) rather than a
+    single packed regex -- so malformed input gets the same kind of clear,
+    actionable ``filename:line_no`` error that parser already gives, instead
+    of an opaque "didn't match" from a failed regex.
+
+    Returns ``{var_name: {key: value}}``, both lowercased; value stripped of
+    only leading/trailing whitespace, not altered further.
+    """
+    if span is None:
+        return {}
+    start, end = span
+    tags: dict[str, dict[str, str]] = {}
+
+    for offset, line in enumerate(source_lines[start - 1:end]):
+        line_no = start + offset
+        stripped = line.strip()
+        if not stripped.startswith("!"):
+            continue
+
+        # Drop the leading '!' and check for the 'ccpp' marker specifically
+        # -- an ordinary comment ("! this computes foo") must never be
+        # mistaken for a tag.
+        body = stripped[1:].strip()
+        if not body.lower().startswith("ccpp"):
+            continue
+        rest = body[len("ccpp"):].strip()
+
+        if not rest.startswith("["):
+            raise ValueError(
+                f"{filename}:{line_no}: '!ccpp' tag missing '[name]': {line!r}"
+            )
+        close = rest.find("]")
+        if close == -1:
+            raise ValueError(
+                f"{filename}:{line_no}: '!ccpp' tag has an unterminated "
+                f"'[name]': {line!r}"
+            )
+        var_name = rest[1:close].strip().lower()
+        if not var_name:
+            raise ValueError(
+                f"{filename}:{line_no}: '!ccpp' tag has an empty '[name]'"
+            )
+
+        remainder = rest[close + 1:].strip()
+        if "=" not in remainder:
+            raise ValueError(
+                f"{filename}:{line_no}: '!ccpp [{var_name}]' tag is missing "
+                f"'key = value': {line!r}"
+            )
+        key, value = remainder.split("=", 1)
+        key = key.strip().lower()
+        if not key:
+            raise ValueError(
+                f"{filename}:{line_no}: '!ccpp [{var_name}]' tag has an "
+                "empty key"
+            )
+
+        tags.setdefault(var_name, {})[key] = value.strip()
+
+    return tags
+
+
+# dup-meta-shadow-elim (BACKLOG.md), Phase 2: clauses that assert a named
+# variable's device residency -- confirmed against real usage in this
+# repo's own examples/ (kessler.F90, cld_liq.F90, cld_ice.F90). Deliberately
+# narrow: `create`/`delete`/`private`/`reduction`/etc. are about a
+# variable's own lifecycle or GPU control flow, not whether a *dummy
+# argument* is device-resident, so they're left out on purpose.
+_DEVICE_RESIDENCY_CLAUSES = ("present", "deviceptr", "copyin", "copyout", "copy")
+_ACC_OMP_SENTINELS = ("!$acc", "!$omp")
+
+
+def _extract_device_resident_vars(
+    source_lines: list[str], span: tuple[int, int] | None, filename: str = "<source>"
+) -> set[str]:
+    """Scan *source_lines* (1-indexed, inclusive *span*) for `!$acc`/`!$omp`
+    directive lines and return the (lowercased) set of variable names named
+    inside a device-residency clause (`present`/`deviceptr`/`copyin`/
+    `copyout`/`copy`).
+
+    Hand-written, line-oriented parser, matching this codebase's own
+    established convention (see `_extract_ccpp_tags` and
+    `ccpp_xml.py`'s `parse_meta_file`) rather than a regex.
+
+    Two real wrinkles confirmed directly against this repo's own examples,
+    not assumed:
+
+    - **Continuation lines.** A directive ending in `&` continues onto the
+      next line, which repeats the sentinel (e.g.
+      `!$acc parallel loop gang vector &` / `!$acc present(...) ...`,
+      confirmed in `examples/kessler/scheme/kessler.F90`). Continuation
+      lines are joined into one logical line before clause-scanning.
+    - **`!!$acc` is not a directive.** A real compiler sentinel is exactly
+      `!$acc`/`!$omp` (no second `!` between the comment character and the
+      `$`) -- `kessler_update.F90` has a real commented-out
+      `!!$acc parallel loop collapse(2) present(...)` sitting right next
+      to an active, shorter `!$acc parallel loop collapse(2)` with no
+      `present(...)` at all. Checking for the sentinel at the very start
+      of the stripped line (after only whitespace) naturally excludes
+      `!!$acc`, with no special-casing needed.
+
+    A clause keyword must be immediately followed by `(` and not preceded
+    by an identifier character, so `default(present)` (a *different*
+    clause, `default`, whose value happens to be the word "present") is
+    never mistaken for a `present(...)` clause -- "present" there is
+    followed by `)`, not `(`.
+    """
+    if span is None:
+        return set()
+    start, end = span
+
+    logical_lines: list[str] = []
+    pending: str | None = None
+
+    def _flush():
+        nonlocal pending
+        if pending is not None:
+            logical_lines.append(pending)
+            pending = None
+
+    for line in source_lines[start - 1:end]:
+        stripped = line.strip()
+        lowered = stripped.lower()
+        sentinel = next((s for s in _ACC_OMP_SENTINELS if lowered.startswith(s)), None)
+        if sentinel is None:
+            _flush()
+            continue
+
+        body = stripped[len(sentinel):].strip()
+        if pending is not None:
+            body = pending + " " + body
+        if body.endswith("&"):
+            pending = body[:-1].strip()
+            continue
+        logical_lines.append(body)
+        pending = None
+    _flush()
+
+    var_names: set[str] = set()
+    for logical in logical_lines:
+        text = logical.lower()
+        for keyword in _DEVICE_RESIDENCY_CLAUSES:
+            needle = keyword + "("
+            pos = text.find(needle)
+            while pos != -1:
+                is_whole_word = pos == 0 or not (text[pos - 1].isalnum() or text[pos - 1] == "_")
+                if is_whole_word:
+                    open_paren = pos + len(keyword)
+                    close_paren = text.find(")", open_paren)
+                    if close_paren == -1:
+                        raise ValueError(
+                            f"{filename}: '{keyword}(' clause has no closing "
+                            f"')': {logical!r}"
+                        )
+                    inner = text[open_paren + 1:close_paren]
+                    for name in inner.split(","):
+                        name = name.strip()
+                        if name:
+                            var_names.add(name)
+                pos = text.find(needle, pos + 1)
+
+    return var_names
+
+
 def _extract_subroutines(
     f90_source: str,
     filename: str = "<source>",
@@ -160,6 +361,11 @@ def _extract_subroutines(
     ParserFactory().create(std="f2003")
     reader = FortranStringReader(f90_source)
     tree = f03.Program(reader)
+    # Same (possibly preprocessed) source the parser just consumed, so line
+    # numbers from fparser2's own .item.span line up exactly -- used only by
+    # the !ccpp tag recovery below, which needs the raw text since fparser2
+    # strips comments from the parse tree itself.
+    source_lines = f90_source.splitlines()
 
     results = []
 
@@ -172,21 +378,49 @@ def _extract_subroutines(
             proc_name = str(sub_stmt.children[1]).lower()
 
             dummy_arg_list = sub_stmt.children[2]
+            dummy_names = (
+                {str(a).lower() for a in dummy_arg_list.items}
+                if dummy_arg_list is not None
+                else set()
+            )
+
+            span = _construct_span(sub)
+            tags = _extract_ccpp_tags(source_lines, span, filename)
+            unknown_tagged = sorted(set(tags) - dummy_names)
+            if unknown_tagged:
+                raise ValueError(
+                    f"'{filename}': subroutine '{proc_name}' has a !ccpp tag "
+                    f"for {unknown_tagged}, which is not one of its own dummy "
+                    f"arguments ({sorted(dummy_names)})"
+                )
+            # Device-residency clauses legitimately also name local/scratch
+            # variables with no corresponding dummy argument at all (e.g.
+            # kessler.F90's `present(r,rhalf,...)` on its own work arrays) --
+            # unlike an unmatched !ccpp tag, that's not an error, it's simply
+            # not looked up below.
+            device_resident = _extract_device_resident_vars(source_lines, span, filename)
+
             if dummy_arg_list is None:
                 results.append((module_name, proc_name, []))
                 continue
 
-            # Dummy args are Name nodes inside Dummy_Arg_List, not Dummy_Arg instances
-            dummy_names = {str(a).lower() for a in dummy_arg_list.items}
-
             decl_map = _build_decl_map(sub, dummy_names)
 
-            # Return args in dummy-argument order
+            # Return args in dummy-argument order, enriched with any !ccpp
+            # tag content found for that argument's name (standard_name/
+            # units/long_name -- the fields fparser2 can never see in plain
+            # declaration syntax, regardless of tagging) and, when not
+            # already given explicitly by a tag, memory_space derived from a
+            # real device-residency clause.
             args = []
             for a in dummy_arg_list.items:
                 name = str(a).lower()
-                if name in decl_map:
-                    args.append({"name": name, **decl_map[name]})
+                if name not in decl_map:
+                    continue
+                extra = dict(tags.get(name, {}))
+                if "memory_space" not in extra and name in device_resident:
+                    extra["memory_space"] = "device"
+                args.append({"name": name, **decl_map[name], **extra})
 
             results.append((module_name, proc_name, args))
 
