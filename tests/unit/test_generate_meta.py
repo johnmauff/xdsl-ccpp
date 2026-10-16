@@ -183,7 +183,7 @@ class TestMetaFromModule:
 # ── Phase 4: real values override stubs when present ──────────────────────────
 # dup-meta-shadow-elim (BACKLOG.md). standard_name/units/long_name/
 # memory_space come straight from an ArgumentOp's own property (set by a
-# !ccpp tag or a real device-residency directive, Phases 1-2) when present;
+# !$ccpp tag or a real device-residency directive, Phases 1-2) when present;
 # stub fallback remains for standard_name/units only -- long_name/
 # memory_space are legitimately sparse and simply omitted otherwise.
 
@@ -369,8 +369,8 @@ module my_scheme
   implicit none
 contains
   subroutine my_scheme_run(qv)
-    !ccpp [qv] standard_name = water_vapor_mixing_ratio
-    !ccpp [qv] units = kg kg-1
+    !$ccpp [qv] standard_name = water_vapor_mixing_ratio
+    !$ccpp [qv] units = kg kg-1
     real, intent(inout) :: qv
   end subroutine
 end module my_scheme

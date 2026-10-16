@@ -128,7 +128,7 @@ end module
 
 def test_local_scratch_variable_in_clause_does_not_error():
     # present(local_work_array) names a plain local, not a dummy argument
-    # -- unlike an unmatched !ccpp tag, this must not raise.
+    # -- unlike an unmatched !$ccpp tag, this must not raise.
     src = """
 module m
 contains
@@ -148,13 +148,13 @@ end module
 
 
 def test_explicit_tag_takes_precedence_over_derived_value():
-    # An explicit !ccpp memory_space tag is a human override and must win
+    # An explicit !$ccpp memory_space tag is a human override and must win
     # over whatever the directive scan would otherwise derive.
     src = """
 module m
 contains
   subroutine m_run(temp, errflg)
-    !ccpp [temp] memory_space = unified
+    !$ccpp [temp] memory_space = unified
     real, intent(inout) :: temp
     integer, intent(out) :: errflg
     !$acc parallel loop present(temp)

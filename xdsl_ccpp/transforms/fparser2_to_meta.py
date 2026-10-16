@@ -171,19 +171,119 @@ def _construct_span(construct_node) -> tuple[int, int] | None:
     return (first_item.span[0], last_item.span[1])
 
 
+def _join_comment_continuations(
+    source_lines: list[str], span: tuple[int, int] | None, sentinels: tuple[str, ...]
+) -> list[tuple[int, list[str]]]:
+    """Scan *source_lines* (1-indexed, inclusive *span*) for comment lines
+    whose stripped, lowercased text starts with one of *sentinels*, chaining
+    a line ending in ``&`` with the next matching-sentinel line, matching
+    real ``!$acc``/``!$omp`` continuation convention (confirmed in
+    ``examples/kessler/scheme/kessler.F90``: ``!$acc parallel loop gang
+    vector &`` / ``!$acc present(...) ...``).
+
+    Shared by ``_extract_ccpp_tags`` (sentinel ``!$ccpp``) and
+    ``_extract_device_resident_vars`` (sentinels ``!$acc``/``!$omp``) --
+    the chain-detection mechanics (trailing ``&``, repeated sentinel) are
+    identical regardless of which sentinel is in play. What each chained
+    line *means*, though, differs by caller, so this returns each
+    sentinel-stripped line **unjoined** -- the caller decides:
+    ``_extract_device_resident_vars`` wants one logical directive's whole
+    clause-list as a single blob (``" ".join(...)``), since a real
+    ``!$acc`` directive's own clauses genuinely span the continuation as
+    one unit. ``_extract_ccpp_tags`` wants each chained line kept
+    separate: a ``!$ccpp`` continuation line is a *complete, independent*
+    ``key = value`` pair for the same bracketed name established on the
+    chain's first line, not a fragment of one value's text -- confirmed
+    directly against a real build failure this session (concatenating
+    `` standard_name = x`` with a following ``long_name = y`` as one
+    blob produced `` standard_name = "x long_name = y"``, corrupting the
+    very name the generator relies on to recognize `errmsg` as a
+    framework-reserved variable).
+
+    fparser2 strips all comments from its own parse tree, so this is the
+    only way to recover them at all -- confirmed empirically this session.
+    A sentinel is checked at the very start of the stripped line, so e.g.
+    ``!!$acc``/``!!$ccpp`` (a second ``!`` -- a human comment *about* a
+    directive, not a real compiler sentinel) is never mistaken for an
+    active one, with no special-casing needed (confirmed real case:
+    ``examples/kessler/scheme/kessler_update.F90``).
+
+    Returns a list of ``(first_line_no, [remainder, ...])`` -- one entry
+    per complete, possibly multi-line, chain; *first_line_no* is the
+    1-indexed source line the chain *started* on (useful for error
+    messages).
+    """
+    if span is None:
+        return []
+    start, end = span
+
+    chains: list[tuple[int, list[str]]] = []
+    pending: list[str] | None = None
+    pending_line_no: int | None = None
+
+    def _flush():
+        nonlocal pending, pending_line_no
+        if pending is not None:
+            chains.append((pending_line_no, pending))
+            pending = None
+            pending_line_no = None
+
+    for offset, line in enumerate(source_lines[start - 1:end]):
+        line_no = start + offset
+        stripped = line.strip()
+        lowered = stripped.lower()
+        sentinel = next((s for s in sentinels if lowered.startswith(s)), None)
+        if sentinel is None:
+            _flush()
+            continue
+
+        body = stripped[len(sentinel):].strip()
+        is_continued = body.endswith("&")
+        if is_continued:
+            body = body[:-1].strip()
+
+        if pending is None:
+            pending = [body]
+            pending_line_no = line_no
+        else:
+            pending.append(body)
+
+        if not is_continued:
+            chains.append((pending_line_no, pending))
+            pending = None
+            pending_line_no = None
+    _flush()
+
+    return chains
+
+
+_CCPP_TAG_SENTINELS = ("!$ccpp",)
+
+
 def _extract_ccpp_tags(
     source_lines: list[str], span: tuple[int, int] | None, filename: str = "<source>"
 ) -> dict[str, dict[str, str]]:
     """Scan *source_lines* (1-indexed, inclusive *span* = ``(start, end)``)
-    for ``!ccpp [name] key = value`` tag comments.
+    for ``!$ccpp [name] key = value`` tag comments.
 
-    fparser2 strips all comments from its own parse tree, so these can only
-    ever be recovered from the raw source text directly, cross-referenced by
-    the enclosing construct's own line span -- confirmed empirically this
-    session (comments are gone from the tree; ``.item.span``/``.item.line``
-    on real statement nodes are not). Tags are matched by bracketed name,
-    not line position, so they may appear anywhere within *span* -- not
-    necessarily adjacent to the declaration they describe.
+    Tags are matched by bracketed name, not line position, so they may
+    appear anywhere within *span* -- not necessarily adjacent to the
+    declaration they describe. Several ``key = value`` pairs for the same
+    name may be chained with a trailing ``&``, matching ``!$acc``/``!$omp``
+    continuation convention (see ``_join_comment_continuations``) -- each
+    chained line is a **complete, independent assignment**, not a
+    fragment of one value's text, so a continuation line doesn't repeat
+    ``[name]`` (it's implied, from the chain's first line), e.g.::
+
+        !$ccpp [qv] standard_name = water_vapor_mixing_ratio &
+        !$ccpp      units = kg kg-1 &
+        !$ccpp      long_name = a long description
+
+    is exactly equivalent to three separate, unchained ``!$ccpp [qv] ...``
+    lines. This is *not* a mechanism for wrapping one long value across
+    lines -- concatenating chained lines into a single value was tried
+    first and is exactly what produced a real build failure (see
+    ``_join_comment_continuations``'s own docstring).
 
     Hand-written, line-oriented parser -- matching this codebase's own
     established convention for text-to-IR frontends
@@ -195,56 +295,44 @@ def _extract_ccpp_tags(
     Returns ``{var_name: {key: value}}``, both lowercased; value stripped of
     only leading/trailing whitespace, not altered further.
     """
-    if span is None:
-        return {}
-    start, end = span
     tags: dict[str, dict[str, str]] = {}
 
-    for offset, line in enumerate(source_lines[start - 1:end]):
-        line_no = start + offset
-        stripped = line.strip()
-        if not stripped.startswith("!"):
-            continue
-
-        # Drop the leading '!' and check for the 'ccpp' marker specifically
-        # -- an ordinary comment ("! this computes foo") must never be
-        # mistaken for a tag.
-        body = stripped[1:].strip()
-        if not body.lower().startswith("ccpp"):
-            continue
-        rest = body[len("ccpp"):].strip()
-
-        if not rest.startswith("["):
+    for line_no, remainders in _join_comment_continuations(source_lines, span, _CCPP_TAG_SENTINELS):
+        first = remainders[0]
+        if not first.startswith("["):
             raise ValueError(
-                f"{filename}:{line_no}: '!ccpp' tag missing '[name]': {line!r}"
+                f"{filename}:{line_no}: '!$ccpp' tag missing '[name]': {first!r}"
             )
-        close = rest.find("]")
+        close = first.find("]")
         if close == -1:
             raise ValueError(
-                f"{filename}:{line_no}: '!ccpp' tag has an unterminated "
-                f"'[name]': {line!r}"
+                f"{filename}:{line_no}: '!$ccpp' tag has an unterminated "
+                f"'[name]': {first!r}"
             )
-        var_name = rest[1:close].strip().lower()
+        var_name = first[1:close].strip().lower()
         if not var_name:
             raise ValueError(
-                f"{filename}:{line_no}: '!ccpp' tag has an empty '[name]'"
+                f"{filename}:{line_no}: '!$ccpp' tag has an empty '[name]'"
             )
 
-        remainder = rest[close + 1:].strip()
-        if "=" not in remainder:
-            raise ValueError(
-                f"{filename}:{line_no}: '!ccpp [{var_name}]' tag is missing "
-                f"'key = value': {line!r}"
-            )
-        key, value = remainder.split("=", 1)
-        key = key.strip().lower()
-        if not key:
-            raise ValueError(
-                f"{filename}:{line_no}: '!ccpp [{var_name}]' tag has an "
-                "empty key"
-            )
-
-        tags.setdefault(var_name, {})[key] = value.strip()
+        # The first chained line's own assignment (after its bracket),
+        # plus every subsequent chained line verbatim -- each is its own
+        # independent key = value pair for this same var_name.
+        segments = [first[close + 1:].strip()] + remainders[1:]
+        for seg in segments:
+            if "=" not in seg:
+                raise ValueError(
+                    f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag is "
+                    f"missing 'key = value': {seg!r}"
+                )
+            key, value = seg.split("=", 1)
+            key = key.strip().lower()
+            if not key:
+                raise ValueError(
+                    f"{filename}:{line_no}: '!$ccpp [{var_name}]' tag has an "
+                    "empty key"
+                )
+            tags.setdefault(var_name, {})[key] = value.strip()
 
     return tags
 
@@ -269,24 +357,11 @@ def _extract_device_resident_vars(
 
     Hand-written, line-oriented parser, matching this codebase's own
     established convention (see `_extract_ccpp_tags` and
-    `ccpp_xml.py`'s `parse_meta_file`) rather than a regex.
-
-    Two real wrinkles confirmed directly against this repo's own examples,
-    not assumed:
-
-    - **Continuation lines.** A directive ending in `&` continues onto the
-      next line, which repeats the sentinel (e.g.
-      `!$acc parallel loop gang vector &` / `!$acc present(...) ...`,
-      confirmed in `examples/kessler/scheme/kessler.F90`). Continuation
-      lines are joined into one logical line before clause-scanning.
-    - **`!!$acc` is not a directive.** A real compiler sentinel is exactly
-      `!$acc`/`!$omp` (no second `!` between the comment character and the
-      `$`) -- `kessler_update.F90` has a real commented-out
-      `!!$acc parallel loop collapse(2) present(...)` sitting right next
-      to an active, shorter `!$acc parallel loop collapse(2)` with no
-      `present(...)` at all. Checking for the sentinel at the very start
-      of the stripped line (after only whitespace) naturally excludes
-      `!!$acc`, with no special-casing needed.
+    `ccpp_xml.py`'s `parse_meta_file`) rather than a regex. Continuation
+    joining and the `!!$acc`-is-not-a-directive handling are shared with
+    `_extract_ccpp_tags` via `_join_comment_continuations` -- see that
+    function's own docstring for both, confirmed directly against this
+    repo's own examples, not assumed.
 
     A clause keyword must be immediately followed by `(` and not preceded
     by an identifier character, so `default(present)` (a *different*
@@ -294,40 +369,9 @@ def _extract_device_resident_vars(
     never mistaken for a `present(...)` clause -- "present" there is
     followed by `)`, not `(`.
     """
-    if span is None:
-        return set()
-    start, end = span
-
-    logical_lines: list[str] = []
-    pending: str | None = None
-
-    def _flush():
-        nonlocal pending
-        if pending is not None:
-            logical_lines.append(pending)
-            pending = None
-
-    for line in source_lines[start - 1:end]:
-        stripped = line.strip()
-        lowered = stripped.lower()
-        sentinel = next((s for s in _ACC_OMP_SENTINELS if lowered.startswith(s)), None)
-        if sentinel is None:
-            _flush()
-            continue
-
-        body = stripped[len(sentinel):].strip()
-        if pending is not None:
-            body = pending + " " + body
-        if body.endswith("&"):
-            pending = body[:-1].strip()
-            continue
-        logical_lines.append(body)
-        pending = None
-    _flush()
-
     var_names: set[str] = set()
-    for logical in logical_lines:
-        text = logical.lower()
+    for _line_no, remainders in _join_comment_continuations(source_lines, span, _ACC_OMP_SENTINELS):
+        text = " ".join(remainders).lower()
         for keyword in _DEVICE_RESIDENCY_CLAUSES:
             needle = keyword + "("
             pos = text.find(needle)
@@ -339,7 +383,7 @@ def _extract_device_resident_vars(
                     if close_paren == -1:
                         raise ValueError(
                             f"{filename}: '{keyword}(' clause has no closing "
-                            f"')': {logical!r}"
+                            f"')': {text!r}"
                         )
                     inner = text[open_paren + 1:close_paren]
                     for name in inner.split(","):

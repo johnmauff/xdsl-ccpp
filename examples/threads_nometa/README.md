@@ -3,7 +3,7 @@
 **dup-meta-shadow-elim (BACKLOG.md) demonstration.** This is the tag-based
 twin of `examples/threads` — identical functionality, identical host/
 suite/driver files, but `thread_scheme.F90` carries
-`standard_name`/`units`/`long_name`/`dim_names` as `!ccpp [name] key =
+`standard_name`/`units`/`long_name`/`dim_names` as `!$ccpp [name] key =
 value` comment tags instead of a hand-maintained `thread_scheme.meta`.
 No `.meta` for the **scheme** is committed to this directory at all; it's
 generated into the build tree from the tagged source at CMake configure
@@ -29,7 +29,7 @@ A ~21% reduction for this one small, 4-argument scheme. That understates
 the real payoff on purpose: the fixed overhead of `.meta`'s own
 structural boilerplate (table/arg-table headers, `type =`/`dimensions =`
 lines) is proportionally large for a tiny scheme like this one, while
-each `!ccpp` tag line added here is pure extra text with no offsetting
+each `!$ccpp` tag line added here is pure extra text with no offsetting
 savings at this scale. The real corpus this backlog item targets
 (`NCAR/atmospheric_physics`, 36,431 real `.meta` lines) has the same
 small, fixed per-argument tag overhead but vastly more of the mechanical
@@ -44,6 +44,6 @@ irreducible ~32% moves into tags).
 |------|-------------|
 | `test_host.meta` | Control table + host table — unchanged from `examples/threads`, out of scope for tagging (Phases 1-4 cover scheme `.meta` only) |
 | `data.meta`/`data.F90` | `thread_type` DDT + host array — unchanged, same reason |
-| `thread_scheme.F90` | The scheme, now carrying `!ccpp` tags; **no `thread_scheme.meta` committed** |
+| `thread_scheme.F90` | The scheme, now carrying `!$ccpp` tags; **no `thread_scheme.meta` committed** |
 | `suite_thread_suite.xml` | Suite definition — unchanged, references the scheme by name only |
 | `main.F90` | Driver — unchanged |
