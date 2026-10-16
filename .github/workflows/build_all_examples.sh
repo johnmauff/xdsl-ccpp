@@ -41,7 +41,8 @@ EXAMPLES=(
   "suite_allocate|suite_allocate.exe|"
   "instances|instances.exe|instances\$"
   "instances_advection|instances_advection.exe|"
-  "threads|threads.exe|"
+  "threads|threads.exe|threads\$"
+  "threads_nometa|threads_nometa.exe|"
 )
 
 # Expected failures: real, already-tracked bugs, each with its own

@@ -84,6 +84,25 @@ def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]
                     # For non-character types strip the optional "KIND =" prefix
                     if raw_kind.upper().startswith("KIND"):
                         raw_kind = raw_kind.split("=", 1)[1].strip()
+                else:
+                    # fparser2's own str() serialization of a Char_Selector
+                    # inserts spaces around '=' (e.g. "LEN = 512"/"LEN = *"),
+                    # unlike every real .meta file's tight "len=512"/"len=*"
+                    # convention. compare_arg_tables already normalizes this
+                    # away with the same .replace(" ", "") when comparing
+                    # (confirmed this session) -- but nothing downstream of
+                    # *extraction* did, so a kind string built here flowed
+                    # into real generation (ccpp_generate_meta.py, Phase 4)
+                    # with the extra spaces intact. xdsl_ccpp/transforms/
+                    # util/typing.py's shape computation does a plain
+                    # `"len=" in kind` substring check with no such
+                    # normalization, silently falling through to the wrong
+                    # (scalar) shape for "len = *" -- confirmed as the exact
+                    # cause of a real `memref<i8>` vs `memref<512xi8>`
+                    # mismatch building examples/threads_nometa. Normalize
+                    # at the source instead of requiring every consumer to
+                    # tolerate both spellings.
+                    raw_kind = raw_kind.replace(" ", "")
                 kind_str = raw_kind.lower() if raw_kind else None
 
         # Intent and optional from attribute list
@@ -532,7 +551,24 @@ def build_meta_module_from_source(
             for arg in args:
                 attrs: dict = {"type": arg["type"]}
                 if arg["rank"] > 0:
-                    dims = ", ".join(f"dim{i + 1}" for i in range(arg["rank"]))
+                    # dim_names isn't a settable ArgumentOp property on its
+                    # own (confirmed: ccpp.py derives it FROM the
+                    # `dimensions` string itself) -- a !ccpp [name]
+                    # dim_names = ... tag's real names are substituted into
+                    # that same string instead of the synthetic
+                    # dim1/dim2/... placeholders, not forwarded separately.
+                    tag_dim_names = arg.get("dim_names")
+                    if tag_dim_names:
+                        dim_list = [d.strip() for d in tag_dim_names.split(",") if d.strip()]
+                        if len(dim_list) != arg["rank"]:
+                            raise ValueError(
+                                f"'{arg['name']}': !ccpp tag's dim_names has "
+                                f"{len(dim_list)} name(s) but the real "
+                                f"declaration has rank {arg['rank']}"
+                            )
+                        dims = ", ".join(dim_list)
+                    else:
+                        dims = ", ".join(f"dim{i + 1}" for i in range(arg["rank"]))
                     attrs["dimensions"] = f"({dims})"
                 if arg["intent"]:
                     attrs["intent"] = arg["intent"]

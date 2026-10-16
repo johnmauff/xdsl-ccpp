@@ -31,6 +31,7 @@ measured data, and will drift as items are reassessed.
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 1 (`examples/` only) | 14-23 days | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
+| `direct-fortran-ingest` | TBD — needs more planning before this can be sized | TBD |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
@@ -312,8 +313,41 @@ smallest to largest:
   resolved with working techniques against the real corpus, not open
   questions).
 
-Targets a different repo (`NCAR/atmospheric_physics`), not this one, but
-Section 5's own architecture review found most of the xdsl_ccpp-side
+**`direct-fortran-ingest`** — a related but distinct, larger item, raised
+2026-10-15 while discussing `dup-meta-shadow-elim`'s own scope: let
+`ccpp_xdsl`'s real generation pipeline (`ccpp_dsl.py`) ingest annotated
+Fortran source directly, making `.meta` an *optional* input rather than
+a hard requirement, instead of always generating and still requiring it
+(`dup-meta-shadow-elim`'s own scope stops at "stop hand-editing `.meta`"
+— it never stops being produced, committed, or consumed, specifically
+*so that* real capgen-v1 keeps working against the same schemes). This
+item goes further: a scheme using the `!ccpp`/`!$acc` annotation
+convention could skip the `.meta`-generation step and the intermediate
+artifact entirely when built with `ccpp_xdsl`.
+
+**Explicit, acknowledged trade-off, not a refinement**: this would break
+real capgen-v1 compatibility for any scheme that takes this path — real
+capgen-v1 has zero ability to read annotated Fortran at all, confirmed
+directly against its own source this session (`ccpp_capgen.py`'s CLI has
+no concept of a Fortran-source input; only `.meta`/XML/`--output-root`).
+Given this project's stated goal of being an interchangeable alternative
+to capgen-v1 (not a wholesale replacement that drops compatibility), this
+would need to be an explicit, scheme-by-scheme or build-configuration
+opt-in, not a blanket default — and is a strategic/governance decision
+(is sacrificing capgen-v1 compatibility ever acceptable, for which
+schemes, decided by whom) at least as much as a technical one.
+
+Builds directly on `dup-meta-shadow-elim`'s own `!ccpp`-tag/`!$acc`-
+directive extraction infrastructure (same mechanisms, different
+consumer) — not schedulable as its own independent effort until that
+work has landed. Not scoped or estimated; someday-maybe, like its
+siblings above, pending a decision on the compatibility trade-off itself
+before any technical planning is worth doing.
+
+Those three proposals target a different repo (`NCAR/atmospheric_physics`),
+not this one -- unlike `direct-fortran-ingest` above, which is squarely
+about this repo's own `ccpp_dsl.py`. Section 5's own architecture review
+found most of the xdsl_ccpp-side
 plumbing this would need (the `fparser2_to_meta.py`/`fir_to_meta.py`
 extractors, `ArgumentOp`'s already-optional `standard_name`/`units`/
 `memory_space` properties, `ccpp_generate_meta.py`'s stub generation)
