@@ -46,6 +46,16 @@ def _make_module(scheme_name: str, entry_points: list[tuple[str, list[ArgumentOp
 # ── entry-point name detection ────────────────────────────────────────────────
 
 class TestIsCcppEntry:
+    def test_register_suffix(self):
+        # dup-meta-shadow-elim (BACKLOG.md), Phase 7: found via
+        # examples/advection's real cld_liq_register/cld_ice_register --
+        # `register` is a genuine CCPP lifecycle phase (suite_cap.py's own
+        # real cap generator already recognises it, `("_register", False):
+        # "register"`), just missing from this tool's own suffix list, so
+        # meta_from_module would silently drop a scheme's whole _register
+        # arg-table block.
+        assert _is_ccpp_entry("cld_liq_register")
+
     def test_run_suffix(self):
         assert _is_ccpp_entry("temp_adjust_run")
 
@@ -391,6 +401,105 @@ contains
 end module my_scheme
 """)
         assert "  memory_space = device" in out
+
+    def test_arbitrary_tag_key_flows_through_generically(self):
+        # dup-meta-shadow-elim (BACKLOG.md), Phase 7: advection's real
+        # .meta files need fields beyond the original four
+        # (standard_name/units/long_name/memory_space) -- advected/
+        # constituent/protected/state_variable/default_value among them.
+        # None of these need their own line of code in the forwarding
+        # path any more; any ArgumentOp-recognised !$ccpp tag key reaches
+        # the generated .meta verbatim.
+        out = self._build("""
+module cld_liq
+  implicit none
+contains
+  subroutine cld_liq_run(cld_liq_array)
+    real, intent(inout) :: cld_liq_array
+    !$ccpp [cld_liq_array] standard_name = cloud_liquid_dry_mixing_ratio &
+    !$ccpp                 advected = .true. &
+    !$ccpp                 default_value = 0.0_kind_phys
+  end subroutine
+end module cld_liq
+""")
+        assert "  advected = True" in out
+        assert "  default_value = 0.0_kind_phys" in out
+
+    def test_unrecognised_tag_key_warns_and_is_dropped(self, capsys):
+        from xdsl_ccpp.dialects.ccpp import ArgumentOp
+
+        out = self._build("""
+module my_scheme
+  implicit none
+contains
+  subroutine my_scheme_run(qv)
+    real, intent(inout) :: qv
+    !$ccpp [qv] standard_name = water_vapor_mixing_ratio
+    !$ccpp [qv] totally_bogus_key = oops
+  end subroutine
+end module my_scheme
+""")
+        assert "totally_bogus_key" not in out
+        assert "oops" not in out
+        assert "standard_name = water_vapor_mixing_ratio" in out
+        err = capsys.readouterr().err
+        assert "unrecognised !$ccpp tag key" in err
+        assert "totally_bogus_key" in err
+        assert "'qv'" in err
+        assert "totally_bogus_key" not in ArgumentOp.KNOWN_PROPS
+
+    def test_register_entry_point_is_not_silently_dropped(self):
+        # dup-meta-shadow-elim (BACKLOG.md), Phase 7: found while building
+        # examples/advection_nometa -- cld_liq_register/cld_ice_register
+        # are real entry points (constituent registration), but
+        # `_CCPP_ENTRY_SUFFIXES` lacked "_register" entirely, so
+        # meta_from_module's filter_entries=True default silently dropped
+        # the whole arg-table block. Scoped only to this .meta-from-
+        # tagged-source convenience tool -- the real cap generator
+        # (suite_cap.py) already recognised `_register` correctly, which
+        # is why examples/advection (hand-authored .meta, never passes
+        # through this tool) was never affected.
+        out = self._build("""
+module cld_liq
+  implicit none
+contains
+  subroutine cld_liq_register(dyn_const, errmsg, errflg)
+    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+    type(ccpp_constituent_properties_t), allocatable, intent(out) :: dyn_const(:)
+    !$ccpp [dyn_const] standard_name = dynamic_constituents_for_cld_liq
+    !$ccpp [dyn_const] units = none
+    character(len=512), intent(out) :: errmsg
+    integer, intent(out) :: errflg
+  end subroutine cld_liq_register
+end module cld_liq
+""")
+        assert "name = cld_liq_register" in out
+        assert "standard_name = dynamic_constituents_for_cld_liq" in out
+        assert "allocatable = True" in out
+
+    def test_bare_colon_dim_names_tag_reproduces_deferred_shape(self):
+        # dup-meta-shadow-elim (BACKLOG.md), Phase 7: found while building
+        # examples/advection_nometa -- a `dim_names = :` tag (for a real
+        # `dimensions = (:)` constituent-properties array, see
+        # ArgumentOp's own dimensions-parsing fix in dialects/ccpp.py) must
+        # reach the generated .meta as a literal "(:)", not fall back to a
+        # stub dimension name (which a real suite then counts as a bogus
+        # extra host variable -- confirmed via a real build failure).
+        out = self._build("""
+module cld_liq
+  implicit none
+contains
+  subroutine cld_liq_register(dyn_const, errmsg, errflg)
+    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
+    type(ccpp_constituent_properties_t), allocatable, intent(out) :: dyn_const(:)
+    !$ccpp [dyn_const] standard_name = dynamic_constituents_for_cld_liq &
+    !$ccpp             dim_names = :
+    character(len=512), intent(out) :: errmsg
+    integer, intent(out) :: errflg
+  end subroutine cld_liq_register
+end module cld_liq
+""")
+        assert "dimensions = (:)" in out
 
 
 # ── Phase 4: generate_meta_for_file's --root-dir dependency wiring ────────────

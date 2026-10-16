@@ -27,6 +27,7 @@ EXAMPLES=(
   "tinyddt|tinyddt_cxx_host|"
   "advection|advection.exe|advection_host"
   "advection_flat_host|advection_flat.exe|"
+  "advection_nometa|advection_nometa.exe|"
   "kessler|kessler_ccpp.exe kessler_hand.exe kessler_cxx.exe kessler_cxx_host.exe|"
   "nestedddt|nestedddt_cxx_host|"
   "chararg|chararg_cxx_host|"

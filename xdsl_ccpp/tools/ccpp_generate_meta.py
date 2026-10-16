@@ -26,12 +26,32 @@ import os
 import sys
 
 from xdsl.dialects import builtin
+from xdsl.dialects.builtin import UnitAttr
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TablePropertiesOp
 
 
+# ArgumentOp properties emitted generically below, in a fixed, stable order
+# (real .meta field order varies per file and isn't semantically significant
+# -- validate_fir.compare_modules compares by field, not text order) --
+# deliberately excludes properties set only by later pipeline passes
+# (host-matching, ownership classification: model_var_*, ownership_kind,
+# is_promoted, promoted_dim, is_interstitial), which ArgumentOp.KNOWN_PROPS
+# already excludes by design (it's the same "human-authorable .meta field"
+# allowlist ccpp_xml.py/fparser2_to_meta.py use to warn on unrecognised
+# tag/attribute keys). standard_name/units/type/kind/dimensions/intent/
+# optional are handled specially above/below (stub fallback, dimensions
+# string construction) and left out of this list to avoid double-emitting.
+_EXTRA_META_PROPS = (
+    "long_name", "advected", "constituent", "protected", "state_variable",
+    "allocatable", "default_value", "diagnostic_name",
+    "diagnostic_name_fixed", "active", "top_at_one", "memory_space",
+)
+
+
 _CCPP_ENTRY_SUFFIXES = (
+    "_register",
     "_run",
     "_init",
     "_finalize",
@@ -73,15 +93,24 @@ def meta_from_module(
         A string in ``.meta`` format ready to write to a file, or an empty
         string when no matching entry points are found.
 
-    ``standard_name``/``units``/``long_name``/``memory_space`` use the real
-    value already present on an ``ArgumentOp`` (from a ``!ccpp`` tag or a
-    real device-residency directive -- Phases 1-2) when one was extracted;
-    stub placeholders (``std_name_NNN``/``enter_units``) remain the
-    fallback only for ``standard_name``/``units``, the two fields real
-    ``.meta`` always requires. ``long_name``/``memory_space`` are both
-    legitimately sparse in real ``.meta`` (confirmed this session:
-    ``long_name`` present in only ~7.7% of real blocks) -- they're simply
-    omitted, not stubbed, when no real value was found.
+    ``standard_name``/``units`` use the real value already present on an
+    ``ArgumentOp`` (from a ``!$ccpp`` tag) when one was extracted; stub
+    placeholders (``std_name_NNN``/``enter_units``) remain the fallback
+    only for these two, the only fields real ``.meta`` always requires.
+    Every other field ``ArgumentOp`` carries (``long_name``/
+    ``memory_space``/``advected``/``constituent``/``protected``/
+    ``state_variable``/``allocatable``/``default_value``/
+    ``diagnostic_name``/``diagnostic_name_fixed``/``active``/
+    ``top_at_one`` -- see ``_EXTRA_META_PROPS``) is emitted generically
+    whenever present and simply omitted otherwise, not stubbed -- dup-
+    meta-shadow-elim (BACKLOG.md), Phase 4 (standard_name/units/
+    long_name/memory_space) and Phase 7 (generalized to every
+    ``!$ccpp``-tag-derived field, not a fixed short list, once advection's
+    real ``.meta`` files needed fields beyond the original four; these
+    fields are all legitimately sparse in real ``.meta`` -- confirmed this
+    session: ``long_name`` present in only ~7.7% of real blocks -- so
+    "omit when absent" is the correct behavior for all of them, not just
+    the original two).
     """
     counter = itertools.count(1)
 
@@ -136,14 +165,18 @@ def meta_from_module(
                 is_optional = arg.optional is not None
                 standard_name = arg.standard_name.data if arg.standard_name is not None else None
                 units = arg.units.data if arg.units is not None else None
-                long_name = arg.long_name.data if arg.long_name is not None else None
-                memory_space = arg.memory_space.data if arg.memory_space is not None else None
 
                 lines.append(f"[ {local_name} ]")
                 lines.append(f"  standard_name = {standard_name or next_stub()}")
                 lines.append(f"  units = {units or 'enter_units'}")
-                if long_name:
-                    lines.append(f"  long_name = {long_name}")
+                for prop in _EXTRA_META_PROPS:
+                    value = arg.properties.get(prop)
+                    if value is None:
+                        continue
+                    if isinstance(value, UnitAttr):
+                        lines.append(f"  {prop} = True")
+                    else:
+                        lines.append(f"  {prop} = {value.data}")
                 lines.append(f"  type = {arg_type}")
                 if kind:
                     lines.append(f"  kind = {kind}")
@@ -159,8 +192,6 @@ def meta_from_module(
                     lines.append(f"  intent = {intent}")
                 if is_optional:
                     lines.append(f"  optional = True")
-                if memory_space:
-                    lines.append(f"  memory_space = {memory_space}")
 
             lines.append("")
 

@@ -18,6 +18,7 @@ Information NOT available from Fortran source text (same gaps as fir_to_meta):
 
 from __future__ import annotations
 
+import sys
 from collections import defaultdict
 
 from xdsl.dialects import builtin
@@ -45,7 +46,7 @@ def _fparser_available() -> bool:
 
 def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]:
     """Walk ``Type_Declaration_Stmt`` nodes within *scope_node* and return a
-    ``name -> {type, rank, intent, optional, kind}`` map.
+    ``name -> {type, rank, intent, optional, allocatable, kind}`` map.
 
     *name_filter*, if given, restricts the result to those names
     (case-insensitive, already lowercased); pass ``None`` to keep every
@@ -105,15 +106,28 @@ def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]
                     raw_kind = raw_kind.replace(" ", "")
                 kind_str = raw_kind.lower() if raw_kind else None
 
-        # Intent and optional from attribute list
+        # Intent/optional/allocatable from attribute list. allocatable
+        # mirrors optional exactly -- both are plain Attr_Spec keywords,
+        # confirmed directly against fparser2's own parse of a real
+        # declaration (examples/advection/cld_liq.F90's `type(...),
+        # allocatable, intent(out) :: dyn_const(:)`) -- dup-meta-shadow-elim
+        # (BACKLOG.md), Phase 7: a real scheme's allocatable constituent
+        # arg needs this to avoid a redundant `!$ccpp ... allocatable =
+        # True` tag for something already visible in the declaration
+        # itself, matching this project's own "derive what's mechanically
+        # derivable, tag only what's genuinely irreducible" philosophy.
         intent_str: str | None = None
         is_optional = False
+        is_allocatable = False
         dim_rank_from_attr = 0
 
         if attr_spec_list:
             for attr in walk(attr_spec_list, f03.Attr_Spec):
-                if str(attr).upper() == "OPTIONAL":
+                attr_upper = str(attr).upper()
+                if attr_upper == "OPTIONAL":
                     is_optional = True
+                elif attr_upper == "ALLOCATABLE":
+                    is_allocatable = True
             for attr in walk(attr_spec_list, f03.Intent_Attr_Spec):
                 intent_str = str(attr.children[1]).lower()
             for attr in walk(attr_spec_list, f03.Dimension_Attr_Spec):
@@ -144,6 +158,7 @@ def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]
                 "rank": rank,
                 "intent": intent_str,
                 "optional": is_optional,
+                "allocatable": is_allocatable,
                 "kind": kind_str,
             }
 
@@ -558,6 +573,17 @@ def extract_program_locals(
     return results
 
 
+# Keys in an `_extract_subroutines` arg dict that are either consumed
+# specially above (`rank`/`dim_names` -> the `dimensions` string;
+# `intent`/`optional`/`allocatable`/`kind` -> their own attrs entries) or
+# not a real ArgumentOp property at all (`name`, passed positionally) --
+# never forwarded generically, and never warned about as "unrecognised"
+# since they're not attrs keys to begin with.
+_ARG_DICT_RESERVED_KEYS = frozenset(
+    {"name", "type", "rank", "intent", "optional", "allocatable", "kind", "dim_names"}
+)
+
+
 def build_meta_module_from_source(
     f90_source: str,
     filename: str = "<source>",
@@ -569,13 +595,19 @@ def build_meta_module_from_source(
     ``preproc_defs``, when truthy, resolves ``#ifdef``/``#if`` conditional
     compilation in *f90_source* before parsing -- see ``_extract_subroutines``.
 
-    ``standard_name``/``units``/``long_name`` (from ``!ccpp`` tags) and
-    ``memory_space`` (from a real ``!$acc``/``!$omp`` device-residency
-    clause) are forwarded onto the ``ArgumentOp`` whenever
-    ``_extract_subroutines`` found them -- dup-meta-shadow-elim
-    (BACKLOG.md), Phase 4. Safe to forward unconditionally: confirmed
-    ``validate_fir.compare_arg_tables`` never compares any of these four
-    fields, so this has no effect on the existing scheme-vs-.meta
+    Every ``!$ccpp``-tag-derived key found by ``_extract_subroutines``
+    (``standard_name``/``units``/``long_name``/``memory_space``/
+    ``advected``/... -- whatever a real scheme needs) is forwarded onto
+    the ``ArgumentOp`` verbatim, not just a fixed short list -- dup-meta-
+    shadow-elim (BACKLOG.md), Phase 4 (and Phase 7's advection migration,
+    which is what first needed fields beyond the original four). A key
+    ``ArgumentOp`` doesn't recognise at all (``ArgumentOp.KNOWN_PROPS``)
+    gets a visible warning instead of being silently dropped, mirroring
+    ``ccpp_xml.py``'s own unrecognised-``.meta``-key warning exactly -- a
+    typo'd ``!$ccpp`` tag key is the same class of mistake as a typo'd
+    ``.meta`` key. Safe to forward unconditionally: confirmed
+    ``validate_fir.compare_arg_tables`` never compares any tag-derived
+    field, so this has no effect on the existing scheme-vs-.meta
     validator even once real files start carrying tags.
 
     Raises ``ImportError`` if fparser is not installed.
@@ -618,11 +650,21 @@ def build_meta_module_from_source(
                     attrs["intent"] = arg["intent"]
                 if arg["optional"]:
                     attrs["optional"] = "True"
+                if arg.get("allocatable"):
+                    attrs["allocatable"] = "True"
                 if arg.get("kind"):
                     attrs["kind"] = arg["kind"]
-                for key in ("standard_name", "units", "long_name", "memory_space"):
-                    if arg.get(key):
-                        attrs[key] = arg[key]
+                for key, value in arg.items():
+                    if key in _ARG_DICT_RESERVED_KEYS or not value:
+                        continue
+                    attrs[key] = value
+                unknown = sorted(set(attrs) - ArgumentOp.KNOWN_PROPS)
+                if unknown:
+                    print(
+                        f"Warning: argument '{arg['name']}' in '{proc_name}' "
+                        f"has unrecognised !$ccpp tag key(s): {unknown}",
+                        file=sys.stderr,
+                    )
                 arg_ops.append(ArgumentOp(arg["name"], arg["type"], attrs))
             arg_tables.append(ArgumentTableOp(proc_name, "scheme", arg_ops))
         table_props.append(TablePropertiesOp(module_name, "scheme", arg_tables))

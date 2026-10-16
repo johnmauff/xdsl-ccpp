@@ -303,7 +303,7 @@ end module
     _, _, args = results[0]
     assert args == [
         {"name": "temp", "type": "real", "rank": 1, "intent": "inout",
-         "optional": False, "kind": None}
+         "optional": False, "allocatable": False, "kind": None}
     ]
 
 
