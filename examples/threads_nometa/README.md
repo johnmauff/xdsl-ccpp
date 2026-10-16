@@ -5,10 +5,14 @@ twin of `examples/threads` — identical functionality, identical host/
 suite/driver files, but `thread_scheme.F90` carries
 `standard_name`/`units`/`long_name`/`dim_names` as `!ccpp [name] key =
 value` comment tags instead of a hand-maintained `thread_scheme.meta`.
-No `.meta` for the scheme is committed to this directory at all; it's
+No `.meta` for the **scheme** is committed to this directory at all; it's
 generated into the build tree from the tagged source at CMake configure
 time (see this directory's own `CMakeLists.txt` for the mechanism and its
-one known limitation).
+one known limitation). `data.meta`/`test_host.meta` (host/control
+metadata, describing arbitrary module-level state rather than subroutine
+arguments) **are** committed, same as in `examples/threads` — nothing
+built so far generates host `.meta`; that's a structurally different
+extraction problem Phases 1-4 never attempted, not an oversight here.
 
 Verified directly, not assumed: the regenerated `.meta` is semantically
 identical to `examples/threads`' own hand-authored `thread_scheme.meta`
