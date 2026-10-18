@@ -243,7 +243,12 @@ class TestDriverParam:
     "unverified" (mandatory but outside the capture pass's v1 type scope
     -- declared and passed so the call compiles, never compared). `dims`
     is the resolved list of *other* local parameter names sizing this
-    argument (e.g. ["ncol", "nz"]) when rank > 0, else None.
+    argument (e.g. ["ncol", "nz"]) when rank > 0, else None. `is_device`
+    (scheme-io-capture-gpu-residency) mirrors the scheme's own
+    memory_space=device attribute for this argument (the same
+    cap_shared._device_arg_names lookup the real cap itself uses) --
+    drives whether the driver establishes/tears down a device copy of it
+    around the call; see _render_driver_enter_data/_render_driver_exit_data.
     """
 
     name: str
@@ -252,6 +257,7 @@ class TestDriverParam:
     kind: "str | None"
     rank: int
     dims: "list[str] | None" = None
+    is_device: bool = False
 
 
 def _test_driver_decl_type(arg_type: "str | None", kind: "str | None") -> str:
@@ -298,10 +304,79 @@ def format_fortran_real_literal(value: float, kind: str = "kind_phys") -> str:
     return f"{text}_{kind}"
 
 
+def _render_driver_enter_data(directive: str, copyin_names: "list[str]", create_names: "list[str]") -> "str | None":
+    """One `!$acc enter data`/`!$omp target enter data` line establishing
+    device residency for this phase's own memory_space=device arguments,
+    for scheme-io-capture-gpu-residency -- a generated test driver is a
+    standalone program with no surrounding suite-level device residency
+    to rely on (unlike a real cap, which assumes it's already established
+    elsewhere and only needs an `update self` sync before reading a value
+    back for capture -- see scheme_io_capture_pass.py's own
+    _insert_capture docstring), so it must create its own device copies
+    around each call. `copyin_names` (intent in/inout -- a real captured
+    value worth transferring) and `create_names` (intent out -- nothing
+    useful to transfer yet, device allocation only) mirror the same
+    needs_in/needs_out distinction the real cap's own AccEnterDataOp
+    printer makes (ccpp_utils.py/print_ftn.py's own module-level case).
+    Returns None when both lists are empty (no device-resident args this
+    phase). No `#ifdef USE_GPU` guard, unlike that real-cap printer: a
+    test driver only ever contains directive text at all when
+    --directive was explicitly passed at cap-generation time, so there's
+    no single-source CPU/GPU dual-build concern here to toggle at compile
+    time -- generate without --directive for a CPU-only driver instead.
+    """
+    if directive == "acc":
+        clauses = []
+        if copyin_names:
+            clauses.append(f"copyin({', '.join(copyin_names)})")
+        if create_names:
+            clauses.append(f"create({', '.join(create_names)})")
+        if not clauses:
+            return None
+        return "!$acc enter data " + " ".join(clauses)
+    clauses = []
+    if copyin_names:
+        clauses.append(f"map(to:{', '.join(copyin_names)})")
+    if create_names:
+        clauses.append(f"map(alloc:{', '.join(create_names)})")
+    if not clauses:
+        return None
+    return "!$omp target enter data " + " ".join(clauses)
+
+
+def _render_driver_exit_data(directive: str, copyout_names: "list[str]", delete_names: "list[str]") -> "str | None":
+    """The exit half of _render_driver_enter_data, above -- emitted after
+    the call (and after the errflg check) so that `copyout_names`
+    (intent out/inout -- the scheme's own device-side result) are back in
+    the driver's host-side variable BEFORE the after/compare steps read
+    it; `delete_names` (intent in -- never read again) just releases the
+    device copy with no transfer back. Returns None when both lists are
+    empty.
+    """
+    if directive == "acc":
+        clauses = []
+        if copyout_names:
+            clauses.append(f"copyout({', '.join(copyout_names)})")
+        if delete_names:
+            clauses.append(f"delete({', '.join(delete_names)})")
+        if not clauses:
+            return None
+        return "!$acc exit data " + " ".join(clauses)
+    clauses = []
+    if copyout_names:
+        clauses.append(f"map(from:{', '.join(copyout_names)})")
+    if delete_names:
+        clauses.append(f"map(release:{', '.join(delete_names)})")
+    if not clauses:
+        return None
+    return "!$omp target exit data " + " ".join(clauses)
+
+
 def _render_test_driver_phase_block(
     table_name: str,
     params: "list[TestDriverParam]",
     declared: set,
+    directive: "str | None" = None,
 ) -> "tuple[list[str], list[str]]":
     """Render one phase's own declarations and body lines for
     render_scheme_io_capture_test_driver, below. `declared` is the set of
@@ -342,6 +417,15 @@ def _render_test_driver_phase_block(
     call_kwargs: list[str] = []
     errmsg_param = None
     errflg_param = None
+    # scheme-io-capture-gpu-residency: a memory_space=device argument needs
+    # its own device copy established before the call and torn down after
+    # -- which transfer direction depends on intent, same needs_in/needs_out
+    # split the real cap's own AccEnterDataOp/AccExitDataOp construction
+    # uses (see _render_driver_enter_data/_render_driver_exit_data above).
+    enter_copyin: list[str] = []
+    enter_create: list[str] = []
+    exit_copyout: list[str] = []
+    exit_delete: list[str] = []
 
     def _declare(name: str, decl_line: str) -> None:
         if name in declared:
@@ -380,6 +464,16 @@ def _render_test_driver_phase_block(
             continue
 
         # category in ("in", "out", "inout") -- a real captured argument.
+        if directive and p.is_device:
+            if p.category in ("in", "inout"):
+                enter_copyin.append(p.name)
+            else:
+                enter_create.append(p.name)
+            if p.category in ("out", "inout"):
+                exit_copyout.append(p.name)
+            else:
+                exit_delete.append(p.name)
+
         tag = f"{table_name}:{p.name}:{p.category}"
         if p.category in ("in", "inout"):
             lines = _read_lines(f"{tag}:before", p.name)
@@ -431,13 +525,26 @@ def _render_test_driver_phase_block(
                     "diag_first_mismatch_index"
                 )
 
+    enter_data_line = (
+        _render_driver_enter_data(directive, enter_copyin, enter_create) if directive else None
+    )
+    exit_data_line = (
+        _render_driver_exit_data(directive, exit_copyout, exit_delete) if directive else None
+    )
+
     body: list[str] = [f"  ! -- {table_name} --", "  call_count = 1", "  do"]
     # Order matters: scalar "before" reads must land before the
     # allocate()s that size arrays off of them, which must in turn land
-    # before the array "before" reads they size.
+    # before the array "before" reads they size. The enter-data directive
+    # (when present) comes last of all, right before the call, so every
+    # device-resident array's host side already holds its captured
+    # "before" value (or is at least allocated, for an out-only array)
+    # before it's transferred to the device.
     body += [f"    {r}" for r in scalar_before_reads]
     body += [f"    {a}" for a in allocates]
     body += [f"    {r}" for r in array_before_reads]
+    if enter_data_line is not None:
+        body += [f"    {enter_data_line}"]
     body += ["", f"    call {table_name}({', '.join(call_kwargs)})", ""]
     if errflg_param is not None:
         body += [
@@ -449,6 +556,13 @@ def _render_test_driver_phase_block(
             "    end if",
             "",
         ]
+    # The exit-data directive comes first of all here, before any
+    # after/compare step -- it's what actually brings a device-resident
+    # out/inout array's real, scheme-computed result back into the host
+    # variable those later steps read; without it they'd silently compare
+    # against the array's unchanged pre-call host value on every GPU build.
+    if exit_data_line is not None:
+        body += [f"    {exit_data_line}"]
     body += [f"    {r}" for r in after_reads]
     body += [f"    {c}" for c in compares]
     body += ["    call_count = call_count + 1", "  end do"]
@@ -459,6 +573,7 @@ def render_scheme_io_capture_test_driver(
     scheme_name: str,
     phase_tables: "list[tuple[str, list[TestDriverParam]]]",
     tolerance: str,
+    directive: "str | None" = None,
 ) -> str:
     """Render a standalone Fortran test-driver program (`test_<scheme_name>
     .F90`'s own content) replaying every captured phase of one scheme, in
@@ -487,12 +602,21 @@ def render_scheme_io_capture_test_driver(
     environment variable) without regenerating or recompiling, which
     matters for cross-compiler/GPU-port comparisons where the right
     tolerance is discovered by iterating, not known up front.
+
+    `directive` ("acc", "omp", or None -- scheme-io-capture-gpu-residency)
+    is the same CLI choice `--directive` makes for the real cap; when set,
+    every `TestDriverParam.is_device` argument gets its own
+    `!$acc enter data`/`!$omp target enter data` before the call and the
+    matching exit-data after it, since this standalone driver has no
+    surrounding suite-level device residency to lean on the way a real
+    cap does. None (the default) emits no directive text at all, exactly
+    like today for every existing CPU-only driver.
     """
     declared: set = set()
     all_decls: list[str] = []
     all_body: list[str] = []
     for table_name, params in phase_tables:
-        decls, body = _render_test_driver_phase_block(table_name, params, declared)
+        decls, body = _render_test_driver_phase_block(table_name, params, declared, directive)
         all_decls += decls
         all_body += body
 

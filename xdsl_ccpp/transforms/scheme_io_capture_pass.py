@@ -79,6 +79,20 @@ be resolved this way, driver generation is skipped for that call site
 entirely (logged, not a hard pipeline failure) rather than emitting a
 driver that can't actually allocate its own arrays correctly.
 
+Device residency (scheme-io-capture-gpu-residency): a generated driver is
+a standalone program, with none of the surrounding suite-level device
+residency a real cap can lean on -- so when --directive was set at
+cap-generation time, _build_test_driver_params marks every
+memory_space=device argument (TestDriverParam.is_device, via the same
+cap_shared._device_arg_names lookup apply()'s own per-argument capture
+loop already uses for this same call site) and print_ftn.py's driver
+renderer wraps the real scheme call with its own `!$acc enter data`/
+`!$omp target enter data` beforehand and the matching exit-data after --
+without this, a real scheme's own `!$acc ... present(...)` checks (e.g.
+kessler_run's) would abort the moment the driver tries to call it under
+`-acc`. No --directive at generation time (the default) means no
+directive text in the driver at all, exactly as before this existed.
+
 The driver's own real-valued comparison tolerance defaults to
 `_TEST_DRIVER_TOLERANCE` but is overridable per invocation via
 --capture-tolerance (scheme-io-capture-tolerance-config) -- uniform
@@ -270,7 +284,7 @@ def _enclosing_module(op) -> "builtin.ModuleOp | None":
 
 
 def _build_test_driver_params(
-    param_names: list, args_by_name: dict,
+    param_names: list, args_by_name: dict, device_names: "set[str]",
 ) -> "list[TestDriverParam] | None":
     """Resolve CCPP metadata for one real scheme call site into the
     plain, Fortran-agnostic TestDriverParam list print_ftn.py's
@@ -280,7 +294,15 @@ def _build_test_driver_params(
     note) if any array argument's dimensions can't be resolved, or if
     nothing in this call site is actually captured (a driver with no
     fixture-backed comparison would be a no-op test, not a regression
-    test)."""
+    test).
+
+    `device_names` (scheme-io-capture-gpu-residency) is the identical
+    cap_shared._device_arg_names lookup apply()'s own per-argument loop
+    already computes for this same call site, reused here (not
+    re-derived) -- a param's own `is_device` flag is just membership in
+    this set, and print_ftn.py uses it to decide whether the driver needs
+    to establish/tear down a device copy of that argument around the call.
+    """
     std_name_to_param = {
         a.getAttr("standard_name"): pname
         for pname, a in args_by_name.items()
@@ -311,7 +333,9 @@ def _build_test_driver_params(
         if category in ("in", "out", "inout"):
             any_captured = True
 
-        params.append(TestDriverParam(pname, category, arg_type, kind, rank, dims))
+        params.append(
+            TestDriverParam(pname, category, arg_type, kind, rank, dims, pname in device_names)
+        )
 
     if not any_captured:
         return None
@@ -437,7 +461,7 @@ class SchemeIOCapturePass(ModulePass):
                     )
 
             if self.test_driver_dir and table_name not in captured_tables:
-                params = _build_test_driver_params(param_names, args_by_name)
+                params = _build_test_driver_params(param_names, args_by_name, device_names)
                 if params is None:
                     print(
                         f"generate-scheme-io-capture: skipping test-driver generation "
@@ -537,7 +561,7 @@ class SchemeIOCapturePass(ModulePass):
             else _TEST_DRIVER_TOLERANCE
         )
         source = render_scheme_io_capture_test_driver(
-            scheme_name, phase_tables, tolerance,
+            scheme_name, phase_tables, tolerance, self.directive,
         )
         os.makedirs(self.test_driver_dir, exist_ok=True)
         out_path = os.path.join(self.test_driver_dir, f"test_{scheme_name}.F90")

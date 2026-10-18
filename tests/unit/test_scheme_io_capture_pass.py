@@ -347,3 +347,106 @@ def test_default_tolerance_used_when_option_unset(run_host_match, ccpp_context, 
     driver_path = tmp_path / "test_test_io_capture_scheme.F90"
     driver_source = driver_path.read_text()
     assert "tolerance = ccpp_capture_tolerance_override(1.0e-10_kind_phys)" in driver_source
+
+
+# scheme-io-capture-gpu-residency: a separate, dedicated fixture (not the
+# shared _SCHEME_META/_HOST_META above) because io_var's own dims there
+# (horizontal_loop_extent, vertical_layer_dimension) aren't resolvable to
+# any scalar argument actually present in that scheme's own arg table --
+# test-driver generation silently skips that call site entirely
+# (_build_test_driver_params returns None), so io_var's device-sync
+# behavior in the capture CALLS is covered above, but it never reaches a
+# generated DRIVER there. This fixture adds the one resolvable scalar
+# (ncol) io_var's own dims need, so the driver actually gets emitted.
+_GPU_SCHEME_META = f"""\
+[ccpp-table-properties]
+  name = test_io_capture_gpu_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = test_io_capture_gpu_scheme_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  units = count
+  type = integer
+  dimensions = ()
+  intent = in
+[ io_var ]
+  standard_name = test_capture_gpu_io_var
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent)
+  memory_space = device
+  intent = inout
+{CCPP_MANDATORY_ARGS}
+"""
+
+_GPU_HOST_META = """\
+[ccpp-table-properties]
+  name = test_io_capture_gpu_host
+  type = module
+[ccpp-arg-table]
+  name = test_io_capture_gpu_host
+  type = module
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  units = count
+  type = integer
+  dimensions = ()
+[ io_var ]
+  standard_name = test_capture_gpu_io_var
+  units = K
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent)
+  memory_space = device
+"""
+
+_GPU_SUITE_XML = minimal_suite_xml(
+    "test_io_capture_gpu_scheme", suite_name="test_io_capture_gpu_suite",
+)
+
+
+def test_gpu_residency_device_array_reaches_written_driver(run_host_match, ccpp_context, tmp_path):
+    module = run_host_match(
+        scheme_metas=[_GPU_SCHEME_META],
+        host_metas=[_GPU_HOST_META],
+        suite_xml=_GPU_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    GPUDataPass(directive="acc").apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    GPUCcppCapPass(directive="acc").apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_gpu_scheme",
+        directive="acc",
+        test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+
+    driver_path = tmp_path / "test_test_io_capture_gpu_scheme.F90"
+    assert driver_path.exists()
+    driver_source = driver_path.read_text()
+    assert "!$acc enter data copyin(io_var)" in driver_source
+    assert "!$acc exit data copyout(io_var)" in driver_source
+
+
+def test_gpu_residency_omitted_without_directive(run_host_match, ccpp_context, tmp_path):
+    # Same device-resident scheme, but no --directive at generation time
+    # -- the driver must come out exactly like a plain CPU-only one.
+    module = run_host_match(
+        scheme_metas=[_GPU_SCHEME_META],
+        host_metas=[_GPU_HOST_META],
+        suite_xml=_GPU_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_gpu_scheme",
+        test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+
+    driver_path = tmp_path / "test_test_io_capture_gpu_scheme.F90"
+    driver_source = driver_path.read_text()
+    assert "!$acc" not in driver_source
+    assert "!$omp" not in driver_source
