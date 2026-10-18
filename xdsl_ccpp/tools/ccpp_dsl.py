@@ -181,6 +181,22 @@ class ccppMain:
                  "--directive is also set.",
         )
         parser.add_argument(
+            "--capture-scheme",
+            action="append",
+            default=[],
+            metavar="SCHEME[:PHASE]",
+            help="Opt-in: instrument every call to SCHEME (optionally restricted "
+                 "to one lifecycle PHASE, e.g. 'kessler:run'; omit ':PHASE' to "
+                 "capture every phase) with calls into the ccpp_capture_mod "
+                 "runtime library, dumping each input/output argument to disk. "
+                 "For building data-driven, scheme-level regression tests from "
+                 "realistic captured atmospheric states -- not a debugging aid "
+                 "and not compared against CAM's own history-file output. May "
+                 "be repeated for multiple scheme/phase targets. Deliberately "
+                 "skips DDT-typed, errmsg/errflg, and optional arguments (v1 "
+                 "scope -- see scheme_io_capture_pass.py).",
+        )
+        parser.add_argument(
             "--kind-map",
             action="append",
             default=[],
@@ -810,6 +826,26 @@ class ccppMain:
             # fully-resolved set of data-movement ops and module-var
             # declarations, not an intermediate state.
             passes.append("generate-gpu-debug-prints")
+        for spec in self.options_db.get("capture_scheme") or []:
+            # One pass instance per --capture-scheme entry (not one pass
+            # with a packed multi-scheme value): each instance scopes its
+            # own call-site walk to its own scheme/phase filter, so
+            # multiple entries compose cleanly in sequence, same as how
+            # the pipeline already tolerates the same pass name appearing
+            # more than once. Must run at the same point
+            # generate-gpu-debug-prints does, for the same reason (real
+            # KeywordCallOps for every scheme call only exist by here).
+            scheme_name, _, phase = spec.partition(":")
+            capture_opts = [f"scheme={scheme_name}"]
+            if phase:
+                capture_opts.append(f"phase={phase}")
+            if directive:
+                # Needed so the pass knows whether/how to sync a
+                # device-resident argument to the host immediately before
+                # reading it for capture -- with no --directive, there's
+                # no GPU residency to sync in the first place.
+                capture_opts.append(f"directive={directive}")
+            passes.append(f"generate-scheme-io-capture{{{' '.join(capture_opts)}}}")
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
 
