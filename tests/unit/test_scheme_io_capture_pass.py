@@ -157,7 +157,7 @@ def test_intent_in_scalar_captured_before_only(run_host_match, ccpp_context):
     assert before_tag in fortran
     # Exactly one capture for an in-only scalar -- no :after tag at all.
     assert 'in_var:in:after' not in fortran
-    assert f'call ccpp_capture_r8_0d({before_tag}, in_var)' in fortran
+    assert f'call ccpp_capture({before_tag}, in_var)' in fortran
     # Positioned before the real call, not after.
     assert fortran.index(before_tag) < fortran.index(call)
 
@@ -168,7 +168,7 @@ def test_intent_out_scalar_captured_after_only(run_host_match, ccpp_context):
     after_tag = '"test_io_capture_scheme_run:out_var:out:after"'
     assert after_tag in fortran
     assert 'out_var:out:before' not in fortran
-    assert f'call ccpp_capture_int_0d({after_tag}, out_var)' in fortran
+    assert f'call ccpp_capture({after_tag}, out_var)' in fortran
     assert fortran.index(call) < fortran.index(after_tag)
 
 
@@ -178,8 +178,8 @@ def test_intent_inout_array_captured_both_with_device_sync(run_host_match, ccpp_
     )
     before_tag = '"test_io_capture_scheme_run:io_var:inout:before"'
     after_tag = '"test_io_capture_scheme_run:io_var:inout:after"'
-    assert f'call ccpp_capture_r8_2d({before_tag}, io_var)' in fortran
-    assert f'call ccpp_capture_r8_2d({after_tag}, io_var)' in fortran
+    assert f'call ccpp_capture({before_tag}, io_var)' in fortran
+    assert f'call ccpp_capture({after_tag}, io_var)' in fortran
     # A device-resident arg must get an update-self sync immediately
     # before each capture read.
     assert fortran.count("update self(io_var)") == 2
@@ -242,3 +242,59 @@ def test_no_phase_filter_captures_every_entry_point(run_host_match, ccpp_context
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     assert "test_io_capture_scheme_run:in_var" in fortran
     assert "test_io_capture_scheme_init:in_var" in fortran
+
+
+# Separate fixture (not the shared _HOST_META above) so the existing
+# tests above keep covering the real "host declares no mpi-root flag at
+# all" case (e.g. examples/kessler's own host) untouched, while these two
+# tests cover the opposite, newly-added case (CAM-SIMA's own real
+# convention: spmd_utils.F90's masterproc, standard_name
+# flag_for_mpi_root) in isolation.
+_HOST_META_WITH_MPI_ROOT = _HOST_META + """\
+[ masterproc ]
+  standard_name = flag_for_mpi_root
+  units = flag
+  type = logical
+  dimensions = ()
+"""
+
+
+def test_capture_guarded_by_host_mpi_root_flag(run_host_match, ccpp_context):
+    """When the host declares flag_for_mpi_root (CAM-SIMA's own real
+    convention, backed by spmd_utils.F90's masterproc), every capture
+    call must be guarded by it -- confirmed necessary against a real
+    24-task CAM-SIMA build, where every task raced to write the same
+    capture file and corrupted it."""
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META],
+        host_metas=[_HOST_META_WITH_MPI_ROOT],
+        suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(scheme="test_io_capture_scheme").apply(ccpp_context, module)
+    out = StringIO()
+    print_to_ftn(module, out)
+    fortran = out.getvalue()
+
+    assert "use test_io_capture_host, only: masterproc" in fortran
+    before_tag = '"test_io_capture_scheme_run:in_var:in:before"'
+    call_text = f"call ccpp_capture({before_tag}, in_var)"
+    assert call_text in fortran
+    # The guard must actually wrap this specific capture call, not just
+    # appear somewhere unrelated in the file.
+    guard_idx = fortran.index("if (masterproc) then")
+    call_idx = fortran.index(call_text)
+    end_if_idx = fortran.index("end if", call_idx)
+    assert guard_idx < call_idx < end_if_idx
+
+
+def test_no_guard_when_host_lacks_mpi_root_flag(run_host_match, ccpp_context):
+    """The existing shared _HOST_META fixture never declares
+    flag_for_mpi_root -- captures must remain unconditional there,
+    exactly as before this guard existed (matches examples/kessler's own
+    real host, which has no such concept and is single-process anyway)."""
+    fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
+    assert "if (masterproc)" not in fortran
+    assert "flag_for_mpi_root" not in fortran

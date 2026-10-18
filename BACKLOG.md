@@ -19,6 +19,7 @@ measured data, and will drift as items are reassessed.
 | ID | Estimate | Size |
 |---|---|---|
 | `task28-stage5-fanout` | 1-3 days | S |
+| `framework-src-resolution-unify` | 2-4 days | S |
 | `eamxx-suite-coverage-checker` | 1-3 days | S |
 | `chost-thread-safety` | 3-6 days | S-M |
 | `eamxx-phaseB-deviceptr` | 3-6 days | S-M |
@@ -31,7 +32,18 @@ measured data, and will drift as items are reassessed.
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
-| `scheme-io-capture` | 10-18 days | M-L |
+| `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
+| `scheme-io-capture-optional-args` | 2-4 days | S |
+| `scheme-io-capture-tolerance-config` | 2-4 days | S |
+| `scheme-io-capture-compare-diagnostics` | 2-4 days | S |
+| `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
+| `scheme-io-capture-gpu-residency` | 2-4 days | S |
+| `scheme-io-capture-gpu-verify` | 3-6 days | S-M |
+| `scheme-io-capture-staleness-check` | 3-6 days | S-M |
+| `scheme-io-capture-task-volume` | 3-6 days | S-M |
+| `scheme-io-capture-multi-timestep` | 5-10 days | M |
+| `scheme-io-capture-netcdf` | 6-10 days | M |
+| `scheme-io-capture-ctest-automation` | 6-10 days (genuinely new ground — this repo has zero precedent for a dynamically-registered CMake test today) | M |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
@@ -115,6 +127,36 @@ separately), CHANGELOG.md L5850.
 | ID | Item | Notes | Archive |
 |---|---|---|---|
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
+| `framework-src-resolution-unify` | `ccpp_datatable.py` now has three separate, inconsistent code paths deciding where a "framework" Fortran file comes from | S; found 2026-10-18 while fixing a real cam-host build failure for scheme-io-capture (see below) | -- |
+
+**`framework-src-resolution-unify`** -- found while diagnosing a real
+CAM-SIMA build failure (`Cannot open module file 'ccpp_capture_mod.mod'`)
+for the `scheme-io-capture` backlog item: `ccpp_datatable.py` resolves
+"which Fortran framework files does this build need, and from where" via
+three separate mechanisms, not one. (1) The non-`cam_host` path
+(`_resolve_framework_f90_files()`/`_FRAMEWORK_F90_FILES`) pulls
+`ccpp_constituent_prop_mod.F90`/`ccpp_scheme_utils.F90` from xdsl_ccpp's
+own internal `_FRAMEWORK_SRC_DIR` (`xdsl_ccpp/framework_src/`). (2) The
+`cam_host=True` path (`_REAL_FRAMEWORK_F90_FILES`) pulls a *different*,
+larger set of same-named files from an entirely separate, externally-
+supplied `framework_src_dir` -- confirmed directly to be the real
+upstream `NCAR/ccpp-framework` git submodule CAM-SIMA vendors, whose
+`ccpp_scheme_utils.F90`/`ccpp_constituent_prop_mod.F90` have genuinely
+different APIs from xdsl_ccpp's own same-named files (confirmed via a
+real diff, not assumed). (3) A third, newly-added one-off block (this
+session, fixing the build failure above) pulls `ccpp_capture_mod.F90`
+specifically from `_FRAMEWORK_SRC_DIR` *even when* `cam_host=True`,
+because that file is xdsl_ccpp's own and will never exist in the real
+upstream submodule path (2) resolves against. Three lookups, two
+different source directories, overlapping but not shared logic, and
+every future xdsl_ccpp-only framework file added under `cam_host=True`
+will need its own one-off block like (3) unless this is unified first.
+A cleaner design: one table mapping each logical framework file to
+*which* source directory it comes from (xdsl_ccpp's own package vs. the
+real external submodule), resolved and validated by one function instead
+of three. Confirmed real and current, not hypothetical -- this is what
+made diagnosing the `scheme-io-capture` build failure take real
+investigation instead of being obvious from reading the code once.
 
 **Resolved since last verification (2026-10-14), removed from the list
 above**: `ccpp-validator-length-check` — new `ccpp_validate_driver` tool
@@ -556,27 +598,168 @@ higher-value piece of tooling."
 
 ## Someday-maybe: scheme I/O capture + generated per-scheme unit tests
 
-ID: `scheme-io-capture`. Not scheduled, not started — a design proposal
-raised 2026-10-17, not a record of work done. Opt-in xdsl_ccpp capability:
-capture every input/output argument of a chosen scheme (CLI-flag-selected)
-to disk during cap generation, using metadata already fully resolved at
-that point (intent/type/kind/dimensions — nothing new to derive), then
-generate a standalone, compiler-agnostic Fortran test-driver program per
-captured call that replays the fixture, calls the scheme, and compares
-outputs with a tolerance. Real motivation: data-driven, scheme-level
-regression tests (catching a performance-optimization or CPU→GPU-port
-regression) built from realistic captured atmospheric states, independent
-of a full CAM build/run — not a debugging aid and not a comparison against
-CAM's own history-file output. An early version of the design planned to
-generate pFUnit tests (reusing CIME's `fortran_unit_testing/` framework);
-dropped after confirming pFUnit has no NVIDIA HPC SDK (nvhpc/nvfortran)
-support, which is disqualifying given the whole point is validating GPU
-ports. `optional`-argument support is deliberately out of v1 scope — unused
-across the entire real CCPP scheme corpus this would target (confirmed:
-zero occurrences in any of 183 `.meta` files under
-`src/physics/ncar_ccpp/schemes/` in CAM-SIMA, zero in this repo's own
-`examples/`) and the real implementation cost (synthesizing new control
-flow around possibly-absent array-section arguments) isn't a good trade
-against shipping v1 for schemes that actually exist. Full design, reasoning,
-and difficulty breakdown: CHANGELOG.md L11731.
+ID: `scheme-io-capture`. **v1 resolved (2026-10-17, PRs #141/#142/#143,
+merged to `main`)** — opt-in `--capture-scheme`/`--capture-test-driver-dir`
+capability, runtime Fortran capture library, and a generated
+scheme-scoped test driver, real-verified end-to-end against
+`examples/kessler` (CPU/gfortran). CHANGELOG.md L12255. Original design
+proposal: CHANGELOG.md L11731. Follow-on work is tracked under its own
+IDs below, not bundled here — see the sizing table at the top of this
+file for the full list.
+
+**ID: `scheme-io-capture-netcdf`. v2 follow-on: NetCDF capture format.**
+v1's runtime library
+(`ccpp_capture_mod.F90`) deliberately uses plain Fortran stream I/O, one
+raw binary file per captured tag (no embedded variable name/shape
+metadata beyond a leading rank+shape header) — a deliberate v1 choice to
+keep the library small and avoid parallel-I/O coordination, confirmed
+real: a 1000-column/56-layer kessler capture produces 23 files, ~6.1MB,
+scaling linearly with `ncol*nz`. NetCDF would be a genuine improvement —
+self-describing (names/shapes travel with the data, not just encoded in
+the filename), one file per captured *call* instead of one per argument,
+inspectable with standard tools (`ncdump`/`xarray`) instead of a bespoke
+reader, built-in compression. Real cost: `examples/` has zero NetCDF
+dependency today anywhere in this repo, so this would be a new build
+dependency for a tool whose whole point was staying minimal/dev-only —
+though notably a much smaller lift if this capability is ever wired into
+real CAM-SIMA builds specifically, which already link NetCDF
+everywhere. Not v1 scope; revisit once v1's real usage (and the "where do
+captured fixtures live" question below) make the tradeoff concrete.
+
+**ID: `scheme-io-capture-gpu-residency`. v2 follow-on: GPU residency
+support for generated test drivers.** Confirmed, not hypothetical: the generated test-driver program has zero
+awareness of `memory_space=device` arguments today —
+`TestDriverParam`/`_build_test_driver_params` never consult
+`cap_shared._device_arg_names`, so every array is declared as a plain
+host `allocatable` with no `!$acc enter data copyin(...)`/`declare`/
+`update device` anywhere in the driver. `kessler.F90`'s own
+`kessler_run`/`kessler_runv2` has hand-written `!$acc present(...)`
+checks inside it; compiling the generated driver with `nvfortran -acc`
+(the deferred GPU verification step below) would very likely crash with
+the same "FATAL ERROR: data in PRESENT clause was not found" failure
+this example's own `CMakeLists.txt` already documents for its other
+under-instrumented drivers (`kessler_hand.exe`/`kessler_cxx.exe`/
+`kessler_cxx_host.exe`) — this CPU/gfortran-only v1 verification never
+exercised it since `!$acc` is inert without `-acc`. Fix is bounded: add
+an `is_device` field to `TestDriverParam` (populated from the same
+`_device_arg_names` lookup `apply()` already does), emit
+`!$acc enter data copyin(...)` for device-resident arrays before each
+phase's call (and `exit data delete(...)` at the end) when `--directive`
+was set at generation time, mirroring the real cap's own `directive_op`/
+sync pattern. Should land before, or alongside, the GPU/nvhpc
+verification item below — that item can't meaningfully run without it.
+
+**ID: `scheme-io-capture-gpu-verify`. v2 follow-on: GPU/nvhpc
+verification of the whole capture+driver pipeline.** v1's own real,
+end-to-end verification (2026-10-17, kessler,
+build/run/break/confirm-FAIL/revert/confirm-PASS) was CPU/gfortran only,
+deliberately deferred away from GPU — the actual motivating use case
+(catching CPU→GPU port regressions) for this whole feature is still
+unverified. Needs a PBS job on a GPU-bearing Derecho compute node with
+the `nvhpc` module (not an interactive login-node step), and depends on
+the GPU-residency-support item above landing first.
+
+**ID: `scheme-io-capture-ctest-automation`. v2 follow-on: full CMake/ctest
+automation.** Already noted in this
+session's own planning as explicitly out of v1 scope, recorded here so
+it isn't lost to a plan file outside this repo: configure-time
+test-driver-filename prediction (mirroring `--list-outputs`/
+`predict_output_filenames()`'s existing pattern), a static `add_test()`
+with a `DEPENDS` ordering between a "produce fixture" test and a
+"consume fixture" test, and an opt-in `examples/kessler/CMakeLists.txt`
+cache var. Confirmed this repo has zero precedent for a
+dynamically-registered CMake test today — every `add_test()` is
+currently static — so this is genuinely new ground, not a quick
+extension of something already there.
+
+**ID: `scheme-io-capture-fixture-storage`. v2 follow-on: where do
+captured fixtures live.** Still an open
+question, not yet decided. Captured `.ccppcap` files are real binary
+data tied to one specific run; confirmed real size: a 1000-column/
+56-layer kessler capture is 23 files, ~6.1MB, scaling linearly with
+`ncol*nz` — a real CAM-scale column count would be substantially larger.
+Options not yet weighed against each other: commit fixtures to git
+alongside the generated driver (simple, but binary blobs that grow with
+scheme complexity); regenerate fresh at build/test time by running the
+capture-enabled executable (no binary data in git, but fixtures aren't
+stable/reviewable across scheme changes without rerunning); or leave
+fixture generation to a local, gitignored, explicitly-opt-in step.
+Interacts with the NetCDF item above (one consolidated file per call
+instead of one per argument would change the size/count math).
+
+**ID: `scheme-io-capture-multi-timestep`. v2 follow-on: multi-timestep
+capture.** The generated driver always
+reads `call_count=1` (the fixture's first, and today only, real write)
+-- a scheme bug that only manifests after several timesteps, through
+state accumulated across calls via `inout` arguments, would never be
+caught by a single-call replay. Would need the runtime library's
+existing tag-keyed call counter (already multi-call-aware,
+`ccpp_capture_mod.F90`) to be exercised across a short real timestep
+sequence, and the generated driver extended to replay that same
+sequence call-by-call, not just once.
+
+**ID: `scheme-io-capture-compare-diagnostics`. v2 follow-on: richer
+compare diagnostics.** `ccpp_capture_compare_*`
+currently returns a bare pass/fail logical; a failed comparison in a
+generated driver only ever prints the variable name, not how badly or
+where it diverged. Printing max/mean absolute (or relative) error, and
+the index of the first mismatching element, would make a driver FAIL
+actually useful for diagnosing a real GPU-port bug, not just confirming
+one exists.
+
+**ID: `scheme-io-capture-tolerance-config`. v2 follow-on: configurable
+tolerance.** `_TEST_DRIVER_TOLERANCE`
+(`1.0e-10_kind_phys`) is a single value hardcoded into every generated
+driver today, uniform across every real-valued comparison in a scheme.
+Matters once this is applied beyond kessler's deterministic math to
+noisier schemes where a single global tolerance is either too tight
+(spurious FAILs) or too loose (misses a real regression) — likely wants
+either a per-invocation CLI tolerance or per-variable overrides.
+
+**ID: `scheme-io-capture-staleness-check`. v2 follow-on: fixture/signature
+staleness detection.** A captured
+`.ccppcap` file carries no version stamp tying it to the scheme's
+argument list (names/types/ranks) as it existed at capture time. If a
+scheme's signature changes later (a renamed/retyped/added argument) and
+the fixture isn't regenerated, today's shape-mismatch reporting in
+`ccpp_capture_read_*` would surface *something* wrong but not clearly
+say "this fixture predates the current scheme signature" -- worth a
+clearer, purpose-built error for this specific, likely-common case.
+
+**ID: `scheme-io-capture-multi-call-site`. v2 follow-on: multi-call-site
+schemes.** Current driver generation
+assumes one call site per table name per suite (`_maybe_emit_test_driver`
+keys `captured_tables` by `table_name` alone) -- a scheme invoked at two
+genuinely distinct call sites within the same suite would have the
+second site's capture/driver silently overwrite the first's. Not hit by
+kessler (single call site per phase), but worth a real check before
+applying this to a busier suite.
+
+**ID: `scheme-io-capture-optional-args`. v2 follow-on: `optional`-argument
+support.** Deliberately out of v1 scope from the original design proposal
+onward — confirmed zero occurrences of `optional` across the entire real
+target corpus (183 `.meta` files under `src/physics/ncar_ccpp/schemes/`
+in CAM-SIMA, zero in this repo's own `examples/`), so the real
+implementation cost (synthesizing new control flow around a possibly-
+absent array-section argument, in both the capture pass's IR insertion
+and the generated test driver's own call/declaration logic) wasn't a
+good trade against shipping v1 for schemes that actually exist. Revisit
+if `--capture-scheme` is ever pointed at a scheme that genuinely uses
+`optional`.
+
+**ID: `scheme-io-capture-task-volume`. v2 follow-on: parallel/volume
+management.** `ccpp_capture_mod.F90`'s own header comment already flags
+this: true multi-MPI-task file-name disambiguation is deliberately not
+included in v1 (the real v1 verification target, `examples/kessler`,
+runs single-process) -- today every capture file's name depends only on
+its tag and call count, so two MPI tasks writing the same tag would
+clobber each other's files. Also covers the related, not-yet-needed
+volume-control knobs a real multi-task/multi-timestep deployment would
+want: an env-var-gated "capture only call N" or "only task 0" mode, to
+keep a long-running capture-enabled build from generating unbounded
+fixture data. Overlaps with `scheme-io-capture-multi-timestep` (both
+touch the call-counter/volume question) but is a distinct concern: that
+item is about the generated *driver* replaying more than one call; this
+one is about the *capture* side not clobbering itself across real
+parallel tasks.
 

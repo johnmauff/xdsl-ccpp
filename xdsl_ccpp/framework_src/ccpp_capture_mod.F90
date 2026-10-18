@@ -18,10 +18,24 @@
 ! a per-tag counter that increments every time that tag is written (so a
 ! scheme called once per timestep produces one file per timestep, without
 ! xdsl_ccpp ever having to thread a call index through the generated IR
-! itself). True multi-MPI-task file-name disambiguation is deliberately
-! not included in v1 -- left to the already-deferred "parallel/volume
-! management" follow-on (BACKLOG.md) -- since the real v1 verification
-! target (examples/kessler) runs single-process.
+! itself). Multi-MPI-task file collisions are avoided one level up, not
+! here: scheme_io_capture_pass.py guards every inserted capture call with
+! the host's own mpi-root flag (CAM-SIMA's flag_for_mpi_root/masterproc,
+! when the host declares it) so only one task ever writes a given tag at
+! all -- this file has no MPI awareness of its own and stays that way.
+!
+! Every open() below passes convert='native' explicitly -- confirmed the
+! hard way against a real CAM-SIMA/Derecho build: without it, unformatted
+! stream I/O silently inherits whatever ambient byte-order convention the
+! surrounding build environment happens to default to (a real CAM-SIMA
+! build there writes big-endian; the gfortran used to verify this library
+! standalone on the same login node defaults to little-endian), making a
+! captured file's byte order depend on build environment, not content.
+! convert='native' forces the true hardware-native order unconditionally,
+! which is little-endian on every architecture this project targets (x86_64
+! and ARM both default to little-endian universally in practice, despite
+! ARM's ISA technically allowing either) -- so this is a safe, durable
+! fix, not a narrow one.
 module ccpp_capture_mod
 
   use ccpp_kinds, only: kind_phys
@@ -29,25 +43,22 @@ module ccpp_capture_mod
   implicit none
   private
 
+  ! Only the three generic names are public. Every caller -- both the
+  ! capture calls scheme_io_capture_pass.py inserts directly into a
+  ! generated cap, and the generated test-driver programs' own read/
+  ! compare calls -- addresses a scheme by its generic name only (e.g.
+  ! `call ccpp_capture(tag, value)`), never a concrete one directly;
+  ! Fortran's own overload resolution dispatches to the right concrete
+  ! procedure from the argument's static type and rank. (An earlier
+  ! version of the capture pass called a concrete write procedure by name
+  ! directly, which real-build linking confirmed needs that name
+  ! individually `public ::`'d too -- a module procedure reachable only
+  ! through a generic interface cannot be named in a `use mod, only:
+  ! <name>` statement from outside the module. Switching the pass to emit
+  ! the generic name instead removed that requirement entirely.)
   public :: ccpp_capture
   public :: ccpp_capture_read
   public :: ccpp_capture_compare
-
-  ! Every concrete procedure below is ALSO individually public, not just
-  ! its generic group name above: scheme_io_capture_pass.py's own
-  ! generated calls (both the capture calls it inserts directly into a
-  ! cap, and the generated test-driver programs' own read/compare calls)
-  ! address a concrete name directly (e.g. `call ccpp_capture_r8_2d(...)`
-  ! or `use ccpp_capture_mod, only: ccpp_capture_r8_2d`), not the generic
-  ! one -- confirmed the hard way against a real link: a module procedure
-  ! only reachable through a generic interface, with no individual
-  ! `public ::` of its own, cannot be named in a `use mod, only: <name>`
-  ! statement from outside the module, generic interface membership
-  ! notwithstanding. Each list sits next to the interface block it backs.
-
-  public :: ccpp_capture_int_0d, ccpp_capture_int_1d, ccpp_capture_int_2d, ccpp_capture_int_3d
-  public :: ccpp_capture_log_0d, ccpp_capture_log_1d, ccpp_capture_log_2d, ccpp_capture_log_3d
-  public :: ccpp_capture_r8_0d, ccpp_capture_r8_1d, ccpp_capture_r8_2d, ccpp_capture_r8_3d
 
   interface ccpp_capture
     module procedure ccpp_capture_int_0d
@@ -64,13 +75,6 @@ module ccpp_capture_mod
     module procedure ccpp_capture_r8_3d
   end interface ccpp_capture
 
-  public :: ccpp_capture_read_int_0d, ccpp_capture_read_int_1d
-  public :: ccpp_capture_read_int_2d, ccpp_capture_read_int_3d
-  public :: ccpp_capture_read_log_0d, ccpp_capture_read_log_1d
-  public :: ccpp_capture_read_log_2d, ccpp_capture_read_log_3d
-  public :: ccpp_capture_read_r8_0d, ccpp_capture_read_r8_1d
-  public :: ccpp_capture_read_r8_2d, ccpp_capture_read_r8_3d
-
   interface ccpp_capture_read
     module procedure ccpp_capture_read_int_0d
     module procedure ccpp_capture_read_int_1d
@@ -85,13 +89,6 @@ module ccpp_capture_mod
     module procedure ccpp_capture_read_r8_2d
     module procedure ccpp_capture_read_r8_3d
   end interface ccpp_capture_read
-
-  public :: ccpp_capture_compare_int_0d, ccpp_capture_compare_int_1d
-  public :: ccpp_capture_compare_int_2d, ccpp_capture_compare_int_3d
-  public :: ccpp_capture_compare_log_0d, ccpp_capture_compare_log_1d
-  public :: ccpp_capture_compare_log_2d, ccpp_capture_compare_log_3d
-  public :: ccpp_capture_compare_r8_0d, ccpp_capture_compare_r8_1d
-  public :: ccpp_capture_compare_r8_2d, ccpp_capture_compare_r8_3d
 
   interface ccpp_capture_compare
     module procedure ccpp_capture_compare_int_0d
@@ -215,7 +212,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -234,7 +231,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -254,7 +251,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -274,7 +271,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -294,7 +291,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -313,7 +310,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -333,7 +330,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -353,7 +350,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -373,7 +370,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -392,7 +389,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -412,7 +409,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -432,7 +429,7 @@ contains
     if (call_count < 0) return
     open(newunit=unit, file=ccpp_capture_filename(tag, call_count), &
          form='unformatted', access='stream', status='replace', &
-         action='write', iostat=ios)
+         action='write', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -466,7 +463,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -494,7 +491,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -528,7 +525,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -562,7 +559,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -596,7 +593,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -624,7 +621,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -658,7 +655,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -692,7 +689,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -726,7 +723,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -754,7 +751,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -788,7 +785,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
@@ -822,7 +819,7 @@ contains
     end if
     open(newunit=unit, file=ccpp_capture_filename(tag, n), &
          form='unformatted', access='stream', status='old', &
-         action='read', iostat=ios)
+         action='read', convert='native', iostat=ios)
     if (ios /= 0) then
       write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
       return
