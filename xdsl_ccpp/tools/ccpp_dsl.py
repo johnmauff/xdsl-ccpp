@@ -197,6 +197,20 @@ class ccppMain:
                  "scope -- see scheme_io_capture_pass.py).",
         )
         parser.add_argument(
+            "--capture-test-driver-dir",
+            default=None,
+            metavar="DIR",
+            help="Only meaningful together with --capture-scheme: for every "
+                 "matched scheme call site, additionally write a standalone "
+                 "Fortran test-driver program "
+                 "(test_<table_name>.F90) into DIR that reads a captured "
+                 "fixture back, calls the real scheme subroutine, and "
+                 "compares its outputs against the captured 'after' "
+                 "snapshot -- for building data-driven, scheme-level "
+                 "regression tests. Source only; no CMake/ctest wiring is "
+                 "generated.",
+        )
+        parser.add_argument(
             "--kind-map",
             action="append",
             default=[],
@@ -845,6 +859,16 @@ class ccppMain:
                 # reading it for capture -- with no --directive, there's
                 # no GPU residency to sync in the first place.
                 capture_opts.append(f"directive={directive}")
+            test_driver_dir = self.options_db.get("capture_test_driver_dir")
+            if test_driver_dir:
+                # Quoted, not bare: a real path routinely contains "-"/"/"
+                # characters the pass-pipeline value lexer's bare IDENT
+                # token doesn't accept (confirmed directly -- an
+                # unquoted path broke parsing on its first "-"). Escaped
+                # per that lexer's own string-literal grammar (only
+                # backslash/double-quote need it for a filesystem path).
+                escaped = test_driver_dir.replace("\\", "\\\\").replace('"', '\\"')
+                capture_opts.append(f'test_driver_dir="{escaped}"')
             passes.append(f"generate-scheme-io-capture{{{' '.join(capture_opts)}}}")
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)
