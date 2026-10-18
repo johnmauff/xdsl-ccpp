@@ -11727,3 +11727,527 @@ mistake will now fail CI automatically. Manually ran `ccpp_validate_driver`
 against `examples/instances/main.F90` and confirmed the printed diagnostic
 clearly identifies the exact mismatch. Full `pytest tests/`: 833 passed (827
 + 6 new), 0 failed.
+
+## `scheme-io-capture`: scheme I/O capture + generated per-scheme unit tests -- design proposal (2026-10-17)
+
+A design proposal, not a record of work done -- nothing described here has
+been implemented. Raised by the user: how hard would it be to give
+xdsl_ccpp a new, opt-in capability to capture every input and output
+argument of a chosen scheme to disk at cap-generation time, controlled by a
+CLI flag? The motivating intuition is correct -- intent, type, kind, and
+dimensions for every scheme argument are already fully resolved metadata
+inside xdsl_ccpp during cap generation, not something that needs inventing.
+
+**Real motivation**: not a one-off debugging aid. The goal is **data-driven
+unit tests per scheme**: capture realistic input/output pairs from a real,
+running CAM-SIMA simulation (so test inputs reflect genuine atmospheric
+states, not synthetic fixture values), then use those captured pairs as
+golden fixtures for standalone, scheme-level unit tests -- tests that can
+catch a regression from a performance optimization or a CPU->GPU port of
+that one scheme, independent of a full CAM build/run. This is NOT about
+comparing against CAM's own history-file output (history files are coarse,
+infrequent, and don't carry every scheme-local input) -- the capture itself
+IS the fixture, which needs to be complete and self-contained enough to
+drive that one scheme's call in isolation, outside a full CAM build.
+
+### What already exists that this would reuse directly
+
+- **Per-argument metadata is already a first-class, exercised capability.**
+  `ccpp_descriptors.py`'s `BuildMetaDataDescriptions`/`BuildSchemeDescription`
+  parse every scheme's `.meta` arg tables into `CCPPArgument` objects
+  carrying `standard_name`, `intent`, `type`, `kind`, `units`, `optional`,
+  and `dimensions` as attributes (`hasAttr`/`getAttr`, the same pattern
+  `gpu_ccpp_cap_pass.py` and `cap_shared.find_diverged_suite_vars` already
+  use constantly). Nothing new needed here.
+- **A near-identical precedent already exists**: `gpu_debug_print_pass.py`
+  (`--gpu-debug-prints`) already walks every scheme call site and inserts
+  diagnostics using the exact mechanism this capability needs:
+  - `_expr_text()` renders any call argument -- `HostVarRefOp` (module var,
+    incl. DDT members), a block argument (dummy arg), or a
+    `RankReducingSliceOp` (array-section slice) -- back into valid Fortran
+    source text / a usable SSA reference, recursively.
+  - It finds scheme call sites via `KeywordCallOp` (the op scheme calls are
+    actually built as, not a bare `func.CallOp`) inside the lifecycle
+    FuncOps, matched by `_GPU_CALL_BEARING_FN_MARKERS` the same way
+    `gpu_data_pass.py`/`suite_cap.py` already do.
+  - It's wired into the CLI exactly the way a new capture flag would be:
+    `ccpp_dsl.py` argparse entry (`--gpu-debug-prints`) -> conditional
+    `passes.append("generate-gpu-debug-prints")` in `_build_pipeline`.
+- **`_build_call_args`/`_build_call_and_copy_back_ops`** (`run_dispatch.py`)
+  are where a scheme's actual call gets built: `call_args` (the real SSA
+  operands, in callee order) and `call_arg_bare_names` (the matching dummy-
+  arg names) are both available together, which is exactly what's needed to
+  zip each operand up with its own metadata (intent/type/kind/dimensions)
+  from that scheme's arg table.
+
+### Proposed design
+
+**1. CLI flag and scope selection**: add `--capture-scheme=<scheme_name>[:<phase>]`
+to `ccpp_dsl.py` (repeatable), e.g. `--capture-scheme=kessler` (every phase)
+or `--capture-scheme=kessler:run` (one phase only). Threaded into
+`_build_pipeline` exactly like `--gpu-debug-prints`: when set, append a new
+`generate-scheme-io-capture` pass with the selected scheme/phase names as a
+pipeline parameter string (same pattern already used for
+`--gpu-debug-sync`'s `debug_sync=true` parameter on `generate-suite-cap`).
+
+**2. New pass: `scheme_io_capture_pass.py`**, running at the same point in
+the pipeline as `gpu_debug_print_pass.py` (after `generate-run-dispatch`/
+`generate-ccpp-cap`, once real `KeywordCallOp`s for every scheme call
+exist). For each matched scheme's call site:
+
+1. Look up that scheme's arg table (`BuildMetaDataDescriptions`, same as
+   every other pass) to get, per dummy-arg: `intent`, `type`, `kind`,
+   `dimensions` (rank), and `standard_name` (used as the human-readable tag
+   in captured output).
+2. Zip the arg table against `call_arg_bare_names`/the call's actual
+   operands (same zip `_build_call_args` already produces) to get, for each
+   argument, both its real SSA value (via `_expr_text`-style resolution,
+   reused/ported from `gpu_debug_print_pass.py`) and its metadata.
+3. Skip (with a one-line debug-log note, not a hard failure) any argument
+   this scheme-independent capture can't handle generically: `ccpp_t`/DDT-
+   typed arguments, `errmsg`/`errflg` (not physically meaningful to dump),
+   and `optional` arguments (deliberately deferred -- see below).
+4. For `intent=in`/`inout` arguments: insert a capture call **before** the
+   scheme's own `KeywordCallOp` (`InsertPoint.before`). For `intent=out`/
+   `inout`: insert one **after** (`InsertPoint.after`) -- an `inout` arg
+   gets both, so before/after values are directly comparable.
+5. If `--directive` is also set and the argument's own `memory_space` (or
+   `model_var_memory_space`) is `device`, insert an `AccUpdateSelfOp` for it
+   immediately before reading it for capture -- otherwise the host value
+   captured could be stale. This is the exact same "sync before reading
+   from host" technique `--gpu-debug-sync` already added to
+   `gpu_data_pass.py`; reuse that construction, don't reinvent it.
+
+**3. The capture call itself, and the runtime library it calls into**: each
+inserted op is a generated call into a small, new, hand-written Fortran
+runtime module (e.g. `ccpp_capture_mod`, vendored alongside other small
+runtime helpers like `ccpp_scheme_utils`) -- NOT a bespoke write statement
+per site, so the generated code stays a one-line call, e.g.
+`call ccpp_capture_r8_2d("kessler_run:temp:inout:before", temp)`.
+`ccpp_capture_mod` needs one small, bounded set of overloaded (generic-
+interface) subroutines covering the real cross product of (base type,
+kind, rank) that actually appears in CCPP metadata -- in practice
+`{integer, logical, real(kind_phys)}` x `{rank 0..3}`, a dozen or so
+procedures, not an open-ended type system. Each derives a filename from the
+tag plus an internal, tag-keyed `SAVE` call counter (so xdsl_ccpp never has
+to thread a timestep/call-index through the generated IR itself -- the
+runtime library owns that bookkeeping) plus the MPI task id, and writes the
+tag, shape, and raw data with plain Fortran stream I/O (`access='stream'`)
+-- deliberately NOT PIO/NetCDF for v1: this is a debug/dev capability, not
+production history output, and avoiding parallel-I/O coordination keeps
+the runtime library genuinely small.
+
+**Files this would touch**: `xdsl_ccpp/tools/ccpp_dsl.py` (flag + pipeline
+wiring), a new `xdsl_ccpp/transforms/scheme_io_capture_pass.py` (expect
+deliberate code reuse from `gpu_debug_print_pass.py`'s `_expr_text`/
+call-site-discovery machinery -- worth factoring the shared pieces into
+`cap_shared.py` rather than copy-pasting), and a new runtime Fortran module
+implementing `ccpp_capture_mod` (write procedures, plus read/compare
+counterparts for the generated test drivers below). The capture pass (or a
+sibling) also emits, per captured call, a standalone Fortran
+`program test_<scheme>_<tag>.F90` and a matching `add_test(...)` CMake
+entry.
+
+### Reconsidered mid-discussion: pFUnit is not viable -- no NVHPC support
+
+An earlier version of this proposal planned to generate pFUnit `.pf` tests,
+reusing CIME's existing `cime/scripts/fortran_unit_testing/` framework
+(already used by `share/test/unit/*`, CLM/FATES) rather than inventing a
+test convention. That direction was wrong and is dropped. Confirmed
+directly against pFUnit's own current README
+(`Goddard-Fortran-Ecosystem/pFUnit` on GitHub, checked 2026-10-17): its
+documented supported-compiler list is Intel ifort/ifx, NAG v7.2, and
+GFortran v12+ -- NVIDIA HPC SDK / nvhpc / nvfortran is not mentioned
+anywhere as a supported compiler, and the only NVIDIA-lineage mention is a
+historical PGI acknowledgment plus a revision-log note that PGI
+workarounds were later *removed* (PGI predates nvhpc). This is
+disqualifying: every GPU case built this session used `derecho_nvhpc`, and
+the entire point of these generated tests is catching CPU-vs-GPU
+regressions in a scheme -- a framework that can't build under the compiler
+the GPU port actually uses defeats the purpose.
+
+**Revised decision**: generate a bespoke, dependency-free standalone
+Fortran test driver instead of a `.pf`/pFUnit test. Less turnkey than
+pFUnit (no inherited assertion macros, no automatic ctest discovery) but
+actually simpler in the way that matters here: it only ever needs to build
+with whatever compiler the scheme itself already builds with (gnu, intel,
+*or* nvhpc -- no new compiler-compatibility surface at all). The
+"framework" it needs is tiny -- a plain Fortran `program` per test case
+that loads a fixture, calls the scheme, compares outputs with a tolerance,
+and `stop 1`s on mismatch:
+
+```fortran
+program test_kessler_run_case1
+  use kessler, only: kessler_run
+  use ccpp_capture_mod, only: ccpp_capture_read_r8_2d, ccpp_capture_compare_r8_2d
+  implicit none
+  real(kind_phys) :: temp(ncol, pver), expected_temp(ncol, pver)
+  integer :: errflg
+  character(len=512) :: errmsg
+  logical :: ok
+
+  call ccpp_capture_read_r8_2d("kessler_run:case1:temp:in", temp)
+  ...
+  call kessler_run(temp, ..., errmsg, errflg)
+  call ccpp_capture_read_r8_2d("kessler_run:case1:temp:out:expected", expected_temp)
+  ok = ccpp_capture_compare_r8_2d(temp, expected_temp, tolerance=<chosen tol>)
+  if (.not. ok) then
+    write(*,*) "FAIL: test_kessler_run_case1"
+    stop 1
+  end if
+  write(*,*) "PASS: test_kessler_run_case1"
+end program
+```
+
+The comparison logic (`ccpp_capture_compare_*`, one per the same bounded
+type/kind/rank set the capture library already covers) lives in the same
+runtime module as the read/write procedures, so the only genuinely new
+per-test-case generated code is the declarations + the actual scheme call,
+both already fully determined by metadata xdsl_ccpp has. The generated
+`program` body is a natural *second consumer* of exactly the same
+per-argument metadata the capture pass already resolves per call site.
+CTest/CIME integration (running each generated program as its own test and
+checking its exit code) is standard, compiler-agnostic `add_test`, no
+framework-specific build step.
+
+**New considerations this raises**:
+- **Tolerance choice**: bit-for-bit (`tolerance=0`) is the right default
+  for a pure CPU refactor/optimization regression test; a GPU port
+  legitimately needs a nonzero relative tolerance (floating-point
+  reduction-order differences are expected, not a bug). Likely needs to be
+  a capture-time or test-generation-time parameter, not a hardcoded
+  constant.
+- **Not every scheme is cleanly testable in isolation.** A scheme with no
+  cross-call persistent module state (reads only its own dummy args) is a
+  clean fit. One that depends on state set up by an earlier `_init`/
+  `_register` call, or SAVE'd module variables mutated by sibling schemes
+  earlier in the suite, needs that setup captured/replayed too, or the
+  generated driver needs to call those lifecycle routines first with their
+  own captured inputs. Worth explicitly scoping v1 to simple, stateless
+  `_run`-only schemes (kessler's own schemes are good first candidates --
+  already the most GPU-exercised suite as of this session) and treating
+  stateful schemes as a deliberate follow-on, not a blocker to shipping v1.
+- **Fixture file placement**: check fixture data into the repo alongside
+  the generated driver program (small, scheme-local, reviewable), not
+  regenerated from a reference run on every test invocation -- a small
+  binary fixture file per captured call, checked in next to its driver.
+- **One fixture = one scheme call, bundled.** For a usable test case, the
+  runtime capture library's per-argument write calls need a thin bundling
+  layer -- one file per (scheme, call-tag) holding every input and output
+  of that one call together, not one file per variable.
+
+### Deliberately deferred: `optional` argument support
+
+Correctly handling `optional` arguments that are legitimately absent at a
+given call would need a generated presence check before capturing -- skipped
+in v1, not just "because it sounds hard." Confirmed directly: `optional` is
+*unused* across the entire real CCPP scheme corpus this capability would
+actually target -- zero occurrences (any value, any case) of the `optional`
+attribute in any of the 183 `.meta` files under
+`src/physics/ncar_ccpp/schemes/` in CAM-SIMA (kessler, the full cam4 scheme
+set, rrtmgp, pumas, vertical diffusion, gravity wave drag -- everything),
+and zero in xdsl_ccpp's own `examples/` corpus either. The one place
+`optional = .true.` appears at all is a single inline Python test fixture
+in `tests/unit/test_gpu_directives.py` (testing an unrelated host-var-
+matching concern).
+
+The actual technical cost if this *were* built isn't the metadata check
+(`arg.getAttr("optional")` is one line, already available) -- it's that
+most captured arguments are array-section slices (e.g.
+`exner(col_start:col_end, 1:pver)`), and constructing that slice expression
+is itself illegal Fortran when the underlying array is absent, so the
+presence guard can't be pushed into the runtime library callee (where
+Fortran's own presence propagation would make it nearly free) -- it has to
+wrap the argument construction itself, meaning xdsl_ccpp would need to
+synthesize a new `scf.IfOp` around an insertion point that may already sit
+inside other control flow (suite-part dispatch, GPU structured data
+regions). That's precisely the category of insertion-ordering bug this
+session spent real effort chasing down in the multi-group residency work
+(`scheme-io-capture` is unrelated to that fix, but shares the risk class).
+Building that machinery speculatively, with no real scheme in the target
+corpus to validate it against, isn't a good trade against shipping v1 for
+the schemes that actually exist.
+
+Also deferred, same reasoning (not a blocker, just not v1): parallel/volume
+management (many MPI tasks x many timesteps could generate a lot of files)
+-- left to the runtime library's own call-counter plus an obvious follow-on
+env-var-gated "capture only call N" or "only task 0" knob. For the test-
+fixture use case this is actually a *feature*, not just noise control:
+capturing a deliberately small, bounded set of calls (e.g. one per distinct
+regime -- a polar column, a convective column, a clear-sky column) is
+exactly what you want for a useful, reviewable test corpus.
+
+### Difficulty assessment
+
+**Low difficulty, high confidence** -- all precedented, mechanical: CLI
+flag + pipeline threading; finding scheme call sites and per-argument
+metadata (already fully resolved and trivially accessible at this point in
+the pipeline); rendering any argument back to a usable reference
+(`_expr_text` already solves this); before/after placement by intent and
+GPU update-self-before-capture (direct reuse of existing, shipped
+mechanisms).
+
+**Medium difficulty** -- new but bounded, not research-y: the runtime
+capture library (a dozen or so overloaded procedures, genuinely new
+Fortran with no existing xdsl_ccpp precedent to crib from); the standalone
+test-driver generation (templated but still new code-gen, and actually
+simpler than the dropped pFUnit approach since there's no framework-
+specific annotation syntax or build-system integration step to get right).
+
+**Bottom line / sizing**: 10-18 days, size band M-L, placing it alongside
+`eamxx-phaseA-variant-tag` (8-15 days, M-L: new metadata vocabulary +
+conditional code-gen, similar shape) and `chost-gpu-memory` (10-20 days,
+M-L: also GPU-data-movement-adjacent, also has a "genuinely new, no
+existing precedent" piece at its core). Breakdown: CLI flag +
+call-site/metadata discovery (<1 day); new runtime Fortran capture/read/
+compare library (~3-5 days including its own tests); generated standalone
+test-driver emission (~2-4 days); CMake/ctest wiring + real end-to-end
+verification against an actual nvhpc build on Derecho (~1-2 days). Smaller
+than the two L-sized `dup-meta-shadow-elim` stages (14-30 days -- those
+touch the entire `.meta` corpus and the Fortran-comment extraction
+pipeline) and larger than `dup-suite-composition-dsl` (4-8 days, a single
+Python DSL with no new runtime/Fortran surface at all).
+
+**Verification, if/when this is built**: (1) unit tests in the style of
+`tests/unit/test_gpu_debug_sync.py`/`test_gpu_directives.py` -- a minimal
+scheme fixture with in/out/inout args, assert the right capture calls land
+at the right before/after positions with the right tags, an unsupported-
+arg-type case is skipped (not a hard failure), and the generated driver's
+declarations/call match the scheme's real signature; (2) real-world: pick
+one stateless kessler-suite scheme, build with `--capture-scheme=kessler:run`,
+run a short case to produce a real fixture + generated test driver, build
+and run that driver under nvhpc specifically, confirm PASS bit-for-bit,
+then deliberately introduce a trivial wrong change to the scheme (e.g. flip
+a sign) and confirm the generated test reports FAIL and exits nonzero --
+the whole point is this must actually catch a real divergence, not just
+execute cleanly.
+
+---
+
+## `dup-meta-shadow-elim` — Stage 1 (`examples/`) implemented and merged (2026-10-15/16)
+
+Picks up the proposal from "4. The bigger question" above (L8615):
+tag `standard_name`/`units`/etc. directly in Fortran source comments and
+generate `.meta` mechanically instead of hand-maintaining it. Scope
+confirmed up front: **Stage 1 only** — this repo's own `examples/`
+directory (113 real `.meta` files, 8,049 lines at the time), not yet the
+real `NCAR/atmospheric_physics` corpus (Stage 2, ~36,431 lines, requires
+that repo's own maintainers' buy-in before it can start — not attempted
+here). Delivered as 4 PRs (7 phases) on `johnmauff/xdsl-ccpp`, all merged
+to `main`: #136 (Phases 1-3), #137 (Phase 4), #138 (Phase 5), #139 (Phase
+6 + grammar fix), #140 (Phase 7).
+
+**Independent re-verification of the original analysis against the real
+corpus** (not just re-citing L8615's numbers): 182 real `.meta` files,
+36,431 lines, 5,412 variable blocks (up from ~126 files/~3,596 blocks) —
+the opportunity grew, not shrank. Field classification held within 1-2
+points of the original split at 50% greater scale: 45.6% fully
+Fortran-derivable, 14.9% mixed (`dimensions`), 29.7% irreducible
+(`standard_name`/`units`), 2.4% sparse human-added, 7.4% structural.
+`memory_space` turned out *more* derivable than originally thought: not
+from the disabled `DEVICEPTR` macro the original finding cited (gone from
+today's corpus), but from real, active `!$acc parallel loop ...
+present(...)` clauses — 1,472 occurrences across 30 files. New finding
+beyond the original scope: a scheme's `dependencies =` field is also
+mechanically derivable from its own `USE` statements via a project-wide
+module-name index (98.3% of 293 real modules follow a clean
+module-name-equals-file-stem convention).
+
+### Design (Phase 0, 2026-10-15)
+
+`!$ccpp [name] key = value` comment tags (originally `!ccpp`, renamed to
+`!$ccpp` in Phase 6 to match real compiler-directive convention and get
+"a second `!` disables it" for free), one assignment per line — real
+`.meta` values routinely contain spaces (`units=kg kg-1`), so packing
+multiple `key=value` pairs on one line was rejected as ambiguous without
+inventing a new quoting scheme. No table-level tag syntax needed at all —
+checked against several real `.meta` files; `[ccpp-table-properties]`
+only ever carries `name=`/`type=` (structurally fixed) and sometimes
+`dependencies=` (mechanically derived, no tag). Framework-module exclusion
+list for `dependencies=` resolution reused directly from
+`ccpp_datatable.py`'s existing `_resolve_framework_f90_files()` rather
+than inventing a new one.
+
+### Three parallel extraction passes (Phases 1-3, PR #136)
+
+All added to `xdsl_ccpp/transforms/fparser2_to_meta.py` (plus a new
+`module_dependency_resolver.py` for Phase 3), as a hand-written,
+line-oriented parser with `filename:line_no` errors — matching this
+codebase's own established text-to-IR convention (`ccpp_xml.py`'s
+`parse_meta_file`), not a regex, after an early regex-based cut was
+deliberately reworked to match that precedent.
+
+- **`_extract_ccpp_tags`**: `standard_name`/`units`/`long_name` (and,
+  later, every other field — see Phase 7 below), matched by bracketed
+  name against the declaration dict, scoped to the enclosing
+  `Subroutine_Subprogram`'s span — immune to reordering.
+- **`_extract_device_resident_vars`**: scans `!$acc`/`!$omp` for
+  `present`/`deviceptr`/`copyin`/`copyout`/`copy` clauses, deriving
+  `memory_space = "device"`. Handles real continuation lines (`&`) and
+  correctly ignores `!!$acc` (a second `!` — a human comment about a
+  directive, not an active one) and `default(present)` (a different
+  clause's value, not a `present(...)` clause).
+- **`module_dependency_resolver.py`**: one-time project-wide
+  `{module_name: file_path}` index, per-scheme `USE`-statement
+  resolution, excluding framework/intrinsic/self-reference/DDT-or-HOST-type
+  modules. Real finding: DDT/HOST tables "always contribute" to a build's
+  dependency closure via their own separate, unconditional path in real
+  capgen-v1 — never through a scheme's own `dependencies=` — confirmed
+  directly against `ccpp_capgen.py`, not assumed, after an initial
+  resolution produced an extra entry (`host_ccpp_ddt.F90`) the real,
+  already-authored `make_ddt.meta` didn't have.
+
+889 tests passed after Phase 3 (no regressions from the pre-existing
+suite).
+
+### Wiring into real generation (Phase 4, PR #137)
+
+`build_meta_module_from_source` forwards extracted values onto
+`ArgumentOp`; `ccpp_generate_meta.py`'s `meta_from_module` emits real
+`standard_name`/`units` instead of stub placeholders when present
+(`long_name`/`memory_space` emitted only when real, never stubbed — both
+legitimately sparse in real `.meta`); new `--root-dir` CLI option wires
+in `dependencies=` resolution. Verified against the real
+`examples/ddthost/scheme/make_ddt.F90` (emits exactly `dependencies =
+ddt2.F90`, matching Phase 3's own real-file verification). 903 tests
+passed.
+
+### `examples/threads_nometa` (Phase 5, PR #138)
+
+First real, buildable `.meta`-free demonstration example — a tag-based
+twin of `examples/threads`, `.meta` generated at CMake **configure
+time** via `execute_process()` (Option 1; a later build-time
+regeneration layer was deliberately deferred, not needed). Host/control
+metadata (`data.meta`/`test_host.meta`) stays committed, unchanged — a
+structurally different extraction problem never attempted here.
+
+**One real, pre-existing bug found and fixed**, the first bug this
+whole effort's real-pipeline consumption surfaced (not caught by unit
+tests, only by building the real example): `_build_decl_map`'s
+character-kind extraction left fparser2's own `"len = *"`-with-spaces
+serialization intact; `typing.py`'s shape computation did a plain
+`"len=" in kind` substring check with no normalization, silently
+computing the wrong (scalar) shape instead of the correct one —
+`compare_arg_tables` already tolerated the spacing, so this was invisible
+until Phase 4 became the first thing to feed extracted kind strings into
+real generation instead of just validation. Fixed at the extraction
+source (normalize the spacing there, not in every downstream consumer).
+Also fixed, in the same CI pass: a `FATAL_ERROR` in one example's new
+CMake step (missing `fparser` in two of three compile-matrix CI jobs)
+that aborted configure for the *whole* repo, not just the new example;
+and a `ctest -R` substring-collision (`threads`'s own empty filter also
+matched `ctest_threads_nometa`, same shape as an existing
+`instances`/`instances_advection` collision, same anchored-filter fix).
+911 tests passed.
+
+### Phase 6: grammar refinement + an honest correction (PR #139)
+
+Renamed `!ccpp` → `!$ccpp`; added `!$acc`-style multi-line continuation
+for long tag values. **The first continuation implementation shipped
+with the wrong semantics** — it concatenated all chained lines' text
+into one value before parsing `key = value` once, i.e. "a continuation
+line is more text for the same value." All 28 of its own synthetic tests
+passed, because every test was built around that same wrong assumption.
+**The user caught it by using the feature for real**: chaining
+`standard_name`/`long_name`/`units` for `thread_scheme.F90`'s `errmsg`
+argument broke CI. Root cause, confirmed via a real local compile: the
+blind join corrupted `errmsg`'s `standard_name` into one garbage string,
+so it no longer exactly matched the literal `"ccpp_error_message"` the
+generator relies on to recognize `errmsg` as framework-reserved — same
+`VerifyException` signature as the Phase 5 kind-string bug, different
+cause. **Correct semantics** (re-read from the original request): each
+`&`-chained line is a complete, independent `key = value` pair for the
+name established on the chain's first line, not a value-text fragment.
+Fixed by changing `_join_comment_continuations`'s return shape to
+unjoined per-line remainders, letting each caller (tag extraction vs.
+`!$acc` clause scanning, which genuinely does want one joined blob)
+decide how to combine them. Verified via a real compile + ctest, then 4
+affected unit tests rewritten for the corrected semantics plus one new
+test modeled directly on the real `errmsg` failure. Also added the
+Phase-6-adapted regression test, `test_threads_nometa_regression.py`
+(`compare_modules()` against `examples/threads`'s hand-authored `.meta`)
+— caught, by actually testing the claim, that this test would *not*
+have caught the Phase 5 kind-string bug (both sides of that comparison
+degrade identically; the real bug lived in a code path `compare_modules`
+never touches), corrected rather than left as an overclaim. 915 tests
+passed.
+
+### `examples/advection_nometa` (Phase 7, PR #140)
+
+A second, much larger demonstration: all 5 real schemes of
+`examples/advection`'s suite (`const_indices`, `cld_liq`,
+`apply_constituent_tendencies`, `cld_ice`, `cld_shadow` — 683 lines of
+real `.meta`, multiple entry points per scheme, real GPU directives)
+tagged and `.meta`-generated at configure time, same Option-1 pattern as
+Phase 5 plus `examples/advection`'s own GPU/`ARCH` CMake plumbing.
+`dlc_liq`/host-control files stay out of scope, same treatment as
+Phase 5's host files.
+
+**Generalized tag forwarding, at the user's request**: the real
+advection `.meta` needs fields beyond the original four
+(`advected`/`constituent`/`state_variable`/`protected`/`default_value`).
+Rather than enumerating each new field by hand in two places
+(`fparser2_to_meta.py`'s forwarding loop and `ccpp_generate_meta.py`'s
+emission loop), both were generalized to forward/emit *every* tag key
+generically, warning (reusing `ArgumentOp.KNOWN_PROPS`, already built
+and already used this way by `ccpp_xml.py`'s own `.meta` frontend — not
+a new mechanism) on any key `ArgumentOp` doesn't recognize. Also added
+mechanical `allocatable` detection from the Fortran `ALLOCATABLE`
+attribute itself (same pattern as the pre-existing `optional` detection)
+— one more field that no longer needs a tag at all.
+
+**Three more real, narrow, pre-existing bugs found and fixed, all
+general-purpose (not advection-specific)**:
+1. `ccpp_generate_meta.py`'s `_CCPP_ENTRY_SUFFIXES` never included
+   `"_register"` — a real CCPP lifecycle phase (constituent
+   registration) used by several real schemes (`cld_liq_register`,
+   `cld_ice_register`, and others elsewhere in `examples/`). Silently
+   dropped a scheme's entire `_register` arg-table block from generated
+   `.meta`. Scoped only to this one convenience tool — the real cap
+   generator (`suite_cap.py`) already handled `_register` correctly,
+   which is why `examples/advection` itself (hand-authored `.meta`,
+   never touches this tool) was never exposed to the gap. One-line fix,
+   confirmed zero false-positive risk across `examples/` before
+   applying it.
+2. `ArgumentOp.__init__`'s dimension-string parser mishandled a bare
+   `:` (the real `dimensions = (:)` convention for a
+   constituent-properties array with no standard dimension name, used
+   by `cld_liq`/`cld_ice`'s `dyn_const`/`dyn_const_ice`) — its
+   range-notation colon-split (for `ccpp_constant_one:horizontal_loop_extent`)
+   silently produced an *empty* `dim_names` for a bare `:` instead of
+   preserving it. This degraded identically on both sides of
+   `compare_modules`'s IR-level comparison, so unit-test verification
+   reported zero mismatches and missed it entirely — only caught by an
+   actual `cmake`/`ctest` build, which reported 13 input/19 required
+   host variables where 12/18 were expected (the resulting stub
+   dimension name counted as a bogus extra variable). Also corrected
+   two stale golden `.mlir` filecheck fixtures that had baked in the
+   old, wrong output for `examples/advection`'s own real, unrelated
+   content — confirming this bug already silently affected real content
+   before this session, not something newly introduced by tagging.
+3. (Minor, same PR) a leftover variable-name reference in
+   `_extract_device_resident_vars`'s own error message, from the Phase 6
+   continuation-handling refactor.
+
+**Verified end-to-end, in order**: all 5 schemes' regenerated `.meta`
+matched `examples/advection`'s hand-authored originals exactly via
+`compare_modules` — then, separately, a real `cmake -S . -B <dir>`
+configure + `cmake --build --target advection.exe`/`advection_nometa.exe`
++ `ctest -R advection_host`/`ctest -R advection_nometa` in a scratch
+build directory on Derecho, replicating `build_all_examples.sh`'s real
+sequential build-then-test pattern — both pass cleanly. This is exactly
+what caught bug #2 above, after the `compare_modules`-only check had
+already reported clean. Final suite: 922 tests passed.
+
+### Stage 1 status: done
+
+Both demonstration examples (`threads_nometa`: trivial single-scheme;
+`advection_nometa`: real multi-scheme, multi-entry-point, GPU-capable)
+are merged to `main` and building/passing in CI. The tooling is proven
+at both ends of the complexity range this repo's own `examples/` can
+offer. **Stage 2 — migrating the real `NCAR/atmospheric_physics` corpus,
+the part that actually delivers this backlog item's motivating
+value — has not been started**; it requires that repo's own
+maintainers' buy-in first, a cross-repo coordination question outside
+this project's unilateral control, unchanged from the original
+2026-10-15 scoping decision.

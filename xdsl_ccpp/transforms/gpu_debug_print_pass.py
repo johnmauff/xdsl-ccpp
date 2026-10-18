@@ -49,7 +49,7 @@ Three diagnostics:
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import arith, builtin, func, scf
+from xdsl.dialects import builtin, func
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -60,29 +60,34 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
     GPUDebugPrintOp,
-    HostVarRefOp,
-    KeywordCallOp,
     ModuleVarOp,
     RankReducingSliceOp,
 )
-from xdsl_ccpp.transforms.util.cap_shared import _bare, split_scheme_table_name
+from xdsl_ccpp.transforms.util.cap_shared import (
+    _GPU_CALL_BEARING_FN_MARKERS,
+    _array_rank,
+    _call_args,
+    _call_param_names,
+    _device_arg_names,
+    _expr_text,
+    _named_bounds,
+    iter_scheme_call_sites,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import CCPP_KIND_PHYS
 
-# Same set of "does this function actually contain scheme calls / GPU-
-# relevant lifecycle code" markers suite_cap.py's own
-# _GPU_CALL_BEARING_FN_MARKERS and gpu_data_pass.py's apply() already use --
-# kept as a separate local copy rather than imported, since this module is
-# purely an optional debug aid and shouldn't create a hard dependency
-# between it and either of those files' own internal constants.
-_GPU_CALL_BEARING_FN_MARKERS = (
-    "_physics",
-    "_timestep_init_",
-    "_timestep_final_",
-    "_init_",
-    "_final_",
-)
+# _GPU_CALL_BEARING_FN_MARKERS, _expr_text, _array_rank, _device_arg_names,
+# _named_bounds, _call_args, _call_param_names, and scheme-call-site
+# discovery (iter_scheme_call_sites) all used to be local copies here,
+# deliberately not imported from cap_shared.py (to avoid a hard dependency
+# for what's "purely an optional debug aid"). Moved to cap_shared.py
+# 2026-10-17 once a second real consumer (scheme_io_capture_pass.py)
+# needed the identical logic -- cap_shared.py is already a neutral leaf
+# module (no dependency on any cap-generation file), so centralizing there
+# doesn't introduce the coupling the original comment was guarding
+# against. See cap_shared.py's own "Scheme call-site discovery" section
+# for the full extraction note.
 
 
 def _ftn_scalar_type_str(base_type: str, kind) -> str:
@@ -93,183 +98,6 @@ def _ftn_scalar_type_str(base_type: str, kind) -> str:
         k = kind.data if kind is not None else CCPP_KIND_PHYS
         return f"real(kind={k})"
     return "integer"
-
-
-def _expr_text(value) -> "str | None":
-    """Return the literal Fortran expression a value resolves to, or None
-    if it can't be determined confidently -- callers must skip
-    instrumenting anything this returns None for, since emitting a
-    guessed/synthetic name as literal source text would produce an
-    undefined-identifier compile error, not a diagnostic.
-
-    Handles the specific shapes this pass actually encounters:
-    - HostVarRefOp results (gpu_ccpp_cap_pass.py's whole-suite hoisting and
-      suite_cap.py's SuiteOwned residency injection both construct
-      references this way -- the real name lives in the defining op's own
-      var_name property, not on the SSA value's name_hint, which
-      HostVarRefOp's constructor never sets). When the op's member_name
-      attribute is set, the reference is a DDT member access
-      (var_name%member_name, e.g. phys_state%exner) -- print_ftn.py's own
-      CCPPHostVarRefOp case resolves it exactly this way; omitting this
-      produced invalid Fortran (a bare "phys_state" used as if it were an
-      array) the first time this function shipped without it. When
-      index_expr is also set (multi-instance host arrays), the reference
-      is var_name(index_expr)%member_name.
-    - Plain block arguments (dummy args of the enclosing FuncOp), which do
-      carry a real name_hint (same convention gpu_data_pass.py's
-      arg_by_name already relies on).
-    - arith.ConstantOp results (a literal bound like the "1" in "1:nz"),
-      rendered as the literal integer text.
-    - RankReducingSliceOp results (a slice, e.g. "exner(col_start:col_end,
-      1:nz)"), rendered recursively from its own source/dim_pattern/
-      range_lowers/range_uppers/scalar_indices.
-    """
-    owner = value.owner
-    if isa(owner, HostVarRefOp):
-        member = owner.attributes.get("member_name")
-        index_expr = owner.attributes.get("index_expr")
-        base_name = (
-            f"{owner.var_name.data}({index_expr.data})"
-            if index_expr is not None
-            else owner.var_name.data
-        )
-        return f"{base_name}%{member.data}" if member is not None else base_name
-    if isa(owner, arith.ConstantOp):
-        return str(owner.value.value.data)
-    if isa(owner, RankReducingSliceOp):
-        source_text = _expr_text(owner.source)
-        if source_text is None:
-            return None
-        subscripts = _rank_reducing_slice_subscripts(owner, _expr_text)
-        if subscripts is None:
-            return None
-        return f"{source_text}({', '.join(subscripts)})"
-    if value.name_hint is not None:
-        return _bare(value.name_hint)
-    return None
-
-
-def _rank_reducing_slice_subscripts(owner, render) -> "list[str] | None":
-    """Scan owner.dim_pattern left-to-right, consuming range pairs and
-    scalar indices (mirroring print_ftn.py's own CCPPRankReducingSliceOp
-    scan exactly) to build one subscript string per dimension, rendering
-    each bound/index via render (an _expr_text-shaped callback). Returns
-    None if any bound/index can't be rendered.
-    """
-    r_lowers = list(owner.range_lowers)
-    r_uppers = list(owner.range_uppers)
-    scalars = list(owner.scalar_indices)
-    r_idx = s_idx = 0
-    subscripts = []
-    for ch in owner.dim_pattern.data:
-        if ch == "R":
-            lower_text = render(r_lowers[r_idx])
-            upper_text = render(r_uppers[r_idx])
-            if lower_text is None or upper_text is None:
-                return None
-            subscripts.append(f"{lower_text}:{upper_text}")
-            r_idx += 1
-        else:  # 'S'
-            scalar_text = render(scalars[s_idx])
-            if scalar_text is None:
-                return None
-            subscripts.append(scalar_text)
-            s_idx += 1
-    return subscripts
-
-
-def _named_bounds(value, seen: set) -> list:
-    """Collect every named (non-literal) bound/index expression referenced
-    by a RankReducingSliceOp chain, in encounter order, de-duplicated --
-    these are the col_start/col_end/nz-style scalars worth printing
-    alongside a slice's size, since they're exactly what determines the
-    slice itself.
-    """
-    owner = value.owner
-    if not isa(owner, RankReducingSliceOp):
-        return []
-    names = []
-    for bound in (
-        list(owner.range_lowers) + list(owner.range_uppers) + list(owner.scalar_indices)
-    ):
-        if isa(bound.owner, arith.ConstantOp):
-            continue
-        text = _expr_text(bound)
-        if text is not None and text not in seen:
-            seen.add(text)
-            names.append(text)
-    return names
-
-
-def _array_rank(ref) -> int:
-    return len(ref.type.shape.data)
-
-
-def _find_call_in_if(if_op):
-    """Return the scheme call inside an error-guarded scf.IfOp, or None --
-    mirrors gpu_data_pass.py's own _find_call_in_if exactly (kept as a
-    separate local copy for the same reason as the marker tuple above)."""
-    if not if_op.true_region.blocks:
-        return None
-    for op in if_op.true_region.blocks[0].ops:
-        if isa(op, func.CallOp) or isa(op, KeywordCallOp):
-            return op
-    return None
-
-
-def _call_args(call_op):
-    if isa(call_op, KeywordCallOp):
-        return list(call_op.args)
-    return list(call_op.arguments)
-
-
-def _callee_name(call_op) -> str:
-    if isa(call_op, KeywordCallOp):
-        return call_op.callee.data
-    return call_op.callee.root_reference.data
-
-
-def _call_param_names(call_op, scheme_name, table_name, meta_data) -> "list[str] | None":
-    """Return this call's own parameter names, one per operand in
-    _call_args' order, or None if they can't be determined.
-
-    KeywordCallOp already stores them (operand_names, positionally paired
-    with .args). A plain func.CallOp has no such record, so fall back to
-    the callee's own .meta table order -- valid only because Fortran
-    positional call arguments must match the callee's declared parameter
-    order exactly.
-    """
-    if isa(call_op, KeywordCallOp):
-        return [n.data for n in call_op.operand_names]
-    if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
-        return None
-    return [
-        arg.name
-        for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
-    ]
-
-
-def _device_arg_names(scheme_name, table_name, meta_data) -> set:
-    """Return the set of this scheme's own parameter names (as declared in
-    its own .meta table) that are memory_space=device -- mirrors
-    gpu_data_pass.py's own _get_device_args exactly, but returns just the
-    name set since Part C only needs "is this device or not", not the host
-    var mapping. Critical for correctness, not just precision: without this
-    filter, Part C instrumented every array-section call argument
-    regardless of whether it was ever supposed to be device-resident --
-    including genuinely host-only/HostMatched variables (e.g. phys_state%T)
-    whose real residency is scoped to GPUCcppCapPass's own narrower
-    structured `!$acc data` region elsewhere. Testing presence of those
-    outside that scope is a guaranteed false-positive crash, confirmed the
-    hard way against a real CAM-SIMA build.
-    """
-    if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
-        return set()
-    return {
-        arg.name
-        for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
-        if arg.hasAttr("memory_space") and arg.getAttr("memory_space") == "device"
-    }
 
 
 @dataclass(frozen=True)
@@ -393,66 +221,56 @@ class GPUDebugPrintPass(ModulePass):
                             InsertPoint.after(block_op),
                         )
 
-                # --- Part C: scheme-call slice diagnostics ---
-                # The actual shape of the motivating crash: an array
-                # SECTION (not a bare whole-array reference) passed
-                # directly as a scheme call argument, e.g.
-                # exner(col_start:col_end, 1:nz). Every scheme call is
-                # wrapped in its own error-guarding scf.IfOp (suite_cap.py
-                # convention) -- walk() finds them regardless of nesting.
-                #
-                # Restricted to arguments the CALLEE's own .meta actually
-                # declares memory_space=device -- see _device_arg_names'
-                # docstring: instrumenting every sliced argument
-                # indiscriminately (including ordinary host-only/
-                # HostMatched variables like phys_state%T, already handled
-                # correctly by GPUCcppCapPass's own narrower-scoped
-                # residency) produces guaranteed false-positive crashes,
-                # not diagnostics.
-                for if_op in list(block.walk()):
-                    if not isa(if_op, scf.IfOp):
-                        continue
-                    call_op = _find_call_in_if(if_op)
-                    if call_op is None:
-                        continue
-                    split = split_scheme_table_name(_callee_name(call_op))
-                    if split is None:
-                        continue
-                    scheme_name, _phase = split
-                    table_name = _callee_name(call_op)
-                    device_names = _device_arg_names(scheme_name, table_name, meta_data)
-                    if not device_names:
-                        continue
-                    param_names = _call_param_names(call_op, scheme_name, table_name, meta_data)
-                    if param_names is None:
-                        continue
+        # --- Part C: scheme-call slice diagnostics ---
+        # The actual shape of the motivating crash: an array SECTION (not a
+        # bare whole-array reference) passed directly as a scheme call
+        # argument, e.g. exner(col_start:col_end, 1:nz). A separate,
+        # independent top-level loop (not nested inside the Part A/B loop
+        # above) since iter_scheme_call_sites does its own, equivalent
+        # module/function walk internally -- no result from Part A/B is
+        # needed here, so there's no reason to share one loop.
+        #
+        # Restricted to arguments the CALLEE's own .meta actually declares
+        # memory_space=device -- see _device_arg_names' own docstring:
+        # instrumenting every sliced argument indiscriminately (including
+        # ordinary host-only/HostMatched variables like phys_state%T,
+        # already handled correctly by GPUCcppCapPass's own narrower-scoped
+        # residency) produces guaranteed false-positive crashes, not
+        # diagnostics.
+        for if_op, call_op, scheme_name, _phase, table_name in iter_scheme_call_sites(op):
+            device_names = _device_arg_names(scheme_name, table_name, meta_data)
+            if not device_names:
+                continue
+            param_names = _call_param_names(call_op, scheme_name, table_name, meta_data)
+            if param_names is None:
+                continue
 
-                    for arg, param_name in zip(_call_args(call_op), param_names):
-                        if param_name not in device_names:
-                            continue
-                        if not isa(arg.owner, RankReducingSliceOp):
-                            continue
-                        rank = _array_rank(arg)
-                        if rank == 0:
-                            continue
-                        slice_text = _expr_text(arg)
-                        if slice_text is None:
-                            continue
-                        named_bounds = _named_bounds(arg, set())
-                        size_prints = ", ".join(
-                            f"' dim{i + 1}=', size({slice_text}, {i + 1})"
-                            for i in range(rank)
-                        )
-                        bound_prints = "".join(
-                            f", ' {b}=', {b}" for b in named_bounds
-                        )
-                        text = (
-                            f"!$acc parallel present({slice_text})\n"
-                            f"write(*,*) 'CCPPDBG call-arg {slice_text} device size:', "
-                            f"{size_prints}{bound_prints}\n"
-                            f"!$acc end parallel"
-                        )
-                        Rewriter.insert_op(
-                            GPUDebugPrintOp([], text),
-                            InsertPoint.before(if_op),
-                        )
+            for arg, param_name in zip(_call_args(call_op), param_names):
+                if param_name not in device_names:
+                    continue
+                if not isa(arg.owner, RankReducingSliceOp):
+                    continue
+                rank = _array_rank(arg)
+                if rank == 0:
+                    continue
+                slice_text = _expr_text(arg)
+                if slice_text is None:
+                    continue
+                named_bounds = _named_bounds(arg, set())
+                size_prints = ", ".join(
+                    f"' dim{i + 1}=', size({slice_text}, {i + 1})"
+                    for i in range(rank)
+                )
+                bound_prints = "".join(
+                    f", ' {b}=', {b}" for b in named_bounds
+                )
+                text = (
+                    f"!$acc parallel present({slice_text})\n"
+                    f"write(*,*) 'CCPPDBG call-arg {slice_text} device size:', "
+                    f"{size_prints}{bound_prints}\n"
+                    f"!$acc end parallel"
+                )
+                Rewriter.insert_op(
+                    GPUDebugPrintOp([], text),
+                    InsertPoint.before(if_op),
+                )

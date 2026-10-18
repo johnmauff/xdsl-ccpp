@@ -26,12 +26,12 @@ measured data, and will drift as items are reassessed.
 | `dup-scheme-family-gen` | 5-10 days | M |
 | `chost-column-major` | 5-10 days | M |
 | `cxx-scheme-no-e2e-test` | 5-10 days (open-ended scope) | M |
+| `direct-fortran-ingest` | 6-10 days (now that Stage 1's extraction infrastructure has landed — see scoping below) | M |
 | `eamxx-phaseA-variant-tag` | 8-15 days | M-L |
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
-| `dup-meta-shadow-elim` — Stage 1 (`examples/` only) | 14-23 days | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
-| `direct-fortran-ingest` | TBD — needs more planning before this can be sized | TBD |
+| `scheme-io-capture` | 10-18 days | M-L |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
@@ -286,9 +286,11 @@ CHANGELOG.md L8406.
 
 ## Someday-maybe: `NCAR/atmospheric_physics` duplication reduction (merged from `duplication_analysis_summary.md`, 2026-09-29)
 
-Not scheduled, not started (unchanged status since first logged
-2026-07-19) — real research, no current commitment to act on it. Full
-analysis, worked examples, resolved technical risks, and an effort
+Two of the three proposals below remain not scheduled, not started
+(unchanged status since first logged 2026-07-19) — real research, no
+current commitment to act on it. `dup-meta-shadow-elim`'s Stage 1 is the
+exception: started and finished 2026-10-15/16 (see its own entry below).
+Full analysis, worked examples, resolved technical risks, and an effort
 staging table live in CHANGELOG.md (L8320 onward). Three proposals,
 smallest to largest:
 
@@ -302,16 +304,23 @@ smallest to largest:
   `suite_cam4.xml`/`suite_cam7.xml` and their standalone-suite sources.
   CHANGELOG.md L8453.
 - `dup-meta-shadow-elim` — **Eliminate `.meta` as a hand-maintained shadow file** — the big one:
-  tag `standard_name`/`units` directly in Fortran source comments
-  (`!ccpp [name] key=value`), generate `.meta` mechanically. ~14,300+
-  lines' worth of hand-authored `.meta` content (45% mechanical mirror of
-  the Fortran signature + 15% half-mechanical dimension info) would
-  become a generated build artifact instead. CHANGELOG.md L8467
-  (magnitude comparison) through L8577 (verdict: "small-to-moderate
-  effort... a couple of focused weeks," with the two open technical risks
-  — comment retrievability through fparser2, line length — already
-  resolved with working techniques against the real corpus, not open
-  questions).
+  tag `standard_name`/`units`/etc. directly in Fortran source comments
+  (`!$ccpp [name] key = value`), generate `.meta` mechanically. **Stage 1
+  (this repo's own `examples/`) is done** — 4 PRs/7 phases merged to
+  `main` (#136-#140), two real demonstration examples
+  (`threads_nometa`/`advection_nometa`) built, verified via real
+  `cmake`/`ctest` builds, and passing in CI; 4 real pre-existing bugs
+  found and fixed along the way (none specific to the demo examples
+  themselves — all general xdsl_ccpp fixes). CHANGELOG.md L12027. **Stage
+  2 (the real `NCAR/atmospheric_physics` corpus, ~36,431 `.meta` lines
+  across 182 files — the part that actually delivers this item's
+  motivating value) has not been started**; still requires that repo's
+  own maintainers' buy-in first, a cross-repo coordination question
+  outside this project's unilateral control. CHANGELOG.md L8467
+  (original magnitude comparison) through L8577 (original verdict — since
+  revised upward for Stage 2 specifically once `dependencies=` extraction
+  and GPU-clause variety turned out larger in scope than first estimated;
+  see the Stage 1 writeup at L12027 for the corrected numbers).
 
 **`direct-fortran-ingest`** — a related but distinct, larger item, raised
 2026-10-15 while discussing `dup-meta-shadow-elim`'s own scope: let
@@ -321,7 +330,7 @@ a hard requirement, instead of always generating and still requiring it
 (`dup-meta-shadow-elim`'s own scope stops at "stop hand-editing `.meta`"
 — it never stops being produced, committed, or consumed, specifically
 *so that* real capgen-v1 keeps working against the same schemes). This
-item goes further: a scheme using the `!ccpp`/`!$acc` annotation
+item goes further: a scheme using the `!$ccpp`/`!$acc` annotation
 convention could skip the `.meta`-generation step and the intermediate
 artifact entirely when built with `ccpp_xdsl`.
 
@@ -337,12 +346,60 @@ opt-in, not a blanket default — and is a strategic/governance decision
 (is sacrificing capgen-v1 compatibility ever acceptable, for which
 schemes, decided by whom) at least as much as a technical one.
 
-Builds directly on `dup-meta-shadow-elim`'s own `!ccpp`-tag/`!$acc`-
+Builds directly on `dup-meta-shadow-elim`'s own `!$ccpp`-tag/`!$acc`-
 directive extraction infrastructure (same mechanisms, different
-consumer) — not schedulable as its own independent effort until that
-work has landed. Not scoped or estimated; someday-maybe, like its
-siblings above, pending a decision on the compatibility trade-off itself
-before any technical planning is worth doing.
+consumer) — its own stated precondition, "not schedulable as its own
+independent effort until that work has landed," is now satisfied (Stage
+1 merged, L12027). Scoped directly against the real code, 2026-10-17, not
+estimated from first principles:
+
+**The real integration point is a single loop**, `xdsl_ccpp/frontend/
+ccpp_xml.py`'s own `main()` (around line 751): `for scheme_file in
+self.options_db["scheme_files"]: for c in parse_meta_file(scheme_file,
+True): ir_ops.append(self.build_meta_ir(c, ...))` — every `--scheme-files`
+entry is read as `.meta` text, unconditionally, today. (`ccpp_dsl.py`'s
+own `merge_meta_files`, used only in `--py` mode, has the same shape at a
+second, less-used call site.) Good news, confirmed directly: `fparser2_
+to_meta.build_meta_module_from_source`/`build_meta_module_from_file`
+(built across Stage 1) already produce IR using the *same* dialect op
+classes (`TablePropertiesOp`/`ArgumentTableOp`/`ArgumentOp`) that
+`build_meta_ir` does — this was never a format-translation problem, it's
+a routing one. For a `.F90` entry in `--scheme-files`, the ingest path is
+structurally just "call `build_meta_module_from_file` instead of
+`parse_meta_file`+`build_meta_ir`, append its ops the same way" — sniffing
+the file extension in that same loop, not a new CLI flag.
+
+**Three things that aren't free, though:**
+1. `dependencies`/`dependencies_path` are real `TablePropertiesOp`
+   properties today populated from a `.meta` file's own `dependencies =`
+   text line (`ccpp_xml.py` lines ~696-715). An ingested `.F90` has no
+   such line — these would need to come from Stage 1's own
+   `module_dependency_resolver.resolve_scheme_dependencies()` instead,
+   which means `ccpp_xml.py` itself needs a `--root-dir`-equivalent
+   option (today only `ccpp_generate_meta.py`, the separate `.meta`-text
+   convenience tool, has one).
+2. `ccpp_dsl.py`'s `--list-outputs` prediction and the incremental-build
+   dependency-file (`.d`) generation (`cmake-dep-manifest`, already
+   resolved) both currently assume a scheme's build-relevant source is
+   its `.meta` file. A Fortran-ingest scheme's real dependency is the
+   `.F90` file itself — CMake-facing tracking needs updating so an edit
+   to that file actually triggers a reconfigure/rebuild, not just a
+   Python-side concern.
+3. The opt-in mechanism itself (not the governance *decision*, which
+   stays non-technical and unresolved) — whatever a build declares to
+   say "this specific scheme takes the Fortran-ingest path" needs an
+   actual flag/config surface once that decision is made.
+
+**Estimate: 6-10 days (M)** — extension of already-built, already-proven
+infrastructure (1-3 days: the routing change + `--root-dir`-style
+dependency wiring, directly reusing Stage 1's resolver), real but bounded
+CMake/build-dependency tracking (2-4 days), the opt-in flag/config
+surface once the governance question is answered (1-2 days), and
+end-to-end verification against one real migrated example with full CI
+(2-3 days). No open technical risk — every piece above has a direct,
+already-built analog from Stage 1 to extend, unlike Stage 1 itself at the
+time it was first scoped. The only genuinely open question is still the
+non-technical one below.
 
 Those three proposals target a different repo (`NCAR/atmospheric_physics`),
 not this one -- unlike `direct-fortran-ingest` above, which is squarely
@@ -496,4 +553,30 @@ flagging any scheme with no corresponding comment — needs no generator
 changes at all, would have mechanically caught a real silent gap found
 during this analysis. CHANGELOG.md's merged section, "A cheaper,
 higher-value piece of tooling."
+
+## Someday-maybe: scheme I/O capture + generated per-scheme unit tests
+
+ID: `scheme-io-capture`. Not scheduled, not started — a design proposal
+raised 2026-10-17, not a record of work done. Opt-in xdsl_ccpp capability:
+capture every input/output argument of a chosen scheme (CLI-flag-selected)
+to disk during cap generation, using metadata already fully resolved at
+that point (intent/type/kind/dimensions — nothing new to derive), then
+generate a standalone, compiler-agnostic Fortran test-driver program per
+captured call that replays the fixture, calls the scheme, and compares
+outputs with a tolerance. Real motivation: data-driven, scheme-level
+regression tests (catching a performance-optimization or CPU→GPU-port
+regression) built from realistic captured atmospheric states, independent
+of a full CAM build/run — not a debugging aid and not a comparison against
+CAM's own history-file output. An early version of the design planned to
+generate pFUnit tests (reusing CIME's `fortran_unit_testing/` framework);
+dropped after confirming pFUnit has no NVIDIA HPC SDK (nvhpc/nvfortran)
+support, which is disqualifying given the whole point is validating GPU
+ports. `optional`-argument support is deliberately out of v1 scope — unused
+across the entire real CCPP scheme corpus this would target (confirmed:
+zero occurrences in any of 183 `.meta` files under
+`src/physics/ncar_ccpp/schemes/` in CAM-SIMA, zero in this repo's own
+`examples/`) and the real implementation cost (synthesizing new control
+flow around possibly-absent array-section arguments) isn't a good trade
+against shipping v1 for schemes that actually exist. Full design, reasoning,
+and difficulty breakdown: CHANGELOG.md L11731.
 
