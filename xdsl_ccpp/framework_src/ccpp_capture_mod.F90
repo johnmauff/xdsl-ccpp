@@ -33,6 +33,22 @@ module ccpp_capture_mod
   public :: ccpp_capture_read
   public :: ccpp_capture_compare
 
+  ! Every concrete procedure below is ALSO individually public, not just
+  ! its generic group name above: scheme_io_capture_pass.py's own
+  ! generated calls (both the capture calls it inserts directly into a
+  ! cap, and the generated test-driver programs' own read/compare calls)
+  ! address a concrete name directly (e.g. `call ccpp_capture_r8_2d(...)`
+  ! or `use ccpp_capture_mod, only: ccpp_capture_r8_2d`), not the generic
+  ! one -- confirmed the hard way against a real link: a module procedure
+  ! only reachable through a generic interface, with no individual
+  ! `public ::` of its own, cannot be named in a `use mod, only: <name>`
+  ! statement from outside the module, generic interface membership
+  ! notwithstanding. Each list sits next to the interface block it backs.
+
+  public :: ccpp_capture_int_0d, ccpp_capture_int_1d, ccpp_capture_int_2d, ccpp_capture_int_3d
+  public :: ccpp_capture_log_0d, ccpp_capture_log_1d, ccpp_capture_log_2d, ccpp_capture_log_3d
+  public :: ccpp_capture_r8_0d, ccpp_capture_r8_1d, ccpp_capture_r8_2d, ccpp_capture_r8_3d
+
   interface ccpp_capture
     module procedure ccpp_capture_int_0d
     module procedure ccpp_capture_int_1d
@@ -48,6 +64,13 @@ module ccpp_capture_mod
     module procedure ccpp_capture_r8_3d
   end interface ccpp_capture
 
+  public :: ccpp_capture_read_int_0d, ccpp_capture_read_int_1d
+  public :: ccpp_capture_read_int_2d, ccpp_capture_read_int_3d
+  public :: ccpp_capture_read_log_0d, ccpp_capture_read_log_1d
+  public :: ccpp_capture_read_log_2d, ccpp_capture_read_log_3d
+  public :: ccpp_capture_read_r8_0d, ccpp_capture_read_r8_1d
+  public :: ccpp_capture_read_r8_2d, ccpp_capture_read_r8_3d
+
   interface ccpp_capture_read
     module procedure ccpp_capture_read_int_0d
     module procedure ccpp_capture_read_int_1d
@@ -62,6 +85,13 @@ module ccpp_capture_mod
     module procedure ccpp_capture_read_r8_2d
     module procedure ccpp_capture_read_r8_3d
   end interface ccpp_capture_read
+
+  public :: ccpp_capture_compare_int_0d, ccpp_capture_compare_int_1d
+  public :: ccpp_capture_compare_int_2d, ccpp_capture_compare_int_3d
+  public :: ccpp_capture_compare_log_0d, ccpp_capture_compare_log_1d
+  public :: ccpp_capture_compare_log_2d, ccpp_capture_compare_log_3d
+  public :: ccpp_capture_compare_r8_0d, ccpp_capture_compare_r8_1d
+  public :: ccpp_capture_compare_r8_2d, ccpp_capture_compare_r8_3d
 
   interface ccpp_capture_compare
     module procedure ccpp_capture_compare_int_0d

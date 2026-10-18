@@ -218,6 +218,264 @@ def _ddt_component_fortran_type(op: CCPPDdtComponentDeclOp) -> str:
     return ftn
 
 
+# ---------------------------------------------------------------------
+# Scheme I/O capture -- generated test-driver rendering (scheme-io-capture
+# backlog item, PR 3). Deliberately standalone, not IR-driven like the
+# rest of this file: scheme_io_capture_pass.py builds one standalone
+# Fortran *program* per captured scheme call site (reads a fixture back,
+# calls the real scheme, compares), which is categorically different from
+# a generated cap's own module/subroutine structure this file's IR walk
+# otherwise renders -- there's no existing dialect for "an arbitrary local
+# scalar/array declaration in a standalone program," and building one
+# solely for this dev-tooling feature would be disproportionate to its
+# scope. What belongs here regardless, per this file's own role as the
+# one place that knows Fortran syntax: the actual text-rendering logic.
+# TestDriverParam is this function's plain, Fortran-agnostic input
+# contract -- scheme_io_capture_pass.py resolves CCPP metadata (intent,
+# optionality, dim_names) into these before calling in; nothing here
+# reads a CCPPArgument or any other CCPP-metadata type directly.
+@dataclass(frozen=True)
+class TestDriverParam:
+    """One real scheme-call keyword argument, already classified by CCPP
+    semantics (scheme_io_capture_pass.py's own _driver_param_category) --
+    "in"/"out"/"inout" (a real captured argument, fixture-backed),
+    "error_arg" (errmsg/errflg -- declared and passed, never compared), or
+    "unverified" (mandatory but outside the capture pass's v1 type scope
+    -- declared and passed so the call compiles, never compared). `dims`
+    is the resolved list of *other* local parameter names sizing this
+    argument (e.g. ["ncol", "nz"]) when rank > 0, else None.
+    """
+
+    name: str
+    category: str
+    arg_type: "str | None"
+    kind: "str | None"
+    rank: int
+    dims: "list[str] | None" = None
+
+
+def _test_driver_decl_type(arg_type: "str | None", kind: "str | None") -> str:
+    """Fortran declaration-prefix text (everything before ` :: name`) for
+    one TestDriverParam."""
+    if arg_type == "real":
+        return f"real(kind={kind or 'kind_phys'})"
+    if arg_type == "integer":
+        return "integer"
+    if arg_type == "logical":
+        return "logical"
+    if arg_type == "character":
+        length = "512"
+        if kind and "len" in kind:
+            raw = kind.split("=", 1)[1].strip()
+            if raw not in ("", "*"):
+                length = raw
+        return f"character(len={length})"
+    # Any other/DDT type should never actually reach here in practice --
+    # anything of a type this framework can't resolve would already have
+    # failed host-var matching earlier in the pipeline. Fall back to
+    # something that at least compiles; the driver simply won't verify it.
+    return "real(kind=kind_phys)"
+
+
+def _render_test_driver_phase_block(
+    table_name: str,
+    params: "list[TestDriverParam]",
+    tolerance: str,
+    declared: set,
+) -> "tuple[list[str], list[str]]":
+    """Render one phase's own declarations and body lines for
+    render_scheme_io_capture_test_driver, below. `declared` is the set of
+    local variable names already declared by an earlier phase block in
+    the same driver (mutated in place) -- a scheme's own phases routinely
+    share argument names for CCPP-mandated roles (errmsg/errflg above
+    all), and Fortran rejects a duplicate declaration, so a name already
+    declared is simply reused rather than redeclared. Returns
+    (decls, body_lines) -- decls only for names first introduced by this
+    phase, body_lines this phase's own read/call/compare sequence.
+    """
+    decls: list[str] = []
+    allocates: list[str] = []
+    # Scalar "before" reads (dimension-bound args like ncol/nz, per CCPP's
+    # own dim_names convention) must run before any allocate(...) that
+    # depends on their value -- kept separate from array reads so the
+    # final emission order below can put every scalar read ahead of every
+    # allocate, which must in turn come ahead of every array read.
+    scalar_before_reads: list[str] = []
+    array_before_reads: list[str] = []
+    after_reads: list[str] = []
+    compares: list[str] = []
+    call_kwargs: list[str] = []
+    errmsg_param = None
+    errflg_param = None
+
+    def _declare(name: str, decl_line: str) -> None:
+        if name in declared:
+            return
+        declared.add(name)
+        decls.append(decl_line)
+
+    for p in params:
+        call_kwargs.append(f"{p.name}={p.name}")
+        decl_type = _test_driver_decl_type(p.arg_type, p.kind)
+
+        if p.category == "error_arg":
+            _declare(p.name, f"{decl_type} :: {p.name}")
+            if p.arg_type == "character":
+                errmsg_param = p.name
+            elif p.arg_type == "integer":
+                errflg_param = p.name
+            continue
+
+        if p.rank == 0:
+            _declare(p.name, f"{decl_type} :: {p.name}")
+        else:
+            colons = ", ".join(":" for _ in p.dims)
+            is_new = p.name not in declared
+            _declare(p.name, f"{decl_type}, allocatable :: {p.name}({colons})")
+            if is_new:
+                allocates.append(f"allocate({p.name}({', '.join(p.dims)}))")
+
+        if p.category == "unverified":
+            continue
+
+        # category in ("in", "out", "inout") -- a real captured argument.
+        tag = f"{table_name}:{p.name}:{p.category}"
+        if p.category in ("in", "inout"):
+            read_line = f'call ccpp_capture_read("{tag}:before", {p.name}, call_count=1)'
+            if p.rank == 0:
+                scalar_before_reads.append(read_line)
+            else:
+                array_before_reads.append(read_line)
+        if p.category in ("out", "inout"):
+            expected = f"{p.name}_expected"
+            if p.rank == 0:
+                _declare(expected, f"{decl_type} :: {expected}")
+            else:
+                colons = ", ".join(":" for _ in p.dims)
+                is_new = expected not in declared
+                _declare(expected, f"{decl_type}, allocatable :: {expected}({colons})")
+                if is_new:
+                    allocates.append(f"allocate({expected}({', '.join(p.dims)}))")
+            after_reads.append(
+                f'call ccpp_capture_read("{tag}:after", {expected}, call_count=1)'
+            )
+            if p.arg_type == "real":
+                compares.append(
+                    f'call report("{p.name}", '
+                    f"ccpp_capture_compare({p.name}, {expected}, {tolerance}), n_failed)"
+                )
+            else:
+                compares.append(
+                    f'call report("{p.name}", ccpp_capture_compare({p.name}, {expected}), n_failed)'
+                )
+
+    body: list[str] = [f"  ! -- {table_name} --"]
+    # Order matters: scalar "before" reads must land before the
+    # allocate()s that size arrays off of them, which must in turn land
+    # before the array "before" reads they size.
+    body += [f"  {r}" for r in scalar_before_reads]
+    body += [f"  {a}" for a in allocates]
+    body += [f"  {r}" for r in array_before_reads]
+    body += ["", f"  call {table_name}({', '.join(call_kwargs)})", ""]
+    if errflg_param is not None:
+        body += [
+            f"  if ({errflg_param} /= 0) then",
+            f"    write(*,*) 'FAIL: {table_name} returned errflg=', {errflg_param}"
+            + (f", ' errmsg=', trim({errmsg_param})" if errmsg_param else ""),
+            "    n_failed = n_failed + 1",
+            "  end if",
+            "",
+        ]
+    body += [f"  {r}" for r in after_reads]
+    body += [f"  {c}" for c in compares]
+    return decls, body
+
+
+def render_scheme_io_capture_test_driver(
+    scheme_name: str,
+    phase_tables: "list[tuple[str, list[TestDriverParam]]]",
+    tolerance: str,
+) -> str:
+    """Render a standalone Fortran test-driver program (`test_<scheme_name>
+    .F90`'s own content) replaying every captured phase of one scheme, in
+    the lifecycle order the caller already sorted `phase_tables` into
+    (register/initialize/timestep_initial/run/timestep_final/finalize --
+    see scheme_io_capture_pass.py's own phase-ordering logic, a CCPP
+    semantics decision this function doesn't make). A scheme's `_run`
+    phase routinely depends on module-private state only its own
+    `_initialize` phase sets (confirmed directly: kessler_run reads
+    module-level lv/pref/rhoqr that only kessler_init sets) -- replaying
+    a scheme as this whole, ordered unit, not one isolated phase at a
+    time, is what makes the comparison meaningful instead of spuriously
+    failing on uninitialized state.
+
+    Each `TestDriverParam` list in `phase_tables` is already fully
+    resolved and filtered by the caller (no `optional` entries, every
+    array's `dims` already a resolved local-name list) -- this function
+    only knows Fortran syntax, not why a given param has the category it
+    has.
+    """
+    declared: set = set()
+    all_decls: list[str] = []
+    all_body: list[str] = []
+    for table_name, params in phase_tables:
+        decls, body = _render_test_driver_phase_block(table_name, params, tolerance, declared)
+        all_decls += decls
+        all_body += body
+
+    table_names = [t for t, _ in phase_tables]
+    use_lines = [f"  use {scheme_name}, only: {t}" for t in table_names]
+
+    lines = [
+        "! Generated by xdsl_ccpp's --capture-test-driver-dir -- reads back a",
+        f"! fixture captured from a real run of {scheme_name} (via --capture-scheme",
+        f"! {scheme_name}), replays each captured phase ({', '.join(table_names)})",
+        "! against it in lifecycle order, and compares outputs against the captured",
+        "! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.",
+        f"program test_{scheme_name}",
+        "  use ccpp_kinds, only: kind_phys",
+        "  use ccpp_capture_mod, only: ccpp_capture_read, ccpp_capture_compare",
+    ]
+    lines += use_lines
+    lines += [
+        "",
+        "  implicit none",
+        "",
+        f"  real(kind=kind_phys), parameter :: tolerance = {tolerance}",
+        "  integer :: n_failed",
+    ]
+    lines += [f"  {d}" for d in all_decls]
+    lines += ["", "  n_failed = 0", ""]
+    lines += all_body
+    lines += [
+        "",
+        "  if (n_failed == 0) then",
+        "    write(*,*) 'ALL TESTS PASSED'",
+        "  else",
+        "    write(*,*) n_failed, ' TEST(S) FAILED'",
+        "    call exit(1)",
+        "  end if",
+        "",
+        "contains",
+        "",
+        "  subroutine report(name, ok, n_failed)",
+        "    character(len=*), intent(in) :: name",
+        "    logical, intent(in) :: ok",
+        "    integer, intent(inout) :: n_failed",
+        "",
+        "    if (ok) then",
+        "      write(*,*) 'PASS: ', trim(name)",
+        "    else",
+        "      write(*,*) 'FAIL: ', trim(name)",
+        "      n_failed = n_failed + 1",
+        "    end if",
+        "  end subroutine report",
+        "",
+        f"end program test_{scheme_name}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def classify_arg_intent(
     *,
     is_allocatable_char: bool,
