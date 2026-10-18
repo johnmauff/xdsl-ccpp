@@ -50,14 +50,18 @@ actually captured.
 
 Generated test drivers (--capture-test-driver-dir, a third, independent
 PR): for every matched call site, when a driver directory is configured,
-also emit a standalone `test_<table_name>.F90` program that reads a
-captured fixture back (call_count=1 -- the fixture's first, and normally
-only, real capture, written by a separate process; see
-ccpp_capture_mod.F90's own call_count semantics for why a driver can't
-just omit it and rely on the peek default, which only makes sense within
-the *writing* process), calls the real scheme subroutine with those
-inputs, and compares its outputs against the captured 'after' snapshot --
-not against a fresh calculation. Declarations and the call's own keyword
+also emit a standalone `test_<table_name>.F90` program that replays
+*every* real call a captured fixture contains for that phase -- not just
+the first (scheme-io-capture-multi-timestep). A real multi-task CAM-SIMA
+run routinely calls one scheme several times (once per chunk/timestep),
+and a run-once replay was silently ignoring that captured data. The
+generated driver loops `call_count = 1, 2, 3, ...`, reading each call's
+own fixture via ccpp_capture_mod.F90's `found` status parameter to detect
+"no more captured calls for this tag" (not an error -- see
+ccpp_capture_mod.F90's own read-procedure docstrings) and stopping there,
+calling the real scheme subroutine with each call's own inputs and
+comparing its outputs against that same call's captured 'after' snapshot
+-- not against a fresh calculation. Declarations and the call's own keyword
 argument list are derived from the identical per-argument metadata this
 pass already resolves for capture (a second consumer of it, not a
 separate derivation): array dimensions are resolved via each array
@@ -74,6 +78,18 @@ compiles, just never compared. If any array argument's dimensions can't
 be resolved this way, driver generation is skipped for that call site
 entirely (logged, not a hard pipeline failure) rather than emitting a
 driver that can't actually allocate its own arrays correctly.
+
+The driver's own real-valued comparison tolerance defaults to
+`_TEST_DRIVER_TOLERANCE` but is overridable per invocation via
+--capture-tolerance (scheme-io-capture-tolerance-config) -- uniform
+across every real-valued comparison in the generated driver, no
+per-variable override in v1. Threaded through as a quoted string in the
+pass-pipeline spec (see ccpp_dsl.py's own comment on why: a bare
+scientific-notation literal with no "." in it, e.g. "1e-08", trips the
+pipeline parser's own int-vs-float NUMBER-token ambiguity) and re-parsed
+with float() here, then formatted into a safe Fortran literal by
+print_ftn.format_fortran_real_literal -- this file never constructs
+Fortran syntax itself.
 
 Language-specific-knowledge boundary, same as everywhere else in this
 codebase: this file interprets CCPP metadata only (_driver_param_category,
@@ -100,7 +116,11 @@ from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.backend.print_ftn import TestDriverParam, render_scheme_io_capture_test_driver
+from xdsl_ccpp.backend.print_ftn import (
+    TestDriverParam,
+    format_fortran_real_literal,
+    render_scheme_io_capture_test_driver,
+)
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateSelfOp,
     OmpTargetUpdateFromOp,
@@ -118,10 +138,11 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import build_host_var_index, find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_KIND_PHYS
 
-# Absolute tolerance used by every generated driver's real-valued
-# comparisons -- a named Fortran PARAMETER in the generated source (not
-# baked into each call site), so a human can tighten/loosen it later by
-# editing one line of generated output without regenerating.
+# Default absolute tolerance used by every generated driver's real-valued
+# comparisons, when --capture-tolerance isn't given (scheme-io-capture-
+# tolerance-config) -- a named Fortran PARAMETER in the generated source
+# (not baked into each call site), so a human can tighten/loosen it later
+# by editing one line of generated output without regenerating.
 _TEST_DRIVER_TOLERANCE = "1.0e-10_kind_phys"
 
 # CCPP standard name for "is this the MPI root/master task" -- CAM-SIMA
@@ -316,6 +337,12 @@ class SchemeIOCapturePass(ModulePass):
     phase: str = ""
     directive: "str | None" = None
     test_driver_dir: "str | None" = None
+    # A string, not a float: ccpp_dsl.py passes this through the
+    # pass-pipeline spec as a quoted string specifically to dodge that
+    # parser's own int-vs-float NUMBER-token ambiguity for an exponent
+    # literal with no "." in it (e.g. "1e-08") -- re-parsed with float()
+    # at the one place it's actually used (_maybe_emit_test_driver).
+    tolerance: "str | None" = None
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         if not self.scheme:
@@ -504,8 +531,13 @@ class SchemeIOCapturePass(ModulePass):
             key=lambda item: _LIFECYCLE_PHASE_ORDER.get(item[1][0], len(_LIFECYCLE_PHASE_ORDER)),
         )
         phase_tables = [(table_name, params) for table_name, (_phase, params) in ordered]
+        tolerance = (
+            format_fortran_real_literal(float(self.tolerance))
+            if self.tolerance is not None
+            else _TEST_DRIVER_TOLERANCE
+        )
         source = render_scheme_io_capture_test_driver(
-            scheme_name, phase_tables, _TEST_DRIVER_TOLERANCE,
+            scheme_name, phase_tables, tolerance,
         )
         os.makedirs(self.test_driver_dir, exist_ok=True)
         out_path = os.path.join(self.test_driver_dir, f"test_{scheme_name}.F90")

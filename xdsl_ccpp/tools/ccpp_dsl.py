@@ -211,6 +211,21 @@ class ccppMain:
                  "generated.",
         )
         parser.add_argument(
+            "--capture-tolerance",
+            type=float,
+            default=None,
+            metavar="VALUE",
+            help="Only meaningful together with --capture-scheme: the "
+                 "absolute tolerance the generated test driver's real-valued "
+                 "comparisons use, overriding the built-in default "
+                 "(1.0e-10). Uniform across every real-valued comparison in "
+                 "the generated driver -- there is no per-variable override "
+                 "in v1. Useful once this is applied beyond a scheme with "
+                 "kessler-like deterministic math to a noisier one, where a "
+                 "single global default is either too tight (spurious "
+                 "FAILs) or too loose (misses a real regression).",
+        )
+        parser.add_argument(
             "--kind-map",
             action="append",
             default=[],
@@ -869,6 +884,17 @@ class ccppMain:
                 # backslash/double-quote need it for a filesystem path).
                 escaped = test_driver_dir.replace("\\", "\\\\").replace('"', '\\"')
                 capture_opts.append(f'test_driver_dir="{escaped}"')
+            tolerance = self.options_db.get("capture_tolerance")
+            if tolerance is not None:
+                # Quoted, not a bare numeric token: the pass-pipeline
+                # value lexer classifies a bare NUMBER token as int vs.
+                # float purely by whether "." appears in it -- a value
+                # like "1e-08" (no literal ".") would be misparsed as an
+                # int() call and crash. A quoted string sidesteps that
+                # ambiguity entirely; SchemeIOCapturePass re-parses it
+                # with float() on the receiving end, so no precision is
+                # lost by round-tripping through str().
+                capture_opts.append(f'tolerance="{tolerance}"')
             passes.append(f"generate-scheme-io-capture{{{' '.join(capture_opts)}}}")
         passes += ["generate-kinds", "strip-ccpp"]
         return ",".join(passes)

@@ -298,3 +298,52 @@ def test_no_guard_when_host_lacks_mpi_root_flag(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     assert "if (masterproc)" not in fortran
     assert "flag_for_mpi_root" not in fortran
+
+
+# scheme-io-capture-tolerance-config: end-to-end through the real pass,
+# not just render_scheme_io_capture_test_driver in isolation (that's
+# already covered by test_print_ftn_scheme_io_capture_driver.py) --
+# confirms the full chain self.tolerance (a string, set from the CLI's
+# --capture-tolerance) -> float() -> format_fortran_real_literal() ->
+# embedded literal in the written test_<scheme>.F90 file actually wires
+# up correctly end to end.
+def test_tolerance_option_reaches_the_written_test_driver_file(
+    run_host_match, ccpp_context, tmp_path,
+):
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META],
+        host_metas=[_HOST_META],
+        suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme",
+        test_driver_dir=str(tmp_path),
+        tolerance="1e-6",
+    ).apply(ccpp_context, module)
+
+    driver_path = tmp_path / "test_test_io_capture_scheme.F90"
+    assert driver_path.exists()
+    driver_source = driver_path.read_text()
+    assert "tolerance = ccpp_capture_tolerance_override(1.0e-06_kind_phys)" in driver_source
+
+
+def test_default_tolerance_used_when_option_unset(run_host_match, ccpp_context, tmp_path):
+    module = run_host_match(
+        scheme_metas=[_SCHEME_META],
+        host_metas=[_HOST_META],
+        suite_xml=_SUITE_XML,
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+    SuiteCAP().apply(ccpp_context, module)
+    CCPPCAP().apply(ccpp_context, module)
+    SchemeIOCapturePass(
+        scheme="test_io_capture_scheme",
+        test_driver_dir=str(tmp_path),
+    ).apply(ccpp_context, module)
+
+    driver_path = tmp_path / "test_test_io_capture_scheme.F90"
+    driver_source = driver_path.read_text()
+    assert "tolerance = ccpp_capture_tolerance_override(1.0e-10_kind_phys)" in driver_source
