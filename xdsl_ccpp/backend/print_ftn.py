@@ -277,10 +277,30 @@ def _test_driver_decl_type(arg_type: "str | None", kind: "str | None") -> str:
     return "real(kind=kind_phys)"
 
 
+def format_fortran_real_literal(value: float, kind: str = "kind_phys") -> str:
+    """Format a Python float as a safe, portable Fortran real(kind=`kind`)
+    literal -- used by scheme_io_capture_pass.py to turn a user-supplied
+    --capture-tolerance value into the generated test driver's own
+    `tolerance` PARAMETER (scheme-io-capture-tolerance-config). Always
+    includes an explicit decimal point: Python's own repr() of a small or
+    large float (e.g. repr(1e-10) == '1e-10') omits one, and while a bare
+    mantissa + exponent letter is technically unambiguous Fortran, adding
+    the decimal point explicitly is cheap and removes any doubt across
+    compiler families.
+    """
+    text = repr(value)
+    if "." not in text:
+        e_idx = next((i for i, c in enumerate(text) if c in "eE"), None)
+        if e_idx is None:
+            text += ".0"
+        else:
+            text = text[:e_idx] + ".0" + text[e_idx:]
+    return f"{text}_{kind}"
+
+
 def _render_test_driver_phase_block(
     table_name: str,
     params: "list[TestDriverParam]",
-    tolerance: str,
     declared: set,
 ) -> "tuple[list[str], list[str]]":
     """Render one phase's own declarations and body lines for
@@ -292,6 +312,21 @@ def _render_test_driver_phase_block(
     declared is simply reused rather than redeclared. Returns
     (decls, body_lines) -- decls only for names first introduced by this
     phase, body_lines this phase's own read/call/compare sequence.
+
+    Replays every real call this phase's own tag has on disk, not just
+    the first: a shared `call_count`/`found` pair (declared once by the
+    caller, reused across every phase's own loop) drives a `do ... exit`
+    loop around this phase's whole read/call/compare sequence, reading
+    call_count=1, 2, 3, ... and stopping the moment any one of this
+    phase's own reads reports found=.false. -- the real signal that no
+    more captured calls exist for this tag (scheme-io-capture-multi-
+    timestep). A real FPHYStest run already produces several calls per
+    tag (one per chunk/timestep); replaying only the first, as earlier
+    versions of this driver did, silently ignored that data. Array
+    allocations move inside the loop with an `allocated()` guard (not
+    allocated once up front): a real scheme's own column count can
+    legitimately differ from one captured call to the next (different
+    chunks), so each iteration must be free to reallocate.
     """
     decls: list[str] = []
     allocates: list[str] = []
@@ -314,6 +349,13 @@ def _render_test_driver_phase_block(
         declared.add(name)
         decls.append(decl_line)
 
+    def _read_lines(tag_with_timing: str, var_name: str) -> list:
+        return [
+            f'call ccpp_capture_read("{tag_with_timing}", {var_name}, '
+            f"call_count=call_count, found=found)",
+            "if (.not. found) exit",
+        ]
+
     for p in params:
         call_kwargs.append(f"{p.name}={p.name}")
         decl_type = _test_driver_decl_type(p.arg_type, p.kind)
@@ -330,10 +372,9 @@ def _render_test_driver_phase_block(
             _declare(p.name, f"{decl_type} :: {p.name}")
         else:
             colons = ", ".join(":" for _ in p.dims)
-            is_new = p.name not in declared
             _declare(p.name, f"{decl_type}, allocatable :: {p.name}({colons})")
-            if is_new:
-                allocates.append(f"allocate({p.name}({', '.join(p.dims)}))")
+            allocates.append(f"if (allocated({p.name})) deallocate({p.name})")
+            allocates.append(f"allocate({p.name}({', '.join(p.dims)}))")
 
         if p.category == "unverified":
             continue
@@ -341,53 +382,76 @@ def _render_test_driver_phase_block(
         # category in ("in", "out", "inout") -- a real captured argument.
         tag = f"{table_name}:{p.name}:{p.category}"
         if p.category in ("in", "inout"):
-            read_line = f'call ccpp_capture_read("{tag}:before", {p.name}, call_count=1)'
+            lines = _read_lines(f"{tag}:before", p.name)
             if p.rank == 0:
-                scalar_before_reads.append(read_line)
+                scalar_before_reads += lines
             else:
-                array_before_reads.append(read_line)
+                array_before_reads += lines
         if p.category in ("out", "inout"):
             expected = f"{p.name}_expected"
             if p.rank == 0:
                 _declare(expected, f"{decl_type} :: {expected}")
             else:
                 colons = ", ".join(":" for _ in p.dims)
-                is_new = expected not in declared
                 _declare(expected, f"{decl_type}, allocatable :: {expected}({colons})")
-                if is_new:
-                    allocates.append(f"allocate({expected}({', '.join(p.dims)}))")
-            after_reads.append(
-                f'call ccpp_capture_read("{tag}:after", {expected}, call_count=1)'
-            )
-            if p.arg_type == "real":
+                allocates.append(f"if (allocated({expected})) deallocate({expected})")
+                allocates.append(f"allocate({expected}({', '.join(p.dims)}))")
+            after_reads += _read_lines(f"{tag}:after", expected)
+            if p.rank == 0:
+                # Scalar: no "which index" diagnostic makes sense, and the
+                # driver already has both values in scope -- print them
+                # directly on FAIL rather than asking ccpp_capture_mod.F90
+                # for anything.
+                if p.arg_type == "real":
+                    compares.append(f"ok = ccpp_capture_compare({p.name}, {expected}, tolerance)")
+                else:
+                    compares.append(f"ok = ccpp_capture_compare({p.name}, {expected})")
+                compares.append(f'call report("{p.name}", call_count, ok, n_failed)')
                 compares.append(
-                    f'call report("{p.name}", '
-                    f"ccpp_capture_compare({p.name}, {expected}, {tolerance}), n_failed)"
+                    f"if (.not. ok) write(*,*) '  actual=', {p.name}, ' expected=', {expected}"
+                )
+            elif p.arg_type == "real":
+                compares.append(
+                    f"ok = ccpp_capture_compare({p.name}, {expected}, tolerance, "
+                    "diag_max_abs_diff, diag_mean_abs_diff, diag_first_mismatch_index)"
+                )
+                compares.append(f'call report("{p.name}", call_count, ok, n_failed)')
+                compares.append(
+                    "if (.not. ok) write(*,*) '  max abs diff=', diag_max_abs_diff, "
+                    "' mean abs diff=', diag_mean_abs_diff, "
+                    "' first mismatch at linear index=', diag_first_mismatch_index"
                 )
             else:
                 compares.append(
-                    f'call report("{p.name}", ccpp_capture_compare({p.name}, {expected}), n_failed)'
+                    f"ok = ccpp_capture_compare({p.name}, {expected}, diag_first_mismatch_index)"
+                )
+                compares.append(f'call report("{p.name}", call_count, ok, n_failed)')
+                compares.append(
+                    "if (.not. ok) write(*,*) '  first mismatch at linear index=', "
+                    "diag_first_mismatch_index"
                 )
 
-    body: list[str] = [f"  ! -- {table_name} --"]
+    body: list[str] = [f"  ! -- {table_name} --", "  call_count = 1", "  do"]
     # Order matters: scalar "before" reads must land before the
     # allocate()s that size arrays off of them, which must in turn land
     # before the array "before" reads they size.
-    body += [f"  {r}" for r in scalar_before_reads]
-    body += [f"  {a}" for a in allocates]
-    body += [f"  {r}" for r in array_before_reads]
-    body += ["", f"  call {table_name}({', '.join(call_kwargs)})", ""]
+    body += [f"    {r}" for r in scalar_before_reads]
+    body += [f"    {a}" for a in allocates]
+    body += [f"    {r}" for r in array_before_reads]
+    body += ["", f"    call {table_name}({', '.join(call_kwargs)})", ""]
     if errflg_param is not None:
         body += [
-            f"  if ({errflg_param} /= 0) then",
-            f"    write(*,*) 'FAIL: {table_name} returned errflg=', {errflg_param}"
+            f"    if ({errflg_param} /= 0) then",
+            f"      write(*,*) 'FAIL: {table_name} returned errflg=', {errflg_param}, "
+            "' (call ', call_count, ')'"
             + (f", ' errmsg=', trim({errmsg_param})" if errmsg_param else ""),
-            "    n_failed = n_failed + 1",
-            "  end if",
+            "      n_failed = n_failed + 1",
+            "    end if",
             "",
         ]
-    body += [f"  {r}" for r in after_reads]
-    body += [f"  {c}" for c in compares]
+    body += [f"    {r}" for r in after_reads]
+    body += [f"    {c}" for c in compares]
+    body += ["    call_count = call_count + 1", "  end do"]
     return decls, body
 
 
@@ -414,12 +478,21 @@ def render_scheme_io_capture_test_driver(
     array's `dims` already a resolved local-name list) -- this function
     only knows Fortran syntax, not why a given param has the category it
     has.
+
+    `tolerance` is a pre-formatted Fortran real literal (the caller's
+    job, via `format_fortran_real_literal`) used as the compiled-in
+    default passed to `ccpp_capture_tolerance_override` at program
+    startup -- NOT a `parameter` anymore. That lets the generated binary
+    be re-run with a different tolerance (the `CCPP_CAPTURE_TOLERANCE`
+    environment variable) without regenerating or recompiling, which
+    matters for cross-compiler/GPU-port comparisons where the right
+    tolerance is discovered by iterating, not known up front.
     """
     declared: set = set()
     all_decls: list[str] = []
     all_body: list[str] = []
     for table_name, params in phase_tables:
-        decls, body = _render_test_driver_phase_block(table_name, params, tolerance, declared)
+        decls, body = _render_test_driver_phase_block(table_name, params, declared)
         all_decls += decls
         all_body += body
 
@@ -434,18 +507,29 @@ def render_scheme_io_capture_test_driver(
         "! 'after' snapshot. Not hand-maintained -- regenerate rather than hand-edit.",
         f"program test_{scheme_name}",
         "  use ccpp_kinds, only: kind_phys",
-        "  use ccpp_capture_mod, only: ccpp_capture_read, ccpp_capture_compare",
+        "  use ccpp_capture_mod, only: ccpp_capture_read, ccpp_capture_compare, &",
+        "                              ccpp_capture_tolerance_override",
     ]
     lines += use_lines
     lines += [
         "",
         "  implicit none",
         "",
-        f"  real(kind=kind_phys), parameter :: tolerance = {tolerance}",
+        "  real(kind=kind_phys) :: tolerance",
         "  integer :: n_failed",
+        "  integer :: call_count",
+        "  logical :: found",
+        "  logical :: ok",
+        "  real(kind=kind_phys) :: diag_max_abs_diff, diag_mean_abs_diff",
+        "  integer :: diag_first_mismatch_index",
     ]
     lines += [f"  {d}" for d in all_decls]
-    lines += ["", "  n_failed = 0", ""]
+    lines += [
+        "",
+        f"  tolerance = ccpp_capture_tolerance_override({tolerance})",
+        "  n_failed = 0",
+        "",
+    ]
     lines += all_body
     lines += [
         "",
@@ -458,15 +542,16 @@ def render_scheme_io_capture_test_driver(
         "",
         "contains",
         "",
-        "  subroutine report(name, ok, n_failed)",
+        "  subroutine report(name, call_count, ok, n_failed)",
         "    character(len=*), intent(in) :: name",
+        "    integer, intent(in) :: call_count",
         "    logical, intent(in) :: ok",
         "    integer, intent(inout) :: n_failed",
         "",
         "    if (ok) then",
-        "      write(*,*) 'PASS: ', trim(name)",
+        "      write(*,*) 'PASS: ', trim(name), ' (call ', call_count, ')'",
         "    else",
-        "      write(*,*) 'FAIL: ', trim(name)",
+        "      write(*,*) 'FAIL: ', trim(name), ' (call ', call_count, ')'",
         "      n_failed = n_failed + 1",
         "    end if",
         "  end subroutine report",

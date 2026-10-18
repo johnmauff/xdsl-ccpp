@@ -36,6 +36,19 @@
 ! and ARM both default to little-endian universally in practice, despite
 ! ARM's ISA technically allowing either) -- so this is a safe, durable
 ! fix, not a narrow one.
+!
+! ccpp_capture_tolerance_override (scheme-io-capture-tolerance-config,
+! runtime-override follow-on): --capture-tolerance (ccpp_dsl.py) bakes a
+! tolerance into a generated driver's own source at CODE-GENERATION time,
+! fixed until the cap is regenerated and recompiled. That fits a same-
+! compiler regression replay (wants something close to bit-exact), but not
+! a cross-compiler/GPU-port comparison, where the same compiled driver
+! binary needs to be re-run against several candidate tolerances without
+! regenerating or recompiling anything. Every generated driver now calls
+! this function once at startup with its own compiled-in default; it
+! returns that default unchanged unless the CCPP_CAPTURE_TOLERANCE
+! environment variable is set to a valid real number, in which case it
+! returns that instead.
 module ccpp_capture_mod
 
   use ccpp_kinds, only: kind_phys
@@ -59,6 +72,7 @@ module ccpp_capture_mod
   public :: ccpp_capture
   public :: ccpp_capture_read
   public :: ccpp_capture_compare
+  public :: ccpp_capture_tolerance_override
 
   interface ccpp_capture
     module procedure ccpp_capture_int_0d
@@ -448,14 +462,27 @@ contains
   ! case of "read the one fixture file this driver program is built to
   ! consume"). Reports a rank/shape mismatch to stderr and leaves `value`
   ! unmodified rather than reading mismatched data into it.
+  !
+  ! `found` (optional, intent(out)) is set .true. on a successful read and
+  ! .false. when the requested call_count's own file simply doesn't exist
+  ! -- the expected, benign way a generated driver detects "no more
+  ! captured calls for this tag" while looping call_count=1,2,3,... to
+  ! replay every real call a fixture contains
+  ! (scheme-io-capture-multi-timestep), not an error. The usual
+  ! "failed to open" stderr warning is suppressed whenever the caller
+  ! passes `found` at all, since that's a reliable sign the caller is
+  ! deliberately checking for exhaustion, not reporting a genuine
+  ! unexpected failure.
   ! ---------------------------------------------------------------------
 
-  subroutine ccpp_capture_read_int_0d(tag, value, call_count)
+  subroutine ccpp_capture_read_int_0d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     integer,           intent(out) :: value
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -465,7 +492,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -476,14 +505,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_int_0d
 
-  subroutine ccpp_capture_read_int_1d(tag, value, call_count)
+  subroutine ccpp_capture_read_int_1d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     integer,           intent(out) :: value(:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(1)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -493,7 +525,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -510,14 +544,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_int_1d
 
-  subroutine ccpp_capture_read_int_2d(tag, value, call_count)
+  subroutine ccpp_capture_read_int_2d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     integer,           intent(out) :: value(:,:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(2)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -527,7 +564,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -544,14 +583,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_int_2d
 
-  subroutine ccpp_capture_read_int_3d(tag, value, call_count)
+  subroutine ccpp_capture_read_int_3d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     integer,           intent(out) :: value(:,:,:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(3)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -561,7 +603,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -578,14 +622,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_int_3d
 
-  subroutine ccpp_capture_read_log_0d(tag, value, call_count)
+  subroutine ccpp_capture_read_log_0d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     logical,           intent(out) :: value
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -595,7 +642,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -606,14 +655,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_log_0d
 
-  subroutine ccpp_capture_read_log_1d(tag, value, call_count)
+  subroutine ccpp_capture_read_log_1d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     logical,           intent(out) :: value(:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(1)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -623,7 +675,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -640,14 +694,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_log_1d
 
-  subroutine ccpp_capture_read_log_2d(tag, value, call_count)
+  subroutine ccpp_capture_read_log_2d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     logical,           intent(out) :: value(:,:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(2)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -657,7 +714,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -674,14 +733,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_log_2d
 
-  subroutine ccpp_capture_read_log_3d(tag, value, call_count)
+  subroutine ccpp_capture_read_log_3d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     logical,           intent(out) :: value(:,:,:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(3)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -691,7 +753,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -708,14 +772,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_log_3d
 
-  subroutine ccpp_capture_read_r8_0d(tag, value, call_count)
+  subroutine ccpp_capture_read_r8_0d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     real(kind=kind_phys), intent(out) :: value
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -725,7 +792,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -736,14 +805,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_r8_0d
 
-  subroutine ccpp_capture_read_r8_1d(tag, value, call_count)
+  subroutine ccpp_capture_read_r8_1d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     real(kind=kind_phys), intent(out) :: value(:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(1)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -753,7 +825,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -770,14 +844,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_r8_1d
 
-  subroutine ccpp_capture_read_r8_2d(tag, value, call_count)
+  subroutine ccpp_capture_read_r8_2d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     real(kind=kind_phys), intent(out) :: value(:,:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(2)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -787,7 +864,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -804,14 +883,17 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_r8_2d
 
-  subroutine ccpp_capture_read_r8_3d(tag, value, call_count)
+  subroutine ccpp_capture_read_r8_3d(tag, value, call_count, found)
     character(len=*), intent(in)  :: tag
     real(kind=kind_phys), intent(out) :: value(:,:,:)
     integer, optional, intent(in) :: call_count
+    logical, optional, intent(out) :: found
     integer :: unit, ios, n, file_rank, file_shape(3)
 
+    if (present(found)) found = .false.
     if (present(call_count)) then
       n = call_count
     else
@@ -821,7 +903,9 @@ contains
          form='unformatted', access='stream', status='old', &
          action='read', convert='native', iostat=ios)
     if (ios /= 0) then
-      write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      if (.not. present(found)) then
+        write(0,*) 'ccpp_capture_mod: failed to open capture file for tag ', trim(tag)
+      end if
       return
     end if
     read(unit) file_rank
@@ -838,6 +922,7 @@ contains
     end if
     read(unit) value
     close(unit)
+    if (present(found)) found = .true.
   end subroutine ccpp_capture_read_r8_3d
 
   ! ---------------------------------------------------------------------
@@ -845,6 +930,20 @@ contains
   ! are always exact (no tolerance concept applies to counts, indices, or
   ! flags); real compares take an absolute tolerance. All return .true.
   ! when every element matches.
+  !
+  ! Every rank>0 (array) variant also takes optional diagnostic outputs
+  ! (scheme-io-capture-compare-diagnostics): a bare pass/fail told a
+  ! generated driver *that* a real GPU-port regression existed but never
+  ! how badly or where. `first_mismatch_index` (all array variants) is a
+  ! 1-based linear (Fortran column-major storage order) index into the
+  ! first element that differs -- 0 when every element matches. The real
+  ! variants additionally report `max_abs_diff`/`mean_abs_diff` (computed
+  ! over every element, not just the mismatching ones, so a PASS can also
+  ! report "how close," not only a FAIL "how far"). Rank-0 (scalar)
+  ! variants are deliberately unchanged -- "which index mismatched" is a
+  ! meaningless question for a scalar, and a generated driver can already
+  ! print a scalar's own actual/expected values directly without needing
+  ! any help from this function.
   ! ---------------------------------------------------------------------
 
   function ccpp_capture_compare_int_0d(actual, expected) result(ok)
@@ -853,22 +952,59 @@ contains
     ok = (actual == expected)
   end function ccpp_capture_compare_int_0d
 
-  function ccpp_capture_compare_int_1d(actual, expected) result(ok)
+  function ccpp_capture_compare_int_1d(actual, expected, first_mismatch_index) result(ok)
     integer, intent(in) :: actual(:), expected(:)
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(actual == expected)
+    logical :: mismatch(size(actual))
+    integer :: loc(1)
+    mismatch = (actual /= expected)
+    ok = .not. any(mismatch)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1)
+      end if
+    end if
   end function ccpp_capture_compare_int_1d
 
-  function ccpp_capture_compare_int_2d(actual, expected) result(ok)
+  function ccpp_capture_compare_int_2d(actual, expected, first_mismatch_index) result(ok)
     integer, intent(in) :: actual(:,:), expected(:,:)
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(actual == expected)
+    logical :: mismatch(size(actual,1), size(actual,2))
+    integer :: loc(2)
+    mismatch = (actual /= expected)
+    ok = .not. any(mismatch)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1)
+      end if
+    end if
   end function ccpp_capture_compare_int_2d
 
-  function ccpp_capture_compare_int_3d(actual, expected) result(ok)
+  function ccpp_capture_compare_int_3d(actual, expected, first_mismatch_index) result(ok)
     integer, intent(in) :: actual(:,:,:), expected(:,:,:)
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(actual == expected)
+    logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
+    integer :: loc(3)
+    mismatch = (actual /= expected)
+    ok = .not. any(mismatch)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1) &
+                                + (loc(3) - 1) * size(actual, 1) * size(actual, 2)
+      end if
+    end if
   end function ccpp_capture_compare_int_3d
 
   function ccpp_capture_compare_log_0d(actual, expected) result(ok)
@@ -877,22 +1013,59 @@ contains
     ok = (actual .eqv. expected)
   end function ccpp_capture_compare_log_0d
 
-  function ccpp_capture_compare_log_1d(actual, expected) result(ok)
+  function ccpp_capture_compare_log_1d(actual, expected, first_mismatch_index) result(ok)
     logical, intent(in) :: actual(:), expected(:)
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(actual .eqv. expected)
+    logical :: mismatch(size(actual))
+    integer :: loc(1)
+    mismatch = .not. (actual .eqv. expected)
+    ok = .not. any(mismatch)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1)
+      end if
+    end if
   end function ccpp_capture_compare_log_1d
 
-  function ccpp_capture_compare_log_2d(actual, expected) result(ok)
+  function ccpp_capture_compare_log_2d(actual, expected, first_mismatch_index) result(ok)
     logical, intent(in) :: actual(:,:), expected(:,:)
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(actual .eqv. expected)
+    logical :: mismatch(size(actual,1), size(actual,2))
+    integer :: loc(2)
+    mismatch = .not. (actual .eqv. expected)
+    ok = .not. any(mismatch)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1)
+      end if
+    end if
   end function ccpp_capture_compare_log_2d
 
-  function ccpp_capture_compare_log_3d(actual, expected) result(ok)
+  function ccpp_capture_compare_log_3d(actual, expected, first_mismatch_index) result(ok)
     logical, intent(in) :: actual(:,:,:), expected(:,:,:)
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(actual .eqv. expected)
+    logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
+    integer :: loc(3)
+    mismatch = .not. (actual .eqv. expected)
+    ok = .not. any(mismatch)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1) &
+                                + (loc(3) - 1) * size(actual, 1) * size(actual, 2)
+      end if
+    end if
   end function ccpp_capture_compare_log_3d
 
   function ccpp_capture_compare_r8_0d(actual, expected, tolerance) result(ok)
@@ -901,22 +1074,104 @@ contains
     ok = (abs(actual - expected) <= tolerance)
   end function ccpp_capture_compare_r8_0d
 
-  function ccpp_capture_compare_r8_1d(actual, expected, tolerance) result(ok)
+  function ccpp_capture_compare_r8_1d( &
+      actual, expected, tolerance, max_abs_diff, mean_abs_diff, first_mismatch_index) result(ok)
     real(kind=kind_phys), intent(in) :: actual(:), expected(:), tolerance
+    real(kind=kind_phys), optional, intent(out) :: max_abs_diff, mean_abs_diff
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(abs(actual - expected) <= tolerance)
+    real(kind=kind_phys) :: diff(size(actual))
+    logical :: mismatch(size(actual))
+    integer :: loc(1)
+    diff = abs(actual - expected)
+    mismatch = (diff > tolerance)
+    ok = .not. any(mismatch)
+    if (present(max_abs_diff)) max_abs_diff = maxval(diff)
+    if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1)
+      end if
+    end if
   end function ccpp_capture_compare_r8_1d
 
-  function ccpp_capture_compare_r8_2d(actual, expected, tolerance) result(ok)
+  function ccpp_capture_compare_r8_2d( &
+      actual, expected, tolerance, max_abs_diff, mean_abs_diff, first_mismatch_index) result(ok)
     real(kind=kind_phys), intent(in) :: actual(:,:), expected(:,:), tolerance
+    real(kind=kind_phys), optional, intent(out) :: max_abs_diff, mean_abs_diff
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(abs(actual - expected) <= tolerance)
+    real(kind=kind_phys) :: diff(size(actual,1), size(actual,2))
+    logical :: mismatch(size(actual,1), size(actual,2))
+    integer :: loc(2)
+    diff = abs(actual - expected)
+    mismatch = (diff > tolerance)
+    ok = .not. any(mismatch)
+    if (present(max_abs_diff)) max_abs_diff = maxval(diff)
+    if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1)
+      end if
+    end if
   end function ccpp_capture_compare_r8_2d
 
-  function ccpp_capture_compare_r8_3d(actual, expected, tolerance) result(ok)
+  function ccpp_capture_compare_r8_3d( &
+      actual, expected, tolerance, max_abs_diff, mean_abs_diff, first_mismatch_index) result(ok)
     real(kind=kind_phys), intent(in) :: actual(:,:,:), expected(:,:,:), tolerance
+    real(kind=kind_phys), optional, intent(out) :: max_abs_diff, mean_abs_diff
+    integer, optional, intent(out) :: first_mismatch_index
     logical :: ok
-    ok = all(abs(actual - expected) <= tolerance)
+    real(kind=kind_phys) :: diff(size(actual,1), size(actual,2), size(actual,3))
+    logical :: mismatch(size(actual,1), size(actual,2), size(actual,3))
+    integer :: loc(3)
+    diff = abs(actual - expected)
+    mismatch = (diff > tolerance)
+    ok = .not. any(mismatch)
+    if (present(max_abs_diff)) max_abs_diff = maxval(diff)
+    if (present(mean_abs_diff)) mean_abs_diff = sum(diff) / real(size(diff), kind_phys)
+    if (present(first_mismatch_index)) then
+      if (ok) then
+        first_mismatch_index = 0
+      else
+        loc = findloc(mismatch, .true.)
+        first_mismatch_index = loc(1) + (loc(2) - 1) * size(actual, 1) &
+                                + (loc(3) - 1) * size(actual, 1) * size(actual, 2)
+      end if
+    end if
   end function ccpp_capture_compare_r8_3d
+
+  ! ---------------------------------------------------------------------
+  ! Runtime tolerance override -- see this module's own header comment
+  ! for the full rationale. Falls back to default_tolerance both when
+  ! CCPP_CAPTURE_TOLERANCE is unset and when it's set but not parseable
+  ! as a real number (reported to stderr in the latter case only -- an
+  ! unset env var is the normal, silent case every generated driver hits
+  ! by default).
+  ! ---------------------------------------------------------------------
+
+  function ccpp_capture_tolerance_override(default_tolerance) result(tolerance)
+    real(kind=kind_phys), intent(in) :: default_tolerance
+    real(kind=kind_phys) :: tolerance
+    character(len=64) :: env_value
+    integer :: env_len, ios
+
+    call get_environment_variable(name="CCPP_CAPTURE_TOLERANCE", value=env_value, length=env_len)
+    if (env_len <= 0) then
+      tolerance = default_tolerance
+      return
+    end if
+    read(env_value, *, iostat=ios) tolerance
+    if (ios /= 0) then
+      write(0,*) 'ccpp_capture_mod: CCPP_CAPTURE_TOLERANCE is set but not a valid number: ', trim(env_value)
+      tolerance = default_tolerance
+    end if
+  end function ccpp_capture_tolerance_override
 
 end module ccpp_capture_mod

@@ -18,7 +18,8 @@
 ! working directory and removed on a clean exit.
 program test_ccpp_capture_mod
   use ccpp_kinds, only: kind_phys
-  use ccpp_capture_mod, only: ccpp_capture, ccpp_capture_read, ccpp_capture_compare
+  use ccpp_capture_mod, only: ccpp_capture, ccpp_capture_read, ccpp_capture_compare, &
+                              ccpp_capture_tolerance_override
 
   implicit none
 
@@ -39,6 +40,9 @@ program test_ccpp_capture_mod
   call test_r8_2d(n_failed)
   call test_r8_3d(n_failed)
   call test_deliberate_mismatch_is_detected(n_failed)
+  call test_found_parameter_for_multi_call_replay(n_failed)
+  call test_compare_diagnostics(n_failed)
+  call test_tolerance_override_default_when_unset(n_failed)
 
   if (n_failed == 0) then
     write(*,*) 'ALL TESTS PASSED'
@@ -215,5 +219,99 @@ contains
     ok = ccpp_capture_compare(readback, written, 1.0e-12_kind_phys)
     call report('uncorrupted readback still compares equal', ok, n_failed)
   end subroutine test_deliberate_mismatch_is_detected
+
+  subroutine test_found_parameter_for_multi_call_replay(n_failed)
+    ! The `found` status parameter (scheme-io-capture-multi-timestep) is
+    ! what lets a generated test driver loop "replay call 1, 2, 3, ...
+    ! until no more captured data exists" without needing to know ahead
+    ! of time how many real calls a fixture actually contains. Confirms:
+    ! found=.true. for a call_count that was actually written, and
+    ! found=.false. (not a crash, not a stderr-noise false alarm) for one
+    ! that wasn't -- exactly the "no more calls" signal a replay loop's
+    ! own exit condition depends on.
+    integer, intent(inout) :: n_failed
+    integer :: written, readback
+    logical :: found
+
+    written = 7
+    call ccpp_capture('test:found_param:in:before', written)
+
+    call ccpp_capture_read('test:found_param:in:before', readback, call_count=1, found=found)
+    call report('found=.true. for a real call_count', found, n_failed)
+    call report('value read correctly alongside found=.true.', readback == written, n_failed)
+
+    call ccpp_capture_read('test:found_param:in:before', readback, call_count=99, found=found)
+    call report('found=.false. for a call_count that was never written', .not. found, n_failed)
+  end subroutine test_found_parameter_for_multi_call_replay
+
+  subroutine test_compare_diagnostics(n_failed)
+    ! scheme-io-capture-compare-diagnostics: a bare pass/fail used to tell
+    ! a generated driver *that* a GPU-port regression existed but never
+    ! how badly or where. Confirms the optional first_mismatch_index/
+    ! max_abs_diff/mean_abs_diff outputs report the exact, known location
+    ! and magnitude of a deliberately-introduced mismatch -- not just
+    ! that ok comes back .false.
+    integer, intent(inout) :: n_failed
+    real(kind=kind_phys) :: actual2d(3,2), expected2d(3,2)
+    real(kind=kind_phys) :: max_abs_diff, mean_abs_diff
+    integer :: first_mismatch_index
+    integer :: actual1d(4), expected1d(4)
+    logical :: ok
+
+    ! Column-major linear index for (i=2, j=1) in a (3,2) array is
+    ! 2 + (1-1)*3 = 2 -- deliberately perturb exactly that element by a
+    ! known amount (5.0) so every diagnostic output has a known-correct
+    ! answer to check against, not just "some nonzero value."
+    expected2d = reshape( &
+        [1._kind_phys, 2._kind_phys, 3._kind_phys, 4._kind_phys, 5._kind_phys, 6._kind_phys], [3,2])
+    actual2d = expected2d
+    actual2d(2,1) = actual2d(2,1) + 5._kind_phys
+
+    ok = ccpp_capture_compare( &
+        actual2d, expected2d, 1.0e-12_kind_phys, max_abs_diff, mean_abs_diff, first_mismatch_index)
+    call report('real 2d diagnostics: ok is .false.', .not. ok, n_failed)
+    call report('real 2d diagnostics: first_mismatch_index == 2', first_mismatch_index == 2, n_failed)
+    call report('real 2d diagnostics: max_abs_diff == 5.0', &
+        abs(max_abs_diff - 5._kind_phys) < 1.0e-12_kind_phys, n_failed)
+    call report('real 2d diagnostics: mean_abs_diff == 5.0/6', &
+        abs(mean_abs_diff - 5._kind_phys/6._kind_phys) < 1.0e-12_kind_phys, n_failed)
+
+    ! A clean match must report first_mismatch_index=0, not a stale value
+    ! from a previous call -- also confirms diagnostics are computed on a
+    ! PASS too ("how close", not only "how far" on a FAIL).
+    ok = ccpp_capture_compare( &
+        expected2d, expected2d, 1.0e-12_kind_phys, max_abs_diff, mean_abs_diff, first_mismatch_index)
+    call report('real 2d diagnostics: ok is .true. on an exact match', ok, n_failed)
+    call report('real 2d diagnostics: first_mismatch_index == 0 on a match', &
+        first_mismatch_index == 0, n_failed)
+    call report('real 2d diagnostics: max_abs_diff == 0 on a match', &
+        abs(max_abs_diff) < 1.0e-12_kind_phys, n_failed)
+
+    ! Integer compares get first_mismatch_index only (no magnitude
+    ! concept for an exact-match type) -- mismatch at index 3.
+    expected1d = [1, 2, 3, 4]
+    actual1d = expected1d
+    actual1d(3) = 30
+    ok = ccpp_capture_compare(actual1d, expected1d, first_mismatch_index)
+    call report('integer 1d diagnostics: ok is .false.', .not. ok, n_failed)
+    call report('integer 1d diagnostics: first_mismatch_index == 3', first_mismatch_index == 3, n_failed)
+  end subroutine test_compare_diagnostics
+
+  subroutine test_tolerance_override_default_when_unset(n_failed)
+    ! scheme-io-capture-tolerance-config's runtime-override follow-on:
+    ! with CCPP_CAPTURE_TOLERANCE unset (the normal case this test's own
+    ! environment is assumed to be in -- setting/unsetting an environment
+    ! variable mid-process has no portable standard Fortran mechanism, so
+    ! the actual "variable IS set" override path is verified separately,
+    ! via a real build run from the shell with CCPP_CAPTURE_TOLERANCE
+    ! exported -- see scheme-io-capture's own CHANGELOG entry), the
+    ! function must return the caller's own default unchanged.
+    integer, intent(inout) :: n_failed
+    real(kind=kind_phys) :: tolerance
+
+    tolerance = ccpp_capture_tolerance_override(1.0e-10_kind_phys)
+    call report('tolerance override: default returned when unset', &
+        abs(tolerance - 1.0e-10_kind_phys) < 1.0e-20_kind_phys, n_failed)
+  end subroutine test_tolerance_override_default_when_unset
 
 end program test_ccpp_capture_mod
