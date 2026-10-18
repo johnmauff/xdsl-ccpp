@@ -198,3 +198,139 @@ def test_tolerance_parameter_is_used_verbatim_in_generated_driver():
     assert "parameter :: tolerance" not in source
     assert "tolerance = ccpp_capture_tolerance_override(5.0e-06_kind_phys)" in source
     assert "ccpp_capture_compare(precl, precl_expected, tolerance, " in source
+
+
+# scheme-io-capture-gpu-residency: a generated driver is a standalone
+# program with no surrounding suite-level device residency to lean on, so
+# a memory_space=device argument needs its own device copy established
+# before the call and torn down after -- unlike a real cap, which only
+# needs an `update self` sync before reading a value back for capture
+# (there's already a device copy to sync from, established elsewhere).
+
+
+def test_inout_device_array_gets_enter_copyin_and_exit_copyout():
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("theta", "inout", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+    )
+    assert "!$acc enter data copyin(theta)" in source
+    assert "!$acc exit data copyout(theta)" in source
+    # Never both directions for the same array in the same directive.
+    assert "!$acc enter data create(theta)" not in source
+    assert "!$acc exit data delete(theta)" not in source
+    # Ordering: enter-data after theta is allocated/read but before the
+    # call; exit-data after the call but before theta is compared --
+    # otherwise the driver would compare against theta's stale pre-call
+    # host value instead of the scheme's real, device-computed result.
+    enter_idx = source.index("!$acc enter data copyin(theta)")
+    call_idx = source.index("call kessler_run(")
+    exit_idx = source.index("!$acc exit data copyout(theta)")
+    compare_idx = source.index("ccpp_capture_compare(theta, theta_expected")
+    assert enter_idx < call_idx < exit_idx < compare_idx
+
+
+def test_in_only_device_array_gets_enter_copyin_and_exit_delete():
+    # Never read back (no :after capture exists for an in-only arg), so
+    # the exit side only needs to release the device copy, not transfer
+    # it back.
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("cpair", "in", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+    )
+    assert "!$acc enter data copyin(cpair)" in source
+    assert "!$acc exit data delete(cpair)" in source
+    assert "copyout(cpair)" not in source
+
+
+def test_out_only_device_array_gets_enter_create_and_exit_copyout():
+    # No captured "before" value exists for an out-only arg -- nothing
+    # useful to transfer to the device yet, just allocate it there.
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("precl", "out", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+    )
+    assert "!$acc enter data create(precl)" in source
+    assert "!$acc exit data copyout(precl)" in source
+    assert "copyin(precl)" not in source
+
+
+def test_multiple_device_arrays_grouped_into_one_directive_each():
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("theta", "inout", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("qv", "inout", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+    )
+    # One grouped directive, not one per array.
+    assert source.count("!$acc enter data") == 1
+    assert source.count("!$acc exit data") == 1
+    assert "!$acc enter data copyin(theta, qv)" in source
+    assert "!$acc exit data copyout(theta, qv)" in source
+
+
+def test_omp_directive_uses_map_clauses_not_acc_syntax():
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("theta", "inout", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE, directive="omp",
+    )
+    assert "!$omp target enter data map(to:theta)" in source
+    assert "!$omp target exit data map(from:theta)" in source
+    assert "!$acc" not in source
+
+
+def test_no_directive_means_no_device_directive_text_at_all():
+    # directive=None (the default) -- a device-resident arg still exists
+    # in the metadata, but with no --directive at cap-generation time
+    # there's no GPU build to support, so the driver must stay exactly
+    # like a plain CPU-only one (no acc/omp text anywhere).
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("theta", "inout", "real", "kind_phys", 1, dims=["ncol"], is_device=True),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE,
+    )
+    assert "!$acc" not in source
+    assert "!$omp" not in source
+
+
+def test_host_only_array_untouched_even_with_directive_set():
+    # is_device=False (the default) -- a plain host array must never show
+    # up in an enter/exit-data directive just because --directive was set
+    # for the scheme overall; only its own memory_space=device arguments do.
+    params = [
+        TestDriverParam("ncol", "in", "integer", None, 0),
+        TestDriverParam("precl", "out", "real", "kind_phys", 1, dims=["ncol"]),
+        TestDriverParam("errmsg", "error_arg", "character", "len=512", 0),
+        TestDriverParam("errflg", "error_arg", "integer", None, 0),
+    ]
+    source = render_scheme_io_capture_test_driver(
+        "kessler", [("kessler_run", params)], _TOLERANCE, directive="acc",
+    )
+    assert "!$acc" not in source
