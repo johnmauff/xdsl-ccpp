@@ -338,6 +338,28 @@ def build_datatable(
                         f"  (framework_src_dir={framework_src_dir!r})"
                     )
                 utility_file_texts.append(os.path.abspath(path))
+        # ccpp_capture_mod.F90 (--capture-scheme's runtime library) is
+        # xdsl_ccpp's own file, never part of the real upstream NCAR
+        # ccpp-framework a cam-host build points framework_src_dir at --
+        # confirmed the hard way against a real CAM-SIMA build ("Cannot
+        # open module file 'ccpp_capture_mod.mod'"), since
+        # _REAL_FRAMEWORK_F90_FILES above only ever resolves against that
+        # external submodule path, which will never contain it. Sourced
+        # instead from xdsl_ccpp's own internal _FRAMEWORK_SRC_DIR -- the
+        # same place the non-cam-host branch below already sources its
+        # own framework files from. Included unconditionally (not only
+        # when --capture-scheme is actually active for this build): it's
+        # small and self-contained (depends only on ccpp_kinds), so
+        # unconditional inclusion is simpler than threading "is capture
+        # active" into this function just to decide whether to add one
+        # file.
+        _capture_mod_path = os.path.join(_FRAMEWORK_SRC_DIR, "ccpp_capture_mod.F90")
+        if not os.path.isfile(_capture_mod_path):
+            raise FileNotFoundError(
+                "xdsl_ccpp installation is incomplete: required framework "
+                f"Fortran source file not found: {_capture_mod_path!r}"
+            )
+        utility_file_texts.append(os.path.abspath(_capture_mod_path))
     else:
         for framework_file in _resolve_framework_f90_files():
             utility_file_texts.append(framework_file)
