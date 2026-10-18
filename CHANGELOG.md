@@ -12251,3 +12251,167 @@ value — has not been started**; it requires that repo's own
 maintainers' buy-in first, a cross-repo coordination question outside
 this project's unilateral control, unchanged from the original
 2026-10-15 scoping decision.
+
+## `scheme-io-capture` v1 implemented and merged (PRs #141/#142/#143, 2026-10-17)
+
+Implementation of the design proposal above (L11731) — the proposal's own
+reasoning and precedent analysis still apply; this entry records what was
+actually built and verified. Three staged PRs, CMake/ctest automation
+deliberately out of scope for v1 (this repo has zero precedent for a
+dynamically-registered CMake test — every `add_test()` is static; see
+`scheme-io-capture-ctest-automation` in BACKLOG.md).
+
+### PR #141 — CLI flag, pipeline wiring, and the capture pass
+
+`--capture-scheme=SCHEME[:PHASE]` (repeatable; `ccpp_dsl.py`) appends one
+`generate-scheme-io-capture{scheme=... phase=... directive=...}` pass
+instance per entry. New `xdsl_ccpp/transforms/scheme_io_capture_pass.py`
+(`SchemeIOCapturePass`): for each matched real scheme call site (found
+via newly-shared `cap_shared.iter_scheme_call_sites`/
+`iter_gpu_call_bearing_functions`, extracted from
+`gpu_debug_print_pass.py`'s own previously-local call-site walk — that
+file had **zero prior test coverage**, closed with a new
+`test_gpu_debug_print_pass.py`, 4 tests), inserts a capture call
+(`RawFortranLinesOp`) for every argument whose `(type, kind, rank)` is in
+v1's supported scope ({integer, logical, real(kind_phys)} x {rank 0..3}),
+skipping `optional`, `errmsg`/`errflg`, and unsupported types. `intent=in`
+captures immediately before the call; `intent=out` immediately after;
+`intent=inout` both. A device-resident (`memory_space=device`) argument
+gets an `AccUpdateSelfOp`/`OmpTargetUpdateFromOp` sync immediately before
+its own capture read, via explicit chained `InsertPoint` anchors (not
+"insert twice at the same point," which has non-obvious ordering
+semantics). New `test_scheme_io_capture_pass.py` (11 tests) covers every
+intent shape, device-sync ordering, phase filtering, and every exclusion
+rule. Full suite: 937 passed, no regressions.
+
+### PR #142 — the runtime Fortran capture library
+
+New `xdsl_ccpp/framework_src/ccpp_capture_mod.F90` — the first file in
+`framework_src/` to use a real generic Fortran `interface` block.
+36 concrete procedures across three generic interfaces
+(`ccpp_capture`/`ccpp_capture_read`/`ccpp_capture_compare`), covering the
+same {integer, logical, real(kind_phys)} x {rank 0..3} scope. Write
+procedure names match the pass's own emitted call text exactly
+(`ccpp_capture_r8_2d`, etc.). Filenames derive from a tag-keyed, fixed-
+capacity (not dynamically reallocated, for cross-compiler certainty)
+`SAVE` call counter; data is written via plain Fortran stream I/O —
+deliberately not PIO/NetCDF, to keep this dev/debug-only library small
+(see `scheme-io-capture-netcdf` in BACKLOG.md for the deferred v2
+alternative). Real bug caught before compiling, not by the compiler: an
+early draft picked between an explicit `call_count` and a default via
+`merge(call_count, ..., present(call_count))` — illegal Fortran, since
+`merge()` evaluates all arguments unconditionally and referencing an
+absent optional argument that way is undefined regardless of the mask;
+fixed with explicit `if (present(...))` in all 12 read procedures. New
+standalone, pipeline-independent `tests/fortran/test_ccpp_capture_mod.F90`
+(+ a minimal `ccpp_kinds.F90` stand-in): round-trips all 12 (type, rank)
+combinations plus a deliberate-mismatch case (a real sign-flip
+corruption, confirming `compare` correctly reports FAIL). Compiled clean
+with `gfortran -Wall -Wextra`, all 14 checks passed.
+
+### PR #143 — wired into `examples/kessler`, generated test driver, real verification
+
+Adds `--capture-test-driver-dir=DIR`: for every scheme captured by
+`--capture-scheme`, emits a standalone `test_<scheme>.F90` program that
+replays the scheme's captured phases and compares against the captured
+"after" snapshot.
+
+**Architecture correction, caught in review**: the first implementation
+put Fortran-syntax rendering directly in `scheme_io_capture_pass.py`,
+alongside its CCPP-metadata interpretation — violating this codebase's
+own language-compartmentalization convention (Fortran syntax belongs in
+`print_ftn.py`, the dedicated printer module). Refactored: `print_ftn.py`
+gained a new, self-contained section (`TestDriverParam` dataclass,
+`_test_driver_decl_type`, `render_scheme_io_capture_test_driver`) that
+knows Fortran syntax only; `scheme_io_capture_pass.py` kept only CCPP
+interpretation (`_driver_param_category`, `_resolve_array_dims`,
+`_build_test_driver_params`) and hands plain `TestDriverParam` objects
+across the boundary. Verified behavior-preserving by diffing the real
+generated driver before/after the refactor — byte-identical.
+
+**Design correction, from the original intent**: the first driver design
+generated one driver per captured *phase* (e.g. `test_kessler_run.F90`
+alone). Verified end-to-end against a real kessler build, it compiled,
+linked, and ran — but FAILED all 6 comparisons: `kessler_run` reads
+module-private state (`lv`/`pref`/`rhoqr`) that only a separate
+`kessler_init` call sets, which a run-only driver never invokes. Fixed by
+making driver generation scheme-scoped, matching the original design
+intent ("capture in units of schemes," not phases): `apply()` now
+accumulates every captured phase's table across its whole call-site loop
+and emits ONE `test_<scheme>.F90` covering every captured phase,
+sequenced by a new `_LIFECYCLE_PHASE_ORDER` (register → initialize →
+timestep_initial → run → timestep_final → finalize), with cross-phase
+declaration deduplication (CCPP mandates shared names like
+`errmsg`/`errflg` across every entry point; a name already declared by an
+earlier phase block is reused, not redeclared).
+
+**Real bug found only by linking, not by any unit test**: a capture
+call's own raw text (`call ccpp_capture_r8_2d(...)`) has no `use`
+statement of its own. First real link failed:
+`undefined reference to 'ccpp_capture_r8_2d_'`. Root cause and fix, two
+parts: (1) calling a module procedure by name from outside its module
+with no `use` resolves to a plain external-symbol convention the
+module-mangled procedure doesn't have — fixed by having
+`scheme_io_capture_pass.py` insert a declaration
+`func.FuncOp.external(proc_name, [], [])` with `module="ccpp_capture_mod"`
+at the top level of the capture call's enclosing suite-cap module (found
+via a new `_enclosing_module` walk-up helper) — the same construction
+`run_dispatch.py`/`lifecycle_cap.py` already use for a real scheme
+callee declaration, which `print_ftn.py`'s `_print_module` reads to
+generate the `use` line. (2) A second, deeper bug this surfaced:
+`ccpp_capture_mod.F90`'s concrete procedures were only reachable through
+their generic interface names, never individually `public ::`'d — a
+module procedure reachable only via a generic interface cannot be named
+in a `use mod, only: <name>` statement from outside the module, generic
+membership notwithstanding. Fixed by adding an explicit `public ::` for
+all 36 concrete names, organized so each group's list sits next to the
+`interface` block it backs.
+
+**Real, manual, end-to-end verification, CPU/gfortran only** (GPU/nvhpc
+explicitly deferred — see `scheme-io-capture-gpu-verify` in BACKLOG.md,
+which in turn depends on the newly-tracked
+`scheme-io-capture-gpu-residency` gap: the generated driver has no
+`!$acc enter data` for device-resident arrays today, confirmed a real
+gap, not yet fixed):
+1. Generated the real kessler cap with `--capture-scheme kessler
+   --capture-test-driver-dir <dir> --directive acc` via a direct
+   `python3 -m xdsl_ccpp.tools.ccpp_dsl` invocation (replicating
+   `cmake/xdsl_ccpp_capgen.cmake`'s own command assembly by hand).
+2. Hand-compiled (`gfortran -ffree-line-length-none -cpp`, this repo's
+   own real compile flags) a captured `kessler_ccpp.exe` linking the
+   generated cap against `ccpp_capture_mod.F90` and the real
+   `kessler`/`kessler_update` sources — clean compile and link.
+3. Ran it (1000 columns, the example's own real test case) — clean exit,
+   produced 23 real `.ccppcap` fixture files (~6.1MB) covering both
+   `kessler_init` and `kessler_run`.
+4. Compiled and ran the generated `test_kessler.F90` driver against that
+   fixture — `ALL TESTS PASSED`, all 6 outputs
+   (theta/qv/qc/qr/precl/relhum) within `1.0e-10` tolerance.
+5. Deliberately flipped a sign in `kessler_runv2`'s own saturation-
+   adjustment line (the real function `kessler_run` calls) — recompiled
+   just the scheme object, relinked the driver (no fixture
+   regeneration needed), reran: all 6 outputs correctly reported `FAIL`,
+   exit 1 — the real bar this whole effort exists to clear.
+6. Reverted the sign flip, recompiled, reran — `ALL TESTS PASSED` again,
+   confirming the fix (not some other change) restored correctness.
+
+Full `pytest` suite stayed green throughout (880 passed, 3 skipped, no
+regressions at every checkpoint).
+
+### What's left
+
+v1's three PRs are complete and merged. Nine follow-on items were raised
+during this work and recorded in BACKLOG.md under their own IDs, not
+bundled anonymously under `scheme-io-capture`:
+`scheme-io-capture-gpu-residency` (a real, confirmed gap — the generated
+driver has no GPU data-movement directives, would very likely crash
+under `nvfortran -acc`), `scheme-io-capture-gpu-verify`,
+`scheme-io-capture-ctest-automation`, `scheme-io-capture-netcdf`,
+`scheme-io-capture-fixture-storage`, `scheme-io-capture-multi-timestep`,
+`scheme-io-capture-compare-diagnostics`,
+`scheme-io-capture-tolerance-config`, `scheme-io-capture-staleness-check`,
+`scheme-io-capture-multi-call-site`. Two items already flagged as
+deliberately out of v1 scope by the original design proposal —
+`optional`-argument support and parallel/multi-task volume management —
+are tracked the same way, as `scheme-io-capture-optional-args` and
+`scheme-io-capture-task-volume`.

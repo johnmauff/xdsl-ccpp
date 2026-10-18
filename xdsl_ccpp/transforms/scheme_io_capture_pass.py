@@ -35,7 +35,18 @@ target corpus, see the design doc for the full reasoning).
 Runtime library note: xdsl_ccpp/framework_src/ccpp_capture_mod.F90 (a
 separate PR) provides the concrete ccpp_capture_*/ccpp_capture_read_*/
 ccpp_capture_compare_* procedures this pass's emitted calls and the
-generated test-driver programs below both depend on.
+generated test-driver programs below both depend on, each grouped under
+one of three generic interfaces (ccpp_capture/ccpp_capture_read/
+ccpp_capture_compare). Every call this pass emits uses the generic
+`ccpp_capture` name, never a concrete one directly -- Fortran's own
+overload resolution dispatches to the right concrete write procedure
+from the captured value's static type and rank, which is exactly the
+compile-time check `_is_capture_supported` already performs at the
+Python/IR level, so there's never a mismatch between the two to worry
+about. This also means only one `use ccpp_capture_mod, only: ccpp_capture`
+declaration is ever needed per generated module (see
+_ensure_capture_decl), not one per distinct (type, rank) combination
+actually captured.
 
 Generated test drivers (--capture-test-driver-dir, a third, independent
 PR): for every matched call site, when a driver directory is configured,
@@ -83,8 +94,8 @@ import sys
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import builtin, func
-from xdsl.dialects.builtin import StringAttr
+from xdsl.dialects import builtin, func, llvm
+from xdsl.dialects.builtin import StringAttr, i8
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -104,7 +115,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     iter_scheme_call_sites,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
-from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
+from xdsl_ccpp.transforms.util.ir_utils import build_host_var_index, find_ccpp_module
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_KIND_PHYS
 
 # Absolute tolerance used by every generated driver's real-valued
@@ -112,6 +123,22 @@ from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_KIND_PHYS
 # baked into each call site), so a human can tighten/loosen it later by
 # editing one line of generated output without regenerating.
 _TEST_DRIVER_TOLERANCE = "1.0e-10_kind_phys"
+
+# CCPP standard name for "is this the MPI root/master task" -- CAM-SIMA
+# exposes this via spmd_utils.F90's `masterproc`, already a widely-used
+# real convention (dozens of real schemes consume it), unlike `mpi_rank`
+# (also host-exposed, but not currently consumed by any real scheme).
+# Used to guard every inserted capture call so only one task ever writes
+# a given tag's file -- confirmed directly against a real 24-task
+# CAM-SIMA build that without this guard, every task races to write the
+# same filename and corrupts it (a captured `ncol` decoded to garbage).
+# Resolved once per `apply()` call via the host's own metadata (not a
+# new MPI dependency in ccpp_capture_mod.F90 itself, which stays exactly
+# as minimal as before); when the host doesn't declare this standard
+# name at all (e.g. the standalone examples/kessler, which is
+# single-task), the guard is simply omitted and every capture call runs
+# unconditionally, which is already correct there.
+_MPI_ROOT_STD_NAME = "flag_for_mpi_root"
 
 # Canonical CCPP lifecycle order -- used only to sequence a scheme's own
 # captured phases within ONE generated test driver (see
@@ -131,27 +158,27 @@ _LIFECYCLE_PHASE_ORDER = {
 # for why this is the real, deliberately narrow v1 scope, not an
 # open-ended type system. "real" is handled separately below (its code
 # additionally requires kind == CCPP_KIND_PHYS); character and any
-# DDT/derived type (anything not in this map and not "real") are excluded
-# simply by never matching a code here.
-_TYPE_CODE = {"integer": "int", "logical": "log"}
+# DDT/derived type (anything not in this set and not "real") are excluded
+# simply by never matching a type here.
+_TYPE_CODE = {"integer", "logical"}
 _MAX_SUPPORTED_RANK = 3
 
 
-def _capture_proc_name(arg_type: "str | None", kind: "str | None", rank: int) -> "str | None":
-    """Return the concrete ccpp_capture_mod procedure name for this
-    argument's (type, kind, rank), or None if unsupported (caller must
-    skip, not guess)."""
+def _is_capture_supported(arg_type: "str | None", kind: "str | None", rank: int) -> bool:
+    """True iff this argument's (type, kind, rank) is within v1's capture
+    scope -- {integer, logical, real(kind_phys)} x {rank 0..3}. The
+    emitted capture call always uses ccpp_capture_mod's generic
+    `ccpp_capture` name (Fortran's own overload resolution picks the
+    right concrete procedure from the argument's static type and rank;
+    there's exactly one real-kind member per rank since this function
+    already rejects any kind but CCPP_KIND_PHYS, so there's no ambiguity
+    to resolve) -- this function only gates whether to capture at all,
+    it no longer needs to name a concrete procedure itself."""
     if rank > _MAX_SUPPORTED_RANK:
-        return None
+        return False
     if arg_type == "real":
-        if kind != CCPP_KIND_PHYS:
-            return None
-        type_code = "r8"
-    elif arg_type in _TYPE_CODE:
-        type_code = _TYPE_CODE[arg_type]
-    else:
-        return None
-    return f"ccpp_capture_{type_code}_{rank}d"
+        return kind == CCPP_KIND_PHYS
+    return arg_type in _TYPE_CODE
 
 
 def _driver_param_category(arg) -> str:
@@ -173,7 +200,7 @@ def _driver_param_category(arg) -> str:
     arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
     kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
     rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-    if _capture_proc_name(arg_type, kind, rank) is None:
+    if not _is_capture_supported(arg_type, kind, rank):
         return "unverified"
     return intent
 
@@ -296,21 +323,29 @@ class SchemeIOCapturePass(ModulePass):
 
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         meta_data = {}
+        mpi_root_ref = None
         if ccpp_mod is not None:
             bmdd = BuildMetaDataDescriptions()
             bmdd.traverse(ccpp_mod)
             meta_data = bmdd.meta_data
+            host_var_index = build_host_var_index(ccpp_mod)
+            entry = host_var_index.get(_MPI_ROOT_STD_NAME)
+            if entry is not None:
+                mpi_root_ref = (entry[0], entry[1])  # (var_name, module_name)
 
-        # Tracks, per enclosing suite-cap module, which ccpp_capture_mod
-        # procedure names already have a declaration inserted -- a capture
+        # Tracks which enclosing suite-cap modules already have which
+        # `use <module>, only: <name>` declarations inserted -- a capture
         # call's own raw text (RawFortranLinesOp, below) has no `use`
-        # statement of its own, so without this declaration the enclosing
-        # module would never get the `use ccpp_capture_mod, only: <proc>`
-        # line print_ftn.py's _print_module generates from exactly this
-        # kind of declaration (see _ensure_capture_decl) -- confirmed the
-        # hard way: a real link against the generated cap failed with
-        # "undefined reference to `ccpp_capture_r8_2d_'" without it.
-        declared_procs: dict[int, set] = {}
+        # statement of its own, so without an explicit declaration the
+        # enclosing module would never get one (see _ensure_capture_decl/
+        # _ensure_host_var_decl). Keyed by (module_op id, name) since this
+        # now tracks up to two distinct declarations per module: the
+        # generic `ccpp_capture` name (always) and the host's mpi-root
+        # flag (only when the host declares one). Both are idempotent per
+        # module -- every capture call in a module shares the same
+        # generic write name and the same mpi-root guard variable, so
+        # neither needs inserting more than once there.
+        declared_decls: set = set()
 
         # Accumulated across every matched call site (potentially several
         # phases of the same scheme, when self.phase == "" -- i.e. "every
@@ -353,23 +388,25 @@ class SchemeIOCapturePass(ModulePass):
                 arg_type = arg.getAttr("type") if arg.hasAttr("type") else None
                 kind = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
-                proc_name = _capture_proc_name(arg_type, kind, rank)
-                if proc_name is None:
+                if not _is_capture_supported(arg_type, kind, rank):
                     continue
                 expr_text = _expr_text(value)
                 if expr_text is None:
                     continue
 
-                self._ensure_capture_decl(call_op, proc_name, declared_procs)
+                self._ensure_capture_decl(call_op, declared_decls)
+                if mpi_root_ref is not None:
+                    self._ensure_host_var_decl(call_op, mpi_root_ref[0], mpi_root_ref[1], declared_decls)
+                mpi_root_var = mpi_root_ref[0] if mpi_root_ref is not None else None
                 if intent in ("in", "inout"):
                     self._insert_capture(
-                        value, expr_text, proc_name, table_name, param_name, intent,
-                        "before", param_name in device_names, call_op,
+                        value, expr_text, table_name, param_name, intent,
+                        "before", param_name in device_names, call_op, mpi_root_var,
                     )
                 if intent in ("out", "inout"):
                     self._insert_capture(
-                        value, expr_text, proc_name, table_name, param_name, intent,
-                        "after", param_name in device_names, call_op,
+                        value, expr_text, table_name, param_name, intent,
+                        "after", param_name in device_names, call_op, mpi_root_var,
                     )
 
             if self.test_driver_dir and table_name not in captured_tables:
@@ -387,30 +424,60 @@ class SchemeIOCapturePass(ModulePass):
         if self.test_driver_dir and captured_tables:
             self._maybe_emit_test_driver(self.scheme, captured_tables)
 
-    def _ensure_capture_decl(self, call_op, proc_name: str, declared_procs: dict) -> None:
-        """Insert a declaration FuncOp for `proc_name`, carrying
-        module="ccpp_capture_mod", at the top level of call_op's enclosing
+    def _ensure_capture_decl(self, call_op, declared_decls: set) -> None:
+        """Insert a declaration FuncOp for ccpp_capture_mod's generic
+        `ccpp_capture` name, at the top level of call_op's enclosing
         suite-cap module -- exactly the same construction
         run_dispatch.py/lifecycle_cap.py use for a real scheme callee
         declaration (func.FuncOp.external + a `module` attribute), which
         is what print_ftn.py's _print_module reads to generate this
-        module's own `use <module>, only: <name>` line. Without this, the
-        capture call's own raw text (RawFortranLinesOp) has no `use`
-        statement backing it at all, and the module-mangled symbol
-        ccpp_capture_mod actually compiles to is unresolvable at link
-        time. Idempotent per module (declared_procs), not per call --
-        several capture calls across a suite can share one proc_name.
+        module's own `use ccpp_capture_mod, only: ccpp_capture` line.
+        Without this, a capture call's own raw text (RawFortranLinesOp)
+        has no `use` statement backing it at all, and the module-mangled
+        symbol ccpp_capture_mod actually compiles to is unresolvable at
+        link time. Idempotent per module (declared_decls, keyed by
+        (module id, "ccpp_capture")) -- every capture call in a module
+        shares the one generic name, so this only ever needs inserting
+        once there, not once per call.
         """
         module_op = _enclosing_module(call_op)
         if module_op is None:
             return
-        seen = declared_procs.setdefault(id(module_op), set())
-        if proc_name in seen:
+        key = (id(module_op), "ccpp_capture")
+        if key in declared_decls:
             return
-        seen.add(proc_name)
-        decl = func.FuncOp.external(proc_name, [], [])
+        declared_decls.add(key)
+        decl = func.FuncOp.external("ccpp_capture", [], [])
         decl.attributes["module"] = StringAttr("ccpp_capture_mod")
         Rewriter.insert_op(decl, InsertPoint.at_end(module_op.body.block))
+
+    def _ensure_host_var_decl(self, call_op, var_name: str, module: str, declared_decls: set) -> None:
+        """Insert a declaration for a real host VARIABLE (not a callable),
+        at the top level of call_op's enclosing suite-cap module -- the
+        `llvm.GlobalOp` + `module` attribute construction real host-var
+        references already use elsewhere (run_dispatch.py's own
+        `hv_glob`), not func.FuncOp.external (that's for callable
+        entities like ccpp_capture_mod's own procedures, see
+        _ensure_capture_decl -- `masterproc` is a logical flag, not a
+        subroutine/function, and print_ftn.py's _print_module reads
+        `llvm.GlobalOp`'s own `module` attribute, not FuncOp's, to decide
+        which `use <module>, only: <name>` lines to emit for a plain
+        variable). Idempotent per (module, var_name) pair, same reasoning
+        as _ensure_capture_decl.
+        """
+        module_op = _enclosing_module(call_op)
+        if module_op is None:
+            return
+        key = (id(module_op), var_name)
+        if key in declared_decls:
+            return
+        declared_decls.add(key)
+        glob = llvm.GlobalOp(
+            llvm.LLVMArrayType.from_size_and_type(1, i8),
+            var_name, "external",
+        )
+        glob.attributes["module"] = StringAttr(module)
+        Rewriter.insert_op(glob, InsertPoint.at_end(module_op.body.block))
 
     def _maybe_emit_test_driver(self, scheme_name, captured_tables: dict) -> None:
         """Write test_<scheme_name>.F90 into self.test_driver_dir, covering
@@ -446,8 +513,8 @@ class SchemeIOCapturePass(ModulePass):
             f.write(source)
 
     def _insert_capture(
-        self, value, expr_text, proc_name, table_name, param_name, intent,
-        timing, is_device, call_op,
+        self, value, expr_text, table_name, param_name, intent,
+        timing, is_device, call_op, mpi_root_var,
     ) -> None:
         """Insert one capture call immediately before/after call_op
         (timing), syncing a device-resident argument to the host first if
@@ -463,6 +530,19 @@ class SchemeIOCapturePass(ModulePass):
         In both cases the sync (when present) always precedes the
         capture it's guarding, and the capture is always the op adjacent
         to call_op on the "before"/"after" side with no sync present.
+
+        When `mpi_root_var` is given (the host's own mpi-root flag, e.g.
+        `masterproc`), the capture call itself is wrapped in
+        `if (<mpi_root_var>) then ... end if` -- confirmed necessary
+        against a real 24-task CAM-SIMA build, where every task racing to
+        write the same filename corrupted it. The device-sync above is
+        deliberately left unguarded (every task still syncs its own
+        device data to host): that's a pure per-task memory copy with no
+        shared-file risk, so guarding it would only save a little work on
+        non-root tasks, not fix a correctness problem. When
+        `mpi_root_var` is None (the host declares no such standard name
+        at all, e.g. the standalone examples/kessler), the call is
+        unconditional, exactly as before this guard existed.
         """
         capture_anchor = (
             InsertPoint.before(call_op) if timing == "before" else InsertPoint.after(call_op)
@@ -476,7 +556,7 @@ class SchemeIOCapturePass(ModulePass):
             Rewriter.insert_op(sync_op, capture_anchor)
             capture_anchor = InsertPoint.after(sync_op)
         tag = f"{table_name}:{param_name}:{intent}:{timing}"
-        Rewriter.insert_op(
-            RawFortranLinesOp(f'call {proc_name}("{tag}", {expr_text})'),
-            capture_anchor,
-        )
+        call_text = f'call ccpp_capture("{tag}", {expr_text})'
+        if mpi_root_var is not None:
+            call_text = f"if ({mpi_root_var}) then\n  {call_text}\nend if"
+        Rewriter.insert_op(RawFortranLinesOp(call_text), capture_anchor)
