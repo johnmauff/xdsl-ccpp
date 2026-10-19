@@ -1,14 +1,14 @@
 """Python API frontend for the CCPP compiler.
 
 Users write a Python file that imports this module, declares arguments, schemes,
-DDTs, and suites using decorators, then calls :func:`emit_ir` to produce the
+DDTs, and suites using decorators, then calls :func:`export_suite` to produce the
 same MLIR as the XML/meta frontend.
 
 There are two ways to define scheme argument metadata:
 
 **Inline** — define arguments directly in Python (no ``.meta`` file needed)::
 
-    from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, emit_ir
+    from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, export_suite
 
     @ccpp_scheme
     class my_scheme:
@@ -20,12 +20,12 @@ There are two ways to define scheme argument metadata:
         physics = [my_scheme]
 
     if __name__ == "__main__":
-        emit_ir(my_suite)
+        export_suite(my_suite)
 
 **From .meta files** — load existing ``.meta`` files and write only the suite
 orchestration in Python (backwards-compatible path)::
 
-    from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, emit_ir
+    from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, export_suite
 
     kessler        = ccpp_scheme_from_meta("examples/kessler/scheme/kessler.meta")
     kessler_update = ccpp_scheme_from_meta("examples/kessler/scheme/kessler_update.meta")
@@ -37,7 +37,31 @@ orchestration in Python (backwards-compatible path)::
             kessler_update()
 
     if __name__ == "__main__":
-        emit_ir(kessler_suite)
+        export_suite(kessler_suite)
+
+**Composing schemes with ordinary Python functions** — a scheme descriptor
+may be called from any helper function (e.g. a physics package or a host
+adapter) that is itself called, directly or indirectly, from ``run()`` or a
+group function; the call records exactly as if made inline.  Groups may be
+written as functions, ``with forLoop("std_name"):`` blocks may appear in any
+of these bodies, and plain keyword defaults give swappable components
+("slots") -- all resolved at IR-generation time, so generated Fortran is
+identical to the equivalent flat suite (see ``composite_scheme_plan.md``).
+Schemes may be referenced by name only, ``ccpp_scheme_ref("name")``, leaving
+file paths to the command line (``--scheme-files=``/``--host-files=``) or the
+driver, as for an XML suite::
+
+    def shortwave(*, diagnostics, overlap=sw_mcica):   # overlap is a slot
+        overlap()
+        with forLoop("number_of_diagnostic_subcycles"):
+            sw_gas_optics()
+            sw_rte()
+            diagnostics()                              # host-supplied hook
+
+    @ccpp_suite("rrtmgp", version="1.0")
+    class rrtmgp:
+        def physics_after_coupler():
+            shortwave(diagnostics=rrtmgp_sw_diagnostics)
 
 The output can be piped directly into ``ccpp_opt``::
 
@@ -46,8 +70,10 @@ The output can be piped directly into ``ccpp_opt``::
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types as _types
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
@@ -192,10 +218,15 @@ class SchemeDescriptor:
                  kind_specs: list[tuple[str, str, str]] | None = None,
                  dependencies: list[str] | None = None,
                  dependencies_path: str | None = None,
-                 source_path: str | None = None):
+                 source_path: str | None = None,
+                 is_reference: bool = False):
         self.name = name
         # Maps entry-point attribute name (e.g. "run") → list of Arg objects.
         self.entry_points = entry_points
+        # True for a name-only reference (ccpp_scheme_ref): no metadata of its
+        # own; build_ir resolves it by name from scheme_files, or leaves the
+        # metadata to the driver (ccpp_dsl --py --scheme-files ...).
+        self.is_reference = is_reference
         # Implementation language: None / "fortran" (default) or "c++".
         self.language = language
         # (kind_name, module, spec) tuples from this table's own kind_spec
@@ -207,6 +238,50 @@ class SchemeDescriptor:
         self.dependencies = dependencies or []
         self.dependencies_path = dependencies_path
         self.source_path = source_path
+
+    def __call__(self, **overrides) -> None:
+        """Record this scheme into the group currently being recorded.
+
+        Lets ordinary Python functions compose schemes: a helper (e.g. a
+        physics package or host adapter) that calls ``some_scheme()`` and is
+        itself called from a suite's ``run()`` records ``some_scheme`` exactly
+        as if it had been called directly inside ``run()``.  Keyword
+        arguments become compile-time literal overrides, same as the
+        by-name callers ``_run_groups`` installs.
+
+        Raises:
+            RuntimeError: when called outside a recording (i.e. not, directly
+                or indirectly, from a ``@ccpp_suite`` ``run()``).
+        """
+        if _active_recorder is None:
+            raise RuntimeError(
+                f"Scheme '{self.name}' was called outside a suite recording. "
+                f"Schemes can only be called (directly or through helper "
+                f"functions) from a @ccpp_suite class's run() method or "
+                f"group functions."
+            )
+        _active_recorder((self, {k: str(v) for k, v in overrides.items()}))
+
+
+# The function that records one item into the suite currently being built,
+# or None when no recording is in progress.  An item is either a scheme call,
+# ``(descriptor, overrides)``, or a completed ``with forLoop(...)`` block, a
+# `SubcycleDescriptor`.  Installed (via `_recording`) by `_run_groups`, by
+# `_record_group_function`, and by an open ``with forLoop(...)`` block.
+_active_recorder = None
+
+
+@contextmanager
+def _recording(recorder):
+    """Install *recorder* as the active recorder for the duration of the block,
+    restoring the previous one afterwards (also when the block raises)."""
+    global _active_recorder
+    previous = _active_recorder
+    _active_recorder = recorder
+    try:
+        yield
+    finally:
+        _active_recorder = previous
 
 
 class TableDescriptor:
@@ -265,28 +340,81 @@ class SubcycleDescriptor:
     ``<subcycle loop="N">`` in a suite XML file.  ``schemes`` may itself
     contain another `SubcycleDescriptor` (a nested ``forLoop()``), to
     arbitrary depth -- corresponding to a nested ``<subcycle>``.
+
+    Also usable as a context manager (``with forLoop("std_name"):``) inside
+    a ``run()``/group function or a helper called from one: scheme calls in
+    the block body are collected as ``(descriptor, overrides)`` pairs, and on
+    exit the whole block is recorded into the enclosing recording as one item.
     """
 
     def __init__(
         self, count: int | str,
-        schemes: list[SchemeDescriptor | SubcycleDescriptor],
+        schemes: list[SchemeDescriptor | tuple[SchemeDescriptor, dict[str, str]]
+                      | SubcycleDescriptor],
     ):
         # Integer → literal loop count baked in at IR-generation time.
         # String → CCPP standard name resolved at runtime (is_literal=False).
         self.count = count
         self.schemes = schemes
+        self._outer_recorder = None
+
+    def __enter__(self) -> SubcycleDescriptor:
+        global _active_recorder
+        if _active_recorder is None:
+            raise RuntimeError(
+                f"'with forLoop({self.count!r}):' was used outside a suite "
+                f"recording; it is only valid (directly or through helper "
+                f"functions) inside a @ccpp_suite class's run() method or "
+                f"group functions."
+            )
+        if self.schemes:
+            raise ValueError(
+                f"forLoop({self.count!r}, [...]) was given a scheme list and "
+                f"also used as a with-block; use one form or the other."
+            )
+        self._outer_recorder = _active_recorder
+        _active_recorder = self.schemes.append
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        global _active_recorder
+        outer, self._outer_recorder = self._outer_recorder, None
+        _active_recorder = outer
+        if exc_type is None:
+            if not self.schemes:
+                raise ValueError(
+                    f"'with forLoop({self.count!r}):' block recorded no "
+                    f"scheme calls."
+                )
+            outer(self)
+        return False
 
 
 def forLoop(
     count: int | str,
-    schemes: list[SchemeDescriptor | SubcycleDescriptor],
+    schemes: list[SchemeDescriptor | SubcycleDescriptor] | None = None,
 ) -> SubcycleDescriptor:
     """Declare a loop block: *schemes* repeated *count* times.
 
-    Corresponds to ``<subcycle loop="N">`` in a suite XML file.  May appear
-    anywhere in a group's scheme list. *schemes* may itself contain another
-    ``forLoop()`` result, nested to arbitrary depth, corresponding to a
-    nested ``<subcycle>``.
+    Corresponds to ``<subcycle loop="N">`` in a suite XML file.  Two forms:
+
+    - **List form** ``forLoop(count, [scheme, ...])``: may appear anywhere in
+      a group's scheme list.  *schemes* may itself contain another
+      ``forLoop()`` result, nested to arbitrary depth, corresponding to a
+      nested ``<subcycle>``.
+    - **Block form** ``with forLoop(count):`` (no *schemes*): usable inside
+      ``run()``, a group function, or any helper function called from one.
+      Every scheme call in the block body -- including through further
+      helpers, keyword overrides included -- forms the loop body; blocks may
+      nest.  The block is recorded into the enclosing group as one subcycle::
+
+          def rrtmgp_shortwave():
+              with forLoop("number_of_diagnostic_subcycles"):
+                  rrtmgp_sw_gas_optics()
+                  rrtmgp_sw_rte()
+
+      Inside ``run()`` the block lands in the parent group of the schemes it
+      contains; all of them must belong to the same group.
 
     Use this function when the loop count is a **CCPP standard name** resolved
     at runtime by the host model.  For a fixed integer count known at
@@ -324,9 +452,9 @@ def forLoop(
                  time, or a ``str`` CCPP standard name resolved at runtime.
         schemes: Ordered list of :class:`SchemeDescriptor` objects forming the
                  loop body -- may itself contain a nested :func:`forLoop`
-                 result for a nested ``<subcycle>``.
+                 result for a nested ``<subcycle>``.  Omit for the block form.
     """
-    return SubcycleDescriptor(count=count, schemes=schemes)
+    return SubcycleDescriptor(count=count, schemes=[] if schemes is None else schemes)
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +482,21 @@ def ccpp_scheme(cls) -> SchemeDescriptor:
         if hasattr(cls, ep):
             entry_points[ep] = getattr(cls, ep)
     return SchemeDescriptor(cls.__name__, entry_points)
+
+
+def ccpp_scheme_ref(name: str) -> SchemeDescriptor:
+    """Reference a scheme by name only, without loading its metadata.
+
+    The Python counterpart of an XML ``<scheme>name</scheme>`` entry: a suite
+    or package written with references contains no file paths.  The
+    metadata is supplied where it is for an XML suite -- by whoever runs the
+    generator: ``build_ir``/``export_suite``'s *scheme_files* (on a script's
+    command line, ``--scheme-files=a.meta,b.F90``), or ``ccpp_dsl --py ...
+    --scheme-files ...``, which merges ``.meta`` metadata itself::
+
+        hello_scheme = ccpp_scheme_ref("hello_scheme")
+    """
+    return SchemeDescriptor(name, {}, is_reference=True)
 
 
 def _table_descriptor_from_class(cls, table_type: str) -> TableDescriptor:
@@ -467,8 +610,9 @@ def _run_groups(
 
         def _make_scheme_caller(sname, ssd):
             def _caller(**kwargs):
-                overrides = {k: str(v) for k, v in kwargs.items()}
-                _add(scheme_to_group.get(sname, default_group), ssd, overrides)
+                # Through the active recorder (not _add directly) so a call
+                # inside a ``with forLoop(...)`` block lands in that block.
+                _active_recorder((ssd, {k: str(v) for k, v in kwargs.items()}))
 
             return _caller
 
@@ -481,17 +625,68 @@ def _run_groups(
             if isinstance(a, str):
                 raise TypeError(
                     f"range() does not accept a CCPP standard name '{a}'. "
-                    f"Use forLoop('{a}', [...]) in the group list instead of "
-                    f"a for loop in def run():"
+                    f"Use 'with forLoop(\"{a}\"):' (or forLoop('{a}', [...]) "
+                    f"in the group list) instead of a for loop in def run():"
                 )
         return range(*args)
 
     namespace["range"] = _checked_range
 
-    # Execute run_fn with recording callables overlaid on its original globals.
-    _types.FunctionType(run_fn.__code__, {**run_fn.__globals__, **namespace})()
+    # Every scheme call -- by-name callers above, or SchemeDescriptor.__call__
+    # for schemes reached through helper functions (whose globals are their
+    # own module's, not the overlay below) -- routes here and goes to its
+    # parent group.  A completed ``with forLoop(...)`` block goes to the
+    # parent group shared by every scheme inside it.
+    def _record_item(item) -> None:
+        if isinstance(item, SubcycleDescriptor):
+            targets = {scheme_to_group.get(sd.name, default_group)
+                       for sd in _subcycle_schemes(item)}
+            if len(targets) > 1:
+                raise ValueError(
+                    f"'with forLoop({item.count!r}):' in run() contains schemes "
+                    f"from several groups {sorted(targets)}; a loop must stay "
+                    f"within one group."
+                )
+            output.setdefault(targets.pop(), []).append(item)
+        else:
+            sd, overrides = item
+            _add(scheme_to_group.get(sd.name, default_group), sd, overrides)
+
+    # Execute run_fn with recording callables overlaid on its original
+    # globals.  Its closure is passed through so run() may also refer to
+    # locals of an enclosing function (those resolve via the closure, not the
+    # overlay, and record through SchemeDescriptor.__call__).
+    with _recording(_record_item):
+        _types.FunctionType(run_fn.__code__, {**run_fn.__globals__, **namespace},
+                            run_fn.__name__, run_fn.__defaults__,
+                            run_fn.__closure__)()
 
     return output
+
+
+def _subcycle_schemes(subcycle: SubcycleDescriptor):
+    """Yield every SchemeDescriptor inside *subcycle*, at any nesting depth."""
+    for item in subcycle.schemes:
+        if isinstance(item, SubcycleDescriptor):
+            yield from _subcycle_schemes(item)
+        elif isinstance(item, tuple):
+            yield item[0]
+        else:
+            yield item
+
+
+def _record_group_function(group_fn) -> list:
+    """Execute a group function, returning the items it recorded, in order.
+
+    Every scheme call made by *group_fn* -- directly or through helper
+    functions -- records into this one group, regardless of any group list
+    the scheme may also appear in; ``with forLoop(...)`` blocks record as
+    `SubcycleDescriptor` items.
+    """
+    items: list = []
+    with _recording(items.append):
+        group_fn()
+    return items
 
 
 def ccpp_suite(name: str, version: str = "1.0"):
@@ -511,7 +706,25 @@ def ccpp_suite(name: str, version: str = "1.0"):
     When ``run`` is absent the default behaviour (include every scheme from
     every group) is preserved.
 
+    **Group functions**: any other non-private function defined on the class
+    becomes a group named after the function.  Its body is executed at
+    IR-generation time, and every scheme it calls -- directly or through
+    ordinary helper functions (physics packages, host adapters) -- is
+    recorded into that group, in call order.  Group functions and list
+    groups may be mixed; groups keep class-definition order.  A class with
+    group functions may not also define ``run``.
+
     Examples::
+
+        # Group functions composing schemes through helper functions
+        def my_package():
+            hello_scheme()
+            temp_adjust()
+
+        @ccpp_suite("hello_world_suite", version="1.0")
+        class hello_world:
+            def physics():
+                my_package()
 
         # Default — include all schemes
         @ccpp_suite("hello_world_suite", version="1.0")
@@ -546,17 +759,32 @@ def ccpp_suite(name: str, version: str = "1.0"):
 
     def decorator(cls) -> SuiteDescriptor:
         raw_groups: dict[str, list[SchemeDescriptor]] = {}
+        group_fns: dict = {}
         for attr_name, val in cls.__dict__.items():
-            if not attr_name.startswith("_") and isinstance(val, list):
+            if attr_name.startswith("_"):
+                continue
+            if isinstance(val, list):
                 raw_groups[attr_name] = val
+            elif attr_name != "run" and inspect.isfunction(val):
+                group_fns[attr_name] = val
         run_fn = cls.__dict__.get("run")
+        if run_fn is not None and group_fns:
+            raise ValueError(
+                f"Suite '{name}' defines both run() and group function(s) "
+                f"{sorted(group_fns)}; use one or the other."
+            )
         if run_fn is not None:
             groups = _run_groups(run_fn, raw_groups)
         else:
-            groups = {
-                k: [item if isinstance(item, SubcycleDescriptor) else (item, {}) for item in v]
-                for k, v in raw_groups.items()
-            }
+            groups = {}
+            for attr_name in cls.__dict__:
+                if attr_name in raw_groups:
+                    groups[attr_name] = [
+                        item if isinstance(item, SubcycleDescriptor) else (item, {})
+                        for item in raw_groups[attr_name]
+                    ]
+                elif attr_name in group_fns:
+                    groups[attr_name] = _record_group_function(group_fns[attr_name])
         return SuiteDescriptor(name, version, groups)
 
     return decorator
@@ -650,7 +878,7 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescr
                 kessler_update()
 
         if __name__ == "__main__":
-            emit_ir(kessler_suite)
+            export_suite(kessler_suite)
 
     When a ``.meta`` file contains multiple scheme definitions (e.g.
     ``physics_tendency_updaters.meta`` defines ``apply_heating_rate``,
@@ -669,7 +897,7 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescr
 
     Returns:
         A :class:`SchemeDescriptor` ready for use in ``@ccpp_suite`` and
-        :func:`emit_ir`.
+        :func:`export_suite`.
     """
     from xdsl_ccpp.frontend.ccpp_xml import (
         parse_meta_file,  # lazy to avoid circular import
@@ -716,6 +944,78 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescr
     )
 
 
+def ccpp_scheme_from_source(
+    filename: str, name: str | None = None, root_dir: str | None = None,
+) -> SchemeDescriptor:
+    """Load a CCPP scheme descriptor from ``!$ccpp``-tagged Fortran source.
+
+    The ``.meta``-free counterpart of :func:`ccpp_scheme_from_meta`: argument
+    names, types, kinds, intents and ranks come from the Fortran declarations,
+    and ``standard_name``/``units``/``long_name``/``dim_names``/etc. from
+    ``!$ccpp [name] key = value`` comment tags beside them -- the convention
+    of ``examples/advection_nometa`` (see that directory's README)::
+
+        hello_scheme = ccpp_scheme_from_source("examples/helloworld_composite/hello_scheme.F90")
+
+    Uses the same extractor as the ``ccpp_generate_meta`` tool, then the same
+    loading path as :func:`ccpp_scheme_from_meta`, so a fully tagged source
+    yields the same descriptor as an equivalent hand-written ``.meta``.
+
+    Args:
+        filename: Path to a tagged scheme ``.F90`` file.
+        name:     As for :func:`ccpp_scheme_from_meta`.
+        root_dir: When given, derive the scheme's ``dependencies`` from its
+                  ``USE`` statements, resolved within this directory (see
+                  ``ccpp_generate_meta``'s ``--root-dir``).  Omitted: no
+                  ``dependencies`` are recorded.
+
+    Raises:
+        ValueError: if metadata could not be extracted from *filename*.
+    """
+    with _meta_from_source(filename, root_dir) as meta_path:
+        return ccpp_scheme_from_meta(meta_path, name)
+
+
+@contextmanager
+def _meta_from_source(filename: str, root_dir: str | None = None):
+    """Yield the path of a temporary ``.meta`` generated from tagged *filename*."""
+    import os
+    import tempfile
+
+    from xdsl_ccpp.tools.ccpp_generate_meta import generate_meta_for_file
+
+    meta_text = generate_meta_for_file(filename, root_dir)
+    if meta_text is None:
+        raise ValueError(
+            f"Could not extract CCPP metadata from {filename!r} "
+            f"(see the error printed above)."
+        )
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        meta_path = os.path.join(tmpdir, f"{stem}.meta")
+        with open(meta_path, "w") as f:
+            f.write(meta_text)
+        yield meta_path
+
+
+def _schemes_from_meta_file(meta_path: str) -> list[SchemeDescriptor]:
+    """Every scheme defined in *meta_path*, in file order."""
+    from xdsl_ccpp.frontend.ccpp_xml import parse_meta_file
+
+    names = [str(m.table_properties.getAttr("name"))
+             for m in parse_meta_file(meta_path, is_scheme=True)
+             if str(m.table_properties.getAttr("type")) == "scheme"]
+    return [ccpp_scheme_from_meta(meta_path, n) for n in names]
+
+
+def _load_scheme_file(filename: str) -> list[SchemeDescriptor]:
+    """Every scheme in a ``.meta`` file or a ``!$ccpp``-tagged Fortran file."""
+    if filename.lower().endswith((".f90", ".f")):
+        with _meta_from_source(filename) as meta_path:
+            return _schemes_from_meta_file(meta_path)
+    return _schemes_from_meta_file(filename)
+
+
 def ccpp_host_from_meta(filename: str) -> list[TableDescriptor]:
     """Load CCPP host metadata from a ``.meta`` file.
 
@@ -724,14 +1024,14 @@ def ccpp_host_from_meta(filename: str) -> list[TableDescriptor]:
     blocks (e.g. a DDT definition followed by a module), so the return value
     is always a list.
 
-    Pass the results in the *additional* argument of :func:`emit_ir` or
+    Pass the results in the *additional* argument of :func:`export_suite` or
     :func:`build_ir`::
 
         host_mod = ccpp_host_from_meta("kessler_host_mod.meta")
         host_sub = ccpp_host_from_meta("kessler_host_sub.meta")
 
         if __name__ == "__main__":
-            emit_ir(kessler_suite, additional=[*host_mod, *host_sub])
+            export_suite(kessler_suite, additional=[*host_mod, *host_sub])
 
     Args:
         filename: Path to a host ``.meta`` file.
@@ -779,7 +1079,7 @@ def ccpp_ddt_from_meta(filename: str) -> TableDescriptor:
             data_prep = [make_ddt, environ_conditions]
 
         if __name__ == "__main__":
-            emit_ir(ddt_suite, additional=[vmr_type])
+            export_suite(ddt_suite, additional=[vmr_type])
 
     Args:
         filename: Path to a ``.meta`` file containing a DDT definition.
@@ -863,6 +1163,13 @@ def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
                                  source_path=sd.source_path)
 
 
+def _register_scheme(seen_schemes: dict[str, SchemeDescriptor], sd: SchemeDescriptor) -> None:
+    """Record *sd* under its name; a full descriptor replaces a reference."""
+    existing = seen_schemes.get(sd.name)
+    if existing is None or (existing.is_reference and not sd.is_reference):
+        seen_schemes[sd.name] = sd
+
+
 def _group_item_to_op(
     item: tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor,
     seen_schemes: dict[str, SchemeDescriptor],
@@ -875,6 +1182,10 @@ def _group_item_to_op(
     `<subcycle>` support (see examples/var_compat/var_compatibility_suite.xml,
     ported from NCAR ccpp-framework's feature/capgen-v1, which nests three
     levels deep).
+
+    Loop-body entries from the list form are bare `SchemeDescriptor`s; those
+    from the ``with forLoop(...)`` block form are ``(descriptor, overrides)``
+    pairs, whose overrides are kept.
     """
     if isinstance(item, SubcycleDescriptor):
         inner_ops = []
@@ -882,35 +1193,62 @@ def _group_item_to_op(
             if isinstance(sd, SubcycleDescriptor):
                 inner_ops.append(_group_item_to_op(sd, seen_schemes))
             else:
-                inner_ops.append(SchemeOp(sd.name, None))
-                seen_schemes.setdefault(sd.name, sd)
+                overrides = None
+                if isinstance(sd, tuple):
+                    sd, overrides = sd
+                inner_ops.append(SchemeOp(sd.name, overrides or None))
+                _register_scheme(seen_schemes, sd)
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
     sd, overrides = item
-    seen_schemes.setdefault(sd.name, sd)
+    _register_scheme(seen_schemes, sd)
     return SchemeOp(sd.name, overrides or None)
 
 
 def build_ir(
     suites: SuiteDescriptor | list[SuiteDescriptor],
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
+    *,
+    scheme_files: list[str] | None = None,
+    host_files: list[str] | None = None,
 ) -> ModuleOp:
     """Build a :class:`~xdsl.dialects.builtin.ModuleOp` from one or more suite descriptors.
 
     Produces the same MLIR as the XML/meta frontend (:mod:`xdsl_ccpp.frontend.ccpp_xml`).
 
     Args:
-        suites:     One :class:`SuiteDescriptor` or a list of them.  When a
-                    list is given all suites are included in the same
-                    ``ModuleOp``, matching the behaviour of the XML frontend
-                    when ``--suites`` receives a comma-separated list.
-        additional: Extra DDT/module/host (or scheme) descriptors not already
-                    referenced inside any suite's groups.
+        suites:       One :class:`SuiteDescriptor` or a list of them.  When a
+                      list is given all suites are included in the same
+                      ``ModuleOp``, matching the behaviour of the XML frontend
+                      when ``--suites`` receives a comma-separated list.
+        additional:   Extra DDT/module/host (or scheme) descriptors not already
+                      referenced inside any suite's groups.
+        scheme_files: ``.meta`` or ``!$ccpp``-tagged Fortran files supplying
+                      metadata for :func:`ccpp_scheme_ref` references, matched
+                      by scheme name.  When given, every reference must be
+                      found in them; when omitted, references emit no
+                      metadata (``ccpp_dsl --py --scheme-files`` merges it).
+        host_files:   Host/module/DDT ``.meta`` files, appended after
+                      *additional*.
 
     Returns:
         A top-level ``ModuleOp`` ready to be passed to ``ccpp_opt``.
+
+    Raises:
+        ValueError: a scheme is defined twice across *scheme_files*, or a
+            reference has no metadata in them.
     """
     if isinstance(suites, SuiteDescriptor):
         suites = [suites]
+
+    loaded: dict[str, SchemeDescriptor] = {}
+    for path in scheme_files or []:
+        for sd in _load_scheme_file(path):
+            if sd.name in loaded:
+                raise ValueError(f"Scheme '{sd.name}' is defined more than once in scheme_files")
+            loaded[sd.name] = sd
+    additional = list(additional or [])
+    for path in host_files or []:
+        additional.extend(ccpp_host_from_meta(path))
 
     ir_ops = []
     seen_schemes: dict[str, SchemeDescriptor] = {}
@@ -923,12 +1261,22 @@ def build_ir(
             group_ops.append(GroupOp(group_name, ops))
         ir_ops.append(SuiteOp(suite.name, group_ops, suite.version))
 
-    # One TablePropertiesOp per unique scheme across all suites.
-    for sd in seen_schemes.values():
+    # One TablePropertiesOp per unique scheme across all suites; references
+    # take their metadata from scheme_files (or are left to the driver).
+    for name, sd in seen_schemes.items():
+        if sd.is_reference:
+            if name in loaded:
+                sd = loaded[name]
+            elif scheme_files:
+                raise ValueError(
+                    f"No metadata for scheme '{name}' in scheme_files {scheme_files}"
+                )
+            else:
+                continue
         ir_ops.append(_scheme_table_properties(sd))
 
     # Additional descriptors (DDTs, host modules, hosts, extra schemes).
-    for desc in additional or []:
+    for desc in additional:
         if isinstance(desc, SchemeDescriptor):
             ir_ops.append(_scheme_table_properties(desc))
         else:
@@ -944,22 +1292,48 @@ def build_ir(
     return ModuleOp(ir_ops)
 
 
-def emit_ir(
+def export_suite(
     suites: SuiteDescriptor | list[SuiteDescriptor],
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
 ) -> None:
-    """Build IR from one or more suites and print it to stdout.
+    """Hand the suite(s) defined in this script to the CCPP generator.
 
-    Intended to be called inside ``if __name__ == "__main__":`` in user scripts.
-    The output is identical to the XML/meta frontend and can be piped directly
-    into ``ccpp_opt``.
+    Call it at the end of a suite script, inside
+    ``if __name__ == "__main__":``.  It writes the suite description (MLIR,
+    identical to what the XML/meta frontend produces) to stdout, where the
+    generator -- ``ccpp_dsl --py`` or a ``| ccpp_opt`` pipeline -- reads it.
 
     Pass a list of :class:`SuiteDescriptor` objects to include multiple suites
     in one IR output, matching ``ccpp_xdsl --suites a.xml,b.xml ...``.
+
+    Metadata for :func:`ccpp_scheme_ref` references and for the host comes
+    from the script's command line, as the build system would pass it for
+    an XML suite (see :func:`build_ir`)::
+
+        python3 suite.py --scheme-files=a.meta,b.F90 --host-files=host.meta
     """
     # This script has no argparse of its own; ccpp_dsl.py's --py mode
     # forwards --legacy-mode as a bare token on this process's own argv
     # (mirroring ccpp_param()'s existing sys.argv-scanning convention).
     # Must run before build_ir() constructs any ArgumentOp below.
     set_legacy_mode("--legacy-mode" in sys.argv)
-    print(build_ir(suites, additional))
+    print(build_ir(suites, additional,
+                   scheme_files=_argv_file_list("--scheme-files"),
+                   host_files=_argv_file_list("--host-files")))
+
+
+def _argv_file_list(option: str) -> list[str] | None:
+    """Comma-separated paths from a ``option=a,b`` token on argv, if present."""
+    prefix = f"{option}="
+    for token in sys.argv[1:]:
+        if token.startswith(prefix):
+            return [p for p in token[len(prefix):].split(",") if p]
+    return None
+
+
+def emit_ir(
+    suites: SuiteDescriptor | list[SuiteDescriptor],
+    additional: list[TableDescriptor | SchemeDescriptor] | None = None,
+) -> None:
+    """Older name for :func:`export_suite`, kept for existing scripts."""
+    export_suite(suites, additional)
