@@ -545,3 +545,54 @@ suite that uses them. With packages:
 Stage 1 delivers the first point, with identical generated Fortran. Stage 2's
 encapsulation makes the second point real, by taking each package's standard
 names out of the global namespace.
+
+---
+
+## 10. PR breakdown
+
+Group sub-steps into PRs that are independently useful, reviewable in one
+sitting, and leave `main` green. That avoids both one PR per sub-step and
+one PR per stage (Stage 2 is 15-50 days). The precedent is
+`dup-meta-shadow-elim` (4 PRs for 7 phases, #136-#140) and
+`scheme-io-capture` (3 PRs, #141-#143).
+
+**Rules for PR boundaries:**
+1. **No existing output changes.** Every PR leaves generated Fortran
+   byte-identical for all existing XML and Python examples. This is the
+   regression bar that makes each PR safe to merge.
+2. **End a PR before each design decision.** Merge, look at the result, then
+   decide with real code in hand.
+3. **High-risk areas get their own PR** — GPU residency especially, since it
+   needs real nvhpc verification.
+
+### Stage 1 — 2 PRs
+
+| PR | Contents | Why it is separate |
+|---|---|---|
+| 1 | 1a recording context, 1b group functions, 1c `with forLoop`, 1d docs, 1f unit tests | Pure `py_api` mechanics; backward-compatible; tested in isolation |
+| 2 | 1e RRTMGP composite example, plus the IR byte-identity check against `suite_rrtmgp_py.py` | Depends on the atmospheric_physics checkout; reviewed as a design showcase (package boundaries); may iterate |
+
+Checkpoint after PR 2: reassess the design before starting Stage 2.
+
+### Stage 2 — about 6-7 PRs
+
+| PR | Contents | Notes |
+|---|---|---|
+| 3 | 2a composite op + 2e flatten lowering | Output identical to Stage 1: a pure refactor into new IR |
+| 4 | 2c scoped resolution + 2d hook scoping rule + name mangling | The core and the largest; split host-match scoping from interstitial/promotion scoping if the diff grows |
+| 5 | 2b public interface (declared or inferred) + validation | Coordinate with the upstream scheme splits (§7) |
+| 6 | 2i run-time conditional | Independent; can land at any time, even alongside Stage 1 |
+| 7 | 2g GPU residency across the composite boundary | Isolated because of the risk; requires a real GPU run |
+| 8 | 2f package cap; possibly 2 PRs (the cap itself, then persistent state and instances) | Merge PR 4 first, so the "hooks inside a package cap" decision is made with scoping in place |
+| — | 2h CAM-SIMA integration | Lands in the CAM-SIMA repo, not xdsl-ccpp |
+
+### Upstream atmospheric_physics (separate repo, own schedule)
+
+- **`iter_num` fix:** tiny, independent, a real latent bug — can be sent now
+  rather than waiting for this plan.
+- **The four scheme splits (§7):** later, coordinated with Stage 2's
+  interface work (PR 5).
+
+**Total:** about 2 PRs for Stage 1 and 6-8 for Stage 2. Each is comparable in
+size to recent PRs (#136-#146), and each has a clear "nothing existing
+changed" check.
