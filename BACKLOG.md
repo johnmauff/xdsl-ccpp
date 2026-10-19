@@ -32,16 +32,12 @@ measured data, and will drift as items are reassessed.
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
+| `composite-scheme` — Stage 1 (Python composition frontend, flattening) | 4-7 days | S-M |
+| `composite-scheme` — Stage 2 (encapsulation) | 15-25 days flatten-only lowering; 25-50 days with package cap + CAM-SIMA integration | L-XL |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
-| `scheme-io-capture-tolerance-config` | 2-4 days | S |
-| `scheme-io-capture-compare-diagnostics` | 2-4 days | S |
 | `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
-| `scheme-io-capture-gpu-residency` | 2-4 days | S |
-| `scheme-io-capture-gpu-verify` | 3-6 days | S-M |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
-| `scheme-io-capture-task-volume` | 3-6 days | S-M |
-| `scheme-io-capture-multi-timestep` | 5-10 days | M |
 | `scheme-io-capture-netcdf` | 6-10 days | M |
 | `scheme-io-capture-ctest-automation` | 6-10 days (genuinely new ground — this repo has zero precedent for a dynamically-registered CMake test today) | M |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
@@ -344,7 +340,9 @@ smallest to largest:
   with composable Python, e.g. `dry_basis`/`theta_basis` combinators) —
   ~280 lines directly, bigger value in removing drift risk between
   `suite_cam4.xml`/`suite_cam7.xml` and their standalone-suite sources.
-  CHANGELOG.md L8453.
+  CHANGELOG.md L8453. `composite-scheme` Stage 1 (below) supplies this
+  item's composition mechanism (`dry_basis`/`theta_basis` become ordinary
+  `with`-combinators); expect the residual estimate to shrink once it lands.
 - `dup-meta-shadow-elim` — **Eliminate `.meta` as a hand-maintained shadow file** — the big one:
   tag `standard_name`/`units`/etc. directly in Fortran source comments
   (`!$ccpp [name] key = value`), generate `.meta` mechanically. **Stage 1
@@ -626,38 +624,11 @@ real CAM-SIMA builds specifically, which already link NetCDF
 everywhere. Not v1 scope; revisit once v1's real usage (and the "where do
 captured fixtures live" question below) make the tradeoff concrete.
 
-**ID: `scheme-io-capture-gpu-residency`. v2 follow-on: GPU residency
-support for generated test drivers.** Confirmed, not hypothetical: the generated test-driver program has zero
-awareness of `memory_space=device` arguments today —
-`TestDriverParam`/`_build_test_driver_params` never consult
-`cap_shared._device_arg_names`, so every array is declared as a plain
-host `allocatable` with no `!$acc enter data copyin(...)`/`declare`/
-`update device` anywhere in the driver. `kessler.F90`'s own
-`kessler_run`/`kessler_runv2` has hand-written `!$acc present(...)`
-checks inside it; compiling the generated driver with `nvfortran -acc`
-(the deferred GPU verification step below) would very likely crash with
-the same "FATAL ERROR: data in PRESENT clause was not found" failure
-this example's own `CMakeLists.txt` already documents for its other
-under-instrumented drivers (`kessler_hand.exe`/`kessler_cxx.exe`/
-`kessler_cxx_host.exe`) — this CPU/gfortran-only v1 verification never
-exercised it since `!$acc` is inert without `-acc`. Fix is bounded: add
-an `is_device` field to `TestDriverParam` (populated from the same
-`_device_arg_names` lookup `apply()` already does), emit
-`!$acc enter data copyin(...)` for device-resident arrays before each
-phase's call (and `exit data delete(...)` at the end) when `--directive`
-was set at generation time, mirroring the real cap's own `directive_op`/
-sync pattern. Should land before, or alongside, the GPU/nvhpc
-verification item below — that item can't meaningfully run without it.
+**ID: `scheme-io-capture-gpu-residency`. Resolved (2026-10-18).** CHANGELOG.md L12524.
 
-**ID: `scheme-io-capture-gpu-verify`. v2 follow-on: GPU/nvhpc
-verification of the whole capture+driver pipeline.** v1's own real,
-end-to-end verification (2026-10-17, kessler,
-build/run/break/confirm-FAIL/revert/confirm-PASS) was CPU/gfortran only,
-deliberately deferred away from GPU — the actual motivating use case
-(catching CPU→GPU port regressions) for this whole feature is still
-unverified. Needs a PBS job on a GPU-bearing Derecho compute node with
-the `nvhpc` module (not an interactive login-node step), and depends on
-the GPU-residency-support item above landing first.
+**ID: `scheme-io-capture-gpu-verify`. Resolved (2026-10-18)** — real
+`nvfortran -acc` run on an A100, confirmed with `nsys` (real
+`cuLaunchKernel`/memcpy activity, not a host fallback). CHANGELOG.md L12524.
 
 **ID: `scheme-io-capture-ctest-automation`. v2 follow-on: full CMake/ctest
 automation.** Already noted in this
@@ -687,34 +658,12 @@ fixture generation to a local, gitignored, explicitly-opt-in step.
 Interacts with the NetCDF item above (one consolidated file per call
 instead of one per argument would change the size/count math).
 
-**ID: `scheme-io-capture-multi-timestep`. v2 follow-on: multi-timestep
-capture.** The generated driver always
-reads `call_count=1` (the fixture's first, and today only, real write)
--- a scheme bug that only manifests after several timesteps, through
-state accumulated across calls via `inout` arguments, would never be
-caught by a single-call replay. Would need the runtime library's
-existing tag-keyed call counter (already multi-call-aware,
-`ccpp_capture_mod.F90`) to be exercised across a short real timestep
-sequence, and the generated driver extended to replay that same
-sequence call-by-call, not just once.
+**ID: `scheme-io-capture-multi-timestep`. Resolved (2026-10-18, PR #145).** CHANGELOG.md L12473.
 
-**ID: `scheme-io-capture-compare-diagnostics`. v2 follow-on: richer
-compare diagnostics.** `ccpp_capture_compare_*`
-currently returns a bare pass/fail logical; a failed comparison in a
-generated driver only ever prints the variable name, not how badly or
-where it diverged. Printing max/mean absolute (or relative) error, and
-the index of the first mismatching element, would make a driver FAIL
-actually useful for diagnosing a real GPU-port bug, not just confirming
-one exists.
+**ID: `scheme-io-capture-compare-diagnostics`. Resolved (2026-10-18, PR #145).** CHANGELOG.md L12473.
 
-**ID: `scheme-io-capture-tolerance-config`. v2 follow-on: configurable
-tolerance.** `_TEST_DRIVER_TOLERANCE`
-(`1.0e-10_kind_phys`) is a single value hardcoded into every generated
-driver today, uniform across every real-valued comparison in a scheme.
-Matters once this is applied beyond kessler's deterministic math to
-noisier schemes where a single global tolerance is either too tight
-(spurious FAILs) or too loose (misses a real regression) — likely wants
-either a per-invocation CLI tolerance or per-variable overrides.
+**ID: `scheme-io-capture-tolerance-config`. Resolved (2026-10-18, PR #145
++ a runtime-override follow-up).** CHANGELOG.md L12473.
 
 **ID: `scheme-io-capture-staleness-check`. v2 follow-on: fixture/signature
 staleness detection.** A captured
@@ -747,19 +696,52 @@ good trade against shipping v1 for schemes that actually exist. Revisit
 if `--capture-scheme` is ever pointed at a scheme that genuinely uses
 `optional`.
 
-**ID: `scheme-io-capture-task-volume`. v2 follow-on: parallel/volume
-management.** `ccpp_capture_mod.F90`'s own header comment already flags
-this: true multi-MPI-task file-name disambiguation is deliberately not
-included in v1 (the real v1 verification target, `examples/kessler`,
-runs single-process) -- today every capture file's name depends only on
-its tag and call count, so two MPI tasks writing the same tag would
-clobber each other's files. Also covers the related, not-yet-needed
-volume-control knobs a real multi-task/multi-timestep deployment would
-want: an env-var-gated "capture only call N" or "only task 0" mode, to
-keep a long-running capture-enabled build from generating unbounded
-fixture data. Overlaps with `scheme-io-capture-multi-timestep` (both
-touch the call-counter/volume question) but is a distinct concern: that
-item is about the generated *driver* replaying more than one call; this
-one is about the *capture* side not clobbering itself across real
-parallel tasks.
+**ID: `scheme-io-capture-task-volume`. Resolved (2026-10-18, PR #144)** —
+the `flag_for_mpi_root` guard closes both halves of this item's original
+scope (the write race AND unbounded multi-task volume, by restricting
+capture to one task) with a simpler mechanism than the task-id-in-
+filename approach originally envisioned. CHANGELOG.md L12426.
 
+
+## Someday-maybe: composite schemes (packages with slots and hooks)
+
+ID: `composite-scheme`. **Proposal, not started** (logged 2026-10-19).
+Full design, worked RRTMGP example and staged plans:
+`composite_scheme_plan.md`. CHANGELOG.md L12572.
+
+Let a physics parameterization be written as an exchangeable **package**
+(composite scheme): a Python function whose body composes schemes, with
+**slots** (swappable science components with package defaults, e.g. cloud
+optics, McICA/overlap) and **hooks** (host code the host must supply, e.g.
+diagnostics, gas source). The package is called from a host-owned adapter
+and from group functions (`def physics_after_coupler()`). Motivated by the
+RRTMGP block of `suite_cam4.xml`: 40 entries, only 11 doing radiative
+transfer.
+
+- **Stage 1 (S-M, 4-7 days)** — frontend-only composition in `py_api.py`:
+  callable `SchemeDescriptor`s through a recording context, group
+  functions, and `with forLoop("std_name"):`. Generated Fortran is
+  unchanged. Exit criterion: IR byte-identical to `suite_rrtmgp_py.py`.
+- **Stage 2 (L-XL)** — encapsulation:
+  - a `ccpp.composite` op;
+  - a declared or inferred public interface;
+  - scoped package → suite → host name resolution;
+  - a hook scoping rule;
+  - flatten-with-mangling lowering;
+  - optionally a per-composite package cap (package-owned state, instances);
+  - GPU residency across the boundary;
+  - CAM-SIMA `--py` integration;
+  - a run-time conditional construct.
+
+  Cross-group agreement on the public radiation interface is governance,
+  not a sizable task.
+
+Upstream atmospheric_physics prerequisites (not xdsl tooling, recorded in
+the plan doc):
+- split the four mixed host/package schemes (`rrtmgp_pre`, `rrtmgp_post`,
+  `rrtmgp_inputs`, `*_calculate_fluxes`);
+- fix the latent `iter_num` column-block bug in
+  `rrtmgp_sw_gas_optics`/`rrtmgp_sw_rte`/`rrtmgp_lw_gas_optics`.
+
+SW/LW diagnostic-loop fusion was deliberately rejected (different
+radiation frequencies).

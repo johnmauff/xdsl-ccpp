@@ -1,0 +1,547 @@
+# Composite schemes: packages with slots and hooks
+
+Backlog ID: `composite-scheme` (see `BACKLOG.md`). Status: proposal, not
+started (logged 2026-10-19). Stage 1 is sized S-M (4-7 days); Stage 2 is
+sized L (15-25 days, flatten-only lowering) to XL (25-50 days, with a real
+package cap and CAM-SIMA integration).
+
+This document is standalone design background in the same spirit as
+`multilanguage_plan.md`: motivation, vocabulary, a worked example, and the
+staged plan. The backlog carries only the sized items and a pointer here.
+
+---
+
+## 1. Motivation
+
+### 1.1 The RRTMGP block of `suite_cam4.xml`
+
+The radiation section of `atmospheric_physics`' `suites/suite_cam4.xml`
+(about L245-301) has **40 scheme entries**; the whole suite has 222. Only 11
+of the 40 do radiative transfer. Classified by role:
+
+| Role | Entries | Code lines | `.meta` args |
+|---|---|---|---|
+| Radiative-transfer science (gas/cloud optics, McICA, solar variability, RTE, heating rates) | 11 | 1,895 | 219 |
+| Glue: layout translation, object lifetime, control, setup, between-step carry-over | 19 (17 distinct) | 1,683 | 323 |
+| Diagnostics (`sima_diagnostics/*`) | 5 | 691 | 135 |
+| Neighbours (`aerosol_optics`, `tropopause_find`, `solar_irradiance_data`) and state update (`apply_heating_rate`, `geopotential_temp`) | 5 | — | — |
+
+The glue is roughly the same amount of code as the science and carries
+about 50% more interface. Glue also appears inside the science schemes
+(day-column gathers and `ktopcam`/`ktoprad` offsets in McICA and cloud
+optics), so the true share is higher.
+
+### 1.2 Why the glue becomes schemes
+
+Three independent causes:
+
+1. **Data-passing granularity.** The only data path the framework sees is
+   standard-named scheme arguments. Every computation between two library
+   calls must therefore be a scheme, and every intermediate value needs a
+   standard name and a `.meta` entry in each producer and consumer. Examples:
+   gathering sunlit columns (`idxday`), the extra layer above the model top,
+   reordering RRTMG→RRTMGP bands, MMR→VMR conversion, and allocating and
+   freeing RRTMGP objects.
+2. **No run-time control in the SDF.**
+   - There is no loop index, so a scheme (`rrtmgp_subcycle`) keeps its own
+     counter, and it appears twice.
+   - There is no scope that controls a variable's lifetime, so
+     `rrtmgp_pre`/`rrtmgp_post` exist to allocate and free objects.
+   - capgen's suite-level `<init>` allows only one scheme, so init-only
+     `*_setup` schemes sit in the run list just to get their `_init` called.
+3. **CAM-SIMA conventions, which no language changes.** Diagnostics live in
+   separate schemes, and process-split state updates follow each process.
+
+Schemes also share data outside that path: run-phase schemes `use`
+module tables filled by init-only setup schemes (`rrtmgp_cloud_optics_setup`,
+`rrtmgp_sw_solar_var_setup`). Those dependencies are invisible to the
+generator. It cannot order them, check them, or make them GPU-resident.
+
+### 1.3 The exchange-unit argument
+
+CCPP's original goal was exchanging physics between modelling groups. The
+40-scheme decomposition does not serve that goal. Its internal interfaces
+are not physical concepts that other groups could adopt piecemeal: RRTMGP
+wrapper objects, `ktoprad`, `idxday`, `iteration_number_for_radiation_subcycle`.
+Much of the glue is also CAM-specific (visible/near-IR albedo mapping, the
+extra top layer at 1.01 Pa, coupler flux splits). The unit worth exchanging
+is the **parameterization**: a package with a small public interface, whose
+internals are still composed of schemes, and which exposes the
+sub-components groups actually differ on as swappable slots.
+
+---
+
+## 2. Vocabulary
+
+- **Generated cap**: the mechanical adapter between host and scheme code.
+  It matches variables by standard name, converts units and kinds, slices
+  arrays and moves GPU data. It is already produced by xdsl_ccpp.
+- **Package (composite scheme)**: the exchangeable unit. From outside it
+  looks like one scheme with a public interface. Inside, it is a mini-suite
+  with private intermediate (interstitial) variables.
+- **Slot**: a swappable science component inside a package (cloud optics,
+  McICA/overlap, aerosol-optics translation). The package supplies a
+  default, and the host may override it.
+- **Hook**: host code the package calls at a defined point (diagnostics,
+  gas-concentration source, solar input, tropopause, loop advance). It has
+  no default, and the host must supply it.
+- **Host adapter**: hand-written, host-owned code in front of and behind the
+  package. It holds host *policy and science*: when radiation runs, carrying
+  heating between radiation steps, coupler output, diagnostics. Each feature
+  the generator gains moves more mechanical work into the generated cap; the
+  remainder stays here.
+
+---
+
+## 3. Worked example (Stage 1 syntax)
+
+The three files below flatten to exactly the scheme order of
+`examples/atmospheric_physics/suite_rrtmgp_py.py`. SW and LW are **separate
+package entry points**. They run at scientifically different frequencies
+(`iradsw` and `iradlw` give independent `dosw`/`dolw` in `rrtmgp_pre`), so
+when each runs is host policy, not something to hide inside the package.
+
+### 3.1 `rrtmgp_package.py` (owned by atmospheric_physics)
+
+```python
+"""RRTMGP radiation package -- the exchangeable unit."""
+from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, forLoop
+
+_R = "../atmospheric_physics/schemes/rrtmgp"
+def _s(name, sub=""):
+    return ccpp_scheme_from_meta(f"{_R}/{sub}{name}.meta")
+
+# --- core: fixed parts of the package ---------------------------------
+variables          = _s("rrtmgp_variables")
+inputs             = _s("rrtmgp_inputs")
+inputs_setup       = _s("rrtmgp_inputs_setup")
+sw_solar_var_setup = _s("rrtmgp_sw_solar_var_setup")
+sw_gas_optics_pre  = _s("rrtmgp_sw_gas_optics_pre")
+sw_gas_optics      = _s("rrtmgp_sw_gas_optics")
+sw_solar_var       = _s("rrtmgp_sw_solar_var")
+sw_rte             = _s("rrtmgp_sw_rte")
+sw_fluxes          = _s("rrtmgp_sw_calculate_fluxes")
+sw_heating         = _s("rrtmgp_sw_calculate_heating_rate")
+lw_gas_optics_pre  = _s("rrtmgp_lw_gas_optics_pre")
+lw_gas_optics      = _s("rrtmgp_lw_gas_optics")
+lw_rte             = _s("rrtmgp_lw_rte")
+lw_fluxes          = _s("rrtmgp_lw_calculate_fluxes")
+lw_heating         = _s("rrtmgp_lw_calculate_heating_rate")
+
+# --- default implementations for the slots ----------------------------
+cloud_optics_setup = _s("rrtmgp_cloud_optics_setup", "utils/")
+sw_cloud_optics    = _s("rrtmgp_sw_cloud_optics")
+lw_cloud_optics    = _s("rrtmgp_lw_cloud_optics")
+sw_mcica           = _s("rrtmgp_sw_mcica_subcol_gen")
+lw_mcica           = _s("rrtmgp_lw_mcica_subcol_gen")
+sw_aerosols        = _s("rrtmgp_sw_aerosols")
+lw_aerosols        = _s("rrtmgp_lw_aerosols")
+
+
+def rrtmgp_prepare(*, tropopause, optics_setup=cloud_optics_setup):
+    optics_setup()               # slot
+    tropopause()                 # hook
+    variables()
+    inputs()
+
+
+def rrtmgp_shortwave(*, n_calls, next_call, gas_source, solar_source,
+                     cloud_diagnostics, diagnostics,
+                     clouds=sw_cloud_optics, overlap=sw_mcica,
+                     aerosols=sw_aerosols):
+    clouds()                     # slot
+    overlap()                    # slot
+    cloud_diagnostics()          # hook
+    with forLoop(n_calls):       # diagnostic calls (gas sets)
+        gas_source()             # hook
+        sw_gas_optics_pre()
+        sw_gas_optics()
+        solar_source()           # hook
+        sw_solar_var()
+        aerosols()               # slot
+        sw_rte()
+        sw_fluxes()
+        sw_heating()
+        diagnostics()            # hook
+        next_call()              # hook
+
+
+def rrtmgp_longwave(*, n_calls, next_call, gas_source, diagnostics,
+                    clouds=lw_cloud_optics, overlap=lw_mcica,
+                    aerosols=lw_aerosols):
+    clouds()
+    overlap()
+    with forLoop(n_calls):
+        gas_source()
+        lw_gas_optics_pre()
+        lw_gas_optics()
+        aerosols()
+        lw_rte()
+        lw_fluxes()
+        lw_heating()
+        diagnostics()
+        next_call()
+
+
+def rrtmgp_init_only():
+    # Init-phase-only schemes. Kept at their current SDF position so the
+    # Stage 1 output stays byte-identical; Stage 2 moves them to package init.
+    inputs_setup()
+    sw_solar_var_setup()
+```
+
+### 3.2 `cam_radiation_adapter.py` (owned by CAM-SIMA)
+
+```python
+"""CAM-SIMA host adapter for RRTMGP: policy, coupler and diagnostics."""
+from rrtmgp_package import (rrtmgp_prepare, rrtmgp_shortwave,
+                            rrtmgp_longwave, rrtmgp_init_only)
+from cam_schemes import (rrtmgp_pre, rrtmgp_constituents, solar_irradiance_data,
+                         tropopause_find, rrtmgp_cloud_diagnostics,
+                         rrtmgp_sw_diagnostics, rrtmgp_lw_diagnostics,
+                         rrtmgp_subcycle, rrtmgp_dry_static_energy_tendency,
+                         calculate_net_heating, rrtmgp_post, rrtmgp_diagnostics,
+                         apply_heating_rate, geopotential_temp)
+
+NDIAG = "number_of_diagnostic_subcycles"   # CAM's forcing-diagnostic calls
+
+def cam_rrtmgp(*, sw_slots=None, lw_slots=None):
+    rrtmgp_pre()                           # SW/LW frequency policy (dosw/dolw)
+    rrtmgp_prepare(tropopause=tropopause_find)
+    rrtmgp_shortwave(n_calls=NDIAG, next_call=rrtmgp_subcycle,
+                     gas_source=rrtmgp_constituents,
+                     solar_source=solar_irradiance_data,
+                     cloud_diagnostics=rrtmgp_cloud_diagnostics,
+                     diagnostics=rrtmgp_sw_diagnostics, **(sw_slots or {}))
+    rrtmgp_longwave(n_calls=NDIAG, next_call=rrtmgp_subcycle,
+                    gas_source=rrtmgp_constituents,
+                    diagnostics=rrtmgp_lw_diagnostics, **(lw_slots or {}))
+    rrtmgp_init_only()
+    rrtmgp_dry_static_energy_tendency()    # qrs carry-over between radiation steps
+    calculate_net_heating()
+    rrtmgp_post()
+    rrtmgp_diagnostics()
+    apply_heating_rate()                   # CAM process-split state update
+    geopotential_temp()
+```
+
+### 3.3 Suite file
+
+```python
+@ccpp_suite("rrtmgp", version="1.0")
+class rrtmgp:
+    def physics_after_coupler():
+        initialize_constituents()
+        cam_rrtmgp()
+
+@ccpp_suite("rrtmgp_alt_overlap", version="1.0")    # swapping one slot
+class rrtmgp_alt_overlap:
+    def physics_after_coupler():
+        initialize_constituents()
+        cam_rrtmgp(sw_slots={"overlap": exp_random_sw},
+                   lw_slots={"overlap": exp_random_lw})
+```
+
+In Stage 1, frequency gating still happens inside each scheme
+(`if (.not. dosw) return`). Separate entry points make it possible to gate
+whole SW/LW calls in the adapter once a run-time conditional construct exists
+(Stage 2, item 2i).
+
+---
+
+## 4. Findings from writing the example
+
+1. **Hooks are needed as well as slots.** Eight hooks exist only because
+   host work is currently interleaved inside the radiation sequence:
+   diagnostics inside the loops, the per-iteration constituent copy, the
+   solar data read, `tropopause_find`, and the loop counter. The hook list
+   is the package's call-level public interface, alongside its data-level
+   interface.
+2. **Four schemes mix package and host concerns**: `rrtmgp_pre`,
+   `rrtmgp_post`, `rrtmgp_inputs` and `*_calculate_fluxes` (detail in §7).
+   Notably, `shortwave_net_radiative_flux` is produced by the scatter in
+   `rrtmgp_sw_calculate_fluxes` (which also does CAM coupler work) and
+   consumed by the package's own `rrtmgp_sw_calculate_heating_rate`.
+3. **The SW and LW loops stay separate.** From the metadata, they share only
+   the loop counter and the constituent copy, so they *could* be fused. They
+   are kept separate deliberately: SW and LW run at scientifically different
+   frequencies, and separate entry points let the host own that policy.
+4. **A latent column-block bug exists in the RRTMGP schemes.**
+   `rrtmgp_sw_gas_optics`, `rrtmgp_sw_rte` and `rrtmgp_lw_gas_optics` compute
+   `iCol = (iter_num-1)*rrtmgp_phys_blksz + 1`. `iter_num` is bound to
+   `iteration_number_for_radiation_subcycle` (the diagnostic-call index),
+   while `rrtmgp_phys_blksz` is all columns. On diagnostic call 2 the column
+   range is empty. The bug is latent today because `ndiags` defaults to 1
+   and only `rad_climate` exists. The generated cap confirms the binding
+   (`rrtmgp_sw_gas_optics_run(..., iter_num=diag_cur, ncol=nday, ...)`).
+5. **Stage 1 shrinks the authoring, not the run-time calls.** About 115
+   lines of structured Python replace a flat 60-entry list. Generated
+   Fortran is identical; the gains are structure, reuse and swappable slots.
+
+---
+
+## 5. Stage 1 — Python composition frontend (S-M, ~4-7 days)
+
+Frontend only, flattening at IR-generation time. No changes to the
+generator's transformation passes; generated Fortran is unchanged.
+
+| Step | Work | File(s) |
+|---|---|---|
+| 1a | **Recording context.** `SchemeDescriptor.__call__(**overrides)` appends to the active recorder, reusing `_run_groups`' `_add`/override semantics. Calling outside a recorder raises a clear error. Enables ordinary Python functions (packages, adapters) that call schemes. | `xdsl_ccpp/frontend/py_api.py` (`_run_groups`, ~L408-494) |
+| 1b | **Group functions.** In `ccpp_suite`, non-private plain functions other than `run` become groups named after the function. List-attribute groups and `run()` keep working. | `py_api.py` (`ccpp_suite`, ~L497-560) |
+| 1c | **`with forLoop("std_name"):`** context-manager form that records a `SubcycleDescriptor`; lowering reuses `_group_item_to_op` unchanged. Keeps the existing `range("std_name")` error. | `py_api.py` |
+| 1d | **Slots and hooks**: keyword defaults and required keyword-only arguments. Pure Python, no framework code. Documented in the `py_api` module docstring. | `py_api.py` docstring |
+| 1e | **Example**: §3's three files. | `examples/atmospheric_physics/suite_rrtmgp_composite_py.py` (+ package and adapter modules) |
+| 1f | **Tests**: calling a descriptor outside a recorder errors; group functions; nested helper composition; `with forLoop`; a slot override changes the recorded scheme. Self-contained on helloworld/kessler metas. | `tests/unit/test_py_api_composition.py` |
+
+**Exit criterion:** the composite example's IR (and generated Fortran) is
+byte-identical to `suite_rrtmgp_py.py`'s; existing Python examples are
+unchanged. The atmospheric_physics example needs the sibling
+`atmospheric_physics` checkout, as the existing `suite_*_py.py` examples
+already do.
+
+**Relation to `dup-suite-composition-dsl`:** Stage 1 supplies that item's
+mechanism. `dry_basis`/`theta_basis` become ordinary `with`-combinators, so
+the residual work there should shrink once Stage 1 lands.
+
+---
+
+## 6. Stage 2 — encapsulation (L to XL)
+
+Turns the flattened composition into real packages: private names, a declared
+interface, and optionally a separately generated package cap.
+
+| Step | Work | Size |
+|---|---|---|
+| 2a | **IR**: a `ccpp.composite` op (region of schemes, subcycles and nested composites, plus slot/hook bindings) in `xdsl_ccpp/dialects/ccpp.py`. `@ccpp_composite` in `py_api` records into it instead of flattening. | S |
+| 2b | **Public interface**: either a declared table (`type = composite`) or inferred (internal inputs not produced internally, plus declared exports). A validation pass checks that every internal argument resolves to the interface or a private variable. With source-derived metadata (`dup-meta-shadow-elim`/`direct-fortran-ingest`), inference avoids yet another hand-maintained shadow file. | M |
+| 2c | **Scoped name resolution**, package → suite → host, through `host_var_match_pass.py`, `generate-arg-ownership` (a new private ownership kind), interstitial promotion in `suite_cap.py`, `run_dispatch.py`, and constituents. | M-L |
+| 2d | **Hook scoping rule**: hooks resolve in host scope plus the composite's exported interface only. | S-M |
+| 2e | **Lowering A — flatten with name mangling** into the existing suite-cap path. Output equals Stage 1's apart from private names. | S-M |
+| 2f | **Lowering B — per-composite package cap**: its own phase entry points, package-owned persistent state (k-distribution, lookup tables, today's module-variable side channels), instances via the existing `ccpp_t` support. **Open decision:** hooks inside a separately generated cap need procedure arguments, or must be eliminated by the upstream scheme splits (§7). | L |
+| 2g | **GPU residency across the boundary** (`gpu_ccpp_cap_pass.py`, `gpu_data_pass.py`). Package-private data could stay device-resident for the package's lifetime. Highest-risk area, given the history of multi-group residency bugs. | M |
+| 2h | **CAM-SIMA integration**: `--py` support in `cime_config/cam_autogen.py`; private ownership excluded from `resolved_vars.json` and `src/data/resolved_var_xdsl_ccpp.py` (which already drops `suite_owned`); FPHYStest rrtmgp. | M |
+| 2i | **Run-time conditional construct** (e.g. `with when("do_shortwave_radiation"):`), so the adapter can gate whole SW/LW entry points and schemes drop their `if (.not. dosw) return` boilerplate. | S |
+
+**Totals:** 2a-2e + 2i give real encapsulation with unchanged generated
+Fortran, about **L (15-25 days)**. Adding 2f-2h gives an exchangeable
+compiled package integrated in CAM-SIMA, about **XL (25-50 days)**.
+
+**Not sizable:** agreeing a public radiation interface across modelling
+groups (standard names, units, required vs host-specific outputs). This is
+governance, like the fixture-storage decision in `scheme-io-capture`.
+
+---
+
+## 7. Upstream prerequisites (atmospheric_physics, not xdsl tooling)
+
+These change atmospheric_physics schemes, so they go upstream as ESCOMP PRs,
+separately from xdsl-ccpp work. Stage 1 does not need them (hooks absorb the
+interleaving). They make Stage 2's boundary clean and reduce the hook count.
+
+**Rule for every split:** anything that needs RRTMGP internals (band layout,
+the k-distribution temperature range, the RRTMGP objects) goes into the
+package; anything that is host policy or a host data format goes into the
+host adapter; ambiguous items become interface decisions.
+
+| Scheme | Package part | Host-adapter part |
+|---|---|---|
+| `rrtmgp_pre` | Allocating the flux objects (move next to the optics-object allocation in `rrtmgp_inputs`) | `radiation_do` for SW/LW, `dosw_heat`/`dolw_heat`, `nextsw_cday` for the coupler |
+| `rrtmgp_post` | Freeing all optics, source and flux objects | `qrs`/`qrl` carry-over (`*pdel`), `netsw` and `flwds` to the coupler |
+| `rrtmgp_inputs` | Radiation grid and extra top layer, T clamp to the k-distribution range, day gather, object init, albedo band mapping (the interface takes visible/near-IR albedos) | t_sfc from LW-up, emissivity, which cloud fraction radiation sees (snow/graupel) |
+| `*_calculate_fluxes` | Scatter back to the model grid (consumed by the package's heating-rate schemes) | `fsns/fsnt/flns/flnt`; the coupler `soll/sols/solld/solsd` |
+
+Better still, the package should export visible/near-IR direct and diffuse
+surface fluxes computed from its own band boundaries. That removes the
+hard-coded band indices (1-9, half of 10, 11-14) from host code.
+
+In flat form, splitting raises the scheme count slightly (4 → about 8), but
+hooks drop and the boundary becomes clean.
+
+**Sequencing:**
+1. `iter_num` fix (XS): drop `iter_num`/`rrtmgp_phys_blksz` from
+   `rrtmgp_sw_gas_optics`, `rrtmgp_sw_rte` and `rrtmgp_lw_gas_optics`.
+   CAM-SIMA does not block columns; this is a leftover from the UFS original.
+2. The scheme splits (S-M), coordinated with the Stage 2 interface design.
+
+Verify each step with FPHYStest rrtmgp and QPC4 bit-for-bit.
+
+**Not pursued:** fusing the SW and LW diagnostic loops. It is legal by the
+metadata, but SW and LW run at different frequencies, and keeping separate
+entry points lets the host own that policy (decision 2026-10-19).
+
+---
+
+## 8. Relation to existing backlog items
+
+- `dup-suite-composition-dsl` — Stage 1 supplies its composition mechanism.
+- `dup-meta-shadow-elim` / `direct-fortran-ingest` — metadata derived from
+  `!$ccpp`-tagged Fortran is produced ahead of generation, so it is
+  frontend-agnostic: Python suites load generated `.meta` through
+  `ccpp_scheme_from_meta` unchanged (only exercised with XML suites so far).
+  The RRTMGP sources are not tagged yet (corpus Stage 2 not started). A small
+  `ccpp_scheme_from_source()` helper in `py_api` would be a slice of
+  `direct-fortran-ingest`. Stage 2's inferred interface (2b) builds on the
+  same idea.
+- `suite-state-full-match` and the `ccpp_t` multi-instance support — relevant
+  to package-owned persistent state in 2f.
+
+---
+
+## 9. Suite-wide impact: CAM4 (analysis 2026-10-19)
+
+`suite_cam4.xml` has 222 `<scheme>` entries and 147 distinct schemes. Four
+of the schemes are commented out: `dme_adjust`, `thermo_water_update`,
+`turbulent_mountain_stress_add_drag_coefficient` and
+`beljaars_add_wind_damping_rate`. The **active** suite therefore has **218
+entries and 143 distinct schemes**.
+
+### 9.1 Three different counts
+
+Composition barely changes the number of Fortran schemes. What it changes is
+how many are *public*: visible at the top level, written out by suite
+authors, and sharing one global namespace.
+
+| Count | Today | With packages |
+|---|---|---|
+| Top-level entries in the CAM4 suite | 218 | ~15-20 |
+| Public building blocks (composed or exchanged) | 143 | ~12-15 packages + 1 shared update combinator |
+| Distinct Fortran schemes | 143 | ~135 (Stage 1/2 language features); ~120-125 (plus suite-wide glue reduction); ~100 (plus declarative diagnostics) |
+
+### 9.2 Top-level suite sketch
+
+```python
+@ccpp_suite("cam4")
+class cam4:
+    def physics_before_coupler():
+        cam_prescribed_inputs()        # ozone, aerosols, volcanic, seasalt rebin, gases  (~8)
+        global_energy_fixer()          # gmean, fix, diagnostics                       (~4)
+        dry_adiabatic_adjustment()     # dadadj                                        (1)
+        zm_deep_convection()           # convr, evap, momtran, convtran, diags          (~14)
+        hack_shallow_convection()      # hack, evap, sum-to-deep, diags                 (~10)
+        rk_stratiform()                # sedimentation ... optical properties           (~23)
+        cam_rrtmgp(aerosol_optics=prescribed_aerosol_optics)                          # (~40)
+        cam_surface_export()           # tropopause, state diags, coupling vars         (~5)
+
+    def physics_after_coupler():
+        vertical_diffusion(pbl=holtslag_boville)                                       # (~27)
+        gravity_wave_drag(sources=[orographic])                                        # (~7)
+        energy_closure()               # save_teout, dycore consistency, tend diags     (~5)
+```
+
+Parenthesised numbers are the distinct schemes each package absorbs. The cam5
+and cam7 suites contain the same ZM, RRTMGP, gravity-wave and
+vertical-diffusion blocks. Shared packages remove the drift risk that
+`dup-suite-composition-dsl` was concerned about.
+
+### 9.3 The largest reduction: the process-update combinator
+
+**76 of the 218 active entries (35%)** are process-update bookkeeping, made
+up of just 11 distinct schemes:
+- `apply_heating_rate`, `apply_constituent_tendencies`,
+  `apply_tendency_of_{eastward,northward}_wind` and
+  `apply_tendency_of_air_temperature`;
+- `qneg`, `geopotential_temp` and `update_dry_static_energy`;
+- the `check_energy_zero_fluxes`/`check_energy_scaling`/`check_energy_chng`
+  bracket around each process.
+
+This is CAM's former `physics_update`, unrolled 12-15 times in the suite. One
+reusable Stage 1 combinator covers it:
+
+```python
+with energy_checked():
+    zm_convr()
+    apply_updates(heat=True, q=True)      # -> apply_*, qneg, geopotential_temp
+```
+
+### 9.4 What actually removes Fortran schemes
+
+Composition alone moves schemes inside packages; deletions come from
+language features:
+
+| Feature | Schemes removed |
+|---|---|
+| Call-site argument binding: bind a scheme argument to a different standard name (extends today's constant-only kwarg overrides) | 4 renaming interstitials: `set_deep_conv_fluxes_to_general`, `set_general_conv_fluxes_to_deep`, `set_shallow_conv_fluxes_to_general`, `set_general_conv_fluxes_to_shallow` (exist only so `zm_conv_evap` can serve deep and shallow convection) |
+| Slots with empty defaults | 2 stubs: `tms_beljaars_zero_stub`, `zero_upper_boundary_condition` |
+| Package-level init | 0 deleted; the 4 `*_options` init-only schemes (`zm_conv_options`, `cloud_fraction_options`, `holtslag_boville_diff_options`, `vertical_diffusion_options`) leave the run lists |
+| Loop index, scoped lifetime, layout transforms (RRTMGP-style glue reduction) | ~5-8 in RRTMGP; vertical diffusion has a similar pre/post-interstitial pattern (~8), not yet measured |
+| Declarative diagnostics: history output driven by metadata (separate feature, outside Stage 1/2) | most of the 30 `*_diagnostics` schemes |
+
+Call-site argument binding is not yet itemised in §6. It fits naturally next
+to 2c (scoped resolution), or as a small Stage 1 extension, since overrides
+already exist for constants.
+
+### 9.5 Standard-name impact
+
+**Method:**
+1. Parse the `.meta` files of all 143 active schemes, collecting standard
+   names across all phases.
+2. Classify each name using the `resolved_vars.json` of a real CAM4 build
+   (`SMS_D_Ln9.mpasa120_mpasa120.QPC4...cam4.xdsl45g`, 2026-09-30).
+3. Assign each scheme to a §9.2 package by its position in the suite.
+
+A name is **package-private** if every scheme that uses it is in a single
+package.
+
+**The 708 standard names used by active CAM4 schemes today:**
+
+| Kind | Count | Affected by packages? |
+|---|---|---|
+| Host-provided (registry, host `.meta`) | 345 | No — they remain the host interface |
+| Interstitial (scheme-to-scheme, suite-owned) | 337 | **Yes** |
+| Framework (`ccpp_error_*`, horizontal/vertical dimensions, constituent arrays) | 23 | No |
+| Constituents | 3 | No |
+
+**How many interstitials become package-private:**
+
+| Step | Private to one package |
+|---|---|
+| Packages as in §9.2, with the RRTMGP adapter and package counted separately | 227 |
+| Counting the RRTMGP adapter + package as one radiation unit | 277 |
+| A tropopause package: of `tropopause_find`'s 25 outputs only ~5 are read elsewhere (`prescribed_volcanic_aerosol`, `prognostic_cloud_water`, RRTMGP diagnostics); the rest feed only `tropopause_diagnostics` | +~20 |
+| Names recomputed in each package (`cloud_fraction_fice` outputs, `tendency_of_{eastward,northward}_wind`) | +4 |
+| Call-site argument binding, which removes the ZM/Hack "general convection" renaming (§9.4) | +~9 |
+| **Total** | **~310 of 337 (~92%)** |
+
+About 25-30 interstitials remain genuinely public (cross-package):
+- energy-budget bookkeeping shared by every process (10: cumulative
+  boundary fluxes, start-of-timestep T/z, imbalance counts);
+- precipitation passed to surface export (9);
+- the main tropopause outputs (~5);
+- the deep-convection top and launch indices used by Hack (2);
+- `relative_humidity` (stratiform → radiation) and `scheme_name`.
+
+**Net result:** the global standard-name namespace shrinks from 708 to about
+400 (345 host + 23 framework + 3 constituents + ~30 public interstitials).
+About 310 names (~44% of all names) leave the global namespace.
+
+**Notes:**
+- **The RRTMGP adapter/package split is the noisiest part.** 50 names cross
+  it today. Most are RRTMGP objects, flags and band indices that cross only
+  because of the four mixed schemes (§7). The upstream splits make them
+  private to one side.
+- **"Leave the global namespace" is not the same as "deleted".** Inside a
+  package these values may keep standard names for documentation or use
+  local names. Glue reduction would delete some outright (e.g. the
+  `*_object_for_rrtmgp` names).
+- **Possible further reduction among host names.** 234 of the 345 are used
+  by only one package. Some are likely registry variables that exist mainly
+  to hold a scheme's own state between timesteps. With Stage 2's package-cap
+  lowering (2f) they could become package-owned and leave the registry. Not
+  yet quantified; it needs a pass over `registry.xml`.
+- **Caveats.** The numbers depend on the §9.2 package boundaries and on a
+  2026-09-30 build; the current atmospheric_physics submodule may differ
+  slightly.
+
+### 9.6 Framing
+
+The core problem is not that CAM4 has 143 Fortran units. It is that all 143
+are public, share one global namespace, and are written out flat in every
+suite that uses them. With packages:
+- **suite authors write** ~15-20 entries instead of 218;
+- **other groups exchange** about a dozen packages with slots;
+- **the Fortran units** become package internals.
+
+Stage 1 delivers the first point, with identical generated Fortran. Stage 2's
+encapsulation makes the second point real, by taking each package's standard
+names out of the global namespace.
