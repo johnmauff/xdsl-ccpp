@@ -12415,3 +12415,184 @@ deliberately out of v1 scope by the original design proposal —
 `optional`-argument support and parallel/multi-task volume management —
 are tracked the same way, as `scheme-io-capture-optional-args` and
 `scheme-io-capture-task-volume`.
+
+## `scheme-io-capture` v2 (PRs #144/#145, 2026-10-18): task-volume, multi-timestep, compare-diagnostics, tolerance-config, GPU residency, and real GPU verification
+
+Closes six of the follow-on items v1 left open. First real pointing of
+`--capture-scheme` at CAM-SIMA's own build (FPHYStest's `kessler_test`
+suite), not just `examples/kessler` — this is also what surfaced the two
+real bugs fixed below, neither of which any unit test caught.
+
+### PR #144 — real multi-task verification, byte-order fix, generic-interface simplification
+
+**`scheme-io-capture-task-volume` resolved.** The real FPHYStest case runs
+`NTASKS_ATM=24`; `ccpp_capture_mod.F90` had zero MPI-task filename
+disambiguation, confirmed to corrupt captures for real (a captured `ncol`
+decoded to `335544320`, 24 tasks racing to write the same file). Fixed by
+guarding every inserted capture call with the host's own
+`flag_for_mpi_root` standard name (CAM-SIMA's `spmd_utils.F90`'s
+`masterproc`, already consumed by dozens of real schemes) — resolved via
+the existing `build_host_var_index` host-var lookup (no new MPI
+dependency in `ccpp_capture_mod.F90` itself), declared via the
+`llvm.GlobalOp`+`module`-attribute construction `run_dispatch.py`'s own
+`hv_glob` already uses for a real host variable reference (distinct from
+`func.FuncOp.external` for a callable). When the host declares no such
+standard name (e.g. `examples/kessler`, single-task), the guard is simply
+omitted. Also fixed, found during the same real-build trial:
+- **Byte-order**: a captured `ncol` decoded correctly as big-endian but
+  not little-endian when read back with a standalone `gfortran` on the
+  same login node — the real CAM-SIMA/Derecho build's ambient Fortran I/O
+  convention differs from a standalone compile. Fixed with explicit
+  `convert='native'` on all 24 `open()` statements in
+  `ccpp_capture_mod.F90`, forcing true hardware-native byte order
+  (little-endian on every architecture this project targets)
+  unconditionally.
+- **Generic-interface simplification** (user-suggested): the capture pass
+  now emits the generic `ccpp_capture` name everywhere (Fortran overload
+  resolution dispatches to the right concrete procedure), instead of a
+  concrete type/rank-specific name — removes the need for
+  `ccpp_capture_mod.F90`'s 36 concrete procedures to be individually
+  `public`, and simplifies `use`-statement insertion to once per module
+  instead of once per distinct (type, rank) actually captured.
+- **`framework-src-resolution` cam-host build gap**: `ccpp_datatable.py`
+  resolved "which framework Fortran files does this build need" only from
+  the real upstream `NCAR/ccpp-framework` submodule path — a different
+  directory than xdsl_ccpp's own `framework_src/`, so `ccpp_capture_mod.F90`
+  silently never compiled into a real CAM-SIMA build
+  (`Cannot open module file 'ccpp_capture_mod.mod'`). Fixed with a third,
+  independent lookup sourcing it from xdsl_ccpp's own package for
+  cam-host builds too (the resulting three-mechanism inconsistency is
+  tracked separately as `framework-src-resolution-unify`).
+
+Re-verified end-to-end against the real FPHYStest case (`SMS_Ln2
+.ne3pg3_ne3pg3_mg37.FPHYStest.derecho_gnu`, `NTASKS_ATM=24`): clean,
+uncorrupted `.ccppcap` files from exactly one task, generated driver ran
+`ALL TESTS PASSED` against them — the first time this capability touched
+real multi-task CAM-SIMA output successfully.
+
+### PR #145 — multi-timestep replay, compare diagnostics, configurable tolerance
+
+**`scheme-io-capture-multi-timestep` resolved.** The real FPHYStest run
+already produced several `call_count` values per tag (one per
+chunk/timestep); the driver only ever replayed `call_count=1`. Each
+phase block now loops `do ... if (.not. found) exit`, replaying every
+real captured call for that tag, not just the first. Array allocations
+moved inside the loop with an `allocated()` guard (column counts can
+differ call to call).
+
+**`scheme-io-capture-compare-diagnostics` resolved.** `ccpp_capture_compare_*`
+gained optional diagnostic outputs for every rank>0 variant:
+`first_mismatch_index` (1-based linear, column-major index of the first
+mismatching element, 0 on a match) for all types, plus
+`max_abs_diff`/`mean_abs_diff` for real variants. Rank-0 (scalar)
+variants are unchanged — the generated driver already has both values in
+scope and prints them directly on FAIL instead.
+
+**`scheme-io-capture-tolerance-config` resolved**, in two parts:
+1. `--capture-tolerance VALUE` (code-generation time, `ccpp_dsl.py`) sets
+   the compiled-in default tolerance baked into the generated driver as a
+   Fortran `parameter`-equivalent literal, overriding
+   `_TEST_DRIVER_TOLERANCE` (`1.0e-10_kind_phys`). Threaded through the
+   pass-pipeline spec as a quoted string specifically because the spec
+   lexer classifies a bare NUMBER token as int-vs-float purely by whether
+   "." appears in it — a value like `1e-08` would otherwise misparse as
+   `int()` and crash; re-parsed with `float()` on the receiving end.
+2. **Runtime override, added after the user identified a real design gap**:
+   the same tolerance value can't be a same-compiler/CPU-regression value
+   AND a cross-compiler/GPU-port-comparison value — the former wants
+   something close to bit-exact, the latter needs a real, likely-iterated-
+   on tolerance, and regenerating the cap just to try a different value is
+   wasteful friction during exactly the kind of GPU-porting work this
+   feature exists for. New `ccpp_capture_tolerance_override(default)` in
+   `ccpp_capture_mod.F90`: every generated driver now declares `tolerance`
+   as a plain variable (not a `parameter`) and calls this function once at
+   startup, which returns the compiled-in default unless the
+   `CCPP_CAPTURE_TOLERANCE` environment variable is set to a valid real
+   number (with a stderr warning + fallback to default if it's set but
+   unparseable). Caught and fixed in review: an earlier draft of this
+   change left every array compare call re-embedding the literal tolerance
+   string directly, which would have silently defeated the whole point of
+   the override — fixed to reference the `tolerance` variable at every
+   call site.
+
+Verified: the exact same compiled driver binary, unmodified, correctly
+reported `FAIL` (with real `max_abs_diff`) against a deliberately
+corrupted fixture at the compiled-in default tolerance, and correctly
+reported `PASS` against the identical corrupted fixture when re-run with
+`CCPP_CAPTURE_TOLERANCE=0.1` — no regeneration, no recompile.
+
+### GPU residency and real GPU verification (uncommitted, this session)
+
+**`scheme-io-capture-gpu-residency` resolved.** The generated driver had
+zero awareness of `memory_space=device` arguments — every array was a
+plain host `allocatable`, with no device data movement, while the real
+scheme's own `!$acc ... default(present)` clauses assume the caller
+already established device residency. `TestDriverParam` gained
+`is_device` (from the same `cap_shared._device_arg_names` lookup
+`apply()` already uses); when `--directive` was set at generation time,
+the driver now wraps each phase's call with `!$acc enter data`/
+`!$omp target enter data` beforehand and matching exit-data after,
+split by intent: `copyin`/`map(to:)` for in/inout (real captured data),
+`create`/`map(alloc:)` for out-only, `copyout`/`map(from:)` for out/inout
+(brings the GPU-computed result back to the host variable *before* the
+comparison reads it — without this the driver would silently compare
+against the stale pre-call value on every GPU build), `delete`/
+`map(release:)` for in-only.
+
+**`scheme-io-capture-gpu-verify` resolved** — the first real
+`nvfortran -acc` verification of this whole pipeline, against the real
+CAM-SIMA GPU FPHYStest case
+(`SMS_Ln2.ne3pg3_ne3pg3_mg37.FPHYStest.derecho_nvhpc.cam-outfrq_kessler_derecho_gpu`,
+`gpudev` queue, A100, `NTASKS_ATM=24`): built and ran the real case with
+`CCPP_GENERATOR=xdsl_ccpp`, confirmed the real suite cap and generated
+driver both carry correct device-residency directives, compiled the
+generated driver with `nvfortran -acc -gpu=cc80` linked against the
+real build's own compiled `kessler.o`/`ccpp_capture_mod.o`, and ran it on
+a real A100 — `ALL TESTS PASSED` across all 4 real captured calls.
+Confirmed with `nsys profile --trace=cuda,openacc`, not just a clean
+exit: `cuLaunchKernel` fired 8 times (the real `kessler_kessler_runv2_472_gpu`
+GPU kernel plus its reduction variant, 4 times each, matching the 4
+replayed calls), with real `cuMemcpyHtoDAsync_v2`/`cuMemcpyDtoHAsync_v2`
+host↔device transfer counts consistent with the enter/exit-data pattern
+above — definitive proof of real GPU execution, not a silent host
+fallback.
+
+Full `pytest` suite: 901 passed, 3 skipped, no regressions, at every
+checkpoint in this entry.
+
+### What's left
+
+`scheme-io-capture-fixture-storage` is explicitly deferred (user's own
+choice — not yet decided where captured fixtures should live).
+`scheme-io-capture-staleness-check`, `scheme-io-capture-multi-call-site`,
+`scheme-io-capture-optional-args`, `scheme-io-capture-netcdf`, and
+`scheme-io-capture-ctest-automation` remain open, unchanged from v1 —
+see BACKLOG.md.
+
+## `composite-scheme` design proposal logged (2026-10-19)
+
+**Proposal only, not started.** Arose from analysing why the RRTMGP block
+of `atmospheric_physics`' `suite_cam4.xml` has 40 scheme entries, of which
+only 11 do radiative transfer. 17 distinct glue schemes carry 1,683 code
+lines and 323 `.meta` arguments, against 1,895 lines and 219 arguments for
+the 11 science schemes. The proposed remedy is **composite schemes**:
+radiation written as an exchangeable package (Python functions) with slots
+(swappable science components with package defaults) and hooks (host code
+the host must supply), called from a host-owned adapter and from group
+functions.
+
+- **Stage 1 (S-M):** frontend-only composition in `py_api.py` —
+  callable scheme descriptors, group functions, `with forLoop(...)`.
+  Generated Fortran is unchanged; the exit criterion is IR byte-identity
+  with `suite_rrtmgp_py.py`.
+- **Stage 2 (L-XL):** encapsulation — a composite op, a declared or
+  inferred public interface, scoped name resolution, and an optional
+  per-package cap.
+
+Upstream atmospheric_physics prerequisites are also recorded: split four
+mixed host/package schemes, and fix a latent `iter_num` column-block bug in
+`rrtmgp_sw_gas_optics`/`rrtmgp_sw_rte`/`rrtmgp_lw_gas_optics`. SW/LW loop
+fusion was considered and deliberately rejected, because SW and LW run at
+scientifically different frequencies. The package therefore exposes separate
+SW and LW entry points. Full design, worked example and staged plans:
+`composite_scheme_plan.md`.
