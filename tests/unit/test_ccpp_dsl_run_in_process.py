@@ -135,3 +135,31 @@ def test_py_composite_suite_generates_same_caps_as_xml(tmp_path):
                    py="examples/advection_composite/advection_composite_py.py")
     assert sorted(xml) == ["ccpp_kinds.F90", "cld_suite_cap.F90", "test_host_ccpp_cap.F90"]
     assert py == xml
+
+
+def test_rrtmgp_composite_matches_reference_suite(legacy_mode):
+    """examples/rrtmgp_composite: the RRTMGP package + CAM-SIMA adapter +
+    suite (Python, name-only references) define exactly the suite
+    atmospheric_physics' flat suite_rrtmgp.xml does -- same groups, scheme
+    sequence, loops and scheme metadata -- compared as the metadata module
+    real generation starts from, built from the example's metadata snapshot.
+    (Full cap generation would need CAM-SIMA's host metadata; out of scope
+    for this not-to-be-compiled example.)"""
+    import glob
+
+    d = "examples/rrtmgp_composite"
+    schemes = sorted(f for f in glob.glob(f"{d}/meta/**/*.meta", recursive=True)
+                     if "/objects/" not in f)
+
+    def metadata_module(**source):
+        tool = ccppMain()
+        options_db = tool.default_options_db()
+        options_db.update({"scheme_files": schemes, "host_files": [],
+                           "legacy_mode": True, "verbose": 0, **source})
+        tool.options_db = tool._normalize_options_db(dict(options_db))
+        return str(tool._build_cheap_metadata_module())
+
+    xml = metadata_module(suites=[f"{d}/suite_rrtmgp.xml"])
+    py = metadata_module(suites=[], py=f"{d}/suite_rrtmgp_composite_py.py")
+    assert xml.count('"ccpp.scheme"') == 40
+    assert py == xml

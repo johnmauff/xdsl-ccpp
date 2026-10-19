@@ -32,7 +32,6 @@ measured data, and will drift as items are reassessed.
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
-| `composite-scheme` — Stage 1 (Python composition frontend, flattening) | 4-7 days | S-M |
 | `composite-scheme` — Stage 2 (encapsulation) | 15-25 days flatten-only lowering; 25-50 days with package cap + CAM-SIMA integration | L-XL |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -342,7 +341,7 @@ smallest to largest:
   with composable Python, e.g. `dry_basis`/`theta_basis` combinators) —
   ~280 lines directly, bigger value in removing drift risk between
   `suite_cam4.xml`/`suite_cam7.xml` and their standalone-suite sources.
-  CHANGELOG.md L8453. `composite-scheme` Stage 1 (below) supplies this
+  CHANGELOG.md L8453. `composite-scheme` Stage 1 (resolved, below) supplies this
   item's composition mechanism (`dry_basis`/`theta_basis` become ordinary
   `with`-combinators); expect the residual estimate to shrink once it lands.
 - `dup-meta-shadow-elim` — **Eliminate `.meta` as a hand-maintained shadow file** — the big one:
@@ -707,8 +706,8 @@ filename approach originally envisioned. CHANGELOG.md L12426.
 
 ## Someday-maybe: composite schemes (packages with slots and hooks)
 
-ID: `composite-scheme`. **Proposal, not started** (logged 2026-10-19).
-Full design, worked RRTMGP example and staged plans:
+ID: `composite-scheme`. **Stage 1 resolved (2026-10-19); Stage 2 not
+started.** Full design, worked RRTMGP example and staged plans:
 `composite_scheme_plan.md`. CHANGELOG.md L12572.
 
 Let a physics parameterization be written as an exchangeable **package**
@@ -720,10 +719,9 @@ and from group functions (`def physics_after_coupler()`). Motivated by the
 RRTMGP block of `suite_cam4.xml`: 40 entries, only 11 doing radiative
 transfer.
 
-- **Stage 1 (S-M, 4-7 days)** — frontend-only composition in `py_api.py`:
-  callable `SchemeDescriptor`s through a recording context, group
-  functions, and `with forLoop("std_name"):`. Generated Fortran is
-  unchanged. Exit criterion: IR byte-identical to `suite_rrtmgp_py.py`.
+- **Stage 1. Resolved (2026-10-19, PRs #148/#149 + RRTMGP example)** —
+  Python composition, path-free `ccpp_scheme_ref`, CMake `PY_SUITE`, and
+  helloworld/advection/RRTMGP composite examples. CHANGELOG.md L12600.
 - **Stage 2 (L-XL)** — encapsulation:
   - a `ccpp.composite` op;
   - a declared or inferred public interface;
