@@ -318,17 +318,43 @@ class TestKindsGate:
         assert "ccpp_kinds.F90" in bindc and "ccpp_kinds.h" in bindc
 
 
-class TestUnsupportedModes:
-    def test_py_mode_rejected(self):
+class TestPyMode:
+    """--py (Python suite) predictions match the equivalent XML suite's."""
+
+    H = "examples/helloworld"
+    SCHEMES = [f"{H}/hello_scheme.meta", f"{H}/temp_adjust.meta"]
+    HOSTS = [f"{H}/hello_world_host.meta", f"{H}/hello_world_mod.meta"]
+
+    def test_py_suite_matches_xml_suite(self):
+        xml = _predict(_options_db(
+            ccppMain(), suites=[f"{self.H}/hello_world_suite.xml"],
+            scheme_files=self.SCHEMES, host_files=self.HOSTS))
+        py = _predict(_options_db(
+            ccppMain(), suites=[], scheme_files=self.SCHEMES, host_files=self.HOSTS,
+            py="examples/helloworld_composite/helloworld_composite_py.py"))
+        assert py == xml == ["hello_world_suite_cap.F90",
+                             "HelloWorld_ccpp_cap.F90", "ccpp_kinds.F90"]
+
+    def test_py_suite_without_host_files_has_no_host_cap(self):
+        """Same has_host gate as the XML path: host tables a script adds
+        itself (additional=...) do not count -- only --host-files does."""
+        outputs = _predict(_options_db(
+            ccppMain(), suites=[], scheme_files=[], host_files=[],
+            py="examples/advection/advection_py.py"))
+        assert "cld_suite_cap.F90" in outputs
+        assert not any(o.endswith("_ccpp_cap.F90") for o in outputs)
+
+    def test_meta_file_mode_rejected(self, tmp_path):
         tool = ccppMain()
         options_db = tool.default_options_db()
-        # Any real file satisfies _normalize_options_db's existence check --
-        # predict_output_filenames() must reject --py mode before it would
-        # ever try to run this (non-frontend) file as one.
-        options_db.update({"py": "xdsl_ccpp/tools/ccpp_dsl.py", "list_outputs": True})
+        meta = tmp_path / "x.mlir"
+        meta.write_text("builtin.module {}")
+        options_db.update({"suites": [f"{self.H}/hello_world_suite.xml"],
+                           "scheme_files": self.SCHEMES, "meta_file": str(meta),
+                           "list_outputs": True})
         tool.options_db = tool._normalize_options_db(dict(options_db))
         try:
             tool.predict_output_filenames()
             assert False, "expected CcppDslError"
         except Exception as exc:
-            assert "py" in str(exc)
+            assert "meta-file" in str(exc)
