@@ -95,6 +95,17 @@ sub-components groups actually differ on as swappable slots.
 
 ## 3. Worked example (Stage 1 syntax)
 
+**Implemented** in `examples/rrtmgp_composite/` (composite-scheme PR 3):
+`rrtmgp_package.py`, `cam_rrtmgp_adapter.py` and
+`suite_rrtmgp_composite_py.py`, commented to mark every SLOT and HOOK. They
+use path-free `ccpp_scheme_ref` references and generate input identical to
+atmospheric_physics' flat `suite_rrtmgp.xml`, checked in CI against a
+metadata-only snapshot (`examples/rrtmgp_composite/meta/`). Compared with the
+sketch below, the implementation adds an `rrtmgp_prepare` entry point, an
+`aerosol_optics` hook (filled by `aerosol_optics_zero_stub` in that test
+suite; CAM4's `aerosol_optics` in a full suite) and `initialize_constituents`
+in the suite; the sketch is kept as design background.
+
 The three files below flatten to exactly the scheme order of
 `examples/atmospheric_physics/suite_rrtmgp_py.py`. SW and LW are **separate
 package entry points**. They run at scientifically different frequencies
@@ -314,7 +325,7 @@ interface, and optionally a separately generated package cap.
 | Step | Work | Size |
 |---|---|---|
 | 2a | **IR**: a `ccpp.composite` op (region of schemes, subcycles and nested composites, plus slot/hook bindings) in `xdsl_ccpp/dialects/ccpp.py`. `@ccpp_composite` in `py_api` records into it instead of flattening. | S |
-| 2b | **Public interface**: either a declared table (`type = composite`) or inferred (internal inputs not produced internally, plus declared exports). A validation pass checks that every internal argument resolves to the interface or a private variable. With source-derived metadata (`dup-meta-shadow-elim`/`direct-fortran-ingest`), inference avoids yet another hand-maintained shadow file. | M |
+| 2b | **Public interface**: either a declared table (`type = composite`) or inferred (internal inputs not produced internally, plus declared exports). A validation pass checks that every internal argument resolves to the interface or a private variable. With source-derived metadata (`dup-meta-shadow-elim`/`direct-fortran-ingest`), inference avoids yet another hand-maintained shadow file. The interface also includes a **package-level init** sequence: init-only schemes (RRTMGP's `rrtmgp_inputs_setup`, which must follow both gas-optics inits, and `rrtmgp_sw_solar_var_setup`) are declared there instead of being placed in a run sequence only to order their `_init` calls -- removing the Stage 1 workaround `rrtmgp_init_only()`. | M |
 | 2c | **Scoped name resolution**, package → suite → host, through `host_var_match_pass.py`, `generate-arg-ownership` (a new private ownership kind), interstitial promotion in `suite_cap.py`, `run_dispatch.py`, and constituents. | M-L |
 | 2d | **Hook scoping rule**: hooks resolve in host scope plus the composite's exported interface only. | S-M |
 | 2e | **Lowering A — flatten with name mangling** into the existing suite-cap path. Output equals Stage 1's apart from private names. | S-M |

@@ -12596,3 +12596,60 @@ fusion was considered and deliberately rejected, because SW and LW run at
 scientifically different frequencies. The package therefore exposes separate
 SW and LW entry points. Full design, worked example and staged plans:
 `composite_scheme_plan.md`.
+
+## `composite-scheme` Stage 1 implemented (PRs #148, #149 and the RRTMGP example PR, 2026-10-19)
+
+Stage 1 of `composite_scheme_plan.md`: schemes compose through ordinary
+Python functions in `xdsl_ccpp/frontend/py_api.py`, flattened at
+IR-generation time, so generated Fortran is unchanged.
+
+**PR #148 (frontend):**
+- callable `SchemeDescriptor`s through a recording context, so helper
+  functions (packages, host adapters) can call schemes;
+- group functions (`def physics_after_coupler():`); `run()` keeps its
+  closure;
+- `with forLoop("std_name"):` blocks (nestable, per-call overrides kept);
+- slots and hooks as plain keyword defaults and required keywords;
+- `ccpp_scheme_from_source()`, which loads schemes from `!$ccpp`-tagged
+  Fortran;
+- path-free `ccpp_scheme_ref("name")`, with metadata supplied by
+  `--scheme-files=`/`--host-files=` or the driver, as for an XML suite;
+- `export_suite()` as the user-facing name, with `emit_ir` kept as an
+  alias;
+- `examples/helloworld_composite` plus FileCheck tests.
+
+The path-free references and `export_suite` were not in the original plan;
+they were added after review of the first example.
+
+**PR #149 (build and CI):**
+- `xdsl_ccpp_capgen(PY_SUITE ... [PY_DEPENDS ...])`;
+- `ccpp_dsl --list-outputs`/`--list-dependencies` support `--py`;
+- the `--py` metadata merge now matches the XML frontend (`source_module`,
+  bundled constituent metadata);
+- compiled, CI-run `examples/helloworld_composite` and
+  `examples/advection_composite`, with scheme metadata generated from tags;
+  both generate caps byte-identical to their XML originals;
+- fixed a GPU-residency slip in `examples/advection{,_flat_host}/cld_ice.meta`
+  (`cld_ice_array` lacked `memory_space = device` in `cld_ice_run`, whose
+  kernel asserts `present(cld_ice_array)`; the cap moved the array to the
+  host and back around a GPU kernel);
+- logged backlog items `acc-meta-residency-check` and `gpu-ci`.
+
+**RRTMGP example PR:**
+- `examples/rrtmgp_composite`: RRTMGP as an exchangeable package (4 entry
+  points, 8 hooks, 7 slots), a CAM-SIMA host adapter, and a 2-call suite;
+- a metadata-only snapshot of atmospheric_physics (`xdsl-support`,
+  `15b844d`) plus its flat `suite_rrtmgp.xml` (40 scheme entries);
+- a unit test requiring identical generator input.
+
+Verification for RRTMGP stops at the generator's input, deliberately:
+- full cap generation would need CAM-SIMA's host metadata;
+- without host metadata, a `kdist` local-name collision between the SW and
+  LW gas-optics schemes blocks suite-cap generation;
+- `examples/atmospheric_physics/suite_rrtmgp_py.py` was found stale
+  (missing `aerosol_optics_zero_stub`) and left as is, since nothing uses
+  it.
+
+Stage 2 (encapsulation) is not started. The plan's checkpoint applies:
+reassess before beginning it. The Stage 2 plan now includes package-level
+init, replacing the Stage 1 `rrtmgp_init_only()` workaround.
