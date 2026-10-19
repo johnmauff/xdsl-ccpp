@@ -159,14 +159,38 @@ class TestSchemeFiltering:
         assert any(d.endswith("host_dep.F90") for d in deps)
 
 
-class TestUnsupportedModes:
-    def test_py_mode_rejected(self):
-        tool = ccppMain()
-        options_db = tool.default_options_db()
-        options_db.update({"py": "xdsl_ccpp/tools/ccpp_dsl.py", "list_dependencies": True})
-        tool.options_db = tool._normalize_options_db(dict(options_db))
-        try:
-            tool.predict_dependencies()
-            assert False, "expected CcppDslError"
-        except Exception as exc:
-            assert "py" in str(exc)
+class TestPyMode:
+    """--py: the same scheme filtering, with the suite written in Python and
+    its scheme referenced by name (ccpp_scheme_ref), metadata merged from
+    --scheme-files/--host-files."""
+
+    def _write_py_suite(self, tmp_path, used_scheme_name):
+        path = tmp_path / "suite_py.py"
+        path.write_text(
+            "from xdsl_ccpp.frontend.py_api import ccpp_scheme_ref, ccpp_suite, export_suite\n"
+            f"used = ccpp_scheme_ref({used_scheme_name!r})\n"
+            "@ccpp_suite('test_suite', version='1.0')\n"
+            "class test_suite:\n"
+            "    def physics():\n"
+            "        used()\n"
+            "if __name__ == '__main__':\n"
+            "    export_suite(test_suite)\n"
+        )
+        return path
+
+    def test_py_suite_matches_xml_suite(self, tmp_path):
+        fixtures = TestSchemeFiltering()
+        used = fixtures._write_scheme(tmp_path, "used_scheme", "used.F90")
+        unused = fixtures._write_scheme(tmp_path, "unused_scheme", "unused.F90")
+        host = fixtures._write_host(tmp_path, "host_dep.F90")
+        common = dict(scheme_files=[str(used), str(unused)], host_files=[str(host)])
+
+        xml = _predict(_options_db(
+            ccppMain(), suites=[str(fixtures._write_suite(tmp_path, "used_scheme"))], **common))
+        py = _predict(_options_db(
+            ccppMain(), suites=[], py=str(self._write_py_suite(tmp_path, "used_scheme")),
+            **common))
+
+        assert sorted(py) == sorted(xml)
+        assert any(d.endswith("used.F90") for d in py)
+        assert not any(d.endswith("unused.F90") for d in py)

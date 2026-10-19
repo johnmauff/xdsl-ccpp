@@ -7,7 +7,7 @@ sources in this directory) and the host metadata come from the command line:
 
     python3 examples/helloworld_composite/helloworld_composite_py.py \
         --scheme-files=examples/helloworld_composite/hello_scheme.F90,examples/helloworld_composite/temp_adjust.F90 \
-        --host-files=examples/helloworld/hello_world_host.meta,examples/helloworld/hello_world_mod.meta \
+        --host-files=examples/helloworld_composite/hello_world_host.meta,examples/helloworld_composite/hello_world_mod.meta \
         [hello_repeats=N]
 """
 

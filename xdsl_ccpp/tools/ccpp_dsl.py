@@ -536,11 +536,23 @@ class ccppMain:
     def merge_meta_files(self, mlir_file):
         """Append ``ccpp.table_properties`` from scheme/host .meta files into *mlir_file*.
 
-        Used when ``--py`` is combined with ``--scheme-files`` or ``--host-files``
-        to merge additional metadata into the MLIR produced by the Python frontend.
+        Used in ``--py`` mode to merge ``--scheme-files``/``--host-files``
+        metadata into the MLIR produced by the Python frontend.  Mirrors
+        run_frontend()/ccpp_xml.py exactly, so a Python suite given the same
+        files generates the same caps as the equivalent XML suite: each table
+        records its file stem as ``source_module``, and the bundled
+        ccpp_constituent_prop_mod.meta is always included as a host file.
         """
+        from pathlib import Path
+
         scheme_files = self.options_db["scheme_files"]
-        host_files = self.options_db["host_files"]
+        host_files = list(self.options_db["host_files"])
+        _const_meta = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "framework_src",
+                         "ccpp_constituent_prop_mod.meta")
+        )
+        if os.path.isfile(_const_meta) and _const_meta not in host_files:
+            host_files.append(_const_meta)
         if not scheme_files and not host_files:
             return
 
@@ -557,12 +569,14 @@ class ccppMain:
         count = 0
         for scheme_file in scheme_files:
             for meta in parse_meta_file(scheme_file, True):
-                prop = frontend.build_meta_ir(meta, meta_file_path=scheme_file)
+                prop = frontend.build_meta_ir(meta, source_module=Path(scheme_file).stem,
+                                              meta_file_path=scheme_file)
                 ccpp_module.body.block.add_op(prop)
                 count += 1
         for host_file in host_files:
             for meta in parse_meta_file(host_file, False):
-                prop = frontend.build_meta_ir(meta, meta_file_path=host_file)
+                prop = frontend.build_meta_ir(meta, source_module=Path(host_file).stem,
+                                              meta_file_path=host_file)
                 ccpp_module.body.block.add_op(prop)
                 count += 1
 
@@ -919,6 +933,9 @@ class ccppMain:
 
         from xdsl_ccpp.frontend.ccpp_xml import XMLSuite
 
+        if self.options_db.get("py"):
+            return self._build_py_metadata_module()
+
         frontend = ccppXML()
         ir_ops = []
         for suite_file in self.options_db["suites"]:
@@ -942,6 +959,28 @@ class ccppMain:
                     meta, source_module=stem, meta_file_path=host_file))
 
         return _builtin.ModuleOp(ir_ops)
+
+    def _build_py_metadata_module(self):
+        """``--py`` counterpart of _build_cheap_metadata_module: the exact IR
+        real generation starts from (run_py_frontend + merge_meta_files),
+        built in a throwaway directory.  The suite script must be executed
+        to learn its suites; it does no codegen, so this stays cheap.
+
+        Runs quietly: --list-outputs/--list-dependencies print a
+        machine-read list on stdout, which progress messages would corrupt.
+        """
+        import tempfile
+
+        verbose = self.options_db["verbose"]
+        self.options_db["verbose"] = 0
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                mlir_file = self.run_py_frontend(tmp_dir)
+                self.merge_meta_files(mlir_file)
+                with open(mlir_file) as f:
+                    return Parser(make_ccpp_context(), f.read()).parse_op()
+        finally:
+            self.options_db["verbose"] = verbose
 
     def _predict_kinds_present(self) -> bool:
         """Return True iff the current --scheme-files/--host-files (plus the
@@ -993,15 +1032,14 @@ class ccppMain:
         _build_cheap_metadata_module()'s raw, pre-MetaCAP module, with no
         pass execution needed at all for this one.
 
-        Does not support --py/--meta-file, matching predict_output_filenames.
+        Supports --py (via _build_py_metadata_module); does not support
+        --meta-file, matching predict_output_filenames.
         """
         from xdsl_ccpp.tools.ccpp_datatable import (
             _collect_dependencies,
             _collect_table_properties,
         )
 
-        if self.options_db.get("py"):
-            raise CcppDslError("--list-dependencies does not support --py")
         if self.options_db.get("meta_file"):
             raise CcppDslError("--list-dependencies does not support --meta-file")
 
@@ -1048,23 +1086,30 @@ class ccppMain:
           that genuinely needs real IR + two real passes, not pure text/
           XML parsing, but still no suite-cap/ccpp-cap/codegen/printing.
 
-        Does not support --py (python frontend) or --meta-file (fir2meta
-        merge): no wired-in example (cmake-configure-regen's own
-        verification universe) uses either, and both would require running
-        arbitrary code / parsing a second MLIR file just to learn names
-        this prediction is meant to stay cheap by avoiding.
+        --py (python frontend): suite names come from running the suite
+        script's frontend only (_build_py_metadata_module) -- no codegen.
+        Does not support --meta-file (fir2meta merge): no wired-in example
+        uses it, and it would require parsing a second MLIR file just to
+        learn names this prediction is meant to stay cheap by avoiding.
         """
+        from xdsl.utils.hints import isa
+
+        from xdsl_ccpp.dialects.ccpp import SuiteOp
         from xdsl_ccpp.frontend.ccpp_xml import XMLSuite
         from xdsl_ccpp.transforms.util.cap_shared import derive_camel_case_name
 
-        if self.options_db.get("py"):
-            raise CcppDslError("--list-outputs does not support --py")
         if self.options_db.get("meta_file"):
             raise CcppDslError("--list-outputs does not support --meta-file")
 
-        suite_names = [
-            XMLSuite(f).attributes["name"] for f in self.options_db["suites"]
-        ]
+        if self.options_db.get("py"):
+            suite_names = [
+                op.suite_name.data for op in self._build_py_metadata_module().walk()
+                if isa(op, SuiteOp)
+            ]
+        else:
+            suite_names = [
+                XMLSuite(f).attributes["name"] for f in self.options_db["suites"]
+            ]
         outputs = [f"{name}_cap.F90" for name in suite_names]
 
         camel_name = (

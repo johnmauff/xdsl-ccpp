@@ -215,12 +215,10 @@
 // CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
 // CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      !$acc update self(cld_ice_cld_ice_array)
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call cld_ice_run(ncol=ncol, timestep=timestep, temp=temp, qv=qv, ps=ps,                     &
 // CHECK-NEXT:          cld_ice_array=cld_ice_cld_ice_array, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      !$acc update device(cld_ice_cld_ice_array)
 // CHECK-NEXT:      if (errflg .eq. 0) then
 // CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errflg,   &
 // CHECK-NEXT:          errmsg=errmsg)

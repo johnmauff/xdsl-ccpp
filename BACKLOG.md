@@ -34,6 +34,8 @@ measured data, and will drift as items are reassessed.
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
 | `composite-scheme` — Stage 1 (Python composition frontend, flattening) | 4-7 days | S-M |
 | `composite-scheme` — Stage 2 (encapsulation) | 15-25 days flatten-only lowering; 25-50 days with package cap + CAM-SIMA integration | L-XL |
+| `acc-meta-residency-check` | 2-4 days | S |
+| `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
@@ -745,3 +747,46 @@ the plan doc):
 
 SW/LW diagnostic-loop fusion was deliberately rejected (different
 radiation frequencies).
+
+## GPU residency verification
+
+Found 2026-10-19 while building `examples/advection_composite`:
+`examples/advection/cld_ice.meta` (and `examples/advection_flat_host`'s
+identical copy) declared `cld_ice_array` host-resident in `cld_ice_run`
+although the routine's own kernel asserts
+`!$acc parallel loop ... present(qv,cld_ice_array,temp)`. The generated
+suite cap therefore wrapped `cld_ice_run` in
+`!$acc update self/device(cld_ice_cld_ice_array)`, whose trailing
+`update device` can overwrite the kernel's device-side result. Fixed in the
+`composite-scheme` PR 2 (one `memory_space = device` line per file, plus
+regenerated `advection-xml` FileCheck goldens); unit test
+`test_py_composite_suite_generates_same_caps_as_xml` now cross-checks
+advection's hand-written `.meta` against `.meta` generated from the
+`!$ccpp`/`!$acc`-annotated sources. The bug survived since July because
+nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
+`!$acc`, and the manual-only nvhpc job runs on a GPU-less runner with
+`ARCH=CPU` (`-noacc`). Two follow-ons:
+
+- `acc-meta-residency-check` — **Static `.meta` vs `!$acc` residency
+  consistency check.** `ccpp_dsl.py`'s `validate_fortran_sources` already
+  pairs each `--scheme-files` `.meta` with its `.F90` and runs
+  `validate_fir.compare_modules`, which compares type/rank/intent/
+  optional/kind/extra args but not `memory_space`. Extend it to compare
+  each argument's declared `memory_space` with what the routine's own
+  `!$acc present(...)`/`deviceptr(...)` clauses imply (the derivation
+  `fparser2_to_meta.py` already performs for `!$ccpp`-tagged sources), and
+  report mismatches the same way (warn-only first, like the existing
+  check). Needs no GPU, would have flagged the `cld_ice` bug at generation
+  time, and applies equally to CAM-SIMA's hand-written atmospheric_physics
+  `.meta`.
+- `gpu-ci` — **CI that actually runs generated OpenACC on a GPU.** GitHub's
+  standard hosted runners have no GPU, so this needs a GPU-equipped runner:
+  a paid GitHub GPU runner, or a self-hosted/scheduled job on NCAR
+  hardware (e.g. a Derecho GPU node, with the PBS submission and
+  credential handling that implies). Also requires the GPU-capable
+  examples (`advection`, `advection_flat_host`, `advection_nometa`,
+  `advection_composite`, `kessler`) to build with `ARCH=GPU`, and their
+  host-integration checks to be sensitive enough to detect wrong data
+  movement (not yet confirmed for `advection`'s `compare_data`). The
+  runner/hosting choice is an infrastructure and funding decision outside
+  this project's unilateral control.

@@ -79,3 +79,59 @@ def test_run_normalizes_options_db_missing_host_files(tmp_path):
     os.makedirs(tool.options_db["tempdir"], exist_ok=True)
     mlir_file = tool.run_frontend(tool.options_db["tempdir"])
     assert os.path.isfile(mlir_file)
+
+
+_ADVECTION_SCHEMES = ("const_indices", "cld_liq", "apply_constituent_tendencies",
+                      "cld_ice", "cld_shadow")
+
+
+def _generate(tmp_path, label, a, tagged, **source):
+    """Generate caps from directory *a*'s advection schemes and host .meta
+    plus *source* (suites= or py=); return {filename: Fortran text}.  With
+    *tagged*, scheme .meta is generated from the !$ccpp-tagged sources (as
+    CMake does, via ccpp_generate_meta) instead of read from *a*."""
+    from xdsl_ccpp.tools.ccpp_generate_meta import generate_meta_for_file
+
+    meta_dir = tmp_path / label / "meta"
+    meta_dir.mkdir(parents=True)
+    scheme_files = []
+    for name in _ADVECTION_SCHEMES:
+        if tagged:
+            path = meta_dir / f"{name}.meta"
+            path.write_text(generate_meta_for_file(f"{a}/{name}.F90", a))
+        else:
+            path = f"{a}/{name}.meta"
+        scheme_files.append(str(path))
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    options_db.update({
+        "scheme_files": scheme_files,
+        "host_files": [f"{a}/test_host_data.meta", f"{a}/test_host_mod.meta",
+                       f"{a}/test_host.meta"],
+        "host_name": "test_host",
+        "directive": "acc",
+        "out": str(tmp_path / label / "out"),
+        "tempdir": str(tmp_path / label / "tmp"),
+        "verbose": 0,
+        **source,
+    })
+    result = tool.run(options_db)
+    out = options_db["out"]
+    return {os.path.basename(p): open(os.path.join(out, p)).read()
+            for p in result.written if p.endswith(".F90")}
+
+
+def test_py_composite_suite_generates_same_caps_as_xml(tmp_path):
+    """examples/advection_composite (Python suite with name-only scheme
+    references and a process-update combinator; scheme metadata generated
+    from !$ccpp tags) generates exactly the caps examples/advection's
+    cld_suite.xml does from its hand-written .meta -- checking both the
+    Python path (including constituent handling, which needs --py's metadata
+    merge to match the XML frontend) and that the hand-written metadata,
+    GPU residency included, agrees with the tagged sources."""
+    xml = _generate(tmp_path, "xml", "examples/advection", tagged=False,
+                    suites=["examples/advection/cld_suite.xml"])
+    py = _generate(tmp_path, "py", "examples/advection_composite", tagged=True,
+                   py="examples/advection_composite/advection_composite_py.py")
+    assert sorted(xml) == ["ccpp_kinds.F90", "cld_suite_cap.F90", "test_host_ccpp_cap.F90"]
+    assert py == xml

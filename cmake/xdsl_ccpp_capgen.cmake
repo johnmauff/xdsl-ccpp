@@ -37,6 +37,13 @@
 #                by the caller; pass full relative/absolute paths as-is)
 # SCHEMEFILES  - CMake list of scheme metadata files
 # SUITES       - CMake list of suite xml files
+# PY_SUITE     - a Python suite script (xdsl_ccpp.frontend.py_api), used
+#                instead of SUITES (passed as "--py <script>"). Its
+#                ccpp_scheme_ref() references take their metadata from
+#                SCHEMEFILES/HOSTFILES, exactly as an XML suite's do.
+# PY_DEPENDS   - CMake list of further Python files the PY_SUITE script
+#                imports (e.g. physics-package modules); editing one
+#                triggers regeneration, like editing the script itself.
 # KIND_MAP     - CMake list of "KIND:ISO" entries (e.g. "kind_dyn:REAL32"),
 #                each passed as its own repeated "--kind-map KIND:ISO" flag
 #                -- ccpp_dsl.py's own CLI explicitly supports repeating this
@@ -87,14 +94,17 @@
 # already follow for CCPP_CAPS_LIST/CCPP_DEPENDENCIES_LIST.
 function(xdsl_ccpp_capgen)
   set(options BIND_C)
-  set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY DIRECTIVE)
-  set(multiValueArgs HOSTFILES SCHEMEFILES SUITES KIND_MAP)
+  set(oneValueArgs HOST_NAME OUTPUT_ROOT VERBOSITY DIRECTIVE PY_SUITE)
+  set(multiValueArgs HOSTFILES SCHEMEFILES SUITES KIND_MAP PY_DEPENDS)
   cmake_parse_arguments(arg "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   if(NOT DEFINED XDSL_CCPP_ROOT)
     message(FATAL_ERROR
       "xdsl_ccpp_capgen: XDSL_CCPP_ROOT must be set (the checkout's own "
       "repo root) before calling this function -- see examples/*/CMakeLists.txt.")
+  endif()
+  if(DEFINED arg_SUITES AND DEFINED arg_PY_SUITE)
+    message(FATAL_ERROR "xdsl_ccpp_capgen: pass SUITES or PY_SUITE, not both.")
   endif()
 
   # Shared flags between the real generation command and the two cheap
@@ -116,6 +126,9 @@ function(xdsl_ccpp_capgen)
   if(DEFINED arg_SUITES)
     list(JOIN arg_SUITES "," SUITES_SEPARATED)
     list(APPEND CCPP_XDSL_CMD_PREDICT "--suites" "${SUITES_SEPARATED}")
+  endif()
+  if(DEFINED arg_PY_SUITE)
+    list(APPEND CCPP_XDSL_CMD_PREDICT "--py" "${arg_PY_SUITE}")
   endif()
   if(DEFINED arg_HOST_NAME)
     list(APPEND CCPP_XDSL_CMD_PREDICT "--host-name" "${arg_HOST_NAME}")
@@ -259,6 +272,7 @@ function(xdsl_ccpp_capgen)
     COMMAND ${CMAKE_COMMAND} -E touch "${_capgen_sentinel}"
     DEPENDS
       ${arg_HOSTFILES} ${arg_SCHEMEFILES} ${arg_SUITES}
+      ${arg_PY_SUITE} ${arg_PY_DEPENDS}
       "${_capgen_bundled_const_meta}"
       "${_capgen_args_fingerprint}"
     WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
