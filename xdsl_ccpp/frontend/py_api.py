@@ -39,6 +39,27 @@ orchestration in Python (backwards-compatible path)::
     if __name__ == "__main__":
         emit_ir(kessler_suite)
 
+**Composing schemes with ordinary Python functions** — a scheme descriptor
+may be called from any helper function (e.g. a physics package or a host
+adapter) that is itself called, directly or indirectly, from ``run()`` or a
+group function; the call records exactly as if made inline.  Groups may be
+written as functions, ``with forLoop("std_name"):`` blocks may appear in any
+of these bodies, and plain keyword defaults give swappable components
+("slots") -- all resolved at IR-generation time, so generated Fortran is
+identical to the equivalent flat suite (see ``composite_scheme_plan.md``)::
+
+    def shortwave(*, diagnostics, overlap=sw_mcica):   # overlap is a slot
+        overlap()
+        with forLoop("number_of_diagnostic_subcycles"):
+            sw_gas_optics()
+            sw_rte()
+            diagnostics()                              # host-supplied hook
+
+    @ccpp_suite("rrtmgp", version="1.0")
+    class rrtmgp:
+        def physics_after_coupler():
+            shortwave(diagnostics=rrtmgp_sw_diagnostics)
+
 The output can be piped directly into ``ccpp_opt``::
 
     python3 my_suite.py | python3 -m xdsl_ccpp.tools.ccpp_opt -p ... -t ftn
@@ -46,8 +67,10 @@ The output can be piped directly into ``ccpp_opt``::
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types as _types
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
@@ -208,6 +231,50 @@ class SchemeDescriptor:
         self.dependencies_path = dependencies_path
         self.source_path = source_path
 
+    def __call__(self, **overrides) -> None:
+        """Record this scheme into the group currently being recorded.
+
+        Lets ordinary Python functions compose schemes: a helper (e.g. a
+        physics package or host adapter) that calls ``some_scheme()`` and is
+        itself called from a suite's ``run()`` records ``some_scheme`` exactly
+        as if it had been called directly inside ``run()``.  Keyword
+        arguments become compile-time literal overrides, same as the
+        by-name callers ``_run_groups`` installs.
+
+        Raises:
+            RuntimeError: when called outside a recording (i.e. not, directly
+                or indirectly, from a ``@ccpp_suite`` ``run()``).
+        """
+        if _active_recorder is None:
+            raise RuntimeError(
+                f"Scheme '{self.name}' was called outside a suite recording. "
+                f"Schemes can only be called (directly or through helper "
+                f"functions) from a @ccpp_suite class's run() method or "
+                f"group functions."
+            )
+        _active_recorder((self, {k: str(v) for k, v in overrides.items()}))
+
+
+# The function that records one item into the suite currently being built,
+# or None when no recording is in progress.  An item is either a scheme call,
+# ``(descriptor, overrides)``, or a completed ``with forLoop(...)`` block, a
+# `SubcycleDescriptor`.  Installed (via `_recording`) by `_run_groups`, by
+# `_record_group_function`, and by an open ``with forLoop(...)`` block.
+_active_recorder = None
+
+
+@contextmanager
+def _recording(recorder):
+    """Install *recorder* as the active recorder for the duration of the block,
+    restoring the previous one afterwards (also when the block raises)."""
+    global _active_recorder
+    previous = _active_recorder
+    _active_recorder = recorder
+    try:
+        yield
+    finally:
+        _active_recorder = previous
+
 
 class TableDescriptor:
     """Descriptor produced by :func:`ccpp_ddt`, :func:`ccpp_module`, or :func:`ccpp_host`."""
@@ -265,28 +332,81 @@ class SubcycleDescriptor:
     ``<subcycle loop="N">`` in a suite XML file.  ``schemes`` may itself
     contain another `SubcycleDescriptor` (a nested ``forLoop()``), to
     arbitrary depth -- corresponding to a nested ``<subcycle>``.
+
+    Also usable as a context manager (``with forLoop("std_name"):``) inside
+    a ``run()``/group function or a helper called from one: scheme calls in
+    the block body are collected as ``(descriptor, overrides)`` pairs, and on
+    exit the whole block is recorded into the enclosing recording as one item.
     """
 
     def __init__(
         self, count: int | str,
-        schemes: list[SchemeDescriptor | SubcycleDescriptor],
+        schemes: list[SchemeDescriptor | tuple[SchemeDescriptor, dict[str, str]]
+                      | SubcycleDescriptor],
     ):
         # Integer → literal loop count baked in at IR-generation time.
         # String → CCPP standard name resolved at runtime (is_literal=False).
         self.count = count
         self.schemes = schemes
+        self._outer_recorder = None
+
+    def __enter__(self) -> SubcycleDescriptor:
+        global _active_recorder
+        if _active_recorder is None:
+            raise RuntimeError(
+                f"'with forLoop({self.count!r}):' was used outside a suite "
+                f"recording; it is only valid (directly or through helper "
+                f"functions) inside a @ccpp_suite class's run() method or "
+                f"group functions."
+            )
+        if self.schemes:
+            raise ValueError(
+                f"forLoop({self.count!r}, [...]) was given a scheme list and "
+                f"also used as a with-block; use one form or the other."
+            )
+        self._outer_recorder = _active_recorder
+        _active_recorder = self.schemes.append
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> bool:
+        global _active_recorder
+        outer, self._outer_recorder = self._outer_recorder, None
+        _active_recorder = outer
+        if exc_type is None:
+            if not self.schemes:
+                raise ValueError(
+                    f"'with forLoop({self.count!r}):' block recorded no "
+                    f"scheme calls."
+                )
+            outer(self)
+        return False
 
 
 def forLoop(
     count: int | str,
-    schemes: list[SchemeDescriptor | SubcycleDescriptor],
+    schemes: list[SchemeDescriptor | SubcycleDescriptor] | None = None,
 ) -> SubcycleDescriptor:
     """Declare a loop block: *schemes* repeated *count* times.
 
-    Corresponds to ``<subcycle loop="N">`` in a suite XML file.  May appear
-    anywhere in a group's scheme list. *schemes* may itself contain another
-    ``forLoop()`` result, nested to arbitrary depth, corresponding to a
-    nested ``<subcycle>``.
+    Corresponds to ``<subcycle loop="N">`` in a suite XML file.  Two forms:
+
+    - **List form** ``forLoop(count, [scheme, ...])``: may appear anywhere in
+      a group's scheme list.  *schemes* may itself contain another
+      ``forLoop()`` result, nested to arbitrary depth, corresponding to a
+      nested ``<subcycle>``.
+    - **Block form** ``with forLoop(count):`` (no *schemes*): usable inside
+      ``run()``, a group function, or any helper function called from one.
+      Every scheme call in the block body -- including through further
+      helpers, keyword overrides included -- forms the loop body; blocks may
+      nest.  The block is recorded into the enclosing group as one subcycle::
+
+          def rrtmgp_shortwave():
+              with forLoop("number_of_diagnostic_subcycles"):
+                  rrtmgp_sw_gas_optics()
+                  rrtmgp_sw_rte()
+
+      Inside ``run()`` the block lands in the parent group of the schemes it
+      contains; all of them must belong to the same group.
 
     Use this function when the loop count is a **CCPP standard name** resolved
     at runtime by the host model.  For a fixed integer count known at
@@ -324,9 +444,9 @@ def forLoop(
                  time, or a ``str`` CCPP standard name resolved at runtime.
         schemes: Ordered list of :class:`SchemeDescriptor` objects forming the
                  loop body -- may itself contain a nested :func:`forLoop`
-                 result for a nested ``<subcycle>``.
+                 result for a nested ``<subcycle>``.  Omit for the block form.
     """
-    return SubcycleDescriptor(count=count, schemes=schemes)
+    return SubcycleDescriptor(count=count, schemes=[] if schemes is None else schemes)
 
 
 # ---------------------------------------------------------------------------
@@ -467,8 +587,9 @@ def _run_groups(
 
         def _make_scheme_caller(sname, ssd):
             def _caller(**kwargs):
-                overrides = {k: str(v) for k, v in kwargs.items()}
-                _add(scheme_to_group.get(sname, default_group), ssd, overrides)
+                # Through the active recorder (not _add directly) so a call
+                # inside a ``with forLoop(...)`` block lands in that block.
+                _active_recorder((ssd, {k: str(v) for k, v in kwargs.items()}))
 
             return _caller
 
@@ -481,17 +602,68 @@ def _run_groups(
             if isinstance(a, str):
                 raise TypeError(
                     f"range() does not accept a CCPP standard name '{a}'. "
-                    f"Use forLoop('{a}', [...]) in the group list instead of "
-                    f"a for loop in def run():"
+                    f"Use 'with forLoop(\"{a}\"):' (or forLoop('{a}', [...]) "
+                    f"in the group list) instead of a for loop in def run():"
                 )
         return range(*args)
 
     namespace["range"] = _checked_range
 
-    # Execute run_fn with recording callables overlaid on its original globals.
-    _types.FunctionType(run_fn.__code__, {**run_fn.__globals__, **namespace})()
+    # Every scheme call -- by-name callers above, or SchemeDescriptor.__call__
+    # for schemes reached through helper functions (whose globals are their
+    # own module's, not the overlay below) -- routes here and goes to its
+    # parent group.  A completed ``with forLoop(...)`` block goes to the
+    # parent group shared by every scheme inside it.
+    def _record_item(item) -> None:
+        if isinstance(item, SubcycleDescriptor):
+            targets = {scheme_to_group.get(sd.name, default_group)
+                       for sd in _subcycle_schemes(item)}
+            if len(targets) > 1:
+                raise ValueError(
+                    f"'with forLoop({item.count!r}):' in run() contains schemes "
+                    f"from several groups {sorted(targets)}; a loop must stay "
+                    f"within one group."
+                )
+            output.setdefault(targets.pop(), []).append(item)
+        else:
+            sd, overrides = item
+            _add(scheme_to_group.get(sd.name, default_group), sd, overrides)
+
+    # Execute run_fn with recording callables overlaid on its original
+    # globals.  Its closure is passed through so run() may also refer to
+    # locals of an enclosing function (those resolve via the closure, not the
+    # overlay, and record through SchemeDescriptor.__call__).
+    with _recording(_record_item):
+        _types.FunctionType(run_fn.__code__, {**run_fn.__globals__, **namespace},
+                            run_fn.__name__, run_fn.__defaults__,
+                            run_fn.__closure__)()
 
     return output
+
+
+def _subcycle_schemes(subcycle: SubcycleDescriptor):
+    """Yield every SchemeDescriptor inside *subcycle*, at any nesting depth."""
+    for item in subcycle.schemes:
+        if isinstance(item, SubcycleDescriptor):
+            yield from _subcycle_schemes(item)
+        elif isinstance(item, tuple):
+            yield item[0]
+        else:
+            yield item
+
+
+def _record_group_function(group_fn) -> list:
+    """Execute a group function, returning the items it recorded, in order.
+
+    Every scheme call made by *group_fn* -- directly or through helper
+    functions -- records into this one group, regardless of any group list
+    the scheme may also appear in; ``with forLoop(...)`` blocks record as
+    `SubcycleDescriptor` items.
+    """
+    items: list = []
+    with _recording(items.append):
+        group_fn()
+    return items
 
 
 def ccpp_suite(name: str, version: str = "1.0"):
@@ -511,7 +683,25 @@ def ccpp_suite(name: str, version: str = "1.0"):
     When ``run`` is absent the default behaviour (include every scheme from
     every group) is preserved.
 
+    **Group functions**: any other non-private function defined on the class
+    becomes a group named after the function.  Its body is executed at
+    IR-generation time, and every scheme it calls -- directly or through
+    ordinary helper functions (physics packages, host adapters) -- is
+    recorded into that group, in call order.  Group functions and list
+    groups may be mixed; groups keep class-definition order.  A class with
+    group functions may not also define ``run``.
+
     Examples::
+
+        # Group functions composing schemes through helper functions
+        def my_package():
+            hello_scheme()
+            temp_adjust()
+
+        @ccpp_suite("hello_world_suite", version="1.0")
+        class hello_world:
+            def physics():
+                my_package()
 
         # Default — include all schemes
         @ccpp_suite("hello_world_suite", version="1.0")
@@ -546,17 +736,32 @@ def ccpp_suite(name: str, version: str = "1.0"):
 
     def decorator(cls) -> SuiteDescriptor:
         raw_groups: dict[str, list[SchemeDescriptor]] = {}
+        group_fns: dict = {}
         for attr_name, val in cls.__dict__.items():
-            if not attr_name.startswith("_") and isinstance(val, list):
+            if attr_name.startswith("_"):
+                continue
+            if isinstance(val, list):
                 raw_groups[attr_name] = val
+            elif attr_name != "run" and inspect.isfunction(val):
+                group_fns[attr_name] = val
         run_fn = cls.__dict__.get("run")
+        if run_fn is not None and group_fns:
+            raise ValueError(
+                f"Suite '{name}' defines both run() and group function(s) "
+                f"{sorted(group_fns)}; use one or the other."
+            )
         if run_fn is not None:
             groups = _run_groups(run_fn, raw_groups)
         else:
-            groups = {
-                k: [item if isinstance(item, SubcycleDescriptor) else (item, {}) for item in v]
-                for k, v in raw_groups.items()
-            }
+            groups = {}
+            for attr_name in cls.__dict__:
+                if attr_name in raw_groups:
+                    groups[attr_name] = [
+                        item if isinstance(item, SubcycleDescriptor) else (item, {})
+                        for item in raw_groups[attr_name]
+                    ]
+                elif attr_name in group_fns:
+                    groups[attr_name] = _record_group_function(group_fns[attr_name])
         return SuiteDescriptor(name, version, groups)
 
     return decorator
@@ -875,6 +1080,10 @@ def _group_item_to_op(
     `<subcycle>` support (see examples/var_compat/var_compatibility_suite.xml,
     ported from NCAR ccpp-framework's feature/capgen-v1, which nests three
     levels deep).
+
+    Loop-body entries from the list form are bare `SchemeDescriptor`s; those
+    from the ``with forLoop(...)`` block form are ``(descriptor, overrides)``
+    pairs, whose overrides are kept.
     """
     if isinstance(item, SubcycleDescriptor):
         inner_ops = []
@@ -882,7 +1091,10 @@ def _group_item_to_op(
             if isinstance(sd, SubcycleDescriptor):
                 inner_ops.append(_group_item_to_op(sd, seen_schemes))
             else:
-                inner_ops.append(SchemeOp(sd.name, None))
+                overrides = None
+                if isinstance(sd, tuple):
+                    sd, overrides = sd
+                inner_ops.append(SchemeOp(sd.name, overrides or None))
                 seen_schemes.setdefault(sd.name, sd)
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
     sd, overrides = item

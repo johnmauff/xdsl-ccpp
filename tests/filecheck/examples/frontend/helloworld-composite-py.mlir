@@ -1,0 +1,76 @@
+// Test the Python frontend IR for the composite-scheme helloworld example.
+// helloworld_composite_py.py builds the same suite as helloworld_py.py through
+// composite-scheme Stage 1 features -- a package function, a slot, a hook and a
+// group function (see composite_scheme_plan.md) -- and must produce IR
+// identical to it.  The CHECK lines below are those of helloworld-py.mlir;
+// keep the two files' CHECK lines in sync.
+//
+// RUN: python3 examples/helloworld/helloworld_composite_py.py | python3 -m filecheck %s
+
+// Suite and group structure.
+
+// CHECK:       builtin.module {
+// CHECK-NEXT:    "ccpp.suite"() <{suite_name = "hello_world_suite", version = "1.0"}> ({
+// CHECK-NEXT:      "ccpp.group"() <{group_name = "physics"}> ({
+// CHECK-NEXT:        "ccpp.scheme"() <{scheme_name = "hello_scheme"}> : () -> ()
+// CHECK-NEXT:        "ccpp.scheme"() <{scheme_name = "temp_adjust"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "hello_scheme", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_scheme_run", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "ncol", type = "integer", standard_name = "horizontal_dimension", intent = "in", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "lev", type = "integer", standard_name = "vertical_layer_dimension", intent = "in", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "ilev", type = "integer", standard_name = "vertical_interface_dimension", intent = "in", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "timestep", type = "real", standard_name = "time_step_for_physics", long_name = "time step", kind = "kind_phys", intent = "in", units = "s"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_level", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_interface_dimension", standard_name = "potential_temperature_at_interface", kind = "kind_dyn", intent = "inout", units = "K"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_layer", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "out", units = "K"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_scheme_init", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_scheme_finalize", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "temp_adjust", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "temp_adjust_run", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "nbox", type = "integer", standard_name = "horizontal_dimension", intent = "in", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "lev", type = "integer", standard_name = "vertical_layer_dimension", intent = "in", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_layer", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", intent = "inout", units = "K"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "timestep", type = "real", standard_name = "time_step_for_physics", long_name = "time step", kind = "kind_phys", intent = "in", units = "s"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "temp_adjust_init", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "temp_adjust_finalize", type = #ccpp<table_type_kind scheme>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", intent = "out", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", intent = "out", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "hello_world_sub", type = #ccpp<table_type_kind control>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_world_sub", type = #ccpp<table_type_kind control>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "col_start", type = "integer", standard_name = "horizontal_loop_begin", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "col_end", type = "integer", standard_name = "horizontal_loop_end", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errmsg", type = "character", standard_name = "ccpp_error_message", long_name = "Error message for error handling in CCPP", kind = "len=512", units = "none"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "errflg", type = "integer", standard_name = "ccpp_error_code", long_name = "Error flag for error handling in CCPP", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) : () -> ()
+// CHECK-NEXT:    "ccpp.table_properties"() <{name = "hello_world_mod", type = #ccpp<table_type_kind module>}> ({
+// CHECK-NEXT:      "ccpp.arg_table"() <{name = "hello_world_mod", type = #ccpp<table_type_kind module>}> ({
+// CHECK-NEXT:        "ccpp.arg"() <{name = "ncols", type = "integer", standard_name = "horizontal_dimension", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "pver", type = "integer", standard_name = "vertical_layer_dimension", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "pverp", type = "integer", standard_name = "vertical_interface_dimension", units = "count"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_midpoints", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_layer_dimension", standard_name = "potential_temperature", kind = "kind_phys", units = "degC"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "temp_interfaces", type = "real", dimensions = #builtin.int<2>, dim_names = "horizontal_dimension,vertical_interface_dimension", standard_name = "potential_temperature_at_interface", kind = "kind_phys", units = "K"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "dt", type = "real", standard_name = "time_step_for_physics", long_name = "time step", kind = "kind_phys", units = "s"}> : () -> ()
+// CHECK-NEXT:        "ccpp.arg"() <{name = "kind_dyn_val", type = "real", standard_name = "kind_dyn_precision", kind = "kind_dyn", units = "1"}> : () -> ()
+// CHECK-NEXT:      }) : () -> ()
+// CHECK-NEXT:    }) : () -> ()
+// CHECK-NEXT:  }
