@@ -1,14 +1,14 @@
 """Python API frontend for the CCPP compiler.
 
 Users write a Python file that imports this module, declares arguments, schemes,
-DDTs, and suites using decorators, then calls :func:`emit_ir` to produce the
+DDTs, and suites using decorators, then calls :func:`export_suite` to produce the
 same MLIR as the XML/meta frontend.
 
 There are two ways to define scheme argument metadata:
 
 **Inline** — define arguments directly in Python (no ``.meta`` file needed)::
 
-    from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, emit_ir
+    from xdsl_ccpp.frontend.py_api import Arg, ccpp_scheme, ccpp_suite, export_suite
 
     @ccpp_scheme
     class my_scheme:
@@ -20,12 +20,12 @@ There are two ways to define scheme argument metadata:
         physics = [my_scheme]
 
     if __name__ == "__main__":
-        emit_ir(my_suite)
+        export_suite(my_suite)
 
 **From .meta files** — load existing ``.meta`` files and write only the suite
 orchestration in Python (backwards-compatible path)::
 
-    from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, emit_ir
+    from xdsl_ccpp.frontend.py_api import ccpp_scheme_from_meta, ccpp_suite, export_suite
 
     kessler        = ccpp_scheme_from_meta("examples/kessler/scheme/kessler.meta")
     kessler_update = ccpp_scheme_from_meta("examples/kessler/scheme/kessler_update.meta")
@@ -37,7 +37,7 @@ orchestration in Python (backwards-compatible path)::
             kessler_update()
 
     if __name__ == "__main__":
-        emit_ir(kessler_suite)
+        export_suite(kessler_suite)
 
 **Composing schemes with ordinary Python functions** — a scheme descriptor
 may be called from any helper function (e.g. a physics package or a host
@@ -46,7 +46,10 @@ group function; the call records exactly as if made inline.  Groups may be
 written as functions, ``with forLoop("std_name"):`` blocks may appear in any
 of these bodies, and plain keyword defaults give swappable components
 ("slots") -- all resolved at IR-generation time, so generated Fortran is
-identical to the equivalent flat suite (see ``composite_scheme_plan.md``)::
+identical to the equivalent flat suite (see ``composite_scheme_plan.md``).
+Schemes may be referenced by name only, ``ccpp_scheme_ref("name")``, leaving
+file paths to the command line (``--scheme-files=``/``--host-files=``) or the
+driver, as for an XML suite::
 
     def shortwave(*, diagnostics, overlap=sw_mcica):   # overlap is a slot
         overlap()
@@ -215,10 +218,15 @@ class SchemeDescriptor:
                  kind_specs: list[tuple[str, str, str]] | None = None,
                  dependencies: list[str] | None = None,
                  dependencies_path: str | None = None,
-                 source_path: str | None = None):
+                 source_path: str | None = None,
+                 is_reference: bool = False):
         self.name = name
         # Maps entry-point attribute name (e.g. "run") → list of Arg objects.
         self.entry_points = entry_points
+        # True for a name-only reference (ccpp_scheme_ref): no metadata of its
+        # own; build_ir resolves it by name from scheme_files, or leaves the
+        # metadata to the driver (ccpp_dsl --py --scheme-files ...).
+        self.is_reference = is_reference
         # Implementation language: None / "fortran" (default) or "c++".
         self.language = language
         # (kind_name, module, spec) tuples from this table's own kind_spec
@@ -474,6 +482,21 @@ def ccpp_scheme(cls) -> SchemeDescriptor:
         if hasattr(cls, ep):
             entry_points[ep] = getattr(cls, ep)
     return SchemeDescriptor(cls.__name__, entry_points)
+
+
+def ccpp_scheme_ref(name: str) -> SchemeDescriptor:
+    """Reference a scheme by name only, without loading its metadata.
+
+    The Python counterpart of an XML ``<scheme>name</scheme>`` entry: a suite
+    or package written with references contains no file paths.  The
+    metadata is supplied where it is for an XML suite -- by whoever runs the
+    generator: ``build_ir``/``export_suite``'s *scheme_files* (on a script's
+    command line, ``--scheme-files=a.meta,b.F90``), or ``ccpp_dsl --py ...
+    --scheme-files ...``, which merges ``.meta`` metadata itself::
+
+        hello_scheme = ccpp_scheme_ref("hello_scheme")
+    """
+    return SchemeDescriptor(name, {}, is_reference=True)
 
 
 def _table_descriptor_from_class(cls, table_type: str) -> TableDescriptor:
@@ -855,7 +878,7 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescr
                 kessler_update()
 
         if __name__ == "__main__":
-            emit_ir(kessler_suite)
+            export_suite(kessler_suite)
 
     When a ``.meta`` file contains multiple scheme definitions (e.g.
     ``physics_tendency_updaters.meta`` defines ``apply_heating_rate``,
@@ -874,7 +897,7 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescr
 
     Returns:
         A :class:`SchemeDescriptor` ready for use in ``@ccpp_suite`` and
-        :func:`emit_ir`.
+        :func:`export_suite`.
     """
     from xdsl_ccpp.frontend.ccpp_xml import (
         parse_meta_file,  # lazy to avoid circular import
@@ -921,6 +944,78 @@ def ccpp_scheme_from_meta(filename: str, name: str | None = None) -> SchemeDescr
     )
 
 
+def ccpp_scheme_from_source(
+    filename: str, name: str | None = None, root_dir: str | None = None,
+) -> SchemeDescriptor:
+    """Load a CCPP scheme descriptor from ``!$ccpp``-tagged Fortran source.
+
+    The ``.meta``-free counterpart of :func:`ccpp_scheme_from_meta`: argument
+    names, types, kinds, intents and ranks come from the Fortran declarations,
+    and ``standard_name``/``units``/``long_name``/``dim_names``/etc. from
+    ``!$ccpp [name] key = value`` comment tags beside them -- the convention
+    of ``examples/advection_nometa`` (see that directory's README)::
+
+        hello_scheme = ccpp_scheme_from_source("examples/helloworld_composite/hello_scheme.F90")
+
+    Uses the same extractor as the ``ccpp_generate_meta`` tool, then the same
+    loading path as :func:`ccpp_scheme_from_meta`, so a fully tagged source
+    yields the same descriptor as an equivalent hand-written ``.meta``.
+
+    Args:
+        filename: Path to a tagged scheme ``.F90`` file.
+        name:     As for :func:`ccpp_scheme_from_meta`.
+        root_dir: When given, derive the scheme's ``dependencies`` from its
+                  ``USE`` statements, resolved within this directory (see
+                  ``ccpp_generate_meta``'s ``--root-dir``).  Omitted: no
+                  ``dependencies`` are recorded.
+
+    Raises:
+        ValueError: if metadata could not be extracted from *filename*.
+    """
+    with _meta_from_source(filename, root_dir) as meta_path:
+        return ccpp_scheme_from_meta(meta_path, name)
+
+
+@contextmanager
+def _meta_from_source(filename: str, root_dir: str | None = None):
+    """Yield the path of a temporary ``.meta`` generated from tagged *filename*."""
+    import os
+    import tempfile
+
+    from xdsl_ccpp.tools.ccpp_generate_meta import generate_meta_for_file
+
+    meta_text = generate_meta_for_file(filename, root_dir)
+    if meta_text is None:
+        raise ValueError(
+            f"Could not extract CCPP metadata from {filename!r} "
+            f"(see the error printed above)."
+        )
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        meta_path = os.path.join(tmpdir, f"{stem}.meta")
+        with open(meta_path, "w") as f:
+            f.write(meta_text)
+        yield meta_path
+
+
+def _schemes_from_meta_file(meta_path: str) -> list[SchemeDescriptor]:
+    """Every scheme defined in *meta_path*, in file order."""
+    from xdsl_ccpp.frontend.ccpp_xml import parse_meta_file
+
+    names = [str(m.table_properties.getAttr("name"))
+             for m in parse_meta_file(meta_path, is_scheme=True)
+             if str(m.table_properties.getAttr("type")) == "scheme"]
+    return [ccpp_scheme_from_meta(meta_path, n) for n in names]
+
+
+def _load_scheme_file(filename: str) -> list[SchemeDescriptor]:
+    """Every scheme in a ``.meta`` file or a ``!$ccpp``-tagged Fortran file."""
+    if filename.lower().endswith((".f90", ".f")):
+        with _meta_from_source(filename) as meta_path:
+            return _schemes_from_meta_file(meta_path)
+    return _schemes_from_meta_file(filename)
+
+
 def ccpp_host_from_meta(filename: str) -> list[TableDescriptor]:
     """Load CCPP host metadata from a ``.meta`` file.
 
@@ -929,14 +1024,14 @@ def ccpp_host_from_meta(filename: str) -> list[TableDescriptor]:
     blocks (e.g. a DDT definition followed by a module), so the return value
     is always a list.
 
-    Pass the results in the *additional* argument of :func:`emit_ir` or
+    Pass the results in the *additional* argument of :func:`export_suite` or
     :func:`build_ir`::
 
         host_mod = ccpp_host_from_meta("kessler_host_mod.meta")
         host_sub = ccpp_host_from_meta("kessler_host_sub.meta")
 
         if __name__ == "__main__":
-            emit_ir(kessler_suite, additional=[*host_mod, *host_sub])
+            export_suite(kessler_suite, additional=[*host_mod, *host_sub])
 
     Args:
         filename: Path to a host ``.meta`` file.
@@ -984,7 +1079,7 @@ def ccpp_ddt_from_meta(filename: str) -> TableDescriptor:
             data_prep = [make_ddt, environ_conditions]
 
         if __name__ == "__main__":
-            emit_ir(ddt_suite, additional=[vmr_type])
+            export_suite(ddt_suite, additional=[vmr_type])
 
     Args:
         filename: Path to a ``.meta`` file containing a DDT definition.
@@ -1068,6 +1163,13 @@ def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
                                  source_path=sd.source_path)
 
 
+def _register_scheme(seen_schemes: dict[str, SchemeDescriptor], sd: SchemeDescriptor) -> None:
+    """Record *sd* under its name; a full descriptor replaces a reference."""
+    existing = seen_schemes.get(sd.name)
+    if existing is None or (existing.is_reference and not sd.is_reference):
+        seen_schemes[sd.name] = sd
+
+
 def _group_item_to_op(
     item: tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor,
     seen_schemes: dict[str, SchemeDescriptor],
@@ -1095,34 +1197,58 @@ def _group_item_to_op(
                 if isinstance(sd, tuple):
                     sd, overrides = sd
                 inner_ops.append(SchemeOp(sd.name, overrides or None))
-                seen_schemes.setdefault(sd.name, sd)
+                _register_scheme(seen_schemes, sd)
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
     sd, overrides = item
-    seen_schemes.setdefault(sd.name, sd)
+    _register_scheme(seen_schemes, sd)
     return SchemeOp(sd.name, overrides or None)
 
 
 def build_ir(
     suites: SuiteDescriptor | list[SuiteDescriptor],
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
+    *,
+    scheme_files: list[str] | None = None,
+    host_files: list[str] | None = None,
 ) -> ModuleOp:
     """Build a :class:`~xdsl.dialects.builtin.ModuleOp` from one or more suite descriptors.
 
     Produces the same MLIR as the XML/meta frontend (:mod:`xdsl_ccpp.frontend.ccpp_xml`).
 
     Args:
-        suites:     One :class:`SuiteDescriptor` or a list of them.  When a
-                    list is given all suites are included in the same
-                    ``ModuleOp``, matching the behaviour of the XML frontend
-                    when ``--suites`` receives a comma-separated list.
-        additional: Extra DDT/module/host (or scheme) descriptors not already
-                    referenced inside any suite's groups.
+        suites:       One :class:`SuiteDescriptor` or a list of them.  When a
+                      list is given all suites are included in the same
+                      ``ModuleOp``, matching the behaviour of the XML frontend
+                      when ``--suites`` receives a comma-separated list.
+        additional:   Extra DDT/module/host (or scheme) descriptors not already
+                      referenced inside any suite's groups.
+        scheme_files: ``.meta`` or ``!$ccpp``-tagged Fortran files supplying
+                      metadata for :func:`ccpp_scheme_ref` references, matched
+                      by scheme name.  When given, every reference must be
+                      found in them; when omitted, references emit no
+                      metadata (``ccpp_dsl --py --scheme-files`` merges it).
+        host_files:   Host/module/DDT ``.meta`` files, appended after
+                      *additional*.
 
     Returns:
         A top-level ``ModuleOp`` ready to be passed to ``ccpp_opt``.
+
+    Raises:
+        ValueError: a scheme is defined twice across *scheme_files*, or a
+            reference has no metadata in them.
     """
     if isinstance(suites, SuiteDescriptor):
         suites = [suites]
+
+    loaded: dict[str, SchemeDescriptor] = {}
+    for path in scheme_files or []:
+        for sd in _load_scheme_file(path):
+            if sd.name in loaded:
+                raise ValueError(f"Scheme '{sd.name}' is defined more than once in scheme_files")
+            loaded[sd.name] = sd
+    additional = list(additional or [])
+    for path in host_files or []:
+        additional.extend(ccpp_host_from_meta(path))
 
     ir_ops = []
     seen_schemes: dict[str, SchemeDescriptor] = {}
@@ -1135,12 +1261,22 @@ def build_ir(
             group_ops.append(GroupOp(group_name, ops))
         ir_ops.append(SuiteOp(suite.name, group_ops, suite.version))
 
-    # One TablePropertiesOp per unique scheme across all suites.
-    for sd in seen_schemes.values():
+    # One TablePropertiesOp per unique scheme across all suites; references
+    # take their metadata from scheme_files (or are left to the driver).
+    for name, sd in seen_schemes.items():
+        if sd.is_reference:
+            if name in loaded:
+                sd = loaded[name]
+            elif scheme_files:
+                raise ValueError(
+                    f"No metadata for scheme '{name}' in scheme_files {scheme_files}"
+                )
+            else:
+                continue
         ir_ops.append(_scheme_table_properties(sd))
 
     # Additional descriptors (DDTs, host modules, hosts, extra schemes).
-    for desc in additional or []:
+    for desc in additional:
         if isinstance(desc, SchemeDescriptor):
             ir_ops.append(_scheme_table_properties(desc))
         else:
@@ -1156,22 +1292,48 @@ def build_ir(
     return ModuleOp(ir_ops)
 
 
-def emit_ir(
+def export_suite(
     suites: SuiteDescriptor | list[SuiteDescriptor],
     additional: list[TableDescriptor | SchemeDescriptor] | None = None,
 ) -> None:
-    """Build IR from one or more suites and print it to stdout.
+    """Hand the suite(s) defined in this script to the CCPP generator.
 
-    Intended to be called inside ``if __name__ == "__main__":`` in user scripts.
-    The output is identical to the XML/meta frontend and can be piped directly
-    into ``ccpp_opt``.
+    Call it at the end of a suite script, inside
+    ``if __name__ == "__main__":``.  It writes the suite description (MLIR,
+    identical to what the XML/meta frontend produces) to stdout, where the
+    generator -- ``ccpp_dsl --py`` or a ``| ccpp_opt`` pipeline -- reads it.
 
     Pass a list of :class:`SuiteDescriptor` objects to include multiple suites
     in one IR output, matching ``ccpp_xdsl --suites a.xml,b.xml ...``.
+
+    Metadata for :func:`ccpp_scheme_ref` references and for the host comes
+    from the script's command line, as the build system would pass it for
+    an XML suite (see :func:`build_ir`)::
+
+        python3 suite.py --scheme-files=a.meta,b.F90 --host-files=host.meta
     """
     # This script has no argparse of its own; ccpp_dsl.py's --py mode
     # forwards --legacy-mode as a bare token on this process's own argv
     # (mirroring ccpp_param()'s existing sys.argv-scanning convention).
     # Must run before build_ir() constructs any ArgumentOp below.
     set_legacy_mode("--legacy-mode" in sys.argv)
-    print(build_ir(suites, additional))
+    print(build_ir(suites, additional,
+                   scheme_files=_argv_file_list("--scheme-files"),
+                   host_files=_argv_file_list("--host-files")))
+
+
+def _argv_file_list(option: str) -> list[str] | None:
+    """Comma-separated paths from a ``option=a,b`` token on argv, if present."""
+    prefix = f"{option}="
+    for token in sys.argv[1:]:
+        if token.startswith(prefix):
+            return [p for p in token[len(prefix):].split(",") if p]
+    return None
+
+
+def emit_ir(
+    suites: SuiteDescriptor | list[SuiteDescriptor],
+    additional: list[TableDescriptor | SchemeDescriptor] | None = None,
+) -> None:
+    """Older name for :func:`export_suite`, kept for existing scripts."""
+    export_suite(suites, additional)

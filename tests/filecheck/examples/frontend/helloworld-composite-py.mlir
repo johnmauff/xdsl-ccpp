@@ -1,11 +1,7 @@
-// Test the Python frontend IR for the composite-scheme helloworld example.
-// helloworld_composite_py.py builds the same suite as helloworld_py.py through
-// composite-scheme Stage 1 features -- a package function, a slot, a hook and a
-// group function (see composite_scheme_plan.md) -- and must produce IR
-// identical to it.  The CHECK lines below are those of helloworld-py.mlir;
-// keep the two files' CHECK lines in sync.
+// examples/helloworld_composite must produce the same IR as helloworld_py.py:
+// CHECK lines are those of helloworld-py.mlir (keep in sync).
 //
-// RUN: python3 examples/helloworld/helloworld_composite_py.py | python3 -m filecheck %s
+// RUN: python3 examples/helloworld_composite/helloworld_composite_py.py --scheme-files=examples/helloworld_composite/hello_scheme.F90,examples/helloworld_composite/temp_adjust.F90 --host-files=examples/helloworld/hello_world_host.meta,examples/helloworld/hello_world_mod.meta | python3 -m filecheck %s
 
 // Suite and group structure.
 

@@ -396,3 +396,125 @@ class TestForLoopBlock:
                         scheme_a()
                         raise KeyError("boom")
         assert py_api._active_recorder is None
+
+
+class TestSchemeFromSource:
+    """ccpp_scheme_from_source: examples/helloworld_composite's tagged schemes
+    must load identically to examples/helloworld's hand-written .meta."""
+
+    @pytest.mark.parametrize("scheme", ["hello_scheme", "temp_adjust"])
+    def test_tagged_source_matches_meta_ir(self, scheme):
+        from_meta = py_api.ccpp_scheme_from_meta(f"examples/helloworld/{scheme}.meta")
+        from_source = py_api.ccpp_scheme_from_source(f"examples/helloworld_composite/{scheme}.F90")
+        assert from_source.name == from_meta.name == scheme
+        assert sorted(from_source.entry_points) == sorted(from_meta.entry_points)
+
+        @ccpp_suite("s", version="1.0")
+        class via_meta:
+            physics = [from_meta]
+
+        @ccpp_suite("s", version="1.0")
+        class via_source:
+            physics = [from_source]
+
+        assert str(build_ir(via_source)) == str(build_ir(via_meta))
+
+    def test_unreadable_source_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="Could not extract CCPP metadata"):
+            py_api.ccpp_scheme_from_source(str(tmp_path / "missing.F90"))
+
+
+H = "examples/helloworld"
+HC = "examples/helloworld_composite"
+ref_hello = py_api.ccpp_scheme_ref("hello_scheme")
+ref_adjust = py_api.ccpp_scheme_ref("temp_adjust")
+
+
+def _table_names(module):
+    from xdsl_ccpp.dialects.ccpp import TablePropertiesOp
+    return [op.table_name.data for op in module.body.block.ops
+            if isinstance(op, TablePropertiesOp)]
+
+
+@ccpp_suite("s", version="1.0")
+class ref_suite:
+    def physics():
+        ref_hello()
+        ref_adjust()
+
+
+class TestSchemeReferences:
+    """ccpp_scheme_ref: path-free scheme references, resolved by name from
+    scheme_files (or left to the driver), as for an XML suite."""
+
+    def _full_suite_ir(self, **kwargs):
+        hello = py_api.ccpp_scheme_from_meta(f"{H}/hello_scheme.meta")
+        adjust = py_api.ccpp_scheme_from_meta(f"{H}/temp_adjust.meta")
+
+        @ccpp_suite("s", version="1.0")
+        class full:
+            def physics():
+                hello()
+                adjust()
+
+        return str(build_ir(full, **kwargs))
+
+    def test_reference_records_like_a_scheme(self):
+        assert _recorded(ref_suite) == [("physics", "hello_scheme", {}),
+                                        ("physics", "temp_adjust", {})]
+
+    def test_unresolved_references_emit_no_metadata(self):
+        """Without scheme_files the driver supplies the metadata."""
+        assert _table_names(build_ir(ref_suite)) == []
+
+    @pytest.mark.parametrize("files", [
+        [f"{H}/hello_scheme.meta", f"{H}/temp_adjust.meta"],
+        [f"{HC}/hello_scheme.F90", f"{HC}/temp_adjust.F90"],
+    ])
+    def test_references_resolve_from_meta_or_tagged_source(self, files):
+        assert str(build_ir(ref_suite, scheme_files=files)) == self._full_suite_ir()
+
+    def test_multi_scheme_meta_file(self, tmp_path):
+        combined = tmp_path / "both.meta"
+        combined.write_text(open(f"{H}/hello_scheme.meta").read() + "\n"
+                            + open(f"{H}/temp_adjust.meta").read())
+        assert str(build_ir(ref_suite, scheme_files=[str(combined)])) == self._full_suite_ir()
+
+    def test_missing_metadata_raises(self):
+        with pytest.raises(ValueError, match="No metadata for scheme 'temp_adjust'"):
+            build_ir(ref_suite, scheme_files=[f"{H}/hello_scheme.meta"])
+
+    def test_duplicate_scheme_raises(self):
+        with pytest.raises(ValueError, match="defined more than once"):
+            build_ir(ref_suite, scheme_files=[f"{H}/hello_scheme.meta",
+                                              f"{HC}/hello_scheme.F90",
+                                              f"{H}/temp_adjust.meta"])
+
+    def test_full_descriptor_wins_over_reference(self):
+        full_hello = py_api.ccpp_scheme_from_meta(f"{H}/hello_scheme.meta")
+
+        @ccpp_suite("s", version="1.0")
+        class mixed:
+            def physics():
+                ref_hello()
+                full_hello()
+
+        assert _table_names(build_ir(mixed)) == ["hello_scheme"]
+
+    def test_host_files_follow_additional(self):
+        hosts = [f"{H}/hello_world_host.meta", f"{H}/hello_world_mod.meta"]
+        expected = self._full_suite_ir(
+            additional=py_api.ccpp_host_from_meta(hosts[0])
+            + py_api.ccpp_host_from_meta(hosts[1]))
+        got = str(build_ir(ref_suite,
+                           scheme_files=[f"{H}/hello_scheme.meta", f"{H}/temp_adjust.meta"],
+                           host_files=hosts))
+        assert got == expected
+
+    @pytest.mark.parametrize("entry", ["export_suite", "emit_ir"])
+    def test_export_suite_reads_files_from_argv(self, entry, monkeypatch, capsys):
+        """export_suite (and its older name emit_ir) take metadata from argv."""
+        files = f"{H}/hello_scheme.meta,{H}/temp_adjust.meta"
+        monkeypatch.setattr("sys.argv", ["suite.py", f"--scheme-files={files}"])
+        getattr(py_api, entry)(ref_suite)
+        assert capsys.readouterr().out.strip() == self._full_suite_ir().strip()
