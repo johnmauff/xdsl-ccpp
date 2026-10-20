@@ -32,7 +32,7 @@ measured data, and will drift as items are reassessed.
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
-| `composite-scheme` — Stage 2 (encapsulation; gated on CAM-SIMA's RRTMGP FPHYStest, see `composite_scheme_plan.md` §11) | core S2-1..S2-4: 15-25 days, plus S2-0 (CAM-SIMA Python-suite support, M); package cap (2f) and GPU residency (2g) deferred | L |
+| `composite-scheme` — Stage 2 follow-ons (core S2-0..S2-3 resolved; see the `composite-scheme` section and `composite_scheme_plan.md` §11) | package cap 2f: L; GPU residency across the boundary 2g: M; S2-4 deferred; GPU validation of the composite path and multi-package scoping not yet sized | L |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
@@ -706,9 +706,9 @@ filename approach originally envisioned. CHANGELOG.md L12426.
 
 ## Someday-maybe: composite schemes (packages with slots and hooks)
 
-ID: `composite-scheme`. **Stage 1 resolved (2026-10-19); Stage 2 not
-started.** Full design, worked RRTMGP example and staged plans:
-`composite_scheme_plan.md`. CHANGELOG.md L12572.
+ID: `composite-scheme`. **Stage 1 and the Stage 2 core resolved
+(2026-10-19/20); follow-ons below are open.** Full design, worked RRTMGP
+example and staged plans: `composite_scheme_plan.md`. CHANGELOG.md L12572.
 
 Let a physics parameterization be written as an exchangeable **package**
 (composite scheme): a Python function whose body composes schemes, with
@@ -722,16 +722,28 @@ transfer.
 - **Stage 1. Resolved (2026-10-19, PRs #148/#149 + RRTMGP example)** —
   Python composition, path-free `ccpp_scheme_ref`, CMake `PY_SUITE`, and
   helloworld/advection/RRTMGP composite examples. CHANGELOG.md L12600.
-- **Stage 2 (L-XL)** — encapsulation:
-  - a `ccpp.composite` op;
-  - a declared or inferred public interface;
-  - scoped package → suite → host name resolution;
-  - a hook scoping rule;
-  - flatten-with-mangling lowering;
-  - optionally a per-composite package cap (package-owned state, instances);
-  - GPU residency across the boundary;
-  - CAM-SIMA `--py` integration;
-  - a run-time conditional construct.
+- **Stage 2 core (S2-0..S2-3). Resolved (2026-10-19/20, CAM-SIMA PR #3,
+  PRs #151/#152/#153)** — CHANGELOG.md L12657.
+- **Open follow-ons** (none scheduled; see plan §11):
+  - **S2-4, run-time conditional** (`with when(...)`) — deferred: gating
+    RRTMGP's entry points would change diagnostics history on non-radiation
+    steps (see CAM-SIMA #482). Plan §11.3, "S2-4 decision".
+  - **GPU residency validation of the composite path. Resolved for the
+    flatten lowering (2026-10-20)** — unit test
+    `test_private_device_array_keeps_gpu_residency` (`tests/unit/test_package_scope.py`):
+    a package-private `memory_space = device` array gets the same OpenACC
+    code (`declare create`, `enter data create`, `exit data delete`) as
+    without the package. The RRTMGP GPU pair (`/cam-sima-rrtmgp <id> gpu`)
+    only checks build and run, since RRTMGP declares no device-resident
+    arguments. A compiled end-to-end check would need a composite version of a
+    CAM-SIMA GPU suite with device-resident arguments (e.g. kessler).
+  - **2f, per-package cap** (package-owned state, instances). GPU residency
+    is a hard requirement; segmentation at hooks is preferred over callbacks.
+  - **2g, GPU residency across the package boundary.**
+  - **Scoping between packages** — needs a multi-package suite (e.g. a
+    CAM4/QPC4 composite); the RRTMGP test has one package.
+  - **Loop index from `forLoop`** — would remove the `next_call` hook and the
+    `rrtmgp_subcycle` counter.
 
   Cross-group agreement on the public radiation interface is governance,
   not a sizable task.
@@ -739,7 +751,10 @@ transfer.
 Upstream atmospheric_physics prerequisites (not xdsl tooling, recorded in
 the plan doc):
 - split the four mixed host/package schemes (`rrtmgp_pre`, `rrtmgp_post`,
-  `rrtmgp_inputs`, `*_calculate_fluxes`);
+  `rrtmgp_inputs`, `*_calculate_fluxes`); the `rrtmgp_pre`/`rrtmgp_post`
+  split is worked out in plan §11.6 (shared state 13 → 2);
+- decide separate standard names for RRTMGP's heating rates and CAM's
+  carried-over heating (the remaining 2 shared-state names);
 - fix the latent `iter_num` column-block bug in
   `rrtmgp_sw_gas_optics`/`rrtmgp_sw_rte`/`rrtmgp_lw_gas_optics`.
 

@@ -12653,3 +12653,55 @@ Verification for RRTMGP stops at the generator's input, deliberately:
 Stage 2 (encapsulation) is not started. The plan's checkpoint applies:
 reassess before beginning it. The Stage 2 plan now includes package-level
 init, replacing the Stage 1 `rrtmgp_init_only()` workaround.
+
+## `composite-scheme` Stage 2 core implemented (CAM-SIMA PR #3; PRs #151, #152, #153; 2026-10-19/20)
+
+Stage 2 of `composite_scheme_plan.md`, as reassessed in §11. Each step was
+gated on CAM-SIMA's RRTMGP FPHYStest pair (XML reference vs Python
+composite, both `xdsl_ccpp`), prepared by the `cam-sima-rrtmgp` skill.
+
+- **S2-0 (CAM-SIMA PR #3):** CAM-SIMA builds from a Python suite.
+  - `cam_autogen.py` finds `suite_<name>.py` when
+    `CCPP_GENERATOR=xdsl_ccpp`, takes its scheme list from the frontend, and
+    passes `--py`.
+  - New testmod `cam/outfrq_rrtmgp_composite_derecho`.
+  - Generated caps identical to the XML case.
+- **S2-1 (#151):** a `ccpp.composite` op recorded by `@ccpp_composite`, and
+  the `flatten-composites` pass at the head of the pipeline. Generated code
+  unchanged.
+- **S2-2 (#152):** packages and package-private names.
+  - `ccpp_package(name)` and `@<package>.entry_point`. Hook calls (from
+    parameters without defaults) are recorded as nested composites marked
+    `hook`, and count as host code.
+  - `transforms/package_scope.py` infers the names private to each package;
+    `ccpp_dsl --list-package-scope` reports them.
+  - The `scope-packages` pass renames them `<package>__<name>` and makes
+    them suite-owned, which resolves RRTMGP's SW/LW `kdist` local-name
+    collision without host metadata.
+  - RRTMGP: 51 of 181 names private. CAM-SIMA's generated code differs from
+    the XML case only by those renames in `resolved_vars.json`, and by
+    private `lw_Ds` leaving `cam_ccpp_cap.F90`'s host-visible suite-variable
+    lists.
+- **S2-3 (#153):** package interface and package-level init.
+  - Shared names are classified as outputs, inputs, or shared state (written
+    by both sides). Shared state must be declared in `shared_state=[...]`;
+    an undeclared name is an error, a stale entry a warning.
+  - A `ccpp.package` op records each package.
+  - `@<package>.init` holds init-only schemes, placed after the package's
+    last entry-point call; `rrtmgp_init_only()` is gone.
+  - RRTMGP: 13 outputs, 21 inputs, 13 shared state (11 objects CAM's
+    `rrtmgp_pre`/`rrtmgp_post` allocate and free, plus the SW/LW heating
+    rates). Generated code unchanged from S2-2.
+- **S2-4 deferred.** A run-time `when()` gate on the SW/LW entry points
+  would stop the RRTMGP diagnostics from writing on non-radiation steps.
+  CAM-SIMA issue #482 wants the opposite (persist the last radiation step's
+  values, as CAM does). The benefit is clarity only, so S2-4 stays deferred.
+  See plan §11.3, "S2-4 decision".
+
+Acceptance changed during Stage 2. "History bit-for-bit vs the XML case"
+became "`ncdata_check` passes against the CAM snapshot": the snapshot is the
+golden reference, and identical generated code covers the rest.
+
+The upstream `rrtmgp_pre`/`rrtmgp_post` split, which would take shared state
+from 13 names to 2 with no policy crossing the boundary, is worked out in
+plan §11.6 as CAM-SIMA work.

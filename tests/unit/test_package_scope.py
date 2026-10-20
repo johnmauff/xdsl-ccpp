@@ -478,3 +478,125 @@ def test_hostless_local_name_collision_resolved_by_scoping(tmp_path, capfd):
              if "kdist" in line and "::" in line]
     assert sorted(decls) == ["real(kind=kind_phys) :: lw_setup_kdist",
                              "real(kind=kind_phys) :: sw_setup_kdist"]
+
+
+def _device_scheme_meta(name, args):
+    """A scheme .meta whose arrays are device-resident (memory_space = device)."""
+    arrays = "".join(f"""[ {local} ]
+  standard_name = {std}
+  units = K
+  dimensions = (horizontal_dimension, vertical_layer_dimension)
+  type = real | kind = kind_phys
+  intent = {intent}
+  memory_space = device
+""" for local, std, intent in args)
+    return f"""[ccpp-table-properties]
+  name = {name}
+  type = scheme
+[ccpp-arg-table]
+  name = {name}_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_dimension
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+[ nlev ]
+  standard_name = vertical_layer_dimension
+  units = count
+  dimensions = ()
+  type = integer
+  intent = in
+{arrays}[ errmsg ]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=512
+  intent = out
+[ errflg ]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+"""
+
+
+_RESIDENCY_SUITE = """\
+from xdsl_ccpp.frontend.py_api import ({decorator_import}, ccpp_scheme_ref, ccpp_suite,
+                                       export_suite)
+
+producer = ccpp_scheme_ref("producer")
+consumer = ccpp_scheme_ref("consumer")
+{declaration}
+def step():
+    producer()
+    consumer()
+
+@ccpp_suite("resid_suite", version="1.0")
+class ResidSuite:
+    def physics():
+        step()
+
+if __name__ == "__main__":
+    export_suite(ResidSuite)
+"""
+
+
+def test_private_device_array_keeps_gpu_residency(tmp_path, legacy_mode):
+    """S2-2 makes package-private names suite-owned. For a device-resident
+    private array, the generated OpenACC code must be what it is without the
+    package: here the same suite as an anonymous composite, where host
+    matching makes the array suite-owned, as in CAM-SIMA."""
+    from xdsl_ccpp.tools.ccpp_dsl import ccppMain
+
+    h = "examples/helloworld"
+    schemes = []
+    for name, args in [
+            ("producer", [("temp", "potential_temperature", "in"),
+                          ("work", "package_work_array", "out")]),
+            ("consumer", [("work", "package_work_array", "in"),
+                          ("temp", "potential_temperature", "inout")])]:
+        path = tmp_path / f"{name}.meta"
+        path.write_text(_device_scheme_meta(name, args))
+        schemes.append(str(path))
+    suites = {
+        "package": ("ccpp_package", 'pkg = ccpp_package("pkg")\n@pkg.entry_point'),
+        "anonymous": ("ccpp_composite", "@ccpp_composite"),
+    }
+
+    def options(label):
+        script = tmp_path / f"{label}.py"
+        imp, decl = suites[label]
+        script.write_text(_RESIDENCY_SUITE.format(decorator_import=imp, declaration=decl))
+        tool = ccppMain()
+        options_db = tool.default_options_db()
+        options_db.update({
+            "suites": [], "py": str(script), "scheme_files": schemes,
+            "host_files": [f"{h}/hello_world_host.meta", f"{h}/hello_world_mod.meta"],
+            "kind_map": ["kind_dyn:REAL32"], "directive": "acc",
+            "out": str(tmp_path / label / "out"), "tempdir": str(tmp_path / label / "tmp"),
+            "verbose": 0})
+        return tool, options_db
+
+    def generate(label):
+        tool, options_db = options(label)
+        result = tool.run(options_db)
+        out = options_db["out"]
+        return {p: open(f"{out}/{p}").read() for p in result.written if p.endswith(".F90")}
+
+    # The array really is package-private, so scoping acts on it.
+    tool, options_db = options("package")
+    tool.options_db = tool._normalize_options_db(dict(options_db))
+    assert "package_work_array" in package_scopes(
+        tool._build_cheap_metadata_module())["pkg"].private
+
+    package, anonymous = generate("package"), generate("anonymous")
+    assert package == anonymous
+    # ...and the comparison covers real residency code for it.
+    cap = package["resid_suite_cap.F90"]
+    for directive in ("!$acc declare create(work)", "!$acc enter data create(work)",
+                      "!$acc exit data delete(work)"):
+        assert directive in cap
