@@ -55,13 +55,22 @@ With this package:
   this file is exchangeable; everything CAM-specific is a hook filled in by
   the adapter.
 
-What this version does NOT yet reduce (composite-scheme Stage 2): the
-generated Fortran is identical to suite_rrtmgp.xml's, and RRTMGP's internal
-standard names are still global.  Stage 2 makes the package's internal
-names private, so only its interface names are visible to the host.
+Entry points are composites
+---------------------------
+Each entry point is decorated ``@ccpp_composite``, so the generator's IR
+records every call as one named ``ccpp.composite`` block (e.g.
+``rrtmgp_shortwave``) instead of losing the package boundary while the suite
+is recorded.  For now the ``flatten-composites`` pass inlines them again
+before code generation, so the generated Fortran is identical to
+suite_rrtmgp.xml's.
+
+What this version does NOT yet reduce (composite-scheme Stage 2): RRTMGP's
+internal standard names are still global.  Later Stage 2 steps use the
+recorded package boundaries to make the package's internal names private,
+so only its interface names are visible to the host.
 """
 
-from xdsl_ccpp.frontend.py_api import ccpp_scheme_ref, forLoop
+from xdsl_ccpp.frontend.py_api import ccpp_composite, ccpp_scheme_ref, forLoop
 
 # ---------------------------------------------------------------------------
 # Core schemes: fixed parts of RRTMGP, always used as-is.
@@ -94,6 +103,7 @@ sw_aerosols        = ccpp_scheme_ref("rrtmgp_sw_aerosols")          # aerosol ->
 lw_aerosols        = ccpp_scheme_ref("rrtmgp_lw_aerosols")          # aerosol -> RRTMGP bands (LW)
 
 
+@ccpp_composite
 def rrtmgp_prepare(*,
                    tropopause,                        # HOOK: host's tropopause diagnosis
                    optics_setup=cloud_optics_setup):  # SLOT: cloud-optics lookup tables
@@ -104,6 +114,7 @@ def rrtmgp_prepare(*,
     inputs()
 
 
+@ccpp_composite
 def rrtmgp_shortwave(*,
                      n_calls,               # HOOK: how many radiation calls (host policy)
                      next_call,             # HOOK: advance the host's radiation-call counter
@@ -134,6 +145,7 @@ def rrtmgp_shortwave(*,
         next_call()
 
 
+@ccpp_composite
 def rrtmgp_longwave(*,
                     n_calls,               # HOOK: how many radiation calls (host policy)
                     next_call,             # HOOK: advance the host's radiation-call counter
@@ -157,6 +169,7 @@ def rrtmgp_longwave(*,
         next_call()
 
 
+@ccpp_composite
 def rrtmgp_init_only():
     """Schemes with only an init phase; inputs_setup must follow both gas optics."""
     inputs_setup()

@@ -70,6 +70,7 @@ The output can be piped directly into ``ccpp_opt``::
 
 from __future__ import annotations
 
+import functools
 import inspect
 import sys
 import types as _types
@@ -81,6 +82,7 @@ from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,
+    CompositeOp,
     GroupOp,
     SchemeOp,
     SubcycleOp,
@@ -457,6 +459,63 @@ def forLoop(
     return SubcycleDescriptor(count=count, schemes=[] if schemes is None else schemes)
 
 
+class CompositeDescriptor:
+    """One call of a ``@ccpp_composite`` function: its name and the items its
+    body recorded, in order -- ``(descriptor, overrides)`` scheme calls,
+    `SubcycleDescriptor` blocks and nested `CompositeDescriptor` calls.
+    Lowered to a ``ccpp.composite`` op.
+    """
+
+    def __init__(self, name: str):
+        self.name = name
+        self.items: list = []
+
+
+def ccpp_composite(fn):
+    """Decorator: record calls of *fn* as a composite scheme (a physics package
+    or one of its entry points).
+
+    Without the decorator, schemes called by a helper function are recorded
+    straight into the caller's group (composition is flattened while the
+    suite is recorded).  With it, each call of *fn* records one
+    ``ccpp.composite`` op named after *fn*, whose body holds the scheme calls,
+    ``with forLoop(...)`` blocks and nested composites the call made.  The
+    ``flatten-composites`` pass inlines composites again before code
+    generation, so generated code is unchanged; keeping them in the IR is
+    what later encapsulation steps build on (composite_scheme_plan.md §11).
+
+    Slots and hooks remain ordinary Python parameters, resolved while the
+    suite is recorded::
+
+        @ccpp_composite
+        def rrtmgp_longwave(*, diagnostics, overlap=lw_mcica):
+            overlap()
+            ...
+
+    Raises:
+        RuntimeError: when called outside a suite recording.
+        ValueError: when a call records no scheme calls.
+    """
+
+    @functools.wraps(fn)
+    def record_composite(*args, **kwargs):
+        if _active_recorder is None:
+            raise RuntimeError(
+                f"Composite '{fn.__name__}' was called outside a suite recording. "
+                f"Composites can only be called (directly or through helper "
+                f"functions) from a @ccpp_suite class's run() method or group "
+                f"functions."
+            )
+        composite = CompositeDescriptor(fn.__name__)
+        with _recording(composite.items.append):
+            fn(*args, **kwargs)
+        if not composite.items:
+            raise ValueError(f"Composite '{fn.__name__}' recorded no scheme calls.")
+        _active_recorder(composite)
+
+    return record_composite
+
+
 # ---------------------------------------------------------------------------
 # Decorators
 # ---------------------------------------------------------------------------
@@ -635,17 +694,19 @@ def _run_groups(
     # Every scheme call -- by-name callers above, or SchemeDescriptor.__call__
     # for schemes reached through helper functions (whose globals are their
     # own module's, not the overlay below) -- routes here and goes to its
-    # parent group.  A completed ``with forLoop(...)`` block goes to the
-    # parent group shared by every scheme inside it.
+    # parent group.  A completed ``with forLoop(...)`` block or composite call
+    # goes to the parent group shared by every scheme inside it.
     def _record_item(item) -> None:
-        if isinstance(item, SubcycleDescriptor):
+        if isinstance(item, (SubcycleDescriptor, CompositeDescriptor)):
             targets = {scheme_to_group.get(sd.name, default_group)
-                       for sd in _subcycle_schemes(item)}
+                       for sd in _block_schemes(item)}
             if len(targets) > 1:
+                what = (f"'with forLoop({item.count!r}):'"
+                        if isinstance(item, SubcycleDescriptor)
+                        else f"composite '{item.name}'")
                 raise ValueError(
-                    f"'with forLoop({item.count!r}):' in run() contains schemes "
-                    f"from several groups {sorted(targets)}; a loop must stay "
-                    f"within one group."
+                    f"{what} in run() contains schemes from several groups "
+                    f"{sorted(targets)}; it must stay within one group."
                 )
             output.setdefault(targets.pop(), []).append(item)
         else:
@@ -664,11 +725,13 @@ def _run_groups(
     return output
 
 
-def _subcycle_schemes(subcycle: SubcycleDescriptor):
-    """Yield every SchemeDescriptor inside *subcycle*, at any nesting depth."""
-    for item in subcycle.schemes:
-        if isinstance(item, SubcycleDescriptor):
-            yield from _subcycle_schemes(item)
+def _block_schemes(block: SubcycleDescriptor | CompositeDescriptor):
+    """Yield every SchemeDescriptor inside a loop block or composite call, at
+    any nesting depth."""
+    items = block.schemes if isinstance(block, SubcycleDescriptor) else block.items
+    for item in items:
+        if isinstance(item, (SubcycleDescriptor, CompositeDescriptor)):
+            yield from _block_schemes(item)
         elif isinstance(item, tuple):
             yield item[0]
         else:
@@ -1171,34 +1234,31 @@ def _register_scheme(seen_schemes: dict[str, SchemeDescriptor], sd: SchemeDescri
 
 
 def _group_item_to_op(
-    item: tuple[SchemeDescriptor, dict[str, str]] | SubcycleDescriptor,
+    item: tuple[SchemeDescriptor, dict[str, str]] | SchemeDescriptor
+          | SubcycleDescriptor | CompositeDescriptor,
     seen_schemes: dict[str, SchemeDescriptor],
-) -> SchemeOp | SubcycleOp:
-    """Convert one group-list item to its MLIR op, registering schemes seen.
+) -> SchemeOp | SubcycleOp | CompositeOp:
+    """Convert one recorded item to its MLIR op, registering schemes seen.
 
-    A `SubcycleDescriptor`'s own `schemes` list may itself contain another
-    `SubcycleDescriptor` (a nested `forLoop()`), which recurses through this
-    same function to arbitrary depth -- mirroring the XML frontend's nested
-    `<subcycle>` support (see examples/var_compat/var_compatibility_suite.xml,
-    ported from NCAR ccpp-framework's feature/capgen-v1, which nests three
-    levels deep).
+    Loop blocks (`SubcycleDescriptor`) and composite calls
+    (`CompositeDescriptor`) recurse through this same function, so they may
+    nest in each other to arbitrary depth -- loops mirroring the XML
+    frontend's nested `<subcycle>` support (see
+    examples/var_compat/var_compatibility_suite.xml, ported from NCAR
+    ccpp-framework's feature/capgen-v1, which nests three levels deep).
 
     Loop-body entries from the list form are bare `SchemeDescriptor`s; those
-    from the ``with forLoop(...)`` block form are ``(descriptor, overrides)``
-    pairs, whose overrides are kept.
+    from the ``with forLoop(...)`` block form and from composites are
+    ``(descriptor, overrides)`` pairs, whose overrides are kept.
     """
     if isinstance(item, SubcycleDescriptor):
-        inner_ops = []
-        for sd in item.schemes:
-            if isinstance(sd, SubcycleDescriptor):
-                inner_ops.append(_group_item_to_op(sd, seen_schemes))
-            else:
-                overrides = None
-                if isinstance(sd, tuple):
-                    sd, overrides = sd
-                inner_ops.append(SchemeOp(sd.name, overrides or None))
-                _register_scheme(seen_schemes, sd)
+        inner_ops = [_group_item_to_op(sub, seen_schemes) for sub in item.schemes]
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
+    if isinstance(item, CompositeDescriptor):
+        inner_ops = [_group_item_to_op(sub, seen_schemes) for sub in item.items]
+        return CompositeOp(item.name, inner_ops)
+    if isinstance(item, SchemeDescriptor):
+        item = (item, {})
     sd, overrides = item
     _register_scheme(seen_schemes, sd)
     return SchemeOp(sd.name, overrides or None)

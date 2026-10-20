@@ -832,7 +832,11 @@ class ccppMain:
             suite_cap_pass += "{" + " ".join(suite_cap_opts) + "}"
 
         has_host = bool(self.options_db.get("host_files"))
-        passes = ["generate-meta-cap"]
+        # Composite schemes (@ccpp_composite in the Python frontend) are
+        # inlined before any other pass, so everything downstream sees the
+        # same flat suite it always has (composite_scheme_plan.md §11, S2-1).
+        # A no-op for suites without composites, including every XML suite.
+        passes = ["flatten-composites", "generate-meta-cap"]
         if has_host:
             host_match_pass = "generate-host-match"
             if self.options_db.get("gfs_dim_aliases"):

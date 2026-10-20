@@ -584,6 +584,8 @@ one PR per stage (Stage 2 is 15-50 days). The precedent is
 | 2 | 1e RRTMGP composite example, plus the IR byte-identity check against `suite_rrtmgp_py.py` | Depends on the atmospheric_physics checkout; reviewed as a design showcase (package boundaries); may iterate |
 
 Checkpoint after PR 2: reassess the design before starting Stage 2.
+(Held 2026-10-19, after Stage 1 took 3 PRs; see §11, which supersedes the
+Stage 2 rows below.)
 
 ### Stage 2 — about 6-7 PRs
 
@@ -607,3 +609,114 @@ Checkpoint after PR 2: reassess the design before starting Stage 2.
 **Total:** about 2 PRs for Stage 1 and 6-8 for Stage 2. Each is comparable in
 size to recent PRs (#136-#146), and each has a clear "nothing existing
 changed" check.
+
+---
+
+## 11. Stage 1 retrospective and Stage 2 reassessment (2026-10-19)
+
+The checkpoint planned in §10, held after Stage 1 merged (PRs #148, #149 and
+the RRTMGP example PR). Where this section and §6/§10 differ, this section
+wins.
+
+### 11.1 What Stage 1 delivered and taught
+
+**Delivered:**
+- Python composition: callable schemes, group functions, `with forLoop`,
+  slots and hooks.
+- Path-free `ccpp_scheme_ref` references and `export_suite`.
+- CMake `PY_SUITE` support.
+- Three composite examples: helloworld and advection (compiled, run in CI)
+  and RRTMGP (checked at the generator's input against atmospheric_physics'
+  `suite_rrtmgp.xml`).
+
+**Lessons that shape Stage 2:**
+1. **Real packages need a real host to validate.** The RRTMGP example can
+   only be checked up to the generator's input: full cap generation needs
+   CAM-SIMA's host metadata. Stage 2 changes generated code, so it needs a
+   compiled, numerically checked vehicle.
+2. **There is a concrete case for scoped names.** RRTMGP's SW and LW
+   gas-optics schemes both use the local name `kdist` for different standard
+   names. Host matching hides this inside CAM-SIMA; without a host, it blocks
+   suite-cap generation. Package scoping (2c/2e) should resolve it.
+3. **Hooks decide the package-cap question.** RRTMGP needs 8 hooks.
+   - Under flatten lowering (2e) they are trivial.
+   - In a separately generated package cap (2f) they become callbacks into
+     host code -- the hardest open design question.
+4. **Stage 2's gains are structural, not textual.** It barely changes what
+   suite authors write. It delivers private names, an enforced interface and
+   an exchangeable unit. The visible complexity in the Python files (hook
+   count, interleaved CAM calls) comes down through other work: a
+   scheme-visible loop index, call-site argument binding, the upstream scheme
+   splits (§7), and the process-update combinator.
+5. **Nothing consumes Python suites in production yet.** CAM-SIMA still builds
+   from XML. Until it can build from a Python suite, every Stage 2 benefit is
+   confined to this repository's examples.
+
+### 11.2 Decisions
+
+- **Primary test vehicle: CAM-SIMA's RRTMGP FPHYStest**
+  (`SMS_Ln2.ne3pg3_ne3pg3_mg37.FPHYStest`, testmod
+  `cam/outfrq_rrtmgp_derecho`).
+  - It runs exactly the suite `examples/rrtmgp_composite` reproduces:
+    `--dyn none --physics-suites rrtmgp` selects atmospheric_physics'
+    `test/test_suites/suite_rrtmgp.xml`.
+  - It is a strict numerical check: it starts from a CAM snapshot and compares
+    the result against the "after" snapshot (`ncdata_check`,
+    `ncdata_check_err = .true.`, `min_difference = 1e-15`), with
+    `irad_always = 3` forcing radiation on every tested step and all SW/LW
+    flux and heating diagnostics written.
+  - It is cheap: null dycore, `ne3pg3`, 2 steps.
+  - Its GPU twin, `cam/outfrq_rrtmgp_derecho_gpu`, is the vehicle for GPU
+    residency (2g).
+- **No synthetic test framework.** Building a compiled synthetic package
+  example would be substantial work of uncertain value next to an existing,
+  strict, real-physics test.
+- **CAM-SIMA integration moves first** (old step 2h becomes step S2-0),
+  using Stage 1's flattening, before any encapsulation code.
+- **Core scope: 2a-2e + 2i** (encapsulation with flatten lowering; generated
+  Fortran equivalent up to private-name renaming).
+- **Deferred until there is a concrete need:**
+  - 2f, the separately generated package cap (needed only to ship a compiled
+    package to another group; blocked on the hook-callback design);
+  - 2g, GPU residency across the boundary.
+
+### 11.3 Revised sequence and acceptance criteria
+
+Each step is its own PR, gated on the FPHYStest. Repositories differ: S2-0 is
+CAM-SIMA (`cime_config/cam_autogen.py` and a testmod); S2-1..S2-4 are
+xdsl-ccpp.
+
+| Step | Work | Repo | Acceptance | Size |
+|---|---|---|---|---|
+| S2-0 | **CAM-SIMA builds from a Python suite** (old 2h, using Stage 1 flattening). `cam_autogen.py`: find a Python suite for a `--physics-suites` name when `CCPP_GENERATOR=xdsl_ccpp`; get its scheme list from the Python frontend instead of parsing XML (`_find_schemes_in_sdf`); pass `--py`. New testmod `cam/outfrq_rrtmgp_composite_derecho`, identical to `outfrq_rrtmgp_derecho` but supplying the composite suite, package and adapter (via the testmod's `SourceMods/src.cam/` if CIME supports that for testmods -- confirm first). | CAM-SIMA | Composite case passes `ncdata_check`; its generated caps in `bld/atm/obj/ccpp` are identical to the XML case's. | M |
+| S2-1 | **2a + 2e without renaming:** `ccpp.composite` op; `@ccpp_composite` records into it; flatten lowering into the existing suite-cap path. | xdsl-ccpp | FPHYStest passes; caps identical to S2-0's. | S-M |
+| S2-2 | **2c + 2d + renaming:** scoped resolution package → suite → host, hook scoping rule, private names renamed in the flattened output. | xdsl-ccpp | FPHYStest passes and its history output matches the XML case bit for bit; RRTMGP's `kdist` collision is resolved by scoping (also checked host-less in `examples/rrtmgp_composite`). | M-L |
+| S2-3 | **2b:** public interface (declared or inferred, see 11.4) with validation, and package-level init, removing `rrtmgp_init_only()`. | xdsl-ccpp | FPHYStest passes, bit for bit; interface violations are reported by the new validation. | M |
+| S2-4 | **2i:** run-time conditional (`with when("do_shortwave_radiation"):`) so the adapter gates whole SW/LW entry points. | xdsl-ccpp | FPHYStest passes, bit for bit. Removing the schemes' own `if (.not. dosw) return` checks is upstream follow-on work, not part of this step. | S |
+
+Core total: about L (15-25 days) for xdsl-ccpp, plus S2-0 in CAM-SIMA.
+
+Division of work is as for Stage 1: changes are prepared in the
+repositories; building, submitting and judging the CAM-SIMA test runs stays
+with the project owner.
+
+### 11.4 Open decisions, settled at the start of the step that needs them
+
+- **S2-0:** the file convention for a Python suite in CAM-SIMA (e.g.
+  `suite_<name>.py`) and where package and adapter modules live: the
+  testmod's SourceMods for testing, atmospheric_physics and CAM-SIMA for
+  production.
+- **S2-3:** declared versus inferred public interface. Inferred fits the
+  project's "no hand-maintained shadow files" direction.
+- **Later:** whether and when to take on 2f (package cap) and 2g (GPU
+  residency, validated on `outfrq_rrtmgp_derecho_gpu`).
+
+### 11.5 Known limits of the test vehicle
+
+- **One package.** The RRTMGP FPHYStest exercises a single package. Scoping
+  between packages (2c across, e.g., radiation and convection) needs a
+  multi-package suite: QPC4/CAM4, or a composite version of another FPHYStest
+  suite, as a later step.
+- **Single-step checks.** FPHYStest is a null-dycore, snapshot-in/snapshot-out
+  check of one or two steps. It validates physics data flow, not long-run
+  behaviour.

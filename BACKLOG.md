@@ -32,7 +32,7 @@ measured data, and will drift as items are reassessed.
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
-| `composite-scheme` — Stage 2 (encapsulation) | 15-25 days flatten-only lowering; 25-50 days with package cap + CAM-SIMA integration | L-XL |
+| `composite-scheme` — Stage 2 (encapsulation; gated on CAM-SIMA's RRTMGP FPHYStest, see `composite_scheme_plan.md` §11) | core S2-1..S2-4: 15-25 days, plus S2-0 (CAM-SIMA Python-suite support, M); package cap (2f) and GPU residency (2g) deferred | L |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
@@ -625,7 +625,7 @@ real CAM-SIMA builds specifically, which already link NetCDF
 everywhere. Not v1 scope; revisit once v1's real usage (and the "where do
 captured fixtures live" question below) make the tradeoff concrete.
 
-**ID: `scheme-io-capture-gpu-residency`. Resolved (2026-10-18).** CHANGELOG.md L12524.
+**ID: `scheme-io-capture-gpu-residency`. Resolved (2026-10-18, PR #146).** CHANGELOG.md L12524.
 
 **ID: `scheme-io-capture-gpu-verify`. Resolved (2026-10-18)** — real
 `nvfortran -acc` run on an A100, confirmed with `nsys` (real
