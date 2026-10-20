@@ -12416,7 +12416,7 @@ deliberately out of v1 scope by the original design proposal —
 are tracked the same way, as `scheme-io-capture-optional-args` and
 `scheme-io-capture-task-volume`.
 
-## `scheme-io-capture` v2 (PRs #144/#145, 2026-10-18): task-volume, multi-timestep, compare-diagnostics, tolerance-config, GPU residency, and real GPU verification
+## `scheme-io-capture` v2 (PRs #144/#145/#146, 2026-10-18): task-volume, multi-timestep, compare-diagnostics, tolerance-config, GPU residency, and real GPU verification
 
 Closes six of the follow-on items v1 left open. First real pointing of
 `--capture-scheme` at CAM-SIMA's own build (FPHYStest's `kessler_test`
@@ -12521,7 +12521,7 @@ corrupted fixture at the compiled-in default tolerance, and correctly
 reported `PASS` against the identical corrupted fixture when re-run with
 `CCPP_CAPTURE_TOLERANCE=0.1` — no regeneration, no recompile.
 
-### GPU residency and real GPU verification (uncommitted, this session)
+### PR #146 — GPU residency, and real GPU/nvhpc verification (verification itself: no code change, no PR)
 
 **`scheme-io-capture-gpu-residency` resolved.** The generated driver had
 zero awareness of `memory_space=device` arguments — every array was a

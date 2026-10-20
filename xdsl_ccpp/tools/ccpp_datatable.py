@@ -31,6 +31,7 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,
+    CompositeOp,
     GroupOp,
     SchemeOp,
     SubcycleOp,
@@ -109,8 +110,9 @@ def _get_int(attr) -> int:
 
 
 def _iter_schemes_in_group(group_op):
-    """Yield SchemeOp names (str) from a GroupOp (or SubcycleOp) body,
-    descending recursively into arbitrarily-nested SubcycleOp.
+    """Yield SchemeOp names (str) from a GroupOp (or SubcycleOp/CompositeOp)
+    body, descending recursively into arbitrarily-nested SubcycleOp and
+    CompositeOp.
 
     A single level of SubcycleOp descent isn't enough -- real suites nest
     subcycles several levels deep (e.g.
@@ -120,14 +122,17 @@ def _iter_schemes_in_group(group_op):
     silently dropping a real
     dependency a host build needs to compile against, not just an
     incomplete `<api>` section entry (flagged by Copilot review, PR #94).
-    GroupOp and SubcycleOp share the same `body = region_def("single_block")`
-    shape, so recursing into a SubcycleOp via this same function works
-    unchanged.
+    GroupOp, SubcycleOp and CompositeOp share the same
+    `body = region_def("single_block")` shape, so recursing into a SubcycleOp
+    or CompositeOp via this same function works unchanged. Composites
+    (``@ccpp_composite`` packages) reach this function unflattened: the
+    datatable and --list-dependencies read the frontend's IR, before the
+    flatten-composites pass runs.
     """
     for op in group_op.body.block.ops:
         if isa(op, SchemeOp):
             yield op.scheme_name.data
-        elif isa(op, SubcycleOp):
+        elif isa(op, SubcycleOp) or isa(op, CompositeOp):
             yield from _iter_schemes_in_group(op)
 
 

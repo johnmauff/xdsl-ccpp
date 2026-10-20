@@ -187,6 +187,36 @@ class SubcycleOp(IRDLOperation):
         )
 
 
+@irdl_op_definition
+class CompositeOp(IRDLOperation):
+    """A composite scheme: a named block of scheme calls, subcycles and nested
+    composites, run once, in order, where it appears.
+
+    Recorded from a ``@ccpp_composite`` Python function (a physics package or
+    one of its entry points; see composite_scheme_plan.md).  Shaped like
+    `SubcycleOp` but without a loop.  The ``flatten-composites`` pass replaces
+    each composite with its body, so passes after it never see one.
+    """
+
+    name = "ccpp.composite"
+
+    composite_name = prop_def(StringAttr)
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self,
+        composite_name: str | StringAttr,
+        body: "Region | Sequence[Operation] | Sequence[Block]",
+    ):
+        if isa(composite_name, str):
+            composite_name = StringAttr(composite_name)
+        if not isinstance(body, Region):
+            body = Region([Block(list(body))])
+        super().__init__(regions=[body], properties={"composite_name": composite_name})
+
+
 class TableBaseOp(IRDLOperation):
     table_name = prop_def(StringAttr, prop_name="name")
     table_type = prop_def(TableTypeKindAttr, prop_name="type")
@@ -692,6 +722,7 @@ CCPP = Dialect(
         GroupOp,
         SchemeOp,
         SubcycleOp,
+        CompositeOp,
         KindOp,
         KindsOp,
         TablePropertiesOp,
