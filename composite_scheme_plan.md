@@ -690,11 +690,40 @@ xdsl-ccpp.
 |---|---|---|---|---|
 | S2-0 | **CAM-SIMA builds from a Python suite** (old 2h, using Stage 1 flattening). `cam_autogen.py`: find a Python suite for a `--physics-suites` name when `CCPP_GENERATOR=xdsl_ccpp`; get its scheme list from the Python frontend instead of parsing XML (`_find_schemes_in_sdf`); pass `--py`. New testmod `cam/outfrq_rrtmgp_composite_derecho`, identical to `outfrq_rrtmgp_derecho` but supplying the composite suite, package and adapter (via the testmod's `SourceMods/src.cam/` if CIME supports that for testmods -- confirm first). | CAM-SIMA | Composite case passes `ncdata_check`; its generated caps in `bld/atm/obj/ccpp` are identical to the XML case's. | M |
 | S2-1 | **2a + 2e without renaming:** `ccpp.composite` op; `@ccpp_composite` records into it; flatten lowering into the existing suite-cap path. | xdsl-ccpp | FPHYStest passes; caps identical to S2-0's. | S-M |
-| S2-2 | **2c + 2d + renaming:** scoped resolution package → suite → host, hook scoping rule, private names renamed in the flattened output. | xdsl-ccpp | FPHYStest passes and its history output matches the XML case bit for bit; RRTMGP's `kdist` collision is resolved by scoping (also checked host-less in `examples/rrtmgp_composite`). | M-L |
-| S2-3 | **2b:** public interface (declared or inferred, see 11.4) with validation, and package-level init, removing `rrtmgp_init_only()`. | xdsl-ccpp | FPHYStest passes, bit for bit; interface violations are reported by the new validation. | M |
-| S2-4 | **2i:** run-time conditional (`with when("do_shortwave_radiation"):`) so the adapter gates whole SW/LW entry points. | xdsl-ccpp | FPHYStest passes, bit for bit. Removing the schemes' own `if (.not. dosw) return` checks is upstream follow-on work, not part of this step. | S |
+| S2-2 | **2c + 2d + renaming:** scoped resolution package → suite → host, hook scoping rule, private names renamed in the flattened output. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot (the golden reference). Generated code may differ from S2-1's only through scoping: private standard names renamed `<package>__<name>` (datatable, `resolved_vars.json`) and leaving the host-visible suite-variable lists. Two private names sharing a local name (RRTMGP's `kdist`) no longer collide without host metadata (unit test). | M-L |
+| S2-3 | **2b:** public interface (declared or inferred, see 11.4) with validation, and package-level init, removing `rrtmgp_init_only()`. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot; interface violations are reported by the new validation. | M |
+| S2-4 | **2i:** run-time conditional (`with when("do_shortwave_radiation"):`) so the adapter gates whole SW/LW entry points. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot. Removing the schemes' own `if (.not. dosw) return` checks is upstream follow-on work, not part of this step. | S |
 
 Core total: about L (15-25 days) for xdsl-ccpp, plus S2-0 in CAM-SIMA.
+
+**S2-2 as built.**
+- **The package is the scope.** `rrtmgp = ccpp_package("rrtmgp")` with
+  `@rrtmgp.entry_point`. It is not per composite, because RRTMGP's internal
+  state (e.g. `kdist`) is made at init and used by both the SW and LW entry
+  points.
+- **Hooks are host code.** Parameters without defaults are hooks: what they
+  run is recorded as a nested composite marked `hook` and belongs to the
+  host's scope.
+- **Private rule.** A name is private to P if all three hold:
+  - it is not host-supplied, framework-managed or a constituent;
+  - only P's own code touches it (entry points and slot implementations,
+    not hooks);
+  - P writes it.
+- **Pass.** `scope-packages`, run before `flatten-composites`, renames each
+  private name to `<package>__<name>` and marks it suite-owned.
+- **Report.** `ccpp_dsl --list-package-scope` reports the result. With
+  CAM-SIMA's host metadata: 51 of RRTMGP's 181 names are private, 47 are
+  shared with host code, and 80 are host-declared.
+  - The shared names are mostly the §7 boundary problem: objects
+    `rrtmgp_pre`/`rrtmgp_post` allocate or free, and fluxes the diagnostics
+    hooks read.
+  - All 51 private names were already suite-owned in CAM. Regenerated with
+    and without scoping, the RRTMGP suite cap is byte-identical; only private
+    `lw_Ds` leaves `cam_ccpp_cap.F90`'s host-visible output lists.
+- **Host-less example.** In `examples/rrtmgp_composite`, scoping removes the
+  `kdist` collision. Full cap generation still needs host metadata: 12
+  public names share local names (`hrate`, `qrs`, `qrl`, the flux objects,
+  ...), which is the host's business, not the package's.
 
 Division of work is as for Stage 1: changes are prepared in the
 repositories; building, submitting and judging the CAM-SIMA test runs stays
