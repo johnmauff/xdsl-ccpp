@@ -357,7 +357,7 @@ host adapter; ambiguous items become interface decisions.
 
 | Scheme | Package part | Host-adapter part |
 |---|---|---|
-| `rrtmgp_pre` | Allocating the flux objects (move next to the optics-object allocation in `rrtmgp_inputs`) | `radiation_do` for SW/LW, `dosw_heat`/`dolw_heat`, `nextsw_cday` for the coupler |
+| `rrtmgp_pre` (worked out in §11.6) | Allocating the flux objects (move next to the optics-object allocation in `rrtmgp_inputs`) | `radiation_do` for SW/LW, `dosw_heat`/`dolw_heat`, `nextsw_cday` for the coupler |
 | `rrtmgp_post` | Freeing all optics, source and flux objects | `qrs`/`qrl` carry-over (`*pdel`), `netsw` and `flwds` to the coupler |
 | `rrtmgp_inputs` | Radiation grid and extra top layer, T clamp to the k-distribution range, day gather, object init, albedo band mapping (the interface takes visible/near-IR albedos) | t_sfc from LW-up, emissivity, which cloud fraction radiation sees (snow/graupel) |
 | `*_calculate_fluxes` | Scatter back to the model grid (consumed by the package's heating-rate schemes) | `fsns/fsnt/flns/flnt`; the coupler `soll/sols/solld/solsd` |
@@ -692,7 +692,7 @@ xdsl-ccpp.
 | S2-1 | **2a + 2e without renaming:** `ccpp.composite` op; `@ccpp_composite` records into it; flatten lowering into the existing suite-cap path. | xdsl-ccpp | FPHYStest passes; caps identical to S2-0's. | S-M |
 | S2-2 | **2c + 2d + renaming:** scoped resolution package → suite → host, hook scoping rule, private names renamed in the flattened output. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot (the golden reference). Generated code may differ from S2-1's only through scoping: private standard names renamed `<package>__<name>` (datatable, `resolved_vars.json`) and leaving the host-visible suite-variable lists. Two private names sharing a local name (RRTMGP's `kdist`) no longer collide without host metadata (unit test). | M-L |
 | S2-3 | **2b:** public interface (declared or inferred, see 11.4) with validation, and package-level init, removing `rrtmgp_init_only()`. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot; interface violations are reported by the new validation. | M |
-| S2-4 | **2i:** run-time conditional (`with when("do_shortwave_radiation"):`) so the adapter gates whole SW/LW entry points. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot. Removing the schemes' own `if (.not. dosw) return` checks is upstream follow-on work, not part of this step. | S |
+| S2-4 | **Deferred (2026-10-20); see "S2-4 decision" below.** **2i:** run-time conditional (`with when("do_shortwave_radiation"):`) so the adapter gates whole SW/LW entry points. | xdsl-ccpp | FPHYStest passes, including `ncdata_check` against the CAM snapshot. Removing the schemes' own `if (.not. dosw) return` checks is upstream follow-on work, not part of this step. | S |
 
 Core total: about L (15-25 days) for xdsl-ccpp, plus S2-0 in CAM-SIMA.
 
@@ -746,6 +746,29 @@ Core total: about L (15-25 days) for xdsl-ccpp, plus S2-0 in CAM-SIMA.
     inits as before.
 - **Generated code.** CAM-SIMA's generated code is identical to S2-2's.
 
+**S2-4 decision: deferred.**
+- **The analysis.** Gating the SW/LW entry points with `when()` leaves
+  physics state unchanged, but it changes history output on non-radiation
+  steps. Inside the entry points, the cloud, SW and LW diagnostics run every
+  step today (`write_diag` defaults to `.true.`), and would stop writing.
+  - On those steps they currently write stale cloud optical depths, and
+    fluxes from objects `rrtmgp_pre` re-allocates but never fills.
+  - The heating-rate, gas-source, call-counter and aerosol-stub schemes are
+    unaffected; `solar_irradiance_data` has no run phase.
+- **The value.** S2-4 adds clarity, not encapsulation; the schemes already
+  return early on `dosw`/`dolw`. That isn't worth a visible output change
+  that is a CAM physics decision.
+- **Caveat for any later attempt.** The `aerosol_optics` hook in the SW entry
+  point also produces LW aerosol absorption. With a real aerosol scheme and
+  different SW/LW frequencies, gating SW would leave LW using stale aerosol
+  optics.
+- **Known issue.** The diagnostics behaviour is CAM-SIMA issue #482 (open):
+  on non-radiation steps the diagnostics should show the last radiation
+  step's values, as CAM does. #426/#527 already did this for the net fluxes.
+  So gating would move CAM-SIMA away from the intended behaviour. The fix is
+  the CAM-SIMA developers': keep the quantities in the registry. It needs no
+  generator work.
+
 Division of work is as for Stage 1: changes are prepared in the
 repositories; building, submitting and judging the CAM-SIMA test runs stays
 with the project owner.
@@ -770,3 +793,65 @@ with the project owner.
 - **Single-step checks.** FPHYStest is a null-dycore, snapshot-in/snapshot-out
   check of one or two steps. It validates physics data flow, not long-run
   behaviour.
+
+### 11.6 The `rrtmgp_pre`/`rrtmgp_post` split, worked out (2026-10-20)
+
+A CAM-SIMA/atmospheric_physics change, not xdsl-ccpp work. It is recorded
+here because it removes most of the shared state S2-3 declares.
+
+**Today, per step:**
+
+| Objects | Allocated by | Filled by | Read by | Freed by |
+|---|---|---|---|---|
+| 4 flux objects (SW/LW, all-sky and clear-sky) | CAM `rrtmgp_pre` | RRTMGP `*_rte` | CAM diagnostics hooks; CAM `rrtmgp_post` (`flwds`) | CAM `rrtmgp_post` |
+| 7 optics/source objects | RRTMGP `rrtmgp_inputs`, `*_mcica_subcol_gen` | RRTMGP | RRTMGP | CAM `rrtmgp_post` |
+
+The objects are allocated and freed every step. That must stay: the SW
+objects are sized by the sunlit-column count (`nday`), which changes every
+step.
+
+**The split.**
+- **CAM keeps** (in the adapter):
+  - in `rrtmgp_pre`: `dosw`/`dolw` (`iradsw`/`iradlw`/`irad_always`),
+    `dosw_heat`/`dolw_heat`, `nextsw_cday`;
+  - in `rrtmgp_post`: `qrs`/`qrl` carry-over (times `pdel`), `netsw = fsns`,
+    and `flwds` read from the LW flux object (a read of a package output).
+- **RRTMGP gets:**
+  - the flux-object allocation, in `rrtmgp_inputs_run`, where the other
+    objects are allocated with the same sizes; it gains `spectralflux` as an
+    ordinary input;
+  - the freeing of all 11 objects.
+
+**When to free.** The objects must outlive CAM's last read of them (the
+diagnostics hooks and `flwds`). Two options:
+- **(a) Free-before-allocate (preferred).** At the start of each step,
+  RRTMGP frees the previous step's objects, then allocates new ones; a final
+  phase frees the last set. The host gets no new call.
+  - This relies on suite-internal variables persisting between steps. They
+    do with xdsl-ccpp, as suite-cap module variables; to be confirmed for
+    capgen-v1.
+- **(b) A `rrtmgp_cleanup()` entry point** that the adapter calls after its
+  last read. Simpler, but it adds an obligation on the host.
+
+**Result.**
+- **Shared state: 13 names down to 2.** The 7 optics and source objects
+  become private; the 4 flux objects become ordinary outputs. Only the SW/LW
+  heating rates remain, which need a separate naming decision.
+- **No policy crosses the boundary.** Moving all of `rrtmgp_pre`/
+  `rrtmgp_post` into the package instead was tried with `--list-package-scope`:
+  shared state also drops to 2, but the package then touches 7 more CAM host
+  variables (radiation frequencies, coupler fields, the heating carry-over),
+  and `dosw`/`dolw` become private to it, taking the frequency decision away
+  from the host.
+- **No numerical change.** `ncdata_check` passes against the unchanged
+  snapshot and history is unchanged. The split does not fix CAM-SIMA #482;
+  persisting objects across steps cannot either, because of `nday`.
+
+**Work.**
+- Move code between `rrtmgp_pre.F90`, `rrtmgp_post.F90` and
+  `rrtmgp_inputs.F90`, and update their `.meta` arguments and intents.
+- `suite_rrtmgp.xml` and the composite change only if a scheme is added:
+  none for (a), one for (b).
+- Validate with the RRTMGP FPHYStest pair, plus `--list-package-scope`
+  showing 2 shared-state names.
+- Size: S-M, low risk.
