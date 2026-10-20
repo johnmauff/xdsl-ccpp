@@ -460,20 +460,81 @@ def forLoop(
 
 
 class CompositeDescriptor:
-    """One call of a ``@ccpp_composite`` function: its name and the items its
-    body recorded, in order -- ``(descriptor, overrides)`` scheme calls,
-    `SubcycleDescriptor` blocks and nested `CompositeDescriptor` calls.
-    Lowered to a ``ccpp.composite`` op.
+    """One call of a ``@ccpp_composite`` function or package entry point: its
+    name and the items its body recorded, in order -- ``(descriptor,
+    overrides)`` scheme calls, `SubcycleDescriptor` blocks and nested
+    `CompositeDescriptor` calls.  ``package`` is set for a package entry
+    point; ``hook`` marks the host code an entry point ran through one of its
+    hooks.  Lowered to a ``ccpp.composite`` op.
     """
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, *, package: str | None = None, hook: bool = False):
         self.name = name
+        self.package = package
+        self.hook = hook
         self.items: list = []
 
 
+def _hook_parameters(fn) -> set[str]:
+    """Names of *fn*'s hook parameters: those that can be passed by keyword
+    and have no default."""
+    return {p.name for p in inspect.signature(fn).parameters.values()
+            if p.default is inspect.Parameter.empty
+            and p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                           inspect.Parameter.KEYWORD_ONLY)}
+
+
+def _hook_call(hook_name: str, target):
+    """Wrap the callable bound to hook *hook_name* so that each call records
+    what it runs as one hook composite.  A call that records nothing (a host
+    that leaves the hook empty) records no composite."""
+
+    @functools.wraps(target)
+    def record_hook(*args, **kwargs):
+        hook = CompositeDescriptor(hook_name, hook=True)
+        with _recording(hook.items.append):
+            target(*args, **kwargs)
+        if hook.items:
+            _active_recorder(hook)
+
+    return record_hook
+
+
+def _composite_recorder(fn, package: str | None = None):
+    """Wrap *fn* so each call records one `CompositeDescriptor`.  For a
+    package entry point, callables bound to hook parameters are wrapped with
+    `_hook_call` first."""
+    hooks = _hook_parameters(fn) if package is not None else set()
+
+    @functools.wraps(fn)
+    def record_composite(*args, **kwargs):
+        if _active_recorder is None:
+            raise RuntimeError(
+                f"Composite '{fn.__name__}' was called outside a suite recording. "
+                f"Composites can only be called (directly or through helper "
+                f"functions) from a @ccpp_suite class's run() method or group "
+                f"functions."
+            )
+        if hooks:
+            bound = inspect.signature(fn).bind(*args, **kwargs)
+            for name in hooks & bound.arguments.keys():
+                if callable(bound.arguments[name]):
+                    bound.arguments[name] = _hook_call(name, bound.arguments[name])
+            args, kwargs = bound.args, bound.kwargs
+        composite = CompositeDescriptor(fn.__name__, package=package)
+        with _recording(composite.items.append):
+            fn(*args, **kwargs)
+        if not composite.items:
+            raise ValueError(f"Composite '{fn.__name__}' recorded no scheme calls.")
+        _active_recorder(composite)
+
+    return record_composite
+
+
 def ccpp_composite(fn):
-    """Decorator: record calls of *fn* as a composite scheme (a physics package
-    or one of its entry points).
+    """Decorator: record calls of *fn* as a composite scheme -- a named block
+    of schemes that belongs to no package (see `ccpp_package` for one that
+    does).
 
     Without the decorator, schemes called by a helper function are recorded
     straight into the caller's group (composition is flattened while the
@@ -481,8 +542,7 @@ def ccpp_composite(fn):
     ``ccpp.composite`` op named after *fn*, whose body holds the scheme calls,
     ``with forLoop(...)`` blocks and nested composites the call made.  The
     ``flatten-composites`` pass inlines composites again before code
-    generation, so generated code is unchanged; keeping them in the IR is
-    what later encapsulation steps build on (composite_scheme_plan.md §11).
+    generation, so generated code is unchanged.
 
     Slots and hooks remain ordinary Python parameters, resolved while the
     suite is recorded::
@@ -496,24 +556,56 @@ def ccpp_composite(fn):
         RuntimeError: when called outside a suite recording.
         ValueError: when a call records no scheme calls.
     """
+    return _composite_recorder(fn)
 
-    @functools.wraps(fn)
-    def record_composite(*args, **kwargs):
-        if _active_recorder is None:
-            raise RuntimeError(
-                f"Composite '{fn.__name__}' was called outside a suite recording. "
-                f"Composites can only be called (directly or through helper "
-                f"functions) from a @ccpp_suite class's run() method or group "
-                f"functions."
-            )
-        composite = CompositeDescriptor(fn.__name__)
-        with _recording(composite.items.append):
-            fn(*args, **kwargs)
-        if not composite.items:
-            raise ValueError(f"Composite '{fn.__name__}' recorded no scheme calls.")
-        _active_recorder(composite)
 
-    return record_composite
+class PackageDescriptor:
+    """A physics package: the exchangeable unit whose entry points share one
+    scope (composite_scheme_plan.md §11).  Produced by `ccpp_package`."""
+
+    def __init__(self, name: str):
+        self.name = name
+        # Entry-point name -> the undecorated function.
+        self.entry_points: dict[str, object] = {}
+
+    def entry_point(self, fn):
+        """Decorator: make *fn* an entry point of this package.
+
+        Each call records one ``ccpp.composite`` op named after *fn* and
+        tagged with the package.  *fn*'s parameters follow the slot/hook
+        convention: a parameter with a default is a SLOT (a swappable science
+        component; whatever is bound to it is package code), one without a
+        default is a HOOK (host code the caller must supply).  Each call of a
+        callable bound to a hook records a nested ``ccpp.composite`` marked
+        ``hook``, so later passes can tell host code from package code.
+        Non-callable hook values (e.g. a loop count's standard name) are
+        passed through unchanged.
+
+        Raises:
+            ValueError: when the package already has an entry point named
+                like *fn*.
+        """
+        if fn.__name__ in self.entry_points:
+            raise ValueError(
+                f"Package '{self.name}' already has an entry point named "
+                f"'{fn.__name__}'.")
+        self.entry_points[fn.__name__] = fn
+        return _composite_recorder(fn, package=self.name)
+
+
+def ccpp_package(name: str) -> PackageDescriptor:
+    """Declare a physics package; decorate its entry points with
+    ``@<package>.entry_point``::
+
+        rrtmgp = ccpp_package("rrtmgp")
+
+        @rrtmgp.entry_point
+        def rrtmgp_longwave(*, diagnostics, overlap=lw_mcica):
+            overlap()
+            ...
+            diagnostics()
+    """
+    return PackageDescriptor(name)
 
 
 # ---------------------------------------------------------------------------
@@ -1256,7 +1348,7 @@ def _group_item_to_op(
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
     if isinstance(item, CompositeDescriptor):
         inner_ops = [_group_item_to_op(sub, seen_schemes) for sub in item.items]
-        return CompositeOp(item.name, inner_ops)
+        return CompositeOp(item.name, inner_ops, package=item.package, hook=item.hook)
     if isinstance(item, SchemeDescriptor):
         item = (item, {})
     sd, overrides = item

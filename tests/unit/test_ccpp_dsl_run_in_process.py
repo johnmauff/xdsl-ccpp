@@ -151,7 +151,7 @@ def test_rrtmgp_composite_matches_reference_suite(legacy_mode):
     sequence, loops and scheme metadata -- compared as the metadata module
     real generation starts from, built from the example's metadata snapshot,
     after the flatten-composites pass that begins the real pipeline (the
-    package's entry points are @ccpp_composite).
+    package's entry points are @rrtmgp.entry_point).
     (Full cap generation would need CAM-SIMA's host metadata; out of scope
     for this not-to-be-compiled example.)"""
     import glob
@@ -177,9 +177,27 @@ def test_rrtmgp_composite_matches_reference_suite(legacy_mode):
 
     xml = metadata_module(suites=[f"{d}/suite_rrtmgp.xml"])
     py = metadata_module(suites=[], py=f"{d}/suite_rrtmgp_composite_py.py")
-    composites = [op.composite_name.data for op in py.walk()
-                  if op.name == "ccpp.composite"]
-    assert composites == ["rrtmgp_prepare", "rrtmgp_shortwave",
-                          "rrtmgp_longwave", "rrtmgp_init_only"]
+    composites = [op for op in py.walk() if op.name == "ccpp.composite"]
+    entry_points = [op.composite_name.data for op in composites if op.hook is None]
+    assert entry_points == ["rrtmgp_prepare", "rrtmgp_shortwave",
+                            "rrtmgp_longwave", "rrtmgp_init_only"]
+    assert {op.package.data for op in composites if op.hook is None} == {"rrtmgp"}
+    # Host code run through hooks is marked, nested in its entry point.
+    def entry_point(op):
+        op = op.parent_op()
+        while op.name != "ccpp.composite":
+            op = op.parent_op()
+        return op.composite_name.data
+
+    hooks = sorted({(entry_point(op), op.composite_name.data)
+                    for op in composites if op.hook is not None})
+    assert hooks == [
+        ("rrtmgp_longwave", "diagnostics"), ("rrtmgp_longwave", "gas_source"),
+        ("rrtmgp_longwave", "next_call"),
+        ("rrtmgp_prepare", "tropopause"),
+        ("rrtmgp_shortwave", "aerosol_optics"),
+        ("rrtmgp_shortwave", "cloud_diagnostics"),
+        ("rrtmgp_shortwave", "diagnostics"), ("rrtmgp_shortwave", "gas_source"),
+        ("rrtmgp_shortwave", "next_call"), ("rrtmgp_shortwave", "solar_source")]
     assert str(xml).count('"ccpp.scheme"') == 40
     assert flattened(py) == flattened(xml)

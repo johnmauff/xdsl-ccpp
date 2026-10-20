@@ -343,6 +343,16 @@ class ccppMain:
                  "even once the real generation is deferred to build time.",
         )
         parser.add_argument(
+            "--list-package-scope",
+            action="store_true",
+            default=False,
+            help="Print, for each package in a --py suite (@<package>.entry_point "
+                 "composites), which standard names are private to it and why "
+                 "each other name it touches is public, then exit -- without "
+                 "generating code (composite-scheme Stage 2; see "
+                 "transforms/package_scope.py).",
+        )
+        parser.add_argument(
             "--gfs-dim-aliases",
             action="store_true",
             default=False,
@@ -832,11 +842,14 @@ class ccppMain:
             suite_cap_pass += "{" + " ".join(suite_cap_opts) + "}"
 
         has_host = bool(self.options_db.get("host_files"))
-        # Composite schemes (@ccpp_composite in the Python frontend) are
+        # Packages' private standard names are scoped while the package
+        # boundaries are still in the IR (S2-2), then composite schemes
+        # (@ccpp_composite / package entry points in the Python frontend) are
         # inlined before any other pass, so everything downstream sees the
         # same flat suite it always has (composite_scheme_plan.md §11, S2-1).
-        # A no-op for suites without composites, including every XML suite.
-        passes = ["flatten-composites", "generate-meta-cap"]
+        # Both are no-ops for suites without composites, including every XML
+        # suite.
+        passes = ["scope-packages", "flatten-composites", "generate-meta-cap"]
         if has_host:
             host_match_pass = "generate-host-match"
             if self.options_db.get("gfs_dim_aliases"):
@@ -1275,6 +1288,18 @@ class ccppMain:
             outputs = self.predict_output_filenames()
             print(",".join(outputs))
             return CcppDslResult(written=outputs)
+
+        if self.options_db.get("list_package_scope"):
+            from xdsl_ccpp.transforms.package_scope import (
+                format_package_scopes,
+                package_scopes,
+            )
+
+            if not self.options_db.get("py"):
+                raise CcppDslError("--list-package-scope needs a --py suite")
+            print(format_package_scopes(
+                package_scopes(self._build_cheap_metadata_module())), end="")
+            return CcppDslResult(written=[])
 
         if self.options_db.get("list_dependencies"):
             deps = self.predict_dependencies()

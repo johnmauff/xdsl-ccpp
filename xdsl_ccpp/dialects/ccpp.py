@@ -192,15 +192,22 @@ class CompositeOp(IRDLOperation):
     """A composite scheme: a named block of scheme calls, subcycles and nested
     composites, run once, in order, where it appears.
 
-    Recorded from a ``@ccpp_composite`` Python function (a physics package or
-    one of its entry points; see composite_scheme_plan.md).  Shaped like
-    `SubcycleOp` but without a loop.  The ``flatten-composites`` pass replaces
-    each composite with its body, so passes after it never see one.
+    Recorded from a ``@ccpp_composite`` Python function or a package entry
+    point (``@<package>.entry_point``; see composite_scheme_plan.md).  Shaped
+    like `SubcycleOp` but without a loop.  The ``flatten-composites`` pass
+    replaces each composite with its body, so passes after it never see one.
+
+    ``package`` names the package an entry-point composite belongs to.  A
+    composite with ``hook`` set is not package code: it is the host code a
+    package entry point ran through one of its hooks (composite_name is the
+    hook parameter's name), and its schemes belong to the host's scope.
     """
 
     name = "ccpp.composite"
 
     composite_name = prop_def(StringAttr)
+    package = opt_prop_def(StringAttr)
+    hook = opt_prop_def(UnitAttr)
     body = region_def("single_block")
 
     traits = traits_def(NoTerminator())
@@ -209,12 +216,20 @@ class CompositeOp(IRDLOperation):
         self,
         composite_name: str | StringAttr,
         body: "Region | Sequence[Operation] | Sequence[Block]",
+        *,
+        package: str | None = None,
+        hook: bool = False,
     ):
         if isa(composite_name, str):
             composite_name = StringAttr(composite_name)
         if not isinstance(body, Region):
             body = Region([Block(list(body))])
-        super().__init__(regions=[body], properties={"composite_name": composite_name})
+        properties = {"composite_name": composite_name}
+        if package is not None:
+            properties["package"] = StringAttr(package)
+        if hook:
+            properties["hook"] = UnitAttr()
+        super().__init__(regions=[body], properties=properties)
 
 
 class TableBaseOp(IRDLOperation):

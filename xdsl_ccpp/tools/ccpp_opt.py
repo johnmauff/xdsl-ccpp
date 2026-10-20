@@ -9,6 +9,7 @@ from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.cpp_interop import CPPInteropCap
 from xdsl_ccpp.transforms.fir_to_meta import FIRToMeta
 from xdsl_ccpp.transforms.flatten_composites import FlattenComposites
+from xdsl_ccpp.transforms.package_scope import ScopePackages
 from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
 from xdsl_ccpp.transforms.lower_ccpp_utils import LowerCCPPUtils
 from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
@@ -25,6 +26,7 @@ from xdsl_ccpp.transforms.scheme_io_capture_pass import SchemeIOCapturePass
 class CCPPOptMain(xDSLOptMain):
     def register_all_passes(self):
         super().register_all_passes()
+        self.register_pass("scope-packages", lambda: ScopePackages)
         self.register_pass("flatten-composites", lambda: FlattenComposites)
         self.register_pass("generate-suite-cap", lambda: SuiteCAP)
         self.register_pass("generate-ccpp-cap", lambda: CCPPCAP)
