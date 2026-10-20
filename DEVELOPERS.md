@@ -58,8 +58,8 @@ python3 examples/helloworld/helloworld_py.py \
 
 | Pass name | Role |
 |-----------|------|
-| `scope-packages` | Rename each package-private standard name to `<package>__<name>` and mark its arguments suite-owned (see `package_scope.py`); first in the driver's pipeline, before `flatten-composites` erases the package boundaries, a no-op without packages |
-| `flatten-composites` | Inline `ccpp.composite` ops (from `@ccpp_composite` and package entry points in the Python frontend) into their callers; runs right after `scope-packages`, a no-op without composites |
+| `scope-packages` | Check each package's declared `shared_state` against the inferred interface, then rename each package-private standard name to `<package>__<name>` and mark its arguments suite-owned (see `package_scope.py`); first in the driver's pipeline, before `flatten-composites` erases the package boundaries, a no-op without packages |
+| `flatten-composites` | Inline `ccpp.composite` ops (from `@ccpp_composite` and package entry points in the Python frontend) into their callers and erase `ccpp.package` declarations; runs right after `scope-packages`, a no-op without composites |
 | `generate-meta-cap` | Build cap metadata ops from descriptor tables |
 | `generate-meta-kinds` | Propagate kind information across the IR |
 | `generate-host-match` | Annotate scheme args with matching host variable names, kinds, and units |
@@ -102,7 +102,7 @@ The transformation pipeline lives under `xdsl_ccpp/transforms/`:
 
 | Module | Pass name | Role |
 |--------|-----------|------|
-| `package_scope.py` | `scope-packages` | Package-private standard names: the analysis (`ccpp_dsl --list-package-scope`) and the pass that scopes them, before flattening |
+| `package_scope.py` | `scope-packages` | Package scope and interface: the analysis (`ccpp_dsl --list-package-scope`: private names, interface inputs/outputs, shared state) and the pass that checks shared state and scopes private names, before flattening |
 | `flatten_composites.py` | `flatten-composites` | Inlines composite schemes into their callers before any other pass except `scope-packages` |
 | `ccpp_cap.py` | `generate-ccpp-cap` | Host-facing cap (`ccpp_physics_initialize`, `ccpp_physics_run`, etc.) |
 | `cpp_interop.py` | `generate-cpp-cap` | C++/BIND(C) host-interop cap ("chost") — runs immediately after `generate-ccpp-cap`, no-ops without a `language = "c++"` host/module table |
@@ -154,7 +154,7 @@ Custom MLIR dialects are defined under `xdsl_ccpp/dialects/`:
 | Module | Contents |
 |--------|----------|
 | `ccpp_utils.py` | Core CCPP ops: `ModuleVarOp`, `HostVarRefOp`, `UnitConvertOp`, `RowMajorConvertOp`, and related ops |
-| `ccpp.py` | Suite-structure ops (`SuiteOp`, `GroupOp`, `SchemeOp`, `SubcycleOp`, `CompositeOp`), metadata table ops (`TablePropertiesOp`, `ArgumentTableOp`, `ArgumentOp`), kind ops (`KindOp`, `KindsOp`), and `ResolvedArgOp`/`ArgSourceKind` (durable per-argument source resolution, built by `run_dispatch.py`) |
+| `ccpp.py` | Suite-structure ops (`SuiteOp`, `GroupOp`, `SchemeOp`, `SubcycleOp`, `CompositeOp`, `PackageOp`), metadata table ops (`TablePropertiesOp`, `ArgumentTableOp`, `ArgumentOp`), kind ops (`KindOp`, `KindsOp`), and `ResolvedArgOp`/`ArgSourceKind` (durable per-argument source resolution, built by `run_dispatch.py`) |
 
 ### ModuleVarOp type representation
 

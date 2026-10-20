@@ -6,6 +6,7 @@ from enum import StrEnum, auto
 from typing import ClassVar
 
 from xdsl.dialects.builtin import (
+    ArrayAttr,
     BoolAttr,
     DictionaryAttr,
     IntAttr,
@@ -185,6 +186,36 @@ class SubcycleOp(IRDLOperation):
                 "is_literal": BoolAttr.from_bool(is_literal),
             },
         )
+
+
+@irdl_op_definition
+class PackageOp(IRDLOperation):
+    """A package declaration (``ccpp_package`` in the Python frontend), one
+    per package whose entry points the suites call.
+
+    ``shared_state`` lists the standard names the package declares as known
+    shared state: names both the package and host code write (e.g. RRTMGP's
+    objects that host schemes allocate and free).  ``scope-packages`` reports
+    any other such name as an error.  ``init`` names the package's init
+    composite (``@<package>.init``), whose schemes must have no run phase.
+    ``flatten-composites`` erases these ops together with the composites.
+    """
+
+    name = "ccpp.package"
+
+    package_name = prop_def(StringAttr)
+    shared_state = prop_def(ArrayAttr[StringAttr])
+    init = opt_prop_def(StringAttr)
+
+    def __init__(self, package_name: str, shared_state: "Sequence[str]" = (),
+                 init: str | None = None):
+        properties = {
+            "package_name": StringAttr(package_name),
+            "shared_state": ArrayAttr([StringAttr(n) for n in shared_state]),
+        }
+        if init is not None:
+            properties["init"] = StringAttr(init)
+        super().__init__(properties=properties)
 
 
 @irdl_op_definition
@@ -738,6 +769,7 @@ CCPP = Dialect(
         SchemeOp,
         SubcycleOp,
         CompositeOp,
+        PackageOp,
         KindOp,
         KindsOp,
         TablePropertiesOp,

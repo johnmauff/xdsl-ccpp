@@ -179,8 +179,9 @@ def test_rrtmgp_composite_matches_reference_suite(legacy_mode):
     py = metadata_module(suites=[], py=f"{d}/suite_rrtmgp_composite_py.py")
     composites = [op for op in py.walk() if op.name == "ccpp.composite"]
     entry_points = [op.composite_name.data for op in composites if op.hook is None]
+    # The package's init (@rrtmgp.init) is placed after its last entry point.
     assert entry_points == ["rrtmgp_prepare", "rrtmgp_shortwave",
-                            "rrtmgp_longwave", "rrtmgp_init_only"]
+                            "rrtmgp_longwave", "rrtmgp_setup"]
     assert {op.package.data for op in composites if op.hook is None} == {"rrtmgp"}
     # Host code run through hooks is marked, nested in its entry point.
     def entry_point(op):

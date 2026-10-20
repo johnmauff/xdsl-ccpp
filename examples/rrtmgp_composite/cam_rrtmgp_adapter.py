@@ -29,8 +29,7 @@ overlap scheme without touching anything else.
 
 from xdsl_ccpp.frontend.py_api import ccpp_scheme_ref
 
-from rrtmgp_package import (rrtmgp_init_only, rrtmgp_longwave, rrtmgp_prepare,
-                            rrtmgp_shortwave)
+from rrtmgp_package import rrtmgp_longwave, rrtmgp_prepare, rrtmgp_shortwave
 
 # ---------------------------------------------------------------------------
 # CAM schemes used before/after the package (adapter-owned steps).
@@ -80,7 +79,6 @@ def cam_rrtmgp(*,
                     gas_source=rrtmgp_constituents,              # HOOK
                     diagnostics=rrtmgp_lw_diagnostics,           # HOOK
                     **(lw_slots or {}))                          # SLOT overrides, if any
-    rrtmgp_init_only()
     rrtmgp_dry_static_energy_tendency()           # CAM: heating carried between radiation steps
     calculate_net_heating()                       # CAM: net radiative heating and fluxes
     rrtmgp_post()                                 # CAM: coupler output, free RRTMGP objects

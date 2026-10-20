@@ -14,9 +14,12 @@ from xdsl_ccpp.frontend.py_api import (
 from xdsl_ccpp.transforms.package_scope import (
     CONSTITUENT,
     FRAMEWORK,
+    FROM_HOST,
     HOST,
     INPUT,
+    OUTPUT,
     SHARED,
+    SHARED_STATE,
     SUITE,
     CallSite,
     format_package_scopes,
@@ -66,7 +69,7 @@ class host:
     host = [_arg("t", "air_temperature", "inout", ("horizontal_dimension",))]
 
 
-rad = ccpp_package("rad")
+rad = ccpp_package("rad", shared_state=["lw_object"])
 
 
 @rad.entry_point
@@ -128,6 +131,56 @@ class TestPackageScope:
             "sw_flux": {CallSite("diagnostics", SUITE, ("rad_sw", "diag"))},
             "lw_object": {CallSite("post", SUITE)},
         }
+
+    def test_interface_directions(self):
+        rad = _scopes()["rad"]
+        assert rad.direction == {"sw_flux": OUTPUT, "lw_object": SHARED_STATE}
+        assert rad.declared_shared_state == ["lw_object"]
+        assert rad.interface_problems() == ([], [])
+
+    def test_input_direction(self):
+        source = SchemeDescriptor("source", {"run": [_arg("x", "host_flag", "out"), *_err]})
+        reader = SchemeDescriptor("reader", {"run": [_arg("x", "host_flag", "in"), *_err]})
+        pkg = ccpp_package("pkg")
+
+        @pkg.entry_point
+        def step(*, fill):
+            fill()
+            reader()
+
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                step(fill=source)
+
+        assert _scopes(s)["pkg"].direction == {"host_flag": FROM_HOST}
+
+    def test_undeclared_and_stale_shared_state(self):
+        pkg = ccpp_package("pkg", shared_state=["sw_object", "nothing_here"])
+
+        @pkg.entry_point
+        def step():
+            lw_setup()
+            sw_setup()
+
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                step()
+                post()
+
+        errors, warnings = _scopes(s)["pkg"].interface_problems()
+        assert errors == [
+            "Package 'pkg': 'lw_object' is written both by the package and by "
+            "host code (post [suite]) but is not declared in its shared_state."]
+        assert warnings == [
+            "Package 'pkg': shared_state lists 'nothing_here', which is not shared "
+            "state (the package does not touch it); remove it from the list.",
+            "Package 'pkg': shared_state lists 'sw_object', which is not shared "
+            "state (it is private); remove it from the list."]
+        report = format_package_scopes(_scopes(s))
+        assert "  ERROR: Package 'pkg': 'lw_object'" in report
+        assert "  WARNING: Package 'pkg': shared_state lists 'nothing_here'" in report
 
     def test_slot_code_is_package_code(self):
         """A scheme bound to a slot (a defaulted parameter) is package code
@@ -200,6 +253,17 @@ def test_rrtmgp_example_scope(legacy_mode, capsys):
             f"{kind}_atmosphere_optical_properties_object_for_rrtmgp"]
     assert CallSite("rrtmgp_sw_diagnostics", SUITE, ("rrtmgp_shortwave", "diagnostics")) \
         in rrtmgp.shared_with["shortwave_net_radiative_flux"]
+    # Every declared shared-state name really is shared state.  Without CAM's
+    # host metadata, three names CAM itself declares (coupler fields, the
+    # heating carried between radiation steps) are reported as undeclared
+    # shared state too; with it, the package's interface check is clean.
+    errors, warnings = rrtmgp.interface_problems()
+    assert warnings == []
+    assert sorted(e.split("'")[3] for e in errors) == [
+        "longwave_downward_radiative_flux_at_surface_to_coupler",
+        "next_calendar_day_to_perform_shortwave_radiation_for_surface_models",
+        "tendency_of_dry_air_enthalpy_at_constant_pressure_due_to_longwave_radiation"
+        "_adjusted_by_air_pressure_thickness"]
 
 
 class TestScopePackagesPass:
@@ -244,6 +308,57 @@ class TestScopePackagesPass:
             assert args[key].standard_name.data == std
             assert args[key].is_interstitial is None
         assert args[("sw_optics_run", "t")].dim_names.data == "horizontal_dimension"
+
+    def test_undeclared_shared_state_is_an_error(self, capsys):
+        import pytest
+
+        from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
+        from xdsl_ccpp.transforms.package_scope import ScopePackages
+
+        pkg = ccpp_package("pkg", shared_state=["nothing_here"])
+
+        @pkg.entry_point
+        def step():
+            lw_setup()
+
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                step()
+                post()
+
+        with pytest.raises(ValueError, match="'lw_object' is written both"):
+            ScopePackages().apply(make_ccpp_context(), build_ir(s, [host]))
+        assert "shared_state lists 'nothing_here'" in capsys.readouterr().err
+
+    def test_init_may_only_call_init_only_schemes(self):
+        from xdsl_ccpp.transforms.package_scope import init_problems
+
+        pkg = ccpp_package("pkg", shared_state=["lw_object"])
+
+        @pkg.entry_point
+        def step():
+            lw_setup()
+            lw_optics()
+
+        @pkg.init
+        def pkg_setup():
+            sw_setup()
+            sw_optics()
+
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                step()
+                post()
+
+        module = build_ir(s, [host])
+        assert init_problems(module) == [
+            "Package 'pkg': init 'pkg_setup' calls 'sw_optics', which has phase(s) "
+            "run; a package init may only call schemes with register, init or "
+            "final phases."]
+        # The init's schemes are package code: sw_setup's object is private.
+        assert "sw_object" in package_scopes(module)["pkg"].private
 
     def test_module_without_packages_unchanged(self):
         from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
