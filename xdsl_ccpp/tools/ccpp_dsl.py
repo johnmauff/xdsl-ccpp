@@ -1292,13 +1292,16 @@ class ccppMain:
         if self.options_db.get("list_package_scope"):
             from xdsl_ccpp.transforms.package_scope import (
                 format_package_scopes,
+                init_problems,
                 package_scopes,
             )
 
             if not self.options_db.get("py"):
                 raise CcppDslError("--list-package-scope needs a --py suite")
-            print(format_package_scopes(
-                package_scopes(self._build_cheap_metadata_module())), end="")
+            module = self._build_cheap_metadata_module()
+            print(format_package_scopes(package_scopes(module)), end="")
+            for problem in init_problems(module):
+                print(f"ERROR: {problem}")
             return CcppDslResult(written=[])
 
         if self.options_db.get("list_dependencies"):

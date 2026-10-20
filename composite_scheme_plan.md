@@ -725,6 +725,27 @@ Core total: about L (15-25 days) for xdsl-ccpp, plus S2-0 in CAM-SIMA.
   public names share local names (`hrate`, `qrs`, `qrl`, the flux objects,
   ...), which is the host's business, not the package's.
 
+**S2-3 as built.**
+- **Interface: inferred, with shared state checked (11.4 settled).** The
+  names a package shares with host code are classified by who writes them:
+  outputs, inputs, and shared state (both write).
+  - Shared state must be declared in `ccpp_package(..., shared_state=[...])`.
+    An undeclared one stops generation; a declared one that no longer is
+    shared state gives a warning, so the list only shrinks.
+  - RRTMGP, with CAM-SIMA's host metadata: 13 outputs, 21 inputs, 13 shared
+    state. The shared state is the 11 objects `rrtmgp_pre`/`rrtmgp_post`
+    allocate and free, plus the SW/LW heating rates, which CAM's
+    `rrtmgp_dry_static_energy_tendency` also writes.
+  - The §7 splits would remove the 11 objects. The heating rates need an
+    interface (naming) decision upstream.
+- **Package-level init, limited to init-only schemes.** `@rrtmgp.init`
+  lists them. The generator places them after the package's last entry-point
+  call, which keeps the init order. `scope-packages` rejects a scheme with a
+  run phase there. The adapter no longer calls `rrtmgp_init_only()`.
+  - Other package init phases keep their positions, interleaved with host
+    inits as before.
+- **Generated code.** CAM-SIMA's generated code is identical to S2-2's.
+
 Division of work is as for Stage 1: changes are prepared in the
 repositories; building, submitting and judging the CAM-SIMA test runs stays
 with the project owner.

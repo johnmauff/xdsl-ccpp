@@ -282,7 +282,7 @@ class TestPackage:
     def test_entry_point_recorded_with_package(self):
         (step,) = package_suite.groups["physics"]
         assert isinstance(step, CompositeDescriptor)
-        assert (step.name, step.package, step.hook) == ("pkg_step", "pkg", False)
+        assert (step.name, step.package, step.hook) == ("pkg_step", pkg, False)
         assert pkg.entry_points == {"pkg_step": pkg_step.__wrapped__}
 
     def test_slot_binding_is_package_code_hook_binding_is_marked(self):
@@ -301,6 +301,19 @@ class TestPackage:
                  op.package.data if op.package else None,
                  op.hook is not None) for op in composites] == [
             ("pkg_step", "pkg", False), ("hook", None, True)]
+
+    def test_package_declared_once_in_ir(self):
+        from xdsl_ccpp.dialects.ccpp import PackageOp
+
+        (op,) = _ops(build_ir(package_suite), PackageOp)
+        assert (op.package_name.data, list(op.shared_state)) == ("pkg", [])
+
+    def test_flatten_erases_package_declarations(self):
+        from xdsl_ccpp.dialects.ccpp import PackageOp
+
+        module = build_ir(package_suite)
+        FlattenComposites().apply(make_ccpp_context(), module)
+        assert _ops(module, PackageOp) == []
 
     def test_ir_round_trips(self):
         from xdsl.parser import Parser
@@ -326,4 +339,125 @@ class TestPackage:
         with pytest.raises(ValueError, match="already has an entry point named 'step'"):
             @p.entry_point
             def step():  # noqa: F811
+                scheme_b()
+
+
+ipkg = ccpp_package("ipkg")
+
+
+@ipkg.entry_point
+def ipkg_a():
+    scheme_a()
+
+
+@ipkg.entry_point
+def ipkg_b():
+    scheme_b()
+
+
+@ipkg.init
+def ipkg_setup():
+    scheme_c()
+
+
+class TestPackageInit:
+    def test_init_placed_after_last_entry_point(self):
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def first():
+                ipkg_a()
+                scheme_c()
+
+            def second():
+                ipkg_b()
+                scheme_a()
+
+        assert [i.name if isinstance(i, CompositeDescriptor) else i[0].name
+                for i in s.groups["first"]] == ["ipkg_a", "scheme_c"]
+        b, init, after = s.groups["second"]
+        assert (b.name, init.name, after[0].name) == ("ipkg_b", "ipkg_setup", "scheme_a")
+        assert (init.package, init.hook, init.items) == (ipkg, False, [(scheme_c, {})])
+
+    def test_init_placed_inside_loop_with_last_entry_point(self):
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                ipkg_a()
+                with forLoop(N):
+                    ipkg_b()
+                scheme_c()
+
+        loop = s.groups["physics"][1]
+        assert [i.name for i in loop.schemes] == ["ipkg_b", "ipkg_setup"]
+
+    def test_init_recorded_in_package_op(self):
+        from xdsl_ccpp.dialects.ccpp import PackageOp
+
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                ipkg_a()
+
+        (op,) = _ops(build_ir(s), PackageOp)
+        assert op.init.data == "ipkg_setup"
+        assert [c.composite_name.data for c in _ops(build_ir(s), CompositeOp)] == [
+            "ipkg_a", "ipkg_setup"]
+
+    def test_flattened_init_is_its_schemes_in_place(self):
+        @ccpp_suite("s", version="1.0")
+        class with_init:
+            def physics():
+                ipkg_a()
+                scheme_b()
+
+        @ccpp_suite("s", version="1.0")
+        class flat:
+            def physics():
+                scheme_a()
+                scheme_c()
+                scheme_b()
+
+        assert _flattened(with_init) == str(build_ir(flat))
+
+    def test_package_not_called_gets_no_init(self):
+        @ccpp_suite("s", version="1.0")
+        class s:
+            def physics():
+                scheme_a()
+
+        assert s.groups["physics"] == [(scheme_a, {})]
+
+    def test_init_is_not_called_directly(self):
+        with pytest.raises(RuntimeError, match="the generator places it"):
+            ipkg_setup()
+
+    def test_init_rules(self):
+        p = ccpp_package("p")
+
+        @p.entry_point
+        def step():
+            scheme_a()
+
+        with pytest.raises(ValueError, match="must take no parameters"):
+            @p.init
+            def with_param(x):
+                scheme_c()
+
+        with pytest.raises(ValueError, match="has the name of an entry point"):
+            @p.init
+            def step():  # noqa: F811
+                scheme_c()
+
+        @p.init
+        def setup():
+            scheme_c()
+
+        with pytest.raises(ValueError, match="already has an init"):
+            @p.init
+            def setup_again():
+                scheme_c()
+
+        with pytest.raises(ValueError, match="'setup' is already its init"):
+            @p.entry_point
+            def setup():  # noqa: F811
                 scheme_b()

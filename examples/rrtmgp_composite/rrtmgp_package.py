@@ -42,10 +42,12 @@ names their 789 metadata arguments use, sits in one suite-wide namespace.
 
 With this package:
 
-- A host calls 4 entry points (``rrtmgp_prepare``, ``rrtmgp_shortwave``,
-  ``rrtmgp_longwave``, ``rrtmgp_init_only``) instead of listing 40 schemes.
-  The order of RRTMGP's internal steps is written once, here, by the people
-  who own RRTMGP, instead of being re-typed into every host's suite file.
+- A host calls 3 entry points (``rrtmgp_prepare``, ``rrtmgp_shortwave``,
+  ``rrtmgp_longwave``) instead of listing 40 schemes.  The order of RRTMGP's
+  internal steps is written once, here, by the people who own RRTMGP,
+  instead of being re-typed into every host's suite file.  RRTMGP's
+  init-only schemes are the package's own business (``@rrtmgp.init``); the
+  host never sees them.
 - What a host must understand is the package's call interface: 8 hooks to
   fill in and 7 optional slots -- not RRTMGP's internal data flow.
 - Swapping a science component is one keyword argument
@@ -66,7 +68,7 @@ the host's code, not RRTMGP's.
 
 Private names
 -------------
-The package boundary is shared by all four entry points (e.g. the
+The package boundary is shared by all its entry points and its init (e.g. the
 k-distribution objects are made at init and used by both shortwave and
 longwave).  A standard name only RRTMGP's own code touches, and RRTMGP
 writes, is private to the package: the generator renames it
@@ -80,7 +82,27 @@ package before the remaining code generation.
 
 from xdsl_ccpp.frontend.py_api import ccpp_package, ccpp_scheme_ref, forLoop
 
-rrtmgp = ccpp_package("rrtmgp")
+# Shared state: names RRTMGP and CAM's host code both write, i.e. where the
+# package boundary still leaks.  The generator rejects any other such name;
+# the list should shrink as the mixed schemes are split upstream
+# (composite_scheme_plan.md §7).
+rrtmgp = ccpp_package("rrtmgp", shared_state=[
+    # RRTMGP objects CAM's adapter allocates (rrtmgp_pre) and frees (rrtmgp_post)
+    "shortwave_aerosol_optical_properties_object_for_rrtmgp",
+    "shortwave_atmosphere_optical_properties_object_for_rrtmgp",
+    "shortwave_cloud_optical_properties_object_for_rrtmgp",
+    "shortwave_all_sky_flux_object_for_rrtmgp",
+    "shortwave_clear_sky_flux_object_for_rrtmgp",
+    "longwave_aerosol_optical_properties_object_for_rrtmgp",
+    "longwave_atmosphere_optical_properties_object_for_rrtmgp",
+    "longwave_cloud_optical_properties_object_for_rrtmgp",
+    "longwave_planck_sources_object_for_rrtmgp",
+    "longwave_all_sky_flux_object_for_rrtmgp",
+    "longwave_clear_sky_flux_object_for_rrtmgp",
+    # Heating rates CAM's adapter schemes also write
+    "tendency_of_dry_air_enthalpy_at_constant_pressure_due_to_shortwave_radiation",
+    "tendency_of_dry_air_enthalpy_at_constant_pressure_due_to_longwave_radiation",
+])
 
 # ---------------------------------------------------------------------------
 # Core schemes: fixed parts of RRTMGP, always used as-is.
@@ -179,8 +201,10 @@ def rrtmgp_longwave(*,
         next_call()
 
 
-@rrtmgp.entry_point
-def rrtmgp_init_only():
-    """Schemes with only an init phase; inputs_setup must follow both gas optics."""
+@rrtmgp.init
+def rrtmgp_setup():
+    """Schemes with only an init phase.  The generator places them after the
+    package's last entry-point call, so inputs_setup's init follows both gas
+    optics' (it needs both k-distributions)."""
     inputs_setup()
     sw_solar_var_setup()

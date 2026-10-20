@@ -83,6 +83,7 @@ from xdsl_ccpp.dialects.ccpp import (
     ArgumentOp,
     ArgumentTableOp,
     CompositeOp,
+    PackageOp,
     GroupOp,
     SchemeOp,
     SubcycleOp,
@@ -463,12 +464,13 @@ class CompositeDescriptor:
     """One call of a ``@ccpp_composite`` function or package entry point: its
     name and the items its body recorded, in order -- ``(descriptor,
     overrides)`` scheme calls, `SubcycleDescriptor` blocks and nested
-    `CompositeDescriptor` calls.  ``package`` is set for a package entry
-    point; ``hook`` marks the host code an entry point ran through one of its
-    hooks.  Lowered to a ``ccpp.composite`` op.
+    `CompositeDescriptor` calls.  ``package`` (a `PackageDescriptor`) is set
+    for a package entry point; ``hook`` marks the host code an entry point
+    ran through one of its hooks.  Lowered to a ``ccpp.composite`` op.
     """
 
-    def __init__(self, name: str, *, package: str | None = None, hook: bool = False):
+    def __init__(self, name: str, *, package: PackageDescriptor | None = None,
+                 hook: bool = False):
         self.name = name
         self.package = package
         self.hook = hook
@@ -500,7 +502,7 @@ def _hook_call(hook_name: str, target):
     return record_hook
 
 
-def _composite_recorder(fn, package: str | None = None):
+def _composite_recorder(fn, package: PackageDescriptor | None = None):
     """Wrap *fn* so each call records one `CompositeDescriptor`.  For a
     package entry point, callables bound to hook parameters are wrapped with
     `_hook_call` first."""
@@ -563,10 +565,15 @@ class PackageDescriptor:
     """A physics package: the exchangeable unit whose entry points share one
     scope (composite_scheme_plan.md §11).  Produced by `ccpp_package`."""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, shared_state=()):
         self.name = name
+        # Standard names the package declares as known shared state (see
+        # ccpp_package), lowercased.
+        self.shared_state = [n.lower() for n in shared_state]
         # Entry-point name -> the undecorated function.
         self.entry_points: dict[str, object] = {}
+        # The package's init function (see `init`), or None.
+        self.init_fn = None
 
     def entry_point(self, fn):
         """Decorator: make *fn* an entry point of this package.
@@ -589,15 +596,62 @@ class PackageDescriptor:
             raise ValueError(
                 f"Package '{self.name}' already has an entry point named "
                 f"'{fn.__name__}'.")
+        if self.init_fn is not None and fn.__name__ == self.init_fn.__name__:
+            raise ValueError(
+                f"Package '{self.name}': '{fn.__name__}' is already its init.")
         self.entry_points[fn.__name__] = fn
-        return _composite_recorder(fn, package=self.name)
+        return _composite_recorder(fn, package=self)
+
+    def init(self, fn):
+        """Decorator: make *fn* this package's init.
+
+        *fn* calls the package's init-only schemes -- schemes with no run
+        phase, which still need a place in the suite because CCPP runs init
+        phases in suite order.  The host never calls it: when a suite is
+        recorded, *fn* is recorded as a ``ccpp.composite`` of the package and
+        placed right after the package's last entry-point call, so its
+        schemes' init phases follow those of every other package scheme
+        (e.g. RRTMGP's input setup needs both k-distributions).
+        ``scope-packages`` checks that its schemes have no run phase.
+
+        Raises:
+            ValueError: when the package already has an init, *fn* takes
+                parameters, or an entry point has *fn*'s name.
+        """
+        if self.init_fn is not None:
+            raise ValueError(
+                f"Package '{self.name}' already has an init "
+                f"('{self.init_fn.__name__}').")
+        if inspect.signature(fn).parameters:
+            raise ValueError(
+                f"Package '{self.name}': init '{fn.__name__}' must take no parameters.")
+        if fn.__name__ in self.entry_points:
+            raise ValueError(
+                f"Package '{self.name}': init '{fn.__name__}' has the name of an "
+                f"entry point.")
+        self.init_fn = fn
+
+        @functools.wraps(fn)
+        def placed_by_generator(*args, **kwargs):
+            raise RuntimeError(
+                f"'{fn.__name__}' is package '{self.name}''s init; the generator "
+                f"places it in the suite, so it is not called directly.")
+
+        return placed_by_generator
 
 
-def ccpp_package(name: str) -> PackageDescriptor:
+def ccpp_package(name: str, *, shared_state=()) -> PackageDescriptor:
     """Declare a physics package; decorate its entry points with
-    ``@<package>.entry_point``::
+    ``@<package>.entry_point``.
 
-        rrtmgp = ccpp_package("rrtmgp")
+    The package's interface is inferred from its schemes' metadata (see
+    transforms/package_scope.py): inputs it reads from host code, outputs
+    host code reads from it.  A standard name that both the package and
+    host code write is shared state, a leak across the boundary; each must
+    be listed in *shared_state*, or the generator reports an error::
+
+        rrtmgp = ccpp_package("rrtmgp", shared_state=[
+            "shortwave_all_sky_flux_object_for_rrtmgp", ...])
 
         @rrtmgp.entry_point
         def rrtmgp_longwave(*, diagnostics, overlap=lw_mcica):
@@ -605,7 +659,7 @@ def ccpp_package(name: str) -> PackageDescriptor:
             ...
             diagnostics()
     """
-    return PackageDescriptor(name)
+    return PackageDescriptor(name, shared_state)
 
 
 # ---------------------------------------------------------------------------
@@ -940,9 +994,39 @@ def ccpp_suite(name: str, version: str = "1.0"):
                     ]
                 elif attr_name in group_fns:
                     groups[attr_name] = _record_group_function(group_fns[attr_name])
+        _place_package_inits(groups)
         return SuiteDescriptor(name, version, groups)
 
     return decorator
+
+
+def _place_package_inits(groups: dict[str, list]) -> None:
+    """Record each called package's init (`PackageDescriptor.init`) and insert
+    it right after the package's last entry-point call, in suite order."""
+    last: dict[str, tuple[PackageDescriptor, list, int]] = {}
+
+    def walk(items: list) -> None:
+        for idx, item in enumerate(items):
+            if isinstance(item, CompositeDescriptor):
+                if item.package is not None and item.package.init_fn is not None:
+                    last[item.package.name] = (item.package, items, idx)
+                walk(item.items)
+            elif isinstance(item, SubcycleDescriptor):
+                walk(item.schemes)
+
+    for items in groups.values():
+        walk(items)
+
+    # Insert from the highest position down, so earlier positions in a shared
+    # list stay valid.
+    for package, items, idx in sorted(last.values(), key=lambda t: -t[2]):
+        init = CompositeDescriptor(package.init_fn.__name__, package=package)
+        with _recording(init.items.append):
+            package.init_fn()
+        if not init.items:
+            raise ValueError(
+                f"Package '{package.name}': init '{init.name}' recorded no scheme calls.")
+        items.insert(idx + 1, init)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,6 +1402,21 @@ def _scheme_table_properties(sd: SchemeDescriptor) -> TablePropertiesOp:
                                  source_path=sd.source_path)
 
 
+def _collect_packages(items, packages: dict[str, PackageDescriptor]) -> None:
+    """Record the package of every entry-point call in *items*, at any
+    nesting depth, by name."""
+    for item in items:
+        if isinstance(item, CompositeDescriptor):
+            if item.package is not None:
+                existing = packages.setdefault(item.package.name, item.package)
+                if existing is not item.package:
+                    raise ValueError(
+                        f"Two different packages are named '{item.package.name}'.")
+            _collect_packages(item.items, packages)
+        elif isinstance(item, SubcycleDescriptor):
+            _collect_packages(item.schemes, packages)
+
+
 def _register_scheme(seen_schemes: dict[str, SchemeDescriptor], sd: SchemeDescriptor) -> None:
     """Record *sd* under its name; a full descriptor replaces a reference."""
     existing = seen_schemes.get(sd.name)
@@ -1348,7 +1447,8 @@ def _group_item_to_op(
         return SubcycleOp(item.count, inner_ops, is_literal=isinstance(item.count, int))
     if isinstance(item, CompositeDescriptor):
         inner_ops = [_group_item_to_op(sub, seen_schemes) for sub in item.items]
-        return CompositeOp(item.name, inner_ops, package=item.package, hook=item.hook)
+        package = item.package.name if item.package is not None else None
+        return CompositeOp(item.name, inner_ops, package=package, hook=item.hook)
     if isinstance(item, SchemeDescriptor):
         item = (item, {})
     sd, overrides = item
@@ -1404,6 +1504,15 @@ def build_ir(
 
     ir_ops = []
     seen_schemes: dict[str, SchemeDescriptor] = {}
+
+    # One PackageOp per package the suites call.
+    packages: dict[str, PackageDescriptor] = {}
+    for suite in suites:
+        for items in suite.groups.values():
+            _collect_packages(items, packages)
+    ir_ops.extend(PackageOp(p.name, p.shared_state,
+                            p.init_fn.__name__ if p.init_fn is not None else None)
+                  for p in packages.values())
 
     # Build one SuiteOp per suite, collecting unique SchemeDescriptors across all.
     for suite in suites:

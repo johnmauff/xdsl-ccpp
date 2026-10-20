@@ -4,6 +4,7 @@ from xdsl.context import Context
 from xdsl.dialects import builtin
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
+    GreedyRewritePatternApplier,
     PatternRewriter,
     PatternRewriteWalker,
     RewritePattern,
@@ -11,7 +12,7 @@ from xdsl.pattern_rewriter import (
 )
 from xdsl.rewriter import InsertPoint
 
-from xdsl_ccpp.dialects.ccpp import CompositeOp
+from xdsl_ccpp.dialects.ccpp import CompositeOp, PackageOp
 
 
 class InlineComposite(RewritePattern):
@@ -29,17 +30,29 @@ class InlineComposite(RewritePattern):
         rewriter.erase_op(op)
 
 
+class ErasePackage(RewritePattern):
+    """Erase a `ccpp.package` declaration: once its entry points are inlined,
+    nothing downstream refers to the package."""
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: PackageOp, rewriter: PatternRewriter):
+        rewriter.erase_op(op)
+
+
 @dataclass(frozen=True)
 class FlattenComposites(ModulePass):
     """Pass that lowers composite schemes by inlining them into their callers.
 
     composite-scheme Stage 2 (composite_scheme_plan.md §11, S2-1): composites
     are recorded in the IR, then flattened before every other pass, so the
-    generated code is identical to the equivalent flat suite.  A module without
-    composites is left unchanged.
+    generated code is identical to the equivalent flat suite.  Package
+    declarations (`ccpp.package`) are erased with them.  A module without
+    composites or packages is left unchanged.
     """
 
     name = "flatten-composites"
 
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
-        PatternRewriteWalker(InlineComposite()).rewrite_module(op)
+        PatternRewriteWalker(
+            GreedyRewritePatternApplier([InlineComposite(), ErasePackage()])
+        ).rewrite_module(op)
