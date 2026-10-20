@@ -35,6 +35,8 @@ measured data, and will drift as items are reassessed.
 | `composite-scheme` — Stage 2 follow-ons (core S2-0..S2-3 resolved; see the `composite-scheme` section and `composite_scheme_plan.md` §11) | package cap 2f: L; GPU residency across the boundary 2g: M; S2-4 deferred; GPU validation of the composite path and multi-package scoping not yet sized | L |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
+| `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
+| `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
@@ -744,9 +746,12 @@ transfer.
     only checks build and run, since RRTMGP declares no device-resident
     arguments. A compiled end-to-end check would need a composite version of a
     CAM-SIMA GPU suite with device-resident arguments (e.g. kessler).
-  - **2f, per-package cap** (package-owned state, instances). GPU residency
-    is a hard requirement; segmentation at hooks is preferred over callbacks.
-  - **2g, GPU residency across the package boundary.**
+  - **2f/2g, per-package cap with GPU residency** — designed 2026-10-20,
+    `composite_scheme_plan.md` §12 (segmentation at hooks in every phase,
+    package-private state in the package cap, package caps never move data,
+    kessler FPHYStest on GPU as the gate). Staged: 2f-1 segmentation
+    analysis (`transforms/package_segments.py`, in `--list-package-scope`);
+    2f-2 package caps on CPU; 2g on GPU; then a default-switch decision.
   - **Scoping between packages** — needs a multi-package suite (e.g. a
     CAM4/QPC4 composite); the RRTMGP test has one package.
   - **Loop index from `forLoop`** — would remove the `next_call` hook and the
@@ -877,3 +882,24 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   movement (not yet confirmed for `advection`'s `compare_data`). The
   runner/hosting choice is an infrastructure and funding decision outside
   this project's unilateral control.
+- `gpu-conversion-residency` — **Device-resident args that need a unit or
+  kind conversion get a host-only temporary.** The suite cap builds
+  `<arg>_unit_conv`/`<arg>_kind_cast` (`suite_cap.py`, ~L1060-1120) as a
+  whole-array host assignment, with no `!$acc`/`!$omp` directive, so a kernel
+  asserting `present(<arg>)` would fail. Latent (checked 2026-10-20): none of
+  the 6 CAM-SIMA GPU tests has a conversion; the only conversion in any
+  CAM-SIMA suite is `dpdry` Pa→hPa for `zm_conv_convtran` (CPU-only today).
+  Fix: create the temporary on the device and run the conversion (and the
+  `inout`/`out` write-back) there -- `acc kernels` around the array
+  assignment, or an explicit loop nest for `--directive omp` -- ideally with
+  xDSL's `acc`/`omp` dialects (needs `xdsl-upgrade`). Must land before ZM
+  convection, or any scheme whose units/kinds differ from the host's, runs
+  on the GPU with device-resident args. Package caps (2f) inherit it.
+- `xdsl-upgrade` — **Move the xDSL pin from 0.56.1 to 0.74.0**
+  (`pyproject.toml`). 0.64.0+ ships a full port of MLIR's OpenACC dialect
+  (`acc.parallel`/`kernels`/`loop`, `acc.data`/`enter_data`/`exit_data`/
+  `update`, clause ops); `omp` is already present. ~18 releases: expect API
+  changes in IRDL, the rewriter and parser/printer. Own PR, no behaviour
+  change, full test suites + a CAM-SIMA regression run. Enables
+  `gpu-conversion-residency` with upstream dialects and, later, replacing
+  xdsl_ccpp's hand-written `Acc*`/`Omp*` data-directive ops.

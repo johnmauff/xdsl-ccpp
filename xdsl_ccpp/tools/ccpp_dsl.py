@@ -1298,9 +1298,16 @@ class ccppMain:
 
             if not self.options_db.get("py"):
                 raise CcppDslError("--list-package-scope needs a --py suite")
+            from xdsl_ccpp.transforms.package_segments import (
+                format_package_segments,
+                multi_instance_problems,
+                package_segments,
+            )
+
             module = self._build_cheap_metadata_module()
             print(format_package_scopes(package_scopes(module)), end="")
-            for problem in init_problems(module):
+            print(format_package_segments(package_segments(module)), end="")
+            for problem in init_problems(module) + multi_instance_problems(module):
                 print(f"ERROR: {problem}")
             return CcppDslResult(written=[])
 
