@@ -931,6 +931,25 @@ module boundary. GPU residency is a hard requirement.
      package routines interleaved with host inits.
 2. **2f-2: package caps on CPU,** gated on the synthetic tests and the RRTMGP
    CPU pair.
+   - **Mechanism (refined 2026-10-21).** No synthetic suite in the IR: about
+     90 places iterate over suites.
+     - `lower-packages` (`transforms/lower_packages.py`) gives each segment a
+       synthetic scheme whose metadata is the segment's interface. The
+       interface is its schemes' arguments in that phase, minus private
+       names, merged by standard name: `in` if never written, `out` if first
+       written, otherwise `inout`. Disagreeing units, kind or dimensions are
+       an error.
+     - The suite then calls these synthetic schemes. The segment's calls move
+       into `ccpp.package_cap`/`ccpp.segment` ops, so inner schemes are never
+       host-matched.
+     - The package cap module will be generated from those ops by the
+       existing group-generation code.
+   - **Consumers inside the pipeline must look into `ccpp.package_cap`:**
+     constituents (correctness) and resolved-vars, scheme I/O capture and
+     variable tracking (completeness). CAM-SIMA's compiled-source list and the
+     datatable come from the frontend IR, so they are unaffected.
+   - **Stage 1 (IR lowering) done.** RRTMGP lowers to 11 segments (5 run, 6
+     init/timestep-init) with CAM's metadata and no interface conflicts.
 3. **2g: package caps on GPU,** gated on the synthetic GPU tests and a kessler
    composite, CPU and GPU, compared with the XML kessler cases.
 4. **The default switch,** decided later.

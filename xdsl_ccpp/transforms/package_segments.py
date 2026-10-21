@@ -51,10 +51,12 @@ class EntryCall:
 
 @dataclass
 class Loop:
-    """A run-phase loop kept as a loop: its body is a list of nodes."""
+    """A run-phase loop kept as a loop: its body is a list of nodes.  ``op``
+    is the `ccpp.subcycle` op it came from."""
 
     count: str
     body: list = field(default_factory=list)
+    op: object = field(default=None, compare=False, repr=False)
 
 
 @dataclass
@@ -65,6 +67,9 @@ class Segment:
     entry: EntryCall
     index: int
     body: list = field(default_factory=list)
+    # The IR ops the body came from, in order: scheme ops and (run phase)
+    # package-only loop ops.
+    ops: list = field(default_factory=list, compare=False, repr=False)
 
     def name(self, phase: str) -> str:
         """Name of the package-cap routine, e.g. ``rrtmgp_shortwave_2`` (run)
@@ -92,6 +97,7 @@ class _Call:
     scheme: str
     entry: EntryCall | None
     hook: tuple[str, str] | None
+    op: object = field(default=None, compare=False)
 
 
 def _scheme_phases(module: ModuleOp) -> dict[str, set[str]]:
@@ -118,12 +124,12 @@ class _Walker:
             if isa(op, ccpp.SchemeOp):
                 name = op.scheme_name.data
                 if phase in self.phases.get(name, set()):
-                    out.append(_Call(name, None if hook else entry, hook))
+                    out.append(_Call(name, None if hook else entry, hook, op))
             elif isa(op, ccpp.SubcycleOp):
                 body = self.items(op.body.block.ops, phase, entry, hook, entry_name)
                 if phase == "run":
                     if body:
-                        out.append(Loop(op.loop_count.data, body))
+                        out.append(Loop(op.loop_count.data, body, op))
                 else:
                     out.extend(body)
             elif isa(op, ccpp.CompositeOp):
@@ -171,6 +177,7 @@ def _segment(items, counters: dict) -> list:
                     current = Segment(entry, counters[entry])
                     out.append(current)
                 current.body.append(Loop(item.count, _strip(item.body)))
+                current.ops.append(item.op)
             else:
                 current = None
                 out.append(Loop(item.count, _segment(item.body, counters)))
@@ -183,6 +190,7 @@ def _segment(items, counters: dict) -> list:
                 current = Segment(item.entry, counters[item.entry])
                 out.append(current)
             current.body.append(item.scheme)
+            current.ops.append(item.op)
     return out
 
 

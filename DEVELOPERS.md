@@ -102,6 +102,7 @@ The transformation pipeline lives under `xdsl_ccpp/transforms/`:
 
 | Module | Pass name | Role |
 |--------|-----------|------|
+| `lower_packages.py` | `lower-packages` | Package caps (2f, opt-in, not yet in the driver pipeline): replaces each segment's calls with one synthetic scheme whose metadata is the segment's interface, and moves the calls into a `ccpp.package_cap` op |
 | `package_segments.py` | — (analysis; `ccpp_dsl --list-package-scope`) | How a per-package cap would cut each package's code into routines (segments at hooks, per phase); multi-instance check |
 | `package_scope.py` | `scope-packages` | Package scope and interface: the analysis (`ccpp_dsl --list-package-scope`: private names, interface inputs/outputs, shared state) and the pass that checks shared state and scopes private names, before flattening |
 | `flatten_composites.py` | `flatten-composites` | Inlines composite schemes into their callers before any other pass except `scope-packages` |
