@@ -14,6 +14,7 @@ from xdsl.ir import Region
 from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
+    FN_PHASE_ATTR,
     LIFECYCLE_POSTFIX_ALIASES,
     SUITE_FN_INFIX,
 )
@@ -55,6 +56,14 @@ from xdsl_ccpp.transforms.suitecap.resolved_vars import (
     _resolved_var_record,
 )
 
+
+# Phase tags (cap_shared.FN_PHASE_ATTR) for the suite-level and per-group
+# functions, keyed by the scheme entry-point postfix each one calls.
+_SUITE_PHASE_TAGS = {"_register": "suite_register", "_init": "suite_initialize",
+                     "_finalize": "suite_finalize"}
+_GROUP_PHASE_TAGS = {"_init": "group_init", "_run": "run",
+                     "_timestep_initialize": "timestep_init",
+                     "_timestep_finalize": "timestep_final", "_finalize": "group_final"}
 
 class PhaseFunctionsMixin:
     """Suite and group phase subroutines: argument tables, signatures, state checks and assembly."""
@@ -680,6 +689,7 @@ class PhaseFunctionsMixin:
                 deferred_warnings=sweep_deferred_warnings,
                 emit_scheme_calls=emit_scheme_calls,
             )
+            fn.attributes[FN_PHASE_ATTR] = StringAttr(_SUITE_PHASE_TAGS[tgt_postfix])
             generated_fns.append(fn)
             suite_host_use_stubs.extend(stubs)
             for sig in sigs:
@@ -718,6 +728,7 @@ class PhaseFunctionsMixin:
                     already_scheduled_allocs=scheduled_allocs,
                     deferred_warnings=sweep_deferred_warnings,
                 )
+                fn.attributes[FN_PHASE_ATTR] = StringAttr(_GROUP_PHASE_TAGS[tgt_postfix])
                 generated_fns.append(fn)
                 suite_host_use_stubs.extend(stubs)
                 for sig in sigs:

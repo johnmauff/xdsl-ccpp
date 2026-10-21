@@ -15,16 +15,17 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     OmpTargetDataEndOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
-    FRAMEWORK_STD_NAME_TO_CAP_VAR,
-    SUITE_FN_INFIX,
-    _bare,
-    _iter_schemes,
     directive_op,
     emit_coalesced_updates,
     find_diverged_capscratch_vars,
     find_diverged_suite_vars,
+    fn_phase,
+    FRAMEWORK_STD_NAME_TO_CAP_VAR,
     resolve_capscratch_cap_var_name,
     split_scheme_table_name,
+    suite_cap_suite_name,
+    _bare,
+    _iter_schemes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -621,27 +622,6 @@ class GPUDataPass(ModulePass):
         if merged_touches:
             emit_coalesced_updates(self.directive, merged_touches, self._emit_present)
 
-    # Suffixes of the suite-level lifecycle subroutines built by
-    # suite_cap.py (suite_name + SUITE_FN_INFIX + generated_subroutine_posfix
-    # -- SUITE_FN_INFIX is the centralized infix constant, currently "",
-    # previously "_suite"; see ccpp_cap.py's lifecycle_specs for the
-    # matching callee_suffix values). The f"{SUITE_FN_INFIX}_physics"/
-    # f"{SUITE_FN_INFIX}_timestep_init_"/f"{SUITE_FN_INFIX}_timestep_final_"/
-    # f"{SUITE_FN_INFIX}_init_"/f"{SUITE_FN_INFIX}_final_" markers are handled
-    # separately below via substring match, since per-group callees are
-    # suffixed with the group name (e.g. f"{SUITE_FN_INFIX}_physics1",
-    # f"{SUITE_FN_INFIX}_timestep_init_g1"), not an exact ending --
-    # timestep_init and timestep_final moved from flat, exact-suffix phases
-    # to per-group, the same shape f"{SUITE_FN_INFIX}_physics" already has,
-    # and net-new per-group ccpp_physics_init/ccpp_physics_final were added
-    # alongside the still-flat, now scheme-call-free
-    # f"{SUITE_FN_INFIX}_initialize"/f"{SUITE_FN_INFIX}_finalize".
-    _LIFECYCLE_SUITE_FN_SUFFIXES = (
-        f"{SUITE_FN_INFIX}_register",
-        f"{SUITE_FN_INFIX}_initialize",
-        f"{SUITE_FN_INFIX}_finalize",
-    )
-
     def apply(self, ctx: Context, op: builtin.ModuleOp) -> None:
         ccpp_mod = find_ccpp_module(op.body.block.ops)
         if ccpp_mod is None:
@@ -664,18 +644,14 @@ class GPUDataPass(ModulePass):
         # schemes with memory_space=device args on those entry points need
         # the same data-region treatment _suite_physics already gets.
         for module_op in op.body.block.ops:
-            if not (
-                isa(module_op, builtin.ModuleOp)
-                and module_op.sym_name is not None
-                and module_op.sym_name.data.endswith("_cap")
-            ):
+            if not isa(module_op, builtin.ModuleOp):
                 continue
-
-            # Each <suite>_cap module corresponds to exactly one suite
-            # (suite_cap.py names it suite_name + "_cap"). Compute its
-            # diverged host vars once per module, reused across every
+            # Each suite-cap module is tagged with its suite's name. Compute
+            # its diverged host vars once per module, reused across every
             # lifecycle/physics function inside it.
-            suite_name = module_op.sym_name.data[: -len("_cap")]
+            suite_name = suite_cap_suite_name(module_op)
+            if suite_name is None:
+                continue
             suite_desc = bsd.schemes.get(suite_name)
             diverged_vars = frozenset()
             diverged_capscratch_vars = frozenset()
@@ -691,15 +667,7 @@ class GPUDataPass(ModulePass):
             for child in module_op.body.block.ops:
                 if not (isa(child, func.FuncOp) and not child.is_declaration):
                     continue
-                fn_name = child.sym_name.data
-                if (
-                    f"{SUITE_FN_INFIX}_physics" in fn_name
-                    or f"{SUITE_FN_INFIX}_timestep_init_" in fn_name
-                    or f"{SUITE_FN_INFIX}_timestep_final_" in fn_name
-                    or f"{SUITE_FN_INFIX}_init_" in fn_name
-                    or f"{SUITE_FN_INFIX}_final_" in fn_name
-                    or fn_name.endswith(self._LIFECYCLE_SUITE_FN_SUFFIXES)
-                ):
+                if fn_phase(child) is not None:
                     self._process_physics_fn(
                         child, meta_data, diverged_vars, diverged_capscratch_vars
                     )

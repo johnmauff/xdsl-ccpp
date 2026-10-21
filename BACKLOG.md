@@ -41,11 +41,16 @@ measured data, and will drift as items are reassessed.
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
 | `scheme-io-capture-netcdf` | 6-10 days | M |
 | `scheme-io-capture-ctest-automation` | 6-10 days (genuinely new ground — this repo has zero precedent for a dynamically-registered CMake test today) | M |
+| `call-site-arg-rebind` | 4-8 days | S-M |
+| `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
+| `process-split-gpu` | 10-20 days (on top of `process-split-region`) | M-L |
 | `eamxx-phaseC-printer` | ~60-150+ days (high uncertainty — no existing analog/technique to build from, unlike every other item above) | XXL |
 
 `hle-vocab-retire` is intentionally not sized — it's blocked on an
 external dependency (CAM-SIMA migrating off `horizontal_loop_extent`
-upstream), not a schedulable estimate.
+upstream), not a schedulable estimate. `process-split-combine-policy` is
+likewise not sized — it's a science decision for the physics developers,
+not engineering work.
 
 Open items only. For the full narrative behind any item (why, how, what was
 tried), see the `L<n>` pointer into `CHANGELOG.md` (line
@@ -125,6 +130,8 @@ separately), CHANGELOG.md L5850.
 |---|---|---|---|
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `framework-src-resolution-unify` | `ccpp_datatable.py` now has three separate, inconsistent code paths deciding where a "framework" Fortran file comes from | S; found 2026-10-18 while fixing a real cam-host build failure for scheme-io-capture (see below) | -- |
+
+**ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
 
 **`framework-src-resolution-unify`** -- found while diagnosing a real
 CAM-SIMA build failure (`Cannot open module file 'ccpp_capture_mod.mod'`)
@@ -760,6 +767,73 @@ the plan doc):
 
 SW/LW diagnostic-loop fusion was deliberately rejected (different
 radiation frequencies).
+
+## Someday-maybe: process splitting
+
+ID: `process-split`. Added 2026-10-20. Neither capgen-v1 nor xdsl-ccpp can
+run schemes process-split, where every process starts from the same state
+and the increments are summed. Both support only time splitting (sequential
+in-place updates). capgen-v1 never implemented it: the old capgen
+`ProcessSplit` class was a stub that raised "not yet implemented". The
+obstacle in capgen is that schemes update host arrays in place through
+`intent(inout)`, the framework keeps no copies of state, and metadata
+doesn't link a tendency to its state variable.
+
+Approach for xdsl-ccpp: compute increments **by difference**, so neither the
+schemes nor the metadata need to change. For each region: snapshot every
+variable any scheme in it writes (`x0 = x`), run each process on its own
+private copy (`x_i = x0`), then combine (`x = x0 + Σ(x_i − x0)`). A process
+may be several schemes run in sequence. Existing machinery to build on: the
+per-call-site temporary + write-back pattern of unit/kind conversion
+(`KindCastOp`/`UnitConvertOp`/`*WriteBackOp` in `suite_cap`), the
+`SubcycleOp` region lowering, per-call intents in `SuiteVarOccurrence`, and
+the residency passes. The Python frontend would express it like
+`forLoop`, and suits it better than XML because combine rules can be Python
+objects:
+
+```python
+with process_split(combine={"air_temperature": SUM_INCREMENTS,
+                            "precipitation_rate": EXCLUSIVE}):
+    with process():
+        deep_convection(); shallow_convection()
+    with process():
+        vertical_diffusion()
+```
+
+The analysis itself belongs in a pass, so an XML `<process_split>` element
+could reach the same machinery.
+
+- `call-site-arg-rebind` — **Rebind a scheme argument to a different
+  variable at the call site** (S-M). Today a call-site keyword override
+  accepts only a compile-time literal (`SchemeDescriptor.__call__` →
+  `arg_overrides` → `name=literal`). Allowing e.g.
+  `vdiff(air_temperature=copy_of("air_temperature"))` would let a suite
+  author build process splitting by hand with small copy/sum schemes, like
+  UFS's `phys_ps` group. It is useful independently and is a stepping stone
+  to `process-split-region`.
+- `process-split-region` — **`ProcessSplitOp` with increments by
+  difference, CPU only** (L). Covers a new dialect op, Python frontend
+  context managers (plus optionally an XML element), a pass that computes
+  each region's write set, `suite_cap` lowering (snapshot, private copy,
+  accumulate ops), `print_ftn` emission, and the datatable and
+  variable-tracking tools. Touches roughly the same 8 files as `SubcycleOp`.
+- `process-split-gpu` — **Device-resident snapshot and private copies**
+  (M-L). Extends `gpu_data_pass`/`gpu_ccpp_cap_pass` to cover the new
+  temporaries and keeps copy/accumulate on the device. Device memory grows
+  with the number of processes per region.
+- `process-split-combine-policy` — **Combine and fixer rules** (not sized;
+  science decision). Summing increments works for temperature, winds and
+  constituents, but not for integers, logicals, flags or characters, or for
+  an `intent(out)` diagnostic written by two processes (error, sum, or
+  last writer?). Summed increments can also push a constituent negative even
+  when each process kept it positive, so positivity and energy fixers must
+  run either per process or after combining. Also needs a rule for `errflg`
+  across processes. Default should be an error for any variable without an
+  explicit rule. Settle this with CAM/UFS physics developers before fixing
+  the IR design of `process-split-region`.
+- **ID: `process-split-terminology`. Resolved (2026-10-20)** — the four
+  agent-written "process-split state update" comments on `apply_heating_rate()`
+  in `composite_scheme_plan.md` and `cam_rrtmgp_adapter.py` now say time-split.
 
 ## GPU residency verification
 

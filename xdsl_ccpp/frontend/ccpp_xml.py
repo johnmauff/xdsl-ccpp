@@ -237,6 +237,36 @@ def _expand_nested_suites(root, default_dir):
     )
 
 
+#: SDF elements that are valid in some CCPP schema but have no xdsl-ccpp
+#: implementation. capgen-v1's suite_v1_0.xsd still accepts
+#: <time_split>/<process_split>; <subcol> is accepted by both its schemas.
+_UNSUPPORTED_SUITE_ELEMENTS = {
+    "time_split": "time-split regions (every group is already time-split; "
+                  "list the schemes directly in the group)",
+    "process_split": "process-split regions",
+    "subcol": "sub-column regions",
+}
+
+
+def _reject_suite_child(parent, child, source):
+    """Raise for a suite-XML child element the frontend does not handle.
+
+    Without this, the element -- and every scheme inside it -- would be
+    dropped from the generated caps without any message.
+    """
+    where = f"<{parent.tag}>"
+    if parent.attrib.get("name"):
+        where += f" '{parent.attrib['name']}'"
+    if source:
+        where += f" of suite file '{source}'"
+    if child.tag in _UNSUPPORTED_SUITE_ELEMENTS:
+        raise ValueError(
+            f"<{child.tag}> in {where} is not supported: xdsl-ccpp does not "
+            f"implement {_UNSUPPORTED_SUITE_ELEMENTS[child.tag]}"
+        )
+    raise ValueError(f"Unknown element <{child.tag}> in {where}")
+
+
 class XMLSuiteBase:
     """Base node for the in-memory representation of a parsed suite XML file.
 
@@ -288,7 +318,7 @@ class XMLSubcycle(XMLSuiteBase):
     branch). This mirrors `XMLGroup`'s own scheme/subcycle dispatch exactly.
     """
 
-    def __init__(self, xml_node):
+    def __init__(self, xml_node, source=None):
         assert xml_node.tag == "subcycle"
         super().__init__(xml_node)
         # .strip(): attribute values rarely pick up incidental whitespace
@@ -306,16 +336,19 @@ class XMLSubcycle(XMLSuiteBase):
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))
             elif child.tag == "subcycle":
-                self.children.append(XMLSubcycle(child))
+                self.children.append(XMLSubcycle(child, source))
+            else:
+                _reject_suite_child(xml_node, child, source)
 
 
 class XMLGroup(XMLSuiteBase):
     """Intermediate node representing a named ``<group>`` within a suite.
 
-    Parses all ``<scheme>`` and ``<subcycle>`` children.
+    Parses all ``<scheme>`` and ``<subcycle>`` children; any other child
+    element raises ``ValueError`` (see `_reject_suite_child`).
     """
 
-    def __init__(self, xml_node):
+    def __init__(self, xml_node, source=None):
         assert xml_node.tag == "group"
         super().__init__(xml_node)
 
@@ -323,7 +356,9 @@ class XMLGroup(XMLSuiteBase):
             if child.tag == "scheme":
                 self.children.append(XMLScheme(child))
             elif child.tag == "subcycle":
-                self.children.append(XMLSubcycle(child))
+                self.children.append(XMLSubcycle(child, source))
+            else:
+                _reject_suite_child(xml_node, child, source)
 
 
 class XMLSuite(XMLSuiteBase):
@@ -372,11 +407,13 @@ class XMLSuite(XMLSuiteBase):
                 self.init_scheme = child.text.strip() if child.text else child.text
             elif child.tag == "final":
                 self.final_scheme = child.text.strip() if child.text else child.text
+            elif child.tag != "group":
+                _reject_suite_child(root, child, xml_name)
 
         # Parse each top-level group element into an XMLGroup node
         for child in root:
             if child.tag == "group":
-                self.children.append(XMLGroup(child))
+                self.children.append(XMLGroup(child, xml_name))
 
 
 # ---------------------------------------------------------------------------

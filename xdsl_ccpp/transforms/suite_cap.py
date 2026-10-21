@@ -24,6 +24,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.constituent_cap import _collect_constituent_info
 from xdsl_ccpp.transforms.util.cap_shared import (
+    SUITE_CAP_ATTR,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _host_table_names,
@@ -179,6 +180,7 @@ class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin
             + type_import_globals + deduped_stubs + allocatable_mod_vars + generated_fns + fn_sigs,
             sym_name=builtin.StringAttr(op.suite_name.data + "_cap"),
         )
+        scheme_mod.attributes[SUITE_CAP_ATTR] = builtin.StringAttr(op.suite_name.data)
         rewriter.insert_op(scheme_mod, InsertPoint.at_start(self.top_level_module.body.block))
 
 

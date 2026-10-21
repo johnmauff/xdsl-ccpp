@@ -10,7 +10,7 @@
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/instances_advection/cld_suite.xml --scheme-files examples/instances_advection/cld_liq.meta,examples/instances_advection/apply_constituent_tendencies.meta --host-files examples/instances_advection/data.meta,examples/instances_advection/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
 // CHECK:       builtin.module {
-// CHECK-LABEL:   builtin.module @cld_suite_cap {
+// CHECK-LABEL:   builtin.module @cld_suite_cap attributes {ccpp_suite_cap = "cld_suite"} {
 // CHECK:           "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "ccpp_suite_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, value = "uninitialized"}> ({
 // CHECK-NEXT:      }) {allocatable = "1"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "const_in_time_step", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "in_time_step"}> ({
@@ -32,7 +32,7 @@
 // CHECK-NEXT:          %0 = arith.constant 1 : i32
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "suite_register"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
@@ -46,7 +46,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_initialize(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @cld_suite_initialize(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
@@ -77,7 +77,7 @@
 // CHECK-NEXT:        "llvm.store"(%12, %13) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_finalize(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @cld_suite_finalize(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
@@ -106,7 +106,7 @@
 // CHECK-NEXT:        "llvm.store"(%12, %13) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_init_physics(%tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @cld_suite_init_physics(%tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
 // CHECK:             "ccpp_utils.constituent_index_lookup"() <{std_names = ["cloud_liquid_dry_mixing_ratio"], err_var_name = "errcode"}> : () -> ()
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
@@ -141,7 +141,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_physics(%ncol : memref<i32>, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">>, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @cld_suite_physics(%ncol : memref<i32>, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">>, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
@@ -181,7 +181,7 @@
 // CHECK-NEXT:        "ccpp_utils.nullify_pointer"() <{ptr_name = "cld_liq_array"}> : () -> ()
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_timestep_init_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @cld_suite_timestep_init_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
 // CHECK:             "ccpp_utils.constituent_index_lookup"() <{std_names = ["cloud_liquid_dry_mixing_ratio"], err_var_name = "errflg"}> : () -> ()
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
@@ -198,7 +198,7 @@
 // CHECK-NEXT:        "llvm.store"(%3, %4) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_timestep_final_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @cld_suite_timestep_final_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32
@@ -214,7 +214,7 @@
 // CHECK-NEXT:        "llvm.store"(%3, %4) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_final_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @cld_suite_final_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %1 = arith.constant 0 : i32

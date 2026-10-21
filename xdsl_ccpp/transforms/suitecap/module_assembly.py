@@ -21,6 +21,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _collect_ddt_use_stubs,
+    fn_phase,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
@@ -116,20 +117,14 @@ class ModuleAssemblyMixin:
             interstitial_var_names.add(entry.local_name.lower())
         return allocatable_mod_vars, interstitial_var_names, run_local_entries
 
-    # sym_name markers of non-run lifecycle FuncOps; the run subroutine is
-    # "{suite_name}_{group_name}" with no phase word.
-    _NON_RUN_SYM_SUBSTRINGS = ("_init_", "_final_")  # covers timestep_* too
-
-    _NON_RUN_SYM_SUFFIXES = ("_register", "_initialize", "_finalize")
-
     @staticmethod
     def _inject_run_local_var_handling(generated_fns, run_local_entries):
         """Inject local allocatable decls and end-of-run SafeDeallocOps for run-local vars.
 
         Run-local vars are dimensioned by a repeating-phase scalar (e.g. nday
         from a _timestep_init), so each call must see the current size. The
-        run FuncOp is found by a LazyAllocOp with is_run_local=True, or by a
-        sym_name with no phase word (for scheme-allocated vars).
+        run FuncOp is found by a LazyAllocOp with is_run_local=True, or by its
+        "run" phase tag (for scheme-allocated vars).
         """
         for fn in generated_fns:
             if not isa(fn, func.FuncOp):
@@ -143,13 +138,8 @@ class ModuleAssemblyMixin:
                 and bool(bop.is_run_local.value.data)
                 for bop in block.ops
             )
-            # Scheme-allocated vars have no LazyAllocOp; match by sym_name.
-            sym = fn.sym_name.data
-            is_run_by_name = (
-                not any(sub in sym for sub in ModuleAssemblyMixin._NON_RUN_SYM_SUBSTRINGS)
-                and not sym.endswith(ModuleAssemblyMixin._NON_RUN_SYM_SUFFIXES)
-            )
-            if not (has_run_local_alloc or is_run_by_name):
+            # Scheme-allocated vars have no LazyAllocOp; use the phase tag.
+            if not (has_run_local_alloc or fn_phase(fn) == "run"):
                 continue
             ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
             if ret_op is None:
@@ -173,7 +163,7 @@ class ModuleAssemblyMixin:
         for fn in generated_fns:
             if not isa(fn, func.FuncOp):
                 continue
-            if "_timestep_final" not in fn.sym_name.data:
+            if fn_phase(fn) != "timestep_final":
                 continue
             if not fn.body.blocks:
                 continue

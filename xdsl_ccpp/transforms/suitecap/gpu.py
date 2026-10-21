@@ -16,9 +16,10 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     LazyAllocOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
-    SUITE_FN_INFIX,
+    GROUP_PHASES,
     emit_coalesced_updates,
     find_diverged_suite_owned_vars,
+    fn_phase,
     split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
@@ -57,7 +58,7 @@ class SuiteOwnedGpuMixin:
         for fn in generated_fns:
             if not isa(fn, func.FuncOp):
                 continue
-            if not fn.sym_name.data.endswith(f"{SUITE_FN_INFIX}_finalize"):
+            if fn_phase(fn) != "suite_finalize":
                 continue
             if not fn.body.blocks:
                 continue
@@ -79,15 +80,6 @@ class SuiteOwnedGpuMixin:
                     InsertPoint.before(ret_op),
                 )
 
-    # Functions containing error-guarded scheme calls; keep in sync with
-    # GPUDataPass.apply() (gpu_data_pass.py).
-    _GPU_CALL_BEARING_FN_MARKERS = (
-        f"{SUITE_FN_INFIX}_physics",
-        f"{SUITE_FN_INFIX}_timestep_init_",
-        f"{SUITE_FN_INFIX}_timestep_final_",
-        f"{SUITE_FN_INFIX}_init_",
-        f"{SUITE_FN_INFIX}_final_",
-    )
 
     @staticmethod
     def _build_suite_owned_debug_sync_touches(calls, suite_model, meta_data):
@@ -164,8 +156,7 @@ class SuiteOwnedGpuMixin:
         for fn in generated_fns:
             if not isa(fn, func.FuncOp) or fn.is_declaration or not fn.body.blocks:
                 continue
-            fn_name = fn.sym_name.data
-            if not any(marker in fn_name for marker in SuiteOwnedGpuMixin._GPU_CALL_BEARING_FN_MARKERS):
+            if fn_phase(fn) not in GROUP_PHASES:
                 continue
 
             block = fn.body.blocks[0]
