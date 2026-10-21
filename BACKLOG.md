@@ -132,6 +132,12 @@ separately), CHANGELOG.md L5850.
 |---|---|---|---|
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `framework-src-resolution-unify` | `ccpp_datatable.py` now has three separate, inconsistent code paths deciding where a "framework" Fortran file comes from | S; found 2026-10-18 while fixing a real cam-host build failure for scheme-io-capture (see below) | -- |
+| `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | S (tooling done; upstream reports open); found 2026-10-21 (see below) | -- |
+| `nvhpc-ncdata-roundoff` | 6 nvhpc FPHYStest cases abort on `ncdata_check` differences of rounding size | S; CAM-SIMA tolerance change made 2026-10-21 (uncommitted), awaiting an nvhpc regression run | -- |
+| `microp-aero-bam-nvhpc-diffs` | nvhpc `microp_aero_bam` FPHYStest: large `ncdata_check` differences in number concentrations | M; xdsl55n, hidden by `derecho-false-run-pass` | -- |
+| `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
+| `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | M; xdsl54g (only run with this case), hidden by `derecho-false-run-pass` | -- |
+| `rrtmgp-gpu-partially-present` | nvhpc `rrtmgp_derecho_gpu` aborts: OpenACC `this%concs(:)` partially present on the device | M; xdsl50n and xdsl55n; the GPU RRTMGP pair has never run to completion | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
 
@@ -163,6 +169,68 @@ real external submodule), resolved and validated by one function instead
 of three. Confirmed real and current, not hypothetical -- this is what
 made diagnosing the `scheme-io-capture` build failure take real
 investigation instead of being obvious from reading the code once.
+
+**`derecho-false-run-pass`** -- on Derecho, TestStatus says `RUN PASS` for a
+CAM run that aborted after writing its first history file. Two causes:
+`mpibind` (`/glade/u/apps/opt/mpitools/bin/mpibind`) runs `mpiexec` and then
+a cleanup block as its last command, so its exit status is 0 even after
+`MPI_Abort(1)`; and for a CAM-only case (`is_comp_standalone()`), CIME's
+`_post_run_check` (`cime/CIME/case/case_run.py`) only requires a non-empty
+`atm.log`. Found when s25e (package-cap RRTMGP) aborted at nstep 2 with
+`RUN PASS`. Done: the `cam-sima-regression` and `cam-sima-rrtmgp` agents now
+require `END OF MODEL RUN` in every `atm.log`. Applied retroactively:
+xdsl50n 36 RUN PASS / 10 false, xdsl51g and xdsl52g 30 / 1, xdsl54g 30 / 2,
+xdsl55n 35 / 9 (so xdsl55n was 26/37, not 35/37). Also done (CAM-SIMA's
+`cime` checkout, uncommitted): `cs.status` re-checks every `RUN PASS` against
+the newest run's logs and reports FAIL when none contains CIME's own
+`TERMINATION_TEXT` (`cs_status.py`, `TestStatus.override_status`, 6 new
+pytest tests); TestStatus files are not changed. Open: report `mpibind`'s
+exit status to CISL; upstream the `cs.status` change, and fix the
+standalone post-run check itself (`_post_run_check`), to ESMCI/cime. The
+failures it hid are the five items below; none is new since xdsl50n.
+
+**`nvhpc-ncdata-roundoff`** -- nvhpc FPHYStest cases `gw_cam4`, `hb_vdiff`,
+`kessler`, `rk_stratiform`, `rrtmgp` and `uw_vdiff` abort on `ncdata_check`
+with few points differing and maximum differences of 1.6e-16 to 1.6e-9
+(xdsl55n; `gw_cam7` also in xdsl50n): compiler rounding against the gnu
+snapshots. Change (CAM-SIMA, uncommitted): an include-only testmod
+`cam/cross_compiler_check_tolerance`. Its `shell_commands` reads the
+snapshot's compiler from the `ncdata_check` file name
+(`..._derecho_gnu_after_...nc`; all are gnu except pumas, intel) and, only
+when it differs from the case's `COMPILER`, sets `min_difference = 1e-8`
+(the GPU testmods' value) in `user_nl_cam`, replacing the testmod's own value
+(2e-15 or 1e-15) or adding one. Same compiler, or no compiler in the name:
+unchanged. Included by the 18 CPU FPHYStest snapshot testmods. Close once an
+nvhpc regression shows these six reach `END OF MODEL RUN`.
+
+**`microp-aero-bam-nvhpc-diffs`** -- unlike the cases above, nvhpc
+`microp_aero_bam` (xdsl55n) differs at every point in several number
+concentrations (e.g. `dust_number_concentration_by_size_bin_for_contact_freezing`,
+112752 points, max 5.98E+03). Step 1 passed `ncdata_check`; not
+investigated.
+
+**`pumas-ncdata-diffs`** -- `SMS_D_Ln2...cam-outfrq_pumas_derecho` aborts on
+`ncdata_check` under gnu (xdsl51g, 52g, 54g) and nvhpc (xdsl50n, 55n):
+hundreds to thousands of points, maximum differences up to 1.3e-10 (gnu,
+e.g. `mass_number_concentration_of_cloud_ice_water_crystals...`). Its
+snapshot is intel-made (`..._derecho_intel_after_c20260820.nc`), so gnu and
+nvhpc both run against another compiler's results: likely rounding, now
+covered by `cross_compiler_check_tolerance` (see `nvhpc-ncdata-roundoff`).
+Close once gnu and nvhpc runs reach `END OF MODEL RUN`.
+
+**`cloud-water-ncdata-diffs`** -- gnu `cam-outfrq_cloud_water_derecho`
+(xdsl54g) differs at every point: `water_vapor_mixing_ratio...` max 2.0E-03,
+`gridbox_total_cloud_liquid_water_mixing_ratio...` max 4.6. A real error.
+Possibly related to `F2000_C7/cam7`'s missing `cloud_water_paths` physics
+(deferred upstream); not investigated.
+
+**`rrtmgp-gpu-partially-present`** -- nvhpc
+`SMS_Ln2...cam-outfrq_rrtmgp_derecho_gpu` aborts in both nvhpc regressions
+(xdsl50n, xdsl55n) with `variable in data clause is partially present on
+the device: name=this%concs(:)` -- an OpenACC data-placement error on the
+gas-concentrations object. The XML GPU RRTMGP case has therefore never run
+to completion; earlier GPU RRTMGP pair results judged by TestStatus need
+rechecking against `END OF MODEL RUN`.
 
 **Resolved since last verification (2026-10-14), removed from the list
 above**: `ccpp-validator-length-check` — new `ccpp_validate_driver` tool

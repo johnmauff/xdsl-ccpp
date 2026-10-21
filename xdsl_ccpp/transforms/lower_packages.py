@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects.builtin import ModuleOp, StringAttr
+from xdsl.dialects.builtin import ArrayAttr, ModuleOp, StringAttr
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -34,6 +34,16 @@ from xdsl_ccpp.dialects.ccpp import TableTypeKind
 from xdsl_ccpp.transforms.package_scope import private_name
 from xdsl_ccpp.transforms.package_segments import Loop, Segment, package_segments
 from xdsl_ccpp.transforms.util.cap_shared import iter_arg_tables
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_LOOP_BEGIN_STD_NAME,
+    CCPP_LOOP_END_STD_NAME,
+    CCPP_LOOP_EXTENT_STD_NAME,
+)
+
+# Attribute of a synthetic scheme's table: the package schemes it calls, so
+# the host's list of active schemes names them (CAM-SIMA reads a scheme's
+# namelist only when the scheme is listed).
+SEGMENT_SCHEMES_ATTR = "segment_schemes"
 
 # Properties every use of an interface name must agree on.
 _MUST_AGREE = ("type", "kind", "units", "dim_names")
@@ -131,6 +141,38 @@ def interface_args(segment_name: str, phase: str, package: str,
     return out
 
 
+def _column_range_args(args: list, phase: str) -> list:
+    """Segments are generated like group functions (physics mode, all phases
+    but register): the loop extent becomes the column range col_start /
+    col_end, the names the generator gives those dummy arguments."""
+    if phase == "register":
+        return args
+    out = []
+    for arg in args:
+        std = arg.standard_name.data.lower() if arg.standard_name is not None else ""
+        if std == CCPP_LOOP_EXTENT_STD_NAME and not (_prop(arg, "dim_names") or ""):
+            for local, bound in (("col_start", CCPP_LOOP_BEGIN_STD_NAME),
+                                 ("col_end", CCPP_LOOP_END_STD_NAME)):
+                out.append(ccpp.ArgumentOp(local, arg.arg_type.data, {
+                    "type": arg.arg_type.data, "standard_name": bound, "units": "count",
+                    "dimensions": "()", "intent": "in"}))
+        else:
+            out.append(arg)
+    return out
+
+
+def _check_loops(segment_name: str, ops) -> None:
+    """Package-only loops with a non-literal count would need the count in
+    the interface under the host's local name: not supported yet."""
+    for op in ops:
+        for inner in op.walk():
+            if isa(inner, ccpp.SubcycleOp) and not inner.is_literal.value.data:
+                raise ValueError(
+                    f"Segment '{segment_name}': package-only loop over "
+                    f"'{inner.loop_count.data}' (a non-literal count) is not "
+                    f"supported in package caps yet.")
+
+
 @dataclass(frozen=True)
 class LowerPackages(ModulePass):
     """Lower every package to synthetic segment schemes plus a
@@ -171,11 +213,16 @@ class LowerPackages(ModulePass):
                 if table is None:
                     raise ValueError(f"Scheme '{scheme}' has no {phase} arg table.")
                 calls.append((scheme, [a for a in table.body.ops if isa(a, ccpp.ArgumentOp)]))
-            args = interface_args(name, phase, seg.entry.package, calls)
+            _check_loops(name, seg.ops)
+            args = _column_range_args(
+                interface_args(name, phase, seg.entry.package, calls), phase)
             new_tables.append(ccpp.TablePropertiesOp(
                 name, "scheme", [ccpp.ArgumentTableOp(f"{name}_{phase}", "scheme", args)],
-                attributes={"source_module": StringAttr(
-                    package_cap_module_name(seg.entry.package))}))
+                attributes={
+                    "source_module": StringAttr(package_cap_module_name(seg.entry.package)),
+                    SEGMENT_SCHEMES_ATTR: ArrayAttr(
+                        [StringAttr(s) for s in dict.fromkeys(s for s, _ in calls)]),
+                }))
             package_segment_ops.setdefault(seg.entry.package, []).append(
                 ccpp.SegmentOp(name, phase, seg.entry.entry_point,
                                [o.clone() for o in seg.ops]))

@@ -866,6 +866,13 @@ class LazyAllocOp(IRDLOperation):
     reference count. Baking it into this op's own printer means it inherits
     the exact same "already done" runtime guard the allocate itself uses,
     with no extra bookkeeping.
+
+    realloc_on_resize (package-cap segments of repeating phases): the extents
+    can change between calls (e.g. the daylit-column count), so an array
+    allocated with other extents is first deallocated:
+        if (allocated(var_name)) then
+          if (any(shape(var_name) /= [d1, d2, ...])) deallocate(var_name)
+        end if
     """
 
     name = "ccpp_utils.lazy_alloc"
@@ -877,6 +884,7 @@ class LazyAllocOp(IRDLOperation):
     init_value_region = opt_region_def("single_block")
     needs_device_residency = opt_prop_def(BoolAttr)
     is_run_local = opt_prop_def(BoolAttr)  # when True: plain allocate(), no lazy guard
+    realloc_on_resize = opt_prop_def(BoolAttr)
     dim_vars   = var_operand_def()          # SSA values giving dimension sizes
 
     traits = traits_def(NoTerminator())

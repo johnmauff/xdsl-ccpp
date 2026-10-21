@@ -23,6 +23,8 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     XMLSuite,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_LOOP_BEGIN_STD_NAME,
+    CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
     normalize_units,
 )
@@ -239,6 +241,15 @@ class PhaseFunctionsMixin:
                 + [_make_col_arg("col_start"), _make_col_arg("col_end")]
                 + input_arg_list[ncol_idx + 1:]
             )
+            # A scheme argument that is this same column range under the same
+            # name (package-cap segments take col_start/col_end) is served by it.
+            same_range = {CCPP_LOOP_BEGIN_STD_NAME: "col_start",
+                          CCPP_LOOP_END_STD_NAME: "col_end"}
+            input_arg_list = [
+                a for a in input_arg_list
+                if not (a.hasAttr("standard_name")
+                        and same_range.get(a.getAttr("standard_name").lower()) == a.name)
+            ]
 
         return _ArgClassification(
             framework_vars=framework_vars,
@@ -283,6 +294,11 @@ class PhaseFunctionsMixin:
                 for scheme_name in arg_tables:
                     for fn_arg in arg_tables[scheme_name].getFunctionArguments():
                         std_key = _std_key(fn_arg)
+                        # The merge below rewrites intent; keep the declared
+                        # one (whether a scheme writes a name before anyone
+                        # reads it decides when allocations sized by it run).
+                        if not fn_arg.hasAttr("declared_intent"):
+                            fn_arg.setAttr("declared_intent", fn_arg.getAttr("intent"))
                         if std_key in all_args:
                             assert fn_arg.getAttr("type") == all_args[std_key].getAttr("type")
                             # Any two different intents combine to 'inout'.

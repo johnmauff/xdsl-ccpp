@@ -950,6 +950,43 @@ module boundary. GPU residency is a hard requirement.
      datatable come from the frontend IR, so they are unaffected.
    - **Stage 1 (IR lowering) done.** RRTMGP lowers to 11 segments (5 run, 6
      init/timestep-init) with CAM's metadata and no interface conflicts.
+   - **Stage 2 (Fortran) done: `ccpp_dsl --package-caps`.**
+     `suitecap/package_cap.py` generates `<package>_package_cap.F90`: one
+     routine `<segment>_<phase>` per segment, built by the group-generation
+     code in physics mode (`register` excepted) without suite-state checks.
+     - Segments taking the loop extent take `col_start`/`col_end` like group
+       functions do; the synthetic scheme declares the same.
+     - `--list-outputs` predicts the new file.
+     - Without `--package-caps`, generated code is byte-identical (24
+       CAM-SIMA configurations).
+   - **CAM-SIMA RRTMGP generates with package caps.**
+     - All 56 scheme calls have the same keywords.
+     - Suite-owned arrays that the flattened cap slices at each call are now
+       sliced once, at the segment call (23 arguments).
+     - One genuine difference: some private arrays (`lw_Ds`, the
+       `*_icld_vistau` arrays) are sliced `(col_start:col_end, ...)`
+       flattened but passed whole in the package cap. The slicing rule needs
+       every dimension available in the current function, and segments lack
+       some (e.g. the g-point count). Identical when one call covers all
+       columns, as in CAM-SIMA (`col_start = 1`, `col_end = columns_on_task`).
+   - **FPHYStest fixes (s25a-s25d):**
+     - the package cap owns only `<pkg>__*` names; shared ones are dummy
+       arguments (`SuiteVariableModel.keep_only`);
+     - an unmatched `len=*` character dummy stays assumed-length
+       (`block_args._block_arg_type`), not `len=512`;
+     - synthetic segment schemes record their schemes (`segment_schemes`), so
+       `ccpp_physics_suite_schemes` lists RRTMGP's schemes and CAM reads
+       their namelists;
+     - in a package cap, allocations wait for the scheme that first writes
+       their dimension, even when that dimension is a dummy argument.
+   - **Open:**
+     - routine names repeat the phase for non-run segments
+       (`rrtmgp_prepare_init_1_init`);
+     - package-only loops with a non-literal count are rejected;
+     - constituents inside packages, resolved-vars and capture tooling;
+     - private arrays passed whole rather than sliced (above): wrong rows
+       for a host that runs physics in column chunks;
+     - GPU (2g).
 3. **2g: package caps on GPU,** gated on the synthetic GPU tests and a kessler
    composite, CPU and GPU, compared with the XML kessler cases.
 4. **The default switch,** decided later.

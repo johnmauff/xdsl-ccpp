@@ -98,6 +98,15 @@ class TestLowering:
             assert [t.table_name.data for t in table.walk()
                     if isinstance(t, ccpp.ArgumentTableOp)] == [f"{name}_{phase}"]
 
+    def test_synthetic_schemes_name_their_package_schemes(self):
+        """The host's active-scheme list is built from these (CAM-SIMA reads a
+        scheme's namelist only if the scheme is listed)."""
+        tables = _tables(_lowered())
+        assert [s.data for s in tables["step_1"].attributes["segment_schemes"].data] == [
+            "make", "use"]
+        assert [s.data for s in tables["step_init_1"].attributes["segment_schemes"].data] == [
+            "make"]
+
     def test_interface_excludes_private_names_and_merges_intents(self):
         args = _args(_tables(_lowered())["step_1"])
         assert args == {
