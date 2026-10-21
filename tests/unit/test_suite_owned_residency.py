@@ -529,6 +529,33 @@ class TestSuiteOwnedResidency:
         assert producer_pos < consumer_pos
         assert "!$acc update device(my_array5)" in physics_fn[producer_pos:consumer_pos]
 
+    def test_update_device_in_group_not_named_physics(self, run_host_match, ccpp_context):
+        """Group functions are recognised by their phase tag, not their name:
+        a run function for a group named "radiation" gets the same
+        update device(...) between producer and consumer."""
+        module = run_host_match(
+            scheme_metas=[_PRODUCER_HOST_SCHEME, _CONSUMER_DEVICE_SCHEME],
+            host_metas=[_HOST_META],
+            suite_xml="""\
+<?xml version="1.0" encoding="UTF-8"?>
+<suite name="test_suite_owned_suite" version="1.0">
+  <group name="radiation">
+    <scheme>test_producer_host_scheme</scheme>
+    <scheme>test_consumer_device_scheme</scheme>
+  </group>
+</suite>
+""",
+        )
+        ArgOwnershipPass().apply(ccpp_context, module)
+        SuiteCAP().apply(ccpp_context, module)
+        out = StringIO()
+        print_to_ftn(module, out)
+        run_fn = out.getvalue().split("subroutine test_suite_owned_suite_radiation(")[1]
+        run_fn = run_fn.split("end subroutine test_suite_owned_suite_radiation")[0]
+        producer_pos = run_fn.index("call test_producer_host_scheme_run(")
+        consumer_pos = run_fn.index("call test_consumer_device_scheme_run(")
+        assert "!$acc update device(my_array5)" in run_fn[producer_pos:consumer_pos]
+
     def test_two_scheme_same_phase_reverse_gets_update_self(
         self, run_host_match, ccpp_context
     ):

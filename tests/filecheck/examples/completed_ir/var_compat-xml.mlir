@@ -52,7 +52,7 @@
 // RUN: python3 -m xdsl_ccpp.frontend.ccpp_xml --suites examples/var_compat/var_compatibility_suite.xml --scheme-files examples/var_compat/effr_pre.meta,examples/var_compat/effr_calc.meta,examples/var_compat/effr_post.meta,examples/var_compat/effrs_calc.meta,examples/var_compat/effr_diag.meta,examples/var_compat/rad_lw.meta,examples/var_compat/rad_sw.meta,examples/var_compat/module_rad_ddt.meta --host-files examples/var_compat/test_host_data.meta,examples/var_compat/test_host_mod.meta,examples/var_compat/test_host.meta | python3 -m xdsl_ccpp.tools.ccpp_opt -p generate-meta-cap,generate-meta-kinds,generate-host-match,generate-arg-ownership,generate-suite-cap,generate-ccpp-cap,generate-cpp-cap,generate-kinds,strip-ccpp | python3 -m filecheck %s
 
 // CHECK:       builtin.module {
-// CHECK-LABEL:   builtin.module @var_compatibility_suite_cap {
+// CHECK-LABEL:   builtin.module @var_compatibility_suite_cap attributes {ccpp_suite_cap = "var_compatibility_suite"} {
 // CHECK:           "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "ccpp_suite_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, value = "uninitialized"}> ({
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "const_in_time_step", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "in_time_step"}> ({
@@ -72,7 +72,7 @@
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "has_ice", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_mod"} : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "ncl_out", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-LABEL:     func.func public @var_compatibility_suite_register() -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_register() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_register"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -80,7 +80,7 @@
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_initialize() -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_initialize() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -108,7 +108,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_finalize() -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_finalize() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -133,7 +133,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_init_radiation(%scheme_order : memref<i32>) -> (memref<i32>, memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_init_radiation(%scheme_order : memref<i32>) -> (memref<i32>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -181,7 +181,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %scheme_order, %errmsg, %errflg : memref<i32>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_radiation(%effrr_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %scalar_varA : memref<!ccpp_utils.real_kind<"kind_phys">>, %ncol : memref<i32>, %nlev : memref<i32>, %effrg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ncg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %nci_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrl_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effri_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrs_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ncl_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %has_graupel : memref<i1>, %scalar_var : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke2_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varB : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varC : memref<i32>, %fluxLW : memref<?x!ccpp_utils.derived_type<"ty_rad_lw">>, %sfc_up_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %sfc_down_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %num_subcycles : memref<i32>) -> (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_radiation(%effrr_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %scalar_varA : memref<!ccpp_utils.real_kind<"kind_phys">>, %ncol : memref<i32>, %nlev : memref<i32>, %effrg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ncg_in__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %nci_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrl_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effri_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %effrs_inout : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ncl_out__opt : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %has_graupel : memref<i1>, %scalar_var : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %tke2_inout : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varB : memref<!ccpp_utils.real_kind<"kind_phys">>, %scalar_varC : memref<i32>, %fluxLW : memref<?x!ccpp_utils.derived_type<"ty_rad_lw">>, %sfc_up_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %sfc_down_sw : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %num_subcycles : memref<i32>) -> (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -334,7 +334,7 @@
 // CHECK-NEXT:        "ccpp_utils.unit_write_back"(%tke_inout_unit_conv, %tke_inout) <{to_host_expr = "* 1.0"}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        func.return %scalar_var, %tke_inout, %tke2_inout, %errmsg, %errflg : memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_timestep_init_radiation() -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_timestep_init_radiation() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -346,7 +346,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_timestep_final_radiation() -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_timestep_final_radiation() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -358,7 +358,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @var_compatibility_suite_final_radiation() -> (memref<i32>, memref<512xi8>) {
+// CHECK-LABEL:     func.func public @var_compatibility_suite_final_radiation() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32

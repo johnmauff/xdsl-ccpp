@@ -64,14 +64,14 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     RankReducingSliceOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
-    _GPU_CALL_BEARING_FN_MARKERS,
+    is_gpu_call_bearing_fn,
+    iter_scheme_call_sites,
     _array_rank,
     _call_args,
     _call_param_names,
     _device_arg_names,
     _expr_text,
     _named_bounds,
-    iter_scheme_call_sites,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
@@ -145,8 +145,7 @@ class GPUDebugPrintPass(ModulePass):
                     continue
                 if not fn.body.blocks:
                     continue
-                fn_name = fn.sym_name.data
-                if not any(marker in fn_name for marker in _GPU_CALL_BEARING_FN_MARKERS):
+                if not is_gpu_call_bearing_fn(module_op, fn):
                     continue
                 block = fn.body.blocks[0]
 

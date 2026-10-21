@@ -11,7 +11,8 @@ policy and science choices that do not belong inside RRTMGP:
   tropopause, aerosol optics, history diagnostics, radiation-call counter);
 - carrying the radiative heating between radiation steps, net heating,
   coupler output, and freeing RRTMGP's objects (``rrtmgp_post``);
-- CAM's process-split state update after radiation.
+- CAM's time-split state update after radiation (apply heating, recompute
+  geopotential).
 
 How this reduces the complexity CCPP exposes
 --------------------------------------------
@@ -83,5 +84,5 @@ def cam_rrtmgp(*,
     calculate_net_heating()                       # CAM: net radiative heating and fluxes
     rrtmgp_post()                                 # CAM: coupler output, free RRTMGP objects
     rrtmgp_diagnostics()                          # CAM: history output
-    apply_heating_rate()                          # CAM: process-split state update
+    apply_heating_rate()                          # CAM: apply radiative heating to T (time-split update)
     geopotential_temp()

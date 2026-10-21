@@ -50,7 +50,8 @@ Three independent causes:
    - capgen's suite-level `<init>` allows only one scheme, so init-only
      `*_setup` schemes sit in the run list just to get their `_init` called.
 3. **CAM-SIMA conventions, which no language changes.** Diagnostics live in
-   separate schemes, and process-split state updates follow each process.
+   separate schemes, and a time-split state update (apply the tendency,
+   recompute geopotential) follows each process.
 
 Schemes also share data outside that path: run-phase schemes `use`
 module tables filled by init-only setup schemes (`rrtmgp_cloud_optics_setup`,
@@ -232,7 +233,7 @@ def cam_rrtmgp(*, sw_slots=None, lw_slots=None):
     calculate_net_heating()
     rrtmgp_post()
     rrtmgp_diagnostics()
-    apply_heating_rate()                   # CAM process-split state update
+    apply_heating_rate()                   # CAM time-split update: apply radiative heating to T
     geopotential_temp()
 ```
 

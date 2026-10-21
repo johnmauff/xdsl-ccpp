@@ -459,6 +459,43 @@ LIFECYCLE_POSTFIX_ALIASES: dict[str, str] = {
 # the value itself is now empty.
 SUITE_FN_INFIX = ""
 
+# Generated suite-cap functions record their lifecycle phase in this
+# attribute (set in suitecap/phase_functions.py), and the suite-cap module its
+# suite's name in SUITE_CAP_ATTR, so later code finds them by role, not by
+# name.
+FN_PHASE_ATTR = "ccpp_phase"
+SUITE_PHASES = ("suite_register", "suite_initialize", "suite_finalize")
+GROUP_PHASES = ("group_init", "run", "timestep_init", "timestep_final", "group_final")
+SUITE_CAP_ATTR = "ccpp_suite_cap"
+
+
+def fn_phase(fn) -> "str | None":
+    """The phase a generated suite-cap function was tagged with, or None."""
+    attr = fn.attributes.get(FN_PHASE_ATTR)
+    return attr.data if attr is not None else None
+
+
+def suite_cap_suite_name(module_op) -> "str | None":
+    """The suite a suite-cap ModuleOp was generated for, or None for any
+    other module."""
+    attr = module_op.attributes.get(SUITE_CAP_ATTR)
+    return attr.data if attr is not None else None
+
+
+# Other generated cap modules (the ccpp cap) have fixed API function names,
+# e.g. ccpp_physics_run; these markers pick out the ones holding data regions.
+_CAP_FN_MARKERS = ("_physics", "_timestep_init_", "_timestep_final_", "_init_", "_final_")
+
+
+def is_gpu_call_bearing_fn(module_op, fn) -> bool:
+    """True for a function worth walking for scheme calls or GPU data
+    regions: a group-phase function of a suite cap, or a physics function of
+    another generated cap module (the ccpp cap)."""
+    if suite_cap_suite_name(module_op):
+        return fn_phase(fn) in GROUP_PHASES
+    name = module_op.sym_name.data if module_op.sym_name is not None else ""
+    return name.endswith("_cap") and any(m in fn.sym_name.data for m in _CAP_FN_MARKERS)
+
 
 def _resolve_lifecycle_table_name(scheme_name: str, meta_data, postfix: str) -> "str | None":
     """Return scheme_name's own arg-table name at lifecycle phase `postfix`
@@ -543,18 +580,6 @@ def split_scheme_table_name(table_name: str) -> "tuple[str, str] | None":
 # against. gpu_debug_print_pass.py now imports these instead of defining
 # its own copies.
 
-# Same set of "does this function actually contain scheme calls / GPU-
-# relevant lifecycle code" markers suite_cap.py's own
-# _GPU_CALL_BEARING_FN_MARKERS and gpu_data_pass.py's apply() independently
-# define -- kept as its own named constant here rather than importing from
-# either of those (both are cap-generation files; this stays a leaf module).
-_GPU_CALL_BEARING_FN_MARKERS = (
-    "_physics",
-    "_timestep_init_",
-    "_timestep_final_",
-    "_init_",
-    "_final_",
-)
 
 
 def _expr_text(value) -> "str | None":
@@ -733,13 +758,8 @@ def _device_arg_names(scheme_name, table_name, meta_data) -> set:
 
 
 def iter_gpu_call_bearing_functions(op):
-    """Yield (module_op, fn, block) for every non-declaration FuncOp, in a
-    `_cap`-suffixed ModuleOp, whose name matches a
-    _GPU_CALL_BEARING_FN_MARKERS marker and has a real body -- the same
-    "is this function even worth walking for scheme calls/GPU-relevant
-    code" filter gpu_debug_print_pass.py's apply() and
-    iter_scheme_call_sites (below) both need.
-    """
+    """Yield (module_op, fn, block) for every function with a body that
+    is_gpu_call_bearing_fn selects."""
     for module_op in op.body.block.ops:
         if not (
             isa(module_op, builtin.ModuleOp)
@@ -752,7 +772,7 @@ def iter_gpu_call_bearing_functions(op):
                 continue
             if not fn.body.blocks:
                 continue
-            if not any(marker in fn.sym_name.data for marker in _GPU_CALL_BEARING_FN_MARKERS):
+            if not is_gpu_call_bearing_fn(module_op, fn):
                 continue
             yield module_op, fn, fn.body.blocks[0]
 
