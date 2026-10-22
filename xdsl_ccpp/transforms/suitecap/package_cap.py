@@ -77,6 +77,7 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
     suite_model.keep_only(lambda std: std.startswith(private_prefix))
 
     generated_fns = []
+    segment_fns = []
     fn_sigs_by_name: dict = {}
     use_stubs = []
     scheduled_allocs: set = set()
@@ -124,6 +125,7 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
                     if isa(op, LazyAllocOp) and op.is_run_local is None:
                         op.properties["realloc_on_resize"] = BoolAttr.from_bool(True)
             generated_fns.append(fn)
+            segment_fns.append((segment, fn))
             use_stubs.extend(stubs)
             for sig in sigs:
                 fn_sigs_by_name[sig.sym_name.data] = sig
@@ -140,6 +142,21 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
         gen._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
     if run_local_entries:
         gen._inject_run_local_var_handling(generated_fns, run_local_entries)
+    # Host uses of device-resident data: private state, kept current on the
+    # device across segments, and segment arguments the suite cap passes
+    # device-resident (lower_packages.interface_args).
+    gen._inject_suite_owned_gpu_update(
+        generated_fns, suite_model, gen.meta_data, debug_sync=gen.debug_sync)
+    for segment, fn in segment_fns:
+        name, phase = segment.segment_name.data, segment.phase.data
+        table = gen.meta_data[name].arg_tables[f"{name}_{phase}"]
+        device_std_names = {
+            arg.getAttr("standard_name").lower()
+            for arg in table.getFunctionArguments()
+            if arg.hasAttr("standard_name") and arg.hasAttr("memory_space")
+            and arg.getAttr("memory_space") == "device"
+        }
+        gen._inject_segment_interface_gpu_update(fn, device_std_names, gen.meta_data)
     # Device-resident private state leaves the device in the delete routine.
     gen._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
