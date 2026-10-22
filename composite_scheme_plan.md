@@ -1003,8 +1003,24 @@ module boundary. GPU residency is a hard requirement.
      these; arrays sized by per-step values (e.g. `nday`) keep the 2f-2
      run-time reallocation. Without this, private arrays were allocated on
      the run path, sized by the chunk, and never deleted from the device.
-   - **Next:** 2g-2, host/device mismatches on private data across segments
-     (`update` inside the package cap); 2g-3, the kessler gate.
+   - **2g-2, host uses of device data inside the package cap (done
+     2026-10-22).** Two gaps, both now synced in the package cap with the
+     suite cap's convention (the device copy is current between host runs:
+     `update self` before each run of host uses, `update device` after):
+     - private state used on the device by some schemes and on the host by
+       others (`_inject_suite_owned_gpu_update`, as in the suite cap). The
+       convention holds at every routine boundary, so it covers host uses in
+       a later segment than the device write;
+     - a shared argument a segment uses on both sides. Its synthetic scheme
+       declared the first use's memory space, so a host use after a device
+       one went unsynced. `interface_args` now declares it device-resident
+       when any use is, the suite cap hands it over device-resident, and
+       `_inject_segment_interface_gpu_update` syncs the host uses.
+     The rule "package caps never move data" is refined: they never
+     allocate, copy in or copy out shared data, but they do sync it between
+     host and device. Calls inside a package-only loop are not synced (as
+     for suite-owned variables in the suite cap). OpenACC only.
+   - **Next:** 2g-3, the kessler gate.
 
 4. **The default switch,** decided later.
 

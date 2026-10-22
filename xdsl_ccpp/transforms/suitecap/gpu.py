@@ -17,12 +17,40 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     GROUP_PHASES,
+    _bare,
     emit_coalesced_updates,
     find_diverged_suite_owned_vars,
     fn_phase,
     split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+
+
+def _scheme_calls(block) -> list:
+    """Ordered (scf.IfOp, scheme_name, table_name) for the error-guarded
+    scheme calls at the top level of *block*."""
+    calls = []
+    for op in block.ops:
+        if not isa(op, scf.IfOp) or not op.true_region.blocks:
+            continue
+        call_op = next(
+            (
+                o for o in op.true_region.blocks[0].ops
+                if isa(o, func.CallOp) or isa(o, KeywordCallOp)
+            ),
+            None,
+        )
+        if call_op is None:
+            continue
+        callee_name = (
+            call_op.callee.data if isa(call_op, KeywordCallOp)
+            else call_op.callee.root_reference.data
+        )
+        split = split_scheme_table_name(callee_name)
+        if split is None:
+            continue
+        calls.append((op, split[0], callee_name))
+    return calls
 
 
 class SuiteOwnedGpuMixin:
@@ -160,28 +188,7 @@ class SuiteOwnedGpuMixin:
                 continue
 
             block = fn.body.blocks[0]
-            calls = []  # ordered (scf.IfOp, scheme_name, table_name)
-            for op in block.ops:
-                if not isa(op, scf.IfOp) or not op.true_region.blocks:
-                    continue
-                call_op = next(
-                    (
-                        o for o in op.true_region.blocks[0].ops
-                        if isa(o, func.CallOp) or isa(o, KeywordCallOp)
-                    ),
-                    None,
-                )
-                if call_op is None:
-                    continue
-                callee_name = (
-                    call_op.callee.data if isa(call_op, KeywordCallOp)
-                    else call_op.callee.root_reference.data
-                )
-                split = split_scheme_table_name(callee_name)
-                if split is None:
-                    continue
-                calls.append((op, split[0], callee_name))
-
+            calls = _scheme_calls(block)
             if not calls:
                 continue
 
@@ -223,3 +230,47 @@ class SuiteOwnedGpuMixin:
 
             if resolved:
                 emit_coalesced_updates("acc", resolved, lambda ref, call_op: None)
+
+    @staticmethod
+    def _inject_segment_interface_gpu_update(fn, device_std_names, meta_data):
+        """Package caps (2g-2): sync host uses of a segment's device-resident
+        dummy arguments.
+
+        A segment argument is device-resident when any of the segment's
+        schemes uses it there (lower_packages.interface_args), so the suite
+        cap hands it over with the device copy current. Each run of host
+        uses inside the segment gets `update self` before it and `update
+        device` after it, as GPUDataPass does in the suite cap for a host
+        variable whose schemes disagree on memory space.
+        """
+        if not device_std_names or not fn.body.blocks:
+            return
+        block = fn.body.blocks[0]
+        arg_by_name = {_bare(a.name_hint): a for a in block.args if a.name_hint is not None}
+        touches: dict = {}  # standard_name -> ordered [(scf.IfOp, category, local_name)]
+        for call_op, scheme_name, table_name in _scheme_calls(block):
+            if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+                continue
+            for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments():
+                if not arg.hasAttr("standard_name"):
+                    continue
+                std_name = arg.getAttr("standard_name").lower()
+                if std_name not in device_std_names:
+                    continue
+                scheme_space = (
+                    arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
+                )
+                category = "present" if scheme_space == "device" else "update"
+                touches.setdefault(std_name, []).append((call_op, category, arg.name))
+
+        # The dummy argument is named after whichever scheme's local name came
+        # first; try each (see gpu_data_pass._resolve_canonical_ref).
+        resolved = {
+            std_name: (
+                next((arg_by_name[n] for _, _, n in touch_list if n in arg_by_name), None),
+                [(call_op, category) for call_op, category, _ in touch_list],
+            )
+            for std_name, touch_list in touches.items()
+        }
+        if resolved:
+            emit_coalesced_updates("acc", resolved, lambda ref, call_op: None)

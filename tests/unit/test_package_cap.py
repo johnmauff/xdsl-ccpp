@@ -345,3 +345,55 @@ def test_private_device_state_lives_in_the_package_cap(tmp_path):
     assert "!$acc" not in suite
     assert "call pkg_state_create_init(" in routine(suite, "pkg_suite_init_physics")
     assert "call pkg_state_delete_finalize(" in routine(suite, "pkg_suite_final_physics")
+
+
+def _mixed_space_caps(tmp_path, suite):
+    """producer and diag use their arrays on the device, consumer on the host."""
+    import sys
+    sys.path.insert(0, "tests/unit")
+    from test_package_scope import _device_scheme_meta
+
+    paths = []
+    for name, args, device in [
+            ("producer", [("temp", "potential_temperature", "inout"),
+                          ("work", "work_array", "out")], True),
+            ("diag", [("temp", "potential_temperature", "in")], True),
+            ("consumer", [("work", "work_array", "in"),
+                          ("temp", "potential_temperature", "inout")], False)]:
+        path = tmp_path / f"{name}.meta"
+        path.write_text((_device_scheme_meta if device else _scheme)(name, args))
+        paths.append(str(path))
+    (tmp_path / "pkg_suite.py").write_text(suite)
+    return _generate(tmp_path, paths, "caps", package_caps=True, directive="acc")
+
+
+def _routine(src, name):
+    return src.split(f"subroutine {name}(")[1].split("end subroutine")[0]
+
+
+def test_private_state_synced_for_host_use_in_a_later_segment(tmp_path):
+    """2g-2: a private array written on the device before the hook and read
+    on the host after it is synced around the host use, inside the package
+    cap; the device copy stays current between segments."""
+    caps = _mixed_space_caps(tmp_path, _SUITE)
+    cap = caps["pkg_package_cap.F90"]
+    assert "!$acc" not in _routine(cap, "step_1_run")
+    step_2 = _routine(cap, "step_2_run")
+    assert re.search(r"!\$acc update self\(work\)\s+(#endif\s+)?(#ifdef USE_GPU\s+)?"
+                     r"[^!]*call consumer_run\([^)]*\)[^!]*!\$acc update device\(work\)",
+                     step_2, re.S), step_2
+    assert "update self(work)" not in caps["pkg_suite_cap.F90"]
+
+
+def test_segment_syncs_host_use_of_a_device_argument(tmp_path):
+    """2g-2: a segment using a shared array on the device (producer) and on
+    the host (consumer) declares it device-resident, so the suite cap moves
+    nothing around it, and syncs the host use inside the package cap."""
+    caps = _mixed_space_caps(tmp_path, _SUITE.replace(
+        "    producer()\n    hook()\n    consumer()",
+        "    producer()\n    consumer()\n    hook()"))
+    step_1 = _routine(caps["pkg_package_cap.F90"], "step_1_run")
+    produce, consume = step_1.index("call producer_run("), step_1.index("call consumer_run(")
+    assert produce < step_1.index("update self(temp)") < consume
+    assert consume < step_1.index("update device(temp)")
+    assert "!$acc update" not in caps["pkg_suite_cap.F90"]

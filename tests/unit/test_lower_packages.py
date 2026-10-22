@@ -188,6 +188,18 @@ class TestInterfaceArgs:
         ])
         assert [a.arg_name.data for a in args] == ["kdist", "lw_kdist"]
 
+    def test_device_use_anywhere_makes_argument_device_resident(self):
+        on_device = Arg("t", standard_name="air_temperature", type="real", intent="in",
+                        units="K", dimensions=("horizontal_dimension",), kind="kind_phys",
+                        extra={"memory_space": "device"})
+        args = interface_args("seg", "run", "pkg", [
+            ("a", self._ops(_arg("t", "air_temperature", "inout"), _arg("x", "host_only", "in"))),
+            ("b", self._ops(on_device)),
+        ])
+        spaces = {a.standard_name.data: a.memory_space for a in args}
+        assert spaces["air_temperature"].data == "device"
+        assert spaces["host_only"] is None
+
     def test_disagreeing_units_rejected(self):
         with pytest.raises(ValueError, match="'t' has units|has units 'K' in a but 'degC'"):
             interface_args("seg", "run", "pkg", [

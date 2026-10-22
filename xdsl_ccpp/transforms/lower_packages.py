@@ -113,7 +113,8 @@ def interface_args(segment_name: str, phase: str, package: str,
     each scheme's arguments in *phase*.  Package-private names are dropped;
     the others are merged by standard name, keeping the first use's
     declaration and local name (qualified with its scheme if that local name
-    is already taken).
+    is already taken), except that an argument any use declares
+    ``memory_space = device`` is device-resident.
 
     Raises:
         ValueError: when uses of one standard name disagree on type, kind,
@@ -156,6 +157,11 @@ def interface_args(segment_name: str, phase: str, package: str,
         arg.properties["name"] = StringAttr(local)
         arg.properties["intent"] = StringAttr(
             _merged_intent([_prop(a, "intent") or "in" for _, a in std_uses]))
+        # Used on the device anywhere in the segment: the suite cap hands it
+        # over device-resident, and the package cap syncs its host uses
+        # (suitecap/package_cap.py).
+        if any(_prop(a, "memory_space") == "device" for _, a in std_uses):
+            arg.properties["memory_space"] = StringAttr("device")
         out.append(arg)
     return out
 
