@@ -225,6 +225,11 @@ class SuiteVariableModel:
         """All ``SuiteVarEntry`` objects, in insertion (first-writer) order."""
         return list(self._suite_owned.values())
 
+    def keep_only(self, predicate) -> None:
+        """Drop every suite-owned entry whose standard name fails
+        *predicate* (a package cap owns only its package-private names)."""
+        self._suite_owned = {k: v for k, v in self._suite_owned.items() if predicate(k)}
+
     def alloc_dims(self, std_name: str) -> list:
         """Dimension standard_names needed to allocate a suite-owned variable.
 

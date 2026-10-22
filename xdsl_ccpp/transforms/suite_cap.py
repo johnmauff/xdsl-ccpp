@@ -38,6 +38,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 from xdsl_ccpp.transforms.util.ir_utils import build_host_var_index, find_ccpp_module
 from xdsl_ccpp.transforms.util.suite_variable_model import SuiteVariableModel
 from xdsl_ccpp.transforms.util.typing import TypeConversions
+from xdsl_ccpp.transforms.suitecap.package_cap import generate_package_caps
 from xdsl_ccpp.transforms.suitecap.call_sequence import CallSequenceMixin
 from xdsl_ccpp.transforms.suitecap.promotion import PromotionMixin
 from xdsl_ccpp.transforms.suitecap.suite_owned import SuiteOwnedMixin
@@ -261,6 +262,7 @@ class SuiteCAP(ModulePass):
             GreedyRewritePatternApplier([generator]),
             apply_recursively=False,
         ).rewrite_module(op)
+        generate_package_caps(generator, op)
 
         if self.emit_resolved_vars:
             _write_resolved_vars(

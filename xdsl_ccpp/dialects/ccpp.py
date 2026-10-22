@@ -219,6 +219,50 @@ class PackageOp(IRDLOperation):
 
 
 @irdl_op_definition
+class SegmentOp(IRDLOperation):
+    """One routine of a package cap: the calls of one segment of a package
+    entry point in one phase (see transforms/package_segments.py).
+
+    ``segment_name`` is also the name of the synthetic scheme the suite calls
+    in place of these calls (transforms/lower_packages.py).
+    """
+
+    name = "ccpp.segment"
+
+    segment_name = prop_def(StringAttr)
+    phase = prop_def(StringAttr)
+    entry_point = prop_def(StringAttr)
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, segment_name: str, phase: str, entry_point: str,
+                 body: "Sequence[Operation]"):
+        super().__init__(
+            regions=[Region([Block(list(body))])],
+            properties={"segment_name": StringAttr(segment_name),
+                        "phase": StringAttr(phase),
+                        "entry_point": StringAttr(entry_point)})
+
+
+@irdl_op_definition
+class PackageCapOp(IRDLOperation):
+    """A package's code, lowered out of the suites: one `SegmentOp` per
+    segment.  Generated as the Fortran module ``<package>_package_cap``."""
+
+    name = "ccpp.package_cap"
+
+    package_name = prop_def(StringAttr)
+    body = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, package_name: str, segments: "Sequence[SegmentOp]"):
+        super().__init__(regions=[Region([Block(list(segments))])],
+                         properties={"package_name": StringAttr(package_name)})
+
+
+@irdl_op_definition
 class CompositeOp(IRDLOperation):
     """A composite scheme: a named block of scheme calls, subcycles and nested
     composites, run once, in order, where it appears.
@@ -770,6 +814,8 @@ CCPP = Dialect(
         SubcycleOp,
         CompositeOp,
         PackageOp,
+        PackageCapOp,
+        SegmentOp,
         KindOp,
         KindsOp,
         TablePropertiesOp,

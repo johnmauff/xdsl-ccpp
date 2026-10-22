@@ -338,8 +338,10 @@ class ScopePackages(ModulePass):
     name = "scope-packages"
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
+        from xdsl_ccpp.transforms.package_segments import multi_instance_problems
+
         scopes = package_scopes(op)
-        errors = init_problems(op)
+        errors = init_problems(op) + multi_instance_problems(op)
         for scope in scopes.values():
             scope_errors, warnings = scope.interface_problems()
             errors += scope_errors

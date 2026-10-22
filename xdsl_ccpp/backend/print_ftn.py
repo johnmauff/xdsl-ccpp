@@ -1664,6 +1664,20 @@ class ftnPrintContext:
                     if init_value_str is not None:
                         self.print(f"{vname} = {init_value_str}")
                 else:
+                    _device = (op.needs_device_residency is not None
+                               and bool(op.needs_device_residency.value.data))
+                    if op.realloc_on_resize is not None and bool(op.realloc_on_resize.value.data):
+                        self.print(f"if (allocated({vname})) then")
+                        with self.descend() as inner:
+                            inner.print(f"if (any(shape({vname}) /= [{dim_str}])) then")
+                            with inner.descend() as body:
+                                if _device:
+                                    body.print("#ifdef USE_GPU", use_prefix=False)
+                                    body.print(f"!$acc exit data delete({vname})")
+                                    body.print("#endif", use_prefix=False)
+                                body.print(f"deallocate({vname})")
+                            inner.print("end if")
+                        self.print("end if")
                     self.print(f"if (.not. allocated({vname})) then")
                     with self.descend() as inner:
                         inner.print(f"allocate({vname}({dim_str}))")
@@ -1671,7 +1685,7 @@ class ftnPrintContext:
                             inner.print(
                                 f"{vname} = {init_value_str}"
                             )
-                        if op.needs_device_residency is not None and bool(op.needs_device_residency.value.data):
+                        if _device:
                             inner.print("#ifdef USE_GPU", use_prefix=False)
                             inner.print(f"!$acc enter data create({vname})")
                             inner.print("#endif", use_prefix=False)

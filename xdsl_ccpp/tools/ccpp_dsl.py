@@ -343,6 +343,14 @@ class ccppMain:
                  "even once the real generation is deferred to build time.",
         )
         parser.add_argument(
+            "--package-caps",
+            action="store_true",
+            default=False,
+            help="Generate one Fortran module per package (<package>_package_cap) "
+                 "instead of flattening packages into the suite cap "
+                 "(composite-scheme 2f; experimental).",
+        )
+        parser.add_argument(
             "--list-package-scope",
             action="store_true",
             default=False,
@@ -849,7 +857,10 @@ class ccppMain:
         # same flat suite it always has (composite_scheme_plan.md §11, S2-1).
         # Both are no-ops for suites without composites, including every XML
         # suite.
-        passes = ["scope-packages", "flatten-composites", "generate-meta-cap"]
+        passes = ["scope-packages"]
+        if self.options_db.get("package_caps"):
+            passes.append("lower-packages")
+        passes += ["flatten-composites", "generate-meta-cap"]
         if has_host:
             host_match_pass = "generate-host-match"
             if self.options_db.get("gfs_dim_aliases"):
@@ -1118,16 +1129,22 @@ class ccppMain:
         if self.options_db.get("meta_file"):
             raise CcppDslError("--list-outputs does not support --meta-file")
 
+        package_names: list = []
         if self.options_db.get("py"):
-            suite_names = [
-                op.suite_name.data for op in self._build_py_metadata_module().walk()
-                if isa(op, SuiteOp)
-            ]
+            from xdsl_ccpp.dialects.ccpp import PackageOp
+
+            module = self._build_py_metadata_module()
+            suite_names = [op.suite_name.data for op in module.walk() if isa(op, SuiteOp)]
+            if self.options_db.get("package_caps"):
+                package_names = [op.package_name.data for op in module.walk()
+                                 if isa(op, PackageOp)]
         else:
             suite_names = [
                 XMLSuite(f).attributes["name"] for f in self.options_db["suites"]
             ]
         outputs = [f"{name}_cap.F90" for name in suite_names]
+        # --package-caps: one module per package (suitecap/package_cap.py).
+        outputs += [f"{name}_package_cap.F90" for name in package_names]
 
         camel_name = (
             self.options_db.get("host_name")
@@ -1298,9 +1315,16 @@ class ccppMain:
 
             if not self.options_db.get("py"):
                 raise CcppDslError("--list-package-scope needs a --py suite")
+            from xdsl_ccpp.transforms.package_segments import (
+                format_package_segments,
+                multi_instance_problems,
+                package_segments,
+            )
+
             module = self._build_cheap_metadata_module()
             print(format_package_scopes(package_scopes(module)), end="")
-            for problem in init_problems(module):
+            print(format_package_segments(package_segments(module)), end="")
+            for problem in init_problems(module) + multi_instance_problems(module):
                 print(f"ERROR: {problem}")
             return CcppDslResult(written=[])
 

@@ -1174,7 +1174,13 @@ class CCPPCAP(ModulePass):
             seen: "dict[str, None]" = {}
             for group in sd:
                 for scheme in _iter_schemes(group):
-                    seen[scheme.attributes["name"]] = None
+                    name = scheme.attributes["name"]
+                    # A package-cap segment stands for the schemes it calls.
+                    props = meta_data.get(name)
+                    if props is not None and props.hasAttr("segment_schemes"):
+                        seen.update(dict.fromkeys(props.getAttr("segment_schemes")))
+                    else:
+                        seen[name] = None
             _suite_schemes.append((sn, list(seen.keys())))
 
         schemes_block.add_ops([

@@ -66,7 +66,7 @@ class CCPPTableProperties(CCPPItem):
             value = CCPPType(value)
         super().setAttr(key, value, ["name", "type", "dependencies",
                                      "dependencies_path", "source_path", "language",
-                                     "source_module"])
+                                     "source_module", "segment_schemes"])
 
     def getArgTable(self, v):
         """Return the argument table registered under key ``v``."""
@@ -274,6 +274,9 @@ class BuildMetaDataDescriptions(Visitor):
         src_module = properties_op.attributes.get("source_module")
         if src_module is not None:
             ccpp_prop.setAttr("source_module", src_module.data)
+        segment_schemes = properties_op.attributes.get("segment_schemes")
+        if segment_schemes is not None:
+            ccpp_prop.setAttr("segment_schemes", [s.data for s in segment_schemes.data])
         self.meta_data[ccpp_prop.getAttr("name")] = ccpp_prop
 
     def traverse_argument_table_op(self, arg_table_op: ccpp.ArgumentTableOp):

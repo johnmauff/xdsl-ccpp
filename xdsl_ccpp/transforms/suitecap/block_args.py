@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from xdsl.dialects import arith, memref
 from xdsl.dialects.builtin import (
+    DYNAMIC_INDEX,
     FloatAttr,
+    i8,
 )
 from xdsl.ir import Block, BlockArgument
 
@@ -69,16 +71,23 @@ def _block_arg_kind(a):
     return a.getAttr("kind") if a.hasAttr("kind") else None
 
 
+def _block_arg_type(a):
+    """Type of the suite block arg. An unmatched ``len=*`` character arg
+    (a package-cap segment's interface) stays assumed-length, so the caller's
+    length passes through instead of CCPP_ERRMSG_LEN."""
+    kind = _block_arg_kind(a)
+    if a.getAttr("type") == "character" and (kind or "").replace(" ", "") == "len=*":
+        return memref.MemRefType(i8, [DYNAMIC_INDEX] * (_arg_dims(a) + 1))
+    return TypeConversions.convert(a.getAttr("type"), kind, _arg_dims(a))
+
+
 def _build_block_and_name_hints(input_arg_list) -> tuple:
     """Build the Block and resolve each input arg's dummy-argument name hint.
 
     Name collisions are disambiguated via model_var_name.
     Returns (new_block, input_arg_types, data_ops, final_values).
     """
-    input_arg_types = [
-        TypeConversions.convert(a.getAttr("type"), _block_arg_kind(a), _arg_dims(a))
-        for a in input_arg_list
-    ]
+    input_arg_types = [_block_arg_type(a) for a in input_arg_list]
 
     new_block = Block(arg_types=input_arg_types)
 

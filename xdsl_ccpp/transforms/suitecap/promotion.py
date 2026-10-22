@@ -164,9 +164,11 @@ class PromotionMixin:
         """Resolve each of alloc_dim_names to an SSA upper bound for an allocation.
 
         Returns (dim_var_refs, pending_producer_scheme). The producer is set
-        when a dimension is a same-phase SuiteOwned intent(out) var whose
-        producing scheme hasn't been called yet; the caller retries after
-        emitting that call. An unresolvable dimension returns ([], None) so
+        when a dimension is a same-phase SuiteOwned intent(out) var -- or, in
+        a package cap, any var a scheme of the segment writes before it is
+        read (declared intent(out)), including dummy arguments the segment
+        returns -- whose producing scheme hasn't been called yet; the caller
+        retries after emitting that call. An unresolvable dimension returns ([], None) so
         the allocation is deferred rather than emitted with the wrong rank.
         """
         dim_var_refs = []
@@ -182,9 +184,12 @@ class PromotionMixin:
                  and dims_compatible(a.getAttr("standard_name"), alloc_dim)),
                 None,
             )
-            if (
-                matching is not None
-                and matching.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+            if matching is not None and (
+                # A package cap's segment returns what its schemes write first.
+                matching.getAttr("declared_intent") == "out"
+                if getattr(self, "generating_package_cap", False)
+                and matching.hasAttr("declared_intent")
+                else matching.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
                 and matching.getAttr("intent") == "out"
             ):
                 producer = _find_producer_scheme(matching, arg_tables)
