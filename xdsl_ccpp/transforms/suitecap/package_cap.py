@@ -18,6 +18,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import LazyAllocOp
+from xdsl_ccpp.transforms.lower_packages import state_create_scheme, state_delete_scheme
 from xdsl_ccpp.transforms.package_scope import private_name
 from xdsl_ccpp.transforms.suitecap.block_args import _std_key
 from xdsl_ccpp.transforms.util.cap_shared import FN_PHASE_ATTR
@@ -82,8 +83,29 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
     deferred_warnings: list = []
     # Allocation order in segments follows what their schemes write first
     # (promotion.py, _resolve_alloc_dim_var_refs).
+    def state_routine(scheme, target_postfix, generated_postfix, tag):
+        """A routine of the package's state schemes: no scheme calls, only
+        the allocation of private state (create) or, after the GPU exit
+        injection below, its deletion from the device (delete)."""
+        state_suite = XMLSuite(scheme, "1.0")
+        for group in groups:
+            state_suite.addChild(group)
+        fn, sigs, stubs = gen.generateSubroutineCall(
+            state_suite, target_postfix, generated_postfix,
+            state_string=None, check_string=None, physics_mode=False,
+            suite_model=suite_model, already_scheduled_allocs=scheduled_allocs,
+            deferred_warnings=deferred_warnings, emit_scheme_calls=False,
+        )
+        fn.attributes[FN_PHASE_ATTR] = StringAttr(tag)
+        generated_fns.append(fn)
+        use_stubs.extend(stubs)
+        for sig in sigs:
+            fn_sigs_by_name[sig.sym_name.data] = sig
+
     gen.generating_package_cap = True
     try:
+        # First, so private arrays sized at init are allocated there.
+        state_routine(state_create_scheme(package), "_init", "_init", "suite_initialize")
         for segment, group in zip(segments, groups):
             postfix, tag = _PHASES[segment.phase.data]
             segment_suite = XMLSuite(segment.segment_name.data, "1.0")
@@ -105,6 +127,7 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
             use_stubs.extend(stubs)
             for sig in sigs:
                 fn_sigs_by_name[sig.sym_name.data] = sig
+        state_routine(state_delete_scheme(package), "_finalize", "_finalize", "suite_finalize")
     finally:
         gen.generating_package_cap = False
 
@@ -117,6 +140,8 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
         gen._inject_safe_deallocs(generated_fns, allocatable_mod_vars, interstitial_var_names)
     if run_local_entries:
         gen._inject_run_local_var_handling(generated_fns, run_local_entries)
+    # Device-resident private state leaves the device in the delete routine.
+    gen._inject_suite_owned_gpu_exit(generated_fns, suite_model)
 
     seen: set = set()
     stubs = []

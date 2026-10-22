@@ -88,7 +88,22 @@ class TestLowering:
         calls = [o.scheme_name.data for o in module.walk() if isinstance(o, ccpp.SchemeOp)
                  and o.parent_op().name != "ccpp.segment"
                  and not any(p.name == "ccpp.segment" for p in _ancestors(o))]
-        assert calls == ["step_init_1", "step_1", "diag"]
+        # The state schemes bracket the package's entry-point call.
+        assert calls == ["pkg_state_create", "step_init_1", "step_1", "diag",
+                         "pkg_state_delete"]
+
+    def test_state_schemes_have_one_lifecycle_phase_each(self):
+        """<pkg>_state_create has only an _init phase, <pkg>_state_delete only
+        a _finalize phase; both take only the error arguments, and stand for
+        no package scheme (segment_schemes empty)."""
+        tables = _tables(_lowered())
+        for name, phase in [("pkg_state_create", "init"), ("pkg_state_delete", "finalize")]:
+            table = tables[name]
+            assert [t.table_name.data for t in table.walk()
+                    if isinstance(t, ccpp.ArgumentTableOp)] == [f"{name}_{phase}"]
+            assert set(_args(table)) == {"ccpp_error_message", "ccpp_error_code"}
+            assert table.attributes["source_module"].data == "pkg_package_cap"
+            assert list(table.attributes["segment_schemes"].data) == []
 
     def test_synthetic_schemes_point_at_the_package_cap(self):
         tables = _tables(_lowered())

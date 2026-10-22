@@ -14,6 +14,13 @@ entry-point call in one phase):
 - the calls themselves move into a ``ccpp.package_cap`` op (one per package),
   as one ``ccpp.segment`` each, from which the package cap is generated.
 
+Each package also gets two **state schemes**, ``<pkg>_state_create`` (an
+``_init`` phase only) before the package's first call and
+``<pkg>_state_delete`` (a ``_finalize`` phase only) after its last: the
+package cap generates them to allocate its private arrays (creating
+device-resident ones on the device) and to delete them from the device, as
+the suite cap's own _initialize/_finalize do for suite-owned arrays.
+
 Downstream passes therefore see the synthetic schemes as ordinary schemes.
 The package's own schemes are no longer called from any suite, so host
 matching leaves them alone: their data arrives through the segment interface.
@@ -35,6 +42,7 @@ from xdsl_ccpp.transforms.package_scope import private_name
 from xdsl_ccpp.transforms.package_segments import Loop, Segment, package_segments
 from xdsl_ccpp.transforms.util.cap_shared import iter_arg_tables
 from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERROR_STD_NAMES,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
@@ -52,6 +60,17 @@ _MUST_AGREE = ("type", "kind", "units", "dim_names")
 def package_cap_module_name(package: str) -> str:
     """Fortran module of a package's cap."""
     return f"{package}_package_cap"
+
+
+def state_create_scheme(package: str) -> str:
+    """Synthetic scheme whose _init allocates the package's private state."""
+    return f"{package}_state_create"
+
+
+def state_delete_scheme(package: str) -> str:
+    """Synthetic scheme whose _finalize deletes the package's private device
+    state."""
+    return f"{package}_state_delete"
 
 
 def _segments(nodes):
@@ -198,6 +217,7 @@ class LowerPackages(ModulePass):
         names: set[str] = set()
         new_tables = []
         package_segment_ops: dict[str, list] = {}
+        error_args: dict[str, list] = {}
         for phase, seg in found:
             name = seg.name(phase)
             if name in names or name in tables:
@@ -216,6 +236,10 @@ class LowerPackages(ModulePass):
             _check_loops(name, seg.ops)
             args = _column_range_args(
                 interface_args(name, phase, seg.entry.package, calls), phase)
+            error_args.setdefault(seg.entry.package, [
+                a.clone() for a in args
+                if a.standard_name is not None
+                and a.standard_name.data.lower() in CCPP_ERROR_STD_NAMES])
             new_tables.append(ccpp.TablePropertiesOp(
                 name, "scheme", [ccpp.ArgumentTableOp(f"{name}_{phase}", "scheme", args)],
                 attributes={
@@ -241,12 +265,41 @@ class LowerPackages(ModulePass):
             return top
 
         rewriter = Rewriter()
+        segment_calls: dict[str, set] = {}
         for phase, seg in found:
             anchor = outermost_moved(seg.ops[0])
             rewriter.insert_op(ccpp.SchemeOp(seg.name(phase)), InsertPoint.before(anchor))
+            segment_calls.setdefault(seg.entry.package, set())
         for o in moved.values():
             if outermost_moved(o) is o:
                 rewriter.erase_op(o)
+
+        # State schemes: create before the package's first entry-point call,
+        # delete after its last (hooks included), outside any loop.
+        def outside_loops(o):
+            while isa(o.parent_op(), ccpp.SubcycleOp):
+                o = o.parent_op()
+            return o
+
+        for package in segment_calls:
+            calls = [o for o in op.walk()
+                     if isa(o, ccpp.CompositeOp) and o.hook is None
+                     and o.package is not None and o.package.data == package]
+            for scheme, phase, where in (
+                    (state_create_scheme(package), "init", InsertPoint.before(outside_loops(calls[0]))),
+                    (state_delete_scheme(package), "finalize", InsertPoint.after(outside_loops(calls[-1])))):
+                if scheme in names or scheme in tables:
+                    raise ValueError(f"Package '{package}': state scheme name '{scheme}' "
+                                     f"is already used.")
+                new_tables.append(ccpp.TablePropertiesOp(
+                    scheme, "scheme",
+                    [ccpp.ArgumentTableOp(f"{scheme}_{phase}", "scheme",
+                                          [a.clone() for a in error_args[package]])],
+                    attributes={
+                        "source_module": StringAttr(package_cap_module_name(package)),
+                        SEGMENT_SCHEMES_ATTR: ArrayAttr([]),
+                    }))
+                rewriter.insert_op(ccpp.SchemeOp(scheme), where)
 
         first_suite = next(o for o in op.body.block.ops if isa(o, ccpp.SuiteOp))
         for table in new_tables:

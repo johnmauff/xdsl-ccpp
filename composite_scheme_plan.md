@@ -989,6 +989,23 @@ module boundary. GPU residency is a hard requirement.
      - GPU (2g).
 3. **2g: package caps on GPU,** gated on the synthetic GPU tests and a kessler
    composite, CPU and GPU, compared with the XML kessler cases.
+   - **2g-1, package state lifecycle (done 2026-10-22).** `lower-packages`
+     adds two state schemes per package, bracketing its entry-point calls:
+     `<pkg>_state_create` (an `_init` phase only) and `<pkg>_state_delete`
+     (a `_finalize` phase only), with only the error arguments and no
+     package scheme in `segment_schemes`. The package cap generates
+     `<pkg>_state_create_init` like the suite cap's `_initialize` -- the
+     allocation sweep, no scheme calls -- so private arrays whose sizes are
+     known at init are allocated there (device-resident ones also
+     `enter data create`), and `<pkg>_state_delete_finalize` gets
+     `exit data delete` for every device-resident private array
+     (`_inject_suite_owned_gpu_exit`). Run segments no longer allocate
+     these; arrays sized by per-step values (e.g. `nday`) keep the 2f-2
+     run-time reallocation. Without this, private arrays were allocated on
+     the run path, sized by the chunk, and never deleted from the device.
+   - **Next:** 2g-2, host/device mismatches on private data across segments
+     (`update` inside the package cap); 2g-3, the kessler gate.
+
 4. **The default switch,** decided later.
 
 The separate track, `xdsl-upgrade` and then `gpu-conversion-residency` (see

@@ -306,3 +306,42 @@ def test_private_array_sized_by_segment_output(tmp_path):
     assert re.search(r"if \(any\(shape\(work\) /= \[ncol, nwork\]\)\) then\s+deallocate\(work\)",
                      step_1)
     assert step_1.index("any(shape(work)") < step_1.index("if (.not. allocated(work))")
+
+
+def test_private_device_state_lives_in_the_package_cap(tmp_path):
+    """2g-1: a private device-resident array crossing segments (written before
+    the hook, read after it) is allocated and created on the device by the
+    package's state-create routine, deleted from the device by its
+    state-delete routine, and neither allocated nor moved by the run
+    segments; the suite cap moves no data and calls the state routines in its
+    group init and final."""
+    import sys
+    sys.path.insert(0, "tests/unit")
+    from test_package_scope import _device_scheme_meta
+
+    paths = []
+    for name, args in [("producer", [("temp", "potential_temperature", "in"),
+                                     ("work", "work_array", "out")]),
+                       ("diag", [("temp", "potential_temperature", "in")]),
+                       ("consumer", [("work", "work_array", "in"),
+                                     ("temp", "potential_temperature", "inout")])]:
+        path = tmp_path / f"{name}.meta"
+        path.write_text(_device_scheme_meta(name, args))
+        paths.append(str(path))
+    (tmp_path / "pkg_suite.py").write_text(_SUITE)
+    caps = _generate(tmp_path, paths, "caps", package_caps=True, directive="acc")
+    cap, suite = caps["pkg_package_cap.F90"], caps["pkg_suite_cap.F90"]
+
+    def routine(src, name):
+        return src.split(f"subroutine {name}(")[1].split("end subroutine")[0]
+
+    create = routine(cap, "pkg_state_create_init")
+    assert re.search(r"allocate\(work\(", create)
+    assert "!$acc enter data create(work)" in create
+    assert "!$acc exit data delete(work)" in routine(cap, "pkg_state_delete_finalize")
+    for segment in ("step_1_run", "step_2_run"):
+        body = routine(cap, segment)
+        assert "allocate(" not in body and "!$acc" not in body
+    assert "!$acc" not in suite
+    assert "call pkg_state_create_init(" in routine(suite, "pkg_suite_init_physics")
+    assert "call pkg_state_delete_finalize(" in routine(suite, "pkg_suite_final_physics")
