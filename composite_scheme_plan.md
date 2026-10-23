@@ -963,12 +963,15 @@ module boundary. GPU residency is a hard requirement.
      - All 56 scheme calls have the same keywords.
      - Suite-owned arrays that the flattened cap slices at each call are now
        sliced once, at the segment call (23 arguments).
-     - One genuine difference: some private arrays (`lw_Ds`, the
-       `*_icld_vistau` arrays) are sliced `(col_start:col_end, ...)`
-       flattened but passed whole in the package cap. The slicing rule needs
-       every dimension available in the current function, and segments lack
-       some (e.g. the g-point count). Identical when one call covers all
-       columns, as in CAM-SIMA (`col_start = 1`, `col_end = columns_on_task`).
+     - One apparent difference: `lw_Ds` was sliced `(col_start:col_end, ...)`
+       flattened but passed whole in the package cap. Corrected 2026-10-23
+       (BACKLOG `chunked-column-slicing`, resolved): the slicing gaps were in
+       the shared suite-cap code. Full-domain arrays were passed whole when
+       an extra dimension was not in scope (fewer in scope in a segment), and
+       `allocatable` arrays allocated in a run routine got the chunk extent
+       -- so the flattened cap's `lw_Ds` slice was the out-of-bounds one. Both
+       caps now allocate over all columns and always slice. (The
+       `*_icld_vistau` arrays are segment arguments the suite cap slices.)
    - **FPHYStest fixes (s25a-s25d):**
      - the package cap owns only `<pkg>__*` names; shared ones are dummy
        arguments (`SuiteVariableModel.keep_only`);
@@ -984,8 +987,8 @@ module boundary. GPU residency is a hard requirement.
        (`rrtmgp_prepare_init_1_init`);
      - package-only loops with a non-literal count are rejected;
      - constituents inside packages, resolved-vars and capture tooling;
-     - private arrays passed whole rather than sliced (above): wrong rows
-       for a host that runs physics in column chunks;
+     - ~~private arrays passed whole rather than sliced~~ -- resolved
+       2026-10-23, see above;
      - GPU (2g).
 3. **2g: package caps on GPU,** gated on the synthetic GPU tests and a kessler
    composite, CPU and GPU, compared with the XML kessler cases.

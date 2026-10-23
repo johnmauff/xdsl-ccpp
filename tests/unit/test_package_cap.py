@@ -442,3 +442,84 @@ def test_init_segment_does_not_repeat_state_allocation(tmp_path):
     assert "allocate(work(" in create
     assert "call producer_init(" in init
     assert "allocate(" not in init
+
+
+# Column slicing (BACKLOG chunked-column-slicing): with col_start/col_end
+# (legacy horizontal_loop_extent), a suite-owned array with a horizontal first
+# dimension is allocated over all columns and passed as the current columns.
+_LOOP = "horizontal_loop_extent"
+
+
+def _slicing_meta(name, phase, body):
+    return f"""[ccpp-table-properties]
+  name = {name}
+  type = scheme
+[ccpp-arg-table]
+  name = {name}_{phase}
+  type = scheme
+{body}{_ERR}"""
+
+
+def _slicing_arg(local, std, intent, dims, extra=""):
+    kind = "type = integer" if not dims else "type = real | kind = kind_phys"
+    units = "count" if not dims else "1"
+    return f"""[ {local} ]
+  standard_name = {std}
+  units = {units}
+  dimensions = ({dims})
+  {kind}
+  intent = {intent}
+{extra}"""
+
+
+def _slicing_caps(tmp_path, package_caps):
+    """setup writes a band count at init; producer writes wk (with interface
+    levels, which no scheme takes as an argument) and bw (allocatable, sized
+    by the band count); consumer, after the hook, reads both."""
+    def run_args(intent):
+        return (_slicing_arg("ncol", _LOOP, "in", "")
+                + _slicing_arg("wk", "work_at_interfaces", intent,
+                               f"{_LOOP}, vertical_interface_dimension")
+                + _slicing_arg("nb", "number_of_bands", "in", "")
+                + _slicing_arg("bw", "band_work", intent, f"{_LOOP}, number_of_bands",
+                               "  allocatable = True\n" if intent == "out" else ""))
+    metas = {
+        "setup": _slicing_meta("setup", "init", _slicing_arg("nb", "number_of_bands", "out", "")),
+        "producer": _slicing_meta("producer", "run", run_args("out")),
+        "diag": _slicing_meta("diag", "run", _slicing_arg("ncol", _LOOP, "in", "")),
+        "consumer": _slicing_meta("consumer", "run", run_args("in")),
+    }
+    paths = []
+    for name, text in metas.items():
+        path = tmp_path / f"{name}.meta"
+        path.write_text(text)
+        paths.append(str(path))
+    (tmp_path / "pkg_suite.py").write_text(_SUITE.replace(
+        "@ccpp_suite", 'setup = ccpp_scheme_ref("setup")\n\n@ccpp_suite').replace(
+        "        step(hook=diag)", "        setup()\n        step(hook=diag)"))
+    caps = _generate(tmp_path, paths, "caps", package_caps=package_caps, legacy_mode=True)
+    return {name: src.replace("&\n", " ") for name, src in caps.items()}
+
+
+def _passed(src, name):
+    """How the calls in *src* pass *name*: each keyword argument's value."""
+    return set(re.findall(rf"\b{name}=\s*({name}(?:\((?:[^()]|\([^()]*\))*\))?)", src))
+
+
+def test_suite_owned_arrays_are_sliced_to_the_current_columns(tmp_path):
+    caps = _slicing_caps(tmp_path, package_caps=False)
+    suite = caps["pkg_suite_cap.F90"]
+    assert _passed(suite, "wk") == {"wk(col_start:col_end, 1:size(wk, 2))"}
+    assert _passed(suite, "bw") == {"bw(col_start:col_end, 1:nb)"}
+    # bw is allocated where it is first written, in the run routine, but
+    # over all columns like every other suite-owned array.
+    assert re.search(r"allocate\(bw\(ncols, nb\)\)", suite)
+    assert not re.search(r"allocate\(\w+\(ncol\b", suite)
+
+
+def test_package_state_is_sliced_to_the_current_columns(tmp_path):
+    caps = _slicing_caps(tmp_path, package_caps=True)
+    cap = caps["pkg_package_cap.F90"]
+    assert _passed(cap, "wk") == {"wk(col_start:col_end, 1:size(wk, 2))"}
+    assert _passed(cap, "bw") == {"bw(col_start:col_end, 1:nb)"}
+    assert not re.search(r"allocate\(\w+\(ncol\b", cap)

@@ -12705,3 +12705,41 @@ golden reference, and identical generated code covers the rest.
 The upstream `rrtmgp_pre`/`rrtmgp_post` split, which would take shared state
 from 13 names to 2 with no policy crossing the boundary, is worked out in
 plan §11.6 as CAM-SIMA work.
+
+## `chunked-column-slicing`: suite-owned arrays sliced to the current columns (2026-10-23)
+
+Found while scoping `package-cap-private-slicing`. The gap was in the shared
+suite-cap code, so the default (flattened) caps had it too, latent in
+CAM-SIMA, which calls physics once over all columns (`col_start = 1`,
+`col_end = columns_on_task`). For a host that calls physics in column
+chunks, two defects gave wrong columns or out-of-bounds access:
+
+- **Full-domain arrays passed whole** (`suitecap/suite_owned.py`). A
+  suite-owned array with a horizontal first dimension was sliced
+  `(col_start:col_end, ...)` only if every other dimension's extent was an
+  argument of a scheme in the routine; otherwise it was passed whole. Now an
+  extent not in scope is the array's own: `x(col_start:col_end, 1:size(x, 2))`.
+  Instances: gw_cam4 (7 arrays), `pint_rad` in rrtmgp and cam4; in package
+  caps more often, since a segment has fewer schemes.
+- **Arrays allocated with the chunk extent** (`suitecap/promotion.py`).
+  `_resolve_alloc_dim_var_refs` took the horizontal allocation extent from
+  the first compatible argument, so an array allocated in a run routine --
+  an `allocatable = True` array with a horizontal dimension, which is left
+  out of the init-time sweep -- got `ncol`, then was sliced as if
+  full-domain. Now the horizontal extent is always the full one
+  (`horizontal_dimension`: an exact argument match or the host module's
+  `columns_on_task`, via `_find_loop_upper_bound(..., exact_only=True)`); a
+  host with neither in scope keeps the loop extent. Instance: RRTMGP's
+  `lw_Ds`, now `allocate(lw_Ds(columns_on_task, nlwgpts))`.
+
+The backlog's original example was inverted: the package cap's `lw_Ds`
+(chunk-sized, resized, passed whole) was consistent, and the flattened
+cap's was the out-of-bounds one; the `*_icld_vistau` arrays are segment
+arguments the suite cap already slices.
+
+Verification: 2 unit tests (`test_package_cap.py`, suite cap and package
+cap) fail before and pass after; 1045 unit + 56 FileCheck pass. 24-config
+baseline: 4 Fortran files change (gw_cam4, rrtmgp, rrtmgp_gpu, cam4) as
+above, `!$acc` lines unchanged. CAM-SIMA RRTMGP pair s30a (XML reference
+and package-cap composite, both with the fix): ACCEPTED, strict
+`ncdata_check` passes in both.

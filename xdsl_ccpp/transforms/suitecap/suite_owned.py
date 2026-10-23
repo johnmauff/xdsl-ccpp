@@ -190,14 +190,16 @@ class SuiteOwnedMixin:
                 uppers = [_col_end_ssa]
                 # For rank>1: resolve extra dims (e.g. vertical_layer_dimension → pver)
                 # via standard_name lookup in all_args. Lower bound is always 1.
+                # An extent no scheme here takes as an argument is the array's
+                # own (size()): passing the whole array would hand the scheme
+                # every column instead of the current ones.
                 _extra_std_names = (
                     _sentry.alloc_dim_std_names[1:]
                     if _sentry is not None and _sentry.alloc_dim_std_names
                     else []
                 )
-                _extra_ok = True
                 _one_const = None
-                for _extra_std in _extra_std_names:
+                for _idx, _extra_std in enumerate(_extra_std_names, start=2):
                     _dim_ssa = next(
                         (data_ops[a.name] for a in all_args.values()
                          if a.hasAttr("standard_name")
@@ -206,23 +208,26 @@ class SuiteOwnedMixin:
                         None,
                     )
                     if _dim_ssa is None:
-                        _extra_ok = False
-                        break
+                        _size_ref = ccpp_utils.CapVarRefOp(
+                            f"size({_var_name}, {_idx})",
+                            memref.MemRefType(TypeConversions.getBaseType("integer"), []),
+                        )
+                        framework_ref_ops.append(_size_ref)
+                        _dim_ssa = _size_ref.res
                     if _one_const is None:
                         _one_const = arith.ConstantOp.from_int_and_width(1, 32)
                         framework_ref_ops.append(_one_const)
                     lowers.append(_one_const.result)
                     uppers.append(_dim_ssa)
-                if _extra_ok:
-                    # Rank-preserving section = all-'R' RankReducingSliceOp
-                    # (see print_ftn.py's CCPPRankReducingSliceOp case).
-                    section = RankReducingSliceOp(
-                        ref_op.res, dim_pattern="R" * len(lowers),
-                        range_lowers=lowers, range_uppers=uppers,
-                        scalar_indices=[],
-                    )
-                    framework_ref_ops.append(section)
-                    data_ops[fw_arg.name] = section
+                # Rank-preserving section = all-'R' RankReducingSliceOp
+                # (see print_ftn.py's CCPPRankReducingSliceOp case).
+                section = RankReducingSliceOp(
+                    ref_op.res, dim_pattern="R" * len(lowers),
+                    range_lowers=lowers, range_uppers=uppers,
+                    scalar_indices=[],
+                )
+                framework_ref_ops.append(section)
+                data_ops[fw_arg.name] = section
 
         return _var_name, _suite_entry
 
