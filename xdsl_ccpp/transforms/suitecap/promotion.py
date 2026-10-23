@@ -41,13 +41,17 @@ class PromotionMixin:
         return False
 
     def _find_loop_upper_bound(self, promoted_dim: str, all_args, data_ops,
-                               framework_ref_ops=None, suite_use_stubs=None):
+                               framework_ref_ops=None, suite_use_stubs=None,
+                               exact_only=False):
         """Find the SSA value to use as the promotion loop's upper bound.
 
         Lookup order: integer scheme args in all_args; then MODULE-type host
         tables (creating a HostVarRefOp + USE stub); then size() of an
         in-scope array with a matching dim_names entry. HOST-type tables are
         deliberately not scanned: their vars are never use-associated.
+
+        exact_only: only an exact standard-name match (args, then MODULE
+        tables) -- e.g. the full horizontal extent, never the loop extent.
         """
         # Exact match first: dims_compatible treats layer and interface
         # dimensions as compatible, but their sizes differ.
@@ -63,7 +67,8 @@ class PromotionMixin:
         # horizontal_loop_extent matching horizontal_dimension).
         for arg in all_args.values():
             if (
-                arg.hasAttr("standard_name")
+                not exact_only
+                and arg.hasAttr("standard_name")
                 and dims_compatible(arg.getAttr("standard_name"), promoted_dim)
                 and arg.getAttr("type") == "integer"
                 and arg.name in data_ops
@@ -112,7 +117,8 @@ class PromotionMixin:
             if tbl_name not in props.arg_tables:
                 continue
             for var in props.getArgTable(tbl_name).getFunctionArguments():
-                if (var.hasAttr("standard_name")
+                if (not exact_only
+                        and var.hasAttr("standard_name")
                         and dims_compatible(var.getAttr("standard_name"), promoted_dim)
                         and var.getAttr("type") == "integer"):
                     if var.name in data_ops:
@@ -137,6 +143,8 @@ class PromotionMixin:
                         suite_use_stubs.append(stub)
                     return data_ops[var.name]
 
+        if exact_only:
+            return None
         # Derive from an in-scope array's shape. SuiteOwned arrays are
         # excluded: they may not be allocated yet (or may match themselves,
         # giving a self-referential size()).
@@ -178,6 +186,19 @@ class PromotionMixin:
                 if dim_std_name.lower() == CCPP_LOOP_EXTENT_STD_NAME
                 else dim_std_name
             )
+            if alloc_dim == CCPP_HORIZ_DIM_STD_NAME:
+                # All columns, in whichever routine allocates it: call sites
+                # pass the current ones (col_start:col_end, suite_owned.py),
+                # so the loop extent of a run routine would be wrong. A host
+                # with no full extent in scope falls back to the loop extent.
+                ssa = self._find_loop_upper_bound(
+                    alloc_dim, all_args, data_ops,
+                    framework_ref_ops=framework_ref_ops,
+                    suite_use_stubs=suite_use_stubs, exact_only=True,
+                )
+                if ssa is not None:
+                    dim_var_refs.append(ssa)
+                    continue
             matching = next(
                 (a for a in all_args.values()
                  if a.hasAttr("standard_name")

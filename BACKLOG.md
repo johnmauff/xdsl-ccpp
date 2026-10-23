@@ -32,7 +32,24 @@ measured data, and will drift as items are reassessed.
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
-| `composite-scheme` — Stage 2 follow-ons (core S2-0..S2-3 resolved; see the `composite-scheme` section and `composite_scheme_plan.md` §11) | package cap 2f: L; GPU residency across the boundary 2g: M; S2-4 deferred; GPU validation of the composite path and multi-package scoping not yet sized | L |
+| `composite-scheme` — Stage 2 follow-ons (core S2-0..S2-3 resolved; see the `composite-scheme` section and `composite_scheme_plan.md` §11) | umbrella: package caps 2f/2g done (GPU validated by the Kessler gate), default switch deferred; open follow-ons sized in the `composite-*` and `package-cap-*` rows below | -- |
+| `package-cap-loop-gpu-sync` | 3-6 days (syncs inside package-only loops, shared with the suite cap's same gap; OpenMP target equivalent) | S-M |
+| `package-cap-runtime-loop-count` | 1-3 days (pass the count to the segment as an argument) | XS-S |
+| `package-cap-tooling` | 4-8 days (constituents, resolved-vars, scheme I/O capture, variable tracking -- each a separate consumer) | S-M |
+| `package-cap-segment-names` | 1-2 days (new segment-naming scheme; regenerate RRTMGP/Kessler package caps) | XS |
+| `canonical-error-arg-order` | 2-4 days (small code change; baseline review across all configurations) | S |
+| `package-scheme-list-order` | 1-2 days | XS |
+| `composite-when-gating` | 2-5 days (plan estimate S) -- deferred by the user, would change RRTMGP's diagnostics history | S |
+| `composite-multi-package-scoping` | 6-12 days (needs a multi-package composite suite, e.g. CAM4/QPC4, before the scoping rules can be tested) | M |
+| `composite-forloop-index` | 2-4 days (loop index from `forLoop`; then drop RRTMGP's `next_call` hook and subcycle counter) | S |
+| `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; upstream reports remain) | XS-S |
+| `nvhpc-ncdata-roundoff` | 1-3 days (cross-compiler tolerance in place; confirm in the next regressions) | XS-S |
+| `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
+| `cloud-water-ncdata-diffs` | 5-10 days (cause not yet known) | M |
+| `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
+| `rrtmgp-gpu-partially-present` | 5-10 days (OpenACC `this%concs(:)` partially present; needs GPU debugging) | M |
+| `suites-py-verification` | 5-10 days (eight Python suites against their XML, flattened-IR comparison) | M |
+| `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
@@ -52,7 +69,10 @@ measured data, and will drift as items are reassessed.
 external dependency (CAM-SIMA migrating off `horizontal_loop_extent`
 upstream), not a schedulable estimate. `process-split-combine-policy` is
 likewise not sized — it's a science decision for the physics developers,
-not engineering work.
+not engineering work. `composite-package-caps` is not sized either: 2f/2g are
+done, and what remains -- making package caps the default -- is a decision
+the user has deferred until more testing; its open gaps are the
+`package-cap-*` rows.
 
 Open items only. For the full narrative behind any item (why, how, what was
 tried), see the `L<n>` pointer into `CHANGELOG.md` (line
@@ -942,7 +962,40 @@ transfer.
     analysis (`transforms/package_segments.py`, in `--list-package-scope`);
     2f-2 package caps on CPU; 2g on GPU; then a default-switch decision.
     2f-1 and 2f-2 done (`--package-caps`; RRTMGP pair s25f accepted
-    2026-10-21); 2g and the default switch remain.
+    2026-10-21); 2g done (Kessler gate, CPU s27b and GPU s29a passed
+    2026-10-23). Remaining: the default switch -- deferred by the user
+    (2026-10-23): XML stays the default until package caps are tested
+    further -- and the open gaps below.
+  - **ID: `chunked-column-slicing` (was `package-cap-private-slicing`). Resolved (2026-10-23)** — suite-owned arrays are now allocated over all columns and sliced to the current ones, in suite caps and package caps. CHANGELOG.md L12709.
+  - `package-cap-loop-gpu-sync` — **no host/device syncs for calls inside a
+    package-only loop; OpenACC only** — 2g-2's syncs
+    (`_inject_suite_owned_gpu_update`, `_inject_segment_interface_gpu_update`)
+    see only the error-guarded calls at a segment's top level, so a host
+    scheme inside a loop held by a segment gets no `update self/device` (the
+    suite cap has the same gap for its own variables). The syncs are emitted
+    as OpenACC only; the OpenMP target backend has no package-cap
+    equivalent. Plan §12, 2g-2.
+  - `package-cap-runtime-loop-count` — **package-only loops with a run-time
+    count are rejected** — `lower_packages._check_loops` refuses a loop that
+    holds only package code unless its count is a literal, since the segment
+    would need the count as an argument. RRTMGP's diagnostic loop holds a
+    hook, so it stays in the suite cap and is unaffected. Plan §12, 2f-2.
+  - `package-cap-tooling` — **consumers that don't look inside package
+    caps** — constituents declared or used inside a package (correctness, if
+    a package ever needs them), the `resolved_vars.json` details of segment
+    arguments, scheme I/O capture and variable tracking (completeness). These
+    passes see the synthetic segment schemes, not the schemes inside the
+    `ccpp.package_cap` op. Plan §12, 2f-2.
+  - `package-cap-segment-names` — **routine names repeat the phase** —
+    non-run segments are named `<entry>_<phase>_<n>` (so they don't share a
+    scheme name with run segment `<entry>_<n>`), and CCPP appends the phase
+    again: `kessler_microphysics_init_1_init`, `rrtmgp_prepare_init_1_init`.
+    Dropping the phase from the segment name would make run and init
+    segments one scheme, called in both phases at both places; shortening
+    needs a different segment-naming scheme. Cosmetic. Plan §12, 2g.
+  - Behaviour-neutral differences from the flattened cap, found by the
+    Kessler gate: `canonical-error-arg-order`, `package-scheme-list-order`
+    (see "Other flagged issues").
   - `composite-multi-package-scoping` — **Scoping between packages** — needs a multi-package suite (e.g. a
     CAM4/QPC4 composite); the RRTMGP test has one package.
   - `composite-forloop-index` — **Loop index from `forLoop`** — would remove the `next_call` hook and the
