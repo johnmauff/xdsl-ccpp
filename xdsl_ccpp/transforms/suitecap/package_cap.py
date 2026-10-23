@@ -62,6 +62,18 @@ def _segment_group(segment: ccpp.SegmentOp, bsd: BuildSchemeDescription) -> XMLG
     return group
 
 
+def _allocated_in(fn) -> set:
+    """Names of the arrays *fn* allocates."""
+    return {op.var_name.data for op in fn.walk() if isa(op, LazyAllocOp)}
+
+
+def _drop_allocations_in(fn, names: set) -> None:
+    """Remove *fn*'s allocations of *names*: the package's state-create
+    routine, which runs first, has already made them."""
+    for op in [o for o in fn.walk() if isa(o, LazyAllocOp) and o.var_name.data in names]:
+        Rewriter.erase_op(op)
+
+
 def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp:
     package = package_cap.package_name.data
     bsd = BuildSchemeDescription()
@@ -102,11 +114,13 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
         use_stubs.extend(stubs)
         for sig in sigs:
             fn_sigs_by_name[sig.sym_name.data] = sig
+        return fn
 
     gen.generating_package_cap = True
     try:
         # First, so private arrays sized at init are allocated there.
-        state_routine(state_create_scheme(package), "_init", "_init", "suite_initialize")
+        create_fn = state_routine(state_create_scheme(package), "_init", "_init",
+                                  "suite_initialize")
         for segment, group in zip(segments, groups):
             postfix, tag = _PHASES[segment.phase.data]
             segment_suite = XMLSuite(segment.segment_name.data, "1.0")
@@ -120,6 +134,8 @@ def _package_cap_module(gen, package_cap: ccpp.PackageCapOp) -> builtin.ModuleOp
                 deferred_warnings=deferred_warnings,
             )
             fn.attributes[FN_PHASE_ATTR] = StringAttr(tag)
+            if segment.phase.data == "init":
+                _drop_allocations_in(fn, _allocated_in(create_fn))
             if segment.phase.data in _REPEATING:
                 for op in fn.walk():
                     if isa(op, LazyAllocOp) and op.is_run_local is None:

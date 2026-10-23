@@ -140,6 +140,8 @@ separately), CHANGELOG.md L5850.
 | `rrtmgp-gpu-partially-present` | nvhpc `rrtmgp_derecho_gpu` aborts: OpenACC `this%concs(:)` partially present on the device | M; xdsl50n and xdsl55n; the GPU RRTMGP pair has never run to completion | -- |
 | `suites-py-verification` | Verify the Python suites in atmospheric_physics' `suites-py/` against the XML suites | M; written 2026-10-22 (uncommitted); structure agreed, correctness not yet verified | -- |
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
+| `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
+| `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
 
@@ -318,6 +320,36 @@ transitively `use` per-suite generated modules (`physics_types`,
 **To do: repeat the measurement for nvhpc** (xdsl56n once built). nvhpc
 compiles more slowly and adds OpenACC for the GPU cases, so the compile
 share -- and with it the case for a base library -- may be larger.
+
+**`canonical-error-arg-order`** -- a generated group routine's dummy
+arguments are collected from its schemes in call order, so its error
+arguments take the order and names of the first scheme in that phase.
+In kessler_test the reference's `kessler_test_final_physics_before_coupler`
+ends `(..., errcode, errmsg)` (from `qneg_final`), while the package-cap
+composite's ends `(..., errmsg, errflg)` (from `kessler_state_delete_finalize`),
+and `col_start`/`col_end` move position the same way. Not a correctness
+problem: scheme calls use keyword arguments, and `cam_ccpp_cap.F90` calls the
+group routines positionally but from the same signature, with explicit
+interfaces, so a swapped `integer`/`character` pair would fail to compile.
+It is noise: any change to which scheme comes first in a phase reorders
+the signature and shows up in reference/composite comparisons (s27b
+`cam-sima-test` check). Fix: always put the error arguments last, as
+`errmsg, errflg` with those names (capgen's convention), in every
+generated routine. Changes the generated code of nearly every
+configuration, so needs a baseline review.
+
+**`package-scheme-list-order`** -- `cam_ccpp_cap.F90`'s `scheme_list`
+(`ccpp_physics_suite_schemes`) takes a segment's schemes from its synthetic
+scheme's `segment_schemes`, all at the position of the first segment that
+contains them -- often an init-phase segment -- so they move ahead of host
+schemes they follow in the suite: in kessler_test, `kessler_update` (in the init
+segment with `kessler`) is listed 8th instead of 12th, ahead of
+potential_temp_to_temp and the dry_to_wet hooks; in rrtmgp,
+`solar_irradiance_data` moves from 14th to 19th. The only consumer is
+CAM's `cam_read_ccpp_scheme_namelists` (`runtime_opts.F90`), so only the
+order scheme namelists are read in changes; calls run in the right order.
+Fix: build the list from the flattened call order of the run phase (the
+order the XML suite gives), not from segment positions.
 
 **Resolved since last verification (2026-10-14), removed from the list
 above**: `ccpp-validator-length-check` — new `ccpp_validate_driver` tool
