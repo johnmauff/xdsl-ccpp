@@ -397,3 +397,48 @@ def test_segment_syncs_host_use_of_a_device_argument(tmp_path):
     assert produce < step_1.index("update self(temp)") < consume
     assert consume < step_1.index("update device(temp)")
     assert "!$acc update" not in caps["pkg_suite_cap.F90"]
+
+
+def test_advected_array_from_the_host_is_a_segment_argument(tmp_path):
+    """An advected array (suite-owned in the suite cap) that a hook writes and
+    the package updates is a dummy argument of the segment, not package state
+    (s27a: Kessler's dry water species)."""
+    schemes = {
+        "producer": [("temp", "potential_temperature", "in"), ("work", "work_array", "out")],
+        "diag": [("temp", "potential_temperature", "in"), ("q", "dry_q", "out")],
+        "consumer": [("work", "work_array", "in"), ("q", "dry_q", "inout"),
+                     ("temp", "potential_temperature", "inout")],
+    }
+    paths = []
+    for name, args in schemes.items():
+        path = tmp_path / f"{name}.meta"
+        text = _scheme(name, args)
+        path.write_text(re.sub(r"(\[ q \]\n(?:  .*\n)*?  intent = \w+\n)", r"\1  advected = True\n",
+                               text))
+        paths.append(str(path))
+    (tmp_path / "pkg_suite.py").write_text(_SUITE.replace(
+        'pkg = ccpp_package("pkg")', 'pkg = ccpp_package("pkg", shared_state=["dry_q"])'))
+    caps = _generate(tmp_path, paths, "caps", package_caps=True)
+    step_2 = caps["pkg_package_cap.F90"].split("subroutine step_2_run(")[1]
+    assert re.match(r"[^)]*\bq\b", step_2), step_2[:200]
+    assert re.search(r"intent\(inout\) :: q\(:, :\)", step_2.split("end subroutine")[0])
+    assert "allocatable :: q(" not in caps["pkg_package_cap.F90"]
+
+
+def test_init_segment_does_not_repeat_state_allocation(tmp_path):
+    """The init-phase segment calls the package's init schemes only; the
+    private arrays are allocated by the state-create routine, which runs
+    first (on a GPU, it also creates them on the device)."""
+    paths = _setup(tmp_path)
+    producer = tmp_path / "producer.meta"
+    producer.write_text(producer.read_text() + f"""[ccpp-arg-table]
+  name = producer_init
+  type = scheme
+{_ERR}""")
+    caps = _generate(tmp_path, paths, "caps", package_caps=True)
+    cap = caps["pkg_package_cap.F90"]
+    create = cap.split("subroutine pkg_state_create_init(")[1].split("end subroutine")[0]
+    init = cap.split("subroutine step_init_1_init(")[1].split("end subroutine")[0]
+    assert "allocate(work(" in create
+    assert "call producer_init(" in init
+    assert "allocate(" not in init

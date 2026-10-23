@@ -1020,7 +1020,30 @@ module boundary. GPU residency is a hard requirement.
      allocate, copy in or copy out shared data, but they do sync it between
      host and device. Calls inside a package-only loop are not synced (as
      for suite-owned variables in the suite cap). OpenACC only.
-   - **Next:** 2g-3, the kessler gate.
+   - **2g-3, the kessler gate (passed 2026-10-23).** Kessler is a package
+     in atmospheric_physics' `suites-py/parameterizations/kessler_package.py`
+     (calc_exner through kessler_update; the wet/dry conversions are hooks
+     filled by CAM's adapter, `kessler.py`), run by the Python test suite
+     `test/test_suites-py/suite_kessler_test.py`. Private: theta, exner, rho,
+     relhum; three run segments. Gate: `/cam-sima-test <id> kessler
+     [gpu] pkgcap` against the XML `kessler_test` cases -- CPU s27b (gnu,
+     exact `ncdata_check`) and GPU s29a (nvhpc/OpenACC, 1e-8 against CPU
+     snapshots) both PASS, with the package's syncs and device lifetime as
+     in the reference. Fixed on the way:
+     - an advected array the suite cap owns (Kessler's dry water species,
+       written by a hook) was neither a segment argument nor package state
+       (s27a build failure); in a package cap only its private names are
+       cap-owned (`phase_functions._classify_args`);
+     - init segments repeated the state-create routine's allocations; they
+       no longer do (`package_cap._drop_allocations_in`).
+     Remaining differences from the reference, behaviour-neutral: argument
+     order of the generated phase routines (BACKLOG
+     `canonical-error-arg-order`) and the `scheme_list` order (BACKLOG
+     `package-scheme-list-order`).
+   - **Open (2g):** routine names repeat the phase for non-run segments
+     (`kessler_microphysics_init_1_init`); shortening them needs a change to
+     segment naming, since dropping the phase makes run and init segments
+     share a scheme name.
 
 4. **The default switch,** decided later.
 

@@ -182,12 +182,16 @@ class PhaseFunctionsMixin:
             writeback_ops=writeback_ops,
         )
 
-    def _classify_args(self, all_args, physics_mode) -> "_ArgClassification":
+    def _classify_args(self, all_args, physics_mode, suite_model=None) -> "_ArgClassification":
         """Partition all_args into framework-managed, input, and output lists.
 
         When physics_mode is True and the loop-extent arg is present, replaces
         that arg in input_arg_list with synthetic col_start/col_end scalars.
         Returns the final lists and the ncol_meta arg (or None).
+
+        In a package cap only the package's own state (*suite_model*, its
+        private names) is framework-managed; any other SuiteOwned arg (e.g. an
+        advected constituent the suite cap owns) is a dummy argument.
         """
         # Missing ownership_kind means generate-arg-ownership didn't run;
         # fail loudly rather than emit a plausible-but-wrong signature.
@@ -200,10 +204,12 @@ class PhaseFunctionsMixin:
             )
         # Keyed by standard_name, not local name: two schemes may use the
         # same local name for different SuiteOwned variables.
+        package_cap = getattr(self, "generating_package_cap", False)
         framework_vars = {
             _std_key(a): a
             for a in all_args.values()
             if a.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+            and not (package_cap and not suite_model.is_suite_owned(_std_key(a)))
         }
         input_arg_list = [
             a
@@ -532,7 +538,7 @@ class PhaseFunctionsMixin:
         suite_use_stubs = _tables.suite_use_stubs
         divergent_std_keys = _tables.divergent_std_keys
 
-        _cls = self._classify_args(all_args, physics_mode)
+        _cls = self._classify_args(all_args, physics_mode, suite_model)
         framework_vars = _cls.framework_vars
         input_arg_list = _cls.input_arg_list
         output_arg_list = _cls.output_arg_list
