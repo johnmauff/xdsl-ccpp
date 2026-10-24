@@ -43,12 +43,12 @@ measured data, and will drift as items are reassessed.
 | `composite-multi-package-scoping` | 6-12 days (needs a multi-package composite suite, e.g. CAM4/QPC4, before the scoping rules can be tested) | M |
 | `composite-forloop-index` | 2-4 days (loop index from `forLoop`; then drop RRTMGP's `next_call` hook and subcycle counter) | S |
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; upstream reports remain) | XS-S |
-| `nvhpc-ncdata-roundoff` | 1-3 days (cross-compiler tolerance in place; confirm in the next regressions) | XS-S |
+| `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `cloud-water-ncdata-diffs` | 5-10 days (cause not yet known) | M |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
 | `rrtmgp-gpu-partially-present` | 5-10 days (OpenACC `this%concs(:)` partially present; needs GPU debugging) | M |
-| `suites-py-verification` | 5-10 days (eight Python suites against their XML, flattened-IR comparison) | M |
+| `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -153,12 +153,12 @@ separately), CHANGELOG.md L5850.
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `framework-src-resolution-unify` | `ccpp_datatable.py` now has three separate, inconsistent code paths deciding where a "framework" Fortran file comes from | S; found 2026-10-18 while fixing a real cam-host build failure for scheme-io-capture (see below) | -- |
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | S (tooling done; upstream reports open); found 2026-10-21 (see below) | -- |
-| `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences of rounding size (<=4.2e-12) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
+| `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | M; xdsl54g (only run with this case), hidden by `derecho-false-run-pass` | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
 | `rrtmgp-gpu-partially-present` | nvhpc `rrtmgp_derecho_gpu` aborts: OpenACC `this%concs(:)` partially present on the device | M; xdsl50n and xdsl55n; the GPU RRTMGP pair has never run to completion | -- |
-| `suites-py-verification` | Verify the Python suites in atmospheric_physics' `suites-py/` against the XML suites | M; written 2026-10-22 (uncommitted); structure agreed, correctness not yet verified | -- |
+| `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
@@ -218,9 +218,10 @@ failures it hid are the five items below; none is new since xdsl50n.
 `ncdata_check` against the gnu snapshots (xdsl55n; `gw_cam7` also in
 xdsl50n). Largest differences, read from the differences table (rows with a
 location; the "Variable Checked ... Avg" table lists averages, not
-differences): kessler 1.6e-16, uw_vdiff 4.5e-15, microp_aero_bam 2.3e-14,
-rrtmgp 9.4e-14, gw_cam4 1.0e-12, rk_stratiform 1.7e-12, hb_vdiff 4.2e-12 --
-double-precision-level. nvhpc is already built with `-Kieee -Mnofma
+differences): kessler 1.6e-16, microp_aero_bam 2.3e-14, gw_cam4 1.0e-12,
+rk_stratiform 1.7e-12, hb_vdiff 4.2e-12 -- double-precision-level -- but
+uw_vdiff 1.4e-10 and rrtmgp 1.6e-9 (corrected 2026-10-24: first recorded as
+4.5e-15 and 9.4e-14, misread; xdsl55n and xdsl57n show the same values). nvhpc is already built with `-Kieee -Mnofma
 -MllvmO0`, so the likely source is math-library differences (exp/log/pow/
 gamma) and `-Mflushz` (inferred, not measured). Change (CAM-SIMA,
 uncommitted): include-only testmod `cam/cross_compiler_check_tolerance`, in
@@ -230,12 +231,17 @@ intel) and, only when it differs from the case's `COMPILER`, sets
 `min_difference` in `user_nl_cam` (replacing the testmod's 2e-15/1e-15, or
 adding one) to 1e-11 -- or to the value of a
 `! cross_compiler_min_difference = <v>` comment line in the testmod's
-`user_nl_cam` (pumas: 1e-9). Same compiler, or none in the name: unchanged.
+`user_nl_cam` (pumas 1e-9, uw_vdiff 1e-9, rrtmgp 1e-8; the last two added
+2026-10-24). Same compiler, or none in the name: unchanged.
 First set to 1e-8 (2026-10-21; xdsl56n passed all seven with it), tightened
 to 1e-11 on 2026-10-22 because 1e-8 is close to single-precision agreement.
 Close once gnu, intel and nvhpc regressions pass with 1e-11 -- the margin
 over the observed 4.2e-12 is thin, so a case landing between 4e-12 and
-1e-11 gets its own justified override, not a looser default.
+1e-11 gets its own justified override, not a looser default. Status
+(2026-10-24): gnu xdsl57g passes (same compiler as the snapshots); nvhpc
+xdsl57n passes the other five at 1e-11; rrtmgp and uw_vdiff failed at 1e-11,
+and their measured maxima are below their new overrides, so the next nvhpc
+regression confirms them. Still to do: an intel regression.
 
 **`pumas-ncdata-diffs`** -- `SMS_D_Ln2...cam-outfrq_pumas_derecho` aborts on
 `ncdata_check` under gnu (xdsl51g, 52g, 54g) and nvhpc (xdsl50n, 55n). Its
@@ -277,37 +283,14 @@ gas-concentrations object. The XML GPU RRTMGP case has therefore never run
 to completion; earlier GPU RRTMGP pair results judged by TestStatus need
 rechecking against `END OF MODEL RUN`.
 
-**`suites-py-verification`** -- `src/physics/ncar_ccpp/suites-py/` (the
-atmospheric_physics checkout in CAM-SIMA, branch `xdsl-support`,
-uncommitted) holds Python versions of all 8 XML suites in `suites/`: suite
-files that only configure physics *categories* (`categories/`: convection,
-clouds, radiation, vertical_diffusion, ...) with *parameterizations*
-(`parameterizations/`: one module per parameterization, each exporting a
-`Parameterization` object -- run, setup, diagnostics, energy flux
-correction). Checked so far: every suite records without errors, and its
-flattened scheme-name sequence equals the XML's -- exactly for the 5 small
-suites; for cam4/cam5/cam7 except that init-only schemes moved into their
-category (`zm_conv_options`, `cloud_fraction_options`,
-`compute_cloud_fraction_two_moment`, `set_cloud_fraction_top`). A metadata
-check found no init-phase read/write overlap between a moved scheme and any
-init routine it moved past, so the moves are expected to be bit-for-bit.
-To do:
-1. IR equivalence: build the metadata module from XML and from Python
-   (`ccppMain._build_cheap_metadata_module`, the suite's scheme `.meta`
-   files), run `FlattenComposites`, compare as
-   `test_rrtmgp_composite_matches_reference_suite` does (groups, order,
-   loops, metadata) -- exact for the small suites, modulo the init-only
-   moves for the CAM suites;
-2. generated caps: diff the caps generated from each form (no build); only
-   the order of the moved init calls may differ;
-3. runtime bit-for-bit: run FPHYStest/CAM-SIMA cases built from the Python
-   suites and compare with the XML-built runs (`ncdata_check`, cprnc);
-4. README for `suites-py/` (layers, roles, the init-only moves).
-Likely XML omissions the Python suites reproduce on purpose (raise with the
-atmospheric_physics developers): cam5 runs ZM's energy check without
+**ID: `suites-py-verification`. Resolved (2026-10-24)** -- the Python suites match their XML suites (IR, generated caps, and cam4 bit-for-bit at runtime). CHANGELOG.md L12747.
+
+**`suites-py-xml-omissions`** -- found while writing the Python suites;
+they reproduce the XML on purpose. cam5 runs ZM's energy check without
 `zm_prepare_flux_for_check_energy`, and the orographic gravity wave source
-without `gravity_wave_drag_orographic_diagnostics` (cam4 and cam7 have
-both).
+without `gravity_wave_drag_orographic_diagnostics`; cam4 and cam7 have
+both. Likely XML omissions: raise with the atmospheric_physics developers,
+and fix the XML and `suites-py/suite_cam5.py` together if confirmed.
 
 **`cam-sima-build-time`** -- measured 2026-10-21 from the xdsl56g (gnu) build
 logs and object mtimes, read-only; scripts, README and the gnu result
