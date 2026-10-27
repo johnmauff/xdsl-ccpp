@@ -12743,3 +12743,79 @@ baseline: 4 Fortran files change (gw_cam4, rrtmgp, rrtmgp_gpu, cam4) as
 above, `!$acc` lines unchanged. CAM-SIMA RRTMGP pair s30a (XML reference
 and package-cap composite, both with the fix): ACCEPTED, strict
 `ncdata_check` passes in both.
+
+## `suites-py-verification`: the Python suites match the XML suites (2026-10-24)
+
+atmospheric_physics' `suites-py/` holds Python versions of the 8 production
+suites (layers: suite files, `categories/`, `parameterizations/`; RRTMGP and
+Kessler as packages); `test/test_suites-py/` holds the RRTMGP and
+kessler_test test suites. Verified against the XML suites in three stages:
+
+- **IR** -- new tool `xdsl_ccpp/tools/verify_py_suites.py`: builds each
+  suite's XML and Python forms as generation starts
+  (`_build_cheap_metadata_module`), flattens the Python form, and compares
+  groups, scheme order, loops, overrides and metadata. All 10 suites PASS:
+  adiabatic, held_suarez_1994, kessler, musica, tj2016, kessler_test and
+  rrtmgp exactly; cam4/cam5/cam7 except moved init-only schemes
+  (`zm_conv_options`, `cloud_fraction_options`, plus
+  `compute_cloud_fraction_two_moment` in cam5/cam7 and
+  `set_cloud_fraction_top` in cam7). `--strict` fails on the moves.
+- **Generated caps** -- `--case CASE_DIR`: generates a built CAM-SIMA case's
+  caps from both forms with its host metadata and compares them file by
+  file. Accepted differences, each named in the output: package-private
+  names (`<pkg>__`, and their removal from host-visible lists) and, for
+  suites with moved init-only schemes, init/register routines,
+  `scheme_list` order and init-phase entries of `resolved_vars.json`. PASS
+  for FADIAB, FPHYStest held_suarez, FHS94, FTJ16, FKESSLER (gnu and nvhpc
+  GPU) and QPC4 cam4 (gnu MPAS, nvhpc SE). It found one real bug: the
+  production Kessler suite failed the package check, because `scheme_name`
+  is written inside the package and by host schemes (qneg, check_energy_*);
+  fixed with `ccpp_package("kessler", shared_state=["scheme_name"])` in
+  atmospheric_physics.
+- **Runtime** -- CAM-SIMA pair s33a (QPC4 `outfrq_analy_ic_cam4`, gnu: XML
+  vs `suites-py`): all 10 history files bit-for-bit identical (cprnc), so
+  the moved init-only schemes are harmless. `phys_init/` and
+  `cam_ccpp_scheme_namelists.F90` differ only by reordering.
+
+Also new: `xdsl_ccpp/tools/py2sdf.py`, which writes a Python suite as a
+suite definition file (round trip exact for all 10 suites);
+`verify_py_suites --write-xml DIR` does the same while verifying. 13 unit
+tests (`test_verify_py_suites.py`, `test_py2sdf.py`).
+
+## `rrtmgp-gpu-partially-present`: GPU RRTMGP runs to completion in xdsl-ccpp builds (2026-10-24)
+
+nvhpc `SMS_Ln2...cam-outfrq_rrtmgp_derecho_gpu` built with xdsl-ccpp aborted
+at the second radiation step with `variable in data clause is partially
+present on the device: name=this%concs(:)` (`mo_gas_concentrations.F90`
+`init`, the `!$acc enter data copyin(this%concs)`); it had never completed
+in our builds.
+
+Mechanism: `rrtmgp_inputs_run` takes `gas_concs_sw` and `gas_concs_lw`
+`intent(out)`, so on every call after the first their `concs` is deallocated
+on entry, and the device copy is released only if RRTMGP's finalizer
+(`del` -> `reset`) runs. In our builds it evidently does not, so the device
+mapping outlives the host array and the next `init` allocates `concs` over
+it. `rrtmgp_post_run` already frees every other per-step RRTMGP object, but
+not these two.
+
+Trigger (corrected the same day, from CAM-SIMA tpr_n): upstream's build does
+not abort. Its capgen GPU RRTMGP test, without the fix below, reaches
+`END OF MODEL RUN` with a clean `ncdata_check`. The difference: our
+`ccs_config` branch's `Depends.nvhpc` `CCPP_CAP_OBJS` rule compiles every
+`.F90` in `bld/atm/obj/ccpp` with `OPENACC_GPU_FLAGS`, including the RRTMGP
+CCPP wrapper `ccpp_gas_concentrations.F90` (`ty_gas_concs_ccpp`), which
+upstream compiles without `-acc` (its `RRTMGP_OBJS` list holds the RRTMGP
+library files only). So the abort is triggered by the xdsl-ccpp build
+configuration, not by the generated caps (which contain no `!$acc`) and not
+by upstream code as built upstream. Likely but unconfirmed; see BACKLOG
+`rrtmgp-wrapper-acc-trigger`.
+
+Fix (atmospheric_physics PR #468, now framed as explicit cleanup):
+`rrtmgp_post_run` takes `gas_concs_sw`/`gas_concs_lw` `intent(inout)` and
+calls `%gas_concs%reset()` on each (`rrtmgp_post.F90`, `.meta`), so device
+cleanup no longer depends on compiler-generated finalization. In the Python
+suites they become RRTMGP package shared state (`rrtmgp_package.py` in
+suites-py and in `examples/rrtmgp_composite`, whose `rrtmgp_post.meta`
+snapshot is updated to match). Verified: CAM-SIMA GPU pair s34a (XML and
+Python RRTMGP, nvhpc/OpenACC) both reach `END OF MODEL RUN` with clean
+`ncdata_check` (1e-8 against the gnu snapshot).

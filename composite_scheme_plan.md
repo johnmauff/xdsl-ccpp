@@ -736,7 +736,9 @@ Core total: about L (15-25 days) for xdsl-ccpp, plus S2-0 in CAM-SIMA.
   - RRTMGP, with CAM-SIMA's host metadata: 13 outputs, 21 inputs, 13 shared
     state. The shared state is the 11 objects `rrtmgp_pre`/`rrtmgp_post`
     allocate and free, plus the SW/LW heating rates, which CAM's
-    `rrtmgp_dry_static_energy_tendency` also writes.
+    `rrtmgp_dry_static_energy_tendency` also writes. (15 since 2026-10-24:
+    `rrtmgp_post` also frees the SW/LW gas-concentration objects -- BACKLOG
+    `rrtmgp-gpu-partially-present`.)
   - The §7 splits would remove the 11 objects. The heating rates need an
     interface (naming) decision upstream.
 - **Package-level init, limited to init-only schemes.** `@rrtmgp.init`

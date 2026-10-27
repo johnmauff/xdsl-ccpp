@@ -99,6 +99,8 @@ rrtmgp = ccpp_package("rrtmgp", shared_state=[
     "longwave_planck_sources_object_for_rrtmgp",
     "longwave_all_sky_flux_object_for_rrtmgp",
     "longwave_clear_sky_flux_object_for_rrtmgp",
+    "shortwave_gas_volume_mixing_ratios_object_for_rrtmgp",
+    "longwave_gas_volume_mixing_ratios_object_for_rrtmgp",
     # Heating rates CAM's adapter schemes also write
     "tendency_of_dry_air_enthalpy_at_constant_pressure_due_to_shortwave_radiation",
     "tendency_of_dry_air_enthalpy_at_constant_pressure_due_to_longwave_radiation",
