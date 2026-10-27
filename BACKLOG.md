@@ -42,13 +42,14 @@ measured data, and will drift as items are reassessed.
 | `composite-when-gating` | 2-5 days (plan estimate S) -- deferred by the user, would change RRTMGP's diagnostics history | S |
 | `composite-multi-package-scoping` | 6-12 days (needs a multi-package composite suite, e.g. CAM4/QPC4, before the scoping rules can be tested) | M |
 | `composite-forloop-index` | 2-4 days (loop index from `forLoop`; then drop RRTMGP's `next_call` hook and subcycle counter) | S |
-| `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; upstream reports remain) | XS-S |
+| `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `cloud-water-ncdata-diffs` | 5-10 days (cause not yet known) | M |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
-| `rrtmgp-gpu-partially-present` | 5-10 days (OpenACC `this%concs(:)` partially present; needs GPU debugging) | M |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
+| `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
+| `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
 | `acc-meta-residency-check` | 2-4 days | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -152,13 +153,14 @@ separately), CHANGELOG.md L5850.
 |---|---|---|---|
 | `suite-state-full-match` | Full capgen-v1 `ccpp_suite_state` match (integer-enum allocatable array + dedicated alloc/dealloc subroutines) | L; was deferred until after task #28 — task #28's Stages 1-4 are now done (archive L6148), so this is unblocked | L6148 |
 | `framework-src-resolution-unify` | `ccpp_datatable.py` now has three separate, inconsistent code paths deciding where a "framework" Fortran file comes from | S; found 2026-10-18 while fixing a real cam-host build failure for scheme-io-capture (see below) | -- |
-| `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | S (tooling done; upstream reports open); found 2026-10-21 (see below) | -- |
+| `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | M; xdsl54g (only run with this case), hidden by `derecho-false-run-pass` | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
-| `rrtmgp-gpu-partially-present` | nvhpc `rrtmgp_derecho_gpu` aborts: OpenACC `this%concs(:)` partially present on the device | M; xdsl50n and xdsl55n; the GPU RRTMGP pair has never run to completion | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
+| `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
+| `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
 | `cam-sima-build-time` | Where CAM-SIMA case build time goes, and cheaper levers than a prebuilt base library | S-M per lever; gnu measured 2026-10-21 (xdsl56g); **repeat for nvhpc** (xdsl56n) | -- |
 | `canonical-error-arg-order` | Generated routines take the CCPP error arguments in whatever order and names their first scheme uses | S code, M review (touches nearly every configuration's generated code); found 2026-10-23 (s27b) | -- |
 | `package-scheme-list-order` | With package caps, `ccpp_physics_suite_schemes` lists a segment's schemes where the segment first appears, not in call order | S; found 2026-10-23 (s27b, s29a); only affects the order CAM reads scheme namelists | -- |
@@ -275,13 +277,7 @@ this is fixed. To do: find whether the ZM scheme or its snapshot moved
 (compare with a capgen build; check the snapshot's date, c20250116,
 against ZM changes).
 
-**`rrtmgp-gpu-partially-present`** -- nvhpc
-`SMS_Ln2...cam-outfrq_rrtmgp_derecho_gpu` aborts in both nvhpc regressions
-(xdsl50n, xdsl55n) with `variable in data clause is partially present on
-the device: name=this%concs(:)` -- an OpenACC data-placement error on the
-gas-concentrations object. The XML GPU RRTMGP case has therefore never run
-to completion; earlier GPU RRTMGP pair results judged by TestStatus need
-rechecking against `END OF MODEL RUN`.
+**ID: `rrtmgp-gpu-partially-present`. Resolved (2026-10-24)** -- `rrtmgp_post` now frees the gas-concentration objects (atmospheric_physics PR #468); GPU RRTMGP pair s34a completes. Trigger is our build config, see `rrtmgp-wrapper-acc-trigger`. CHANGELOG.md L12785.
 
 **ID: `suites-py-verification`. Resolved (2026-10-24)** -- the Python suites match their XML suites (IR, generated caps, and cam4 bit-for-bit at runtime). CHANGELOG.md L12747.
 
@@ -291,6 +287,57 @@ they reproduce the XML on purpose. cam5 runs ZM's energy check without
 without `gravity_wave_drag_orographic_diagnostics`; cam4 and cam7 have
 both. Likely XML omissions: raise with the atmospheric_physics developers,
 and fix the XML and `suites-py/suite_cam5.py` together if confirmed.
+
+**`generation-error-output`** -- found 2026-10-24 comparing the gw_cam7
+FPHYStest failure under both generators. xdsl-ccpp's message is the better
+one: `host_var_match_pass` lists every unmatched argument at once (scheme,
+argument, standard name: `prec_dp`, `prec_sh`, `prec_str` of
+`compute_total_precipitation_rate`), where capgen stops at the first and
+omits the argument name. But in xdsl57n's `TestStatus.log` it is buried:
+- 1,580 `Warning(LEGACY): arg '...': standard_name 'horizontal_loop_extent'
+  is deprecated` lines, printed by the arg op's verifier in
+  `xdsl_ccpp/dialects/ccpp.py` each time it runs (so repeated across
+  passes);
+- an unrelated `Warning: fparser2 failed to parse ... qneg.F90 for
+  Fortran-vs-.meta validation: tuple index out of range`
+  (`tools/ccpp_dsl.py`);
+- the `ValueError` arrives inside the optimizer's Python traceback, which
+  `cam_autogen.py` wraps in CIME's.
+
+**Design decision (user, 2026-10-24): tie the legacy warnings to
+`--verbose`.** Both views are useful: the full per-argument list is a guide
+to which `.meta` files still need updating, and normal builds should be
+quiet. So `--verbose 2` keeps every `Warning(LEGACY)` line (as now); the
+default level prints a short summary (each deprecated name once, with a
+count); `--verbose 0` prints none. There is no such control today: the
+warning is printed unconditionally from `ArgumentOp.__init__` in
+`dialects/ccpp.py` (once per argument, and again whenever IR is re-parsed,
+e.g. in the `ccpp_opt` subprocess), and `--verbose` only reaches
+`ccpp_dsl.py`'s `print_verbose_message`. The level must be carried to the
+`ccpp_opt` subprocess and the Python-suite frontend (which reads `sys.argv`
+itself), e.g. as a module setting next to `set_legacy_mode` in
+`util/ccpp_conventions.py`; `cam_autogen.py` can then choose the level.
+Not started (user deferred).
+
+Also to do: report user-input errors such as host-match
+failures as a plain `Error:` message with exit status 1, keeping the
+traceback for internal errors or a verbose flag; show the fparser2 warning
+only when verbose (and check why qneg.F90 fails to parse).
+
+**`rrtmgp-wrapper-acc-trigger`** -- found 2026-10-24. Upstream's capgen GPU
+RRTMGP test (CAM-SIMA tpr_n, `development`, no atmospheric_physics #468)
+reaches `END OF MODEL RUN` with a clean `ncdata_check`; our xdsl-ccpp builds
+aborted without #468. Compile-flag comparison of the two builds:
+`ccpp_gas_concentrations.F90` (the `ty_gas_concs_ccpp` wrapper, copied from
+`schemes/rrtmgp/objects/` into `bld/atm/obj/ccpp`) gets `-acc` only in ours,
+via the `ccs_config` branch's `Depends.nvhpc` `CCPP_CAP_OBJS` rule (every
+`.F90` in `obj/ccpp`). `mo_gas_concentrations.F90` is `-acc` in both.
+To do: (1) confirm with one xdsl GPU RRTMGP run with the pre-#468
+`rrtmgp_post` and `ccpp_gas_concentrations.o` excluded from `CCPP_CAP_OBJS`
+(expect completion); (2) if confirmed, decide whether the RRTMGP `ccpp_*`
+wrappers (and other copied scheme utility files) should be excluded from
+`CCPP_CAP_OBJS`, and whether nvfortran's skipped finalization of a component
+deallocated through `intent(out)` is worth a compiler bug report.
 
 **`cam-sima-build-time`** -- measured 2026-10-21 from the xdsl56g (gnu) build
 logs and object mtimes, read-only; scripts, README and the gnu result
