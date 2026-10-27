@@ -25,7 +25,10 @@ tooling enforces this):
 - IDs here must always match `BACKLOG.md`'s current ID for that item
   exactly.
 
-Last synchronized with `BACKLOG.md`: 2026-10-08.
+Last synchronized with `BACKLOG.md`: 2026-10-27.
+
+Non-C++ items in `BACKLOG.md` that affect this work (owned elsewhere,
+need coordination) are listed in `CPP_CROSSCUTTING.md`.
 
 ## Recommended near-term path
 
@@ -48,28 +51,40 @@ until there's real pull for it.
    chost path. Note: `chost-rank3-bindc`'s resolution confirmed `--bind-c`
    + `--directive acc/omp` together is still completely untested in this
    repo — relevant context for whoever picks this item up.
-3. **`chost-column-major`** — C++ callers must manually match Fortran's
-   column-major layout with no detection or alternative; a silent-wrong-
-   numerical-result footgun, not an active failure.
+3. **`chost-column-major`** — C++ callers must match Fortran's
+   column-major layout or get silently wrong numbers. The
+   `array_layout = row_major` host option (Fortran `RESHAPE`) already
+   exists but is untested on the chost/BIND(C) path and is CPU-only, and
+   nothing detects a mismatch. Re-scoped 2026-10-27 to verify/test on the
+   chost path (2-5 days).
 4. **`chost-thread-safety`** — concurrent C++ threads race on the
-   module-level `ccpp_suite_state` variable; safe today only because the
-   one real driver is single-threaded. Lower urgency than 2/3 — no known
+   module-level `ccpp_suite_state` variable; safe today only because
+   every C++ driver (nine in `examples/`) is single-threaded. Coordinate
+   with `suite-state-full-match`, which rewrites the same variable. Lower urgency than 2/3 — no known
    real caller is multi-threaded yet.
+5. **`cxx-scheme-annotations`** — a C++ equivalent of the Fortran `!$ccpp`
+   source tags, so a C++ scheme's `.meta` can be generated from its
+   `extern "C"` source instead of hand-written. 8-14 days (M-L), +3-5 for
+   deriving `memory_space` from `#pragma acc`. Do after item 1, which
+   supplies the real C++ scheme to annotate and test against.
 
 ## Tier 2 — bigger downstream investment (EAMxx C++ bridge)
 
-5. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
+6. **`eamxx-phaseB-deviceptr`** — small, concrete: a `gpu_pointer_mode =
    deviceptr` host-meta property for zero-staging GPU pointer passing.
    Directly resolves `chost-gpu-memory` above — doing this closes two
    backlog items for the cost of one.
-6. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
+7. **`eamxx-suite-coverage-checker`** — cheap tooling (a diff script, no
    generator changes), catches a real class of silent coverage gaps.
    Worth doing opportunistically any time, independent of the phased
    work below.
-7. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
+8. **`eamxx-phaseA-variant-tag`** — moderate effort: a metadata `variant`
     tag so a scheme can declare separate CPU/GPU argument lists. A loose
-    prerequisite for Phase C below.
-8. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
+    prerequisite for Phase C below. **On hold (2026-10-27):** predates the
+    XML auto-generation capability (source-code analysis + directives),
+    which may make it obsolete — revisit the motivation before anyone
+    starts work on it.
+9. **`eamxx-phaseC-printer`** — the big one: generate a whole C++
     `AtmosphereProcess` class, not just the BIND(C) layer. An order of
     magnitude more effort than everything above combined; only worth
     starting once the groundwork above has landed and real EAMxx

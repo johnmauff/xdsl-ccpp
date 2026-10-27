@@ -25,10 +25,11 @@ measured data, and will drift as items are reassessed.
 | `eamxx-phaseB-deviceptr` | 3-6 days | S-M |
 | `dup-suite-composition-dsl` | 4-8 days | M |
 | `dup-scheme-family-gen` | 5-10 days | M |
-| `chost-column-major` | 5-10 days | M |
+| `chost-column-major` | 2-5 days (re-scoped 2026-10-27: `row_major` exists; verify/test on the chost path; more if the conversion must be wired in there) | S |
 | `cxx-scheme-no-e2e-test` | 5-10 days (open-ended scope) | M |
+| `cxx-scheme-annotations` | 8-14 days (+3-5 for the optional `memory_space` derivation from `#pragma acc`; after `cxx-scheme-no-e2e-test`) | M-L |
 | `direct-fortran-ingest` | 6-10 days (now that Stage 1's extraction infrastructure has landed — see scoping below) | M |
-| `eamxx-phaseA-variant-tag` | 8-15 days | M-L |
+| `eamxx-phaseA-variant-tag` | 8-15 days (on hold — motivation under review, may be obsolete) | M-L |
 | `chost-gpu-memory` | 10-20 days | M-L |
 | `suite-state-full-match` | (file's own prior note: "L") | L |
 | `dup-meta-shadow-elim` — Stage 2 (full, real corpus) | 18-30 days | L |
@@ -748,14 +749,25 @@ for full detail.
   there would directly resolve this item, not just a similar one.
 - `chost-column-major` — **Column-major array layout requirement** — a C++ caller must lay out
   arrays column-major (Fortran order) or get silently wrong physics
-  results; no detection or row-major option exists. Potential fix:
-  generate a row-major variant that transposes internally, or an
-  `array_layout = row_major` host `.meta` option. Medium effort, more a
-  documentation/footgun risk than a broken feature today.
-  `multilanguage_limitations.md` §1.
+  results. **Re-scoped 2026-10-27:** the `array_layout = row_major` host
+  `.meta` option already exists (commit `2111339`): the frontends parse
+  it, `run_dispatch.py` inserts `RowMajorConvertOp`/`RowMajorWriteBackOp`
+  (a Fortran `RESHAPE` in, write-back out) for rank >= 2 arguments, tested
+  in `tests/filecheck/examples/end_to_end/array-layout-reshape.mlir`.
+  What's still open: (1) no test combines `row_major` with `--bind-c`/the
+  chost cap, and `cpp_interop.py` has no row-major handling, so it's
+  unconfirmed that a C++ host calling through BIND(C) gets the conversion;
+  (2) `RESHAPE` is CPU-only — GPU-resident data still has to arrive
+  column-major; (3) a caller passing row-major data while declaring
+  column-major can't be detected from raw pointers (document it).
+  Verify/test first; it only grows if the chost path needs the conversion
+  wired in. `multilanguage_limitations.md` §1.
 - `chost-thread-safety` — **Thread safety — `ccpp_suite_state`** — concurrent C++ threads calling
   the chost cap race on the module-level suite-state variable. Safe today
-  only because the one real C++ driver (kessler) is single-threaded.
+  only because every C++ driver is single-threaded (eight under
+  `examples/*/host_cpp/` plus `examples/kessler/host_ftn/driver_kessler_cpp.cpp`,
+  checked 2026-10-27). Coordinate with `suite-state-full-match`, which
+  rewrites the same variable.
   Low-Medium effort; multi-instance support (see above) is one viable
   fix path, now that its own reference to the removed `--num-instances`
   flag has been corrected. `multilanguage_limitations.md` §6.
@@ -798,6 +810,57 @@ static `.meta`/`.xml` FileCheck fixtures exist today
 2026-09-29 (no such compiled test or example found anywhere in the
 repo). Not scoped/estimated in the source doc.
 
+## C++ scheme source annotations (a `!$ccpp` equivalent)
+
+ID: `cxx-scheme-annotations` (added 2026-10-27)
+
+A Fortran scheme can carry its CCPP metadata as `!$ccpp [name] key = value`
+comment tags beside its declarations (`examples/advection_nometa`), and
+`ccpp_generate_meta` / `py_api.ccpp_scheme_from_source` derive the `.meta`
+from it via `fparser2_to_meta.py`; `memory_space = device` is derived from
+the routine's own `!$acc present(...)` clauses. A C++ scheme
+(`language = c++`) has no equivalent, so it always needs a hand-written
+`.meta` — the duplication `dup-meta-shadow-elim`/`direct-fortran-ingest`
+remove for Fortran stays for C++.
+
+**Scope:**
+1. **Annotation convention** (1-2 days): a comment form parallel to the
+   Fortran one, e.g. `// $ccpp [name] key = value` beside each
+   `extern "C"` entry point's parameters (comments survive any compiler and
+   need no macros or attributes). Decide it with the C++ developers.
+2. **Extractor** (3-5 days): parse `extern "C"` entry points and their
+   parameters into the same `ArgumentTableOp`/`ArgumentOp` IR
+   `fparser2_to_meta.py` produces, so `ccpp_generate_meta`'s
+   `meta_from_module` writer is reused unchanged. Parser choice is the main
+   decision: libclang (`clang.cindex`, accurate, new optional dependency —
+   not installed here today) vs a restricted hand-written parser limited to
+   the C-compatible subset an `extern "C"` signature allows.
+3. **Type mapping** (1-2 days): C types to CCPP type/kind via
+   `cpp_interop.py`'s existing Fortran↔C kind map in reverse
+   (`double` → `real`/`kind_phys`, `int` → `integer`, `bool`/`int` →
+   `logical`, `char*` + length → `character`). C source carries less than
+   Fortran: a pointer has no rank and `const T*` only proves `intent(in)`,
+   so `dim_names` and `intent` (`out` vs `inout`) must be tagged explicitly
+   where Fortran infers them.
+4. **Integration** (1-2 days): accept `.cpp`/`.cc`/`.hpp`/`.h` in
+   `ccpp_generate_meta` and `py_api._load_scheme_file` (today it checks for
+   `.f90`/`.f` only), setting `language = c++` automatically.
+5. **Tests and example** (2-3 days): unit tests for the extractor, plus a
+   tagged C++ twin of the `cxx-scheme-no-e2e-test` scheme whose generated
+   `.meta` must match the hand-written one.
+6. **Optional — `memory_space` derivation** (+3-5 days): derive
+   `memory_space = device` from `#pragma acc ... present(...)`/`deviceptr(...)`
+   in the scheme body, as the Fortran extractor does from `!$acc`. Kokkos
+   schemes have no pragma to read and would need an explicit tag.
+
+**Estimate:** 8-14 days (M-L), plus 3-5 for item 6.
+
+**Dependencies:** do `cxx-scheme-no-e2e-test` first — it supplies the real
+`extern "C"` scheme to annotate and a compiled test proving the generated
+`.meta` is correct. Coordinate with `acc-meta-residency-check` (same
+`memory_space`-from-pragmas logic, Fortran side) and with
+`direct-fortran-ingest`, whose design should allow C++ sources too.
+
 ## Someday-maybe: EAMxx bridge automation (merged from `EAMxx/EAMxx-bridge-automation.md`, 2026-09-29)
 
 ID: `eamxx-bridge-automation`
@@ -806,7 +869,7 @@ A design proposal (2026-07-29/08-06), not a record of work done — nothing
 in it has been implemented, confirmed against current source (no
 `variant` metadata tag, no `gpu_pointer_mode` property, no suite-coverage
 checker script anywhere in `xdsl_ccpp/`). Full proposal lives in
-CHANGELOG.md (L8588 onward). Addresses: given both CPU and GPU (OpenACC)
+CHANGELOG.md ("EAMxx bridge automation design proposal", ~L8764). Addresses: given both CPU and GPU (OpenACC)
 Fortran variants of a scheme, how would xdsl-ccpp generate a real C++
 host's *entire* bridge, not just the Fortran cap layer — motivated by
 `EAMxx/kessler-README.md`'s real downstream integration (a different
@@ -817,12 +880,19 @@ Three phases, recommended in this order:
   `.meta` format that a scheme has CPU and GPU (OpenACC) variants with
   different argument lists, so `suite_cap.py` can emit an `#ifdef`
   branch automatically instead of requiring a hand-patched meta per
-  build config. CHANGELOG.md L8624.
+  build config. CHANGELOG.md "Phase A -- Teach the metadata format..." (~L8800).
+  **ON HOLD (2026-10-27): revisit motivation before any work starts.**
+  This predates the XML auto-generation capability (suite XML derived
+  from source-code analysis and directives), which may make the
+  hand-maintained, divergent CPU/GPU `.meta` problem it targets
+  obsolete. Re-check whether the motivating Kessler CPU/GPU signature
+  divergence still exists and whether that capability already covers it
+  before re-scoping or closing.
 - `eamxx-phaseB-deviceptr` — **Phase B — explicit device-pointer contract** (small): a
   `gpu_pointer_mode = deviceptr` host-meta property so `cpp_interop.py`
   knows to pass GPU pointers straight through with zero data-staging
   directives, instead of silently assuming the scheme's own directives
-  happen to do the right thing. CHANGELOG.md L8650. Related: this is a
+  happen to do the right thing. CHANGELOG.md "Phase B -- Make the chost cap's device-pointer contract explicit" (~L8826). Related: this is a
   concrete design for the "chost (C++ host) known limitations" section's
   "GPU memory management" item above — implementing this would directly
   close that gap.
@@ -833,7 +903,7 @@ Three phases, recommended in this order:
   `FieldLayout` tags, buffer-manager/Kokkos-View integration) with no
   existing analog in the tool. Some pieces (QA-check bounds,
   energy-fixer bookkeeping) should stay permanently hand-written even if
-  built. CHANGELOG.md L8667.
+  built. CHANGELOG.md "Phase C -- A new EAMxx AtmosphereProcess printer" (~L8843).
 
 `eamxx-suite-coverage-checker` — A cheaper, high-value piece of tooling identified independent of the
 three phases: a "suite-coverage checker" script diffing a real suite
