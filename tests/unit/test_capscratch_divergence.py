@@ -148,7 +148,7 @@ class TestDirectFrameworkMappedDivergence:
         # Not lumped into the blanket enter-once/exit-once region -- that
         # would be a no-op for an already-persistently-resident array (the
         # actual bug this feature fixes).
-        assert "copyin(const_tend" not in suite_fn
+        assert "copy(const_tend" not in suite_fn
 
 
 # ── constituent-tendency scratch-var path: producer uses an alias, ─────────
@@ -294,6 +294,6 @@ class TestNonDivergedRegression:
         )
         suite_fn = _fn_body(fortran, "test_csdiv_agree_suite_physics")
 
-        assert "copyin(const_tend" in suite_fn
+        assert "copy(const_tend" in suite_fn
         assert "update self(const_tend" not in suite_fn
         assert "update device(const_tend" not in suite_fn

@@ -190,8 +190,8 @@ class PhaseFunctionsMixin:
         Returns the final lists and the ncol_meta arg (or None).
 
         In a package cap only the package's own state (*suite_model*, its
-        private names) is framework-managed; any other SuiteOwned arg (e.g. an
-        advected constituent the suite cap owns) is a dummy argument.
+        private names) is framework-managed; any other SuiteOwned arg (one
+        the suite cap owns) is a dummy argument.
         """
         # Missing ownership_kind means generate-arg-ownership didn't run;
         # fail loudly rather than emit a plausible-but-wrong signature.
@@ -378,8 +378,6 @@ class PhaseFunctionsMixin:
         lazy_alloc_ops,
         suite_lifecycle_call_ops=(),
         instance_local_name: str | None = None,
-        constituent_extract_ops=(),
-        constituent_writeback_ops=(),
     ):
         """Assemble all op lists into the body block and return the FuncOp.
 
@@ -422,9 +420,7 @@ class PhaseFunctionsMixin:
             + kind_cast_ops
             + unit_convert_ops
             + check_ops
-            + list(constituent_extract_ops)
             + call_ops
-            + list(constituent_writeback_ops)
             + writeback_ops
             + list(suite_lifecycle_call_ops)
             + state_ops
@@ -577,16 +573,6 @@ class PhaseFunctionsMixin:
             deferred_warnings=deferred_warnings,
         )
 
-        # _run only: point suite-owned constituent vars at slices of the host
-        # constituent array before the scheme calls and nullify them after.
-        # The pointers alias live memory, so no re-sync is needed in between
-        # (matches capgen-v1's array-section aliasing).
-        constituent_extract_ops = []
-        constituent_writeback_ops = []
-        if physics_mode and tgt_subroutine_postfix == "_run" and suite_model is not None:
-            constituent_extract_ops, constituent_writeback_ops = \
-                self._build_constituent_sync_ops(suite_model, data_ops, input_arg_list)
-
         _bco_kwargs = dict(
             suite_description=suite_description,
             tgt_subroutine_postfix=tgt_subroutine_postfix,
@@ -655,8 +641,6 @@ class PhaseFunctionsMixin:
             lazy_alloc_ops=lazy_alloc_ops,
             suite_lifecycle_call_ops=suite_lifecycle_call_ops,
             instance_local_name=instance_local_name,
-            constituent_extract_ops=constituent_extract_ops,
-            constituent_writeback_ops=constituent_writeback_ops,
         )
         return new_func, list(fn_sigs.values()), suite_use_stubs
 

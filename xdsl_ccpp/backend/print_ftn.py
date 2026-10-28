@@ -39,8 +39,6 @@ from xdsl_ccpp.dialects.ccpp_utils import CamSuiteSchemeListOp as CCPPCamSuiteSc
 from xdsl_ccpp.dialects.ccpp_utils import CapVarRefOp as CCPPCapVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
-from xdsl_ccpp.dialects.ccpp_utils import ConstituentIndexLookupOp as CCPPConstituentIndexLookupOp
-from xdsl_ccpp.dialects.ccpp_utils import ConstituentSyncOp as CCPPConstituentSyncOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import ErrorPropagateOp as CCPPErrorPropagateOp
 from xdsl_ccpp.dialects.ccpp_utils import GPUDebugPrintOp as CCPPGPUDebugPrintOp
@@ -1844,24 +1842,6 @@ class ftnPrintContext:
                 self.print_block(op.body.block)
             case CCPPNonCamHostConstituentApiOp():
                 self.print_block(op.body.block)
-            case CCPPConstituentSyncOp():
-                var = op.var_name.data
-                q = op.q_name.data
-                ncol = op.ncol_name.data
-                idx = op.constituent_idx.value.data
-                if op.direction.data == "extract":
-                    self.print(f"{var}(1:{ncol}, :) = {q}(1:{ncol}, :, lc_const_indices({idx}))")
-                else:
-                    self.print(f"{q}(1:{ncol}, :, lc_const_indices({idx})) = {var}(1:{ncol}, :)")
-            case CCPPConstituentIndexLookupOp():
-                names_list = [s.data for s in op.std_names.data]
-                max_len = max(len(s) for s in names_list) if names_list else 1
-                quoted = ", ".join(f'"{s}"' for s in names_list)
-                self.print(f"call ccpp_constituent_indices( &")
-                self.print(f"    [character(len={max_len}) :: {quoted}], &")
-                ev = op.err_var_name.data if op.err_var_name is not None else "errflg"
-                self.print(f"    lc_const_indices, {ev}, errmsg)")
-                self.print(f"if ({ev} /= 0) return")
             case CCPPCamDirectCallOp():
                 args = ", ".join(a.data for a in op.call_args.data)
                 self.print(f"call {op.callee.data}({args})")

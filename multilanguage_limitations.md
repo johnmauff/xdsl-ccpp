@@ -36,11 +36,16 @@ std::vector<double> theta(ncol * nz);
 double val = theta[lev * ncol + col];   // wrong: lev varies fastest
 ```
 
-**Potential resolution:** Generate a row-major variant of the cap header that
-internally transposes arguments, or add an `array_layout = row_major` option on
-the host `.meta` table (see `multilanguage_plan.md` for the existing design).
-The Fortran RESHAPE approach is CPU-only; a GPU-resident transpose would require
-device-side kernels.
+**Status (2026-10-27):** the `array_layout = row_major` option on the host
+`.meta` table already exists (see `multilanguage_plan.md` for the design;
+implemented in commit `2111339`). The generated cap transposes rank >= 2
+arguments with a Fortran RESHAPE on the way in and writes them back afterwards
+(`RowMajorConvertOp`/`RowMajorWriteBackOp` in `run_dispatch.py`; tested in
+`tests/filecheck/examples/end_to_end/array-layout-reshape.mlir`). Still open
+(`chost-column-major` in `BACKLOG.md`): no test combines it with `--bind-c`/the
+chost cap, so it's unconfirmed on that path; RESHAPE is CPU-only, so
+GPU-resident data still has to arrive column-major (or be transposed on the
+device by the host); and a layout mismatch can't be detected from raw pointers.
 
 ---
 
@@ -215,7 +220,8 @@ The generated suite cap stores per-suite state in a Fortran module-level
 variable (`ccpp_suite_state`).  Calling the chost cap concurrently from multiple
 C++ threads will produce a data race on that module variable.
 
-This is safe for single-threaded C++ drivers (the current kessler example) but
+This is safe for single-threaded C++ drivers (all of the C++ drivers in
+`examples/` today) but
 would be a correctness issue for threaded host models that call physics from
 multiple threads simultaneously.
 
@@ -360,7 +366,7 @@ all 24 elements equal 2.0 after the run.
 | ~~9~~ | ~~`character(len=N)` scalar args~~ | *(Resolved)* | *(Done)* |
 | ~~10~~ | ~~Runtime-determined dimensions (`ncnst`)~~ | *(Resolved)* | *(Done)* |
 | 2 | GPU memory management | Yes, for GPU builds | Medium–High |
-| 1 | Column-major layout | Subtle bugs if overlooked | Medium |
+| 1 | Column-major layout (`row_major` option exists; untested on chost path) | Subtle bugs if overlooked | Low–Medium |
 | ~~5~~ | ~~Array rank/shape mismatch — plain `--bind-c` path (was scoped as "rank > 2"; actually every rank)~~ | *(Resolved)* | *(Done)* |
 | 6 | Thread safety | Only for concurrent callers | Low–Medium |
 | ~~7~~ | ~~No C++ ergonomics~~ | *(Resolved)* | *(Done)* |

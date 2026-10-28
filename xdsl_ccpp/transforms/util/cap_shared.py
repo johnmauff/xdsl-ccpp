@@ -868,19 +868,23 @@ def find_diverged_suite_vars(scheme_names, meta_data) -> frozenset:
     )
 
 
-def resolve_capscratch_cap_var_name(std_name: str, is_constituent: bool) -> "str | None":
+def resolve_capscratch_cap_var_name(
+    std_name: str, is_constituent: bool, is_advected: bool = False,
+) -> "str | None":
     """Resolve a CapScratch-classified arg's standard_name to the shared
     cap-module-scope array it's backed by, or None if it isn't backed by one
     of the two known shared constituent arrays.
 
-    Two cases: a direct match to FRAMEWORK_STD_NAME_TO_CAP_VAR (const/
+    Three cases: a direct match to FRAMEWORK_STD_NAME_TO_CAP_VAR (const/
     const_tend's own standard names, ccpp_constituents/
     ccpp_constituent_tendencies, mapping directly to
-    lc_constituent_array/lc_const_tend); or a constituent-tendency scratch
-    var (constituent=True, standard_name starting with tendency_of_, e.g.
-    cld_liq_tend) -- a Fortran pointer slice into lc_const_tend, not a
-    separately-allocated array, but backed by the same shared memory for
-    residency purposes.
+    lc_constituent_array/lc_const_tend); a host-bound advected arg (CapScratch
+    only when classify_arg_ownership found it a registered constituent, e.g.
+    cld_liq_array) -- a pointer slice into lc_constituent_array; or a
+    constituent-tendency scratch var (constituent=True, standard_name
+    starting with tendency_of_, e.g. cld_liq_tend) -- a pointer slice into
+    lc_const_tend. The slices are not separately allocated, but are backed
+    by the shared array for residency purposes.
 
     Single source of truth for this resolution, shared by ccpp_cap.py's
     _build_cap_var_map (building the array/allocate mechanics) and this
@@ -891,9 +895,29 @@ def resolve_capscratch_cap_var_name(std_name: str, is_constituent: bool) -> "str
     std_name = std_name.lower()
     if std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR:
         return FRAMEWORK_STD_NAME_TO_CAP_VAR[std_name]
+    if is_advected:
+        return "lc_constituent_array"
     if is_constituent and std_name.startswith("tendency_of_"):
         return "lc_const_tend"
     return None
+
+
+def is_constituent_view_arg(arg) -> bool:
+    """True for a host-bound advected arg: a CapScratch pointer view into
+    lc_constituent_array (see classify_arg_ownership).
+
+    These views are never device-resident across calls. Constituents are
+    updated on the host (by the host model and by host-side schemes)
+    through other views of the same memory, so gpu_data_pass wraps each
+    device scheme call that takes a view in its own copy() region instead
+    (_emit_constituent_view_copies), and the residency, divergence and
+    debug-sync machinery skips them.
+    """
+    return (
+        arg.hasAttr("advected")
+        and arg.hasAttr("ownership_kind")
+        and arg.getAttr("ownership_kind") == ArgOwnershipKind.CapScratch
+    )
 
 
 def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
@@ -936,10 +960,11 @@ def find_diverged_capscratch_vars(scheme_names, meta_data) -> frozenset:
                     or arg.getAttr("ownership_kind") != ArgOwnershipKind.CapScratch
                 ):
                     continue
-                if not arg.hasAttr("standard_name"):
+                if not arg.hasAttr("standard_name") or is_constituent_view_arg(arg):
                     continue
                 cap_var = resolve_capscratch_cap_var_name(
-                    arg.getAttr("standard_name"), arg.hasAttr("constituent")
+                    arg.getAttr("standard_name"), arg.hasAttr("constituent"),
+                    arg.hasAttr("advected"),
                 )
                 if cap_var is None:
                     continue
@@ -1415,7 +1440,10 @@ def _collect_host_block_std_names(meta_data) -> set:
     return host_block_std
 
 
-def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> ArgOwnershipOp:
+def classify_arg_ownership(
+    arg_op, host_var_map_lc, host_block_std_names,
+    host_bound_constituents: frozenset = frozenset(),
+) -> ArgOwnershipOp:
     """Classify one ccpp.ArgumentOp into its ownership bucket (see
     ArgOwnershipKind in ccpp.py) -- does the cap own this arg, or does its
     data come from outside?
@@ -1434,6 +1462,12 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
     not the CCPPArgument descriptor's generic hasAttr/getAttr interface --
     the two representations expose the same underlying data differently.
 
+    host_bound_constituents -- std names of the advected args the host cap
+    passes as views of its constituent array
+    (constituent_cap.host_bound_constituent_std_names). Those are
+    CapScratch, like the constituent tendencies; any other advected array
+    stays SuiteOwned.
+
     Returns a constructed, verified (verify() is called before returning)
     ArgOwnershipOp -- not inserted into the module. Callers
     (generate-arg-ownership) copy .ownership_kind onto the real
@@ -1447,6 +1481,11 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
         ownership.verify()
         return ownership
 
+    std_name = arg_op.standard_name.data.lower() if arg_op.standard_name is not None else None
+
+    if arg_op.advected is not None and std_name in host_bound_constituents:
+        return _make(ArgOwnershipKind.CapScratch, std_name=std_name)
+
     is_suite_owned = arg_op.is_interstitial is not None or (
         arg_op.arg_type.data == "real"
         and arg_op.dimensions is not None
@@ -1455,8 +1494,6 @@ def classify_arg_ownership(arg_op, host_var_map_lc, host_block_std_names) -> Arg
     )
     if is_suite_owned:
         return _make(ArgOwnershipKind.SuiteOwned)
-
-    std_name = arg_op.standard_name.data.lower() if arg_op.standard_name is not None else None
 
     if arg_op.model_var_name is not None:
         # HostVariableMatchPass only ever sets model_var_name when

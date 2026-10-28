@@ -109,7 +109,7 @@ class TestBuildCapVarMap:
     def test_unmatched_scratch_var_becomes_cap_owned(self):
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
         assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
-        assert ("lc_scratch1", 0, "ncols, pver", None, False) in scratch_var_list
+        assert ("lc_scratch1", 0, "ncols, pver", None, False, None) in scratch_var_list
 
     def test_host_matched_arg_is_excluded(self):
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
@@ -119,7 +119,7 @@ class TestBuildCapVarMap:
     def test_constituent_tendency_scratch_var_records_const_std_name(self):
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
         assert cap_var_map["tendency_of_water_vapor"] == ("lc_tend1", None, None)
-        assert ("lc_tend1", 0, "ncols, pver", "water_vapor", False) in scratch_var_list
+        assert ("lc_tend1", 0, "ncols, pver", "water_vapor", False, "lc_const_tend") in scratch_var_list
 
     def test_host_var_map_lc_empty_when_no_module_tables(self):
         _cap_var_map, host_var_map_lc, _scratch, _residency = self._build()
@@ -177,4 +177,4 @@ class TestBuildCapVarMapFlattensSubcycles:
             self._meta_data(), self._suite_descriptions(), self._public_fns()
         )
         assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
-        assert ("lc_scratch1", 0, "ncols, pver", None, False) in scratch_var_list
+        assert ("lc_scratch1", 0, "ncols, pver", None, False, None) in scratch_var_list

@@ -1,12 +1,7 @@
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import arith, builtin, func, memref
-from xdsl.dialects.builtin import (
-    ArrayAttr,
-    IntegerAttr,
-    StringAttr,
-)
+from xdsl.dialects import arith, builtin, memref
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     GreedyRewritePatternApplier,
@@ -18,11 +13,6 @@ from xdsl.pattern_rewriter import (
 )
 
 from xdsl_ccpp.dialects import ccpp
-from xdsl_ccpp.dialects.ccpp_utils import (
-    ArrayConstructorExprOp,
-    ModuleVarOp,
-)
-from xdsl_ccpp.transforms.constituent_cap import _collect_constituent_info
 from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_CAP_ATTR,
     _build_ddt_resolution_maps,
@@ -43,7 +33,6 @@ from xdsl_ccpp.transforms.suitecap.call_sequence import CallSequenceMixin
 from xdsl_ccpp.transforms.suitecap.promotion import PromotionMixin
 from xdsl_ccpp.transforms.suitecap.suite_owned import SuiteOwnedMixin
 from xdsl_ccpp.transforms.suitecap.phase_functions import PhaseFunctionsMixin
-from xdsl_ccpp.transforms.suitecap.constituents import ConstituentsMixin
 from xdsl_ccpp.transforms.suitecap.module_assembly import ModuleAssemblyMixin
 from xdsl_ccpp.transforms.suitecap.gpu import SuiteOwnedGpuMixin
 from xdsl_ccpp.transforms.suitecap.block_args import (
@@ -57,7 +46,7 @@ from xdsl_ccpp.transforms.suitecap.resolved_vars import (
 )
 
 
-class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin, PhaseFunctionsMixin, ConstituentsMixin, ModuleAssemblyMixin, SuiteOwnedGpuMixin, RewritePattern):
+class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin, PhaseFunctionsMixin, ModuleAssemblyMixin, SuiteOwnedGpuMixin, RewritePattern):
     """Rewrites each ccpp.SuiteOp into a named ModuleOp containing the five
     CCPP cap subroutines: initialize, finalize, physics, timestep_initial, and
     timestep_final.  Each subroutine guards scheme calls behind an errflg check
@@ -152,29 +141,6 @@ class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin
             if key not in seen_stubs:
                 seen_stubs.add(key)
                 deduped_stubs.append(stub)
-
-        # Fixed advected constituents: add lc_const_indices(N) module var, a
-        # ccpp_constituent_indices USE stub, and an index lookup in each _init_.
-        _, fixed_adv, _ = _collect_constituent_info(self.meta_data)
-        if fixed_adv:
-            n = len(fixed_adv)
-            allocatable_mod_vars.append(ModuleVarOp(
-                "lc_const_indices", "integer",
-                fixed_dim=n,
-                init_value_op=ArrayConstructorExprOp([
-                    arith.ConstantOp(IntegerAttr.from_int_and_width(i, 32))
-                    for i in range(1, n + 1)
-                ]),
-                rank=1,
-            ))
-            ci_stub_key = ("ccpp_constituent_indices", "ccpp_scheme_utils")
-            if ci_stub_key not in seen_stubs:
-                seen_stubs.add(ci_stub_key)
-                ci_stub = func.FuncOp.external("ccpp_constituent_indices", [], [])
-                ci_stub.attributes["module"] = StringAttr("ccpp_scheme_utils")
-                deduped_stubs.append(ci_stub)
-            std_name_attrs = ArrayAttr([StringAttr(sn) for sn, *_ in fixed_adv])
-            self._inject_constituent_index_lookup(generated_fns, std_name_attrs)
 
         scheme_mod = builtin.ModuleOp(
             [ccpp_suite_state_global] + string_const_globals

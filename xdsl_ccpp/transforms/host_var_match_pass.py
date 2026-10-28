@@ -666,7 +666,7 @@ class HostVariableMatchPass(ModulePass):
                         f"'{std_name}') is missing advected = true, but "
                         f"scheme(s) {', '.join(sorted(other_declaring))} "
                         f"declare it advected in this suite. Reclassifying "
-                        f"as suite-owned.",
+                        f"as advected.",
                         file=sys.stderr,
                     )
                     arg_op.properties["advected"] = UnitAttr()

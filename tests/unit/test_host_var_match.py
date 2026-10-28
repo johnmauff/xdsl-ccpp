@@ -898,7 +898,9 @@ class TestAdvectedConsistency:
         assert arg.advected is not None
         assert arg.model_var_name is None
 
-    def test_reclassified_as_suite_owned(self, run_host_match, ccpp_context):
+    def test_reclassified_as_host_bound_constituent(self, run_host_match, ccpp_context):
+        """The reclassified arg is a registered constituent, which the host
+        cap passes in (CapScratch), like its sibling's."""
         module = run_host_match(
             scheme_metas=[_ADVECTED_PRODUCER_META, _ADVECTED_CONSUMER_META],
             host_metas=[_ADVECTED_HOST_META],
@@ -908,7 +910,7 @@ class TestAdvectedConsistency:
         arg = _get_scheme_arg(module, "advected_consumer", "test_shared_advected_var")
         assert arg is not None
         assert arg.ownership_kind is not None
-        assert arg.ownership_kind.data == ArgOwnershipKind.SuiteOwned
+        assert arg.ownership_kind.data == ArgOwnershipKind.CapScratch
 
     def test_all_schemes_agree_no_warning(self, run_host_match, capsys):
         run_host_match(

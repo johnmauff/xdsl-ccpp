@@ -71,7 +71,6 @@ class ModuleAssemblyMixin:
 
         run_local_entries are declared as locals in _run, not at module scope.
         """
-        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
         interstitial_var_names: set[str] = set()
         allocatable_mod_vars = []
         run_local_entries = []
@@ -84,16 +83,6 @@ class ModuleAssemblyMixin:
                 # DDT interstitials are module-scope non-allocatable scalars.
                 allocatable_mod_vars.append(
                     ModuleVarOp(entry.local_name, "type", ddt_name=entry.fortran_type, rank=0)
-                )
-                interstitial_var_names.add(entry.local_name.lower())
-                continue
-            if entry.standard_name in fixed_adv_names:
-                # Pointer-aliased constituent (_build_constituent_sync_ops):
-                # declared POINTER, never allocated/deallocated by this cap.
-                kind = entry.kind if entry.kind else CCPP_KIND_PHYS
-                allocatable_mod_vars.append(
-                    ModuleVarOp(entry.local_name, "real", kind=kind,
-                                is_pointer=True, rank=entry.rank)
                 )
                 interstitial_var_names.add(entry.local_name.lower())
                 continue

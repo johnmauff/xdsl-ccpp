@@ -46,7 +46,8 @@ measured data, and will drift as items are reassessed.
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
-| `cloud-water-ncdata-diffs` | 5-10 days (cause not yet known) | M |
+| `cloud-water-ncdata-diffs` | <1 day (cause found and patched; confirm with a cloud_water run) | XS |
+| `advected-constituent-host-binding` | 6-12 days (classification, host-cap constituent views, removing the suite-owned pointer path, GPU residency, the advection examples' non-run uses; then a full regression) | M |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
@@ -56,6 +57,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
 | `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
+| `constituent-device-residency` | 5-10 days (enter/exit and entry/exit syncs are small; the per-call last-writer tracking across views, the whole array and tendency appliers is most of it; plus a GPU regression) | M |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
@@ -157,7 +159,8 @@ separately), CHANGELOG.md L5850.
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
-| `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | M; xdsl54g (only run with this case), hidden by `derecho-false-run-pass` | -- |
+| `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | XS; cause found 2026-10-28 (advected args never bound to the constituents); interim fix uncommitted, awaiting a run | -- |
+| `advected-constituent-host-binding` | Pass `advected` scheme args from the host's constituent array, as capgen-v1 does, instead of making them suite-owned arrays aliased by pointer | M; found 2026-10-28; replaces the interim `cloud-water-ncdata-diffs` fix | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
@@ -260,8 +263,40 @@ RUN` (xdsl56g, xdsl56n). Close once they also pass with 1e-9.
 **`cloud-water-ncdata-diffs`** -- gnu `cam-outfrq_cloud_water_derecho`
 (xdsl54g) differs at every point: `water_vapor_mixing_ratio...` max 2.0E-03,
 `gridbox_total_cloud_liquid_water_mixing_ratio...` max 4.6. A real error.
-Possibly related to `F2000_C7/cam7`'s missing `cloud_water_paths` physics
-(deferred upstream); not investigated.
+Cause found 2026-10-28 by comparing the caps with capgen-v1's:
+`convective_cloud_water` and `cloud_water_paths` declare `ls_liq`/`ls_ice`
+`advected = true`, which makes them suite-owned arrays. Those are only
+pointed into the constituent array when some scheme in the suite takes
+`ccpp_constituents`, and none in cloud_water does, so the schemes read
+arrays nothing filled. Interim fix (uncommitted): the suite cap adds the
+constituent array to `_run` when needed
+(`ConstituentsMixin._synthesize_constituent_array_arg`, with
+`SYNTHESIZED_ARG_STD_NAMES` in `cap_shared.py`). The caps now match
+capgen-v1's; still to do is confirming with a cloud_water run. The
+interim fix is meant to be replaced by `advected-constituent-host-binding`.
+
+**`advected-constituent-host-binding`** -- found 2026-10-28. capgen-v1
+treats an `advected = true` scheme arg as host data: the host cap passes
+that constituent's slice of the constituent object
+(`cam_constituents_obj%vars_layer(:, :, idx)`) and the suite cap owns
+nothing. xdsl_ccpp instead classifies it `SuiteOwned`
+(`classify_arg_ownership`, `cap_shared.py`) and then compensates: a
+pointer is aliased into the constituent array at the start of `_run`
+(`ConstituentsMixin._build_constituent_sync_ops`), with a value copy for
+names also used outside `_run`, and the special case is repeated in
+`module_assembly`, `suite_owned`, `suite_cap` (`lc_const_indices`) and the
+print backend. That design caused `cloud-water-ncdata-diffs`, and its
+interim fix adds to it (a synthesized argument and a local-name lookup
+table). To do: classify these args as host-provided; have the host cap
+pass each one as a view of `lc_constituent_array` looked up by standard
+name (as it already does for constituent tendencies, e.g. `lc_qtnd`);
+delete the suite-side pointer path, the interim fix and its name table.
+Open questions: non-`_run` uses (`examples/advection`'s `cld_ice_array`
+in `_init`, before the constituent data exist), GPU residency (these
+arrays now go through the suite-owned residency code), and the
+multi-instance constituent bundle. Check with `capcmp.py` against
+capgen-v1 on every test suite, the unit and filecheck suites, and a full
+CAM-SIMA regression.
 
 **`zm-ncdata-diffs`** -- `SMS_Ln2...cam-outfrq_zm_derecho` differs from its
 (gnu-made) snapshot under gnu, intel and nvhpc alike: 16-18 variables in
@@ -1249,3 +1284,28 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   change, full test suites + a CAM-SIMA regression run. Enables
   `gpu-conversion-residency` with upstream dialects and, later, replacing
   xdsl_ccpp's hand-written `Acc*`/`Omp*` data-directive ops.
+- `constituent-device-residency` — **Keep the constituents on the device
+  across calls (performance).** Since `advected-constituent-host-binding`,
+  `generate-gpu-data` wraps each scheme call that takes a
+  `memory_space = device` constituent view in its own
+  `!$acc data copy(<view>)` region
+  (`GPUDataPass._emit_constituent_view_copies`). That is correct by
+  construction but moves each view host→device→host on every device call,
+  every step. Instead: `enter data` `lc_constituent_array` once in
+  `<host>_ccpp_initialize_constituents` and `exit data delete` it in the
+  deallocate routine; `update device` at physics entry and `update self`
+  before returning to the host model; inside the suite, track per call
+  which side last wrote each constituent and `update self`/`update device`
+  only where that changes, run device calls under `present`. The hard
+  part is aliasing: the same memory is reached through per-constituent
+  views, the whole array (`ccpp_constituents`, e.g. `qneg`) and the
+  tendency appliers, so the existing per-cap-var divergence routing
+  (`find_diverged_capscratch_vars`) must treat a view and the whole array
+  as overlapping. The host model's syncs also change if CAM's dynamics
+  moves to the GPU. A missed sync gives silently wrong values, so it needs
+  a GPU Kessler/advection regression with physics checks. Related: a
+  device-resident whole-array `ccpp_constituents` arg still makes
+  `lc_constituent_array` resident (`framework_var_residency`), and a
+  per-call `copy` of a view of it then degenerates to `present` with no
+  sync; no current suite has that mix. Worth doing once GPU physics
+  coverage is large enough for the transfers to matter.

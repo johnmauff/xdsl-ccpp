@@ -53,6 +53,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
+    _resolve_lifecycle_table_name,
     derive_camel_case_name,
     iter_arg_tables,
     resolve_capscratch_cap_var_name,
@@ -125,13 +126,14 @@ class _CVArgInfo:
     back together at the same call sites below) into one dict of these.
     std_name/dim_names/
     ownership_kind keep "first occurrence wins" semantics (None means "not
-    yet seen"); is_constituent/needs_gpu are True once any occurrence sets
+    yet seen"); is_constituent/is_advected/needs_gpu are True once any occurrence sets
     them (never reset).
     """
 
     std_name: "str | None" = None
     dim_names: "list | None" = None
     is_constituent: bool = False
+    is_advected: bool = False
     ownership_kind: object = None
     needs_gpu: bool = False
 
@@ -186,8 +188,11 @@ def _build_cap_var_map(
           - cap_var_map: standard_name -> (var_name, mlir_type, fortran_type_str)
           - host_var_map_lc: standard_name -> (var_name, table_name), MODULE tables only
           - scratch_var_list: [(var_name, rank, alloc_dims_str, const_std_name_or_None,
-            needs_device_residency)] -- one entry per distinct CapScratch scratch
-            var (excluding ones that resolve directly to a shared framework var)
+            needs_device_residency, base_cap_var_or_None)] -- one entry per
+            distinct CapScratch scratch var (excluding ones that resolve
+            directly to a shared framework var). A constituent view has
+            const_std_name set and base_cap_var lc_constituent_array (a
+            host-bound advected arg) or lc_const_tend (a tendency).
           - framework_var_residency: cap var name (e.g. "lc_constituent_array",
             "lc_const_tend") -> True if any contributing occurrence (direct
             framework-mapped arg, or a constituent-tendency scratch var
@@ -220,93 +225,118 @@ def _build_cap_var_map(
     scratch_var_list: list = []
     scratch_var_index: dict = {}  # std_name -> index into scratch_var_list
     framework_var_residency: dict = {}  # cap var name -> True
+    # (suite-callee infix, scheme table postfix) per group phase. Only
+    # constituent views (host-bound advected args) are taken from the phases
+    # other than _run: they reach schemes the same way in every phase.
+    _group_phases_cv = [
+        ("_", "_run"),
+        ("_init_", "_init"),
+        ("_timestep_init_", "_timestep_initialize"),
+        ("_timestep_final_", "_timestep_finalize"),
+        ("_final_", "_finalize"),
+    ]
     for _sn_cv, _sd_cv in suite_descriptions.items():
         for _grp_cv in _sd_cv:
             _grp_name_cv = _grp_cv.attributes["name"]
-            _callee_cv = _sn_cv + SUITE_FN_INFIX + "_" + _grp_name_cv
-            if _callee_cv not in public_fns:
-                continue
-            _, _, _ci_types, _ci_names = public_fns[_callee_cv]
             _grp_schemes = [_s.attributes["name"] for _s in _iter_schemes(_grp_cv)]
-            _arg_info_cv: dict[str, _CVArgInfo] = {}
-            for _scheme_cv in _grp_schemes:
-                _run_tbl_cv = _scheme_cv + "_run"
-                if _scheme_cv not in meta_data:
+            for _infix_cv, _postfix_cv in _group_phases_cv:
+                _callee_cv = _sn_cv + SUITE_FN_INFIX + _infix_cv + _grp_name_cv
+                if _callee_cv not in public_fns:
                     continue
-                if _run_tbl_cv not in meta_data[_scheme_cv].arg_tables:
-                    continue
-                for _fa_cv in (
-                    meta_data[_scheme_cv].getArgTable(_run_tbl_cv).getFunctionArguments()
-                ):
-                    _bn_cv = _bare(_fa_cv.name)
-                    _info_cv = _arg_info_cv.setdefault(_bn_cv, _CVArgInfo())
-                    if _info_cv.std_name is None and _fa_cv.hasAttr("standard_name"):
-                        _info_cv.std_name = _fa_cv.getAttr("standard_name").lower()
-                    if _info_cv.dim_names is None and _fa_cv.hasAttr("dim_names"):
-                        _info_cv.dim_names = _fa_cv.getAttr("dim_names")
-                    if _fa_cv.hasAttr("constituent"):
-                        _info_cv.is_constituent = True
-                    if _info_cv.ownership_kind is None and _fa_cv.hasAttr("ownership_kind"):
-                        _info_cv.ownership_kind = _fa_cv.getAttr("ownership_kind")
-                    if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
-                        _info_cv.needs_gpu = True
-            for _an_cv, _at_cv in zip(_ci_names, _ci_types):
-                _bn_cv = _bare(_an_cv)
-                _info_cv = _arg_info_cv.get(_bn_cv)
-                # Anything not classified CapScratch (HostMatched, Block, or
-                # unclassified) has nothing to promote here -- this single
-                # check replaces the old _matched_cv / CCPP_FRAMEWORK_STD_NAMES
-                # / CCPP_ERROR_STD_NAMES / host_block_std / host_var_map_lc
-                # exclusion-set checks, all folded into ownership_kind already.
-                if _info_cv is None or _info_cv.ownership_kind != ccpp.ArgOwnershipKind.CapScratch:
-                    continue
-                _std_cv = _info_cv.std_name
-                if not _std_cv:
-                    continue
-                _needs_gpu_cv = _info_cv.needs_gpu
-                if _std_cv in FRAMEWORK_STD_NAME_TO_CAP_VAR:
-                    _cap_name_cv = resolve_capscratch_cap_var_name(
-                        _std_cv, _info_cv.is_constituent
-                    )
-                    if _std_cv not in cap_var_map:
-                        cap_var_map[_std_cv] = (_cv_ref(_cap_name_cv), None, None)
-                    if _needs_gpu_cv:
-                        framework_var_residency[_cap_name_cv] = True
-                    continue
-                if _std_cv not in scratch_var_index:
-                    _lc_cv = f"lc_{_bn_cv}"
-                    _rank_cv = _rank_of(_at_cv)
-                    _dims_cv = _info_cv.dim_names or []
-                    _alloc_cv = ", ".join(
-                        _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
-                    ) if _dims_cv else "ncols, pver"
-                    # Constituent-tendency scratch vars (constituent=True in meta)
-                    # are pointer slices into lc_const_tend, not separate allocatables.
+                _, _, _ci_types, _ci_names = public_fns[_callee_cv]
+                _arg_info_cv: dict[str, _CVArgInfo] = {}
+                for _scheme_cv in _grp_schemes:
+                    _tbl_cv = _resolve_lifecycle_table_name(_scheme_cv, meta_data, _postfix_cv)
+                    if _tbl_cv is None:
+                        continue
+                    for _fa_cv in meta_data[_scheme_cv].getArgTable(_tbl_cv).getFunctionArguments():
+                        _bn_cv = _bare(_fa_cv.name)
+                        _info_cv = _arg_info_cv.setdefault(_bn_cv, _CVArgInfo())
+                        if _info_cv.std_name is None and _fa_cv.hasAttr("standard_name"):
+                            _info_cv.std_name = _fa_cv.getAttr("standard_name").lower()
+                        if _info_cv.dim_names is None and _fa_cv.hasAttr("dim_names"):
+                            _info_cv.dim_names = _fa_cv.getAttr("dim_names")
+                        if _fa_cv.hasAttr("constituent"):
+                            _info_cv.is_constituent = True
+                        if _fa_cv.hasAttr("advected"):
+                            _info_cv.is_advected = True
+                        if _info_cv.ownership_kind is None and _fa_cv.hasAttr("ownership_kind"):
+                            _info_cv.ownership_kind = _fa_cv.getAttr("ownership_kind")
+                        if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
+                            _info_cv.needs_gpu = True
+                for _an_cv, _at_cv in zip(_ci_names, _ci_types):
+                    _bn_cv = _bare(_an_cv)
+                    _info_cv = _arg_info_cv.get(_bn_cv)
+                    # Anything not classified CapScratch (HostMatched, Block, or
+                    # unclassified) has nothing to promote here -- this single
+                    # check replaces the old _matched_cv / CCPP_FRAMEWORK_STD_NAMES
+                    # / CCPP_ERROR_STD_NAMES / host_block_std / host_var_map_lc
+                    # exclusion-set checks, all folded into ownership_kind already.
+                    if _info_cv is None or _info_cv.ownership_kind != ccpp.ArgOwnershipKind.CapScratch:
+                        continue
+                    if _postfix_cv != "_run" and not _info_cv.is_advected:
+                        continue
+                    _std_cv = _info_cv.std_name
+                    if not _std_cv:
+                        continue
+                    _needs_gpu_cv = _info_cv.needs_gpu
                     _resolved_cap_var_cv = resolve_capscratch_cap_var_name(
-                        _std_cv, _info_cv.is_constituent
+                        _std_cv, _info_cv.is_constituent, _info_cv.is_advected
                     )
-                    _const_std_name = (
-                        _std_cv[len("tendency_of_"):]
-                        if _resolved_cap_var_cv == "lc_const_tend"
-                        else None
-                    )
-                    cap_var_map[_std_cv] = (_cv_ref(_lc_cv), None, None)
-                    scratch_var_index[_std_cv] = len(scratch_var_list)
-                    scratch_var_list.append(
-                        [_lc_cv, _rank_cv, _alloc_cv, _const_std_name, _needs_gpu_cv]
-                    )
-                    if _const_std_name and _needs_gpu_cv:
-                        framework_var_residency[_resolved_cap_var_cv] = True
-                elif _needs_gpu_cv:
-                    # Repeat occurrence of an already-seen scratch var (e.g.
-                    # referenced again from a later group/suite) -- OR this
-                    # occurrence's own memory_space into the existing entry
-                    # instead of silently discarding it, same as the
-                    # framework-mapped branch above.
-                    _entry_cv = scratch_var_list[scratch_var_index[_std_cv]]
-                    _entry_cv[4] = True
-                    if _entry_cv[3]:
-                        framework_var_residency["lc_const_tend"] = True
+                    if _std_cv in FRAMEWORK_STD_NAME_TO_CAP_VAR:
+                        if _std_cv not in cap_var_map:
+                            cap_var_map[_std_cv] = (_cv_ref(_resolved_cap_var_cv), None, None)
+                        if _needs_gpu_cv:
+                            framework_var_residency[_resolved_cap_var_cv] = True
+                        continue
+                    if _std_cv not in scratch_var_index:
+                        # Unique per standard name: two schemes may use one
+                        # local name for different variables.
+                        _lc_cv = f"lc_{_bn_cv}"
+                        _taken_cv = {e[0] for e in scratch_var_list}
+                        _n_cv = 1
+                        while _lc_cv in _taken_cv:
+                            _n_cv += 1
+                            _lc_cv = f"lc_{_bn_cv}{_n_cv}"
+                        _rank_cv = _rank_of(_at_cv)
+                        _dims_cv = _info_cv.dim_names or []
+                        _alloc_cv = ", ".join(
+                            _DIM_TO_ALLOC.get(_d.lower(), "1") for _d in _dims_cv
+                        ) if _dims_cv else "ncols, pver"
+                        # A constituent view (a host-bound advected arg, or a
+                        # constituent tendency) is a pointer slice into its base
+                        # array (_resolved_cap_var_cv), selected by the
+                        # constituent's standard name; anything else is a
+                        # separately allocated array.
+                        if _resolved_cap_var_cv == "lc_const_tend":
+                            _const_std_name = _std_cv[len("tendency_of_"):]
+                        elif _resolved_cap_var_cv == "lc_constituent_array":
+                            _const_std_name = _std_cv
+                        else:
+                            _const_std_name = None
+                        cap_var_map[_std_cv] = (_cv_ref(_lc_cv), None, None)
+                        scratch_var_index[_std_cv] = len(scratch_var_list)
+                        scratch_var_list.append(
+                            [_lc_cv, _rank_cv, _alloc_cv, _const_std_name, _needs_gpu_cv,
+                             _resolved_cap_var_cv]
+                        )
+                        # A tendency view makes lc_const_tend (physics-owned)
+                        # device-resident. A constituent view does not: the
+                        # host model updates the constituents on the host, so
+                        # their device copies are made around the scheme
+                        # calls (generate-gpu-data), not for the cap's life.
+                        if _const_std_name and _needs_gpu_cv and _resolved_cap_var_cv == "lc_const_tend":
+                            framework_var_residency[_resolved_cap_var_cv] = True
+                    elif _needs_gpu_cv:
+                        # Repeat occurrence of an already-seen scratch var (e.g.
+                        # referenced again from a later group/suite/phase) -- OR
+                        # this occurrence's own memory_space into the existing
+                        # entry instead of silently discarding it, same as the
+                        # framework-mapped branch above.
+                        _entry_cv = scratch_var_list[scratch_var_index[_std_cv]]
+                        _entry_cv[4] = True
+                        if _entry_cv[3] and _entry_cv[5] == "lc_const_tend":
+                            framework_var_residency[_entry_cv[5]] = True
 
     # Built as mutable lists above (to allow in-place OR-updates on repeat
     # occurrences); returned as tuples to preserve the established
@@ -333,7 +363,7 @@ def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var
     resident: dict = {
         name: 3 for name, needed in framework_var_residency.items() if needed
     }
-    for lc_name, rank, _alloc_dims, cst_std, needs_gpu in scratch_var_list:
+    for lc_name, rank, _alloc_dims, cst_std, needs_gpu, _base in scratch_var_list:
         if needs_gpu and not cst_std:
             resident[lc_name] = rank
 

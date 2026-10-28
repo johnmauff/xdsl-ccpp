@@ -23,25 +23,18 @@
 // CHECK-NEXT:      }) {module = "data"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "pver", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "data"} : () -> ()
-// CHECK-LABEL:     func.func private @ccpp_constituent_indices() -> () attributes {module = "ccpp_scheme_utils"}
-// CHECK:           "ccpp_utils.module_var"() <{var_name = "tcld", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_liq_array", base_type = "real", rank = 2 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
+// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "tcld", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_liq_tend", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_const_indices", base_type = "integer", rank = 1 : i64, fixed_dim = 1 : i64}> ({
-// CHECK-NEXT:        "ccpp_utils.array_constructor_expr"() ({
-// CHECK-NEXT:          %0 = arith.constant 1 : i32
-// CHECK-NEXT:        }) : () -> ()
-// CHECK-NEXT:      }) : () -> ()
 // CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "suite_register"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errcode[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errcode[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
-// CHECK-NEXT:        %2 = arith.constant 0 : i32
-// CHECK-NEXT:        %3 = memref.load %errcode[] : memref<i32>
-// CHECK-NEXT:        %4 = arith.cmpi eq, %3, %2 : i32
-// CHECK-NEXT:        scf.if %4 {
+// CHECK-NEXT:        %1 = arith.constant 0 : i32
+// CHECK-NEXT:        %2 = memref.load %errcode[] : memref<i32>
+// CHECK-NEXT:        %3 = arith.cmpi eq, %2, %1 : i32
+// CHECK-NEXT:        scf.if %3 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const__alloc, %errmsg, %errcode) <{callee = "cld_liq_register", operand_names = ["dyn_const", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
@@ -49,8 +42,8 @@
 // CHECK-LABEL:     func.func public @cld_suite_initialize(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errflg[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %ncols = "ccpp_utils.host_var_ref"() <{var_name = "ncols", module_name = "data"}> : () -> memref<i32>
 // CHECK-NEXT:        %pver = "ccpp_utils.host_var_ref"() <{var_name = "pver", module_name = "data"}> : () -> memref<i32>
@@ -58,60 +51,59 @@
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_uninitialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        %5 = "llvm.load"(%4) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%3, %5) <{length = 13 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:        %7 = arith.constant true
-// CHECK-NEXT:        %8 = arith.xori %6, %7 : i1
-// CHECK-NEXT:        scf.if %8 {
-// CHECK-NEXT:          %9 = "ccpp_utils.trim"(%5) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %9) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_initialize"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:          %10 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %10, %errflg[] : memref<i32>
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_uninitialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 13 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
+// CHECK-NEXT:        %6 = arith.constant true
+// CHECK-NEXT:        %7 = arith.xori %5, %6 : i1
+// CHECK-NEXT:        scf.if %7 {
+// CHECK-NEXT:          %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_initialize"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
+// CHECK-NEXT:          %9 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %11 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %12 = "llvm.load"(%11) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %13 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        "llvm.store"(%12, %13) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:        %10 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %11 = "llvm.load"(%10) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %12 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @cld_suite_finalize(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errflg[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %tcld = "ccpp_utils.host_var_ref"() <{var_name = "tcld", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        %5 = "llvm.load"(%4) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%3, %5) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:        %7 = arith.constant true
-// CHECK-NEXT:        %8 = arith.xori %6, %7 : i1
-// CHECK-NEXT:        scf.if %8 {
-// CHECK-NEXT:          %9 = "ccpp_utils.trim"(%5) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %9) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_finalize"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:          %10 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %10, %errflg[] : memref<i32>
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
+// CHECK-NEXT:        %6 = arith.constant true
+// CHECK-NEXT:        %7 = arith.xori %5, %6 : i1
+// CHECK-NEXT:        scf.if %7 {
+// CHECK-NEXT:          %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_finalize"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
+// CHECK-NEXT:          %9 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %11 = "llvm.mlir.addressof"() <{global_name = @const_uninitialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %12 = "llvm.load"(%11) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %13 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        "llvm.store"(%12, %13) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:        %10 = "llvm.mlir.addressof"() <{global_name = @const_uninitialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %11 = "llvm.load"(%10) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %12 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @cld_suite_init_physics(%tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
-// CHECK:             "ccpp_utils.constituent_index_lookup"() <{std_names = ["cloud_liquid_dry_mixing_ratio"], err_var_name = "errcode"}> : () -> ()
-// CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
+// CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errcode[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errcode[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %tcld = "ccpp_utils.host_var_ref"() <{var_name = "tcld", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %ncols = "ccpp_utils.host_var_ref"() <{var_name = "ncols", module_name = "data"}> : () -> memref<i32>
@@ -120,122 +112,118 @@
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        %5 = "llvm.load"(%4) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%3, %5) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:        %7 = arith.constant true
-// CHECK-NEXT:        %8 = arith.xori %6, %7 : i1
-// CHECK-NEXT:        scf.if %8 {
-// CHECK-NEXT:          %9 = "ccpp_utils.trim"(%5) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %9) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_init_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:          %10 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %10, %errcode[] : memref<i32>
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
+// CHECK-NEXT:        %6 = arith.constant true
+// CHECK-NEXT:        %7 = arith.xori %5, %6 : i1
+// CHECK-NEXT:        scf.if %7 {
+// CHECK-NEXT:          %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_init_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
+// CHECK-NEXT:          %9 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %9, %errcode[] : memref<i32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %11 = arith.constant 0 : i32
-// CHECK-NEXT:        %12 = memref.load %errcode[] : memref<i32>
-// CHECK-NEXT:        %13 = arith.cmpi eq, %12, %11 : i32
-// CHECK-NEXT:        scf.if %13 {
+// CHECK-NEXT:        %10 = arith.constant 0 : i32
+// CHECK-NEXT:        %11 = memref.load %errcode[] : memref<i32>
+// CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
+// CHECK-NEXT:        scf.if %12 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%tfreeze, %tcld, %errmsg, %errcode) <{callee = "cld_liq_init", operand_names = ["tfreeze", "tcld", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_physics(%ncol : memref<i32>, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">>, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @cld_suite_physics(%ncol : memref<i32>, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">>, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %cld_liq_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, %instance : memref<i32>, %ninstances : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errcode[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errcode[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %tcld = "ccpp_utils.host_var_ref"() <{var_name = "tcld", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:        %cld_liq_array = "ccpp_utils.host_var_ref"() <{var_name = "cld_liq_array", module_name = ""}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        %5 = "llvm.load"(%4) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%3, %5) <{length = 12 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:        %7 = arith.constant true
-// CHECK-NEXT:        %8 = arith.xori %6, %7 : i1
-// CHECK-NEXT:        scf.if %8 {
-// CHECK-NEXT:          %9 = "ccpp_utils.trim"(%5) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %9) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:          %10 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %10, %errcode[] : memref<i32>
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 12 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
+// CHECK-NEXT:        %6 = arith.constant true
+// CHECK-NEXT:        %7 = arith.xori %5, %6 : i1
+// CHECK-NEXT:        scf.if %7 {
+// CHECK-NEXT:          %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
+// CHECK-NEXT:          %9 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %9, %errcode[] : memref<i32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        "ccpp_utils.pointer_slice_assign"() <{ptr_name = "cld_liq_array", array_name = "const", index_var = "lc_const_indices(1)"}> : () -> ()
-// CHECK-NEXT:        %11 = arith.constant 0 : i32
-// CHECK-NEXT:        %12 = memref.load %errcode[] : memref<i32>
-// CHECK-NEXT:        %13 = arith.cmpi eq, %12, %11 : i32
-// CHECK-NEXT:        scf.if %13 {
+// CHECK-NEXT:        %10 = arith.constant 0 : i32
+// CHECK-NEXT:        %11 = memref.load %errcode[] : memref<i32>
+// CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
+// CHECK-NEXT:        scf.if %12 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %tcld, %temp, %qv, %ps__in, %cld_liq_array, %cld_liq_tend, %errmsg, %errcode) <{callee = "cld_liq_run", operand_names = ["ncol", "timestep", "tcld", "temp", "qv", "ps", "cld_liq_array", "cld_liq_tend", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %14 = arith.constant 0 : i32
-// CHECK-NEXT:        %15 = memref.load %errcode[] : memref<i32>
-// CHECK-NEXT:        %16 = arith.cmpi eq, %15, %14 : i32
-// CHECK-NEXT:        scf.if %16 {
+// CHECK-NEXT:        %13 = arith.constant 0 : i32
+// CHECK-NEXT:        %14 = memref.load %errcode[] : memref<i32>
+// CHECK-NEXT:        %15 = arith.cmpi eq, %14, %13 : i32
+// CHECK-NEXT:        scf.if %15 {
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%const_tend, %const, %errcode, %errmsg) <{callee = "apply_constituent_tendencies_run", operand_names = ["const_tend", "const", "errcode", "errmsg"], result_names = [], overrides = {}}> : (memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>) -> ()
 // CHECK-NEXT:        }
-// CHECK-NEXT:        "ccpp_utils.nullify_pointer"() <{ptr_name = "cld_liq_array"}> : () -> ()
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @cld_suite_timestep_init_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
-// CHECK:             "ccpp_utils.constituent_index_lookup"() <{std_names = ["cloud_liquid_dry_mixing_ratio"], err_var_name = "errflg"}> : () -> ()
-// CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
+// CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errflg[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %tcld = "ccpp_utils.host_var_ref"() <{var_name = "tcld", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        "llvm.store"(%3, %4) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @cld_suite_timestep_final_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errflg[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %tcld = "ccpp_utils.host_var_ref"() <{var_name = "tcld", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        "llvm.store"(%3, %4) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @cld_suite_final_physics(%instance : memref<i32>, %ninstances : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = arith.constant 0 : i32
-// CHECK-NEXT:        memref.store %1, %errflg[] : memref<i32>
+// CHECK-NEXT:        %0 = arith.constant 0 : i32
+// CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %tcld = "ccpp_utils.host_var_ref"() <{var_name = "tcld", module_name = ""}> : () -> memref<!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ninstances) <{var_name = "ccpp_suite_state", kind_name = "character"}> ({
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = "uninitialized"}> : () -> ()
 // CHECK-NEXT:        }) : (memref<i32>) -> ()
-// CHECK-NEXT:        %2 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
-// CHECK-NEXT:        %3 = "llvm.load"(%2) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %4 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
-// CHECK-NEXT:        %5 = "llvm.load"(%4) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
-// CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%3, %5) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
-// CHECK-NEXT:        %7 = arith.constant true
-// CHECK-NEXT:        %8 = arith.xori %6, %7 : i1
-// CHECK-NEXT:        scf.if %8 {
-// CHECK-NEXT:          %9 = "ccpp_utils.trim"(%5) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
-// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %9) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_final_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
-// CHECK-NEXT:          %10 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %10, %errflg[] : memref<i32>
+// CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
+// CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> {ccpp_instance_ref = "instance"} : () -> !llvm.ptr
+// CHECK-NEXT:        %4 = "llvm.load"(%3) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
+// CHECK-NEXT:        %5 = "ccpp_utils.strcmp"(%2, %4) <{length = 11 : i64}> : (!llvm.array<16 x i8>, !llvm.array<16 x i8>) -> i1
+// CHECK-NEXT:        %6 = arith.constant true
+// CHECK-NEXT:        %7 = arith.xori %5, %6 : i1
+// CHECK-NEXT:        scf.if %7 {
+// CHECK-NEXT:          %8 = "ccpp_utils.trim"(%4) : (!llvm.array<16 x i8>) -> !llvm.array<16 x i8>
+// CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %8) <{prefix = "Invalid initial CCPP state, '", suffix = "' in cld_suite_final_physics"}> : (memref<512xi8>, !llvm.array<16 x i8>) -> ()
+// CHECK-NEXT:          %9 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %9, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
@@ -343,28 +331,30 @@
 // CHECK-NEXT:          %10 = "ccpp_utils.host_var_ref"() <{var_name = "phys_state", module_name = "data"}> {member_name = "temp", index_expr = "instance"} : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %11 = "ccpp_utils.host_var_ref"() <{var_name = "phys_state", module_name = "data"}> {member_name = "q(:, :, index_qv)", index_expr = "instance"} : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %12 = "ccpp_utils.host_var_ref"() <{var_name = "phys_state", module_name = "data"}> {member_name = "ps", index_expr = "instance"} : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %13 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_cld_liq_tend"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %14 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_const_tend"}> : () -> memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %15 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_constituent_array"}> : () -> memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %16 = arith.constant 1 : i32
-// CHECK-NEXT:          %17 = "ccpp_utils.host_var_ref"() <{var_name = "pver", module_name = "data"}> : () -> i32
-// CHECK-NEXT:          %18 = "ccpp_utils.rank_reducing_slice"(%10, %lb, %16, %ub, %17) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %19 = "ccpp_utils.rank_reducing_slice"(%12, %lb, %ub) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %20 = "ccpp_utils.rank_reducing_slice"(%13, %lb, %16, %ub, %17) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
-// CHECK-NEXT:          %21 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
-// CHECK-NEXT:          scf.if %21 {
-// CHECK-NEXT:            %22, %23 = func.call @cld_suite_physics(%ncol, %9, %18, %11, %19, %20, %14, %15, %instance, %ninstances) : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>)
-// CHECK-NEXT:            "memref.copy"(%22, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
-// CHECK-NEXT:            "memref.copy"(%23, %errflg) : (memref<i32>, memref<i32>) -> ()
+// CHECK-NEXT:          %13 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_cld_liq_array"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %14 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_cld_liq_tend"}> : () -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %15 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_const_tend"}> : () -> memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %16 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_instances(instance)%lc_constituent_array"}> : () -> memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %17 = arith.constant 1 : i32
+// CHECK-NEXT:          %18 = "ccpp_utils.host_var_ref"() <{var_name = "pver", module_name = "data"}> : () -> i32
+// CHECK-NEXT:          %19 = "ccpp_utils.rank_reducing_slice"(%10, %lb, %17, %ub, %18) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %20 = "ccpp_utils.rank_reducing_slice"(%12, %lb, %ub) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %21 = "ccpp_utils.rank_reducing_slice"(%13, %lb, %17, %ub, %18) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %22 = "ccpp_utils.rank_reducing_slice"(%14, %lb, %17, %ub, %18) <{dim_pattern = "RR"}> {operandSegmentSizes = array<i32: 1, 2, 2, 0>} : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, i32, memref<i32>, i32) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %23 = "ccpp_utils.strcmp"(%3) <{literal = "physics"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:          scf.if %23 {
+// CHECK-NEXT:            %24, %25 = func.call @cld_suite_physics(%ncol, %9, %19, %11, %20, %21, %22, %15, %16, %instance, %ninstances) : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>)
+// CHECK-NEXT:            "memref.copy"(%24, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
+// CHECK-NEXT:            "memref.copy"(%25, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {
 // CHECK-NEXT:            "ccpp_utils.write_errmsg"(%errmsg, %3) <{prefix = "No suite part named ", suffix = " found in suite cld_suite"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:            %24 = arith.constant 1 : i32
-// CHECK-NEXT:            memref.store %24, %errflg[] : memref<i32>
+// CHECK-NEXT:            %26 = arith.constant 1 : i32
+// CHECK-NEXT:            memref.store %26, %errflg[] : memref<i32>
 // CHECK-NEXT:          }
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          "ccpp_utils.write_errmsg"(%errmsg, %1) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
-// CHECK-NEXT:          %25 = arith.constant 1 : i32
-// CHECK-NEXT:          memref.store %25, %errflg[] : memref<i32>
+// CHECK-NEXT:          %27 = arith.constant 1 : i32
+// CHECK-NEXT:          memref.store %27, %errflg[] : memref<i32>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
@@ -509,6 +499,7 @@
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_constituent_array", base_type = "real", rank = 3 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_const_tend", base_type = "real", rank = 3 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_const_props", base_type = "type", rank = 1 : i64, ddt_name = "ccpp_constituent_prop_ptr_t"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_cld_liq_array", base_type = "real", rank = 2 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_cld_liq_tend", base_type = "real", rank = 2 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "cam_model_const_stdnames", base_type = "character", rank = 0 : i64, kind = "29", fixed_dim = 1 : i64, init_value = "[ character(len=29) :: 'cloud_liquid_dry_mixing_ratio' ]"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "cam_model_const_indices", base_type = "integer", rank = 0 : i64, fixed_dim = 1 : i64, init_value = "-1"}> : () -> ()
@@ -573,6 +564,7 @@
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_instances(instance)%lc_const_props"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "if (associated(lc_instances(instance)%lc_constituent_array)) nullify(lc_instances(instance)%lc_constituent_array)"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_instances(instance)%lc_const_tend"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_array"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_tend"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.cam_direct_call"() <{callee = "lc_instances(instance)%cam_constituents_obj%reset", call_args = []}> : () -> ()
 // CHECK-NEXT:        }) : () -> ()
@@ -934,7 +926,7 @@
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_instances(instance)%lc_const_tend"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.scoped_block"() <{local_decls = ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"]}> ({
-// CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_tend"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_array"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
 // CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
@@ -964,6 +956,43 @@
 // CHECK-NEXT:              %34 = arith.constant 0 : i32
 // CHECK-NEXT:              %35 = arith.cmpi sgt, %33, %34 : i32
 // CHECK-NEXT:              %36 = arith.andi %32, %35 : i1
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.pointer_slice_assign"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_array", array_name = "lc_instances(instance)%lc_constituent_array", index_var = "lc_tend_idx"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 1\nerrmsg = 'ccpp_initialize_constituents: no constituent cloud_liquid_dry_mixing_ratio'\nreturn"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.scoped_block"() <{local_decls = ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"]}> ({
+// CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_tend"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:                "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "instance"}> : () -> ()
+// CHECK-NEXT:                }) : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_tend_idx"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "cloud_liquid_dry_mixing_ratio"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.keyword_arg_expr"() <{arg_name = "errmsg"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_tend_errmsg"}> : () -> ()
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
+// CHECK-NEXT:            "ccpp_utils.active_check"() ({
+// CHECK-NEXT:              %37 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:              %38 = arith.constant 0 : i32
+// CHECK-NEXT:              %39 = arith.cmpi eq, %37, %38 : i32
+// CHECK-NEXT:              %40 = "ccpp_utils.var_ref_expr"() <{var_name = "lc_tend_idx"}> : () -> i32
+// CHECK-NEXT:              %41 = arith.constant 0 : i32
+// CHECK-NEXT:              %42 = arith.cmpi sgt, %40, %41 : i32
+// CHECK-NEXT:              %43 = arith.andi %39, %42 : i1
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.pointer_slice_assign"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_tend", array_name = "lc_instances(instance)%lc_const_tend", index_var = "lc_tend_idx"}> : () -> ()
 // CHECK-NEXT:            }, {
@@ -998,12 +1027,12 @@
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "Cld_const_get_index", is_function = false, args = ["std_name", "index", "errflg", "errmsg", "instance"], use_stmts = ["use ccpp_constituent_prop_mod, only: to_lower"], arg_decls = ["character(len=*), intent(in) :: std_name", "integer, intent(out) :: index", "integer, intent(out) :: errflg", "character(len=512), intent(out) :: errmsg", "integer, intent(in) :: instance"], local_decls = []}> ({
 // CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0\nerrmsg = ''\nindex = -1"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "const_get_index: constituents not registered"}> ({
-// CHECK-NEXT:            %37 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            %44 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "const_get_index: constituents not registered"}> ({
-// CHECK-NEXT:            %38 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
+// CHECK-NEXT:            %45 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances(instance)%lc_all_constituents"}> : () -> ()
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
@@ -1030,14 +1059,14 @@
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
-// CHECK-NEXT:          %39 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
-// CHECK-NEXT:          %40 = arith.constant 0 : i32
-// CHECK-NEXT:          %41 = arith.cmpi ne, %39, %40 : i32
-// CHECK-NEXT:          %42 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
-// CHECK-NEXT:          %43 = arith.constant 0 : i32
-// CHECK-NEXT:          %44 = arith.cmpi sle, %42, %43 : i32
-// CHECK-NEXT:          %45 = arith.ori %41, %44 : i1
-// CHECK-NEXT:          scf.if %45 {
+// CHECK-NEXT:          %46 = "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> i32
+// CHECK-NEXT:          %47 = arith.constant 0 : i32
+// CHECK-NEXT:          %48 = arith.cmpi ne, %46, %47 : i32
+// CHECK-NEXT:          %49 = "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> i32
+// CHECK-NEXT:          %50 = arith.constant 0 : i32
+// CHECK-NEXT:          %51 = arith.cmpi sle, %49, %50 : i32
+// CHECK-NEXT:          %52 = arith.ori %48, %51 : i1
+// CHECK-NEXT:          scf.if %52 {
 // CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
 // CHECK-NEXT:          }
@@ -1057,7 +1086,7 @@
 // CHECK-LABEL:     func.func private @cld_suite_register(memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {module = "cld_suite_cap"}
 // CHECK-LABEL:     func.func private @cld_suite_initialize(memref<i32>, memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {module = "cld_suite_cap"}
 // CHECK-LABEL:     func.func private @cld_suite_finalize(memref<i32>, memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {module = "cld_suite_cap"}
-// CHECK-LABEL:     func.func private @cld_suite_physics(memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {module = "cld_suite_cap"}
+// CHECK-LABEL:     func.func private @cld_suite_physics(memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {module = "cld_suite_cap"}
 // CHECK-LABEL:     func.func private @cld_suite_timestep_init_physics(memref<i32>, memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {module = "cld_suite_cap"}
 // CHECK-LABEL:     func.func private @cld_suite_timestep_final_physics(memref<i32>, memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {module = "cld_suite_cap"}
 // CHECK-LABEL:     func.func private @cld_suite_init_physics(memref<!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {module = "cld_suite_cap"}
