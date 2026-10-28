@@ -122,6 +122,82 @@ def test_device_views_copied_per_call(tmp_path):
     assert not re.search(r"enter data [^\n]*lc_constituent_array", host)
 
 
+_SCHEME_TMPL = """\
+[ccpp-table-properties]
+  name = {name}
+  type = scheme
+[ccpp-arg-table]
+  name = {name}_run
+  type = scheme
+{args}[errmsg]
+  standard_name = ccpp_error_message
+  units = none
+  dimensions = ()
+  type = character
+  kind = len=*
+  intent = out
+[errcode]
+  standard_name = ccpp_error_code
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+"""
+
+
+def _arg(local, std, intent, extra=""):
+    return (f"[{local}]\n  standard_name = {std}\n  units = kg kg-1\n"
+            "  dimensions = (horizontal_dimension, vertical_layer_dimension)\n"
+            f"  type = real\n  kind = kind_phys\n  intent = {intent}\n{extra}")
+
+
+def test_device_suite_var_not_confused_with_same_named_view(tmp_path):
+    """A device scheme's suite-owned arg whose local name matches a
+    constituent view's (Kessler: dry `qv` vs the moist view `qv`) gets no
+    blanket copy() region; that region named the view, not the suite
+    variable."""
+    ex = "examples/constituents_dim"
+    metas = {
+        "to_work": _SCHEME_TMPL.format(name="to_work", args=(
+            # inout, as Kessler's dry_to_wet makes the moist view.
+            _arg("qbase", "test_constituent_one", "inout", "  advected = True\n")
+            + _arg("qwork", "test_constituent_one_workspace", "out"))),
+        "dev_scheme": _SCHEME_TMPL.format(name="dev_scheme", args=_arg(
+            "qbase", "test_constituent_one_workspace", "inout",
+            "  memory_space = device\n")),
+    }
+    for name, text in metas.items():
+        (tmp_path / f"{name}.meta").write_text(text)
+    suite_xml = tmp_path / "s.xml"
+    suite_xml.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n<suite name="s" version="2.0">\n'
+        '  <group name="g">\n    <scheme>register_consts</scheme>\n'
+        '    <scheme>to_work</scheme>\n    <scheme>dev_scheme</scheme>\n'
+        '  </group>\n</suite>\n')
+    tool = ccppMain()
+    options_db = tool.default_options_db()
+    options_db.update({
+        "suites": [str(suite_xml)],
+        "scheme_files": [f"{ex}/register_consts.meta"]
+                        + [str(tmp_path / f"{n}.meta") for n in metas],
+        "host_files": [f"{ex}/host_data.meta", f"{ex}/test_host.meta"],
+        "host_name": "test_host",
+        "out": str(tmp_path / "out"),
+        "tempdir": str(tmp_path / "tmp"),
+        "verbose": 0,
+        "directive": "acc",
+    })
+    result = tool.run(options_db)
+    suite = next(open(os.path.join(options_db["out"], p)).read()
+                 for p in result.written if p.endswith("s_cap.F90"))
+    suite = _unwrapped(suite)
+    # The view is a block arg named qbase; dev_scheme's qbase is the suite var.
+    assert re.search(r"intent\(in(out)?\) :: qbase\(:, :\)", suite)
+    assert re.search(r"call dev_scheme_run\([^)]*qbase=qwork", suite)
+    assert not re.search(r"!\$acc data copy[^\n]*\bqbase\b", suite)
+    assert re.search(r"!\$acc enter data create\(qwork\)", suite)
+
+
 def test_multi_instance_views(tmp_path):
     suite, host = _generate(
         tmp_path, "instances_advection", "cld_suite.xml",

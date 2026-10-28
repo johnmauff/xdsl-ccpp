@@ -392,6 +392,18 @@ class GPUDataPass(ModulePass):
             and arg.getAttr("memory_space") == "device"
         }
 
+    def _get_suite_owned_args(self, scheme_name, table_name, meta_data):
+        """Return the local names of the SuiteOwned args in this scheme's
+        <table_name> argument table."""
+        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+            return set()
+        return {
+            arg.name
+            for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
+            if arg.hasAttr("ownership_kind")
+            and arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+        }
+
     def _emit_constituent_view_copies(self, calls, meta_data, arg_by_name):
         """Wrap each call that takes a device constituent view in its own
         copy() region over those views.
@@ -632,11 +644,20 @@ class GPUDataPass(ModulePass):
                 view_names = self._get_device_constituent_views(
                     scheme_name, table_name, meta_data
                 )
+                # SuiteOwned args are suite-cap module variables with their
+                # own residency (suite_owned.py's enter data create and
+                # updates), never block args: a block arg with the same
+                # name is a different variable (Kessler's dry qv vs the
+                # moist constituent view qv).
+                suite_owned_names = self._get_suite_owned_args(
+                    scheme_name, table_name, meta_data
+                )
                 for local_name, host_var in device_vars.items():
                     if (
                         host_var is None
                         and local_name not in diverged_local_names
                         and local_name not in view_names
+                        and local_name not in suite_owned_names
                     ):
                         all_local_vars.add(local_name)
 
