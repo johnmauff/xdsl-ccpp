@@ -156,7 +156,7 @@ _SUITE_OWNED_SCHEME = f"""\
   type = scheme
 [ my_array ]
   standard_name = test_sync_so_var
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys

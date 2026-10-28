@@ -162,6 +162,20 @@ def _collect_constituent_info(meta_data):
     return dynamic_array_names, fixed_advected, references_count
 
 
+def host_bound_constituent_std_names(meta_data) -> frozenset:
+    """Std names of the advected scheme args the host cap passes in.
+
+    These are the fixed-advected constituents the cap registers itself
+    (_collect_constituent_info, after its dry-air filter). As in capgen, a
+    scheme arg with one of these names is a view of the host cap's
+    constituent array in every phase, never storage of the suite cap. An
+    advected arg whose name was filtered out (a *_wrt_dry_air form produced
+    by wet_to_dry_* schemes) stays suite-owned.
+    """
+    _, fixed_advected, _ = _collect_constituent_info(meta_data)
+    return frozenset(std_name for std_name, *_ in fixed_advected)
+
+
 
 def _generate_constituent_api(
     camel_name: str,
@@ -315,7 +329,7 @@ def _generate_constituent_api(
         module_var_ops.append(
             ModuleVarOp("lc_const_props", "type", ddt_name="ccpp_constituent_prop_ptr_t", is_target=True, rank=1)
         )
-        for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
+        for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu, _base in scratch_vars:
             module_var_ops.append(
                 ModuleVarOp(lc_name, "real", kind="kind_phys",
                             is_pointer=bool(_cst_std), rank=rank)
@@ -368,7 +382,7 @@ def _generate_constituent_api(
             DdtComponentDeclOp("lc_const_props", "type",
                                ddt_name="ccpp_constituent_prop_ptr_t", rank=1)
         )
-        for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
+        for lc_name, rank, _alloc_dims, _cst_std, _needs_gpu, _base in scratch_vars:
             component_ops.append(
                 DdtComponentDeclOp(lc_name, "real", kind="kind_phys",
                                    is_pointer=bool(_cst_std), rank=rank)
@@ -491,7 +505,7 @@ def _generate_constituent_api(
     ]
     if needs_const_tend:
         da_body_ops.append(SafeDeallocOp(ref("lc_const_tend")))
-    for lc_name, _rank, _alloc_dims, _cst_std, _needs_gpu in scratch_vars:
+    for lc_name, _rank, _alloc_dims, _cst_std, _needs_gpu, _base in scratch_vars:
         lc_ref = ref(lc_name)
         if _cst_std:
             da_body_ops.append(NullifyPointerOp(lc_ref))
@@ -792,11 +806,23 @@ def _generate_constituent_api(
             ic_body_ops.append(RawFortranLinesOp(
                 f"#ifdef USE_GPU\n!$acc enter data copyin({ref('lc_const_tend')})\n#endif"
             ))
-    for lc_name, _rank, alloc_dims, _cst_std, needs_gpu in scratch_vars:
+    for lc_name, _rank, alloc_dims, _cst_std, needs_gpu, base in scratch_vars:
         lc_ref = ref(lc_name)
         if _cst_std:
-            # Use cam_constituents_obj%const_index for hash lookup instead of
-            # linear scan; block construct avoids polluting outer scope.
+            # A constituent view: a pointer slice of its base array
+            # (lc_constituent_array for an advected arg, lc_const_tend for a
+            # tendency), found with cam_constituents_obj%const_index; the
+            # block construct avoids polluting the outer scope. The cap
+            # registered every advected constituent itself, so a missing
+            # one is an error; a tendency's base constituent may be absent.
+            if base == "lc_constituent_array":
+                not_found_ops = [RawFortranLinesOp(
+                    "errflg = 1\n"
+                    f"errmsg = 'ccpp_initialize_constituents: no constituent {_cst_std}'\n"
+                    "return"
+                )]
+            else:
+                not_found_ops = [RawFortranLinesOp("errflg = 0")]
             ic_body_ops.append(ScopedBlockOp(
                 ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"],
                 [
@@ -811,13 +837,13 @@ def _generate_constituent_api(
                             _int_var_cmp_zero("errflg", "eq"),
                             _int_var_cmp_zero("lc_tend_idx", "sgt"),
                         ),
-                        with_body_ops=[PointerSliceAssignOp(lc_ref, ref('lc_const_tend'), "lc_tend_idx")],
-                        without_body_ops=[RawFortranLinesOp("errflg = 0")],
+                        with_body_ops=[PointerSliceAssignOp(lc_ref, ref(base), "lc_tend_idx")],
+                        without_body_ops=not_found_ops,
                     ),
                 ],
             ))
             # No separate enter-data here: lc_name is a pointer slice into
-            # lc_const_tend, already made resident above -- OpenACC tracks
+            # its base array, already made resident above -- OpenACC tracks
             # residency by the underlying array's actual memory, not the
             # pointer name used to reference a slice of it.
         else:

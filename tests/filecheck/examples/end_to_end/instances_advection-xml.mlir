@@ -14,7 +14,6 @@
 // CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use apply_constituent_tendencies, only: apply_constituent_tendencies_run
 // CHECK-NEXT:    use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t
-// CHECK-NEXT:    use ccpp_scheme_utils, only: ccpp_constituent_indices
 // CHECK-NEXT:    use cld_liq, only: cld_liq_init
 // CHECK-NEXT:    use cld_liq, only: cld_liq_register
 // CHECK-NEXT:    use cld_liq, only: cld_liq_run
@@ -27,9 +26,7 @@
 // CHECK-NEXT:    character(len=16), parameter :: const_initialized = 'initialized'
 // CHECK-NEXT:    character(len=16), parameter :: const_uninitialized = 'uninitialized'
 // CHECK-NEXT:    real(kind=kind_phys) :: tcld
-// CHECK-NEXT:    real(kind=kind_phys), pointer :: cld_liq_array(:, :) => null()
 // CHECK-NEXT:    real(kind=kind_phys), allocatable :: cld_liq_tend(:, :)
-// CHECK-NEXT:    integer :: lc_const_indices(1) = [ 1 ]
 // CHECK-NEXT:    public :: cld_suite_register
 // CHECK-NEXT:    public :: cld_suite_initialize
 // CHECK-NEXT:    public :: cld_suite_finalize
@@ -96,11 +93,7 @@
 // CHECK-NEXT:      integer, intent(in) :: ninstances
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
-// CHECK:           call ccpp_constituent_indices( &
-// CHECK-NEXT:          [character(len=29) :: "cloud_liquid_dry_mixing_ratio"], &
-// CHECK-NEXT:          lc_const_indices, errcode, errmsg)
-// CHECK-NEXT:      if (errcode /= 0) return
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(cld_liq_tend)) then
 // CHECK-NEXT:        allocate(cld_liq_tend(ncols, pver))
@@ -118,13 +111,14 @@
 // CHECK-NEXT:        call cld_liq_init(tfreeze=tfreeze, tcld=tcld, errmsg=errmsg, errcode=errcode)
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine cld_suite_init_physics
-// CHECK-LABEL:   subroutine cld_suite_physics(ncol, timestep, temp, qv, ps, cld_liq_tend, const_tend, const,     &
-// CHECK:           instance, ninstances, errmsg, errcode)
+// CHECK-LABEL:   subroutine cld_suite_physics(ncol, timestep, temp, qv, ps, cld_liq_array, cld_liq_tend,         &
+// CHECK:           const_tend, const, instance, ninstances, errmsg, errcode)
 // CHECK-NEXT:      integer, intent(in) :: ncol
 // CHECK-NEXT:      real(kind=kind_phys), intent(in) :: timestep
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: temp(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: qv(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(in) :: ps(:)
+// CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: cld_liq_array(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: cld_liq_tend(:, :)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: const_tend(:, :, :)
 // CHECK-NEXT:      real(kind=kind_phys), target, intent(inout) :: const(:, :, :)
@@ -143,7 +137,6 @@
 // CHECK-NEXT:          "' in cld_suite_physics"
 // CHECK-NEXT:        errcode = 1
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      cld_liq_array => const(:, :, lc_const_indices(1))
 // CHECK-NEXT:      if (errcode .eq. 0) then
 // CHECK-NEXT:        call cld_liq_run(ncol=ncol, timestep=timestep, tcld=tcld, temp=temp, qv=qv, ps=ps,          &
 // CHECK-NEXT:          cld_liq_array=cld_liq_array, cld_liq_tend=cld_liq_tend, errmsg=errmsg, errcode=errcode)
@@ -152,18 +145,13 @@
 // CHECK-NEXT:        call apply_constituent_tendencies_run(const_tend=const_tend, const=const, errcode=errcode,  &
 // CHECK-NEXT:          errmsg=errmsg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      nullify(cld_liq_array)
 // CHECK-NEXT:    end subroutine cld_suite_physics
 // CHECK-LABEL:   subroutine cld_suite_timestep_init_physics(instance, ninstances, errflg, errmsg)
 // CHECK:           integer, intent(in) :: instance
 // CHECK-NEXT:      integer, intent(in) :: ninstances
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK:           call ccpp_constituent_indices( &
-// CHECK-NEXT:          [character(len=29) :: "cloud_liquid_dry_mixing_ratio"], &
-// CHECK-NEXT:          lc_const_indices, errflg, errmsg)
-// CHECK-NEXT:      if (errflg /= 0) return
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(ccpp_suite_state)) then
 // CHECK-NEXT:        allocate(ccpp_suite_state(ninstances))
@@ -235,6 +223,7 @@
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: lc_constituent_array(:, :, :) => null()
 // CHECK-NEXT:      real(kind=kind_phys), allocatable :: lc_const_tend(:, :, :)
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), allocatable :: lc_const_props(:)
+// CHECK-NEXT:      real(kind=kind_phys), pointer :: lc_cld_liq_array(:, :) => null()
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: lc_cld_liq_tend(:, :) => null()
 // CHECK-NEXT:      character(len=29) :: cam_model_const_stdnames(1) = [ character(len=29) :: 'cloud_liquid_dry_mixing_ratio' ]
 // CHECK-NEXT:      integer :: cam_model_const_indices(1) = -1
@@ -324,6 +313,7 @@
 // CHECK-NEXT:        if (trim(suite_part) .eq. 'physics') then
 // CHECK-NEXT:          call cld_suite_physics(ncol, dt, phys_state(instance)%temp(lb:ub, 1:pver),                &
 // CHECK-NEXT:            phys_state(instance)%q(:, :, index_qv), phys_state(instance)%ps(lb:ub),                 &
+// CHECK-NEXT:            lc_instances(instance)%lc_cld_liq_array(lb:ub, 1:pver),                                 &
 // CHECK-NEXT:            lc_instances(instance)%lc_cld_liq_tend(lb:ub, 1:pver),                                  &
 // CHECK-NEXT:            lc_instances(instance)%lc_const_tend, lc_instances(instance)%lc_constituent_array,      &
 // CHECK-NEXT:            instance, ninstances, errmsg, errflg)
@@ -539,6 +529,7 @@
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_const_props)) deallocate(lc_instances(instance)%lc_const_props)
 // CHECK-NEXT:      if (associated(lc_instances(instance)%lc_constituent_array)) nullify(lc_instances(instance)%lc_constituent_array)
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_const_tend)) deallocate(lc_instances(instance)%lc_const_tend)
+// CHECK-NEXT:      nullify(lc_instances(instance)%lc_cld_liq_array)
 // CHECK-NEXT:      nullify(lc_instances(instance)%lc_cld_liq_tend)
 // CHECK-NEXT:      call lc_instances(instance)%cam_constituents_obj%reset()
 // CHECK-NEXT:    end subroutine Cld_ccpp_deallocate_dynamic_constituents
@@ -668,6 +659,21 @@
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_const_tend)) deallocate(lc_instances(instance)%lc_const_tend)
 // CHECK-NEXT:      allocate(lc_instances(instance)%lc_const_tend(ncols, pver, size(lc_instances(instance)%lc_all_constituents)))
 // CHECK-NEXT:      lc_instances(instance)%lc_const_tend = 0.0_kind_phys
+// CHECK-NEXT:      block
+// CHECK-NEXT:        integer :: lc_tend_idx
+// CHECK-NEXT:        character(len=512) :: lc_tend_errmsg
+// CHECK-NEXT:        nullify(lc_instances(instance)%lc_cld_liq_array)
+// CHECK-NEXT:        call lc_instances(instance)%cam_constituents_obj%const_index(lc_tend_idx,                   &
+// CHECK-NEXT:          'cloud_liquid_dry_mixing_ratio', errcode=errflg, errmsg=lc_tend_errmsg)
+// CHECK-NEXT:        if (errflg .eq. 0 .and. lc_tend_idx .gt. 0) then
+// CHECK-NEXT:          lc_instances(instance)%lc_cld_liq_array => lc_instances(instance)%lc_constituent_array(:, &
+// CHECK-NEXT:            :, lc_tend_idx)
+// CHECK-NEXT:        else
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:          errmsg = 'ccpp_initialize_constituents: no constituent cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:          return
+// CHECK-NEXT:        end if
+// CHECK-NEXT:      end block
 // CHECK-NEXT:      block
 // CHECK-NEXT:        integer :: lc_tend_idx
 // CHECK-NEXT:        character(len=512) :: lc_tend_errmsg

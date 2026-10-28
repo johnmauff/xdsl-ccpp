@@ -7,6 +7,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp import TableTypeKind
+from xdsl_ccpp.transforms.constituent_cap import host_bound_constituent_std_names
 from xdsl_ccpp.transforms.util.cap_shared import (
     _build_host_var_map,
     _collect_host_block_std_names,
@@ -51,12 +52,28 @@ class ArgOwnershipPass(ModulePass):
 
         host_var_map_lc = _build_host_var_map(meta_data, include_host=False)
         host_block_std_names = _collect_host_block_std_names(meta_data)
+        host_bound_constituents = host_bound_constituent_std_names(meta_data)
 
+        errors = []
         for _table_prop_op, arg_table_op in iter_arg_tables(ccpp_mod, table_type=TableTypeKind.Scheme):
+            table_name = arg_table_op.table_name.data
             for arg_op in arg_table_op.body.ops:
                 if not isa(arg_op, ccpp.ArgumentOp):
                     continue
                 ownership = classify_arg_ownership(
-                    arg_op, host_var_map_lc, host_block_std_names
+                    arg_op, host_var_map_lc, host_block_std_names,
+                    host_bound_constituents,
                 )
                 arg_op.properties["ownership_kind"] = ownership.ownership_kind
+                # A constituent's data exists only once the constituents are
+                # initialized, after the _register phase.
+                if (table_name.endswith("_register")
+                        and ownership.ownership_kind.data == ccpp.ArgOwnershipKind.CapScratch
+                        and arg_op.advected is not None):
+                    errors.append(
+                        f"  '{table_name}': advected argument "
+                        f"'{arg_op.arg_name.data}' ({arg_op.standard_name.data}) -- "
+                        f"constituent data is not available in the _register phase."
+                    )
+        if errors:
+            raise ValueError("Invalid constituent arguments:\n" + "\n".join(errors))

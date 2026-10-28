@@ -1,7 +1,8 @@
 """Unit tests for SuiteOwned GPU residency.
 
-SuiteOwned scheme args (advected/allocatable arrays, e.g. examples/
-advection_flat_host's cld_liq_array) are allocated as module-scope arrays
+SuiteOwned scheme args (allocatable arrays; examples/advection_flat_host's
+advected cld_liq_array was one until advected args became views of the host
+cap's constituent array) are allocated as module-scope arrays
 inside the generated <suite>_suite_cap module (suite_cap.py/
 suite_variable_model.py) -- a structurally different allocation path from
 CapScratch's cap_var_map in ccpp_cap.py, and from HostMatched args' present/
@@ -63,7 +64,7 @@ _RESIDENT_SCHEME = f"""\
   type = scheme
 [ my_array ]
   standard_name = test_suite_owned_var
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -81,7 +82,7 @@ _NON_RESIDENT_SCHEME = f"""\
   type = scheme
 [ my_array2 ]
   standard_name = test_suite_owned_var2
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -102,7 +103,7 @@ _SECOND_OCCURRENCE_SCHEME = f"""\
   type = scheme
 [ my_array3 ]
   standard_name = test_suite_owned_var3
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -119,7 +120,7 @@ _SECOND_OCCURRENCE_SCHEME = f"""\
   intent = in
 [ my_array3_run ]
   standard_name = test_suite_owned_var3
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_loop_extent, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -185,7 +186,7 @@ _PRODUCER_HOST_SCHEME = f"""\
   type = scheme
 [ my_array5 ]
   standard_name = test_suite_owned_var5
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -202,7 +203,7 @@ _CONSUMER_DEVICE_SCHEME = f"""\
   type = scheme
 [ my_array5_b ]
   standard_name = test_suite_owned_var5
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -224,7 +225,7 @@ _PRODUCER_DEVICE_SCHEME = f"""\
   type = scheme
 [ my_array6 ]
   standard_name = test_suite_owned_var6
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -242,7 +243,7 @@ _CONSUMER_HOST_SCHEME = f"""\
   type = scheme
 [ my_array6_b ]
   standard_name = test_suite_owned_var6
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -314,14 +315,14 @@ _PRODUCER_HOST_SCHEME_MULTI = f"""\
   type = scheme
 [ my_array5 ]
   standard_name = test_suite_owned_var5
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
   intent = out
 [ my_array7 ]
   standard_name = test_suite_owned_var7
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -338,7 +339,7 @@ _CONSUMER_DEVICE_SCHEME_MULTI = f"""\
   type = scheme
 [ my_array5_b ]
   standard_name = test_suite_owned_var5
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -346,7 +347,7 @@ _CONSUMER_DEVICE_SCHEME_MULTI = f"""\
   intent = in
 [ my_array7_b ]
   standard_name = test_suite_owned_var7
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -364,7 +365,7 @@ _COLLISION_SCHEME_A = f"""\
   type = scheme
 [ dup_name ]
   standard_name = test_collision_var_a
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -382,7 +383,7 @@ _COLLISION_SCHEME_B = f"""\
   type = scheme
 [ dup_name ]
   standard_name = test_collision_var_b
-  advected = .true.
+  allocatable = .true.
   units = kg kg-1
   dimensions = (horizontal_dimension, vertical_layer_dimension)
   type = real | kind = kind_phys
@@ -418,7 +419,7 @@ class TestSuiteOwnedResidency:
         )
         assert "real(kind=kind_phys), allocatable :: my_array(:, :)" in fortran
         decl_block = fortran.split("real(kind=kind_phys), allocatable :: my_array(:, :)")[1]
-        decl_block = decl_block.split("integer :: lc_const_indices")[0]
+        decl_block = decl_block.split("public ::")[0]
         assert "#ifdef USE_GPU" in decl_block
         assert "!$acc declare create(my_array)" in decl_block
         assert "#endif" in decl_block

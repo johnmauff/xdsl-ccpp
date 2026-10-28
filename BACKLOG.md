@@ -46,21 +46,38 @@ measured data, and will drift as items are reassessed.
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
-| `cloud-water-ncdata-diffs` | 5-10 days (cause not yet known) | M |
+| `cloud-water-ncdata-diffs` | <1 day (cause found and patched; confirm with a cloud_water run) | XS |
+| `advected-constituent-host-binding` | 6-12 days (classification, host-cap constituent views, removing the suite-owned pointer path, GPU residency, the advection examples' non-run uses; then a full regression) | M |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
 | `cam-sima-build-time` | 3-6 days per lever (nvhpc measurement first) | S-M |
-| `acc-meta-residency-check` | 2-4 days | S |
+| `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
 | `gpu-conversion-residency` | 2-5 days (after `xdsl-upgrade`) | S-M |
 | `xdsl-upgrade` | 2-5 days, depending on API changes | S-M |
+| `constituent-device-residency` | 5-10 days (enter/exit and entry/exit syncs are small; the per-call last-writer tracking across views, the whole array and tendency appliers is most of it; plus a GPU regression) | M |
+| `gpu-ddt-deep-copy-residency` | 6-12 days (component discovery from DDT metadata, enter/exit/update sequences for acc and omp, partial-update routing, a new GPU example; allocatable components only); phase 2 (nested, polymorphic, for RRTMGP) +5-10 days | M (L with phase 2) |
+| `gpu-fphystest-pumas` | umbrella, ~30-50 days in total: the sum of its steps below plus `acc-derive-memory-space`, `constituent-device-residency` and `gpu-ddt-deep-copy-residency` phase 1; plus ESCOMP/PUMAS review time | XL |
+| `gpu-fphystest-rrtmgp` | umbrella, ~50-80 days in total: its steps below plus `acc-derive-memory-space`, `constituent-device-residency` and `gpu-ddt-deep-copy-residency` phases 1-2 (items shared with `gpu-fphystest-pumas` count once if both are done) | XL-XXL |
+| `gpu-pumas-testmod` | 1-2 days | XS |
+| `pumas-module-props-device` | <1 day of code (plus ESCOMP/PUMAS review) | XS |
+| `gpu-port-pumas-interface-schemes` | 2-5 days (4 small schemes: reshapes and limiters; plus `micro_pumas_ccpp_run` directives and ESCOMP/PUMAS review) | S |
+| `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
+| `gpu-fphystest-kessler` | umbrella, ~25-45 days in total: `gpu-sync-intent-aware`, `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
+| `gpu-sync-intent-aware` | 2-4 days | S |
+| `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
+| `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
+| `suite-cap-loop-gpu-sync` | 3-5 days | S |
+| `acc-derive-memory-space` | 4-7 days (hand-written `.meta` pairing, `default(present)`, DDT components, precedence and warnings; entry-point body only; includes `acc-meta-residency-check`'s 2-4) | S-M |
 | `scheme-io-capture-multi-call-site` | 1-3 days | XS-S |
 | `scheme-io-capture-optional-args` | 2-4 days | S |
 | `scheme-io-capture-fixture-storage` | 2-4 days engineering (once a storage approach is picked — the decision itself is unquantifiable) | S |
 | `scheme-io-capture-staleness-check` | 3-6 days | S-M |
 | `scheme-io-capture-netcdf` | 6-10 days | M |
+| `scheme-io-capture-ddt-args` | 4-8 days (component discovery, recursive capture/restore of allocatable and fixed-size numeric components; or a constituent-properties special case first, ~2-3 days) | S-M |
+| `scheme-io-capture-group-replay` | 6-12 days (group-level capture point incl. suite module state, driver with host-cap residency emulation, GPU build and compare; reuses the v1/v2 capture library and tolerance code) | M |
 | `scheme-io-capture-ctest-automation` | 6-10 days (genuinely new ground — this repo has zero precedent for a dynamically-registered CMake test today) | M |
 | `call-site-arg-rebind` | 4-8 days | S-M |
 | `process-split-region` | 15-25 days (CPU only; assumes `process-split-combine-policy` is settled first) | L |
@@ -157,7 +174,8 @@ separately), CHANGELOG.md L5850.
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
-| `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | M; xdsl54g (only run with this case), hidden by `derecho-false-run-pass` | -- |
+| `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | XS; cause found 2026-10-28 (advected args never bound to the constituents); interim fix uncommitted, awaiting a run | -- |
+| `advected-constituent-host-binding` | Pass `advected` scheme args from the host's constituent array, as capgen-v1 does, instead of making them suite-owned arrays aliased by pointer | M; found 2026-10-28; replaces the interim `cloud-water-ncdata-diffs` fix | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
@@ -260,8 +278,40 @@ RUN` (xdsl56g, xdsl56n). Close once they also pass with 1e-9.
 **`cloud-water-ncdata-diffs`** -- gnu `cam-outfrq_cloud_water_derecho`
 (xdsl54g) differs at every point: `water_vapor_mixing_ratio...` max 2.0E-03,
 `gridbox_total_cloud_liquid_water_mixing_ratio...` max 4.6. A real error.
-Possibly related to `F2000_C7/cam7`'s missing `cloud_water_paths` physics
-(deferred upstream); not investigated.
+Cause found 2026-10-28 by comparing the caps with capgen-v1's:
+`convective_cloud_water` and `cloud_water_paths` declare `ls_liq`/`ls_ice`
+`advected = true`, which makes them suite-owned arrays. Those are only
+pointed into the constituent array when some scheme in the suite takes
+`ccpp_constituents`, and none in cloud_water does, so the schemes read
+arrays nothing filled. Interim fix (uncommitted): the suite cap adds the
+constituent array to `_run` when needed
+(`ConstituentsMixin._synthesize_constituent_array_arg`, with
+`SYNTHESIZED_ARG_STD_NAMES` in `cap_shared.py`). The caps now match
+capgen-v1's; still to do is confirming with a cloud_water run. The
+interim fix is meant to be replaced by `advected-constituent-host-binding`.
+
+**`advected-constituent-host-binding`** -- found 2026-10-28. capgen-v1
+treats an `advected = true` scheme arg as host data: the host cap passes
+that constituent's slice of the constituent object
+(`cam_constituents_obj%vars_layer(:, :, idx)`) and the suite cap owns
+nothing. xdsl_ccpp instead classifies it `SuiteOwned`
+(`classify_arg_ownership`, `cap_shared.py`) and then compensates: a
+pointer is aliased into the constituent array at the start of `_run`
+(`ConstituentsMixin._build_constituent_sync_ops`), with a value copy for
+names also used outside `_run`, and the special case is repeated in
+`module_assembly`, `suite_owned`, `suite_cap` (`lc_const_indices`) and the
+print backend. That design caused `cloud-water-ncdata-diffs`, and its
+interim fix adds to it (a synthesized argument and a local-name lookup
+table). To do: classify these args as host-provided; have the host cap
+pass each one as a view of `lc_constituent_array` looked up by standard
+name (as it already does for constituent tendencies, e.g. `lc_qtnd`);
+delete the suite-side pointer path, the interim fix and its name table.
+Open questions: non-`_run` uses (`examples/advection`'s `cld_ice_array`
+in `_init`, before the constituent data exist), GPU residency (these
+arrays now go through the suite-owned residency code), and the
+multi-instance constituent bundle. Check with `capcmp.py` against
+capgen-v1 on every test suite, the unit and filecheck suites, and a full
+CAM-SIMA regression.
 
 **`zm-ncdata-diffs`** -- `SMS_Ln2...cam-outfrq_zm_derecho` differs from its
 (gnu-made) snapshot under gnu, intel and nvhpc alike: 16-18 variables in
@@ -1021,6 +1071,57 @@ scope (the write race AND unbounded multi-task volume, by restricting
 capture to one task) with a simpler mechanism than the task-id-in-
 filename approach originally envisioned. CHANGELOG.md L12426.
 
+**ID: `scheme-io-capture-ddt-args`. Capture derived-type arguments.**
+Added 2026-10-28. The capture pass's type scope is {integer, logical,
+real(kind_phys)} x rank 0-3 (`scheme_io_capture_pass.py`, module
+docstring); a derived-type argument is skipped, and the generated driver
+declares and passes it uninitialized, so a scheme that reads one replays
+wrong. First case: `geopotential_temp_run`'s `cprops`
+(`ccpp_constituent_prop_ptr_t`), one of the 12 Kessler GPU ports
+(`gpu-fphystest-kessler`); `qneg`'s properties appear only in its
+timestep-final/final phases. Later cases: PUMAS's `micro_proc_rates`
+(`proc_rates_type`, 119 allocatable components) and the rte-rrtmgp
+objects (`gpu-fphystest-pumas`, `gpu-fphystest-rrtmgp`). Approach:
+capture the components the scheme can read, found from the type's
+definition (DDT `.meta` table, or fparser2 on the defining module):
+allocatable and fixed-size numeric components recursively, allocation
+status and bounds included; rebuild the object in the driver before the
+call. The constituent properties are a pointer type wrapping
+`ccpp_constituent_properties_t`, whose fields are set through
+type-bound procedures, so a special case that captures the property
+values (standard name, molar mass, water-species and dry/moist flags,
+minimum value) and reconstructs them through the same setters may be
+simpler than generic recursion. Polymorphic (`class(...)`) components
+are out of scope at first.
+
+**ID: `scheme-io-capture-group-replay`. Replay a whole generated group
+subroutine.** Added 2026-10-28. Per-scheme replay checks one scheme's
+numerics but not the data movement the generated suite cap does between
+schemes on the GPU (`copy`/`present` regions, `update self/device`
+around CPU schemes), which is where `gpu-sync-intent-aware` and
+`constituent-device-residency` can go wrong. Instead, capture one
+group's subroutine (e.g. `kessler_test_physics_before_coupler`) on the
+CPU: every argument at entry, the suite cap's module variables the group
+reads (`exner`, `theta`, `qv_dry`, `temp_prev`, ...), and every
+`intent(out/inout)` value at exit. Generate a driver that restores them,
+emits the residency the host cap would establish around the call
+(`enter data`/`exit data` for the variables `GPUCcppCapPass` makes
+resident; the generator knows them), calls the real generated group
+subroutine linked with the real scheme objects, and compares against the
+capture with the existing tolerance config. Built with `-acc` on a GPU
+node, it runs in minutes; it generalizes `examples/kessler`'s
+hand-written `run_cpu_gpu_parity.sh`/`check_cpu_gpu_parity.py` (six
+global sums, bit-for-bit only, one suite) to any suite and whole fields.
+Open: replay at the group level (driver emulates the host cap's
+residency and constituent views) vs at `ccpp_physics_run` (covers the
+host cap's own directives, but its inputs are host-model module
+variables); suite state that crosses phases (capture it at group entry,
+or replay timestep_init -> run -> timestep_final). Needs
+`scheme-io-capture-ddt-args` for groups with derived-type arguments and
+a decision on `scheme-io-capture-fixture-storage`. A flattened composite
+has no subroutine of its own; package caps (2f) would allow
+package-scoped replay later.
+
 
 ## Someday-maybe: composite schemes (packages with slots and hooks)
 
@@ -1214,7 +1315,9 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   `!$acc present(...)`/`deviceptr(...)` clauses imply (the derivation
   `fparser2_to_meta.py` already performs for `!$ccpp`-tagged sources), and
   report mismatches the same way (warn-only first, like the existing
-  check). Needs no GPU, would have flagged the `cld_ice` bug at generation
+  check). Subsumed by `acc-derive-memory-space` (2026-10-28), which
+  derives `memory_space` from the source and warns where an explicit
+  `.meta` value disagrees; do it as that item's first stage. Needs no GPU, would have flagged the `cld_ice` bug at generation
   time, and applies equally to CAM-SIMA's hand-written atmospheric_physics
   `.meta`.
 - `gpu-ci` — **CI that actually runs generated OpenACC on a GPU.** GitHub's
@@ -1249,3 +1352,381 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
   change, full test suites + a CAM-SIMA regression run. Enables
   `gpu-conversion-residency` with upstream dialects and, later, replacing
   xdsl_ccpp's hand-written `Acc*`/`Omp*` data-directive ops.
+- `constituent-device-residency` — **Keep the constituents on the device
+  across calls (performance).** Since `advected-constituent-host-binding`,
+  `generate-gpu-data` wraps each scheme call that takes a
+  `memory_space = device` constituent view in its own
+  `!$acc data copy(<view>)` region
+  (`GPUDataPass._emit_constituent_view_copies`). That is correct by
+  construction but moves each view host→device→host on every device call,
+  every step. Instead: `enter data` `lc_constituent_array` once in
+  `<host>_ccpp_initialize_constituents` and `exit data delete` it in the
+  deallocate routine; `update device` at physics entry and `update self`
+  before returning to the host model; inside the suite, track per call
+  which side last wrote each constituent and `update self`/`update device`
+  only where that changes, run device calls under `present`. The hard
+  part is aliasing: the same memory is reached through per-constituent
+  views, the whole array (`ccpp_constituents`, e.g. `qneg`) and the
+  tendency appliers, so the existing per-cap-var divergence routing
+  (`find_diverged_capscratch_vars`) must treat a view and the whole array
+  as overlapping. The host model's syncs also change if CAM's dynamics
+  moves to the GPU. A missed sync gives silently wrong values, so it needs
+  a GPU Kessler/advection regression with physics checks. Related: a
+  device-resident whole-array `ccpp_constituents` arg still makes
+  `lc_constituent_array` resident (`framework_var_residency`), and a
+  per-call `copy` of a view of it then degenerates to `present` with no
+  sync; no current suite has that mix. Worth doing once GPU physics
+  coverage is large enough for the transfers to matter.
+- `gpu-ddt-deep-copy-residency` — **Device residency for derived-type
+  arguments with allocatable components.** Found 2026-10-28 while scoping
+  a GPU PUMAS test. The GPU passes handle a derived type only through its
+  members as host variables (`phys_state%T` etc., via
+  `_build_ddt_resolution_maps` in `gpu_ccpp_cap_pass.py`); a whole
+  derived-type argument gets no residency. Making one resident takes a
+  deep copy: `enter data copyin(x)` of the parent, then `enter data` of
+  each allocated component (attach), the reverse on exit, and `update`
+  of individual components where the host reads or writes them (e.g.
+  diagnostics). Motivating case: PUMAS's `micro_proc_rates`
+  (`proc_rates_type`, `micro_pumas_diags.F90`, 119 allocatable
+  components), produced by `micro_pumas_ccpp` and read by later schemes.
+  `micro_pumas_tend`'s own data region `copyin`s it and `copyout`s its
+  components every call; with the parent and components already present
+  those clauses would move nothing. Needs: which components are
+  device-resident, derived from clauses on the components at the entry
+  point (as `micro_pumas_tend` writes them today,
+  `copyout(proc_rates%qcsevap, ...)`) by `acc-derive-memory-space`
+  rather than declared in `.meta`, the component list from the type's definition (the
+  `.meta` DDT table, or fparser2 on the defining module), the generated
+  enter/exit/update sequences for `--directive acc` and `omp`
+  (`target enter data map(to:)` per component), and a GPU test that
+  checks the data (an example scheme passing a DDT with allocatable
+  components between two device schemes and a host scheme). Also
+  covers OpenACC's lack of automatic deep copy for pointer components;
+  allocatable-only first. Not needed for a first GPU PUMAS test (PUMAS
+  copies its own data); needed for PUMAS to stay resident with its
+  neighbours, alongside `constituent-device-residency`. Phase 2, for
+  `gpu-fphystest-rrtmgp`: nested and polymorphic components (rte-rrtmgp's
+  `class(ty_optical_props_arry)` inside the `*_ccpp` wrapper types, e.g.
+  `lw_optical_props_clrsky%optical_props%tau`), which the RRTMGP
+  wrappers deep-copy by hand today (`rrtmgp_lw_rte.F90`).
+
+## GPU-enabling whole FPHYStest configurations
+
+Goal (2026-10-28): run a whole FPHYStest suite on the GPU with its data
+**resident within the physics run**: one transfer in at physics entry,
+one out at exit, and `update self` only where a host consumer needs a
+value (history output from the diagnostics schemes, which the existing
+divergence routing in `generate-gpu-data` already emits). The dycore and
+coupler stay on the CPU, so the entry/exit transfers remain. Acceptance:
+the Physics Check against the testmod's snapshot passes (within the
+cross-compiler tolerance, `nvhpc-ncdata-roundoff`), and an
+`NV_ACC_NOTIFY=2` (or nsys) audit shows no host/device transfers between
+entry and exit other than the diagnostics' `update self`.
+
+PUMAS and RRTMGP today run every scheme on the CPU as far as the cap is
+concerned: no `.meta` in either suite declares `memory_space = device`.
+The GPU code that exists sits below the CCPP interface and moves its own
+data per call. Kessler is partly there: its two physics schemes are
+device-resident, and the cap syncs around the CPU schemes between them. No `.meta` file needs to change for this goal: residency
+is derived from the Fortran source's OpenACC clauses
+(`acc-derive-memory-space`), so the scheme work is adding OpenACC to the
+`.F90` only.
+
+- `gpu-fphystest-pumas` — **PUMAS FPHYStest
+  (`cam/outfrq_pumas_derecho`, `suite_pumas.xml`, 18 schemes) fully
+  GPU-resident.** PUMAS (the ESCOMP/PUMAS submodule,
+  `schemes/pumas/pumas`, tag `pumas_cam-release_v1.41`) has ~170
+  `!$acc parallel` regions one call below `micro_pumas_ccpp_run`, and
+  one large `copyin`/`copyout` data region over `micro_pumas_tend`;
+  every other scheme in the suite is CPU-only. The suite cap has no
+  unit or kind conversions (checked 2026-10-28), so
+  `gpu-conversion-residency` is not needed unless a port adds one.
+  Steps, in order:
+  1. `gpu-pumas-testmod` — PUMAS's own kernels on the GPU, cap
+     unchanged.
+  2. `pumas-module-props-device` — PUMAS's module-level props resident
+     (upstream, ESCOMP/PUMAS).
+  3. Add OpenACC directives (a data region with `present`/copy
+     clauses for its arguments) to `micro_pumas_ccpp_run`, the routine
+     `micro_pumas_ccpp.meta` describes, so `acc-derive-memory-space`
+     sees them; it does not follow the call into `micro_pumas_tend`.
+     `micro_pumas_ccpp.F90` lives in ESCOMP/PUMAS, so this is an
+     upstream change (bundle `pumas-module-props-device` with it); no
+     `.meta` change.
+  4. `gpu-ddt-deep-copy-residency` — `micro_proc_rates`
+     (`proc_rates_type`, 119 allocatable components; suite-owned in the
+     generated cap).
+  5. `constituent-device-residency` — PUMAS's main inputs (cloud
+     liquid/ice, number concentrations, rain, snow, graupel) are
+     constituents, copied per device call today.
+  6. `gpu-port-pumas-interface-schemes` and
+     `gpu-port-shared-utility-schemes` — the CPU schemes around PUMAS.
+  7. Validation per the acceptance criteria above; tolerance per
+     `pumas-ncdata-diffs` (its snapshot is intel-made).
+
+  Optional: `gpu-ci` to keep it working.
+- `gpu-fphystest-rrtmgp` — **RRTMGP FPHYStest
+  (`cam/outfrq_rrtmgp_derecho[_gpu]`, `suite_rrtmgp.xml`, 40 calls / 38
+  schemes) fully GPU-resident.** Further along than PUMAS in one way: a
+  GPU testmod exists and passes (s34a). Only 4 schemes have OpenACC
+  (`rrtmgp_{lw,sw}_gas_optics`, `rrtmgp_{lw,sw}_rte`), each wrapping
+  the rte-rrtmgp kernels (`schemes/rrtmgp/ext`, earth-system-radiation
+  v1.9.2) in hand-written deep-copy data regions; the other 34 are
+  CPU-only. No unit or kind conversions in the suite cap (checked
+  2026-10-28). Heavier than PUMAS: the data passed between schemes are
+  rte-rrtmgp objects with nested, polymorphic components, and the
+  shortwave diagnostic subcycle is a loop holding host schemes. Steps:
+  1. `rrtmgp-wrapper-acc-trigger` — settle the build-flag question
+     first.
+  2. `acc-derive-memory-space` — derive the wrappers' device arguments
+     (and derived-type components) from their existing data clauses.
+  3. `gpu-ddt-deep-copy-residency`, including its phase 2 (nested,
+     polymorphic components) for `ty_gas_concs_ccpp`,
+     `ty_gas_optics_rrtmgp_ccpp`, `ty_optical_props_*_ccpp`,
+     `ty_source_func_lw_ccpp` and `ty_fluxes_*_ccpp`.
+  4. `constituent-device-residency` — the gas concentrations come from
+     constituents.
+  5. `suite-cap-loop-gpu-sync` — syncs for host schemes inside the
+     subcycle loop (and `package-cap-loop-gpu-sync` for the composite
+     package-cap variant).
+  6. `gpu-port-rrtmgp-wrapper-schemes` and
+     `gpu-port-shared-utility-schemes`.
+  7. Validation per the acceptance criteria above, for both the XML and
+     the composite (package-cap) suites.
+
+  Optional: `gpu-ci`.
+- `gpu-fphystest-kessler` — **Kessler FPHYStest
+  (`cam/outfrq_kessler_derecho_gpu`, `suite_kessler_test.xml`, 16
+  schemes) fully GPU-resident.** The smallest of the three and the
+  natural first target. Today only `kessler` and `kessler_update` run on
+  the device (their `.meta` declares `memory_space = device`); the other
+  14 are CPU-only. The generated suite cap (checked 2026-10-28,
+  `--directive acc`) therefore does about 30 `update self`/`update
+  device` per step, one pair around each CPU scheme, plus a per-call
+  `copy` of `qv`/`qc`/`qr` around `kessler_run`. No unit or kind
+  conversions, so `gpu-conversion-residency` is not needed. The only
+  derived-type argument is the constituent properties
+  (`geopotential_temp_run`'s `cprops`), read-only host data; port
+  `geopotential_temp` without putting it on the device (as for `qneg`,
+  see `gpu-port-shared-utility-schemes`), so
+  `gpu-ddt-deep-copy-residency` is not needed either.
+
+  Order (decided 2026-10-28): build the fast test loop from the general
+  scheme I/O capture generator rather than a Kessler-specific harness,
+  so every later step is checked in minutes on a GPU node, with the
+  CAM-SIMA regression only at milestones.
+  1. `gpu-sync-intent-aware` — drop the redundant half of today's syncs.
+     Generator-only, checked by pytest/FileCheck; confirm with one
+     CAM-SIMA GPU Kessler case. Useful on its own, before any port.
+  2. Capture gaps: `scheme-io-capture-ddt-args` (at least the
+     constituent-properties case, for `geopotential_temp`) and a
+     decision on `scheme-io-capture-fixture-storage` (local, gitignored
+     fixtures regenerated from a CAM-SIMA capture run would do).
+  3. `scheme-io-capture-group-replay` — replay
+     `kessler_test_physics_before_coupler` on the GPU against a CPU
+     capture: the check for the generator's cross-scheme data movement.
+  4. `acc-derive-memory-space` — so the ported schemes need no `.meta`
+     change (`kessler` and `kessler_update` keep their explicit
+     `memory_space`, which then must agree with their source).
+  5. `gpu-port-shared-utility-schemes`, Kessler's 12: the 10 state
+     converters (`calc_exner`, `temp_to_potential_temp`,
+     `potential_temp_to_temp`, `calc_dry_air_ideal_gas_density`,
+     `wet_to_dry_*`, `dry_to_wet_*`), `qneg` and `geopotential_temp`.
+     Each port checked by per-scheme replay on the GPU, and by group
+     replay (the syncs around it should disappear).
+  6. `constituent-device-residency` — `qv`/`qc`/`qr` and the whole
+     array `qneg` takes. Riskiest step (a missed sync gives silently
+     wrong values); checked by group replay.
+  7. Validation per the acceptance criteria above, on every Kessler GPU
+     testmod: FPHYStest, `se_cslam_gpu` and `se_cslam_multitape_gpu`,
+     `kessler_mpas_derecho[_history]_gpu`, and the composite package-cap
+     pair (`outfrq_kessler_composite_pkgcap_derecho_gpu`). Also run
+     these after steps 1 and 5 as milestones.
+
+  `sima_state_diagnostics` and `kessler_diagnostics` stay on the host
+  (history output) and keep an `update self` before them throughout.
+
+Supporting items (not tracked elsewhere):
+
+- `gpu-sync-intent-aware` — **Skip host/device syncs an argument's
+  intent makes redundant.** The per-call `update self`/`update device`
+  pairs `generate-gpu-data` emits around a host scheme ignore intent:
+  Kessler's cap pulls `exner` to the host before `calc_exner_run`,
+  which only writes it (`intent(out)`), and pushes `cpair`, `rair`,
+  `phis`, `dse`, `z`, `temp` and `precl` back after schemes that only
+  read them (`intent(in)`). Emit `update self` only for `in`/`inout`
+  and `update device` only for `out`/`inout`. The coalescing in
+  `cap_shared.emit_coalesced_updates` must keep a run's boundary syncs
+  correct when its calls differ in intent. Package caps' own syncs
+  (`_inject_suite_owned_gpu_update`) need the same rule.
+
+- `acc-derive-memory-space` — **Derive argument residency from the
+  scheme's Fortran source instead of `.meta`.** The `.F90` already says
+  which arguments the scheme uses on the device; `memory_space` in
+  `.meta` duplicates it and can drift (the `cld_ice` bug above). The
+  derivation exists in part: `_extract_device_resident_vars`
+  (`transforms/fparser2_to_meta.py:365`) reads `present`/`deviceptr`/
+  `copyin`/`copyout`/`copy` clauses, but only for `!$ccpp`-tagged
+  sources whose `.meta` is generated, and only within the routine's own
+  body. Extend it to:
+  - every `--scheme-files` entry with hand-written `.meta`, using the
+    `.meta`/`.F90` pairing `validate_fortran_sources` already does;
+  - `default(present)` on a compute construct (Kessler): every
+    argument referenced inside it is device-resident;
+  - derived-type components named in clauses
+    (`copyout(proc_rates%qcsevap)`,
+    `copyin(sources%sources%lay_source)`), for
+    `gpu-ddt-deep-copy-residency`.
+
+  Classify `present`/`deviceptr` as "requires device" and the copy
+  family as "either" (present-or-copy: the scheme works with host data
+  and with data the cap keeps resident), and let the residency passes
+  use that. An explicit `memory_space` in `.meta` stays as an override;
+  a disagreement with the source warns. That warning is
+  `acc-meta-residency-check`, which this item subsumes. Only the entry
+  point's own body is read, never its callees: a scheme whose OpenACC
+  sits deeper (PUMAS) gets directives added at the entry point, the
+  routine its `.meta` describes. Without `-acc`
+  in the scheme's build, the derived residency must be ignored (the
+  directives are comments there); tie it to `--directive`.
+
+- `gpu-pumas-testmod` — **First GPU PUMAS test.** New testmod
+  `cam/outfrq_pumas_derecho_gpu`: the PUMAS `user_nl_cam` and snapshot
+  plus `outfrq_kessler_derecho_gpu`'s xmlchanges (`OPENACC_GPU_OFFLOAD`,
+  `GPU_TYPE=a100`, `NGPUS_PER_NODE=4`, `OVERSUBSCRIBE_GPU`) and an
+  nvhpc entry in `testlist_cam.xml`. Check that the PUMAS `.F90` files
+  get `-acc` in the build, and whether the snapshot needs a looser
+  tolerance on the GPU. Exercises PUMAS's own data regions only.
+  Set up 2026-10-28 (CAM-SIMA, uncommitted): standalone testmod with
+  `min_difference = 5e-10` (the nvhpc GPU flags match GPU to CPU results), test `SMS_Ln2` nvhpc (not `SMS_D`: PUMAS
+  gets `-acc` only when `DEBUG=FALSE` in `Depends.nvhpc`); awaiting its
+  first run in the next regression sweep.
+- `pumas-module-props-device` — **ESCOMP/PUMAS: make `mg_*_props`
+  device-resident once.** Add the six `MGHydrometeorProps` module
+  variables to the existing `!$acc declare create(...)`
+  (`micro_pumas_utils.F90:289`) and `!$acc update device(...)` (`:390`,
+  after they are set). Flat type, set only at init; `micro_pumas_tend`'s
+  `copyin` then finds them present. Bit-for-bit; also applies to
+  ESCOMP/CAM. Small gain, so bundle it with step 3 of
+  `gpu-fphystest-pumas`.
+- `gpu-port-pumas-interface-schemes` — **OpenACC ports of the PUMAS
+  suite's own per-step CPU schemes** (5; see `gpu-port-scheme-checklist`):
+  `micro_pumas_ccpp_dimensions_pre/post`, `pumas_post_main`,
+  `micro_pumas_ccpp_optics_limiter` (atmospheric_physics), and
+  entry-point directives in `micro_pumas_ccpp_run` (ESCOMP/PUMAS; its
+  kernels are one call down). The suite's cloud-fraction schemes,
+  `to_be_ccppized_temporary`, the stubs and `pumas_pre_main` are init- or
+  register-only, so they need no port; `sima_state_diagnostics` stays on
+  the host (history). Each port adds
+  `!$acc` kernels to the `.F90` only (residency is derived by
+  `acc-derive-memory-space`; the `.meta` is unchanged) and keeps the CPU
+  path (directives are comments without `-acc`).
+- `gpu-port-shared-utility-schemes` — **atmospheric_physics: OpenACC
+  ports of the utility schemes every suite uses**:
+  `apply_constituent_tendencies`, `apply_heating_rate`, `qneg`,
+  `geopotential_temp`,
+  `clamp_number_concentrations`, `calculate_net_heating`,
+  `tropopause_find`, and the 10 state converters in
+  `schemes/utilities/state_converters.F90` (`calc_exner`,
+  `temp_to_potential_temp`, `potential_temp_to_temp`,
+  `calc_dry_air_ideal_gas_density`, `wet_to_dry_*`, `dry_to_wet_*`;
+  pointwise loops), plus the test scheme `initialize_constituents`
+  (18 in all; see `gpu-port-scheme-checklist`). Shared by all three
+  configurations; `apply_tendency_of_*_wind` joins the list for the full
+  cam suites. `qneg` reads the constituent properties
+  (`ccpp_constituent_prop_ptr_t`), a pointer derived type; port it with
+  the minimum values passed as a plain array instead of putting the
+  properties on the device. A regression across every suite that uses
+  them, CPU and GPU.
+- `gpu-port-rrtmgp-wrapper-schemes` — **atmospheric_physics: OpenACC
+  ports of RRTMGP's 21 per-step CPU-only CCPP schemes** (see
+  `gpu-port-scheme-checklist`: inputs/pre/post, cloud and aerosol
+  optics, McICA subcolumn generation, flux and heating-rate calculation,
+  gas-optics pre, solar variability, the subcycle counter).
+  `solar_irradiance_data`, the three init-only `*_setup` schemes and the
+  four `*_diagnostics` stay on the host. McICA's random numbers
+  must stay reproducible against the snapshot (generate on the host and
+  copy, or a matching device generator).
+- `suite-cap-loop-gpu-sync` — **Host/device syncs for host schemes
+  inside a suite-cap loop.** The suite-cap half of
+  `package-cap-loop-gpu-sync`'s gap: `generate-gpu-data` only sees
+  error-guarded calls at a function's top level, so a host scheme inside
+  a `<subcycle>` loop gets no `update self/device`. Latent until a
+  device scheme shares a loop with a host scheme (RRTMGP's shortwave
+  diagnostic subcycle, during `gpu-fphystest-rrtmgp`).
+- `gpu-port-scheme-checklist` — **Per-scheme status for the Kessler,
+  PUMAS and RRTMGP FPHYStest GPU work** (computed 2026-10-28 from
+  `test/test_suites/suite_{kessler_test,pumas,rrtmgp}.xml`). The three
+  suites use 66 distinct schemes. 6 already run on the device:
+  `kessler`, `kessler_update` (Kessler) and `rrtmgp_{lw,sw}_gas_optics`,
+  `rrtmgp_{lw,sw}_rte` (RRTMGP). The other 60 are CPU-only: 44 need a
+  port (18 shared utilities, 5 PUMAS, 21 RRTMGP), 9 are init- or
+  register-only and need none, and 7 stay on the host (the 6
+  history-diagnostics schemes and `solar_irradiance_data`). "CPU-only"
+  means no `!$acc` in the scheme's `.F90` and no `memory_space = device`
+  in its `.meta`; a port adds `!$acc` to the routine the `.meta`
+  describes (`acc-derive-memory-space`). Tick a row off when its port
+  is merged.
+
+| Scheme | File | Needed by | Port item |
+|---|---|---|---|
+| `apply_constituent_tendencies` | `schemes/utilities/physics_tendency_updaters.F90` | pumas | `gpu-port-shared-utility-schemes` |
+| `apply_heating_rate` | `schemes/utilities/physics_tendency_updaters.F90` | pumas, rrtmgp | `gpu-port-shared-utility-schemes` |
+| `calc_dry_air_ideal_gas_density` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `calc_exner` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `calculate_net_heating` | `schemes/rrtmgp/utils/calculate_net_heating.F90` | rrtmgp | `gpu-port-shared-utility-schemes` |
+| `clamp_number_concentrations` | `schemes/utilities/clamp_number_concentrations.F90` | pumas | `gpu-port-shared-utility-schemes` |
+| `dry_to_wet_cloud_liquid_water` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `dry_to_wet_rain` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `dry_to_wet_water_vapor` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `geopotential_temp` | `schemes/utilities/geopotential_temp.F90` | kessler, pumas, rrtmgp | `gpu-port-shared-utility-schemes` |
+| `initialize_constituents` (test scheme) | `test/test_schemes/initialize_constituents.F90` | pumas, rrtmgp | `gpu-port-shared-utility-schemes` |
+| `potential_temp_to_temp` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `qneg` | `schemes/utilities/qneg.F90` | kessler, pumas | `gpu-port-shared-utility-schemes` |
+| `temp_to_potential_temp` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `tropopause_find` | `schemes/tropopause_find/tropopause_find.F90` | rrtmgp | `gpu-port-shared-utility-schemes` |
+| `wet_to_dry_cloud_liquid_water` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `wet_to_dry_rain` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `wet_to_dry_water_vapor` | `schemes/utilities/state_converters.F90` | kessler | `gpu-port-shared-utility-schemes` |
+| `micro_pumas_ccpp_dimensions_post` | `schemes/pumas/micro_pumas_ccpp_dimensions_post.F90` | pumas | `gpu-port-pumas-interface-schemes` |
+| `micro_pumas_ccpp_dimensions_pre` | `schemes/pumas/micro_pumas_ccpp_dimensions_pre.F90` | pumas | `gpu-port-pumas-interface-schemes` |
+| `micro_pumas_ccpp_optics_limiter` | `schemes/pumas/micro_pumas_ccpp_optics_limiter.F90` | pumas | `gpu-port-pumas-interface-schemes` |
+| `pumas_post_main` | `schemes/pumas/pumas_post_main.F90` | pumas | `gpu-port-pumas-interface-schemes` |
+| `micro_pumas_ccpp` | `schemes/pumas/pumas/micro_pumas_ccpp.F90` | pumas | `gpu-port-pumas-interface-schemes` (entry-point directives; ESCOMP/PUMAS) |
+| `aerosol_optics_zero_stub` | `schemes/chemistry/aerosol_optics_zero_stub.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_constituents` | `schemes/rrtmgp/rrtmgp_constituents.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_dry_static_energy_tendency` | `schemes/rrtmgp/utils/rrtmgp_dry_static_energy_tendency.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_inputs` | `schemes/rrtmgp/rrtmgp_inputs.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_lw_aerosols` | `schemes/rrtmgp/rrtmgp_lw_aerosols.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_lw_calculate_fluxes` | `schemes/rrtmgp/rrtmgp_lw_calculate_fluxes.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_lw_calculate_heating_rate` | `schemes/rrtmgp/rrtmgp_lw_calculate_heating_rate.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_lw_cloud_optics` | `schemes/rrtmgp/rrtmgp_lw_cloud_optics.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_lw_gas_optics_pre` | `schemes/rrtmgp/rrtmgp_lw_gas_optics_pre.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_lw_mcica_subcol_gen` | `schemes/rrtmgp/rrtmgp_lw_mcica_subcol_gen.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_post` | `schemes/rrtmgp/rrtmgp_post.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_pre` | `schemes/rrtmgp/rrtmgp_pre.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_subcycle` | `schemes/rrtmgp/rrtmgp_subcycle.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_aerosols` | `schemes/rrtmgp/rrtmgp_sw_aerosols.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_calculate_fluxes` | `schemes/rrtmgp/rrtmgp_sw_calculate_fluxes.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_calculate_heating_rate` | `schemes/rrtmgp/rrtmgp_sw_calculate_heating_rate.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_cloud_optics` | `schemes/rrtmgp/rrtmgp_sw_cloud_optics.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_gas_optics_pre` | `schemes/rrtmgp/rrtmgp_sw_gas_optics_pre.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_mcica_subcol_gen` | `schemes/rrtmgp/rrtmgp_sw_mcica_subcol_gen.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_sw_solar_var` | `schemes/rrtmgp/rrtmgp_sw_solar_var.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `rrtmgp_variables` | `schemes/rrtmgp/rrtmgp_variables.F90` | rrtmgp | `gpu-port-rrtmgp-wrapper-schemes` |
+| `cloud_fraction_options` | `schemes/cloud_fraction/cloud_fraction_options.F90` | pumas | none: init/register only |
+| `clubb_stub` (test scheme) | `test/test_schemes/clubb_stub.F90` | pumas | none: init/register only |
+| `compute_cloud_fraction_two_moment` | `schemes/cloud_fraction/compute_cloud_fraction_two_moment.F90` | pumas | none: init/register only |
+| `hetfrz_classnuc_stub` | `schemes/microp_aero/hetfrz_classnuc_stub.F90` | pumas | none: init/register only |
+| `pumas_pre_main` | `schemes/pumas/pumas_pre_main.F90` | pumas | none: init/register only |
+| `rrtmgp_cloud_optics_setup` | `schemes/rrtmgp/utils/rrtmgp_cloud_optics_setup.F90` | rrtmgp | none: init/register only |
+| `rrtmgp_inputs_setup` | `schemes/rrtmgp/rrtmgp_inputs_setup.F90` | rrtmgp | none: init/register only |
+| `rrtmgp_sw_solar_var_setup` | `schemes/rrtmgp/rrtmgp_sw_solar_var_setup.F90` | rrtmgp | none: init/register only |
+| `to_be_ccppized_temporary` | `schemes/utilities/to_be_ccppized_temporary.F90` | pumas | none: init/register only |
+| `kessler_diagnostics` | `schemes/sima_diagnostics/kessler_diagnostics.F90` | kessler | none: stays on host (history output) |
+| `rrtmgp_cloud_diagnostics` | `schemes/sima_diagnostics/rrtmgp_cloud_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
+| `rrtmgp_diagnostics` | `schemes/sima_diagnostics/rrtmgp_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
+| `rrtmgp_lw_diagnostics` | `schemes/sima_diagnostics/rrtmgp_lw_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
+| `rrtmgp_sw_diagnostics` | `schemes/sima_diagnostics/rrtmgp_sw_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
+| `sima_state_diagnostics` | `schemes/sima_diagnostics/sima_state_diagnostics.F90` | kessler, pumas | none: stays on host (history output) |
+| `solar_irradiance_data` | `schemes/radiation_utils/solar_irradiance_data.F90` | rrtmgp | none: likely stays on host (1-D spectral data from file, no column loop; confirm), small `update device` of its output |

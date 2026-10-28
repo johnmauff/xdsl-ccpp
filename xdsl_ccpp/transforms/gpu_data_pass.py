@@ -21,6 +21,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     find_diverged_suite_vars,
     fn_phase,
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    is_constituent_view_arg,
     resolve_capscratch_cap_var_name,
     split_scheme_table_name,
     suite_cap_suite_name,
@@ -86,7 +87,7 @@ class GPUDataPass(ModulePass):
     lookup (backlog gap #5).
 
     Remaining limitation:
-    - Host-less scratch vars always generate copyin+copyout (no 'present'
+    - Host-less scratch vars always generate copy (no 'present'
       optimisation yet).
     """
 
@@ -246,10 +247,12 @@ class GPUDataPass(ModulePass):
                 or arg.getAttr("ownership_kind") != ArgOwnershipKind.CapScratch
             ):
                 continue
-            if not arg.hasAttr("standard_name"):
+            if not arg.hasAttr("standard_name") or is_constituent_view_arg(arg):
                 continue
             std_name = arg.getAttr("standard_name")
-            cap_var = resolve_capscratch_cap_var_name(std_name, arg.hasAttr("constituent"))
+            cap_var = resolve_capscratch_cap_var_name(
+                std_name, arg.hasAttr("constituent"), arg.hasAttr("advected")
+            )
             if cap_var is None or cap_var not in diverged_capscratch_vars:
                 continue
             scheme_space = (
@@ -288,6 +291,9 @@ class GPUDataPass(ModulePass):
             intent = arg.getAttr("intent") if arg.hasAttr("intent") else None
             if intent not in ("out", "inout"):
                 continue
+            if is_constituent_view_arg(arg):
+                # Its per-call copy() region already copies it back.
+                continue
             if arg.hasAttr("model_var_name"):
                 identity = ("host", arg.getAttr("model_var_name"))
             elif (
@@ -296,7 +302,8 @@ class GPUDataPass(ModulePass):
                 and arg.hasAttr("standard_name")
             ):
                 cap_var = resolve_capscratch_cap_var_name(
-                    arg.getAttr("standard_name"), arg.hasAttr("constituent")
+                    arg.getAttr("standard_name"), arg.hasAttr("constituent"),
+                    arg.hasAttr("advected"),
                 )
                 if cap_var is None:
                     continue
@@ -370,6 +377,77 @@ class GPUDataPass(ModulePass):
             directive_op(self.directive, AccDataEndOp, {}, OmpTargetDataEndOp, {}),
             InsertPoint.after(call_op),
         )
+
+    def _get_device_constituent_views(self, scheme_name, table_name, meta_data):
+        """Return {local_name: standard_name} for the memory_space=device
+        constituent views (cap_shared.is_constituent_view_arg) in this
+        scheme's <table_name> argument table."""
+        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+            return {}
+        return {
+            arg.name: arg.getAttr("standard_name")
+            for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
+            if is_constituent_view_arg(arg)
+            and arg.hasAttr("memory_space")
+            and arg.getAttr("memory_space") == "device"
+        }
+
+    def _get_suite_owned_args(self, scheme_name, table_name, meta_data):
+        """Return the local names of the SuiteOwned args in this scheme's
+        <table_name> argument table."""
+        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
+            return set()
+        return {
+            arg.name
+            for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
+            if arg.hasAttr("ownership_kind")
+            and arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
+        }
+
+    def _emit_constituent_view_copies(self, calls, meta_data, arg_by_name):
+        """Wrap each call that takes a device constituent view in its own
+        copy() region over those views.
+
+        The constituents are updated on the host between device calls (by
+        the host model, host-side schemes and tendency appliers writing
+        through other views of the same memory), so a device copy is never
+        kept across calls: each call copies its views in and back out.
+        Keeping lc_constituent_array resident with explicit update syncs
+        instead is backlog item constituent-device-residency.
+
+        Called after the blanket hostless region is built, so these
+        per-call regions nest inside it.
+        """
+        per_call = []  # (call_op, [local_name, ...])
+        names_by_std: dict = {}  # standard_name -> [local_name, ...]
+        for call_op, scheme_name, table_name in calls:
+            views = self._get_device_constituent_views(scheme_name, table_name, meta_data)
+            if not views:
+                continue
+            per_call.append((call_op, views))
+            for local_name, std_name in views.items():
+                names_by_std.setdefault(std_name, []).append(local_name)
+
+        ref_by_std = {
+            std_name: _resolve_canonical_ref(names, arg_by_name)
+            for std_name, names in names_by_std.items()
+        }
+        for call_op, views in per_call:
+            refs = []
+            for std_name in sorted(set(views.values())):
+                ref = ref_by_std[std_name]
+                if ref is not None and ref not in refs:
+                    refs.append(ref)
+            if not refs:
+                continue
+            Rewriter.insert_op(
+                directive_op(self.directive, AccDataBeginOp, {"copy": refs}, OmpTargetDataBeginOp, {"tofrom": refs}),
+                InsertPoint.before(call_op),
+            )
+            Rewriter.insert_op(
+                directive_op(self.directive, AccDataEndOp, {}, OmpTargetDataEndOp, {}),
+                InsertPoint.after(call_op),
+            )
 
     def _process_diverged_host_vars(self, calls, meta_data, diverged_vars, arg_by_name):
         """Route present/update clauses per individual scheme call for host
@@ -563,8 +641,24 @@ class GPUDataPass(ModulePass):
                     if diverged_capscratch_vars
                     else {}
                 )
+                view_names = self._get_device_constituent_views(
+                    scheme_name, table_name, meta_data
+                )
+                # SuiteOwned args are suite-cap module variables with their
+                # own residency (suite_owned.py's enter data create and
+                # updates), never block args: a block arg with the same
+                # name is a different variable (Kessler's dry qv vs the
+                # moist constituent view qv).
+                suite_owned_names = self._get_suite_owned_args(
+                    scheme_name, table_name, meta_data
+                )
                 for local_name, host_var in device_vars.items():
-                    if host_var is None and local_name not in diverged_local_names:
+                    if (
+                        host_var is None
+                        and local_name not in diverged_local_names
+                        and local_name not in view_names
+                        and local_name not in suite_owned_names
+                    ):
                         all_local_vars.add(local_name)
 
             if all_local_vars:
@@ -586,17 +680,19 @@ class GPUDataPass(ModulePass):
                             InsertPoint.after(last_if),
                         )
                     else:  # acc (default)
+                        # copy(), not copyin() + copyout() of the same
+                        # vars: a var may appear in only one data clause.
                         Rewriter.insert_op(
-                            AccDataBeginOp(
-                                copyin=copyin_refs,
-                                copyout=copyin_refs,
-                            ),
+                            AccDataBeginOp(copy=copyin_refs),
                             InsertPoint.before(first_if),
                         )
                         Rewriter.insert_op(
                             AccDataEndOp(),
                             InsertPoint.after(last_if),
                         )
+
+        # --- device constituent views: a copy() region per call ---
+        self._emit_constituent_view_copies(calls, meta_data, arg_by_name)
 
         # --- diverged host vars + CapScratch cap vars: per-scheme-call
         # routing, merged into one resolved-touches dict so a host var and

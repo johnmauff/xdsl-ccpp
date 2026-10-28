@@ -269,10 +269,6 @@ class SuiteOwnedMixin:
         """
         if not is_alloc_phase:
             return
-        if fw_std_key in self._fixed_advected_std_names(self.meta_data):
-            # Fixed-advected constituent: pointer-aliased into the constituent
-            # array by _build_constituent_sync_ops, never allocate()'d.
-            return
         if fw_arg.hasAttr("allocatable"):
             # An `allocatable, intent(out)` dummy is allocated by the scheme
             # itself (e.g. examples/advection/dlc_liq.F90); the suite must
@@ -387,11 +383,7 @@ class SuiteOwnedMixin:
         already_allocated |= {
             p.var_name for _plist in pending_allocs.values() for p in _plist
         }
-        fixed_adv_names = self._fixed_advected_std_names(self.meta_data)
         for entry in suite_model.suite_owned_vars():
-            if entry.standard_name in fixed_adv_names:
-                # Pointer-aliased into the constituent array; never allocated.
-                continue
             if not suite_model.needs_allocation(entry.standard_name):
                 continue
             if entry.local_name in already_allocated:

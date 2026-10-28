@@ -7,6 +7,7 @@ Implements the four-case variable resolution algorithm from capgen-ng
 from dataclasses import dataclass
 from enum import Enum
 
+from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERROR_STD_NAMES, CCPP_PRIMITIVE_TYPES
 
 
@@ -191,6 +192,15 @@ class SuiteVariableModel:
         # (not HOST-type) host variable -- see _process_table's Case 1 and
         # _resolve_name_collisions. Populated during _build.
         self._module_matched_names: set = set()
+        # Local names the suite cap's own subroutines take as dummy
+        # arguments (host-table and DDT-member matches, host-bound
+        # constituents), mapped to their standard names -- a suite-owned
+        # variable of the same name for a different standard name would be
+        # shadowed by the dummy. A phase subroutine names each dummy after
+        # the first scheme in that phase and group that uses its standard
+        # name (_dummy_seen). See _resolve_name_collisions.
+        self._dummy_names: dict[str, set] = {}
+        self._dummy_seen: set = set()
 
         # Ordered list of (scheme_name, group_name) pairs across the suite.
         #
@@ -316,6 +326,11 @@ class SuiteVariableModel:
         with test_host_mod's own unrelated "model_times"; that pair lives in
         two separate Fortran modules and was never a real collision, so a
         blanket whole-metadata scan would have falsely renamed it.
+        A suite-owned local_name equal to a dummy argument of the suite
+        cap's subroutines (self._dummy_names) for a different
+        standard_name collides too: inside the subroutine the dummy shadows
+        the module variable (examples/advection: cld_shadow's own
+        cld_ice_array vs. the cld_ice_array constituent the host passes in).
         Only the colliding subset is touched -- every non-colliding name
         (the overwhelming majority) is emitted exactly as the scheme author
         wrote it, unchanged from today's behavior.
@@ -331,13 +346,20 @@ class SuiteVariableModel:
 
         for local_name, entries in sorted(by_local_name.items()):
             distinct_std_names = {e.standard_name for e in entries}
+            shadowed = bool(self._dummy_names.get(local_name, set()) - distinct_std_names)
             if (
                 len(distinct_std_names) <= 1
                 and local_name not in self._module_matched_names
+                and not shadowed
             ):
                 continue
             for entry in sorted(entries, key=lambda e: e.producing_scheme):
                 entry.local_name = f"{entry.producing_scheme}_{local_name}"
+
+    def _add_dummy_name(self, arg, std_name, phase, group_name) -> None:
+        if (phase, group_name, std_name) not in self._dummy_seen:
+            self._dummy_seen.add((phase, group_name, std_name))
+            self._dummy_names.setdefault(arg.name, set()).add(std_name)
 
     def _process_table(
         self,
@@ -373,6 +395,8 @@ class SuiteVariableModel:
                     and not arg.hasAttr("model_var_is_ddt")
                 ):
                     self._module_matched_names.add(arg.getAttr("model_var_name"))
+                else:
+                    self._add_dummy_name(arg, std_name, phase, group_name)
                 continue
 
             intent = (
@@ -422,7 +446,14 @@ class SuiteVariableModel:
                     and _arg_type_str.lower() not in CCPP_PRIMITIVE_TYPES):
                 continue
 
-            # Framework-managed arrays (advected/allocatable) are always
+            # A constituent the host cap passes in (see
+            # classify_arg_ownership) is not a suite variable.
+            if (arg.hasAttr("advected") and arg.hasAttr("ownership_kind")
+                    and arg.getAttr("ownership_kind") == ArgOwnershipKind.CapScratch):
+                self._add_dummy_name(arg, std_name, phase, group_name)
+                continue
+
+            # Other framework-managed arrays (advected/allocatable) are
             # suite-owned — the suite cap allocates them regardless of whether
             # the first scheme entry writes (out) or reads/writes (inout) them.
             if arg.hasAttr("advected") or arg.hasAttr("allocatable"):
