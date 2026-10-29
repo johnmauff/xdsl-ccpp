@@ -13034,3 +13034,32 @@ in 10 `completed_ir` goldens gain `ccpp.intent`; no generated Fortran
 changes in `examples/`. `cap_oracle` on the 92 built aux_sima/package-cap
 cases: `diff` against `main` all IDENTICAL, `capgen` all EQUIVALENT (Kessler
 NO CAPGEN). pytest 1136 passed.
+
+## `gpu-data-arg-std-names`: GPU passes find block arguments by standard name (2026-10-28)
+
+The GPU data pass (`gpu_data_pass.py`) and the package-cap segment sync
+(`suitecap/gpu.py`) found a scheme argument's suite block argument by
+trying scheme local names until one matched a block argument
+(`_resolve_canonical_ref`). That matched the wrong variable when a
+different block argument had the same name (the spurious `copy(qc, qr, qv)`
+around `kessler_run`, worked around in PR #164 by skipping suite-owned
+args), and matched nothing when the suite cap had renamed colliding
+arguments after their host variables: a device-resident host variable
+whose schemes disagree on residency then got no present/update routing at
+all. Latent: no current suite has the second case.
+
+Now both look block arguments up by the standard names the suite cap
+records on the suite subroutine (`cap_shared.block_args_by_std`, from
+`suite_arg_attrs`). `_resolve_canonical_ref`, the `arg_by_name` maps and the
+suite-owned skip are gone (a suite-owned argument has no block argument,
+so it has no entry). The suite cap's loop-bound lookup for promoted
+dimensions (`suitecap/promotion.py`) now uses the `("std_name", ...)` key
+of `data_ops` instead of the local name; the computed `ncol` is now also
+registered under its standard name.
+
+Tests: new `test_gpu_data_arg_std_names.py` (fails on the previous code: no
+`present(host_a)`); the PR #164 regression test
+`test_device_suite_var_not_confused_with_same_named_view` still passes.
+`cap_oracle` on the built aux_sima, package-cap and GPU package-cap cases
+(30 distinct): `diff` against `main` all IDENTICAL, `capgen` all
+EQUIVALENT (Kessler NO CAPGEN). No golden changes. pytest 1137 passed.
