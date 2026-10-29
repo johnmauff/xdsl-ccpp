@@ -66,7 +66,8 @@ measured data, and will drift as items are reassessed.
 | `gpu-fphystest-kessler` | umbrella, ~25-45 days in total: `gpu-sync-intent-aware`, `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `lifecycle-cap-arg-std-names` | 2-3 days (same change as `rk-top-lev-host-match`, for the non-run phases; capcmp all suites) | S |
-| `cap-oracle-check` | 4-8 days (scripts exist in a session scratchpad; needs a ccpp_framework checkout and CAM-SIMA build caches, or committed fixtures, for CI) | S-M |
+| `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
+| `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `gpu-data-arg-std-names` | 3-5 days (GPU data pass and the suite cap's local-name `data_ops` keys; GPU directive old-vs-new diff on the GPU testmods) | S-M |
 | `chost-arg-std-names` | 4-8 days (replace the chost identity scan and fallback; chost examples) | M |
 | `arg-flags-not-in-names` | 5-10 days (intent/optional/allocatable/hostarg into `arg_attrs`; printer and 9 `_bare()` callers; goldens) | M |
@@ -1729,18 +1730,18 @@ remaining consumers onto it and remove the guessing. Suggested order:
   (all phases) are equivalent today. Fix: read the callee's `arg_attrs`
   (fifth `public_fns` element), look host matches up by standard name, as
   `run_dispatch` now does.
-- `cap-oracle-check` — **No systematic check against a reference.** The
-  cloud_water, rasch_kristjansson `top_lev` and cam4 `dlf` binding bugs were
-  invisible to the unit tests and the aux_sima regressions; they surfaced
-  only by comparing generated caps with original capgen's (`capcmp.py`),
-  and the spurious GPU `copy(qc, qr, qv)` only by diffing GPU directives
-  between versions (`gpugen.py`). Make both a routine pre-merge check: (1)
-  semantic comparison with original capgen for the atmospheric_physics test
-  suites and the production suites (cam4, Kessler, adiabatic, ...), (2)
-  old-vs-new generated-code diff (CPU and `--directive acc`) for the same
-  inputs, reported per suite. Needs the inputs (CAM-SIMA build caches or
-  committed file lists) and a ccpp_framework checkout; start as a script
-  the reviewer runs, CI later.
+- `cap-oracle-check` — resolved 2026-10-28: `xdsl_ccpp/tools/cap_oracle.py`
+  (`diff`, `capgen`), usage in DEVELOPERS.md. CHANGELOG.md L12972.
+- `cap-oracle-ci` — **Run cap_oracle in CI.** Today it runs on Derecho
+  against built cases. In CI it needs the generator inputs (committed
+  fixtures of the suites' `.meta`/suite files, or a CAM-SIMA checkout with
+  submodules) and, for `capgen`, a ccpp_framework checkout. Start with
+  `diff` against the PR's base on a fixed set of suites.
+- `cap-oracle-kessler-capgen` — **capgen cannot check Kessler.** capgen
+  rejects xdsl-only metadata (`memory_space` in `kessler.meta`), so
+  `cap_oracle capgen` reports the Kessler suites as NO CAPGEN. Give capgen
+  copies of the `.meta` files with xdsl-only properties removed; they do not
+  change what CPU caps should do.
 - `gpu-data-arg-std-names` — **The GPU data pass resolves arguments by
   trying local names.** `gpu_data_pass._resolve_canonical_ref` "tries every
   local name until one resolves" to a suite block argument (12 scheme-table
