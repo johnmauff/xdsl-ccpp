@@ -30,13 +30,12 @@ the original test's own duplicate check could miss a collision between args
 of different shape (scalar vs array) or intent, since it compared raw
 declaration text instead of just the dummy-argument name. Investigating
 that led to a real gap in the *production* code, not just the test:
-suite_cap.py's collision detection compared the internal, possibly-suffixed
-name_hint (e.g. "x" vs "x__in" for a scalar vs. an intent(in) array), but
-print_ftn.py strips that suffix before printing -- so both would print as
-the identical duplicate name "x" while going undetected as a collision.
-Fixed by comparing the *printed* name (suffix stripped) everywhere
-suite_cap.py does collision bookkeeping; see
-TestCollisionAcrossShapeAndIntent for direct regression coverage.
+suite_cap.py's collision detection compared internal name hints that
+differed by shape and intent (an intent(in) array's carried a suffix), while
+both printed as the identical duplicate name "x" -- an undetected collision.
+Argument names no longer carry such suffixes (they and the flags are in the
+suite subroutine's arg_attrs), so collisions are detected on the printed
+name; see TestCollisionAcrossShapeAndIntent for direct regression coverage.
 """
 
 from io import StringIO
@@ -171,15 +170,12 @@ class TestCollisionResolvedViaHostName:
 
 class TestCollisionAcrossShapeAndIntent:
     """Both schemes' own arg is named "x" for two different standard_names,
-    but one is a scalar intent(in) arg (no name_hint suffix) and the other is
-    an array intent(in) arg (gets an internal "__in" name_hint suffix, which
-    print_ftn.py strips before emitting the Fortran identifier). Collision
-    detection must compare on the *printed* name, not the raw, suffixed
-    name_hint -- otherwise "x" and "x__in" look like different names and the
-    collision goes undetected, even though both print as the literal
-    duplicate dummy-argument name "x". Found via a Copilot review comment on
-    PR #42 questioning whether the original collision test could miss a
-    shape/intent-driven case like this one.
+    but one is a scalar intent(in) arg and the other an array intent(in) arg
+    (declared intent(in) from its arg_attrs). Their shape and intent differ,
+    but both would print as the dummy-argument name "x", so this is a
+    collision. Found via a Copilot review comment on PR #42 questioning
+    whether the original collision test could miss a shape/intent-driven
+    case like this one.
     """
 
     _HOST_META = """\

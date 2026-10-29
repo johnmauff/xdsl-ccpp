@@ -46,14 +46,15 @@ from xdsl_ccpp.transforms.run_dispatch import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    SUITE_ARG_NAME,
     SUITE_FN_INFIX,
-    _bare,
     _build_host_var_map,
     _collect_ddt_use_stubs,
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
     _resolve_lifecycle_table_name,
+    arg_attr_values,
     derive_camel_case_name,
     iter_arg_tables,
     resolve_capscratch_cap_var_name,
@@ -84,28 +85,15 @@ from xdsl_ccpp.util.ccpp_conventions import (
 )
 
 
-def _arg_attr_values(fn) -> list:
-    """A suite subroutine's per-argument attributes (suite_arg_attrs) as
-    plain values: one {key: str | list[str]} per argument."""
-    n = len(fn.body.block.args)
-    if fn.arg_attrs is None:
-        return [{} for _ in range(n)]
-    values = []
-    for d in fn.arg_attrs.data:
-        entry = {}
-        for k, v in d.data.items():
-            entry[k] = [x.data for x in v.data] if isa(v, builtin.ArrayAttr) else v.data
-        values.append(entry)
-    return values
-
-
 def _collect_public_suite_functions(ops):
     """Scan all named ModuleOps in ops and return a map of public function info.
 
     Returns:
         dict mapping function_name → (module_name, output_types,
         input_types, input_names, input_arg_attrs); input_arg_attrs holds
-        each argument's suite_arg_attrs as plain values.
+        each argument's suite_arg_attrs as plain values, and input_names
+        come from them (SUITE_ARG_NAME) where recorded, else from the
+        block arguments' name hints.
     """
     public_fns = {}
     for op in ops:
@@ -119,12 +107,14 @@ def _collect_public_suite_functions(ops):
                 and child.sym_visibility is not None
                 and child.sym_visibility.data == "public"
             ):
+                attrs = arg_attr_values(child)
                 public_fns[child.sym_name.data] = (
                     mod_name,
                     list(child.function_type.outputs),
                     list(child.function_type.inputs),
-                    [arg.name_hint for arg in child.body.block.args],
-                    _arg_attr_values(child),
+                    [a.get(SUITE_ARG_NAME, arg.name_hint)
+                     for a, arg in zip(attrs, child.body.block.args)],
+                    attrs,
                 )
     return public_fns
 
@@ -267,8 +257,7 @@ def _build_cap_var_map(
                     if _tbl_cv is None:
                         continue
                     for _fa_cv in meta_data[_scheme_cv].getArgTable(_tbl_cv).getFunctionArguments():
-                        _bn_cv = _bare(_fa_cv.name)
-                        _info_cv = _arg_info_cv.setdefault(_bn_cv, _CVArgInfo())
+                        _info_cv = _arg_info_cv.setdefault(_fa_cv.name, _CVArgInfo())
                         if _info_cv.std_name is None and _fa_cv.hasAttr("standard_name"):
                             _info_cv.std_name = _fa_cv.getAttr("standard_name").lower()
                         if _info_cv.dim_names is None and _fa_cv.hasAttr("dim_names"):
@@ -282,8 +271,7 @@ def _build_cap_var_map(
                         if _fa_cv.hasAttr("memory_space") and _fa_cv.getAttr("memory_space") == "device":
                             _info_cv.needs_gpu = True
                 for _an_cv, _at_cv in zip(_ci_names, _ci_types):
-                    _bn_cv = _bare(_an_cv)
-                    _info_cv = _arg_info_cv.get(_bn_cv)
+                    _info_cv = _arg_info_cv.get(_an_cv)
                     # Anything not classified CapScratch (HostMatched, Block, or
                     # unclassified) has nothing to promote here -- this single
                     # check replaces the old _matched_cv / CCPP_FRAMEWORK_STD_NAMES
@@ -309,12 +297,12 @@ def _build_cap_var_map(
                     if _std_cv not in scratch_var_index:
                         # Unique per standard name: two schemes may use one
                         # local name for different variables.
-                        _lc_cv = f"lc_{_bn_cv}"
+                        _lc_cv = f"lc_{_an_cv}"
                         _taken_cv = {e[0] for e in scratch_var_list}
                         _n_cv = 1
                         while _lc_cv in _taken_cv:
                             _n_cv += 1
-                            _lc_cv = f"lc_{_bn_cv}{_n_cv}"
+                            _lc_cv = f"lc_{_an_cv}{_n_cv}"
                         _rank_cv = _rank_of(_at_cv)
                         _dims_cv = _info_cv.dim_names or []
                         _alloc_cv = ", ".join(
@@ -945,12 +933,6 @@ class CCPPCAP(ModulePass):
             )
             _CAM_STD_EXPRS.setdefault(_std, (_expr, None, False))
 
-        def _strip_suffix(name):
-            for sfx in ("__inout", "__in", "__alloc"):
-                if name.endswith(sfx):
-                    return name[:-len(sfx)]
-            return name
-
         def _make_use_global(var_name, module_name):
             g = llvm.GlobalOp(
                 llvm.LLVMArrayType.from_size_and_type(1, char_base),
@@ -978,11 +960,9 @@ class CCPPCAP(ModulePass):
 
             Returns (None, [], False) when the dispatcher is absent from lifecycle_fns.
 
-            NOTE: arg_to_std keys are the RAW name_hints (which may carry __in /
-            __inout / __alloc suffixes) because non_host_std_to_canonical in
-            _build_run_block_signature stores the raw callee_input_names as its
-            values. We strip the suffix only for suite_name / suite_part
-            identification; all other lookups use the raw hint.
+            arg_to_std is keyed by the dispatcher's dummy-argument names,
+            which _build_run_block_signature records in its arg_attrs
+            (SUITE_ARG_NAME).
             """
             if lifecycle_fns is None:
                 return None, [], False
@@ -995,21 +975,20 @@ class CCPPCAP(ModulePass):
             gspecs     = []
             qmin_needed = False
 
-            for a in fn.args:
-                raw_hint = a.name_hint or ""
-                base = _strip_suffix(raw_hint)
-                if base == "suite_name":
+            for a, attrs in zip(fn.args, arg_attr_values(fn)):
+                arg_name = attrs.get(SUITE_ARG_NAME, a.name_hint or "")
+                if arg_name == "suite_name":
                     call_args.append("suite_name")
                     continue
-                if base == "suite_part":
+                if arg_name == "suite_part":
                     call_args.append(suite_part_expr)
                     continue
 
-                std_name = arg_to_std.get(raw_hint)
+                std_name = arg_to_std.get(arg_name)
                 if std_name is None:
                     raise ValueError(
                         f"_generate_cam_lifecycle_wrappers: no standard_name for "
-                        f"dispatcher '{fn_suffix}' block arg '{raw_hint}'. "
+                        f"dispatcher '{fn_suffix}' block arg '{arg_name}'. "
                         f"Ensure _generate_run_fn returns non_host_std_to_canonical "
                         f"and ccpp_cap.py stores it in lifecycle_fns."
                     )
@@ -1023,7 +1002,7 @@ class CCPPCAP(ModulePass):
                     raise ValueError(
                         f"_generate_cam_lifecycle_wrappers: no CAM expression for "
                         f"standard_name '{std_name}' (dispatcher '{fn_suffix}', "
-                        f"arg '{raw_hint}'). Either add it to _CAM_STD_EXPRS (for "
+                        f"arg '{arg_name}'). Either add it to _CAM_STD_EXPRS (for "
                         f"cap-local framework variables) or declare it in a MODULE-type "
                         f"host metadata table (for host-model variables)."
                     )

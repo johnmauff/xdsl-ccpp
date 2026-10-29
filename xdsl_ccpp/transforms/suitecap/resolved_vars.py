@@ -5,7 +5,6 @@ from __future__ import annotations
 
 
 from xdsl_ccpp.transforms.util.cap_shared import (
-    _bare,
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
 )
@@ -55,7 +54,7 @@ def _resolved_var_record(arg) -> "dict | None":
         # Scheme's own arg name: local_name fallback for args with no host
         # match (e.g. constituents), matching capgen-v1; see
         # resolved_var_xdsl_ccpp.py.
-        "arg_name": _bare(arg.name),
+        "arg_name": arg.name,
         "model_var_name": arg.getAttr("model_var_name") if arg.hasAttr("model_var_name") else None,
         "model_module_name": arg.getAttr("model_module_name") if arg.hasAttr("model_module_name") else None,
         # Plain (non-DDT) defaults; _apply_ddt_chain overwrites import_name,

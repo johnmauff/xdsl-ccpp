@@ -13112,3 +13112,49 @@ be resolved (14 calls, 9 of them generating C++ host caps: capgen,
 chararg, constadv, constprop, ddthost, kessler, nestedddt, tinyddt)
 identical to `main`, by a generation-only old-vs-new diff. pytest 1123
 passed.
+
+## `arg-flags-not-in-names`: argument names and flags travel in attributes, not name suffixes (2026-10-29)
+
+Whether a generated subroutine's dummy argument was optional, allocatable
+or an `intent(in)` array was spelled into its block argument's name hint
+(`__opt`, `__alloc`, `__in`); allocatable locals carried `__alloc`, and
+lifecycle-wrapper arguments `__hostarg`. The printers and passes parsed
+these back (`_bare()`, 26 call sites, plus the printers' own suffix
+checks), and the host cap's dispatchers inherited the suffixed names from
+the suite subroutines. `__hostarg` existed only because xDSL drops a
+trailing `_<digits>` from a name hint (`opt_var_2` -> `opt_var`), so a name
+hint cannot be relied on for a name at all.
+
+Now:
+- Suite subroutines record each argument's name, and whether it is
+  optional or allocatable, in `arg_attrs` (`suite_arg_attrs`, keys
+  `ccpp.name`/`ccpp.optional`/`ccpp.allocatable` alongside the existing
+  standard name, intent and dimension names; the keys moved to
+  `util/ccpp_conventions.py`).
+- The dispatchers (`run_dispatch`) copy each union argument's attributes
+  from the suite argument it came from; the lifecycle wrappers
+  (`lifecycle_cap`) record their argument names.
+- Locals: `mark_allocatable_local()`/`name_local()` record the name (and
+  allocatable flag) on the `memref.AllocaOp`.
+- Readers use `arg_decl()` (name and declaration flags, same precedence as
+  the suffixes: allocatable, then optional, then `intent(in)` for arrays)
+  and `value_name()` (the recorded name of a block argument or local):
+  both printers, the in-body `present()` guards, `cpp_interop`'s
+  `intent(in)` test, the CAM wrappers, GPU copy ordering and
+  instrumentation text.
+- Removed: `_bare()`, every suffix check, the suffix fallback and
+  `block_args.py`'s collision detection on suffix-stripped names.
+
+Also fixes the plain `lc_<name>` fallback locals in lifecycle wrappers,
+which lost a trailing `_<digits>` from their names.
+
+Tests: new `test_arg_decl.py` (including printed declarations of an
+optional `opt_var_2` argument and an allocatable `lc_var_2` local);
+`test_optional_args.py`'s host-table test used `nx2`, which xDSL does not
+strip, and now uses `nx_2` on both a `_register` entry (lifecycle wrapper)
+and `_timestep_init` (dispatcher) -- it fails with the wrapper's
+`arg_attrs` removed. `completed_ir` goldens regenerated (renamed SSA values
+and the new attributes only); `end_to_end` goldens unchanged. `cap_oracle
+diff` against `main` on the built aux_sima (gnu/intel/nvhpc), package-cap
+and GPU package-cap cases plus 16 example calls (opt_arg added): all 46
+IDENTICAL after each of the four stages. pytest 1135 passed.

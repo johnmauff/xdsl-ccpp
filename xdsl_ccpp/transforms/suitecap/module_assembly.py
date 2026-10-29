@@ -26,6 +26,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_KIND_PHYS,
+    mark_allocatable_local,
 )
 from xdsl_ccpp.transforms.suitecap.host_scalars import (
     _is_multi_instance_host,
@@ -140,7 +141,7 @@ class ModuleAssemblyMixin:
                 alloca = memref.AllocaOp.get(
                     full_type.element_type, shape=[0] * entry.rank
                 )
-                alloca.memref.name_hint = entry.local_name + "__alloc"
+                mark_allocatable_local(alloca, entry.local_name)
                 Rewriter.insert_op(alloca, InsertPoint.at_start(block))
                 Rewriter.insert_op(
                     SafeDeallocOp(entry.local_name), InsertPoint.before(ret_op)

@@ -82,54 +82,34 @@ def _block_arg_type(a):
 
 
 def _build_block_and_name_hints(input_arg_list) -> tuple:
-    """Build the Block and resolve each input arg's dummy-argument name hint.
+    """Build the Block and resolve each input arg's dummy-argument name.
 
-    Name collisions are disambiguated via model_var_name.
-    Returns (new_block, input_arg_types, data_ops, final_values).
+    Each entry is a distinct standard_name and is named by the scheme's
+    local name; only when two standard_names share a local name (e.g.
+    examples/var_compat) is the host's model_var_name used instead. The
+    names are returned for the suite subroutine's arg_attrs
+    (suite_arg_attrs), which is where later passes and the printers read
+    them -- a block argument's name_hint is only a hint (xDSL drops a
+    trailing "_<digits>" from it).
+    Returns (new_block, input_arg_types, data_ops, final_values, names).
     """
     input_arg_types = [_block_arg_type(a) for a in input_arg_list]
 
     new_block = Block(arg_types=input_arg_types)
 
-    def _hint_for(fn_arg, base_name: str) -> str:
-        if fn_arg.hasAttr("allocatable"):
-            return base_name + "__alloc"
-        if fn_arg.hasAttr("optional"):
-            return base_name + "__opt"
-        if _has_dims(fn_arg) and fn_arg.getAttr("intent") == "in":
-            # __in makes the printer emit intent(in) instead of inout.
-            return base_name + "__in"
-        return base_name
-
-    def _printed_name(hint: str) -> str:
-        # print_ftn.py strips these suffixes, so collisions must be
-        # detected on the stripped (printed) form.
-        if hint.endswith("__alloc"):
-            return hint[: -len("__alloc")]
-        if hint.endswith("__opt"):
-            return hint[: -len("__opt")]
-        if hint.endswith("__in"):
-            return hint[: -len("__in")]
-        return hint
-
-    # Each entry is a distinct standard_name. Use the scheme's local name;
-    # only when two standard_names share a local name (e.g.
-    # examples/var_compat) fall back to the host's model_var_name.
-    default_hints = [_hint_for(fn_arg, fn_arg.name) for fn_arg in input_arg_list]
     collision_counts: dict[str, int] = {}
-    for h in default_hints:
-        printed = _printed_name(h)
-        collision_counts[printed] = collision_counts.get(printed, 0) + 1
+    for fn_arg in input_arg_list:
+        collision_counts[fn_arg.name] = collision_counts.get(fn_arg.name, 0) + 1
 
     data_ops = {}
-    printed_seen: dict[str, str] = {}  # printed dummy-arg name -> the fn_arg.name that claimed it
+    names: list[str] = []
+    name_seen: dict[str, str] = {}  # dummy-arg name -> the fn_arg.name that claimed it
     for idx, fn_arg in enumerate(input_arg_list):
-        hint = default_hints[idx]
-        printed = _printed_name(hint)
-        if collision_counts[printed] > 1:
+        name = fn_arg.name
+        if collision_counts[name] > 1:
             if not fn_arg.hasAttr("model_var_name"):
                 raise ValueError(
-                    f"Suite dummy-argument name collision on {printed!r}: "
+                    f"Suite dummy-argument name collision on {name!r}: "
                     f"scheme argument {fn_arg.name!r} shares this local name "
                     f"with another, unrelated standard_name, and has no "
                     f"host-matched canonical name (model_var_name) to "
@@ -137,26 +117,26 @@ def _build_block_and_name_hints(input_arg_list) -> tuple:
                     f"name for this standard_name, or rename one of the "
                     f"colliding schemes' arguments."
                 )
-            hint = _hint_for(fn_arg, fn_arg.getAttr("model_var_name"))
-            printed = _printed_name(hint)
-            if printed in printed_seen:
+            name = fn_arg.getAttr("model_var_name")
+            if name in name_seen:
                 raise ValueError(
                     f"Suite dummy-argument name collision: both "
-                    f"{printed_seen[printed]!r} and {fn_arg.name!r} (different "
+                    f"{name_seen[name]!r} and {fn_arg.name!r} (different "
                     f"standard_names) resolve to the same dummy-argument "
-                    f"name {printed!r} even after preferring model_var_name. "
+                    f"name {name!r} even after preferring model_var_name. "
                     f"Give the host a distinct local name for one of these "
                     f"standard_names."
                 )
-        printed_seen[printed] = fn_arg.name
-        new_block.args[idx].name_hint = hint
+        name_seen[name] = fn_arg.name
+        names.append(name)
+        new_block.args[idx].name_hint = name
         data_ops[fn_arg.name] = new_block.args[idx]
 
     # Index-keyed resolved values: fn_arg.name is not unique for colliding
     # args, so the name-keyed data_ops can't be relied on for them.
     final_values: list = [new_block.args[idx] for idx in range(len(input_arg_list))]
 
-    return new_block, input_arg_types, data_ops, final_values
+    return new_block, input_arg_types, data_ops, final_values, names
 
 
 _UNIT_CONV_OP_MAP = {"+": arith.AddfOp, "-": arith.SubfOp, "*": arith.MulfOp}

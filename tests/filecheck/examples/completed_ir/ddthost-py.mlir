@@ -80,7 +80,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ddt_suite_init_data_prep(%nbox : memref<i32> {ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.standard_name = "host_standard_ccpp_type", ccpp.intent = "in"}, %o3 : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ozone", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension"]}, %hno3 : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "nitric_acid", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension"]}, %model_times : memref<?xi32> {ccpp.standard_name = "model_times", ccpp.intent = "out", ccpp.dim_names = ["number_of_model_times"]}) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>, memref<i32>) attributes {ccpp_phase = "group_init"} {
+// CHECK-LABEL:     func.func public @ddt_suite_init_data_prep(%nbox : memref<i32> {ccpp.name = "nbox", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info", ccpp.standard_name = "host_standard_ccpp_type", ccpp.intent = "in"}, %o3 : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "o3", ccpp.standard_name = "ozone", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension"]}, %hno3 : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "hno3", ccpp.standard_name = "nitric_acid", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension"]}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "out", ccpp.dim_names = ["number_of_model_times"]}) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>, memref<i32>) attributes {ccpp_phase = "group_init"} {
 // CHECK:             %vmr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<!ccpp_utils.derived_type<"vmr_type">>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
@@ -118,7 +118,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %vmr, %errmsg, %errflg, %ntimes : memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ddt_suite_data_prep(%cols : memref<i32> {ccpp.standard_name = "horizontal_loop_begin", ccpp.intent = "in"}, %cole : memref<i32> {ccpp.standard_name = "horizontal_loop_end", ccpp.intent = "in"}, %O3__in : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ozone", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %HNO3__in : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "nitric_acid", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %vmr : memref<!ccpp_utils.derived_type<"vmr_type">> {ccpp.standard_name = "volume_mixing_ratio_ddt", ccpp.intent = "inout"}, %psurf__in : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "surface_air_pressure", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @ddt_suite_data_prep(%cols : memref<i32> {ccpp.name = "cols", ccpp.standard_name = "horizontal_loop_begin", ccpp.intent = "in"}, %cole : memref<i32> {ccpp.name = "cole", ccpp.standard_name = "horizontal_loop_end", ccpp.intent = "in"}, %O3 : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "O3", ccpp.standard_name = "ozone", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %HNO3 : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "HNO3", ccpp.standard_name = "nitric_acid", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %vmr : memref<!ccpp_utils.derived_type<"vmr_type">> {ccpp.name = "vmr", ccpp.standard_name = "volume_mixing_ratio_ddt", ccpp.intent = "inout"}, %psurf : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "psurf", ccpp.standard_name = "surface_air_pressure", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}) -> (memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -142,13 +142,13 @@
 // CHECK-NEXT:        %11 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%cols, %cole, %O3__in, %HNO3__in, %vmr, %errmsg, %errflg) <{callee = "make_ddt_run", operand_names = ["cols", "cole", "O3", "HNO3", "vmr", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%cols, %cole, %O3, %HNO3, %vmr, %errmsg, %errflg) <{callee = "make_ddt_run", operand_names = ["cols", "cole", "O3", "HNO3", "vmr", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = arith.constant 0 : i32
 // CHECK-NEXT:        %14 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %15 = arith.cmpi eq, %14, %13 : i32
 // CHECK-NEXT:        scf.if %15 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%psurf__in, %errmsg, %errflg) <{callee = "environ_conditions_run", operand_names = ["psurf", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%psurf, %errmsg, %errflg) <{callee = "environ_conditions_run", operand_names = ["psurf", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %vmr, %errmsg, %errflg : memref<!ccpp_utils.derived_type<"vmr_type">>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
@@ -166,7 +166,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ddt_suite_timestep_final_data_prep(%ncols : memref<i32> {ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %vmr : memref<!ccpp_utils.derived_type<"vmr_type">> {ccpp.standard_name = "volume_mixing_ratio_ddt", ccpp.intent = "in"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "timestep_final"} {
+// CHECK-LABEL:     func.func public @ddt_suite_timestep_final_data_prep(%ncols : memref<i32> {ccpp.name = "ncols", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %vmr : memref<!ccpp_utils.derived_type<"vmr_type">> {ccpp.name = "vmr", ccpp.standard_name = "volume_mixing_ratio_ddt", ccpp.intent = "in"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "timestep_final"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -185,7 +185,7 @@
 // CHECK-NEXT:        "llvm.store"(%5, %6) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ddt_suite_final_data_prep(%ntimes : memref<i32> {ccpp.standard_name = "number_of_model_times", ccpp.intent = "in"}, %model_times__in : memref<?xi32> {ccpp.standard_name = "model_times", ccpp.intent = "in", ccpp.dim_names = ["number_of_model_times"]}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_final"} {
+// CHECK-LABEL:     func.func public @ddt_suite_final_data_prep(%ntimes : memref<i32> {ccpp.name = "ntimes", ccpp.standard_name = "number_of_model_times", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "in", ccpp.dim_names = ["number_of_model_times"]}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_final"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -209,7 +209,7 @@
 // CHECK-NEXT:        %11 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%ntimes, %model_times__in, %errmsg, %errflg) <{callee = "environ_conditions_finalize", operand_names = ["ntimes", "model_times", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%ntimes, %model_times, %errmsg, %errflg) <{callee = "environ_conditions_finalize", operand_names = ["ntimes", "model_times", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
@@ -231,7 +231,7 @@
 // CHECK-NEXT:      }) {module = "ccpp_constituent_prop_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<1 x i8>, sym_name = "ccpp_model_constituents_t", linkage = #llvm.linkage<"external">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "ccpp_constituent_prop_mod"} : () -> ()
-// CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -249,7 +249,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_init(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @ccpp_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -267,7 +267,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_final(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @ccpp_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -285,7 +285,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -317,7 +317,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -341,7 +341,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %ncols : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ncols : memref<i32> {ccpp.name = "ncols", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -366,7 +366,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %nbox : memref<i32>, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>, %model_times : memref<?xi32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %nbox : memref<i32> {ccpp.name = "nbox", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info", ccpp.standard_name = "host_standard_ccpp_type", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "out", ccpp.dim_names = ["number_of_model_times"]}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -392,7 +392,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %ntimes : memref<i32>, %model_times__in : memref<?xi32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "ntimes", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ntimes : memref<i32> {ccpp.name = "ntimes", ccpp.standard_name = "number_of_model_times", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "in", ccpp.dim_names = ["number_of_model_times"]}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "ntimes", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -401,7 +401,7 @@
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:          %4 = "ccpp_utils.strcmp"(%3) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %4 {
-// CHECK-NEXT:            %5, %6 = func.call @ddt_suite_final_data_prep(%ntimes, %model_times__in) : (memref<i32>, memref<?xi32>) -> (memref<512xi8>, memref<i32>)
+// CHECK-NEXT:            %5, %6 = func.call @ddt_suite_final_data_prep(%ntimes, %model_times) : (memref<i32>, memref<?xi32>) -> (memref<512xi8>, memref<i32>)
 // CHECK-NEXT:            "memref.copy"(%5, %errmsg) : (memref<512xi8>, memref<512xi8>) -> ()
 // CHECK-NEXT:            "memref.copy"(%6, %errflg) : (memref<i32>, memref<i32>) -> ()
 // CHECK-NEXT:          } else {

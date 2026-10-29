@@ -44,6 +44,7 @@ class _ArgClassification:
 class _BlockSignature:
     new_block: "object"
     input_arg_types: list
+    arg_names: list  # each dummy argument's name (see suite_arg_attrs)
     data_ops: dict
     alloc_ops: dict
     kind_cast_ops: list

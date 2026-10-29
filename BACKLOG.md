@@ -67,8 +67,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `cap-oracle-examples` | 1-2 days | XS |
-| `arg-flags-not-in-names` | 5-10 days (intent/optional/allocatable/hostarg into `arg_attrs`; printer and 9 `_bare()` callers; goldens) | M |
 | `raw-fortran-in-ir` | 5-10 days (mostly `constituent_cap.py`'s 24 raw blocks into ops) | M |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -1714,8 +1712,8 @@ name, each with its own collision rules, and disagreed with it. Since
 `rk-top-lev-host-match`, suite subroutines carry each argument's standard
 name and dimension names as `arg_attrs` (`suite_arg_attrs`,
 `SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES`); the items below move the
-remaining consumers onto it and remove the guessing. Suggested order:
-`arg-flags-not-in-names`; the rest opportunistically.
+remaining consumers onto it and remove the guessing; open items are taken
+opportunistically.
 
 - `lifecycle-cap-arg-std-names` — resolved 2026-10-28 (it was
   `ccpp_register`/`ccpp_init`/`ccpp_final`, not the group phases).
@@ -1733,22 +1731,9 @@ remaining consumers onto it and remove the guessing. Suggested order:
   copies of the `.meta` files with xdsl-only properties removed; they do not
   change what CPU caps should do.
 - `gpu-data-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13038.
-- `chost-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13067.
-- `cap-oracle-examples` — **cap_oracle does not cover `examples/`.**
-  `cap_oracle diff` regenerates built CAM-SIMA cases only. For
-  `chost-arg-std-names` (the C++ host path, which CAM-SIMA does not use) an
-  old-vs-new diff of the examples' generated output needed a scratch
-  script reading the `xdsl_ccpp_capgen()` calls in
-  `examples/*/CMakeLists.txt`. Add it as `cap_oracle diff --examples`; it
-  must resolve the CMake variables those calls use (14 of 28 calls used
-  only `set()` variables of the same file; the rest use loops or other
-  files) or read the generation calls from a configured build tree.
-- `arg-flags-not-in-names` — **Argument properties carried as name
-  suffixes.** `intent(in)`, `optional`, `allocatable` and host-arg status
-  travel as `__in`/`__opt`/`__alloc`/`__hostarg` suffixes on block-argument
-  name hints; the printers and passes parse them back (`_bare()` in 9
-  files; `block_args.py` detects collisions on the stripped "printed"
-  name). Put them in `arg_attrs` and print names as they are.
+- `chost-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13091.
+- `cap-oracle-examples` — resolved 2026-10-28. CHANGELOG.md L13067.
+- `arg-flags-not-in-names` — resolved 2026-10-29. CHANGELOG.md L13116.
 - `raw-fortran-in-ir` — **Logic as raw text.** 29 `RawFortranLinesOp`s, 24
   in `constituent_cap.py` (including the constituent-lookup error paths),
   are invisible to passes and verifiers. Replace with ops where they carry

@@ -10,6 +10,7 @@ ccpp_cap.py itself).
 
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
+from xdsl.ir import BlockArgument
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
@@ -29,7 +30,18 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
 from xdsl_ccpp.transforms.util.typing import TypeConversions
-from xdsl_ccpp.util.ccpp_conventions import (
+# The arg_attrs keys and helpers are re-exported for the passes that
+# import them from here.
+from xdsl_ccpp.util.ccpp_conventions import (  # noqa: F401
+    SUITE_ARG_ALLOCATABLE,
+    SUITE_ARG_DIM_NAMES,
+    SUITE_ARG_INTENT,
+    SUITE_ARG_NAME,
+    SUITE_ARG_OPTIONAL,
+    SUITE_ARG_STD_NAME,
+    arg_attr_dict,
+    arg_attr_values,
+    local_name,
     CCPP_ERROR_STD_NAMES,
     CCPP_FRAMEWORK_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
@@ -388,27 +400,16 @@ def resolve_dim_exprs(
         sn_lower = dim_sn.strip().lower()
         canonical = non_host_std_to_canonical.get(sn_lower)
         if canonical:
-            dim_exprs.append(_bare(canonical))
+            dim_exprs.append(canonical)
             continue
         if sn_lower in (CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME):
             col_begin = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
             col_end = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
             if col_begin and col_end:
-                dim_exprs.append(f"{_bare(col_end)} - {_bare(col_begin)} + 1")
+                dim_exprs.append(f"{col_end} - {col_begin} + 1")
                 continue
         return None
     return dim_exprs
-
-
-def _bare(name: str) -> str:
-    """Strip __alloc, __opt, or __in suffix from an arg name hint to get the bare Fortran name."""
-    if name.endswith("__alloc"):
-        return name[:-7]
-    if name.endswith("__opt"):
-        return name[:-5]
-    if name.endswith("__in"):
-        return name[:-4]
-    return name
 
 
 def derive_camel_case_name(suite_name: str) -> str:
@@ -629,9 +630,26 @@ def _expr_text(value) -> "str | None":
         if subscripts is None:
             return None
         return f"{source_text}({', '.join(subscripts)})"
-    if value.name_hint is not None:
-        return _bare(value.name_hint)
-    return None
+    return value_name(value)
+
+
+def value_name(value) -> "str | None":
+    """The Fortran name of an SSA value: for a function's block argument,
+    the dummy-argument name its function records (SUITE_ARG_NAME in
+    arg_attrs); for an allocatable local, the name recorded on its alloca
+    (mark_allocatable_local) -- the name hint can differ, since xDSL drops
+    a trailing "_<digits>" from it -- else its name hint."""
+    if isa(value.owner, memref.AllocaOp):
+        name = local_name(value.owner)
+        if name is not None:
+            return name
+    if isinstance(value, BlockArgument):
+        fn_op = value.block.parent_op()
+        if isa(fn_op, func.FuncOp) and fn_op.arg_attrs is not None:
+            attrs = fn_op.arg_attrs.data[value.index].data
+            if SUITE_ARG_NAME in attrs:
+                return attrs[SUITE_ARG_NAME].data
+    return value.name_hint
 
 
 def _rank_reducing_slice_subscripts(owner, render) -> "list[str] | None":
@@ -902,11 +920,6 @@ def resolve_capscratch_cap_var_name(
     return None
 
 
-# Per-argument attributes the suite cap records on each suite subroutine
-# (suitecap/phase_functions.py suite_arg_attrs), read by the host cap.
-SUITE_ARG_STD_NAME = "ccpp.standard_name"
-SUITE_ARG_DIM_NAMES = "ccpp.dim_names"
-SUITE_ARG_INTENT = "ccpp.intent"
 
 
 def block_args_by_std(fn_op) -> dict:
@@ -1358,7 +1371,7 @@ def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):
     suite cap:
     - intent=out only
     - Scalar (dimensions = 0 or absent) — array outs are block args, not returns
-    - Not allocatable — those become __alloc block args
+    - Not allocatable — those become allocatable block args
     - Not interstitial — framework-managed vars are not suite cap outputs
     """
     all_out_args = {}

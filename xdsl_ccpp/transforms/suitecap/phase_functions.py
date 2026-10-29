@@ -8,6 +8,7 @@ from xdsl.dialects.builtin import (
     ArrayAttr,
     DictionaryAttr,
     StringAttr,
+    UnitAttr,
     i8,
 )
 from xdsl.ir import Region
@@ -15,8 +16,11 @@ from xdsl.ir import Region
 from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
+    SUITE_ARG_ALLOCATABLE,
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_INTENT,
+    SUITE_ARG_NAME,
+    SUITE_ARG_OPTIONAL,
     SUITE_ARG_STD_NAME,
     FN_PHASE_ATTR,
     LIFECYCLE_POSTFIX_ALIASES,
@@ -79,16 +83,17 @@ _SYNTHETIC_ARG_STD_NAMES = {
 }
 
 
-def suite_arg_attrs(input_arg_list) -> ArrayAttr:
+def suite_arg_attrs(input_arg_list, names) -> ArrayAttr:
     """Per-argument attributes for a suite subroutine: each dummy
-    argument's standard name, dimension standard names and intent (merged
-    across the schemes that share it), from the scheme argument it was
-    built from. The host cap (run_dispatch) reads these
-    instead of re-deriving the suite cap's argument naming from scheme
-    metadata."""
+    argument's name (*names*, from _build_block_and_name_hints), standard
+    name, dimension standard names and intent (merged across the schemes
+    that share it), and whether it is optional or allocatable, from the
+    scheme argument it was built from. The host cap (run_dispatch) and the
+    printers read these instead of re-deriving the suite cap's argument
+    naming from scheme metadata or from block-argument name hints."""
     attrs = []
-    for a in input_arg_list:
-        entries = {}
+    for a, name in zip(input_arg_list, names, strict=True):
+        entries = {SUITE_ARG_NAME: StringAttr(name)}
         std = (a.getAttr("standard_name").lower() if a.hasAttr("standard_name")
                else _SYNTHETIC_ARG_STD_NAMES.get(a.name))
         if std:
@@ -100,6 +105,10 @@ def suite_arg_attrs(input_arg_list) -> ArrayAttr:
             entries[SUITE_ARG_DIM_NAMES] = ArrayAttr(
                 [StringAttr(d.strip().lower()) for d in a.getAttr("dim_names")]
             )
+        if a.hasAttr("allocatable"):
+            entries[SUITE_ARG_ALLOCATABLE] = UnitAttr()
+        if a.hasAttr("optional"):
+            entries[SUITE_ARG_OPTIONAL] = UnitAttr()
         attrs.append(DictionaryAttr(entries))
     return ArrayAttr(attrs)
 
@@ -200,8 +209,8 @@ class PhaseFunctionsMixin:
         conversion; each scheme call marshals independently instead (see
         generateSchemeSubroutineCallOps).
         """
-        new_block, input_arg_types, data_ops, final_values = _build_block_and_name_hints(
-            input_arg_list
+        new_block, input_arg_types, data_ops, final_values, arg_names = (
+            _build_block_and_name_hints(input_arg_list)
         )
         kind_cast_ops, unit_convert_ops, writeback_ops = _apply_kind_and_unit_casts(
             input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
@@ -212,6 +221,7 @@ class PhaseFunctionsMixin:
         return _BlockSignature(
             new_block=new_block,
             input_arg_types=input_arg_types,
+            arg_names=arg_names,
             data_ops=data_ops,
             alloc_ops=alloc_ops,
             kind_cast_ops=kind_cast_ops,
@@ -402,6 +412,7 @@ class PhaseFunctionsMixin:
         state_string,
         input_arg_list,
         input_arg_types,
+        arg_names,
         new_block,
         data_ops,
         alloc_ops,
@@ -477,7 +488,7 @@ class PhaseFunctionsMixin:
             new_fn_type,
             body,
             visibility="public",
-            arg_attrs=suite_arg_attrs(input_arg_list),
+            arg_attrs=suite_arg_attrs(input_arg_list, arg_names),
         )
 
     def _record_resolved_vars_for_phase(
@@ -666,6 +677,7 @@ class PhaseFunctionsMixin:
             state_string=state_string,
             input_arg_list=input_arg_list,
             input_arg_types=input_arg_types,
+            arg_names=_sig.arg_names,
             new_block=new_block,
             data_ops=data_ops,
             alloc_ops=alloc_ops,
