@@ -67,7 +67,7 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `chost-arg-std-names` | 4-8 days (replace the chost identity scan and fallback; chost examples) | M |
+| `cap-oracle-examples` | 1-2 days | XS |
 | `arg-flags-not-in-names` | 5-10 days (intent/optional/allocatable/hostarg into `arg_attrs`; printer and 9 `_bare()` callers; goldens) | M |
 | `raw-fortran-in-ir` | 5-10 days (mostly `constituent_cap.py`'s 24 raw blocks into ops) | M |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
@@ -1715,7 +1715,6 @@ name, each with its own collision rules, and disagreed with it. Since
 name and dimension names as `arg_attrs` (`suite_arg_attrs`,
 `SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES`); the items below move the
 remaining consumers onto it and remove the guessing. Suggested order:
-`chost-arg-std-names`, then
 `arg-flags-not-in-names`; the rest opportunistically.
 
 - `lifecycle-cap-arg-std-names` — resolved 2026-10-28 (it was
@@ -1734,11 +1733,16 @@ remaining consumers onto it and remove the guessing. Suggested order:
   copies of the `.meta` files with xdsl-only properties removed; they do not
   change what CPU caps should do.
 - `gpu-data-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13038.
-- `chost-arg-std-names` — **A third copy for the C++ host.**
-  `cpp_interop.py` (`_chost_scan_scheme_phase_args`,
-  `_chost_resolve_scheme_arg_identities`, plus a flat fallback merged under
-  it) re-derives argument identities by local name with its own collision
-  handling. Replace with `arg_attrs`.
+- `chost-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13067.
+- `cap-oracle-examples` — **cap_oracle does not cover `examples/`.**
+  `cap_oracle diff` regenerates built CAM-SIMA cases only. For
+  `chost-arg-std-names` (the C++ host path, which CAM-SIMA does not use) an
+  old-vs-new diff of the examples' generated output needed a scratch
+  script reading the `xdsl_ccpp_capgen()` calls in
+  `examples/*/CMakeLists.txt`. Add it as `cap_oracle diff --examples`; it
+  must resolve the CMake variables those calls use (14 of 28 calls used
+  only `set()` variables of the same file; the rest use loops or other
+  files) or read the generation calls from a configured build tree.
 - `arg-flags-not-in-names` — **Argument properties carried as name
   suffixes.** `intent(in)`, `optional`, `allocatable` and host-arg status
   travel as `__in`/`__opt`/`__alloc`/`__hostarg` suffixes on block-argument
