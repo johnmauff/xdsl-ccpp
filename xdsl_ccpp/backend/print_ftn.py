@@ -85,10 +85,11 @@ from xdsl_ccpp.dialects.ccpp_utils import ErrorGuardOp as CCPPErrorGuardOp
 from xdsl_ccpp.dialects.ccpp_utils import NullifyPointerOp as CCPPNullifyPointerOp
 from xdsl_ccpp.dialects.ccpp_utils import AssignOp as CCPPAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import PointerAssignOp as CCPPPointerAssignOp
-from xdsl_ccpp.dialects.ccpp_utils import PointerSliceAssignOp as CCPPPointerSliceAssignOp
 from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import ScopedBlockOp as CCPPScopedBlockOp
-from xdsl_ccpp.dialects.ccpp_utils import TextBoundedDoLoopOp as CCPPTextBoundedDoLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import DoLoopOp as CCPPDoLoopOp
+from xdsl_ccpp.dialects.ccpp_utils import MetadataLiteralExprOp as CCPPMetadataLiteralExprOp
+from xdsl_ccpp.dialects.ccpp_utils import MethodCallExprOp as CCPPMethodCallExprOp
 from xdsl_ccpp.dialects.ccpp_utils import ZeroFillOp as CCPPZeroFillOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     CamHostConstituentApiOp as CCPPCamHostConstituentApiOp,
@@ -172,51 +173,41 @@ def wrap_paren_list(
     return lines
 
 
-def _module_var_fortran_type(op: CCPPModuleVarOp) -> str:
-    """Reconstruct the Fortran type string from a ModuleVarOp's structured attributes."""
+def _extent_text(names: "list[str]") -> str:
+    """One explicit-shape extent from a bind_c_extents entry (see
+    cap_shared.bind_c_extents_attr): n; hi - lo + 1; or assumed size."""
+    if not names:
+        return "*"
+    if len(names) == 1:
+        return names[0]
+    lo, hi = names
+    return f"{hi} - {lo} + 1"
+
+
+def _decl_fortran_type(op) -> str:
+    """The Fortran type of a ModuleVarOp or DdtComponentDeclOp, from its
+    structured attributes (DdtComponentDeclOp has no is_target: TARGET is
+    illegal on a derived-type component)."""
     base = op.base_type.data
     kind = op.kind.data if op.kind is not None else None
-    ddt  = op.ddt_name.data if op.ddt_name is not None else None
 
     if base == "type":
-        ftn = f"type({ddt})"
+        ftn = f"type({op.ddt_name.data})"
+    elif base == "character":
+        specs = []
+        if kind is not None:
+            specs.append(f"kind={kind}")
+        if op.char_len is not None:
+            specs.append(f"len={op.char_len.value.data}")
+        ftn = f"character({', '.join(specs)})" if specs else base
     elif kind is not None:
-        if base == "character":
-            # kind may already be "len=N" (from meta 'kind = len=64') or a bare N
-            len_spec = kind if kind.startswith("len=") else f"len={kind}"
-            ftn = f"character({len_spec})"
-        else:
-            ftn = f"{base}(kind={kind})"
+        ftn = f"{base}(kind={kind})"
     else:
         ftn = base
 
-    if op.is_target is not None and op.is_target.value.data:
+    is_target = getattr(op, "is_target", None)
+    if is_target is not None and is_target.value.data:
         ftn += ", target"
-    if op.is_pointer is not None and op.is_pointer.value.data:
-        ftn += ", pointer"
-    return ftn
-
-
-def _ddt_component_fortran_type(op: CCPPDdtComponentDeclOp) -> str:
-    """Like _module_var_fortran_type, but for DdtComponentDeclOp -- no
-    TARGET check at all, since that property doesn't exist on this op
-    (TARGET is illegal on a Fortran derived-type component)."""
-    base = op.base_type.data
-    kind = op.kind.data if op.kind is not None else None
-    ddt  = op.ddt_name.data if op.ddt_name is not None else None
-
-    if base == "type":
-        ftn = f"type({ddt})"
-    elif kind is not None:
-        if base == "character":
-            # "kind=..." is a kind (e.g. c_char); otherwise a length.
-            spec = kind if kind.startswith(("len=", "kind=")) else f"len={kind}"
-            ftn = f"character({spec})"
-        else:
-            ftn = f"{base}(kind={kind})"
-    else:
-        ftn = base
-
     if op.is_pointer is not None and op.is_pointer.value.data:
         ftn += ", pointer"
     return ftn
@@ -1025,34 +1016,16 @@ class ftnPrintContext:
                 return None
 
     @staticmethod
-    def _suffix_kind_in_expr(expr: str, kind: str | None) -> str:
-        """Append _{kind} to the numeric literal at the end of a unit-conv expression.
-
-        Converts e.g. ``"+ 273.15"`` with kind ``"kind_phys"`` →
-        ``"+ 273.15_kind_phys"`` so Fortran uses the correct precision for
-        the constant instead of defaulting to the default-real kind (REAL32).
-        """
-        if not expr or kind is None:
-            return expr
-        # expression is "<op> <number>", e.g. "+ 273.15" or "* 100.0"
-        parts = expr.rsplit(None, 1)
-        if len(parts) == 2:
-            return f"{parts[0]} {parts[1]}_{kind}"
-        return expr
-
-    def _unit_conversion_suffix(self, to_expr_attr, conversion_region) -> str:
-        """Return the opaque Fortran suffix fragment (e.g. "+ 273.15") for
-        a CCPPUnitConvertOp/CCPPUnitWriteBackOp, from whichever of its two
-        mutually exclusive shapes this instance actually carries: the
-        legacy StringAttr text (`to_expr_attr`), or lang-neutral-expr-ir
-        Stage 1b's structured `conversion` region holding a real
-        arith.AddfOp/SubfOp whose lhs is the op's own source/conv_result
-        operand -- see UnitConvertOp/UnitWriteBackOp's own docstrings.
-        """
-        if to_expr_attr is not None:
-            return to_expr_attr.data
-        conv_op = conversion_region.block.last_op
-        return f"{self._binops[conv_op.name]} {self._render_expr(conv_op.rhs.owner)}"
+    def _unit_conversion_text(op, kind: str | None) -> str:
+        """The conversion a UnitConvertOp/UnitWriteBackOp applies, as the
+        tail of its assignment's right-hand side (e.g. "+ 273.15_kind_phys");
+        "" for none. The factor takes the variable's kind, so Fortran uses
+        the right precision instead of default real (REAL32)."""
+        if op.operation is None:
+            return ""
+        symbol = {"add": "+", "sub": "-", "mul": "*"}[op.operation.data]
+        factor = op.factor.data
+        return f"{symbol} {factor}_{kind}" if kind is not None else f"{symbol} {factor}"
 
     def _ftn_dim_suffix(self, type_attr: Attribute) -> str:
         """Return the Fortran assumed-shape array suffix for a memref type.
@@ -1142,6 +1115,13 @@ class ftnPrintContext:
         needs a newline mid-expression.
         """
         self.print(self._render_expr(op), end="", use_prefix=False)
+
+    def _target_text(self, op, name_attr) -> str:
+        """The variable an op names: its identifier property, or its target
+        reference expression (see ccpp_utils._name_or_target)."""
+        if name_attr is not None:
+            return name_attr.data
+        return self._render_expr(op.target.block.last_op)
 
     def _render_value(self, val: SSAValue) -> str:
         """Render an SSA value used as an operand: resolve it by name
@@ -1369,6 +1349,12 @@ class ftnPrintContext:
                 return op.var_name.data
             case CCPPValueExprOp():
                 return self._render_value(op.value)
+            case CCPPMetadataLiteralExprOp():
+                return op.text.data
+            case CCPPMethodCallExprOp():
+                base_str = self._render_base_expr(op.base)
+                args = ", ".join(self._render_expr(r.block.last_op) for r in op.args)
+                return f"{base_str}%{op.method.data}({args})"
             case CCPPStringConcatExprOp():
                 pieces = [self._render_expr(r.block.last_op) for r in op.pieces]
                 return " // ".join(pieces)
@@ -1585,8 +1571,8 @@ class ftnPrintContext:
                     self.print_expr(val.owner)
                     self.print("")
             case CCPPCapVarRefOp():
-                # Register the cap module variable name — no Fortran code emitted
-                self.variables[op.res] = op.var_name.data
+                # Register the cap module variable reference — no Fortran code emitted
+                self.variables[op.res] = self._target_text(op, op.var_name)
             case CCPPHostVarRefOp():
                 # Register the host variable name for the result — no Fortran emitted.
                 # When member_name is set the reference is var_name%member_name (DDT).
@@ -1617,8 +1603,9 @@ class ftnPrintContext:
                 self.print_expr(op.var.owner)
                 self.print(f', "{op.suffix.data}"', use_prefix=False)
             case CCPPWriteStmtOp():
-                items = ", ".join(i.data for i in op.items.data)
-                self.print(f"write({op.dest.data}, '{op.format_spec.data}') {items}")
+                dest = self._render_expr(op.dest.block.last_op)
+                items = [self._render_expr(r.block.last_op) for r in op.items]
+                self.print(f"write({dest}, '({len(items)}a)') {', '.join(items)}")
             case builtin.UnrealizedConversionCastOp():
                 # Type annotation cast — transparent to Fortran; map each result
                 # to the same variable name as the corresponding input operand.
@@ -1670,9 +1657,7 @@ class ftnPrintContext:
                 vname = op.var_name.data
                 dim_names = [self._get_variable_name_for(v) for v in op.dim_vars]
                 dim_str = ", ".join(dim_names)
-                if op.init_value is not None:
-                    init_value_str = op.init_value.data
-                elif op.init_value_region is not None:
+                if op.init_value_region is not None:
                     init_value_str = self._render_expr(op.init_value_region.block.last_op)
                 else:
                     init_value_str = None
@@ -1715,88 +1700,63 @@ class ftnPrintContext:
                             inner.print("#endif", use_prefix=False)
                     self.print("end if")
             case CCPPSafeDeallocOp():
-                vname = op.var_name.data
+                vname = self._target_text(op, op.var_name)
                 self.print(f"if (allocated({vname})) deallocate({vname})")
             case CCPPNullifyPointerOp():
-                ptr = op.ptr_name.data
+                ptr = self._target_text(op, op.ptr_name)
                 if op.if_associated is not None:
                     self.print(f"if (associated({ptr})) nullify({ptr})")
                 else:
                     self.print(f"nullify({ptr})")
             case CCPPAllocateOp():
-                if op.dims is not None:
-                    dims = ", ".join(d.data for d in op.dims.data)
-                else:
-                    dims = ", ".join(
-                        self._render_expr(r.block.last_op) for r in op.dims_region
-                    )
-                target = f"{op.var_name.data}({dims})" if dims else op.var_name.data
+                dims = ", ".join(self._render_expr(r.block.last_op) for r in op.dims_region)
+                name = self._target_text(op, op.var_name)
+                target = f"{name}({dims})" if dims else name
                 stat = f", stat={op.stat_var.data}" if op.stat_var is not None else ""
                 self.print(f"allocate({target}{stat})")
             case CCPPZeroFillOp():
-                self.print(f"{op.var_name.data} = 0.0_kind_phys")
-            case CCPPPointerSliceAssignOp():
-                self.print(
-                    f"{op.ptr_name.data} => "
-                    f"{op.array_name.data}(:, :, {op.index_var.data})"
-                )
+                self.print(f"{self._target_text(op, op.var_name)} = 0.0_kind_phys")
             case CCPPPointerAssignOp():
-                if op.rhs_expr is not None:
-                    rhs_str = op.rhs_expr.data
-                else:
-                    rhs_str = self._render_expr(op.rhs_expr_region.block.last_op)
-                self.print(f"{op.ptr_name.data} => {rhs_str}")
+                rhs_str = self._render_expr(op.rhs_expr_region.block.last_op)
+                self.print(f"{self._target_text(op, op.ptr_name)} => {rhs_str}")
             case CCPPAssignOp():
-                if op.lhs_expr is not None:
-                    self.print(f"{op.lhs_expr.data} = {op.rhs_expr.data}")
-                else:
-                    lhs = self._render_expr(op.lhs.block.last_op)
-                    rhs = self._render_expr(op.rhs.block.last_op)
-                    self.print(f"{lhs} = {rhs}")
+                lhs = self._render_expr(op.lhs.block.last_op)
+                rhs = self._render_expr(op.rhs.block.last_op)
+                self.print(f"{lhs} = {rhs}")
             case CCPPDdtMethodCallOp():
-                if op.obj_expr is not None:
-                    obj_str = op.obj_expr.data
-                else:
-                    obj_str = self._render_expr(op.obj_expr_region.block.last_op)
-                if op.args is not None:
-                    arg_strs = [a.data for a in op.args.data]
-                else:
-                    arg_strs = [self._render_expr(r.block.last_op) for r in op.args_region]
-                if op.kwargs is not None:
-                    kwarg_strs = [k.data for k in op.kwargs.data]
-                else:
-                    kwarg_strs = [self._render_expr(r.block.last_op) for r in op.kwargs_region]
-                all_args = arg_strs + kwarg_strs
+                obj_str = self._render_expr(op.obj_expr_region.block.last_op)
+                all_args = [
+                    self._render_expr(r.block.last_op)
+                    for r in (*op.args_region, *op.kwargs_region)
+                ]
                 self.print(f"call {obj_str}%{op.method.data}({', '.join(all_args)})")
             case CCPPErrorGuardOp():
                 errflg_var = op.errflg_var.data if op.errflg_var is not None else "errflg"
                 errmsg_var = op.errmsg_var.data if op.errmsg_var is not None else "errmsg"
-                if op.condition is not None:
-                    cond_str = op.condition.data
-                else:
-                    cond_root = op.condition_region.block.last_op
-                    cond_str = self._render_expr(cond_root)
-                    # Fortran's .not. binds TIGHTER than .and./.or./
-                    # .eqv./.neqv. (but looser than relational/concat/
-                    # arithmetic) -- "if (.not. a .or. b)" parses as
-                    # "(.not. a) .or. b", not the intended ".not. (a .or.
-                    # b)", silently inverting the guard for any compound
-                    # condition at this level. A bare comparison/call/
-                    # var-ref needs no parens (those bind tighter than
-                    # .not. already). Not yet exercised by any real
-                    # constituent_cap.py call site (all use a single
-                    # CallExprOp today), but a real bug in the general
-                    # mechanism (Copilot PR #109 review, 2026-10-05).
-                    if expr_precedence.level_of(cond_root) < expr_precedence.LEVEL_CMP:
-                        cond_str = f"({cond_str})"
+                cond_root = op.condition_region.block.last_op
+                cond_str = self._render_expr(cond_root)
+                # Fortran's .not. binds TIGHTER than .and./.or./
+                # .eqv./.neqv. (but looser than relational/concat/
+                # arithmetic) -- "if (.not. a .or. b)" parses as
+                # "(.not. a) .or. b", not the intended ".not. (a .or.
+                # b)", silently inverting the guard for any compound
+                # condition at this level. A bare comparison/call/
+                # var-ref needs no parens (those bind tighter than
+                # .not. already). Not yet exercised by any real
+                # constituent_cap.py call site (all use a single
+                # CallExprOp today), but a real bug in the general
+                # mechanism (Copilot PR #109 review, 2026-10-05).
+                if expr_precedence.level_of(cond_root) < expr_precedence.LEVEL_CMP:
+                    cond_str = f"({cond_str})"
                 self.print(f"if (.not. {cond_str}) then")
                 with self.descend() as inner:
                     inner.print(f"{errflg_var} = 1")
                     inner.print(f"{errmsg_var} = '{op.errmsg_text.data}'")
                     inner.print("return")
                 self.print("end if")
-            case CCPPTextBoundedDoLoopOp():
-                self.print(f"do {op.loop_var.data} = 1, {op.upper_expr.data}")
+            case CCPPDoLoopOp():
+                upper = self._render_expr(op.upper.block.last_op)
+                self.print(f"do {op.loop_var.data} = 1, {upper}")
                 with self.descend() as inner:
                     inner.print_block(op.body.block)
                 self.print("end do")
@@ -1834,13 +1794,10 @@ class ftnPrintContext:
             case CCPPNonCamHostConstituentApiOp():
                 self.print_block(op.body.block)
             case CCPPCamDirectCallOp():
-                args = ", ".join(a.data for a in op.call_args.data)
+                args = ", ".join(self._render_expr(r.block.last_op) for r in op.arg_exprs)
                 self.print(f"call {op.callee.data}({args})")
             case CCPPCallStatementOp():
-                if op.call_args is not None:
-                    call_args = [a.data for a in op.call_args.data]
-                else:
-                    call_args = [self._render_expr(r.block.last_op) for r in op.arg_exprs]
+                call_args = [self._render_expr(r.block.last_op) for r in op.arg_exprs]
                 lines = wrap_paren_list(
                     f"call {op.callee.data}(", call_args, ")", 80, "    "
                 )
@@ -1899,7 +1856,8 @@ class ftnPrintContext:
                 wrapper    = op.wrapper_fn.data
                 ev         = op.errcode_var.data
                 em         = op.errmsg_var.data
-                template   = [a.data for a in op.call_args_template.data]
+                other_args = [self._render_expr(r.block.last_op) for r in op.arg_exprs]
+                part_at    = op.suite_part_index.value.data
                 first = True
                 for inner in op.suite_groups.data:
                     attrs    = inner.data
@@ -1910,8 +1868,7 @@ class ftnPrintContext:
                     self.print(f"{kw} (trim(suite_name) == '{sn}') then")
                     with self.descend() as blk:
                         for grp in groups:
-                            args = [f"'{grp}'" if a == "__suite_part__" else a
-                                    for a in template]
+                            args = [*other_args[:part_at], f"'{grp}'", *other_args[part_at:]]
                             blk.print(f"call {dispatcher}({', '.join(args)})")
                             blk.print(f"if ({ev} /= 0) return")
                 if not first:
@@ -2165,10 +2122,7 @@ class ftnPrintContext:
                 src_name    = self._get_variable_name_for(op.source)
                 result_name = self._get_variable_name_for(op.res)
                 scheme_kind = self._elem_kind_name(op.res.type)
-                to_expr = self._suffix_kind_in_expr(
-                    self._unit_conversion_suffix(op.to_scheme_expr, op.conversion),
-                    scheme_kind,
-                )
+                to_expr = self._unit_conversion_text(op, scheme_kind)
                 dim_suffix = self._ftn_dim_suffix(op.res.type)
                 if dim_suffix:
                     rank = dim_suffix.count(":")
@@ -2189,10 +2143,7 @@ class ftnPrintContext:
                 conv_name = self._get_variable_name_for(op.conv_result)
                 dest_name = self._get_variable_name_for(op.original_dest)
                 host_kind = self._elem_kind_name(op.original_dest.type)
-                to_expr = self._suffix_kind_in_expr(
-                    self._unit_conversion_suffix(op.to_host_expr, op.conversion),
-                    host_kind,
-                )
+                to_expr = self._unit_conversion_text(op, host_kind)
                 dim_suffix = self._ftn_dim_suffix(op.conv_result.type)
                 # Mirror CCPPUnitConvertOp's own presence gating: an absent
                 # optional array was never allocated/converted, so there is
@@ -2491,14 +2442,12 @@ class ftnPrintContext:
                 if not isa(comp, CCPPDdtComponentDeclOp):
                     continue
                 rank      = comp.rank.value.data
-                ftn_type  = _ddt_component_fortran_type(comp)
+                ftn_type  = _decl_fortran_type(comp)
                 var_name  = comp.var_name.data
                 is_ptr    = comp.is_pointer is not None and comp.is_pointer.value.data
                 if comp.fixed_dim is not None:
                     dim = comp.fixed_dim.value.data
-                    if comp.init_value is not None:
-                        init_part = f" = {comp.init_value.data}"
-                    elif comp.init_value_region is not None:
+                    if comp.init_value_region is not None:
                         init_part = " = " + self._render_expr(
                             comp.init_value_region.block.last_op)
                     else:
@@ -2520,14 +2469,12 @@ class ftnPrintContext:
         for op in body.ops:
             if isa(op, CCPPModuleVarOp):
                 rank     = op.rank.value.data
-                ftn_type = _module_var_fortran_type(op)
+                ftn_type = _decl_fortran_type(op)
                 var_name = op.var_name.data
                 is_ptr   = op.is_pointer is not None and op.is_pointer.value.data
                 if op.fixed_dim is not None:
                     dim = op.fixed_dim.value.data
-                    if op.init_value is not None:
-                        init_part = f" = {op.init_value.data}"
-                    elif op.init_value_region is not None:
+                    if op.init_value_region is not None:
                         init_part = f" = {self._render_expr(op.init_value_region.block.last_op)}"
                     else:
                         init_part = ""
@@ -2772,9 +2719,9 @@ class ftnPrintContext:
         Integer scalars with ``intent(in)`` use the ``VALUE`` attribute (pass by value).
         All real kinds default to ``real(c_double)`` (CCPP physics kinds are 64-bit).
 
-        explicit_dims -- when given (a resolved per-dimension Fortran
-        expression list, e.g. ["col_end - col_start + 1", "nz"] -- see
-        run_dispatch.py's resolve_dim_exprs/bind_c_dim_exprs), an array
+        explicit_dims -- when given (the per-dimension extents spelled
+        from a bind_c_extents entry, e.g. ["col_end - col_start + 1", "nz"]
+        -- see cap_shared.bind_c_extents_attr), an array
         argument is declared with EXPLICIT shape + target instead of flat
         assumed-size (*) -- chost-rank3-bindc: assumed-size (*) cannot be
         passed to the suite cap's own assumed-shape (:,...) dummy for any
@@ -2995,9 +2942,9 @@ class ftnPrintContext:
         """Print the subroutine's own dummy-argument declarations: intent(in)/
         intent(inout) for inputs, intent(out) for outputs (always scalars).
 
-        fn_op -- when given and bind_c is set, its own bind_c_dim_exprs
-        attribute (stamped by run_dispatch.py's _generate_run_fn, one entry
-        per block arg in order, "" meaning "no override") supplies an
+        fn_op -- when given and bind_c is set, its own bind_c_extents
+        attribute (cap_shared.bind_c_extents_attr: one entry per block arg
+        in order, empty meaning "no override") supplies an
         explicit-shape dimension list for an array argument instead of
         today's flat assumed-size (*) (chost-rank3-bindc). Absent/missing/
         empty falls straight back to the existing (*) behavior -- additive,
@@ -3005,8 +2952,8 @@ class ftnPrintContext:
         _print_fn's own single call site) and every non-array/non-bind_c
         case is completely unaffected.
         """
-        dim_exprs_attr = (
-            fn_op.attributes.get("bind_c_dim_exprs") if fn_op is not None else None
+        extents_attr = (
+            fn_op.attributes.get("bind_c_extents") if fn_op is not None else None
         )
         # Declare input arguments with intent(in) or intent(inout).
         # Array block args (dynamic memref) are always intent(inout): the host
@@ -3030,10 +2977,11 @@ class ftnPrintContext:
                 type_str = type_str + ", allocatable"
             if bind_c:
                 explicit_dims = None
-                if dim_exprs_attr is not None and idx < len(dim_exprs_attr.data):
-                    raw = dim_exprs_attr.data[idx].data
-                    if raw:
-                        explicit_dims = raw.split(",")
+                if extents_attr is not None and idx < len(extents_attr.data):
+                    explicit_dims = [
+                        _extent_text([n.data for n in extent.data])
+                        for extent in extents_attr.data[idx].data
+                    ] or None
                 inner.print(inner._bind_c_arg_decl_line(
                     arg.type, arg_name, intent, is_opt, explicit_dims=explicit_dims,
                     keep_derived=decl.declared_intent is not None,
@@ -3274,7 +3222,7 @@ class ftnPrintContext:
 
         fn_op -- the owning func.FuncOp itself (not just its decomposed
         name/body/type), so _declare_fn_arguments can read its own
-        bind_c_dim_exprs attribute (chost-rank3-bindc) -- optional, so
+        bind_c_extents attribute (chost-rank3-bindc) -- optional, so
         every other existing concern stays unaffected.
         """
         analysis = self._analyze_fn_body(bdy, fn_op)

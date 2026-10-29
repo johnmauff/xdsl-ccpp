@@ -234,7 +234,6 @@ def _build_suite_state_lazy_alloc(ninstances_ssa) -> "LazyAllocOp":
     """
     return LazyAllocOp(
         var_name="ccpp_suite_state",
-        kind_name="character",
         dim_var_refs=[ninstances_ssa],
         init_value_op=StringLiteralExprOp("uninitialized"),
     )

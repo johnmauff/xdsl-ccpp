@@ -345,40 +345,39 @@ def deprecated_std_name_warning(std_name: str) -> str | None:
     )
 
 # ── Unit conversion table ────────────────────────────────────────────────────
-# Maps (scheme_units, host_units) → (to_scheme_expr, to_host_expr).
-#
-# Each expression is appended to the source variable name to form the RHS of
-# a Fortran assignment, e.g. "source_var + 273.15" or "source_var * 100.0".
-# An empty string means no conversion expression is emitted (intent=out only).
+# Maps (scheme_units, host_units) → (to_scheme, to_host), each an
+# (operation, factor) pair for UnitConvertOp/UnitWriteBackOp: the value is
+# converted by "add", "sub" or "mul" with the factor, a real literal kept as
+# written (e.g. "1.0E6").
 #
 # Units are matched after lowercasing and stripping whitespace.
 UNIT_CONVERSIONS: dict = {
     # Temperature
-    ("k",    "degc"): ("+ 273.15", "- 273.15"),
-    ("degc", "k"):    ("- 273.15", "+ 273.15"),
+    ("k",    "degc"): (("add", "273.15"), ("sub", "273.15")),
+    ("degc", "k"):    (("sub", "273.15"), ("add", "273.15")),
     # Pressure
-    ("pa",   "hpa"):  ("* 100.0",  "* 0.01"),
-    ("hpa",  "pa"):   ("* 0.01",   "* 100.0"),
+    ("pa",   "hpa"):  (("mul", "100.0"), ("mul", "0.01")),
+    ("hpa",  "pa"):   (("mul", "0.01"), ("mul", "100.0")),
     # Length
-    ("m",    "cm"):   ("* 0.01",   "* 100.0"),
-    ("cm",   "m"):    ("* 100.0",  "* 0.01"),
+    ("m",    "cm"):   (("mul", "0.01"), ("mul", "100.0")),
+    ("cm",   "m"):    (("mul", "100.0"), ("mul", "0.01")),
     # Mixing ratio
-    ("kg kg-1", "g g-1"):  ("* 0.001",  "* 1000.0"),
-    ("g g-1",   "kg kg-1"): ("* 1000.0", "* 0.001"),
+    ("kg kg-1", "g g-1"):  (("mul", "0.001"), ("mul", "1000.0")),
+    ("g g-1",   "kg kg-1"): (("mul", "1000.0"), ("mul", "0.001")),
     # Speed
-    ("m s-1",  "cm s-1"): ("* 0.01",  "* 100.0"),
-    ("cm s-1", "m s-1"):  ("* 100.0", "* 0.01"),
+    ("m s-1",  "cm s-1"): (("mul", "0.01"), ("mul", "100.0")),
+    ("cm s-1", "m s-1"):  (("mul", "100.0"), ("mul", "0.01")),
     # Length (micrometer)
-    ("um", "m"): ("* 1.0E6", "* 1.0E-6"),
-    ("m", "um"): ("* 1.0E-6", "* 1.0E6"),
+    ("um", "m"): (("mul", "1.0E6"), ("mul", "1.0E-6")),
+    ("m", "um"): (("mul", "1.0E-6"), ("mul", "1.0E6")),
     # Length (kilometer)
-    ("km", "m"): ("* 0.001", "* 1000.0"),
-    ("m", "km"): ("* 1000.0", "* 0.001"),
+    ("km", "m"): (("mul", "0.001"), ("mul", "1000.0")),
+    ("m", "km"): (("mul", "1000.0"), ("mul", "0.001")),
     # Specific energy — "j kg-1" and "m2 s-2" are dimensionally identical
     # (1 J/kg = 1 (kg m2 s-2) / kg = 1 m2 s-2), so this is a same-magnitude
     # relabeling rather than a real numeric conversion.
-    ("m2 s-2", "j kg-1"): ("* 1.0", "* 1.0"),
-    ("j kg-1", "m2 s-2"): ("* 1.0", "* 1.0"),
+    ("m2 s-2", "j kg-1"): (("mul", "1.0"), ("mul", "1.0")),
+    ("j kg-1", "m2 s-2"): (("mul", "1.0"), ("mul", "1.0")),
 }
 
 # Unit strings that are all considered dimensionless — mutually compatible.

@@ -69,7 +69,8 @@ class TypeConversions:
             - Shape ``[]`` (zero-dimensional scalar memref) otherwise.
         """
         shape = []
-        if text_type == "real" and kind is not None and "len=" not in kind:
+        char_len = cls.char_len(kind)
+        if text_type == "real" and kind is not None and char_len is None:
             width = real_kind_width(kind)
             if width is not None:
                 # Bare numeric KIND literal (e.g. "8") -- already valid,
@@ -90,14 +91,10 @@ class TypeConversions:
                 base_type = RealKindType(kind)
         else:
             base_type = cls.getBaseType(text_type)
-        if kind is not None and "len=" in kind:
+        if char_len is not None:
             # A 'len=N' kind qualifier on a character type sets the string length.
-            # 'len=*' means assumed-length (dynamic); any integer N means fixed length.
             # Other kind values (e.g. 'kind_phys') are Fortran precision specifiers
             # and have no effect on the memref shape.
-            len_val = kind.split("=")[1]
-            # len=* means assumed-length in Fortran source; CCPP always uses CCPP_ERRMSG_LEN
-            char_len = CCPP_ERRMSG_LEN if len_val == "*" else int(len_val)
             # Array dims come first; the string length is the trailing dimension.
             # e.g. character(len=32), dimension(N) → memref<?x32xi8>
             shape = [DYNAMIC_INDEX] * dimensions + [char_len]
@@ -106,6 +103,16 @@ class TypeConversions:
             # the actual extent is provided by the host at runtime
             shape = [DYNAMIC_INDEX] * dimensions
         return memref.MemRefType(base_type, shape)
+
+    @staticmethod
+    def char_len(kind: "str | None") -> "int | None":
+        """The character length a .meta ``kind = len=N`` qualifier gives;
+        None for any other kind. ``len=*`` (assumed length in Fortran
+        source) is CCPP_ERRMSG_LEN, the length CCPP always uses."""
+        if kind is None or not kind.replace(" ", "").startswith("len="):
+            return None
+        len_val = kind.split("=", 1)[1].strip()
+        return CCPP_ERRMSG_LEN if len_val == "*" else int(len_val)
 
     @classmethod
     def getBaseType(cls, text_type):

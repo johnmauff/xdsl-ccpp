@@ -114,7 +114,7 @@
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        %temp_level_kind_cast = "ccpp_utils.kind_cast"(%temp_level) <{target_kind = "kind_dyn"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>
-// CHECK-NEXT:        %temp_layer_unit_conv = "ccpp_utils.unit_convert"(%temp_layer) <{to_scheme_expr = "+ 273.15"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:        %temp_layer_unit_conv = "ccpp_utils.unit_convert"(%temp_layer) <{operation = "add", factor = "273.15"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_in_time_step}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -141,7 +141,7 @@
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %lev, %temp_layer_unit_conv, %timestep, %errmsg, %errflg) <{callee = "temp_adjust_run", operand_names = ["nbox", "lev", "temp_layer", "timestep", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<i32>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        "ccpp_utils.kind_write_back"(%temp_level_kind_cast, %temp_level) <{original_kind = "kind_phys"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_dyn">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
-// CHECK-NEXT:        "ccpp_utils.unit_write_back"(%temp_layer_unit_conv, %temp_layer) <{to_host_expr = "- 273.15"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
+// CHECK-NEXT:        "ccpp_utils.unit_write_back"(%temp_layer_unit_conv, %temp_layer) <{operation = "sub", factor = "273.15"}> : (memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @hello_world_suite_timestep_init_physics() -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
@@ -279,7 +279,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -318,7 +318,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -342,7 +342,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -366,7 +366,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -390,7 +390,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -451,22 +451,22 @@
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%errflg) : (memref<i32>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %0 = arith.constant 0 : i32
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.assign"() ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = ""}> : () -> ()
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.assign"() ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%do_input) : (memref<i1>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %1 = arith.constant true
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.assign"() ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%do_output) : (memref<i1>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %2 = arith.constant true
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        %3 = "ccpp_utils.call_expr"() <{callee = "present"}> ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%input_vars) : (memref<i1>) -> ()
 // CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
@@ -475,7 +475,7 @@
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%do_input) : (memref<i1>) -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%input_vars) : (memref<i1>) -> ()
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %4 = "ccpp_utils.call_expr"() <{callee = "present"}> ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%output_vars) : (memref<i1>) -> ()
@@ -485,7 +485,7 @@
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%do_output) : (memref<i1>) -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%output_vars) : (memref<i1>) -> ()
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%5) <{literal = "hello_world_suite"}> : (memref<?xi8>) -> i1
@@ -498,7 +498,7 @@
 // CHECK-NEXT:          scf.if %11 {
 // CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
 // CHECK-NEXT:              %12 = arith.constant 6 : i32
-// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -507,7 +507,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "horizontal_dimension                "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -516,7 +516,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "potential_temperature               "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -525,7 +525,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "potential_temperature_at_interface  "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -534,7 +534,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "time_step_for_physics               "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -543,7 +543,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "vertical_interface_dimension        "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -552,7 +552,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "vertical_layer_dimension            "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          } else {
 // CHECK-NEXT:            %19 = "ccpp_utils.value_expr"(%do_input) : (memref<i1>) -> i1
 // CHECK-NEXT:            %20 = arith.constant true
@@ -562,7 +562,7 @@
 // CHECK-NEXT:            scf.if %23 {
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
 // CHECK-NEXT:                %24 = arith.constant 4 : i32
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -571,7 +571,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_code                     "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -580,7 +580,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_message                  "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -589,7 +589,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "potential_temperature               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -598,11 +598,11 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "potential_temperature_at_interface  "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            } else {
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
 // CHECK-NEXT:                %29 = arith.constant 8 : i32
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -611,7 +611,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_code                     "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -620,7 +620,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_message                  "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -629,7 +629,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "horizontal_dimension                "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -638,7 +638,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "potential_temperature               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -647,7 +647,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "potential_temperature_at_interface  "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -656,7 +656,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "time_step_for_physics               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -665,7 +665,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "vertical_interface_dimension        "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -674,7 +674,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "vertical_layer_dimension            "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }
 // CHECK-NEXT:          }
 // CHECK-NEXT:        } else {

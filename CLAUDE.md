@@ -31,5 +31,5 @@ op and its printer case rather than emitting text.
 Before calling such work done, scan the string literals of `xdsl_ccpp/transforms/` for
 target syntax (`::`, `intent(`, `.true.`, `/=`, statement keywords, intrinsic calls,
 `!$`) instead of trusting a count of one op class. Known remaining text is tracked in
-`BACKLOG.md` (`fortran-decls-as-text`, `fortran-exprs-as-text`, `cpp-text-in-ir`,
-`gpu-debug-text`); don't add to it.
+`BACKLOG.md` (`active-condition-ir`, `cpp-text-in-ir`, `gpu-debug-text`); don't add to
+it. `tests/unit/test_ir_names_are_identifiers.py` checks the IR's naming properties.

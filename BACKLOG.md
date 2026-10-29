@@ -67,9 +67,9 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `fortran-exprs-as-text` | 5-10 days (convert ~45 callers to expression ops, then delete the text forms) | M |
 | `cpp-text-in-ir` | 5-10 days | M |
 | `gpu-debug-text` | 2-4 days | S |
+| `active-condition-ir` | 3-6 days (parser for `active` expressions and member subscripts, tests, convert `ActiveCheckOp` and DDT-member `HostVarRefOp`s and their identity keys) | S |
 | `printer-trailing-whitespace` | <1 day | XS |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
@@ -1739,19 +1739,25 @@ opportunistically.
 - `arg-flags-not-in-names` — resolved 2026-10-29. CHANGELOG.md L13116.
 - `raw-fortran-in-ir` — resolved 2026-10-29. CHANGELOG.md L13162.
 - `fortran-decls-as-text` — resolved 2026-10-29. CHANGELOG.md L13210.
-- `fortran-exprs-as-text` — **Expressions passed as Fortran text.** About
-  45 sites: the text form of `AssignOp` (25, mostly `cpp_interop.py`, e.g.
-  `"real(x, kind_phys)"`), `TextBoundedDoLoopOp` bounds, `AllocateOp`
-  dimension strings (scratch `alloc_dims`), `VarRefExprOp`s holding an
-  expression (`ref()`'s `lc_instances(i)%x` text into `_allocated_cond`),
-  `WriteStmtOp` items, `CallStatementOp`'s `call_args` and the text
-  conditions of `ErrorGuardOp`/`ActiveCheckOp`. Convert each caller to the
-  expression-op form (most of these ops already have one), then delete the
-  text forms.
+- `fortran-exprs-as-text` — resolved 2026-10-29. CHANGELOG.md L13259.
+- `active-condition-ir` — **Expressions from `.meta` files are Fortran
+  text.** Two kinds: a host variable's `active` attribute, such as
+  `(flag_a .and. n > 0)` (`suitecap/active.py` `_resolve_active_condition`
+  rewrites its tokens to host references; `ActiveCheckOp.condition_expr`
+  carries the result), and a DDT member's subscripted local name, such as
+  `q(:, :, index_of_water_vapor)` (`cap_shared._resolve_member_subscripts`
+  rewrites the standard names; `HostVarRefOp.member_name` carries
+  `q(:, :, index_qv)`, and the `{var}%{member}` text doubles as a host-var
+  identity key, `_resolve_host_var_key`). Parse both in the frontend (a
+  hand-written parser with `filename:line` errors, like `parse_meta_file`)
+  into `arith` comparisons/logic, index/slice and reference ops, so passes
+  can inspect them and other printers can spell them.
 - `cpp-text-in-ir` — **C++ syntax in the middle layer.** `cpp_interop.py`
   builds the C++ host cap partly from `RawCppLinesOp` and C++ text
   (`static_cast<...>`, `return {errflg, ...}`, `std::vector<...>`): the
-  same problem for the C++ backend.
+  same problem for the C++ backend. Once `VarRefExprOp('&errflg')` (64 in
+  the C++ caps) is gone, make `VarRefExprOp` reject a non-identifier name,
+  as `MemberAccessExprOp` does.
 - `gpu-debug-text` — **GPU debug instrumentation as text.**
   `gpu_debug_print_pass.py` builds `GPUDebugPrintOp`s from `!$acc
   parallel present(...)`/`write(*,*)` text. Use the `Acc*` ops and a
@@ -1762,7 +1768,9 @@ opportunistically.
   dispatcher's `errflg = 1` ends in trailing whitespace (21 times in a
   Kessler cap). Harmless; FileCheck ignores it.
 
-To re-measure the first four: scan the string literals (not docstrings) of
+To re-measure the first three: scan the transformed IR's string properties
+(`tests/unit/test_ir_names_are_identifiers.py` does this for the
+completed_ir goldens) and the string literals (not docstrings) of
 `xdsl_ccpp/transforms/` for Fortran/C++ syntax (`::`, `intent(`,
 `.true.`, `/=`, statement keywords, intrinsic calls, `!$`), excluding the
 frontends that parse Fortran input (`fparser2_to_meta`, `fir_to_meta`,

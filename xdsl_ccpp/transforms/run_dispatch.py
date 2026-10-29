@@ -29,7 +29,6 @@ from xdsl.ir import Block, Region
 
 from xdsl_ccpp.dialects.ccpp import ArgSourceKind, ResolvedArgOp
 from xdsl_ccpp.dialects.ccpp_utils import (
-    CapVarRefOp,
     HostVarRefOp,
     KeywordCallOp,
     RankReducingSliceOp,
@@ -44,6 +43,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_NAME,
     SUITE_ARG_OPTIONAL,
+    bind_c_extents_attr,
     SUITE_ARG_STD_NAME,
     SchemeArgsByStd,
     _assert_call_arg_count_matches_signature,
@@ -60,7 +60,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     arg_attr_dict,
     build_ncol_compute_ops,
     classify_host_table_vars,
-    resolve_dim_exprs,
+    resolve_dim_extents,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
@@ -470,7 +470,7 @@ def _build_run_block_signature(
     # Also build a rename map for per-suite block_arg_map construction below.
     non_host_std_to_canonical: dict = {}  # suite-level std_name → canonical name
     # canonical_arg_name → dim_std_names list, array args only -- feeds the
-    # plain-bind_c explicit-shape fix (chost-rank3-bindc) via resolve_dim_exprs.
+    # plain-bind_c explicit-shape fix (chost-rank3-bindc) via resolve_dim_extents.
     union_dim_names: dict = {}
     # canonical_arg_name → the first-seen callee arg's suite_arg_attrs
     # (intent, optional, allocatable, ...): recorded on the dispatcher's
@@ -930,13 +930,12 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
                     ctx.chain_global_ops.append(sv_glob)
         elif op.source_kind.data == ArgSourceKind.CapVar:
             std_name_cv = op.std_name.data
-            cv_name, _cv_type, _ftn = ctx.cap_var_map[std_name_cv]
+            cv_ref, _cv_type, _ftn = ctx.cap_var_map[std_name_cv]
             _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])
+            _cv_rank = 0
             if _cv_dims and _cv_dims[0].lower() == CCPP_LOOP_EXTENT_STD_NAME:
                 _cv_rank = _rank_of(arg_type)
-                if _cv_rank > 0:
-                    cv_name = f"{cv_name}({', '.join([':'] * _cv_rank)})"
-            cap_ref = CapVarRefOp(cv_name, arg_type)
+            cap_ref = cv_ref.ref_op(arg_type, section_rank=_cv_rank)
             host_var_ref_ops.append(cap_ref)
             host_var_ref_results[arg_name] = cap_ref.res
 
@@ -1350,8 +1349,8 @@ def _build_call_and_copy_back_ops(
             if (a_type == ret_type
                     and resolved_arg_ops[i].source_kind.data == ArgSourceKind.CapVar):
                 std_name_cv = resolved_arg_ops[i].std_name.data
-                cv_name, _cv_type, _ = ctx.cap_var_map[std_name_cv]
-                return CapVarRefOp(cv_name, a_type)
+                cv_ref, _cv_type, _ = ctx.cap_var_map[std_name_cv]
+                return cv_ref.ref_op(a_type)
         return None
 
     # ── Inner if for suite_part ───────────────────────────────────
@@ -1912,9 +1911,9 @@ def _generate_run_fn(
         fn_name, _sig, _pre, main_chain_ops, errmsg_type, errflg_type,
         wrapper_inout_echo_args,
     )
-    # Stamp a per-dummy-argument resolved explicit-shape expression list onto
-    # cap_fn, keyed by position (one entry per sig.new_block.args, "" meaning
-    # "no override, keep today's assumed-size (*)") -- consumed by
+    # Stamp each dummy argument's resolved explicit-shape extents onto
+    # cap_fn, keyed by position (one entry per sig.new_block.args, empty
+    # meaning "no override, keep today's assumed-size (*)") -- consumed by
     # print_ftn.py's _bind_c_arg_decl_line only when bind_c mode is active;
     # inert, harmless metadata otherwise. Stamped unconditionally (same as
     # arg_names/arg_intents elsewhere), not gated on a bind_c flag here --
@@ -1922,17 +1921,11 @@ def _generate_run_fn(
     # counting leading/trailing fixed args) is robust to either signature
     # shape (ccpp_info_t-bundled vs. plain errmsg/errflg trailing) since
     # every block arg has its own canonical name in _sig.arg_names.
-    bind_c_dim_exprs: list = []
-    for arg_name in _sig.arg_names:
-        dim_names = _sig.union_dim_names.get(arg_name)
-        resolved = (
-            resolve_dim_exprs(dim_names, non_host_std_to_canonical)
-            if dim_names else None
-        )
-        bind_c_dim_exprs.append(",".join(resolved) if resolved is not None else "")
-    cap_fn.attributes["bind_c_dim_exprs"] = ArrayAttr(
-        [StringAttr(s) for s in bind_c_dim_exprs]
-    )
+    cap_fn.attributes["bind_c_extents"] = bind_c_extents_attr([
+        resolve_dim_extents(_sig.union_dim_names[arg_name], non_host_std_to_canonical)
+        if _sig.union_dim_names.get(arg_name) else None
+        for arg_name in _sig.arg_names
+    ])
     return cap_fn, all_decls, all_host_global_ops, non_host_std_to_canonical
 
 def _generate_suite_part_list_fn(

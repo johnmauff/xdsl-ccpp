@@ -8,6 +8,8 @@ directly, and all of them need these same helpers, which previously lived in
 ccpp_cap.py itself).
 """
 
+from dataclasses import dataclass
+
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
 from xdsl.ir import Block, BlockArgument, Region
@@ -21,11 +23,15 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateSelfOp,
     AssignOp,
     CallExprOp,
+    CapVarRefOp,
     HostVarRefOp,
+    IndexExprOp,
     KeywordCallOp,
+    MemberAccessExprOp,
     OmpTargetUpdateFromOp,
     OmpTargetUpdateToOp,
     RankReducingSliceOp,
+    SliceExprOp,
     VarRefExprOp,
     WriteErrMsgOp,
 )
@@ -63,8 +69,7 @@ from xdsl_ccpp.util.ccpp_conventions import (  # noqa: F401
 # builders shared by constituent_cap.py and cpp_interop.py. Every result
 # here feeds an scf.IfOp's `cond` operand directly, so each one must carry
 # a real result_type=i1 (constituent_cap.py's own locals have no SSA
-# values at all -- see TextBoundedDoLoopOp's docstring -- every name here
-# is still just opaque text wrapped in a VarRefExprOp leaf; result_type
+# values at all -- every name here is an identifier in a VarRefExprOp leaf; result_type
 # is set purely so the whole expression composes as a typed i1 operand).
 
 def _allocated_cond(name_expr: str) -> CallExprOp:
@@ -243,24 +248,64 @@ def iter_arg_tables(ccpp_mod, table_type=None, table_name_in=None):
             yield table_prop_op, arg_table_op
 
 # Known framework standard names promoted to a fixed cap-owned module-scope
-# reference (an array's module variable name, or a scalar expression over
-# one), rather than a freshly-allocated scratch var. Used directly by both
+# variable, rather than a freshly-allocated scratch var. Used directly by both
 # ccpp_cap.py's _build_cap_var_map and classify_arg_ownership below -- a
 # single definition, not two independently-maintained copies, so the two
 # heuristics can't silently diverge on this list.
-#
-# number_of_ccpp_constituents resolves to an expression, not a bare
-# identifier -- safe here because CapVarRefOp's printer (print_ftn.py)
-# registers this string verbatim as the SSA result's text with no
-# accompanying Fortran declaration emitted (same mechanism RankReducingSliceOp
-# uses for its own inline expressions), and every real .meta declaration of
-# this standard name is intent(in) (a count being read, never written back),
-# so it never needs to appear as an assignable lvalue.
 FRAMEWORK_STD_NAME_TO_CAP_VAR: dict = {
     "ccpp_constituents": "lc_constituent_array",
     "ccpp_constituent_tendencies": "lc_const_tend",
-    "number_of_ccpp_constituents": "size(lc_all_constituents)",
+    "number_of_ccpp_constituents": "lc_all_constituents",
 }
+
+# The framework standard names above that denote the element count of their
+# cap variable (size(lc_all_constituents)), not the variable itself. Every
+# real .meta declaration of one is intent(in): a count is read, never
+# written back, so it never needs to be an assignable lvalue.
+FRAMEWORK_COUNT_STD_NAMES = frozenset({"number_of_ccpp_constituents"})
+
+
+@dataclass(frozen=True)
+class CapVarRef:
+    """How a cap function refers to a cap-module variable: ``name`` itself;
+    with ``instance``, the component of the multi-instance bundle
+    (``lc_instances(instance)%name``); with ``count``, its element count
+    (``size(...)``)."""
+
+    name: str
+    instance: "str | None" = None
+    count: bool = False
+
+    def expr_op(self, section_rank: int = 0):
+        """The reference as an expression op; ``section_rank`` > 0 takes the
+        whole-array section ``(:, ..., :)`` of that rank."""
+        if self.instance is None:
+            op = VarRefExprOp(self.name)
+        else:
+            op = MemberAccessExprOp(
+                IndexExprOp(VarRefExprOp("lc_instances"), [VarRefExprOp(self.instance)]),
+                self.name,
+            )
+        if section_rank:
+            op = IndexExprOp(op, [SliceExprOp() for _ in range(section_rank)])
+        if self.count:
+            op = CallExprOp("size", [op], result_type=i32)
+        return op
+
+    def ref_op(self, result_type, section_rank: int = 0) -> CapVarRefOp:
+        """A CapVarRefOp giving the reference an SSA value of ``result_type``."""
+        if self.instance is None and not self.count and not section_rank:
+            return CapVarRefOp(self.name, result_type)
+        return CapVarRefOp(None, result_type, target_op=self.expr_op(section_rank))
+
+
+def framework_cap_var_ref(std_name: str, instance: "str | None" = None) -> CapVarRef:
+    """The CapVarRef for a FRAMEWORK_STD_NAME_TO_CAP_VAR standard name."""
+    std_name = std_name.lower()
+    return CapVarRef(
+        FRAMEWORK_STD_NAME_TO_CAP_VAR[std_name], instance,
+        count=std_name in FRAMEWORK_COUNT_STD_NAMES,
+    )
 
 _CCPP_CONSTITUENT_MOD = "ccpp_constituent_prop_mod"
 
@@ -424,13 +469,14 @@ def build_ncol_compute_ops(col_start_ref, col_end_ref, name_hint: str = "ncol") 
     )
 
 
-def resolve_dim_exprs(
+def resolve_dim_extents(
     dim_std_names: "list", non_host_std_to_canonical: dict,
-) -> "list[str] | None":
-    """Resolve a rank-N array's own per-dimension standard_names to Fortran
-    expression strings usable as an EXPLICIT-SHAPE dimension list in a
-    BIND(C) dummy-argument declaration (e.g. ["col_end - col_start + 1",
-    "nz"] for a (horizontal_dimension, vertical_layer_dimension) array).
+) -> "list[tuple] | None":
+    """Resolve a rank-N array's own per-dimension standard_names to the
+    extents of an EXPLICIT-SHAPE dimension list in a BIND(C) dummy-argument
+    declaration, each one a bind_c_extents entry (see bind_c_extents_attr):
+    e.g. [("col_start", "col_end"), ("nz",)] -- col_end - col_start + 1 by
+    nz -- for a (horizontal_dimension, vertical_layer_dimension) array.
 
     For each dimension, in order:
       1. A direct sibling lookup: non_host_std_to_canonical.get(std_name) --
@@ -442,8 +488,8 @@ def resolve_dim_exprs(
          for a different purpose (row-major transpose).
       2. ONLY if that fails AND this is one of the two horizontal
          standard names (CCPP_HORIZ_DIM_STD_NAME/CCPP_LOOP_EXTENT_STD_NAME):
-         synthesize "col_end - col_start + 1" from col_start/col_end's own
-         canonical sibling names -- the BIND(C) boundary's own loop-
+         synthesize the extent col_end - col_start + 1 from col_start/col_end's
+         own canonical sibling names -- the BIND(C) boundary's own loop-
          chunking convention never carries a bare "ncol" identifier once a
          scheme's ncol-replacement has fired, so this is the only way to
          express a chunk-sized horizontal extent at this layer.
@@ -474,21 +520,34 @@ def resolve_dim_exprs(
     Fortran's explicit-shape declarator has no partial form (every
     dimension must be given, or none).
     """
-    dim_exprs: list = []
+    extents: list = []
     for dim_sn in dim_std_names:
         sn_lower = dim_sn.strip().lower()
         canonical = non_host_std_to_canonical.get(sn_lower)
         if canonical:
-            dim_exprs.append(canonical)
+            extents.append((canonical,))
             continue
         if sn_lower in (CCPP_HORIZ_DIM_STD_NAME, CCPP_LOOP_EXTENT_STD_NAME):
             col_begin = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
             col_end = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
             if col_begin and col_end:
-                dim_exprs.append(f"{col_end} - {col_begin} + 1")
+                extents.append((col_begin, col_end))
                 continue
         return None
-    return dim_exprs
+    return extents
+
+
+def bind_c_extents_attr(per_arg: list) -> builtin.ArrayAttr:
+    """A BIND(C) routine's ``bind_c_extents`` attribute: for each dummy
+    argument in order, its explicit-shape extents, or None to keep the
+    printer's default declaration. Each extent is a tuple of identifiers:
+    ``(n,)`` is n; ``(lo, hi)`` is hi - lo + 1; ``()`` is assumed size."""
+    return builtin.ArrayAttr([
+        builtin.ArrayAttr([
+            builtin.ArrayAttr([StringAttr(n) for n in extent]) for extent in extents or ()
+        ])
+        for extents in per_arg
+    ])
 
 
 def derive_camel_case_name(suite_name: str) -> str:
@@ -990,6 +1049,8 @@ def resolve_capscratch_cap_var_name(
     disagree about which cap var a given arg resolves to.
     """
     std_name = std_name.lower()
+    if std_name in FRAMEWORK_COUNT_STD_NAMES:
+        return None   # a count, not backed by the array it counts
     if std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR:
         return FRAMEWORK_STD_NAME_TO_CAP_VAR[std_name]
     if is_advected:

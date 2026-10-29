@@ -48,6 +48,7 @@ from xdsl_ccpp.transforms import ccpp_cap as ccpp_cap_mod
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
+from xdsl_ccpp.transforms.util.cap_shared import CapVarRef
 
 _HOST_MOD_META = """\
 [ccpp-table-properties]
@@ -91,7 +92,7 @@ def _install_fake_cap_var_map(monkeypatch):
             real_build(meta_data, suite_descriptions, public_fns, instance_local_name)
         )
         cap_var_map = dict(cap_var_map)
-        cap_var_map["ccpp_constituent_tendencies"] = ("lc_real_cap_var", None, None)
+        cap_var_map["ccpp_constituent_tendencies"] = (CapVarRef("lc_real_cap_var"), None, None)
         return cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency
 
     monkeypatch.setattr(ccpp_cap_mod, "_build_cap_var_map", _fake)
