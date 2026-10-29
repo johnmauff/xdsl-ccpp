@@ -65,6 +65,14 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-fphystest-kessler` | umbrella, ~25-45 days in total: `gpu-sync-intent-aware`, `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `gpu-sync-intent-aware` | 2-4 days | S |
+| `lifecycle-cap-arg-std-names` | 2-3 days (same change as `rk-top-lev-host-match`, for the non-run phases; capcmp all suites) | S |
+| `cap-oracle-check` | 4-8 days (scripts exist in a session scratchpad; needs a ccpp_framework checkout and CAM-SIMA build caches, or committed fixtures, for CI) | S-M |
+| `gpu-data-arg-std-names` | 3-5 days (GPU data pass and the suite cap's local-name `data_ops` keys; GPU directive old-vs-new diff on the GPU testmods) | S-M |
+| `chost-arg-std-names` | 4-8 days (replace the chost identity scan and fallback; chost examples) | M |
+| `arg-flags-not-in-names` | 5-10 days (intent/optional/allocatable/hostarg into `arg_attrs`; printer and 9 `_bare()` callers; goldens) | M |
+| `raw-fortran-in-ir` | 5-10 days (mostly `constituent_cap.py`'s 24 raw blocks into ops) | M |
+| `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
+| `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
@@ -1696,3 +1704,78 @@ Supporting items (not tracked elsewhere):
 | `rrtmgp_sw_diagnostics` | `schemes/sima_diagnostics/rrtmgp_sw_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
 | `sima_state_diagnostics` | `schemes/sima_diagnostics/sima_state_diagnostics.F90` | kessler, pumas | none: stays on host (history output) |
 | `solar_irradiance_data` | `schemes/radiation_utils/solar_irradiance_data.F90` | rrtmgp | none: likely stays on host (1-D spectral data from file, no column loop; confirm), small `update device` of its output |
+
+## Design problems: re-derived information and special-casing (review 2026-10-28)
+
+Found while fixing `advected-constituent-host-binding` and
+`rk-top-lev-host-match`, which had one root cause: a decision one pass made
+(how the suite cap names, merges and classifies arguments) was not recorded
+in the IR, so later passes re-derived it from scheme metadata keyed by local
+name, each with its own collision rules, and disagreed with it. Since
+`rk-top-lev-host-match`, suite subroutines carry each argument's standard
+name and dimension names as `arg_attrs` (`suite_arg_attrs`,
+`SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES`); the items below move the
+remaining consumers onto it and remove the guessing. Suggested order:
+`lifecycle-cap-arg-std-names`, `cap-oracle-check`, then
+`gpu-data-arg-std-names`/`chost-arg-std-names`, then
+`arg-flags-not-in-names`; the rest opportunistically.
+
+- `lifecycle-cap-arg-std-names` — **The non-run phases still guess
+  standard names by local name.** `lifecycle_cap.py` builds `_std_name_of`
+  (~L200, extra host args) and `std_name_of` (~L290, callee input
+  resolution) as "first scheme arg with this bare local name wins" -- the
+  logic that bound the wrong host variable in rasch_kristjansson and cam4,
+  for init, finalize and timestep phases. Latent: the capgen comparisons
+  (all phases) are equivalent today. Fix: read the callee's `arg_attrs`
+  (fifth `public_fns` element), look host matches up by standard name, as
+  `run_dispatch` now does.
+- `cap-oracle-check` — **No systematic check against a reference.** The
+  cloud_water, rasch_kristjansson `top_lev` and cam4 `dlf` binding bugs were
+  invisible to the unit tests and the aux_sima regressions; they surfaced
+  only by comparing generated caps with original capgen's (`capcmp.py`),
+  and the spurious GPU `copy(qc, qr, qv)` only by diffing GPU directives
+  between versions (`gpugen.py`). Make both a routine pre-merge check: (1)
+  semantic comparison with original capgen for the atmospheric_physics test
+  suites and the production suites (cam4, Kessler, adiabatic, ...), (2)
+  old-vs-new generated-code diff (CPU and `--directive acc`) for the same
+  inputs, reported per suite. Needs the inputs (CAM-SIMA build caches or
+  committed file lists) and a ccpp_framework checkout; start as a script
+  the reviewer runs, CI later.
+- `gpu-data-arg-std-names` — **The GPU data pass resolves arguments by
+  trying local names.** `gpu_data_pass._resolve_canonical_ref` "tries every
+  local name until one resolves" to a suite block argument (12 scheme-table
+  lookups in the pass); this produced the spurious `copy(qc, qr, qv)` of
+  the moist constituent views around `kessler_run` (fixed in PR #164 by
+  skipping suite-owned args, not by resolving correctly). Resolve each
+  scheme arg to its block argument by standard name via `arg_attrs`, and
+  drop `_resolve_canonical_ref`. Same for the suite cap's own `data_ops`,
+  keyed both by local name and by `("std_name", ...)`; `promotion.py`
+  still uses the local-name key.
+- `chost-arg-std-names` — **A third copy for the C++ host.**
+  `cpp_interop.py` (`_chost_scan_scheme_phase_args`,
+  `_chost_resolve_scheme_arg_identities`, plus a flat fallback merged under
+  it) re-derives argument identities by local name with its own collision
+  handling. Replace with `arg_attrs`.
+- `arg-flags-not-in-names` — **Argument properties carried as name
+  suffixes.** `intent(in)`, `optional`, `allocatable` and host-arg status
+  travel as `__in`/`__opt`/`__alloc`/`__hostarg` suffixes on block-argument
+  name hints; the printers and passes parse them back (`_bare()` in 9
+  files; `block_args.py` detects collisions on the stripped "printed"
+  name). Put them in `arg_attrs` and print names as they are.
+- `raw-fortran-in-ir` — **Logic as raw text.** 29 `RawFortranLinesOp`s, 24
+  in `constituent_cap.py` (including the constituent-lookup error paths),
+  are invisible to passes and verifiers. Replace with ops where they carry
+  logic rather than boilerplate.
+- `suite-cap-mode-flags` — **One generator, several products.** The
+  suite-cap generator branches on `instance_local_name` (71 uses),
+  `physics_mode` (38), `cam_host` (18), `emit_scheme_calls` (16) and
+  `getattr(self, "generating_package_cap", False)`. Special-purpose paths
+  accumulate there (e.g. the removed `ConstituentsMixin`). Separate the
+  products (suite cap, package cap, CAM wrappers) over a shared core.
+- `split-large-generators` — **Very large functions** where special cases
+  collect: `_generate_constituent_api` (904 lines),
+  `_generate_lifecycle_fn` (657), `_generate_ccpp_cap_module` (454),
+  `_build_chost_ftn_text` (404), `_generate_cam_lifecycle_wrappers` (354).
+  Split by responsibility when touched. Related: comments and docstrings
+  often narrate history (review rounds, earlier fix attempts) rather than
+  describe the current design; trim them in the same edits.
