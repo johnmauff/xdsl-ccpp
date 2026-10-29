@@ -13064,6 +13064,30 @@ Tests: new `test_gpu_data_arg_std_names.py` (fails on the previous code: no
 (30 distinct): `diff` against `main` all IDENTICAL, `capgen` all
 EQUIVALENT (Kessler NO CAPGEN). No golden changes. pytest 1137 passed.
 
+## `cap-oracle-examples`: cap_oracle diff covers examples/ (2026-10-28)
+
+`cap_oracle diff` regenerated built CAM-SIMA cases only, so changes to
+paths CAM-SIMA does not use (the C++ host, `chost-arg-std-names`) needed a
+scratch script that parsed `examples/*/CMakeLists.txt` -- which could
+resolve only 14 of the 28 `xdsl_ccpp_capgen()` calls (the rest build their
+lists with `list(TRANSFORM)`/`list(APPEND)`).
+
+Now CMake records each call: `cmake/xdsl_ccpp_capgen.cmake` writes the
+generator arguments (without the interpreter and the output-location
+flags) and the working directory to `<output dir>/xdsl_ccpp_command.txt`
+at configure time, and `cap_oracle diff --examples BUILD_DIR` reruns every
+recorded call with the base revision and the working tree
+(`ExampleCall`, `read_example_calls`). No CMake evaluation is
+re-implemented; it needs a configured build tree. Example inputs are read
+from the working tree by both revisions, and its path is normalized on
+both sides of the comparison.
+
+Checked with records in the same format, written by hand for 15 calls
+(the 14 resolvable ones plus advection): all IDENTICAL against `main`;
+against `dfa15a2` (before PR #164) advection is DIFFERENT
+(`cld_suite_cap.F90`, `test_host_ccpp_cap.F90`) and the exit status is 1.
+The CMake side is not yet exercised: it takes a configure. 3 new unit
+tests; pytest 1140 passed.
 ## `chost-arg-std-names`: the C++ host cap reads suite argument standard names (2026-10-28)
 
 `cpp_interop.py` built the C++ host cap's map from a suite cap function's

@@ -19,9 +19,14 @@ memory_space) are reported, not compared. GPU cases are compared without
 --directive.
 
 Cases are built CAM-SIMA case directories: their build cache records the
-generator inputs (see cam_case.py). Generation only -- nothing is compiled.
+generator inputs (see cam_case.py). ``diff --examples BUILD_DIR`` also
+regenerates every xdsl_ccpp_capgen() call of a configured CMake build tree
+of this repository (examples/), from the command each call records at
+configure time (cmake/xdsl_ccpp_capgen.cmake). Generation only -- nothing
+is compiled.
 
-    python -m xdsl_ccpp.tools.cap_oracle diff [--base main] [--out DIR] [-j N] CASE_DIR...
+    python -m xdsl_ccpp.tools.cap_oracle diff [--base main] [--out DIR] [-j N]
+        [--examples BUILD_DIR] [CASE_DIR...]
     python -m xdsl_ccpp.tools.cap_oracle capgen [--out DIR] [-j N] CASE_DIR...
 
 Exit status: 0 if every case generates identically (diff) or equivalently
@@ -55,14 +60,61 @@ def export_revision(repo: str, ref: str, dest: str) -> str:
     return dest
 
 
-def generate(src_tree: str, case: CamCase, out_dir: str) -> tuple[bool, str]:
+EXAMPLE_COMMAND_FILE = "xdsl_ccpp_command.txt"
+
+
+@dataclasses.dataclass(frozen=True)
+class ExampleCall:
+    """One xdsl_ccpp_capgen() call of a configured build tree, as CMake
+    recorded it in <output dir>/xdsl_ccpp_command.txt: the generator
+    arguments (without the output-location flags) and the directory they
+    are relative to."""
+    name: str                  # output directory, relative to the build tree
+    cwd: str
+    args: tuple[str, ...]
+
+    @property
+    def label(self) -> str:
+        return self.name
+
+    @property
+    def input_key(self) -> str:
+        return self.name
+
+
+def read_example_calls(build_dir: str) -> list[ExampleCall]:
+    """Every recorded xdsl_ccpp_capgen() call under a configured build tree."""
+    calls = []
+    for root, _dirs, files in sorted(os.walk(build_dir)):
+        if EXAMPLE_COMMAND_FILE not in files:
+            continue
+        cwd, args = None, []
+        for line in open(os.path.join(root, EXAMPLE_COMMAND_FILE)).read().splitlines():
+            key, _, value = line.partition("=")
+            if key == "cwd":
+                cwd = value
+            elif key == "arg":
+                args.append(value)
+        if cwd is None:
+            raise ValueError(f"{root}/{EXAMPLE_COMMAND_FILE}: no cwd= line")
+        calls.append(ExampleCall(os.path.relpath(root, build_dir), cwd, tuple(args)))
+    return calls
+
+
+def generate(src_tree: str, case: "CamCase | ExampleCall", out_dir: str) -> tuple[bool, str]:
     """Generate <case>'s caps with the xdsl-ccpp in <src_tree>.
     Returns (success, the end of stderr)."""
     os.makedirs(out_dir, exist_ok=True)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join((src_tree, *case.python_path)))
+    if isinstance(case, ExampleCall):
+        args = [*case.args, "-o", out_dir, "--tempdir", os.path.join(out_dir, "tmp"),
+                "--emit-datatable", os.path.join(out_dir, "datatable.xml")]
+        cwd, path = case.cwd, (src_tree,)
+    else:
+        args, cwd, path = generator_args(case, out_dir), src_tree, (src_tree, *case.python_path)
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(path))
     proc = subprocess.run(
-        [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_dsl", *generator_args(case, out_dir)],
-        cwd=src_tree, env=env, capture_output=True, text=True,
+        [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_dsl", *args],
+        cwd=cwd, env=env, capture_output=True, text=True,
     )
     return proc.returncode == 0, "\n".join(proc.stderr.splitlines()[-5:])
 
@@ -88,7 +140,10 @@ def compare_dirs(base_dir: str, head_dir: str, base_tree: str = "", head_tree: s
     """[(file, unified diff lines)] for every file that differs, is missing
     or is new."""
     base, head = generated_files(base_dir), generated_files(head_dir)
-    base_paths = {p: v for p, v in ((base_dir, "<out>"), (base_tree, "<xdsl-ccpp>")) if p}
+    # The head tree also appears on the base side: an example's inputs are
+    # read from the working tree by both revisions.
+    base_paths = {p: v for p, v in ((base_dir, "<out>"), (base_tree, "<xdsl-ccpp>"),
+                                    (head_tree, "<xdsl-ccpp>")) if p}
     head_paths = {p: v for p, v in ((head_dir, "<out>"), (head_tree, "<xdsl-ccpp>")) if p}
     diffs = []
     for name in sorted(set(base) | set(head)):
@@ -281,15 +336,21 @@ def main(argv=None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     diff = sub.add_parser("diff", help="compare generated caps: base revision vs working tree")
     diff.add_argument("--base", default="main", help="git revision to compare against (default: main)")
-    sub.add_parser("capgen", help="compare the working tree's caps with original capgen's")
+    diff.add_argument("--examples", metavar="BUILD_DIR",
+                      help="also regenerate the xdsl_ccpp_capgen() calls of this configured "
+                           "CMake build tree (examples/)")
+    diff.add_argument("cases", nargs="*", metavar="CASE_DIR", help="built CAM-SIMA case directories")
+    capgen = sub.add_parser("capgen", help="compare the working tree's caps with original capgen's")
+    capgen.add_argument("cases", nargs="+", metavar="CASE_DIR", help="built CAM-SIMA case directories")
     for p in sub.choices.values():
-        p.add_argument("cases", nargs="+", metavar="CASE_DIR", help="built CAM-SIMA case directories")
         p.add_argument("--repo", default=REPO, help="xdsl-ccpp repository (default: this one)")
         p.add_argument("--out", help="output directory (default: a new temporary directory)")
         p.add_argument("--jobs", "-j", type=int, default=default_jobs(),
                        help="cases generated at once (default: half the CPUs available "
                             "to this user, %(default)s here)")
     args = parser.parse_args(argv)
+    if args.command == "diff" and not (args.cases or args.examples):
+        parser.error("diff: give CASE_DIR(s), --examples BUILD_DIR, or both")
 
     out = args.out or tempfile.mkdtemp(prefix="cap_oracle_")
     cases = []
@@ -301,6 +362,12 @@ def main(argv=None) -> int:
     if args.command == "capgen":
         print(f"capgen vs {args.repo} (working tree); output in {out}")
         return 0 if run_capgen_check(cases, args.repo, out, jobs=args.jobs) else 1
+    if args.examples:
+        examples = read_example_calls(args.examples)
+        if not examples:
+            print(f"SKIPPED    {args.examples}: no {EXAMPLE_COMMAND_FILE} (configure the build "
+                  f"tree with this revision's cmake/xdsl_ccpp_capgen.cmake)")
+        cases += examples
     base_tree = export_revision(args.repo, args.base, os.path.join(out, "base_src"))
     print(f"base {args.base}, head {args.repo} (working tree); output in {out}")
     return 0 if run_diff(cases, base_tree, args.repo, out, jobs=args.jobs) else 1

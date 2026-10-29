@@ -162,6 +162,18 @@ function(xdsl_ccpp_capgen)
     set(OUTPUT_ROOT_DIR "${arg_OUTPUT_ROOT}")
   endif()
   file(MAKE_DIRECTORY "${OUTPUT_ROOT_DIR}")
+
+  # Record this call's generator arguments (everything after
+  # "<python> -m xdsl_ccpp.tools.ccpp_dsl", before the output-location flags)
+  # and working directory, for xdsl_ccpp.tools.cap_oracle (diff --examples),
+  # which regenerates each call with two xdsl-ccpp revisions.
+  list(SUBLIST CCPP_XDSL_CMD 3 -1 _oracle_args)
+  set(_oracle_text "cwd=${CMAKE_CURRENT_SOURCE_DIR}\n")
+  foreach(_oracle_arg IN LISTS _oracle_args)
+    string(APPEND _oracle_text "arg=${_oracle_arg}\n")
+  endforeach()
+  file(WRITE "${OUTPUT_ROOT_DIR}/xdsl_ccpp_command.txt" "${_oracle_text}")
+
   list(APPEND CCPP_XDSL_CMD "-o" "${OUTPUT_ROOT_DIR}")
   list(APPEND CCPP_XDSL_CMD "--tempdir" "${OUTPUT_ROOT_DIR}/tmp")
 

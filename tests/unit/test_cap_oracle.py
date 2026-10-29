@@ -225,3 +225,60 @@ def test_capgen_check_outcomes(tmp_path, monkeypatch):
 
     lines = []
     assert cap_oracle.run_capgen_check(cases[2:3], "head", str(tmp_path / "out2"), report=lines.append)
+
+
+# ---- diff --examples: calls recorded by cmake/xdsl_ccpp_capgen.cmake ----
+
+def _record(build, rel, cwd, args):
+    d = build / rel
+    d.mkdir(parents=True)
+    (d / cap_oracle.EXAMPLE_COMMAND_FILE).write_text(
+        f"cwd={cwd}\n" + "".join(f"arg={a}\n" for a in args))
+
+
+def test_read_example_calls(tmp_path):
+    _record(tmp_path, "examples/ddthost/ccpp_plain", "/src/examples/ddthost",
+            ["--host-files", "a.meta,b.meta", "--suites", "s.xml", "--host-name", "test_host"])
+    _record(tmp_path, "examples/kessler/ccpp_gpu", "/src/examples/kessler",
+            ["--suites", "k.xml", "--directive", "acc", "--kind-map", "r8:REAL64"])
+    (tmp_path / "examples" / "other").mkdir()
+    calls = cap_oracle.read_example_calls(str(tmp_path))
+    assert [c.name for c in calls] == ["examples/ddthost/ccpp_plain", "examples/kessler/ccpp_gpu"]
+    assert calls[0].cwd == "/src/examples/ddthost"
+    assert calls[1].args == ("--suites", "k.xml", "--directive", "acc", "--kind-map", "r8:REAL64")
+
+
+def test_generate_example_call_adds_output_flags(tmp_path, monkeypatch):
+    seen = {}
+
+    class Done:
+        returncode, stderr = 0, ""
+
+    def fake_run(cmd, cwd, env, **_):
+        seen.update(cmd=cmd, cwd=cwd, path=env["PYTHONPATH"])
+        return Done()
+
+    monkeypatch.setattr(cap_oracle.subprocess, "run", fake_run)
+    call = cap_oracle.ExampleCall("examples/x/ccpp", "/src/examples/x", ("--suites", "s.xml"))
+    out = str(tmp_path / "o")
+    assert cap_oracle.generate("/tree", call, out) == (True, "")
+    assert seen["cwd"] == "/src/examples/x" and seen["path"] == "/tree"
+    assert seen["cmd"][3:] == ["--suites", "s.xml", "-o", out, "--tempdir", f"{out}/tmp",
+                               "--emit-datatable", f"{out}/datatable.xml"]
+
+
+def test_run_diff_mixes_cases_and_example_calls(tmp_path, monkeypatch):
+    def fake_generate(src_tree, case, out_dir):
+        os.makedirs(out_dir, exist_ok=True)
+        text = "changed\n" if (src_tree == "head" and case.label == "examples/b/ccpp") else "same\n"
+        open(os.path.join(out_dir, "cap.F90"), "w").write(text)
+        return True, ""
+
+    monkeypatch.setattr(cap_oracle, "generate", fake_generate)
+    cases = [read_case(_case(tmp_path, "c")),
+             cap_oracle.ExampleCall("examples/a/ccpp", "/src/a", ()),
+             cap_oracle.ExampleCall("examples/b/ccpp", "/src/b", ())]
+    lines = []
+    assert not cap_oracle.run_diff(cases, "base", "head", str(tmp_path / "out"), report=lines.append)
+    assert lines[0] == "IDENTICAL  cam4" and lines[1] == "IDENTICAL  examples/a/ccpp"
+    assert lines[2].startswith("DIFFERENT  examples/b/ccpp: cap.F90 (2 lines)")
