@@ -996,7 +996,7 @@
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.pointer_slice_assign"() <{ptr_name = "lc_instances(instance)%lc_cld_liq_tend", array_name = "lc_instances(instance)%lc_const_tend", index_var = "lc_tend_idx"}> : () -> ()
 // CHECK-NEXT:            }, {
-// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 0"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.raw_fortran_lines"() <{lines = "errflg = 1\nerrmsg = 'ccpp_initialize_constituents: no constituent for tendency cloud_liquid_dry_mixing_ratio'\nreturn"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()

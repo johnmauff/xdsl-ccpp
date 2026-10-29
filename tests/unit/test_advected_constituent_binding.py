@@ -198,6 +198,63 @@ def test_device_suite_var_not_confused_with_same_named_view(tmp_path):
     assert re.search(r"!\$acc enter data create\(qwork\)", suite)
 
 
+def test_tendency_without_its_constituent_is_an_error(run_host_match, ccpp_context, legacy_mode):
+    """A constituent tendency whose constituent no scheme in the suite
+    declares advected is rejected at generation time, as in original
+    capgen; with the constituent present it is accepted."""
+    tend = f"""\
+[ccpp-table-properties]
+  name = tend_scheme
+  type = scheme
+[ccpp-arg-table]
+  name = tend_scheme_run
+  type = scheme
+[ ncol ]
+  standard_name = horizontal_loop_extent
+  units = count
+  type = integer
+  dimensions = ()
+  intent = in
+[ qtend ]
+  standard_name = tendency_of_test_tracer_mixing_ratio
+  units = kg kg-1 s-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = out
+  constituent = True
+{CCPP_MANDATORY_ARGS}"""
+    suite = minimal_suite_xml("tend_scheme")
+    module = run_host_match(scheme_metas=[tend], host_metas=[_HOST], suite_xml=suite)
+    with pytest.raises(ValueError, match="constituent tendency 'qtend'"):
+        ArgOwnershipPass().apply(ccpp_context, module)
+
+    module = run_host_match(
+        scheme_metas=[tend, _scheme("q_scheme", "test_tracer_mixing_ratio")],
+        host_metas=[_HOST],
+        suite_xml=suite.replace("<scheme>tend_scheme</scheme>",
+                                "<scheme>q_scheme</scheme>\n    <scheme>tend_scheme</scheme>"),
+    )
+    ArgOwnershipPass().apply(ccpp_context, module)
+
+
+def test_missing_constituent_is_an_error_for_views_and_tendencies(tmp_path):
+    """A failed const_index lookup in ccpp_initialize_constituents sets
+    errflg and returns, for a tendency view (lc_const_tend) as for a
+    constituent view; it used to leave the tendency pointer null with
+    errflg = 0."""
+    _, host = _generate(
+        tmp_path, "advection", "cld_suite.xml",
+        ["const_indices", "cld_liq", "cld_ice", "apply_constituent_tendencies", "cld_shadow"],
+        ["test_host_data", "test_host_mod", "test_host"], host_name="test_host",
+    )
+    for what, std in [("constituent", "cloud_ice_dry_mixing_ratio"),
+                      ("constituent for tendency", "cloud_liquid_dry_mixing_ratio")]:
+        assert re.search(
+            rf"errflg = 1\s*\n\s*errmsg = 'ccpp_initialize_constituents: no {what} {std}'"
+            r"\s*\n\s*return", host), what
+    assert not re.search(r"else\s*\n\s*errflg = 0\s*\n", host)
+
+
 def test_multi_instance_views(tmp_path):
     suite, host = _generate(
         tmp_path, "instances_advection", "cld_suite.xml",

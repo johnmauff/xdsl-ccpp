@@ -166,6 +166,13 @@ _TEND_PRODUCER_SCHEME = f"""\
 [ccpp-arg-table]
   name = test_csdiv_tend_producer_scheme_run
   type = scheme
+[ qbase ]
+  standard_name = test_csdiv_tend_quantity
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = in
+  advected = True
 [ my_tend ]
   standard_name = tendency_of_test_csdiv_tend_quantity
   units = kg kg-1 s-1

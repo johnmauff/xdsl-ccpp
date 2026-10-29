@@ -684,7 +684,9 @@
 // CHECK-NEXT:          lc_instances(instance)%lc_cld_liq_tend => lc_instances(instance)%lc_const_tend(:, :,      &
 // CHECK-NEXT:            lc_tend_idx)
 // CHECK-NEXT:        else
-// CHECK-NEXT:          errflg = 0
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:          errmsg = 'ccpp_initialize_constituents: no constituent for tendency cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:          return
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end block
 // CHECK-NEXT:    end subroutine Cld_ccpp_initialize_constituents

@@ -812,17 +812,15 @@ def _generate_constituent_api(
             # A constituent view: a pointer slice of its base array
             # (lc_constituent_array for an advected arg, lc_const_tend for a
             # tendency), found with cam_constituents_obj%const_index; the
-            # block construct avoids polluting the outer scope. The cap
-            # registered every advected constituent itself, so a missing
-            # one is an error; a tendency's base constituent may be absent.
-            if base == "lc_constituent_array":
-                not_found_ops = [RawFortranLinesOp(
-                    "errflg = 1\n"
-                    f"errmsg = 'ccpp_initialize_constituents: no constituent {_cst_std}'\n"
-                    "return"
-                )]
-            else:
-                not_found_ops = [RawFortranLinesOp("errflg = 0")]
+            # block construct avoids polluting the outer scope. A missing
+            # constituent is an error: otherwise the view stays null and a
+            # scheme writing through it fails later, far from the cause.
+            what = "constituent" if base == "lc_constituent_array" else "constituent for tendency"
+            not_found_ops = [RawFortranLinesOp(
+                "errflg = 1\n"
+                f"errmsg = 'ccpp_initialize_constituents: no {what} {_cst_std}'\n"
+                "return"
+            )]
             ic_body_ops.append(ScopedBlockOp(
                 ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"],
                 [

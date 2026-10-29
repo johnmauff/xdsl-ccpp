@@ -46,9 +46,8 @@ measured data, and will drift as items are reassessed.
 | `derecho-false-run-pass` | 1-3 days (detection done in the skills and the CIME fork's `cs.status`; fixed upstream in cime6.6.2 (ESMCI/cime#5033, #5063); CAM-SIMA issue #575 asks to update its cime pin) | XS |
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
-| `cloud-water-ncdata-diffs` | <1 day (cause found and patched; confirm with a cloud_water run) | XS |
-| `advected-constituent-host-binding` | 6-12 days (classification, host-cap constituent views, removing the suite-owned pointer path, GPU residency, the advection examples' non-run uses; then a full regression) | M |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
+| `rk-top-lev-host-match` | 1-2 days remaining (fix implemented on branch `rk-top-lev-host-match`; PR, then a cam4 run to see the effect of ZM's corrected `dlf`) | XS |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
@@ -174,9 +173,8 @@ separately), CHANGELOG.md L5850.
 | `derecho-false-run-pass` | CIME reports `RUN PASS` for CAM runs that aborted; past regression counts were overstated | XS (tooling done; fixed upstream in cime6.6.2; CAM-SIMA #575 to update the pin); found 2026-10-21 (see below) | -- |
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
-| `cloud-water-ncdata-diffs` | gnu `cloud_water` FPHYStest: large `ncdata_check` differences | XS; cause found 2026-10-28 (advected args never bound to the constituents); interim fix uncommitted, awaiting a run | -- |
-| `advected-constituent-host-binding` | Pass `advected` scheme args from the host's constituent array, as capgen-v1 does, instead of making them suite-owned arrays aliased by pointer | M; found 2026-10-28; replaces the interim `cloud-water-ncdata-diffs` fix | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
+| `rk-top-lev-host-match` | The host cap can pass the wrong host variable when schemes share a local name (rasch_kristjansson `top_lev`, cam4 ZM `dlf`) | XS; found 2026-10-28; fix on branch `rk-top-lev-host-match` | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
@@ -275,43 +273,30 @@ testmod sets `! cross_compiler_min_difference = 1e-9` (see
 `nvhpc-ncdata-roundoff`); with 1e-8, gnu and nvhpc reached `END OF MODEL
 RUN` (xdsl56g, xdsl56n). Close once they also pass with 1e-9.
 
-**`cloud-water-ncdata-diffs`** -- gnu `cam-outfrq_cloud_water_derecho`
-(xdsl54g) differs at every point: `water_vapor_mixing_ratio...` max 2.0E-03,
-`gridbox_total_cloud_liquid_water_mixing_ratio...` max 4.6. A real error.
-Cause found 2026-10-28 by comparing the caps with capgen-v1's:
-`convective_cloud_water` and `cloud_water_paths` declare `ls_liq`/`ls_ice`
-`advected = true`, which makes them suite-owned arrays. Those are only
-pointed into the constituent array when some scheme in the suite takes
-`ccpp_constituents`, and none in cloud_water does, so the schemes read
-arrays nothing filled. Interim fix (uncommitted): the suite cap adds the
-constituent array to `_run` when needed
-(`ConstituentsMixin._synthesize_constituent_array_arg`, with
-`SYNTHESIZED_ARG_STD_NAMES` in `cap_shared.py`). The caps now match
-capgen-v1's; still to do is confirming with a cloud_water run. The
-interim fix is meant to be replaced by `advected-constituent-host-binding`.
+**`rk-top-lev-host-match`** -- found 2026-10-28 comparing the caps of
+the atmospheric_physics test suites with original capgen (CAM-SIMA's
+bundled `ccpp_framework`). Root cause: `run_dispatch._build_per_suite_run_info`
+does not know each suite subroutine argument's standard name, and
+re-derives it from scheme metadata by local name, guessing how
+`suite_cap.py` named and merged the arguments. When schemes reuse one local
+name for different standard names, the guess can bind the wrong host
+variable. Two cases:
+- rasch_kristjansson: `prognostic_cloud_water`'s `top_lev`
+  (`vertical_layer_index_of_troposphere_cloud_physics_top`, host
+  `trop_cloud_top_lev` in `ref_pres`) gets `top_lev_cloudphys` (the
+  cloud-fraction top), because `cloud_fraction_fice` also has a local
+  `top_lev` with the cloud-fraction standard name. rk_stratiform still
+  passes, presumably because the two levels coincide there.
+- production cam4: `zm_convr`, `zm_diagnostics` and
+  `convect_shallow_sum_to_deep` get `dlf` (detrainment from all
+  convection) instead of `dlfzm` (deep convection), because the
+  rk_stratiform schemes also use the local name `dlf`. Not caught by any
+  test (the cam4 QPC4 tests are smoke tests).
 
-**`advected-constituent-host-binding`** -- found 2026-10-28. capgen-v1
-treats an `advected = true` scheme arg as host data: the host cap passes
-that constituent's slice of the constituent object
-(`cam_constituents_obj%vars_layer(:, :, idx)`) and the suite cap owns
-nothing. xdsl_ccpp instead classifies it `SuiteOwned`
-(`classify_arg_ownership`, `cap_shared.py`) and then compensates: a
-pointer is aliased into the constituent array at the start of `_run`
-(`ConstituentsMixin._build_constituent_sync_ops`), with a value copy for
-names also used outside `_run`, and the special case is repeated in
-`module_assembly`, `suite_owned`, `suite_cap` (`lc_const_indices`) and the
-print backend. That design caused `cloud-water-ncdata-diffs`, and its
-interim fix adds to it (a synthesized argument and a local-name lookup
-table). To do: classify these args as host-provided; have the host cap
-pass each one as a view of `lc_constituent_array` looked up by standard
-name (as it already does for constituent tendencies, e.g. `lc_qtnd`);
-delete the suite-side pointer path, the interim fix and its name table.
-Open questions: non-`_run` uses (`examples/advection`'s `cld_ice_array`
-in `_init`, before the constituent data exist), GPU residency (these
-arrays now go through the suite-owned residency code), and the
-multi-instance constituent bundle. Check with `capcmp.py` against
-capgen-v1 on every test suite, the unit and filecheck suites, and a full
-CAM-SIMA regression.
+Fix (branch `rk-top-lev-host-match`, in progress): the suite cap records
+each argument's standard name on the suite subroutine (`arg_attrs`) and
+`run_dispatch` reads it, looking up host matches by standard name; with it,
+rasch_kristjansson and cam4 caps are equivalent to original capgen.
 
 **`zm-ncdata-diffs`** -- `SMS_Ln2...cam-outfrq_zm_derecho` differs from its
 (gnu-made) snapshot under gnu, intel and nvhpc alike: 16-18 variables in
@@ -329,6 +314,12 @@ this is fixed. To do: find whether the ZM scheme or its snapshot moved
 against ZM changes).
 
 **ID: `rrtmgp-gpu-partially-present`. Resolved (2026-10-24)** -- `rrtmgp_post` now frees the gas-concentration objects (atmospheric_physics PR #468); GPU RRTMGP pair s34a completes. Trigger is our build config, see `rrtmgp-wrapper-acc-trigger`. CHANGELOG.md L12785.
+
+**ID: `cloud-water-ncdata-diffs`. Resolved (2026-10-28)** -- fixed by `advected-constituent-host-binding`; gnu cloud_water clean in xdsl58g. CHANGELOG.md L12823.
+
+**ID: `advected-constituent-host-binding`. Resolved (2026-10-28, PR #164)** -- advected args are host-cap constituent views, as in original capgen. CHANGELOG.md L12823.
+
+**ID: `tendency-view-lookup-silent`. Resolved (2026-10-28)** -- a tendency without its advected constituent is a generation error (as in original capgen); a failed run-time lookup now sets `errflg`. CHANGELOG.md L12900.
 
 **ID: `suites-py-verification`. Resolved (2026-10-24)** -- the Python suites match their XML suites (IR, generated caps, and cam4 bit-for-bit at runtime). CHANGELOG.md L12747.
 

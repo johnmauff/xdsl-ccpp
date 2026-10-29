@@ -12819,3 +12819,105 @@ suites-py and in `examples/rrtmgp_composite`, whose `rrtmgp_post.meta`
 snapshot is updated to match). Verified: CAM-SIMA GPU pair s34a (XML and
 Python RRTMGP, nvhpc/OpenACC) both reach `END OF MODEL RUN` with clean
 `ncdata_check` (1e-8 against the gnu snapshot).
+
+## `advected-constituent-host-binding`: advected scheme args become host-cap constituent views; fixes cloud_water (PR #164, 2026-10-28)
+
+gnu `SMS_Ln2...cam-outfrq_cloud_water_derecho` aborted on `ncdata_check`
+differences at every point (xdsl54g/57g: cloud liquid max diff 4.6, water
+vapor 2.0e-3), though TestStatus said RUN PASS (`derecho-false-run-pass`).
+
+Cause: xdsl-ccpp made every `advected = true` scheme arg a suite-owned array
+and then patched it up in the suite cap. A pointer alias into the
+constituent array was set at the start of `_run`, with a value copy for
+names also used outside `_run`, but only when some scheme in the suite took
+the whole array (`ccpp_constituents`). cloud_water has no such scheme, so
+`convective_cloud_water`/`cloud_water_paths` read `ls_liq`/`ls_ice` arrays
+nothing filled. Found by comparing the caps of the 16 atmospheric_physics
+test suites against original capgen (CAM-SIMA's bundled `ccpp_framework`),
+which passes `cam_constituents_obj%vars_layer(:, :, idx)` from the host cap
+in every phase and gives the suite cap no storage.
+
+Fix: the same model, reusing the existing constituent-tendency mechanism.
+
+- **Classification** -- an advected arg whose standard name is a registered
+  constituent (`host_bound_constituent_std_names`, `constituent_cap.py`) is
+  `CapScratch` (`classify_arg_ownership`, `arg_ownership_pass.py`). A
+  `*_wrt_dry_air` form whose moist form is present stays suite-owned
+  (Kessler's `wet_to_dry_*` produce it). An advected arg in a `_register`
+  table is a generation error.
+- **Host cap** -- `<host>_ccpp_initialize_constituents` associates
+  `lc_<name> => lc_constituent_array(:, :, idx)` by standard name (a failed
+  lookup sets `errflg`), and `run_dispatch` passes it in every group phase
+  (`_build_cap_var_map` now scans init, timestep and final tables too).
+- **Suite cap** -- removed `ConstituentsMixin` (`suitecap/constituents.py`),
+  the `lc_const_indices` lookup, `ConstituentSyncOp`/
+  `ConstituentIndexLookupOp` and their special cases in `module_assembly`,
+  `suite_owned` and `phase_functions` (about 300 lines). A suite variable
+  shadowed by a different scheme's dummy name is renamed (advection's
+  `cld_shadow` `cld_ice_array` -> `cld_shadow_cld_ice_array`).
+- **GPU** -- constituent views are never made resident (the host updates
+  the constituents between calls): each device call that takes one gets its
+  own `!$acc data copy(<view>)` region
+  (`GPUDataPass._emit_constituent_view_copies`), and the residency,
+  divergence and debug-sync code skip them
+  (`cap_shared.is_constituent_view_arg`). Keeping them resident is BACKLOG
+  `constituent-device-residency`. The blanket region for device args with
+  no host match now uses `copy(x)` instead of `copyin(x) copyout(x)`.
+- **Follow-up fix (`d128c5c`, in the same PR)** -- that blanket region
+  looked up a scheme's local name among the group subroutine's arguments.
+  Once the moist constituent views became arguments named `qv`/`qc`/`qr`,
+  Kessler's dry suite-owned `qv`/`qc`/`qr` matched them, adding a spurious
+  `copy(qc, qr, qv)` of the moist views around `kessler_run`. Suite-owned
+  args are now skipped there (they have their own residency). Regression
+  test `test_device_suite_var_not_confused_with_same_named_view`.
+
+Verification:
+
+- pytest 1121 passed; new `test_advected_constituent_binding.py` (7 tests);
+  advection/instances_advection FileCheck goldens regenerated.
+- Caps of the atmospheric_physics test suites vs original capgen: 14 of 15
+  comparable suites equivalent, cloud_water included. rasch_kristjansson
+  differs only by a separate bug (BACKLOG `rk-top-lev-host-match`);
+  kessler_test is not comparable (capgen rejects `memory_space`).
+- GPU caps (`--directive acc`) for the four aux_sima GPU testmods (Kessler
+  FPHYStest, RRTMGP FPHYStest, SE cslam, MPAS Kessler), regenerated with
+  the pre-PR code and with this PR from the cases' own build inputs: the
+  OpenACC directives are identical; the only differences are the host-cap
+  views replacing the suite-cap aliases. The pre-PR regeneration reproduced
+  `xdsl57n`'s caps byte for byte.
+- aux_sima regressions (judged by atm.log, not TestStatus): gnu `xdsl58g`
+  and intel `xdsl58i` show no regressions -- cloud_water now clean ("No
+  differences found" both timesteps); zm aborts and gw_cam7/F2000_C7 fail
+  to build as before. nvhpc `xdsl58n`: GPU Kessler and GPU RRTMGP FPHYStest
+  clean (built with the follow-up fix); remaining cases were still running
+  when this entry was written.
+
+Also in CAM-SIMA (separate repo): cloud_water added to the test list for
+intel and nvhpc (cross-compiler tolerance 1e-11 via
+`cross_compiler_check_tolerance`), and a new GPU PUMAS test
+(`cam/outfrq_pumas_derecho_gpu`, `SMS_Ln2` nvhpc, `min_difference = 5e-10`).
+
+## `tendency-view-lookup-silent`: a constituent tendency needs its constituent (2026-10-28)
+
+In `<host>_ccpp_initialize_constituents`, a constituent-tendency view
+(`lc_<name> => lc_const_tend(:, :, idx)`) whose `const_index` lookup failed
+was left null with `errflg = 0`, so a scheme writing the tendency would fail
+later, far from the cause.
+
+- **Generation time** (`arg_ownership_pass.py`): a `constituent = True`
+  argument `tendency_of_<X>` whose `<X>` no scheme in the suite declares as
+  an advected constituent (`host_bound_constituent_std_names`) is an error,
+  naming the table and argument -- the rule original capgen enforces
+  (`host_cap.py`, "No associated state variable for tendency variable").
+  Checked against the 16 atmospheric_physics test suites and the production
+  cam4 and Kessler suites: all still generate. Three synthetic unit-test
+  fixtures that declared a tendency without its constituent
+  (`test_capscratch_residency.py`, `test_capscratch_divergence.py`) gained
+  the advected constituent.
+- **Run time** (`constituent_cap.py`, backstop): a failed lookup now sets
+  `errflg = 1` and `errmsg = 'ccpp_initialize_constituents: no constituent
+  for tendency <std>'` and returns, as constituent views already did.
+
+Tests: `test_tendency_without_its_constituent_is_an_error`,
+`test_missing_constituent_is_an_error_for_views_and_tendencies`;
+advection/instances_advection FileCheck goldens updated; pytest 1123 passed.
