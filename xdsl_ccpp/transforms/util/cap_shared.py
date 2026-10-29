@@ -909,6 +909,21 @@ SUITE_ARG_DIM_NAMES = "ccpp.dim_names"
 SUITE_ARG_INTENT = "ccpp.intent"
 
 
+def block_args_by_std(fn_op) -> dict:
+    """{standard name: block argument} for a suite subroutine (or package
+    segment), from the standard names the suite cap records on it
+    (suite_arg_attrs). Arguments are identified by standard name; local
+    names are not unique across schemes."""
+    if fn_op.arg_attrs is None or not fn_op.body.blocks:
+        return {}
+    out = {}
+    for arg, attrs in zip(fn_op.body.blocks[0].args, fn_op.arg_attrs.data):
+        std = attrs.data.get(SUITE_ARG_STD_NAME)
+        if std is not None:
+            out[std.data] = arg
+    return out
+
+
 class SchemeArgsByStd:
     """What the scheme args of one phase say about each standard name.
     Host matching is per standard name, so every scheme arg with a given

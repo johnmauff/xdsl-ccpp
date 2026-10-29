@@ -21,6 +21,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     find_diverged_suite_vars,
     fn_phase,
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
+    block_args_by_std,
     is_constituent_view_arg,
     resolve_capscratch_cap_var_name,
     split_scheme_table_name,
@@ -35,26 +36,12 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
 
 
-def _resolve_canonical_ref(local_names, arg_by_name):
-    """Return the first of local_names that is a key in arg_by_name, or
-    None if none of them are.
-
-    suite_cap.py unifies same-standard_name args from different schemes
-    into a single shared block-arg parameter, named after whichever
-    scheme's own local arg name was encountered first when the suite cap
-    was built (generateSchemeSubroutineCallOps) -- so a later-contributing
-    scheme's own local name is never itself a block-arg key; only the
-    "winning" name is. Rather than reproduce that dedup-order logic here,
-    try every local name known to touch this identity until one resolves
-    -- since exactly one of them must be the real (shared) block argument,
-    and Fortran call-by-reference means every call passing that var passes
-    the exact same value regardless of which local name it used to do so.
-
-    Shared by the diverged-var resolution (_process_diverged_host_vars/
-    _process_diverged_capscratch_vars) and the debug-sync producing-touch
-    resolution (_build_debug_sync_touches) -- both need this exact trick.
-    """
-    return next((arg_by_name[name] for name in local_names if name in arg_by_name), None)
+def _ref(std_names, arg_by_std):
+    """The suite subroutine's block argument for the first of std_names it
+    has, or None. Block arguments are identified by the standard names the
+    suite cap records on the subroutine (suite_arg_attrs); a scheme arg
+    with no block argument (e.g. a suite-owned module variable) has none."""
+    return next((arg_by_std[s] for s in std_names if s in arg_by_std), None)
 
 
 @dataclass(frozen=True)
@@ -122,7 +109,8 @@ class GPUDataPass(ModulePass):
         return split[0] if split is not None else None
 
     def _get_device_args(self, scheme_name, table_name, meta_data):
-        """Return a dict mapping scheme-local name → host variable name for
+        """Return a dict mapping scheme-local name → (host variable name,
+        standard name) for
         all device-resident arguments in the scheme's <table_name> argument
         table -- the specific lifecycle entry point actually being called
         (e.g. '<scheme>_timestep_final'), NOT always '<scheme>_run'.  A
@@ -151,7 +139,7 @@ class GPUDataPass(ModulePass):
                     if arg.hasAttr("model_var_name")
                     else None
                 )
-                device_args[arg.name] = host_var
+                device_args[arg.name] = (host_var, arg.getAttr("standard_name").lower() if arg.hasAttr("standard_name") else None)
         return device_args
 
     def _find_call_in_if(self, if_op):
@@ -180,7 +168,7 @@ class GPUDataPass(ModulePass):
         return call_op.callee.root_reference.data
 
     def _get_diverged_args(self, scheme_name, table_name, meta_data, diverged_vars):
-        """Return {local_name: (category, host_var)} for every arg in this
+        """Return {local_name: (category, host_var, standard name)} for every arg in this
         scheme's <table_name> argument table whose model_var_name is in
         diverged_vars.
 
@@ -207,11 +195,11 @@ class GPUDataPass(ModulePass):
                 arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
             )
             category = "present" if scheme_space == "device" else "update"
-            result[arg.name] = (category, host_var)
+            result[arg.name] = (category, host_var, arg.getAttr("standard_name").lower() if arg.hasAttr("standard_name") else None)
         return result
 
     def _get_diverged_capscratch_args(self, scheme_name, table_name, meta_data, diverged_capscratch_vars):
-        """Return {local_name: (category, cap_var_name, is_direct)} for
+        """Return {local_name: (category, cap_var_name, is_direct, standard name)} for
         every arg in this scheme's <table_name> argument table that is
         CapScratch-classified and resolves (via
         cap_shared.resolve_capscratch_cap_var_name) to a cap var name in
@@ -260,11 +248,11 @@ class GPUDataPass(ModulePass):
             )
             category = "present" if scheme_space == "device" else "update"
             is_direct = std_name.lower() in FRAMEWORK_STD_NAME_TO_CAP_VAR
-            result[arg.name] = (category, cap_var, is_direct)
+            result[arg.name] = (category, cap_var, is_direct, std_name.lower())
         return result
 
     def _get_producing_device_args(self, scheme_name, table_name, meta_data):
-        """Return {local_name: identity} for every arg in this scheme's
+        """Return {local_name: (identity, standard name)} for every arg in this scheme's
         <table_name> argument table that writes (intent out/inout) a
         memory_space=device value, regardless of divergence status --
         sibling to _get_device_args (unfiltered by intent, used for the
@@ -310,10 +298,10 @@ class GPUDataPass(ModulePass):
                 identity = ("capscratch", cap_var)
             else:
                 continue
-            result[arg.name] = identity
+            result[arg.name] = (identity, arg.getAttr("standard_name").lower() if arg.hasAttr("standard_name") else None)
         return result
 
-    def _build_debug_sync_touches(self, calls, meta_data, arg_by_name):
+    def _build_debug_sync_touches(self, calls, meta_data, arg_by_std):
         """Build (identity, call)-keyed debug-sync touches for every
         producing (intent out/inout) memory_space=device arg in this
         function -- HostMatched and CapScratch alike, regardless of
@@ -335,22 +323,18 @@ class GPUDataPass(ModulePass):
         emit_coalesced_updates' own per-call grouping for "produced"
         touches.
 
-        Ref resolution reuses _resolve_canonical_ref, the same "try every
-        local name known to touch this identity across the whole
-        function" trick _process_diverged_host_vars already uses.
+        The block argument to sync is found by the args' standard names.
         """
-        touches: dict = {}  # identity -> [(call_op, local_name), ...]
+        touches: dict = {}  # identity -> [(call_op, standard name), ...]
         for call_op, scheme_name, table_name in calls:
-            for local_name, identity in self._get_producing_device_args(
+            for identity, std in self._get_producing_device_args(
                 scheme_name, table_name, meta_data
-            ).items():
-                touches.setdefault(identity, []).append((call_op, local_name))
+            ).values():
+                touches.setdefault(identity, []).append((call_op, std))
 
         debug_sync_touches: dict = {}
         for identity, touch_list in touches.items():
-            ref = _resolve_canonical_ref(
-                (name for _, name in touch_list), arg_by_name
-            )
+            ref = _ref((std for _, std in touch_list), arg_by_std)
             if ref is None:
                 continue
             for call_op, _ in touch_list:
@@ -385,26 +369,14 @@ class GPUDataPass(ModulePass):
         if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
             return {}
         return {
-            arg.name: arg.getAttr("standard_name")
+            arg.name: arg.getAttr("standard_name").lower()
             for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
             if is_constituent_view_arg(arg)
             and arg.hasAttr("memory_space")
             and arg.getAttr("memory_space") == "device"
         }
 
-    def _get_suite_owned_args(self, scheme_name, table_name, meta_data):
-        """Return the local names of the SuiteOwned args in this scheme's
-        <table_name> argument table."""
-        if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
-            return set()
-        return {
-            arg.name
-            for arg in meta_data[scheme_name].arg_tables[table_name].getFunctionArguments()
-            if arg.hasAttr("ownership_kind")
-            and arg.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
-        }
-
-    def _emit_constituent_view_copies(self, calls, meta_data, arg_by_name):
+    def _emit_constituent_view_copies(self, calls, meta_data, arg_by_std):
         """Wrap each call that takes a device constituent view in its own
         copy() region over those views.
 
@@ -418,24 +390,11 @@ class GPUDataPass(ModulePass):
         Called after the blanket hostless region is built, so these
         per-call regions nest inside it.
         """
-        per_call = []  # (call_op, [local_name, ...])
-        names_by_std: dict = {}  # standard_name -> [local_name, ...]
         for call_op, scheme_name, table_name in calls:
             views = self._get_device_constituent_views(scheme_name, table_name, meta_data)
-            if not views:
-                continue
-            per_call.append((call_op, views))
-            for local_name, std_name in views.items():
-                names_by_std.setdefault(std_name, []).append(local_name)
-
-        ref_by_std = {
-            std_name: _resolve_canonical_ref(names, arg_by_name)
-            for std_name, names in names_by_std.items()
-        }
-        for call_op, views in per_call:
             refs = []
             for std_name in sorted(set(views.values())):
-                ref = ref_by_std[std_name]
+                ref = arg_by_std.get(std_name)
                 if ref is not None and ref not in refs:
                     refs.append(ref)
             if not refs:
@@ -449,7 +408,7 @@ class GPUDataPass(ModulePass):
                 InsertPoint.after(call_op),
             )
 
-    def _process_diverged_host_vars(self, calls, meta_data, diverged_vars, arg_by_name):
+    def _process_diverged_host_vars(self, calls, meta_data, diverged_vars, arg_by_std):
         """Route present/update clauses per individual scheme call for host
         vars in `diverged_vars` (backlog item (b)) -- these get no
         VarLifetime at the ccpp_cap level (gpu_ccpp_cap_pass.py excludes
@@ -480,35 +439,22 @@ class GPUDataPass(ModulePass):
         CapScratch var sharing a run boundary end up in the same
         update self/device call.
 
-        suite_cap.py unifies same-standard_name args from different
-        schemes into a single shared function parameter, named after
-        whichever scheme's own local arg name was encountered first when
-        the suite cap was built (generateSchemeSubroutineCallOps) -- so a
-        later-contributing scheme's own local name (e.g. "qv_b") is never
-        itself a block-arg key; only the "winning" name is. Rather than
-        reproduce that dedup-order logic here, resolve one canonical SSA
-        reference per host var by trying every local name any contributing
-        call used until one is found in arg_by_name -- since exactly one of
-        them must be the real (shared) block argument, and Fortran call-by-
-        reference means every call passing that host var passes the exact
-        same value regardless of which local name it used to do so.
+        The block argument to sync is the one with the args' standard name.
         """
-        touches: dict = {}  # host_var -> ordered [(op, category, local_name), ...]
+        touches: dict = {}  # host_var -> ordered [(op, category, standard name), ...]
         for call_op, scheme_name, table_name in calls:
-            for local_name, (category, host_var) in self._get_diverged_args(
+            for category, host_var, std in self._get_diverged_args(
                 scheme_name, table_name, meta_data, diverged_vars
-            ).items():
-                touches.setdefault(host_var, []).append((call_op, category, local_name))
+            ).values():
+                touches.setdefault(host_var, []).append((call_op, category, std))
 
         resolved: dict = {}
         for host_var, touch_list in touches.items():
-            ref = _resolve_canonical_ref(
-                (name for _, _, name in touch_list), arg_by_name
-            )
+            ref = _ref((std for _, _, std in touch_list), arg_by_std)
             resolved[host_var] = (ref, [(call_op, category) for call_op, category, _ in touch_list])
         return resolved
 
-    def _process_diverged_capscratch_vars(self, calls, meta_data, diverged_capscratch_vars, arg_by_name):
+    def _process_diverged_capscratch_vars(self, calls, meta_data, diverged_capscratch_vars, arg_by_std):
         """Route present/update clauses per individual scheme call for
         CapScratch cap vars in `diverged_capscratch_vars` -- the CapScratch
         counterpart of _process_diverged_host_vars, for shared cap-owned
@@ -533,30 +479,26 @@ class GPUDataPass(ModulePass):
         equally valid, this prefers a "direct" touch (the arg whose own
         standard_name is the actual shared array, e.g. const/const_tend --
         see _get_diverged_capscratch_args's is_direct) when picking which
-        local name's SSA value to sync, falling back to any touch only if
-        no direct one exists for this cap var.
+        block argument to sync, falling back to any touch only if no direct
+        one exists for this cap var.
 
         Returns the resolved touches dict (not yet emitted) -- see
         _process_diverged_host_vars' docstring and _process_physics_fn for
         why emission is deferred to a single, merged
         cap_shared.emit_coalesced_updates call.
         """
-        touches: dict = {}  # cap_var_name -> ordered [(op, category, local_name, is_direct), ...]
+        touches: dict = {}  # cap_var_name -> ordered [(op, category, standard name, is_direct), ...]
         for call_op, scheme_name, table_name in calls:
-            for local_name, (category, cap_var, is_direct) in self._get_diverged_capscratch_args(
+            for category, cap_var, is_direct, std in self._get_diverged_capscratch_args(
                 scheme_name, table_name, meta_data, diverged_capscratch_vars
-            ).items():
-                touches.setdefault(cap_var, []).append((call_op, category, local_name, is_direct))
+            ).values():
+                touches.setdefault(cap_var, []).append((call_op, category, std, is_direct))
 
         resolved: dict = {}
         for cap_var, touch_list in touches.items():
-            ref = _resolve_canonical_ref(
-                (name for _, _, name, is_direct in touch_list if is_direct), arg_by_name
-            )
+            ref = _ref((std for _, _, std, is_direct in touch_list if is_direct), arg_by_std)
             if ref is None:
-                ref = _resolve_canonical_ref(
-                    (name for _, _, name, _ in touch_list), arg_by_name
-                )
+                ref = _ref((std for _, _, std, _ in touch_list), arg_by_std)
             resolved[cap_var] = (
                 ref, [(call_op, category) for call_op, category, _, _ in touch_list]
             )
@@ -608,15 +550,9 @@ class GPUDataPass(ModulePass):
         # At the suite_cap level the variables are function block arguments —
         # assumed-shape arrays that already represent the active column slice.
         # No further subsectioning is needed; just pass the block arg SSA values.
-        # Optional/allocatable args carry a __opt/__alloc suffix on their
-        # block-arg name_hint (see suite_cap.py) that metadata names never
-        # have -- bare both sides so a hostless optional/allocatable device
-        # var isn't silently dropped.
-        arg_by_name = {
-            _bare(arg.name_hint): arg
-            for arg in block.args
-            if arg.name_hint is not None
-        }
+        # A scheme arg's block argument is the one with its standard name
+        # (suite_arg_attrs); local names are not unique across schemes.
+        arg_by_std = block_args_by_std(fn_op)
 
         # --- hostless scratch vars: unchanged single-region approach ---
         gpu_calls = []  # (scf.IfOp, scheme_name, table_name, device_vars) for calls with >=1 device arg
@@ -632,7 +568,7 @@ class GPUDataPass(ModulePass):
             # _process_diverged_host_vars below (diverged vars). Emitting
             # directives here too would create nested !$acc data regions
             # with redundant data movement.
-            all_local_vars = set()
+            refs = set()
             for _, scheme_name, table_name, device_vars in gpu_calls:
                 diverged_local_names = (
                     self._get_diverged_capscratch_args(
@@ -644,31 +580,21 @@ class GPUDataPass(ModulePass):
                 view_names = self._get_device_constituent_views(
                     scheme_name, table_name, meta_data
                 )
-                # SuiteOwned args are suite-cap module variables with their
-                # own residency (suite_owned.py's enter data create and
-                # updates), never block args: a block arg with the same
-                # name is a different variable (Kessler's dry qv vs the
-                # moist constituent view qv).
-                suite_owned_names = self._get_suite_owned_args(
-                    scheme_name, table_name, meta_data
-                )
-                for local_name, host_var in device_vars.items():
+                # A suite-owned arg (a suite-cap module variable with its own
+                # residency, suite_owned.py) has no block argument, so no ref.
+                for local_name, (host_var, std) in device_vars.items():
                     if (
                         host_var is None
                         and local_name not in diverged_local_names
                         and local_name not in view_names
-                        and local_name not in suite_owned_names
+                        and std in arg_by_std
                     ):
-                        all_local_vars.add(local_name)
+                        refs.add(arg_by_std[std])
 
-            if all_local_vars:
+            if refs:
                 first_if = gpu_calls[0][0]
                 last_if  = gpu_calls[-1][0]
-                copyin_refs = [
-                    arg_by_name[name]
-                    for name in sorted(all_local_vars)
-                    if name in arg_by_name
-                ]
+                copyin_refs = sorted(refs, key=lambda a: _bare(a.name_hint or ""))
                 if copyin_refs:
                     if self.directive == "omp":
                         Rewriter.insert_op(
@@ -692,7 +618,7 @@ class GPUDataPass(ModulePass):
                         )
 
         # --- device constituent views: a copy() region per call ---
-        self._emit_constituent_view_copies(calls, meta_data, arg_by_name)
+        self._emit_constituent_view_copies(calls, meta_data, arg_by_std)
 
         # --- diverged host vars + CapScratch cap vars: per-scheme-call
         # routing, merged into one resolved-touches dict so a host var and
@@ -703,17 +629,17 @@ class GPUDataPass(ModulePass):
         merged_touches: dict = {}
         if diverged_vars:
             for host_var, entry in self._process_diverged_host_vars(
-                calls, meta_data, diverged_vars, arg_by_name
+                calls, meta_data, diverged_vars, arg_by_std
             ).items():
                 merged_touches[("host", host_var)] = entry
         if diverged_capscratch_vars:
             for cap_var, entry in self._process_diverged_capscratch_vars(
-                calls, meta_data, diverged_capscratch_vars, arg_by_name
+                calls, meta_data, diverged_capscratch_vars, arg_by_std
             ).items():
                 merged_touches[("capscratch", cap_var)] = entry
         if self.debug_sync:
             merged_touches.update(
-                self._build_debug_sync_touches(calls, meta_data, arg_by_name)
+                self._build_debug_sync_touches(calls, meta_data, arg_by_std)
             )
         if merged_touches:
             emit_coalesced_updates(self.directive, merged_touches, self._emit_present)

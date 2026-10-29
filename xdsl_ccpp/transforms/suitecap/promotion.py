@@ -30,6 +30,11 @@ from xdsl_ccpp.transforms.suitecap.block_args import (
 )
 
 
+
+def _std_ref(arg) -> tuple:
+    """data_ops key of a scheme arg's block argument."""
+    return ("std_name", arg.getAttr("standard_name").lower())
+
 class PromotionMixin:
     """Rank promotion: loops over a promoted dimension around scheme calls."""
 
@@ -55,14 +60,17 @@ class PromotionMixin:
         """
         # Exact match first: dims_compatible treats layer and interface
         # dimensions as compatible, but their sizes differ.
+        # The block argument of a scheme arg is keyed by its standard name
+        # (block_args._tag_data_ops_by_std_name); a local name can be shared
+        # by several standard names.
         for arg in all_args.values():
             if (
                 arg.hasAttr("standard_name")
                 and arg.getAttr("standard_name") == promoted_dim
                 and arg.getAttr("type") == "integer"
-                and arg.name in data_ops
+                and _std_ref(arg) in data_ops
             ):
-                return data_ops[arg.name]
+                return data_ops[_std_ref(arg)]
         # Compatible fallback: catches horizontal dim aliases (e.g.
         # horizontal_loop_extent matching horizontal_dimension).
         for arg in all_args.values():
@@ -71,9 +79,9 @@ class PromotionMixin:
                 and arg.hasAttr("standard_name")
                 and dims_compatible(arg.getAttr("standard_name"), promoted_dim)
                 and arg.getAttr("type") == "integer"
-                and arg.name in data_ops
+                and _std_ref(arg) in data_ops
             ):
-                return data_ops[arg.name]
+                return data_ops[_std_ref(arg)]
 
         # Not found in scheme args — try MODULE-type host tables.
         from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType

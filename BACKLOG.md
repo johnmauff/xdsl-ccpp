@@ -67,7 +67,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `gpu-data-arg-std-names` | 3-5 days (GPU data pass and the suite cap's local-name `data_ops` keys; GPU directive old-vs-new diff on the GPU testmods) | S-M |
 | `chost-arg-std-names` | 4-8 days (replace the chost identity scan and fallback; chost examples) | M |
 | `arg-flags-not-in-names` | 5-10 days (intent/optional/allocatable/hostarg into `arg_attrs`; printer and 9 `_bare()` callers; goldens) | M |
 | `raw-fortran-in-ir` | 5-10 days (mostly `constituent_cap.py`'s 24 raw blocks into ops) | M |
@@ -1716,7 +1715,7 @@ name, each with its own collision rules, and disagreed with it. Since
 name and dimension names as `arg_attrs` (`suite_arg_attrs`,
 `SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES`); the items below move the
 remaining consumers onto it and remove the guessing. Suggested order:
-`gpu-data-arg-std-names`/`chost-arg-std-names`, then
+`chost-arg-std-names`, then
 `arg-flags-not-in-names`; the rest opportunistically.
 
 - `lifecycle-cap-arg-std-names` — resolved 2026-10-28 (it was
@@ -1734,16 +1733,7 @@ remaining consumers onto it and remove the guessing. Suggested order:
   `cap_oracle capgen` reports the Kessler suites as NO CAPGEN. Give capgen
   copies of the `.meta` files with xdsl-only properties removed; they do not
   change what CPU caps should do.
-- `gpu-data-arg-std-names` — **The GPU data pass resolves arguments by
-  trying local names.** `gpu_data_pass._resolve_canonical_ref` "tries every
-  local name until one resolves" to a suite block argument (12 scheme-table
-  lookups in the pass); this produced the spurious `copy(qc, qr, qv)` of
-  the moist constituent views around `kessler_run` (fixed in PR #164 by
-  skipping suite-owned args, not by resolving correctly). Resolve each
-  scheme arg to its block argument by standard name via `arg_attrs`, and
-  drop `_resolve_canonical_ref`. Same for the suite cap's own `data_ops`,
-  keyed both by local name and by `("std_name", ...)`; `promotion.py`
-  still uses the local-name key.
+- `gpu-data-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13038.
 - `chost-arg-std-names` — **A third copy for the C++ host.**
   `cpp_interop.py` (`_chost_scan_scheme_phase_args`,
   `_chost_resolve_scheme_arg_identities`, plus a flat fallback merged under

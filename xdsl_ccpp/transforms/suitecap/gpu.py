@@ -17,7 +17,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     GROUP_PHASES,
-    _bare,
+    block_args_by_std,
     emit_coalesced_updates,
     find_diverged_suite_owned_vars,
     fn_phase,
@@ -246,8 +246,8 @@ class SuiteOwnedGpuMixin:
         if not device_std_names or not fn.body.blocks:
             return
         block = fn.body.blocks[0]
-        arg_by_name = {_bare(a.name_hint): a for a in block.args if a.name_hint is not None}
-        touches: dict = {}  # standard_name -> ordered [(scf.IfOp, category, local_name)]
+        arg_by_std = block_args_by_std(fn)
+        touches: dict = {}  # standard_name -> ordered [(scf.IfOp, category)]
         for call_op, scheme_name, table_name in _scheme_calls(block):
             if scheme_name not in meta_data or table_name not in meta_data[scheme_name].arg_tables:
                 continue
@@ -261,15 +261,10 @@ class SuiteOwnedGpuMixin:
                     arg.getAttr("memory_space") if arg.hasAttr("memory_space") else "host"
                 )
                 category = "present" if scheme_space == "device" else "update"
-                touches.setdefault(std_name, []).append((call_op, category, arg.name))
+                touches.setdefault(std_name, []).append((call_op, category))
 
-        # The dummy argument is named after whichever scheme's local name came
-        # first; try each (see gpu_data_pass._resolve_canonical_ref).
         resolved = {
-            std_name: (
-                next((arg_by_name[n] for _, _, n in touch_list if n in arg_by_name), None),
-                [(call_op, category) for call_op, category, _ in touch_list],
-            )
+            std_name: (arg_by_std.get(std_name), touch_list)
             for std_name, touch_list in touches.items()
         }
         if resolved:

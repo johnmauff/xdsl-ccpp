@@ -87,6 +87,11 @@ class GenerateSuiteSubroutine(CallSequenceMixin, PromotionMixin, SuiteOwnedMixin
         data_ops["ncol"] = ncol_alloc
         if ncol_meta.name != "ncol":
             data_ops[ncol_meta.name] = ncol_alloc
+        # Also under its standard name, as every scheme arg is
+        # (block_args._tag_data_ops_by_std_name): ncol replaces the
+        # horizontal_loop_extent argument, which has no block argument.
+        if ncol_meta.hasAttr("standard_name"):
+            data_ops[("std_name", ncol_meta.getAttr("standard_name").lower())] = ncol_alloc
         _ib = TypeConversions.getBaseType("integer")
         lbound_one_alloc = memref.AllocaOp.get(_ib, shape=[])
         lbound_one_alloc.memref.name_hint = "ccpp_lbound_one"
