@@ -343,8 +343,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
-// CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      logical :: do_input
+// CHECK-NEXT:      logical :: do_output
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
@@ -382,7 +383,7 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer :: lc_idx
 // CHECK-NEXT:      character(len=256) :: lc_std_name
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
@@ -408,10 +409,11 @@
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
-// CHECK-NEXT:      integer :: lc_i, lc_num_consts
+// CHECK-NEXT:      integer :: lc_i
+// CHECK-NEXT:      integer :: lc_num_consts
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: const_prop
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      lc_num_consts = size(host_constituents)
 // CHECK-NEXT:      if (allocated(lc_dyn_const)) then
@@ -461,7 +463,7 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
 // CHECK-NEXT:      logical, optional, intent(in) :: advected
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      call cam_constituents_obj%num_constituents(num_advected, advected=advected, errcode=errcode,  &
 // CHECK-NEXT:        errmsg=errmsg)
@@ -471,7 +473,7 @@
 // CHECK-NEXT:      integer, intent(in) :: pver
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(lc_all_constituents)) then
 // CHECK-NEXT:        errflg = 1
@@ -482,13 +484,13 @@
 // CHECK-NEXT:      if (errflg /= 0) return
 // CHECK-NEXT:      lc_constituent_array => cam_constituents_obj%field_data_ptr()
 // CHECK-NEXT:    end subroutine DdtRedef_ccpp_initialize_constituents
-// CHECK-NEXT:    function DdtRedef_constituents_array() result(ptr)
+// CHECK:         function DdtRedef_constituents_array() result(ptr)
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
-// CHECK-NEXT:      ptr => lc_constituent_array
+// CHECK:           ptr => lc_constituent_array
 // CHECK-NEXT:    end function DdtRedef_constituents_array
-// CHECK-NEXT:    function DdtRedef_advected_constituents_array() result(ptr)
+// CHECK:         function DdtRedef_advected_constituents_array() result(ptr)
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
-// CHECK-NEXT:      ptr => cam_constituents_obj%advected_constituents_ptr()
+// CHECK:           ptr => cam_constituents_obj%advected_constituents_ptr()
 // CHECK-NEXT:    end function DdtRedef_advected_constituents_array
 // CHECK-LABEL:   subroutine DdtRedef_const_get_index(std_name, index, errflg, errmsg)
 // CHECK:           use ccpp_constituent_prop_mod, only: to_lower
@@ -496,7 +498,7 @@
 // CHECK-NEXT:      integer, intent(out) :: index
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      index = -1
 // CHECK-NEXT:      if (.not. allocated(lc_all_constituents)) then
@@ -510,8 +512,8 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine DdtRedef_const_get_index
-// CHECK-NEXT:    function DdtRedef_model_const_properties() result(ptr)
+// CHECK:         function DdtRedef_model_const_properties() result(ptr)
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
-// CHECK-NEXT:      ptr => lc_const_props
+// CHECK:           ptr => lc_const_props
 // CHECK-NEXT:    end function DdtRedef_model_const_properties
 // CHECK-NEXT:  end module DdtRedef_ccpp_cap

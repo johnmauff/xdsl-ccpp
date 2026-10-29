@@ -445,8 +445,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
-// CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      logical :: do_input
+// CHECK-NEXT:      logical :: do_output
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
@@ -506,7 +507,7 @@
 // CHECK-NEXT:      integer, intent(in) :: instance
 // CHECK-NEXT:      integer :: lc_idx
 // CHECK-NEXT:      character(len=256) :: lc_std_name
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
 // CHECK-NEXT:      if (allocated(lc_instances)) then
@@ -529,7 +530,7 @@
 // CHECK-NEXT:    end subroutine Cld_ccpp_is_scheme_constituent
 // CHECK-LABEL:   subroutine Cld_ccpp_deallocate_dynamic_constituents(instance)
 // CHECK:           integer, intent(in) :: instance
-// CHECK-NEXT:      if (.NOT. (allocated(lc_instances))) return
+// CHECK:           if (.NOT. (allocated(lc_instances))) return
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_dyn_const)) deallocate(lc_instances(instance)%lc_dyn_const)
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_all_constituents)) deallocate(lc_instances(instance)%lc_all_constituents)
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_const_props)) deallocate(lc_instances(instance)%lc_const_props)
@@ -548,10 +549,12 @@
 // CHECK-NEXT:      integer, intent(out) :: errcode
 // CHECK-NEXT:      integer, intent(in) :: instance
 // CHECK-NEXT:      integer, intent(in) :: ninstances
-// CHECK-NEXT:      integer :: lc_i, lc_num_consts, field_ind
+// CHECK-NEXT:      integer :: lc_i
+// CHECK-NEXT:      integer :: lc_num_consts
+// CHECK-NEXT:      integer :: field_ind
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: const_prop
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.NOT. (allocated(lc_instances))) then
 // CHECK-NEXT:        allocate(lc_instances(ninstances))
@@ -633,7 +636,7 @@
 // CHECK-NEXT:      integer, intent(out) :: errcode
 // CHECK-NEXT:      logical, optional, intent(in) :: advected
 // CHECK-NEXT:      integer, intent(in) :: instance
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (allocated(lc_instances)) then
 // CHECK-NEXT:        call lc_instances(instance)%cam_constituents_obj%num_constituents(num_advected,             &
@@ -648,7 +651,7 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(in) :: instance
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(lc_instances)) then
 // CHECK-NEXT:        errflg = 1
@@ -698,15 +701,15 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end block
 // CHECK-NEXT:    end subroutine Cld_ccpp_initialize_constituents
-// CHECK-NEXT:    function Cld_constituents_array(instance) result(ptr)
-// CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK:         function Cld_constituents_array(instance) result(ptr)
 // CHECK-NEXT:      integer, intent(in) :: instance
-// CHECK-NEXT:      ptr => lc_instances(instance)%lc_constituent_array
+// CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK:           ptr => lc_instances(instance)%lc_constituent_array
 // CHECK-NEXT:    end function Cld_constituents_array
-// CHECK-NEXT:    function Cld_advected_constituents_array(instance) result(ptr)
-// CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK:         function Cld_advected_constituents_array(instance) result(ptr)
 // CHECK-NEXT:      integer, intent(in) :: instance
-// CHECK-NEXT:      ptr => lc_instances(instance)%cam_constituents_obj%advected_constituents_ptr()
+// CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
+// CHECK:           ptr => lc_instances(instance)%cam_constituents_obj%advected_constituents_ptr()
 // CHECK-NEXT:    end function Cld_advected_constituents_array
 // CHECK-LABEL:   subroutine Cld_const_get_index(std_name, index, errflg, errmsg, instance)
 // CHECK:           use ccpp_constituent_prop_mod, only: to_lower
@@ -715,7 +718,7 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(in) :: instance
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      index = -1
 // CHECK-NEXT:      if (.not. allocated(lc_instances)) then
@@ -735,10 +738,10 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine Cld_const_get_index
-// CHECK-NEXT:    function Cld_model_const_properties(instance) result(ptr)
-// CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
+// CHECK:         function Cld_model_const_properties(instance) result(ptr)
 // CHECK-NEXT:      integer, intent(in) :: instance
-// CHECK-NEXT:      ptr => lc_instances(instance)%lc_const_props
+// CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
+// CHECK:           ptr => lc_instances(instance)%lc_const_props
 // CHECK-NEXT:    end function Cld_model_const_properties
 // CHECK-NEXT:  end module Cld_ccpp_cap
 // CHECK:       // -----

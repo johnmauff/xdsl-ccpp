@@ -10,7 +10,7 @@ ccpp_cap.py itself).
 
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
-from xdsl.ir import BlockArgument
+from xdsl.ir import Block, BlockArgument, Region
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
 
@@ -35,11 +35,17 @@ from xdsl_ccpp.transforms.util.typing import TypeConversions
 # import them from here.
 from xdsl_ccpp.util.ccpp_conventions import (  # noqa: F401
     SUITE_ARG_ALLOCATABLE,
+    SUITE_ARG_DECLARED_INTENT,
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_INTENT,
     SUITE_ARG_NAME,
     SUITE_ARG_OPTIONAL,
+    SUITE_ARG_POINTER,
     SUITE_ARG_STD_NAME,
+    SUITE_ARG_TARGET,
+    FN_FIXED_INTERFACE,
+    FN_RESULT,
+    FN_USES,
     arg_attr_dict,
     arg_attr_values,
     local_name,
@@ -96,6 +102,63 @@ def _trim_eq_cond(lhs_name: str, rhs_name: str) -> arith.CmpiOp:
     lhs = CallExprOp("trim", [VarRefExprOp(lhs_name)], result_type=i32)
     rhs = CallExprOp("trim", [VarRefExprOp(rhs_name)], result_type=i32)
     return arith.CmpiOp(lhs, rhs, "eq")
+
+
+def fixed_interface_fn(
+    name: str, args: list, body, *,
+    locals_: list = (), result=None, uses: "dict | None" = None,
+) -> func.FuncOp:
+    """A public func.FuncOp with a fixed Fortran interface -- argument
+    names, order, intents and attributes given rather than inferred
+    (SUITE_ARG_DECLARED_INTENT) -- for generated API routines such as
+    ccpp_physics_suite_variables and the constituent API.
+
+    args    -- [(name, type, intent, flags)]; flags from {"optional",
+               "pointer", "target"}.
+    body    -- the statement ops, or a callable taking the block arguments
+               and returning them.
+    locals_ -- named allocas (name_local, mark_pointer_local, ...): the
+               function's local variables. Attached before the body is
+               built, so a body may use them as operands.
+    result  -- a named alloca: the function is a Fortran FUNCTION with this
+               result variable (FN_RESULT).
+    uses    -- {module: [names]} the function USEs itself (FN_USES).
+    """
+    types = [t for _, t, _, _ in args]
+    block = Block(arg_types=types)
+    for arg, (arg_name, *_) in zip(block.args, args):
+        arg.name_hint = arg_name
+    block.add_ops([*locals_, *([result] if result is not None else [])])
+    body_ops = body(block.args) if callable(body) else body
+    block.add_ops([*body_ops,
+                   func.ReturnOp(*([result.memref] if result is not None else []))])
+
+    arg_attrs = []
+    for arg_name, _type, intent, flags in args:
+        attrs = {SUITE_ARG_NAME: arg_name, SUITE_ARG_DECLARED_INTENT: intent}
+        for flag, key in (("optional", SUITE_ARG_OPTIONAL),
+                          ("pointer", SUITE_ARG_POINTER),
+                          ("target", SUITE_ARG_TARGET)):
+            if flag in flags:
+                attrs[key] = True
+        arg_attrs.append(arg_attr_dict(attrs))
+    fn = func.FuncOp(
+        name,
+        builtin.FunctionType.from_lists(
+            types, [result.memref.type] if result is not None else []),
+        Region(block),
+        visibility="public",
+        arg_attrs=builtin.ArrayAttr(arg_attrs),
+    )
+    fn.attributes[FN_FIXED_INTERFACE] = builtin.UnitAttr()
+    if result is not None:
+        fn.attributes[FN_RESULT] = builtin.UnitAttr()
+    if uses:
+        fn.attributes[FN_USES] = builtin.DictionaryAttr({
+            module: builtin.ArrayAttr([StringAttr(n) for n in names])
+            for module, names in uses.items()
+        })
+    return fn
 
 
 def _assign_const(var_name: str, value: "bool | int") -> AssignOp:
