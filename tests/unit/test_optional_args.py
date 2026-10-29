@@ -698,17 +698,15 @@ class TestActiveGatedOptionalArgs:
 # variable ('nx') -- examples/opt_arg's own confirmed bug shape:
 # lifecycle_cap.py's _generate_lifecycle_fn hardcoded "timestep_initial has
 # no host inputs", so it fell back to an uninitialized local placeholder
-# (lc_nx) instead of threading the real value through. 'nx2' with a name
-# ending in a digit specifically exercises the xDSL name_hint auto-strip
-# gotcha (extract_valid_name silently drops a trailing "_<digits>", which
-# would otherwise collide two differently-suffixed extra args down to the
-# same printed name -- see lifecycle_cap.py's own "__hostarg" marker).
-_TIMESTEP_HOST_ARG_SCHEME = """\
-[ccpp-table-properties]
-  name = timestep_host_arg_scheme
-  type = scheme
+# (lc_nx) instead of threading the real value through. 'nx_2' exercises
+# the xDSL name_hint auto-strip gotcha (extract_valid_name silently drops a
+# trailing "_<digits>", which would collide it with 'nx'): the dummy-argument
+# names must come from arg_attrs, not name hints. The same arguments on a
+# _register entry point cover the lifecycle wrapper (ccpp_register), and on
+# _timestep_init the per-group dispatcher (ccpp_physics_timestep_init).
+_TIMESTEP_HOST_ARG_TABLE = """\
 [ccpp-arg-table]
-  name = timestep_host_arg_scheme_timestep_init
+  name = timestep_host_arg_scheme_{phase}
   type = scheme
 [ nx ]
   standard_name = size_of_std_arg
@@ -716,7 +714,7 @@ _TIMESTEP_HOST_ARG_SCHEME = """\
   type = integer
   intent = in
   dimensions = ()
-[ nx2 ]
+[ nx_2 ]
   standard_name = size_of_std_arg_2
   units = count
   type = integer
@@ -739,6 +737,14 @@ _TIMESTEP_HOST_ARG_SCHEME = """\
   units = 1
 """
 
+_TIMESTEP_HOST_ARG_SCHEME = (
+    "[ccpp-table-properties]\n"
+    "  name = timestep_host_arg_scheme\n"
+    "  type = scheme\n"
+    + _TIMESTEP_HOST_ARG_TABLE.format(phase="register")
+    + _TIMESTEP_HOST_ARG_TABLE.format(phase="timestep_init")
+)
+
 _TIMESTEP_HOST_ARG_HOST = """\
 [ccpp-table-properties]
   name = timestep_host_arg_host
@@ -751,7 +757,7 @@ _TIMESTEP_HOST_ARG_HOST = """\
   type = integer
   units = count
   dimensions = ()
-[ nx2 ]
+[ nx_2 ]
   standard_name = size_of_std_arg_2
   type = integer
   units = count
@@ -811,12 +817,16 @@ class TestTimestepPhaseHostTableArgs:
         wrapper_idx = text.index("ccpp_physics_timestep_init(")
         sig_end = text.index(")", wrapper_idx)
         sig = text[wrapper_idx:sig_end]
-        assert "nx" in sig
-        assert "nx2" in sig
+        assert "nx, nx_2" in sig
         assert "lc_nx" not in sig
 
+    def test_lifecycle_wrapper_signature_and_call(self, timestep_host_arg_fortran):
+        text = timestep_host_arg_fortran
+        assert "subroutine ccpp_register(suite_name, nx, nx_2, errmsg, errflg)" in text
+        assert "call timestep_host_arg_suite_register(nx, nx_2, errmsg, errflg)" in text
+
     def test_no_disconnected_local_placeholders_declared(self, timestep_host_arg_fortran):
-        """The old bug declared lc_nx/lc_nx2 as local, never-allocated
+        """The old bug declared lc_nx/lc_nx_2 as local, never-allocated
         dummies and passed those into the suite callee instead."""
         assert "lc_nx" not in timestep_host_arg_fortran
 
@@ -828,5 +838,4 @@ class TestTimestepPhaseHostTableArgs:
         call_idx = text.index("call timestep_host_arg_suite_timestep_init_physics(")
         call_end = text.index(")", call_idx)
         call = text[call_idx:call_end]
-        assert "nx" in call
-        assert "nx2" in call
+        assert "nx, nx_2" in call

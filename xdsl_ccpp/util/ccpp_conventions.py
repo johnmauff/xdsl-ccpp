@@ -6,6 +6,9 @@ literals throughout the codebase.
 """
 
 import re
+from typing import NamedTuple
+
+from xdsl.dialects import builtin
 
 # ── Primitive Fortran types ──────────────────────────────────────────────────
 # The set of CCPP "primitive" (non-derived) Fortran types -- anything else is
@@ -472,3 +475,100 @@ def parse_kind_spec_value(value: str) -> tuple[str, str, str]:
 
 # Convenience constant for the primary physics precision kind.
 CCPP_KIND_PHYS = "kind_phys"
+
+
+# Per-argument attributes (func.FuncOp arg_attrs) on generated subroutines:
+# what each dummy argument is. Set by the suite cap on suite subroutines
+# (suite_arg_attrs) and by the host cap on the functions that pass them
+# through; read by later passes and by the printers instead of parsing
+# argument names. Names live here too because xDSL rewrites name hints
+# (a trailing "_<digits>" is dropped: opt_var_2 -> opt_var).
+SUITE_ARG_NAME = "ccpp.name"                # Fortran dummy-argument name
+SUITE_ARG_STD_NAME = "ccpp.standard_name"
+SUITE_ARG_DIM_NAMES = "ccpp.dim_names"      # dimension standard names
+SUITE_ARG_INTENT = "ccpp.intent"            # merged across the schemes sharing it
+SUITE_ARG_OPTIONAL = "ccpp.optional"        # UnitAttr
+SUITE_ARG_ALLOCATABLE = "ccpp.allocatable"  # UnitAttr
+
+
+
+def arg_attr_values(fn_op) -> list:
+    """A function's per-argument attributes as plain values, one dict per
+    argument: str for StringAttr, list[str] for ArrayAttr, True for
+    UnitAttr; empty dicts when the function has none."""
+    n = len(fn_op.body.blocks[0].args) if fn_op.body.blocks else len(fn_op.function_type.inputs)
+    if fn_op.arg_attrs is None:
+        return [{} for _ in range(n)]
+    values = []
+    for d in fn_op.arg_attrs.data:
+        entry = {}
+        for k, v in d.data.items():
+            if isinstance(v, builtin.ArrayAttr):
+                entry[k] = [x.data for x in v.data]
+            elif isinstance(v, builtin.UnitAttr):
+                entry[k] = True
+            else:
+                entry[k] = v.data
+        values.append(entry)
+    return values
+
+
+def arg_attr_dict(values: dict) -> builtin.DictionaryAttr:
+    """The inverse of arg_attr_values for one argument."""
+    out = {}
+    for k, v in values.items():
+        if v is True:
+            out[k] = builtin.UnitAttr()
+        elif isinstance(v, list):
+            out[k] = builtin.ArrayAttr([builtin.StringAttr(x) for x in v])
+        elif v not in (None, False):
+            out[k] = builtin.StringAttr(v)
+    return builtin.DictionaryAttr(out)
+
+
+class ArgDecl(NamedTuple):
+    """How a printer declares one dummy argument."""
+    name: str
+    is_alloc: bool  # allocatable (intent(inout))
+    is_opt: bool    # optional
+    is_in: bool     # an array narrowed to intent(in)
+
+
+def arg_decl(attrs: dict, name_hint: "str | None", idx: int) -> ArgDecl:
+    """Name and declaration flags of dummy argument *idx*, from its
+    arg_attrs (*attrs*, plain values). A function that records no name
+    for it (e.g. one built by hand in a test) gets its name hint, or a
+    positional name. Allocatable takes precedence over optional, and
+    either over intent(in), which narrows only arrays."""
+    name = attrs.get(SUITE_ARG_NAME) or name_hint or f"arg_{idx}"
+    is_alloc = bool(attrs.get(SUITE_ARG_ALLOCATABLE))
+    is_opt = not is_alloc and bool(attrs.get(SUITE_ARG_OPTIONAL))
+    is_in = (not is_alloc and not is_opt
+             and attrs.get(SUITE_ARG_INTENT) == "in"
+             and bool(attrs.get(SUITE_ARG_DIM_NAMES)))
+    return ArgDecl(name, is_alloc, is_opt, is_in)
+
+
+def name_local(alloca, name: str) -> None:
+    """Name the local variable a memref.AllocaOp declares: the name goes in
+    the op's attributes (SUITE_ARG_NAME), where the printer reads it -- the
+    name hint is only a hint (xDSL drops a trailing "_<digits>" from it)."""
+    alloca.attributes[SUITE_ARG_NAME] = builtin.StringAttr(name)
+    alloca.memref.name_hint = name
+
+
+def mark_allocatable_local(alloca, name: str) -> None:
+    """name_local, and make the local allocatable (SUITE_ARG_ALLOCATABLE)."""
+    name_local(alloca, name)
+    alloca.attributes[SUITE_ARG_ALLOCATABLE] = builtin.UnitAttr()
+
+
+def local_name(alloca) -> "str | None":
+    """The name name_local recorded on a memref.AllocaOp, if any."""
+    name = alloca.attributes.get(SUITE_ARG_NAME)
+    return name.data if name is not None else None
+
+
+def is_allocatable_local(alloca) -> bool:
+    """Whether mark_allocatable_local marked a memref.AllocaOp allocatable."""
+    return SUITE_ARG_ALLOCATABLE in alloca.attributes

@@ -42,6 +42,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     TrimOp,
     VarRefExprOp,
 )
+from xdsl_ccpp.util.ccpp_conventions import ArgDecl, arg_attr_values, arg_decl
 from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
 
 # op.name -> C++ infix token, paralleling print_ftn.py's _binops. Built
@@ -524,15 +525,16 @@ def _char_buffer_comment(mlir_type: object, intent: str) -> str:
     return f"  /* caller must allocate >= {declared_len + 1} bytes ({declared_len} + null terminator) */"
 
 
-def _intent_from_arg(arg: object, inout_block_args: set) -> str:
-    """Return the intent for a block argument via print_ftn.py's shared
-    classify_arg_intent -- see that function's own docstring for why this
-    must go through the shared decision tree rather than its own copy."""
+def _intent_from_arg(arg: object, decl: ArgDecl, inout_block_args: set) -> str:
+    """Return the intent for a block argument (declared as *decl*) via
+    print_ftn.py's shared classify_arg_intent -- see that function's own
+    docstring for why this must go through the shared decision tree rather
+    than its own copy."""
     mlir_type = arg.type
     return classify_arg_intent(
         is_allocatable_char=_is_allocatable_char(mlir_type),
-        is_alloc=bool(arg.name_hint and arg.name_hint.endswith("__alloc")),
-        is_in=bool(arg.name_hint and arg.name_hint.endswith("__in")),
+        is_alloc=decl.is_alloc,
+        is_in=decl.is_in,
         has_array_dims=_has_array_dims(mlir_type),
         is_inout_return=arg in inout_block_args,
     )
@@ -560,17 +562,10 @@ def _fn_params(fn_op: func.FuncOp) -> list[tuple[str, str, str]]:
 
     params: list[tuple[str, str, str]] = []
 
-    for arg in block.args:
-        hint = arg.name_hint or f"arg_{arg.index}"
-        if hint.endswith("__alloc"):
-            name = hint[:-7]
-        elif hint.endswith("__opt"):
-            name = hint[:-5]
-        elif hint.endswith("__in"):
-            name = hint[:-4]
-        else:
-            name = hint
-        intent = _intent_from_arg(arg, inout_block_args)
+    for arg, attrs in zip(block.args, arg_attr_values(fn_op)):
+        decl = arg_decl(attrs, arg.name_hint, arg.index)
+        name = decl.name
+        intent = _intent_from_arg(arg, decl, inout_block_args)
         comment = _rank_comment(arg.type) or _char_buffer_comment(arg.type, intent)
         params.append((name, _cpp_type(arg.type, intent), comment))
 

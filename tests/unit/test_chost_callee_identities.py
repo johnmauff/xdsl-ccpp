@@ -12,7 +12,7 @@ from xdsl_ccpp.transforms.util.cap_shared import SUITE_ARG_DIM_NAMES, SUITE_ARG_
 
 
 def test_renamed_colliding_args_keep_their_own_standard_names():
-    hints = ["col_start", "col_end", "scalar_var", "scalar_varA", "effr__in"]
+    hints = ["col_start", "col_end", "scalar_var", "scalar_varA", "effr"]
     attrs = [
         {SUITE_ARG_STD_NAME: "horizontal_loop_begin"},
         {SUITE_ARG_STD_NAME: "horizontal_loop_end"},
@@ -27,7 +27,7 @@ def test_renamed_colliding_args_keep_their_own_standard_names():
         "col_end": "horizontal_loop_end",
         "scalar_var": "scalar_variable_for_testing",
         "scalar_varA": "scalar_variable_for_testing_a",
-        "effr": "effective_radius",          # the __in suffix is not part of the name
+        "effr": "effective_radius",
     }
     assert local_to_dims == {"effr": ["horizontal_loop_extent", "vertical_layer_dimension"]}
 

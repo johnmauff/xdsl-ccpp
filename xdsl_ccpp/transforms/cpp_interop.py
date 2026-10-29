@@ -57,7 +57,6 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_STD_NAME,
     SUITE_FN_INFIX,
     _allocated_cond,
-    _bare,
     _int_var_cmp,
     _scf_if,
 )
@@ -79,6 +78,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_SCHEME_NAME_LEN,
     CCPP_VERT_DIM_STD_NAME,
     CCPP_VERTICAL_DIMENSIONS,
+    arg_decl,
     real_kind_width,
 )
 from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
@@ -304,9 +304,10 @@ class ChostArgInfo:
 
 
 def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
-                    local_to_dim_names=None):
-    """Return an arg descriptor dict for a single suite cap input argument."""
-    bare = _bare(hint) if hint else ""
+                    local_to_dim_names=None, attrs=None):
+    """Return an arg descriptor dict for a single suite cap input argument;
+    *attrs* is its suite_arg_attrs, as plain values."""
+    bare = hint or ""
     std  = local_to_std.get(bare, "")
     host = std_to_host.get(std, bare)
 
@@ -317,7 +318,7 @@ def _chost_arg_info(hint, mtype, local_to_std, std_to_host, kind_iso_map=None,
     is_errmsg    = (std == "ccpp_error_message")
     is_errflg    = (std == "ccpp_error_code")
     is_sname     = (std == "scheme_name" or bare == "scheme_name")
-    is_in_only   = (hint is not None and hint.endswith("__in"))
+    is_in_only   = arg_decl(attrs or {}, hint, 0).is_in
 
     rank = 0
     real_width = 64
@@ -802,7 +803,7 @@ def _chost_callee_identities(pfn_hints, arg_attrs) -> "tuple[dict, dict]":
     for hint, attrs in zip(pfn_hints, arg_attrs):
         if not hint:
             continue
-        bare = _bare(hint)
+        bare = hint
         if SUITE_ARG_STD_NAME in attrs:
             local_to_std[bare] = attrs[SUITE_ARG_STD_NAME]
         if SUITE_ARG_DIM_NAMES in attrs:
@@ -985,8 +986,8 @@ def _chost_fn_contexts(
         suite_call_pieces: list = []
         constituent_vars: list = []
 
-        for h, t in zip(pfn_hints, pfn_types):
-            bare = _bare(h) if h else ""
+        for h, t, h_attrs in zip(pfn_hints, pfn_types, pfn_attrs):
+            bare = h or ""
             _ddt_type = None
             if isinstance(t, MemRefType) and isinstance(t.element_type, DerivedType):
                 _ddt_type = t.element_type.type_name.data
@@ -1018,10 +1019,10 @@ def _chost_fn_contexts(
             else:
                 ai = _chost_arg_info(
                     h, t, local_to_std, std_to_host, kind_iso_map,
-                    local_to_dim_names=local_to_dim_names,
+                    local_to_dim_names=local_to_dim_names, attrs=h_attrs,
                 )
-                # Scalar char args don't get the __in hint suffix from suite_cap
-                # (that's only for array args), so their intent defaults to "inout".
+                # Only array args are narrowed to intent(in) (arg_decl), so a
+                # scalar char arg's intent defaults to "inout".
                 # Look up the actual intent from scheme metadata to get it right.
                 if (ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]
                         and ai["intent"] == "inout" and meta_data is not None):

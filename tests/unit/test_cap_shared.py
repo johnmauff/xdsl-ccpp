@@ -375,12 +375,11 @@ class TestResolveDimExprs:
         is the safe choice."""
         assert resolve_dim_exprs(["number_of_tracers"], {}) is None
 
-    def test_suffix_stripped_from_resolved_sibling_name(self):
-        """non_host_std_to_canonical's values can carry a __alloc/__opt/__in
-        suffix (the raw callee_input_names form) -- the resolved expression
-        must use the bare, suffix-stripped name, matching what's actually
-        printed as the Fortran dummy-argument name."""
+    def test_resolved_sibling_name_used_as_is(self):
+        """non_host_std_to_canonical's values are the dummy-argument names
+        exactly as printed (recorded in arg_attrs), so they are used
+        unchanged -- including one ending in "_<digits>"."""
         assert resolve_dim_exprs(
             ["number_of_model_times"],
-            {"number_of_model_times": "ntimes__alloc"},
-        ) == ["ntimes"]
+            {"number_of_model_times": "ntimes_2"},
+        ) == ["ntimes_2"]

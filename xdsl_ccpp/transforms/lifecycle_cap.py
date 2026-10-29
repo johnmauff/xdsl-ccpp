@@ -9,6 +9,8 @@ module assembly.
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
+    ArrayAttr,
+    DictionaryAttr,
     IndexType,
     IntegerAttr,
     StringAttr,
@@ -29,10 +31,10 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_DDT_MODS,
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     SUITE_ARG_INTENT,
+    SUITE_ARG_NAME,
     SUITE_ARG_STD_NAME,
     SchemeArgsByStd,
     _assert_call_arg_count_matches_signature,
-    _bare,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
@@ -43,6 +45,8 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
     CCPP_ERROR_CODE,
     CCPP_ERROR_MESSAGE,
+    mark_allocatable_local,
+    name_local,
 )
 
 
@@ -161,20 +165,19 @@ def _generate_lifecycle_fn(
     # intent (suite_arg_attrs) -- including the args suite_cap.py adds itself
     # (e.g. instance_number/number_of_instances), which no scheme entry
     # point of these phases declares.
-    extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
+    extra_host_args: dict = {}  # arg_name -> (arg_type, intent)
     for _sn, _suite_callee, _ret, _scheme_names, _entry_postfix, _ri in suite_entries:
         _, _, _callee_in_types, _callee_in_names, _callee_attrs = public_fns[_suite_callee]
         for _arg_name, _arg_type, _attrs in zip(_callee_in_names, _callee_in_types, _callee_attrs):
-            _bare_name = _bare(_arg_name)
             _std_name = _attrs.get(SUITE_ARG_STD_NAME)
             if (
                 _std_name
                 and _std_name in host_var_map_all
                 and _std_name not in host_var_map
-                and _bare_name not in extra_host_args
+                and _arg_name not in extra_host_args
                 and not (_ccpp_info_type_for_scan is not None and _std_name == "host_standard_ccpp_type")
             ):
-                extra_host_args[_bare_name] = (_arg_type, _attrs.get(SUITE_ARG_INTENT, "in"))
+                extra_host_args[_arg_name] = (_arg_type, _attrs.get(SUITE_ARG_INTENT, "in"))
     extra_host_arg_names = list(extra_host_args.keys())
     extra_host_arg_types = [extra_host_args[n][0] for n in extra_host_arg_names]
     # Only inout/out extra args need to be threaded back out through
@@ -192,10 +195,7 @@ def _generate_lifecycle_fn(
         # Use HostVarRefOps (member access) in place of AllocaOps so the
         # printer emits ccpp_info%errmsg / ccpp_info%errflg everywhere.
         new_block = Block(arg_types=[suite_name_type, ccpp_info_type] + extra_host_arg_types)
-        new_block.args[0].name_hint = "suite_name"
-        new_block.args[1].name_hint = "ccpp_info"
-        for _i, _n in enumerate(extra_host_arg_names):
-            new_block.args[2 + _i].name_hint = _n + "__hostarg"
+        arg_names = ["suite_name", "ccpp_info", *extra_host_arg_names]
         errmsg_alloc = HostVarRefOp(
             "ccpp_info", ccpp_info_module, errmsg_type, member_name="errmsg"
         )
@@ -209,9 +209,10 @@ def _generate_lifecycle_fn(
         errflg_alloc = memref.AllocaOp.get(int_base, shape=[])
         errflg_alloc.memref.name_hint = "errflg"
         new_block = Block(arg_types=[suite_name_type] + extra_host_arg_types)
-        new_block.args[0].name_hint = "suite_name"
-        for _i, _n in enumerate(extra_host_arg_names):
-            new_block.args[1 + _i].name_hint = _n + "__hostarg"
+        arg_names = ["suite_name", *extra_host_arg_names]
+
+    for arg, name in zip(new_block.args, arg_names, strict=True):
+        arg.name_hint = name
 
     # Extra HOST-table args are always appended last, regardless of which
     # branch above ran -- their block-arg index is just the tail of
@@ -259,7 +260,6 @@ def _generate_lifecycle_fn(
         call_inputs: list = []
 
         for arg_name, arg_type, attrs in zip(callee_input_names, callee_input_types, callee_arg_attrs):
-            bare = _bare(arg_name)
             std_name = attrs.get(SUITE_ARG_STD_NAME)
             intent = attrs.get(SUITE_ARG_INTENT, "in")
             host_match = by_std.host.get(std_name)
@@ -326,7 +326,7 @@ def _generate_lifecycle_fn(
                     alloc_op = memref.AllocaOp.get(
                         arg_type.element_type, shape=list(arg_type.shape.data)
                     )
-                    alloc_op.memref.name_hint = f"lc_{bare}"
+                    name_local(alloc_op, f"lc_{arg_name}")
                     true_branch_pre_ops.append(alloc_op)
                     call_inputs.append(alloc_op.memref)
             elif (
@@ -378,13 +378,13 @@ def _generate_lifecycle_fn(
                 # The ccpp_info_t block arg IS the CCPP framework handle — pass
                 # it directly to callees that expect host_standard_ccpp_type.
                 call_inputs.append(new_block.args[1])
-            elif bare in extra_host_arg_index:
+            elif arg_name in extra_host_arg_index:
                 # Resolved by the pre-scan above to a HOST-type-table var this
                 # phase's own scheme entry point genuinely needs -- passed
                 # straight through as this wrapper's own dummy argument
                 # (never use-associated, matching every other HOST-type
                 # table reference in this codebase).
-                call_inputs.append(new_block.args[extra_host_arg_index[bare]])
+                call_inputs.append(new_block.args[extra_host_arg_index[arg_name]])
             else:
                 # Not host-matched (e.g. optional arg or allocatable DDT arg).
                 # Hoist the alloca to function scope so Fortran can declare it
@@ -409,7 +409,7 @@ def _generate_lifecycle_fn(
                     # must match that exactly, or it's a reference to a
                     # symbol that no longer exists (confirmed the hard way
                     # in real CI: "has no IMPLICIT type").
-                    _lc_name = f"lc_{bare}"
+                    _lc_name = f"lc_{arg_name}"
                     cap_ref_name = (
                         f"lc_instances({instance_local_name})%{_lc_name}"
                         if instance_local_name is not None
@@ -471,7 +471,7 @@ def _generate_lifecycle_fn(
                         elem_type, shape=shape,
                         dynamic_sizes=[zero_idx.result] * n_dyn,
                     )
-                    alloc_op.memref.name_hint = f"lc_{bare}__alloc"
+                    mark_allocatable_local(alloc_op, f"lc_{arg_name}")
                     hoisted_alloc_ops.append(zero_idx)
                     # Ensure the DDT type's module appears in the USE list.
                     if isinstance(elem_type, DerivedType):
@@ -491,7 +491,7 @@ def _generate_lifecycle_fn(
                     call_inputs.append(alloc_op.memref)
                 else:
                     alloc_op = memref.AllocaOp.get(elem_type, shape=shape)
-                    alloc_op.memref.name_hint = f"lc_{bare}"
+                    name_local(alloc_op, f"lc_{arg_name}")
                     hoisted_alloc_ops.append(alloc_op)
                     call_inputs.append(alloc_op.memref)
 
@@ -598,7 +598,15 @@ def _generate_lifecycle_fn(
 
     body = Region()
     body.add_block(new_block)
-    cap_fn = func.FuncOp(fn_name, fn_type, body, visibility="public")
+    # The dummy-argument names are recorded in arg_attrs, where the printer
+    # and the CAM wrappers (ccpp_cap.py) read them: a host-table arg's local
+    # name may end in "_<digits>", which xDSL drops from a name hint.
+    cap_fn = func.FuncOp(
+        fn_name, fn_type, body, visibility="public",
+        arg_attrs=ArrayAttr(
+            [DictionaryAttr({SUITE_ARG_NAME: StringAttr(n)}) for n in arg_names]
+        ),
+    )
 
     for suite_name, suite_callee, call_ret_types, scheme_names, entry_postfix, _ri \
             in suite_entries:

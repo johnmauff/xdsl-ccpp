@@ -126,6 +126,12 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteStmtOp as CCPPWriteStmtOp
 from xdsl_ccpp.backend import expr_precedence
+from xdsl_ccpp.util.ccpp_conventions import (
+    arg_attr_values,
+    arg_decl,
+    is_allocatable_local,
+    local_name,
+)
 
 _MAX_LINE_LEN = 99
 
@@ -712,11 +718,10 @@ def classify_arg_intent(
     is_allocatable_char -- True for memref<memref<?xi8>> (allocatable
         character array): always intent(out), the callee allocates and
         fills it.
-    is_alloc -- True when the arg's own name_hint carries the "__alloc"
-        suffix (allocatable, non-character): intent(inout).
-    is_in -- True when the name_hint carries the "__in" suffix (an array
-        arg deliberately narrowed to intent(in), e.g. after being copied
-        into a local for unit conversion): intent(in).
+    is_alloc -- True for an allocatable (non-character) arg (arg_decl):
+        intent(inout).
+    is_in -- True for an array arg narrowed to intent(in) (arg_decl):
+        intent(in).
     has_array_dims -- True when the type has at least one dynamic array
         dimension: intent(inout) (the host provides the buffer, the
         scheme may write to it in place).
@@ -742,8 +747,9 @@ class _FnBodyAnalysis:
     """Pure-analysis results for one ``func.FuncOp`` body, computed by
     ``ftnPrintContext._analyze_fn_body`` before any printing begins.
 
-    input_names/output_names -- dummy-argument names, derived from
-        block-arg/alloca-result name hints (suffix-stripped).
+    input_names/output_names -- dummy-argument names (arg_decls' names,
+        and the alloca results' name hints).
+    arg_decls -- each block arg's ArgDecl (name and declaration flags).
     output_ret_vals -- the AllocaOp results paired 1:1 with output_names.
     inout_block_args -- block args echoed back in the function's own
         ReturnOp -- these get intent(inout) rather than the default in.
@@ -754,6 +760,7 @@ class _FnBodyAnalysis:
     """
 
     input_names: list
+    arg_decls: list
     output_names: list
     output_ret_vals: list
     inout_block_args: set
@@ -783,6 +790,11 @@ class ftnPrintContext:
 
     # Counter used to generate unique fallback variable names
     _counter: int = field(default=0)
+
+    # The enclosing function's optional dummy arguments (block args), set by
+    # _print_fn from its arg_attrs: an absent one has no bounds, so array
+    # copies of it are gated on present().
+    optional_args: set = field(default_factory=set)
 
     # Whether the program being printed actually contains a generated
     # @ccpp_kinds module (generate_kinds.py is a no-op, and emits none, when
@@ -1398,10 +1410,9 @@ class ftnPrintContext:
         from an explicit `dim_exprs` attribute, not the result type's own
         shape the way the other three derive theirs from
         `self._ftn_dim_suffix`, and its source is always a host module-var
-        reference (`HostVarRefOp`), which -- confirmed against
-        `suite_cap.py`'s own `_hint_for`, the sole site anywhere that ever
-        tags a value `"__opt"` -- can never be an optional dummy argument in
-        the first place, so it needs no present() gate at all.
+        reference (`HostVarRefOp`), which can never be an optional dummy
+        argument (only block args are, see `optional_args`), so it needs
+        no present() gate at all.
 
         assign_expr=None skips the assignment line entirely (UnitConvertOp's
         own intent(out) case, where to_expr is empty and there is nothing to
@@ -2127,15 +2138,8 @@ class ftnPrintContext:
                     # An optional array dummy that the caller genuinely did
                     # not pass has no bounds to call size() on at all --
                     # gate the whole allocate+convert on present() so this
-                    # only runs when the source is actually there. Detected
-                    # via the block arg's own "__opt" name_hint suffix (see
-                    # suite_cap.py's _build_block_signature/_hint_for),
-                    # which survives independently of the printed/stripped
-                    # name used for src_name above.
-                    is_optional_array = (
-                        op.source.name_hint is not None
-                        and op.source.name_hint.endswith("__opt")
-                    )
+                    # only runs when the source is actually there.
+                    is_optional_array = op.source in self.optional_args
                     self._print_guarded_alloc_and_assign(
                         src_name, result_name, sizes, is_optional_array,
                         assign_expr=f"{result_name} = real({src_name}, kind={target_kind})",
@@ -2151,9 +2155,7 @@ class ftnPrintContext:
                 # was never allocated/converted in the first place, so there
                 # is nothing to write back or deallocate either.
                 is_optional_array = bool(
-                    dim_suffix
-                    and op.original_dest.name_hint is not None
-                    and op.original_dest.name_hint.endswith("__opt")
+                    dim_suffix and op.original_dest in self.optional_args
                 )
                 self._print_guarded_writeback_and_dealloc(
                     dest_name, conv_name, is_optional_array,
@@ -2178,10 +2180,7 @@ class ftnPrintContext:
                     # See CCPPKindCastOp's own comment above: an absent
                     # optional array has no bounds to call size() on, so
                     # gate the whole allocate(+copy) on present().
-                    is_optional_array = (
-                        op.source.name_hint is not None
-                        and op.source.name_hint.endswith("__opt")
-                    )
+                    is_optional_array = op.source in self.optional_args
                     self._print_guarded_alloc_and_assign(
                         src_name, result_name, sizes, is_optional_array,
                         assign_expr=f"{result_name} = {src_name} {to_expr}" if to_expr else None,
@@ -2203,9 +2202,7 @@ class ftnPrintContext:
                 # optional array was never allocated/converted, so there is
                 # nothing to write back or deallocate either.
                 is_optional_array = bool(
-                    dim_suffix
-                    and op.original_dest.name_hint is not None
-                    and op.original_dest.name_hint.endswith("__opt")
+                    dim_suffix and op.original_dest in self.optional_args
                 )
                 self._print_guarded_writeback_and_dealloc(
                     dest_name, conv_name, is_optional_array,
@@ -2236,10 +2233,7 @@ class ftnPrintContext:
                 # set), which doesn't itself exclude optional args, so the
                 # gate is a real (if not yet exercised by any current
                 # example) latent-crash guard, not just defensive symmetry.
-                is_optional_array = (
-                    op.source.name_hint is not None
-                    and op.source.name_hint.endswith("__opt")
-                )
+                is_optional_array = op.source in self.optional_args
                 self._print_guarded_alloc_and_assign(
                     src_name, result_name, sizes, is_optional_array,
                     assign_expr=f"{result_name} = {src_name}({', '.join(sections)})",
@@ -2258,10 +2252,7 @@ class ftnPrintContext:
                 ]
                 # See CCPPVerticalFlipOp's own comment above for why this
                 # gate matters despite no current example exercising it.
-                is_optional_array = (
-                    op.original_dest.name_hint is not None
-                    and op.original_dest.name_hint.endswith("__opt")
-                )
+                is_optional_array = op.original_dest in self.optional_args
                 self._print_guarded_writeback_and_dealloc(
                     dest_name, conv_name, is_optional_array,
                     assign_expr=f"{dest_name} = {conv_name}({', '.join(sections)})",
@@ -2865,43 +2856,26 @@ class ftnPrintContext:
         self.print("end interface", prefix="  ")
 
     @staticmethod
-    def _analyze_fn_body(bdy: Region) -> _FnBodyAnalysis:
+    def _analyze_fn_body(bdy: Region, fn_op: "object | None" = None) -> _FnBodyAnalysis:
         """Pure IR analysis for one func.FuncOp body, run before any printing
         begins.
 
-        Argument names are taken from the name_hint set on each block argument
-        and alloca result during IR generation, falling back to positional
-        names if no hint is present.
+        Argument names and declaration flags (allocatable, optional,
+        intent(in)) come from the function's arg_attrs (arg_decl).
+        Output-argument names come from the alloca results' name hints.
 
         The ReturnOp is scanned to detect inout arguments (block args that
         appear in the return list) so they can be declared intent(inout) rather
         than the default intent(in).  Pure output arguments come from AllocaOp
         results also present in the return list.
         """
-        # Collect input arg names from block arg name hints.
-        # Strip __alloc (allocatable), __opt (optional), __in (intent-in array),
-        # or __hostarg (see below) suffix.
-        #
-        # __hostarg: xdsl.ir.core.IRWithName.extract_valid_name silently strips
-        # any trailing "_<digits>" from a name_hint (its own SSA-value auto-
-        # disambiguation convention -- it assumes such a suffix is framework-
-        # generated, not semantic). A scheme arg whose own real name happens to
-        # end that way (e.g. opt_arg's own opt_var_2) would collide with a
-        # same-prefixed sibling (opt_var) once both are stripped down to
-        # "opt_var". lifecycle_cap.py's extra_host_args wrapper-arg exposure
-        # appends "__hostarg" specifically to dodge that strip (it doesn't end
-        # in digits, so xDSL leaves it alone) -- unlike __alloc/__opt/__in,
-        # it carries no intent implication of its own, so it's deliberately
-        # NOT checked by the is_alloc/is_opt/is_in flags below; intent falls
-        # through to the ordinary array/inout-echo detection.
-        input_names = [
-            (arg.name_hint[:-7] if arg.name_hint and arg.name_hint.endswith("__alloc")
-             else arg.name_hint[:-5] if arg.name_hint and arg.name_hint.endswith("__opt")
-             else arg.name_hint[:-4] if arg.name_hint and arg.name_hint.endswith("__in")
-             else arg.name_hint[:-9] if arg.name_hint and arg.name_hint.endswith("__hostarg")
-             else (arg.name_hint if arg.name_hint is not None else f"arg_{idx}"))
-            for idx, arg in enumerate(bdy.block.args)
+        attrs = (arg_attr_values(fn_op) if fn_op is not None
+                 else [{} for _ in bdy.block.args])
+        arg_decls = [
+            arg_decl(a, arg.name_hint, idx)
+            for idx, (arg, a) in enumerate(zip(bdy.block.args, attrs))
         ]
+        input_names = [d.name for d in arg_decls]
 
         # Scan ReturnOp to separate output allocas from returned inout block args
         output_names: list[str] = []
@@ -2969,6 +2943,7 @@ class ftnPrintContext:
 
         return _FnBodyAnalysis(
             input_names=input_names,
+            arg_decls=arg_decls,
             output_names=output_names,
             output_ret_vals=output_ret_vals,
             inout_block_args=inout_block_args,
@@ -3030,14 +3005,8 @@ class ftnPrintContext:
         # provides the buffer and the scheme may write to it in-place.
         # Exception: memref<memref<?xi8>> is an allocatable character array
         # passed intent(out) — the callee allocates and fills it.
-        for idx, (arg, arg_name) in enumerate(zip(bdy.block.args, analysis.input_names)):
-            # Check the original name_hint for the __alloc / __opt / __in suffix
-            is_alloc = (arg.name_hint is not None
-                        and arg.name_hint.endswith("__alloc"))
-            is_opt   = (arg.name_hint is not None
-                        and arg.name_hint.endswith("__opt"))
-            is_in    = (arg.name_hint is not None
-                        and arg.name_hint.endswith("__in"))
+        for idx, (arg, decl) in enumerate(zip(bdy.block.args, analysis.arg_decls)):
+            arg_name, is_alloc, is_opt, is_in = decl
             type_str = inner.mlir_type_to_ftn_type(arg.type)
             dim_suffix = inner._ftn_dim_suffix(arg.type)
             is_allocatable_char = ftnPrintContext._is_allocatable_char(arg.type)
@@ -3103,13 +3072,12 @@ class ftnPrintContext:
         # directly, which would emit the identical declaration line twice
         # (a Fortran compile error) whenever that collision happens.
         for alloca_op in analysis.local_allocas:
-            var_name = (
-                alloca_op.memref.name_hint
-                if alloca_op.memref.name_hint is not None
-                else f"local_{id(alloca_op)}"
+            hint = (
+                local_name(alloca_op)
+                or alloca_op.memref.name_hint
+                or f"local_{id(alloca_op)}"
             )
-            is_alloc = var_name.endswith("__alloc")
-            hint = var_name[: -len("__alloc")] if is_alloc else var_name
+            is_alloc = is_allocatable_local(alloca_op)
             ftn_name = inner._get_variable_name_for(alloca_op.memref, hint=hint)
             if is_alloc:
                 # For local allocatable declarations the memref shape encodes
@@ -3277,7 +3245,7 @@ class ftnPrintContext:
         bind_c_dim_exprs attribute (chost-rank3-bindc) -- optional, so
         every other existing concern stays unaffected.
         """
-        analysis = self._analyze_fn_body(bdy)
+        analysis = self._analyze_fn_body(bdy, fn_op)
 
         args_str = ", ".join(analysis.input_names + analysis.output_names)
         if bind_c:
@@ -3293,6 +3261,10 @@ class ftnPrintContext:
             # Register input block args so downstream ops can look them up by name
             for arg, arg_name in zip(bdy.block.args, analysis.input_names):
                 inner.variables[arg] = arg_name
+            inner.optional_args = {
+                arg for arg, decl in zip(bdy.block.args, analysis.arg_decls)
+                if decl.is_opt
+            }
 
             # Register output alloca results so StoreOp and CallOp can resolve them
             for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
@@ -3404,6 +3376,7 @@ class ftnPrintContext:
             _binops=self._binops,
             _counter=self._counter,
             _prefix=self._prefix + self._INDENT,
+            optional_args=self.optional_args,
         )
         if block_end is not None:
             self.print(f"{block_end} ")

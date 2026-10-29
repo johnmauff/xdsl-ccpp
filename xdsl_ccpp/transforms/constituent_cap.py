@@ -42,7 +42,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _allocated_cond,
-    _bare,
     _int_var_cmp_zero,
     _not_allocated_cond,
     _scf_if,
@@ -111,9 +110,8 @@ def _collect_constituent_info(meta_data):
                     and fn_arg.hasAttr("type")
                     and fn_arg.getAttr("type").lower() == "ccpp_constituent_properties_t"
                 ):
-                    bare = _bare(fn_arg.name)
-                    if bare not in dynamic_array_names:
-                        dynamic_array_names.append(bare)
+                    if fn_arg.name not in dynamic_array_names:
+                        dynamic_array_names.append(fn_arg.name)
                 elif (
                     not is_register
                     and fn_arg.hasAttr("advected")
@@ -132,7 +130,7 @@ def _collect_constituent_info(meta_data):
                     )
                     # Use local variable name as diagnostic name, matching
                     # capgen-v1's local_name_to_diag_name default.
-                    local_name = _bare(fn_arg.name)
+                    local_name = fn_arg.name
                     if std_name not in seen_fixed:
                         seen_fixed.add(std_name)
                         fixed_advected.append((std_name, units, default_val, local_name))

@@ -42,10 +42,11 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_DIM_NAMES,
+    SUITE_ARG_NAME,
+    SUITE_ARG_OPTIONAL,
     SUITE_ARG_STD_NAME,
     SchemeArgsByStd,
     _assert_call_arg_count_matches_signature,
-    _bare,
     _build_ddt_resolution_maps,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
@@ -56,6 +57,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_ddt_access_path,
     _resolve_lifecycle_table_name,
     _resolve_member_subscripts,
+    arg_attr_dict,
     build_ncol_compute_ops,
     classify_host_table_vars,
     resolve_dim_exprs,
@@ -106,6 +108,8 @@ class _RunBlockSignature:
     ccpp_info_block_arg: "object" # BlockArgument | None
     ccpp_info_type: "object"      # memref type or None
     union_dim_names: dict         # canonical_arg_name -> dim_std_names list
+    arg_names: list               # each block arg's dummy-argument name
+    arg_attrs: list               # each block arg's arg_attrs, as plain values
 
 
 @dataclass
@@ -204,21 +208,20 @@ def _build_per_suite_run_info(
         std_name_of = {}
         local_to_host_info: dict = {}
         local_to_dim_names: dict = {}
-        # bare_name → (dim_std_names, intent) for rank≥2 row_major args,
+        # arg_name → (dim_std_names, intent) for rank≥2 row_major args,
         # transposed via RowMajorConvertOp in the dispatch chain.
         local_to_array_layout: dict = {}
         for arg_name, attrs in zip(callee_input_names, callee_arg_attrs):
-            bare = _bare(arg_name)
             if SUITE_ARG_DIM_NAMES in attrs:
-                local_to_dim_names[bare] = list(attrs[SUITE_ARG_DIM_NAMES])
+                local_to_dim_names[arg_name] = list(attrs[SUITE_ARG_DIM_NAMES])
             std = attrs.get(SUITE_ARG_STD_NAME)
             if std is None:
                 continue
-            std_name_of[bare] = std
+            std_name_of[arg_name] = std
             if std in host_by_std:
-                local_to_host_info[bare] = host_by_std[std]
+                local_to_host_info[arg_name] = host_by_std[std]
             if std in layout_by_std:
-                local_to_array_layout[bare] = layout_by_std[std]
+                local_to_array_layout[arg_name] = layout_by_std[std]
 
         # A callee arg no scheme declares (one the suite cap synthesizes,
         # e.g. a dynamic subcycle loop count) has no host match from
@@ -228,7 +231,6 @@ def _build_per_suite_run_info(
         # (e.g. phys_state%num_subcycles) rather than as a plain caller
         # block argument.
         for arg_name, attrs in zip(callee_input_names, callee_arg_attrs):
-            bare = _bare(arg_name)
             std = attrs.get(SUITE_ARG_STD_NAME)
             if std in scheme_std_names:
                 continue
@@ -243,11 +245,11 @@ def _build_per_suite_run_info(
                     if not var.hasAttr("standard_name"):
                         continue
                     var_std = var.getAttr("standard_name").lower()
-                    if (var_std == std) if std is not None else (var.name == bare):
-                        std_name_of[bare] = var_std
+                    if (var_std == std) if std is not None else (var.name == arg_name):
+                        std_name_of[arg_name] = var_std
                         if (props.getAttr("type") == CCPPType.DDT
-                                and bare not in local_to_host_info):
-                            local_to_host_info[bare] = (var.name, tbl_name, True)
+                                and arg_name not in local_to_host_info):
+                            local_to_host_info[arg_name] = (var.name, tbl_name, True)
                         break
                 else:
                     continue
@@ -255,17 +257,16 @@ def _build_per_suite_run_info(
 
         # Classify each callee input arg using match pass results as primary source.
         resolved_arg_ops = []
-        for arg_name in callee_input_names:
-            bare = _bare(arg_name)
-            std_name = std_name_of.get(bare) or std_name_of.get(arg_name)
+        for arg_name, attrs in zip(callee_input_names, callee_arg_attrs):
+            std_name = std_name_of.get(arg_name)
 
-            if bare in local_to_host_info and not (
+            if arg_name in local_to_host_info and not (
                 std_name and std_name in host_block_std_names
             ):
                 # local_to_host_info has a match, AND it is not a protected
                 # HOST-type block arg (those are passed by the caller, not
                 # accessed via a USE statement).
-                host_var, host_mod, is_ddt = local_to_host_info[bare]
+                host_var, host_mod, is_ddt = local_to_host_info[arg_name]
                 if is_ddt:
                     # DDT member: model_module_name is the DDT table/type name.
                     # Resolve to a module-level instance, following parent DDTs
@@ -296,7 +297,7 @@ def _build_per_suite_run_info(
                         if expected_index_std_name is not None:
                             for _callee_arg in callee_input_names:
                                 if (
-                                    std_name_of.get(_bare(_callee_arg))
+                                    std_name_of.get(_callee_arg)
                                     == expected_index_std_name
                                 ):
                                     index_std_name = expected_index_std_name
@@ -362,7 +363,7 @@ def _build_per_suite_run_info(
                 if std_name and std_name not in host_block_std_names \
                         and std_name not in CCPP_FRAMEWORK_STD_NAMES \
                         and std_name not in constituent_std_names \
-                        and not arg_name.endswith("__opt"):
+                        and not attrs.get(SUITE_ARG_OPTIONAL):
                     print(
                         f"Info: '{suite_callee}' arg '{arg_name}' "
                         f"(standard_name='{std_name}') has no host variable "
@@ -374,8 +375,8 @@ def _build_per_suite_run_info(
 
         non_host_args = [
             (callee_input_names[i], callee_input_types[i],
-             std_name_of.get(_bare(callee_input_names[i]),
-                             callee_input_names[i]))
+             std_name_of.get(callee_input_names[i], callee_input_names[i]),
+             callee_arg_attrs[i])
             for i, op in enumerate(resolved_arg_ops)
             if op.source_kind.data == ArgSourceKind.Block
             # cap_var sources are cap-internal; don't expose as block args
@@ -414,6 +415,7 @@ def _build_per_suite_run_info(
                 "callee_output_types": callee_output_types,
                 "callee_input_types": callee_input_types,
                 "callee_input_names": callee_input_names,
+                "callee_arg_attrs": callee_arg_attrs,
                 "resolved_arg_ops": resolved_arg_ops,
                 "non_host_args": non_host_args,
                 "std_name_of": std_name_of,
@@ -470,24 +472,28 @@ def _build_run_block_signature(
     # canonical_arg_name → dim_std_names list, array args only -- feeds the
     # plain-bind_c explicit-shape fix (chost-rank3-bindc) via resolve_dim_exprs.
     union_dim_names: dict = {}
+    # canonical_arg_name → the first-seen callee arg's suite_arg_attrs
+    # (intent, optional, allocatable, ...): recorded on the dispatcher's
+    # own arguments, since the dispatcher declares them the same way.
+    union_arg_attrs: dict = {}
     for info in per_suite:
         _dim_map = info.get("local_to_dim_names", {})
-        for arg_name, arg_type, std_name in info["non_host_args"]:
+        for arg_name, arg_type, std_name, arg_attrs in info["non_host_args"]:
             if std_name and std_name in seen_non_host_std_names:
                 # Same standard_name seen before — record the rename
                 canonical = seen_non_host_std_names[std_name]
                 non_host_std_to_canonical[std_name] = canonical
             elif arg_name not in union_non_host_args:
                 union_non_host_args[arg_name] = arg_type
+                union_arg_attrs[arg_name] = arg_attrs
                 canonical = arg_name
                 if std_name:
                     seen_non_host_std_names[std_name] = arg_name
                     non_host_std_to_canonical[std_name] = arg_name
             else:
                 canonical = arg_name
-            _bare_arg_name = _bare(arg_name)
-            if canonical not in union_dim_names and _bare_arg_name in _dim_map:
-                union_dim_names[canonical] = _dim_map[_bare_arg_name]
+            if canonical not in union_dim_names and arg_name in _dim_map:
+                union_dim_names[canonical] = _dim_map[arg_name]
 
     # Bare names of args filtered out below because their own declared type
     # IS the ccpp_info_t DDT (not one of its member fields) -- populated
@@ -680,6 +686,18 @@ def _build_run_block_signature(
         errflg_arg = new_block.args[2 + n_non_host + 1]
         errflg_arg.name_hint = "errflg"
 
+    # Every dummy argument's name and attributes, in block order. The
+    # union args take the attributes of the callee arg they came from
+    # (intent, optional, allocatable, ...), so the dispatcher declares them
+    # as the suite subroutine does.
+    if ccpp_info_type is not None:
+        arg_names = ["suite_name", "suite_part", "ccpp_info", *union_non_host_args]
+    else:
+        arg_names = ["suite_name", "suite_part", *union_non_host_args, "errmsg", "errflg"]
+    arg_attrs = [
+        {**union_arg_attrs.get(name, {}), SUITE_ARG_NAME: name} for name in arg_names
+    ]
+
     return _RunBlockSignature(
         new_block=new_block,
         all_block_types=all_block_types,
@@ -696,6 +714,8 @@ def _build_run_block_signature(
         ccpp_info_block_arg=ccpp_info_block_arg,
         ccpp_info_type=ccpp_info_type,
         union_dim_names=union_dim_names,
+        arg_names=arg_names,
+        arg_attrs=arg_attrs,
     )
 
 def _build_run_chain_preamble(
@@ -838,7 +858,7 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
             _col_begin_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
             _col_end_key = ctx.non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
             if (
-                std_name_of.get(_bare(arg_name)) == CCPP_HORIZ_DIM_STD_NAME
+                std_name_of.get(arg_name) == CCPP_HORIZ_DIM_STD_NAME
                 and _rank_of(arg_type) == 0
                 and _col_begin_key is not None
                 and _col_end_key is not None
@@ -858,7 +878,7 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
                 _ncol_ops, _ncol_alloc = build_ncol_compute_ops(
                     ctx.block_arg_map[_col_begin_key],
                     ctx.block_arg_map[_col_end_key],
-                    name_hint=_bare(arg_name),
+                    name_hint=arg_name,
                 )
                 host_var_ref_ops.extend(_ncol_ops)
                 host_var_ref_results[arg_name] = _ncol_alloc.memref
@@ -1020,7 +1040,7 @@ def _build_array_section_ops(
     ):
         # Row-major rank≥2 arrays are handled by RowMajorConvertOp below;
         # skip ArraySectionOp for them so we don't double-slice.
-        if _bare(arg_name) in local_to_array_layout:
+        if arg_name in local_to_array_layout:
             continue
         op = resolved_arg_ops[i]
         if op.source_kind.data == ArgSourceKind.Host:
@@ -1182,11 +1202,10 @@ def _build_row_major_convert_ops(ctx, info, host_var_ref_results) -> tuple:
         op = resolved_arg_ops[i]
         if op.source_kind.data != ArgSourceKind.Host:
             continue
-        bare = _bare(arg_name)
-        if bare not in local_to_array_layout:
+        if arg_name not in local_to_array_layout:
             continue
 
-        dim_std_names, intent = local_to_array_layout[bare]
+        dim_std_names, intent = local_to_array_layout[arg_name]
         dim_exprs: list = []
         valid = True
         for dim_sn in dim_std_names:
@@ -1217,7 +1236,7 @@ def _build_row_major_convert_ops(ctx, info, host_var_ref_results) -> tuple:
 
         host_ref_result = host_var_ref_results[arg_name]
         conv_op = RowMajorConvertOp(host_ref_result, dim_exprs, arg_type)
-        conv_op.res.name_hint = f"{bare}_col"
+        conv_op.res.name_hint = f"{arg_name}_col"
         row_major_convert_ops.append(conv_op)
         host_var_ref_results[arg_name] = conv_op.res
 
@@ -1228,13 +1247,13 @@ def _build_row_major_convert_ops(ctx, info, host_var_ref_results) -> tuple:
 
 
 def _build_call_args(ctx, info, host_var_ref_results) -> tuple:
-    """Build call args in callee order. Returns (call_args, call_arg_bare_names)."""
+    """Build call args in callee order. Returns (call_args, call_arg_names)."""
     callee_input_names = info["callee_input_names"]
     resolved_arg_ops = info["resolved_arg_ops"]
     std_name_of = info["std_name_of"]
 
     call_args = []
-    call_arg_bare_names = []
+    call_arg_names = []
     for i, arg_name in enumerate(callee_input_names):
         op = resolved_arg_ops[i]
         if op.source_kind.data in (
@@ -1243,15 +1262,14 @@ def _build_call_args(ctx, info, host_var_ref_results) -> tuple:
             call_args.append(host_var_ref_results[arg_name])
         else:
             # Block arg: use canonical name if this arg was deduplicated
-            bare = _bare(arg_name)
-            std = std_name_of.get(bare, bare)
+            std = std_name_of.get(arg_name, arg_name)
             canonical = ctx.non_host_std_to_canonical.get(std, arg_name)
             # Fall back to arg_name if canonical not in block_arg_map
             key = canonical if canonical in ctx.block_arg_map else arg_name
             call_args.append(ctx.block_arg_map[key])
-        call_arg_bare_names.append(_bare(arg_name))
+        call_arg_names.append(arg_name)
 
-    return call_args, call_arg_bare_names
+    return call_args, call_arg_names
 
 
 def _result_keyword_name(idx, ret_type, ctx, n_inout_ret, leading_inout_ret, run_ret_alloc):
@@ -1291,7 +1309,7 @@ def _result_keyword_name(idx, ret_type, ctx, n_inout_ret, leading_inout_ret, run
 
 
 def _build_call_and_copy_back_ops(
-    ctx, info, trim_suite_part, call_args, call_arg_bare_names,
+    ctx, info, trim_suite_part, call_args, call_arg_names,
     host_var_ref_results, wrapper_inout_echo_args, wrapper_inout_echo_seen,
 ) -> tuple:
     """Build this suite part's own StrCmpOp guard and call op (positional
@@ -1366,7 +1384,7 @@ def _build_call_and_copy_back_ops(
 
     # Use keyword-argument call when any suite cap input is optional
     # so that Fortran correctly forwards the OPTIONAL absence status.
-    suite_has_optional = any(n.endswith("__opt") for n in callee_input_names)
+    suite_has_optional = any(a.get(SUITE_ARG_OPTIONAL) for a in info["callee_arg_attrs"])
     if suite_has_optional:
         _result_names = [
             _result_keyword_name(_i, rt, ctx, _n_inout_ret, _leading_inout_ret, _run_ret_alloc)
@@ -1374,7 +1392,7 @@ def _build_call_and_copy_back_ops(
         ]
         call_op = KeywordCallOp(
             suite_callee,
-            ArrayAttr([StringAttr(n) for n in call_arg_bare_names]),
+            ArrayAttr([StringAttr(n) for n in call_arg_names]),
             ArrayAttr([StringAttr(n) for n in _result_names]),
             DictionaryAttr({}),
             call_args,
@@ -1560,7 +1578,7 @@ def _build_one_suite_part_dispatch(
     )
 
     # ── Build call args in callee order ───────────────────────────
-    call_args, call_arg_bare_names = _build_call_args(ctx, info, host_var_ref_results)
+    call_args, call_arg_names = _build_call_args(ctx, info, host_var_ref_results)
 
     # ── Verify argument count matches callee signature ─────────────
     _assert_call_arg_count_matches_signature(
@@ -1568,7 +1586,7 @@ def _build_one_suite_part_dispatch(
     )
 
     suite_part_eq, call_op, cap_var_inout_refs, copy_ops = _build_call_and_copy_back_ops(
-        ctx, info, trim_suite_part, call_args, call_arg_bare_names,
+        ctx, info, trim_suite_part, call_args, call_arg_names,
         host_var_ref_results, wrapper_inout_echo_args, wrapper_inout_echo_seen,
     )
 
@@ -1763,7 +1781,10 @@ def _assemble_run_fn(
 
     body = Region()
     body.add_block(sig.new_block)
-    return func.FuncOp(fn_name, fn_type, body, visibility="public")
+    return func.FuncOp(
+        fn_name, fn_type, body, visibility="public",
+        arg_attrs=ArrayAttr([arg_attr_dict(a) for a in sig.arg_attrs]),
+    )
 
 def _generate_run_fn(
     fn_name,
@@ -1900,10 +1921,10 @@ def _generate_run_fn(
     # chost-rank3-bindc. Iterating sig.new_block.args directly (rather than
     # counting leading/trailing fixed args) is robust to either signature
     # shape (ccpp_info_t-bundled vs. plain errmsg/errflg trailing) since
-    # every block arg already has its own canonical name_hint set above.
+    # every block arg has its own canonical name in _sig.arg_names.
     bind_c_dim_exprs: list = []
-    for arg in _sig.new_block.args:
-        dim_names = _sig.union_dim_names.get(arg.name_hint)
+    for arg_name in _sig.arg_names:
+        dim_names = _sig.union_dim_names.get(arg_name)
         resolved = (
             resolve_dim_exprs(dim_names, non_host_std_to_canonical)
             if dim_names else None

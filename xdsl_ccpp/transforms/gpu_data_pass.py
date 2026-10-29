@@ -22,11 +22,11 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     fn_phase,
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     block_args_by_std,
+    value_name,
     is_constituent_view_arg,
     resolve_capscratch_cap_var_name,
     split_scheme_table_name,
     suite_cap_suite_name,
-    _bare,
     _iter_schemes,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -594,7 +594,7 @@ class GPUDataPass(ModulePass):
             if refs:
                 first_if = gpu_calls[0][0]
                 last_if  = gpu_calls[-1][0]
-                copyin_refs = sorted(refs, key=lambda a: _bare(a.name_hint or ""))
+                copyin_refs = sorted(refs, key=lambda a: value_name(a) or "")
                 if copyin_refs:
                     if self.directive == "omp":
                         Rewriter.insert_op(

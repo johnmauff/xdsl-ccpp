@@ -27,7 +27,7 @@
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "tcld", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_shadow_cld_ice_array", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_shadow_ncols", base_type = "real", rank = 1 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.standard_name = "dynamic_constituents_for_cld_liq", ccpp.intent = "out", ccpp.dim_names = [":"]}, %dyn_const_ice__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.standard_name = "dynamic_constituents_for_cld_ice", ccpp.intent = "out", ccpp.dim_names = [":"]}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "suite_register"} {
+// CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.name = "dyn_const", ccpp.standard_name = "dynamic_constituents_for_cld_liq", ccpp.intent = "out", ccpp.dim_names = [":"], ccpp.allocatable}, %dyn_const_ice : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.name = "dyn_const_ice", ccpp.standard_name = "dynamic_constituents_for_cld_ice", ccpp.intent = "out", ccpp.dim_names = [":"], ccpp.allocatable}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "suite_register"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -37,13 +37,13 @@
 // CHECK-NEXT:        %2 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %3 = arith.cmpi eq, %2, %1 : i32
 // CHECK-NEXT:        scf.if %3 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const__alloc, %errmsg, %errflg) <{callee = "cld_liq_register", operand_names = ["dyn_const", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const, %errmsg, %errflg) <{callee = "cld_liq_register", operand_names = ["dyn_const", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %4 = arith.constant 0 : i32
 // CHECK-NEXT:        %5 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %6 = arith.cmpi eq, %5, %4 : i32
 // CHECK-NEXT:        scf.if %6 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const_ice__alloc, %errmsg, %errflg) <{callee = "cld_ice_register", operand_names = ["dyn_const_ice", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const_ice, %errmsg, %errflg) <{callee = "cld_ice_register", operand_names = ["dyn_const_ice", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
@@ -102,7 +102,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_init_physics(%const_std_name : memref<32xi8> {ccpp.standard_name = "test_banana_name", ccpp.intent = "in"}, %num_consts : memref<i32> {ccpp.standard_name = "banana_array_dim", ccpp.intent = "in"}, %test_stdname_array__in : memref<?x32xi8> {ccpp.standard_name = "test_banana_name_array", ccpp.intent = "in", ccpp.dim_names = ["banana_array_dim"]}, %const_inds : memref<?xi32> {ccpp.standard_name = "test_banana_constituent_indices", ccpp.intent = "out", ccpp.dim_names = ["banana_array_dim"]}, %tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "water_temperature_at_freezing", ccpp.intent = "in"}, %cld_liq_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "cloud_liquid_dry_mixing_ratio", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %cld_ice_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "cloud_ice_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}) -> (memref<i32>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
+// CHECK-LABEL:     func.func public @cld_suite_init_physics(%const_std_name : memref<32xi8> {ccpp.name = "const_std_name", ccpp.standard_name = "test_banana_name", ccpp.intent = "in"}, %num_consts : memref<i32> {ccpp.name = "num_consts", ccpp.standard_name = "banana_array_dim", ccpp.intent = "in"}, %test_stdname_array : memref<?x32xi8> {ccpp.name = "test_stdname_array", ccpp.standard_name = "test_banana_name_array", ccpp.intent = "in", ccpp.dim_names = ["banana_array_dim"]}, %const_inds : memref<?xi32> {ccpp.name = "const_inds", ccpp.standard_name = "test_banana_constituent_indices", ccpp.intent = "out", ccpp.dim_names = ["banana_array_dim"]}, %tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "tfreeze", ccpp.standard_name = "water_temperature_at_freezing", ccpp.intent = "in"}, %cld_liq_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "cld_liq_array", ccpp.standard_name = "cloud_liquid_dry_mixing_ratio", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %cld_ice_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "cld_ice_array", ccpp.standard_name = "cloud_ice_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}) -> (memref<i32>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
 // CHECK:             %const_index = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
@@ -132,7 +132,7 @@
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
 // CHECK-NEXT:          %13 = builtin.unrealized_conversion_cast %const_std_name : memref<32xi8> to memref<512xi8>
-// CHECK-NEXT:          %14 = builtin.unrealized_conversion_cast %test_stdname_array__in : memref<?x32xi8> to memref<?x512xi8>
+// CHECK-NEXT:          %14 = builtin.unrealized_conversion_cast %test_stdname_array : memref<?x32xi8> to memref<?x512xi8>
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%13, %num_consts, %14, %const_index, %const_inds, %errmsg, %errflg) <{callee = "const_indices_init", operand_names = ["const_std_name", "num_consts", "test_stdname_array", "const_index", "const_inds", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<512xi8>, memref<i32>, memref<?x512xi8>, memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %15 = arith.constant 0 : i32
@@ -149,7 +149,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %const_index, %errmsg, %errflg : memref<i32>, memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_physics(%const_std_name : memref<32xi8> {ccpp.standard_name = "test_banana_name", ccpp.intent = "in"}, %num_consts : memref<i32> {ccpp.standard_name = "banana_array_dim", ccpp.intent = "in"}, %test_stdname_array__in : memref<?x32xi8> {ccpp.standard_name = "test_banana_name_array", ccpp.intent = "in", ccpp.dim_names = ["banana_array_dim"]}, %const_inds : memref<?xi32> {ccpp.standard_name = "test_banana_constituent_indices", ccpp.intent = "out", ccpp.dim_names = ["banana_array_dim"]}, %ncol : memref<i32> {ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "time_step_for_physics", ccpp.intent = "in"}, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "temperature", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "water_vapor_specific_humidity", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "surface_air_pressure", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "tendency_of_cloud_liquid_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ccpp_constituent_tendencies", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ccpp_constituents", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %cld_ice_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "cloud_ice_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}) -> (memref<i32>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @cld_suite_physics(%const_std_name : memref<32xi8> {ccpp.name = "const_std_name", ccpp.standard_name = "test_banana_name", ccpp.intent = "in"}, %num_consts : memref<i32> {ccpp.name = "num_consts", ccpp.standard_name = "banana_array_dim", ccpp.intent = "in"}, %test_stdname_array : memref<?x32xi8> {ccpp.name = "test_stdname_array", ccpp.standard_name = "test_banana_name_array", ccpp.intent = "in", ccpp.dim_names = ["banana_array_dim"]}, %const_inds : memref<?xi32> {ccpp.name = "const_inds", ccpp.standard_name = "test_banana_constituent_indices", ccpp.intent = "out", ccpp.dim_names = ["banana_array_dim"]}, %ncol : memref<i32> {ccpp.name = "ncol", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "timestep", ccpp.standard_name = "time_step_for_physics", ccpp.intent = "in"}, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "temp", ccpp.standard_name = "temperature", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "qv", ccpp.standard_name = "water_vapor_specific_humidity", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %ps : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "ps", ccpp.standard_name = "surface_air_pressure", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "cld_liq_tend", ccpp.standard_name = "tendency_of_cloud_liquid_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "const_tend", ccpp.standard_name = "ccpp_constituent_tendencies", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "const", ccpp.standard_name = "ccpp_constituents", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %cld_ice_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.name = "cld_ice_array", ccpp.standard_name = "cloud_ice_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}) -> (memref<i32>, memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %const_index = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
@@ -177,14 +177,14 @@
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
 // CHECK-NEXT:          %13 = builtin.unrealized_conversion_cast %const_std_name : memref<32xi8> to memref<512xi8>
-// CHECK-NEXT:          %14 = builtin.unrealized_conversion_cast %test_stdname_array__in : memref<?x32xi8> to memref<?x512xi8>
+// CHECK-NEXT:          %14 = builtin.unrealized_conversion_cast %test_stdname_array : memref<?x32xi8> to memref<?x512xi8>
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%13, %num_consts, %14, %const_index, %const_inds, %errmsg, %errflg) <{callee = "const_indices_run", operand_names = ["const_std_name", "num_consts", "test_stdname_array", "const_index", "const_inds", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<512xi8>, memref<i32>, memref<?x512xi8>, memref<i32>, memref<?xi32>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %15 = arith.constant 0 : i32
 // CHECK-NEXT:        %16 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %17 = arith.cmpi eq, %16, %15 : i32
 // CHECK-NEXT:        scf.if %17 {
-// CHECK-NEXT:          %ps_unit_conv = "ccpp_utils.unit_convert"(%ps__in) <{to_scheme_expr = "* 0.01"}> : (memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %ps_unit_conv = "ccpp_utils.unit_convert"(%ps) <{to_scheme_expr = "* 0.01"}> : (memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %tcld, %temp, %qv, %ps_unit_conv, %cld_liq_tend, %errmsg, %errflg) <{callee = "cld_liq_run", operand_names = ["ncol", "timestep", "tcld", "temp", "qv", "ps", "cld_liq_tend", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %18 = arith.constant 0 : i32
@@ -197,7 +197,7 @@
 // CHECK-NEXT:        %22 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %23 = arith.cmpi eq, %22, %21 : i32
 // CHECK-NEXT:        scf.if %23 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %temp, %qv, %ps__in, %cld_ice_array, %errmsg, %errflg) <{callee = "cld_ice_run", operand_names = ["ncol", "timestep", "temp", "qv", "ps", "cld_ice_array", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %temp, %qv, %ps, %cld_ice_array, %errmsg, %errflg) <{callee = "cld_ice_run", operand_names = ["ncol", "timestep", "temp", "qv", "ps", "cld_ice_array", "errmsg", "errflg"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %24 = arith.constant 0 : i32
 // CHECK-NEXT:        %25 = memref.load %errflg[] : memref<i32>
@@ -316,7 +316,7 @@
 // CHECK-NEXT:      }) {module = "ccpp_constituent_prop_mod"} : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<0 x i8>, sym_name = "physics_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_data"} : () -> ()
-// CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = "ccpp_utils.cap_var_ref"() <{var_name = "lc_dyn_const"}> : () -> memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>
@@ -336,7 +336,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_init(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @ccpp_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -354,7 +354,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_final(%suite_name : memref<?xi8>) -> (memref<512xi8>, memref<i32>) {
+// CHECK-LABEL:     func.func public @ccpp_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}) -> (memref<512xi8>, memref<i32>) {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -374,7 +374,7 @@
 // CHECK-NEXT:        "ccpp_utils.acc_exit_data"(%6) {operandSegmentSizes = array<i32: 0, 1>} : (memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %col_start : memref<i32>, %col_end : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -427,7 +427,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %col_start : memref<i32>, %col_end : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -451,7 +451,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %col_start : memref<i32>, %col_end : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -475,7 +475,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %col_start : memref<i32>, %col_end : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -512,7 +512,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8>, %suite_part : memref<?xi8>, %col_start : memref<i32>, %col_end : memref<i32>, %errmsg : memref<512xi8>, %errflg : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %col_start : memref<i32> {ccpp.name = "col_start"}, %col_end : memref<i32> {ccpp.name = "col_end"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", ""]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
