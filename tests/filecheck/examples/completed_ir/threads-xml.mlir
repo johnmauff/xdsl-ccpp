@@ -14,7 +14,7 @@
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<16 x i8>, sym_name = "const_uninitialized", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32, constant, value = "uninitialized"}> ({
 // CHECK-NEXT:      }) : () -> ()
-// CHECK-LABEL:     func.func public @thread_suite_register(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_register"} {
+// CHECK-LABEL:     func.func public @thread_suite_register(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_register"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -22,7 +22,7 @@
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_initialize(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
+// CHECK-LABEL:     func.func public @thread_suite_initialize(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -47,7 +47,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_finalize(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
+// CHECK-LABEL:     func.func public @thread_suite_finalize(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -72,7 +72,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_init_thread_group(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_init"} {
+// CHECK-LABEL:     func.func public @thread_suite_init_thread_group(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_init"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -93,7 +93,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_thread_group(%thread : memref<i32>, %data_array : memref<?x!ccpp_utils.real_kind<"kind_phys">>, %nthreads : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @thread_suite_thread_group(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %data_array : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "data_array", ccpp.dim_names = ["horizontal_dimension"]}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -120,7 +120,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_timestep_init_thread_group(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
+// CHECK-LABEL:     func.func public @thread_suite_timestep_init_thread_group(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -132,7 +132,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_timestep_final_thread_group(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
+// CHECK-LABEL:     func.func public @thread_suite_timestep_final_thread_group(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -144,7 +144,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @thread_suite_final_thread_group(%thread : memref<i32>, %nthreads : memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
+// CHECK-LABEL:     func.func public @thread_suite_final_thread_group(%thread : memref<i32> {ccpp.standard_name = "thread_number"}, %nthreads : memref<i32> {ccpp.standard_name = "number_of_threads"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32

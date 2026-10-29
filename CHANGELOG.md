@@ -12921,3 +12921,50 @@ later, far from the cause.
 Tests: `test_tendency_without_its_constituent_is_an_error`,
 `test_missing_constituent_is_an_error_for_views_and_tendencies`;
 advection/instances_advection FileCheck goldens updated; pytest 1123 passed.
+
+## `rk-top-lev-host-match`: the host cap reads suite argument standard names instead of guessing them (2026-10-28)
+
+The host cap (`run_dispatch._build_per_suite_run_info`) did not know each
+suite subroutine argument's standard name. It re-derived it from scheme
+metadata by local name, guessing how `suite_cap.py` had named and merged the
+arguments, and looked up host matches by local name. When schemes reuse one
+local name for different standard names, the guess could bind the wrong
+host variable. Found comparing caps with original capgen:
+
+- **rasch_kristjansson** -- `prognostic_cloud_water`'s `top_lev`
+  (`vertical_layer_index_of_troposphere_cloud_physics_top`) got
+  `top_lev_cloudphys` (the cloud-fraction top), because
+  `cloud_fraction_fice` also has a local `top_lev` with the cloud-fraction
+  standard name. It became a dummy argument of `ccpp_physics_run`, which
+  `cam_ccpp_physics_run` filled with `top_lev_cloudphys` instead of
+  `ref_pres`'s `trop_cloud_top_lev`.
+- **production cam4** -- `zm_convr`, `zm_diagnostics` and
+  `convect_shallow_sum_to_deep` got `dlf` (cloud liquid detrainment from all
+  convection) instead of `dlfzm` (deep convection), because the
+  rk_stratiform schemes also use the local name `dlf`. No test caught it:
+  the cam4 QPC4 tests have no physics check.
+
+Fix: direct match, no re-derivation.
+
+- `suitecap/phase_functions.py` records each suite subroutine argument's
+  standard name and dimension standard names as `arg_attrs`
+  (`suite_arg_attrs`; keys `SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES` in
+  `cap_shared.py`), from the scheme argument the suite cap used.
+- `_collect_public_suite_functions` carries them as a fifth `public_fns`
+  element (8 unpacking sites updated).
+- `run_dispatch` reads each callee argument's standard name and dimensions
+  from them and looks up host matches and array layouts by standard name;
+  the local-name collision handling is gone. An argument no scheme declares
+  (a synthesized subcycle count) is found in the host tables by its standard
+  name.
+
+Effect on generated code: rasch_kristjansson and cam4 caps are now
+equivalent to original capgen; the other 15 atmospheric_physics test suites,
+the production adiabatic, held_suarez_1994, tj2016 and Kessler suites, and
+the four GPU testmods (`--directive acc`) are byte-identical to before.
+cam4 results change (ZM now writes the deep-convection detrainment array);
+the aux_sima cam4 tests are smoke tests, so their status should not.
+Tests: suite-function signatures in 10 `completed_ir` goldens gain the
+`ccpp.standard_name` attributes; the run-dispatch unit tests pass the
+recorded standard names; new `TestMergedArgDoesNotShadowSameLocalName`;
+pytest 1124 passed.

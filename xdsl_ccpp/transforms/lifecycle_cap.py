@@ -172,7 +172,7 @@ def _generate_lifecycle_fn(
     name_to_std_all: dict = {v: k for k, (v, _m) in host_var_map_all.items()}
     extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
     for _sn, _suite_callee, _ret, _scheme_names, _entry_postfix, _ri in suite_entries:
-        _, _, _callee_in_types, _callee_in_names = public_fns[_suite_callee]
+        _, _, _callee_in_types, _callee_in_names, _ = public_fns[_suite_callee]
         _std_name_of: dict = {}
         _intent_of: dict = {}
         # _entry_postfix is None for a phase with no scheme-level arg table
@@ -285,7 +285,7 @@ def _generate_lifecycle_fn(
 
     for suite_name, suite_callee, call_ret_types, scheme_names, entry_postfix, ret_info \
             in reversed(suite_entries):
-        _, _, callee_input_types, callee_input_names = public_fns[suite_callee]
+        _, _, callee_input_types, callee_input_names, _ = public_fns[suite_callee]
 
         # Build {bare_arg_name → standard_name} from the scheme entry-point tables
         std_name_of: dict = {}
@@ -695,7 +695,7 @@ def _generate_lifecycle_fn(
 
     for suite_name, suite_callee, call_ret_types, scheme_names, entry_postfix, _ri \
             in suite_entries:
-        callee_module, _, callee_input_types, _ = public_fns[suite_callee]
+        callee_module, _, callee_input_types, _, _ = public_fns[suite_callee]
         decl = func.FuncOp.external(suite_callee, callee_input_types, call_ret_types)
         decl.attributes["module"] = StringAttr(callee_module)
         decls.append(decl)

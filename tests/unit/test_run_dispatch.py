@@ -28,6 +28,7 @@ from xdsl_ccpp.transforms.run_dispatch import (
     _resolve_ddt_access_path,
     _resolve_member_subscripts,
 )
+from xdsl_ccpp.transforms.util.cap_shared import SUITE_ARG_STD_NAME
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
     CCPPArgumentTable,
@@ -45,6 +46,20 @@ def _make_arg(name, **attrs):
     for k, v in attrs.items():
         arg.setAttr(k, v)
     return arg
+
+
+def _recorded_arg_attrs(callee_input_names, meta_data, scheme_names):
+    """The per-argument attributes the suite cap records (suite_arg_attrs):
+    each callee arg's standard name, here taken from the scheme arg of the
+    same name (these fixtures have no local-name collisions)."""
+    std_of = {}
+    for scheme_name in scheme_names:
+        for tbl in meta_data[scheme_name].arg_tables.values():
+            for a in tbl.getFunctionArguments():
+                if a.hasAttr("standard_name"):
+                    std_of.setdefault(a.name, a.getAttr("standard_name").lower())
+    return [{SUITE_ARG_STD_NAME: std_of[n]} if n in std_of else {}
+            for n in callee_input_names]
 
 
 def _make_arg_table(name, args, table_type):
@@ -416,12 +431,14 @@ class TestBuildPerSuiteRunInfoResolvedArgOps:
 
     def test_resolved_arg_ops_classify_each_source_kind(self):
         callee_input_names = ["temp", "rad_temp", "vmr", "unmatched_arg"]
+        meta_data = self._meta_data()
         public_fns = {
             "test_suite_callee": (
                 "test_suite_cap_mod",
                 [],
                 [None] * len(callee_input_names),
                 callee_input_names,
+                _recorded_arg_attrs(callee_input_names, meta_data, ["phys_scheme"]),
             ),
         }
         suite_run_entries = [
@@ -509,6 +526,7 @@ class TestBuildPerSuiteRunInfoMultiInstanceArray:
             "test_suite_callee": (
                 "test_suite_cap_mod", [], [None] * len(callee_input_names),
                 callee_input_names,
+                _recorded_arg_attrs(callee_input_names, meta_data, ["unit_conv_scheme_1"]),
             ),
         }
         suite_run_entries = [

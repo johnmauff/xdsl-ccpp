@@ -47,7 +47,6 @@ measured data, and will drift as items are reassessed.
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
-| `rk-top-lev-host-match` | 1-2 days remaining (fix implemented on branch `rk-top-lev-host-match`; PR, then a cam4 run to see the effect of ZM's corrected `dlf`) | XS |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
@@ -174,7 +173,6 @@ separately), CHANGELOG.md L5850.
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
-| `rk-top-lev-host-match` | The host cap can pass the wrong host variable when schemes share a local name (rasch_kristjansson `top_lev`, cam4 ZM `dlf`) | XS; found 2026-10-28; fix on branch `rk-top-lev-host-match` | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
@@ -273,31 +271,6 @@ testmod sets `! cross_compiler_min_difference = 1e-9` (see
 `nvhpc-ncdata-roundoff`); with 1e-8, gnu and nvhpc reached `END OF MODEL
 RUN` (xdsl56g, xdsl56n). Close once they also pass with 1e-9.
 
-**`rk-top-lev-host-match`** -- found 2026-10-28 comparing the caps of
-the atmospheric_physics test suites with original capgen (CAM-SIMA's
-bundled `ccpp_framework`). Root cause: `run_dispatch._build_per_suite_run_info`
-does not know each suite subroutine argument's standard name, and
-re-derives it from scheme metadata by local name, guessing how
-`suite_cap.py` named and merged the arguments. When schemes reuse one local
-name for different standard names, the guess can bind the wrong host
-variable. Two cases:
-- rasch_kristjansson: `prognostic_cloud_water`'s `top_lev`
-  (`vertical_layer_index_of_troposphere_cloud_physics_top`, host
-  `trop_cloud_top_lev` in `ref_pres`) gets `top_lev_cloudphys` (the
-  cloud-fraction top), because `cloud_fraction_fice` also has a local
-  `top_lev` with the cloud-fraction standard name. rk_stratiform still
-  passes, presumably because the two levels coincide there.
-- production cam4: `zm_convr`, `zm_diagnostics` and
-  `convect_shallow_sum_to_deep` get `dlf` (detrainment from all
-  convection) instead of `dlfzm` (deep convection), because the
-  rk_stratiform schemes also use the local name `dlf`. Not caught by any
-  test (the cam4 QPC4 tests are smoke tests).
-
-Fix (branch `rk-top-lev-host-match`, in progress): the suite cap records
-each argument's standard name on the suite subroutine (`arg_attrs`) and
-`run_dispatch` reads it, looking up host matches by standard name; with it,
-rasch_kristjansson and cam4 caps are equivalent to original capgen.
-
 **`zm-ncdata-diffs`** -- `SMS_Ln2...cam-outfrq_zm_derecho` differs from its
 (gnu-made) snapshot under gnu, intel and nvhpc alike: 16-18 variables in
 xdsl56g/i/n (42 in xdsl55n), e.g. `air_temperature` at ~3400-3800 points,
@@ -318,6 +291,8 @@ against ZM changes).
 **ID: `cloud-water-ncdata-diffs`. Resolved (2026-10-28)** -- fixed by `advected-constituent-host-binding`; gnu cloud_water clean in xdsl58g. CHANGELOG.md L12823.
 
 **ID: `advected-constituent-host-binding`. Resolved (2026-10-28, PR #164)** -- advected args are host-cap constituent views, as in original capgen. CHANGELOG.md L12823.
+
+**ID: `rk-top-lev-host-match`. Resolved (2026-10-28)** -- the host cap reads suite argument standard names recorded by the suite cap; rasch_kristjansson and cam4 caps match original capgen. CHANGELOG.md L12925.
 
 **ID: `tendency-view-lookup-silent`. Resolved (2026-10-28)** -- a tendency without its advected constituent is a generation error (as in original capgen); a failed run-time lookup now sets `errflg`. CHANGELOG.md L12900.
 

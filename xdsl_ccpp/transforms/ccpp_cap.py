@@ -84,12 +84,28 @@ from xdsl_ccpp.util.ccpp_conventions import (
 )
 
 
+def _arg_attr_values(fn) -> list:
+    """A suite subroutine's per-argument attributes (suite_arg_attrs) as
+    plain values: one {key: str | list[str]} per argument."""
+    n = len(fn.body.block.args)
+    if fn.arg_attrs is None:
+        return [{} for _ in range(n)]
+    values = []
+    for d in fn.arg_attrs.data:
+        entry = {}
+        for k, v in d.data.items():
+            entry[k] = [x.data for x in v.data] if isa(v, builtin.ArrayAttr) else v.data
+        values.append(entry)
+    return values
+
+
 def _collect_public_suite_functions(ops):
     """Scan all named ModuleOps in ops and return a map of public function info.
 
     Returns:
         dict mapping function_name → (module_name, output_types,
-        input_types, input_names).
+        input_types, input_names, input_arg_attrs); input_arg_attrs holds
+        each argument's suite_arg_attrs as plain values.
     """
     public_fns = {}
     for op in ops:
@@ -108,6 +124,7 @@ def _collect_public_suite_functions(ops):
                     list(child.function_type.outputs),
                     list(child.function_type.inputs),
                     [arg.name_hint for arg in child.body.block.args],
+                    _arg_attr_values(child),
                 )
     return public_fns
 
@@ -243,7 +260,7 @@ def _build_cap_var_map(
                 _callee_cv = _sn_cv + SUITE_FN_INFIX + _infix_cv + _grp_name_cv
                 if _callee_cv not in public_fns:
                     continue
-                _, _, _ci_types, _ci_names = public_fns[_callee_cv]
+                _, _, _ci_types, _ci_names, _ = public_fns[_callee_cv]
                 _arg_info_cv: dict[str, _CVArgInfo] = {}
                 for _scheme_cv in _grp_schemes:
                     _tbl_cv = _resolve_lifecycle_table_name(_scheme_cv, meta_data, _postfix_cv)
@@ -1479,10 +1496,10 @@ class CCPPCAP(ModulePass):
                         # has a _register entry), fall back to the callee's signature
                         # so errmsg/errflg are included.
                         if not call_ret_types:
-                            _, call_ret_types, _, _ = public_fns[suite_callee]
+                            _, call_ret_types, _, _, _ = public_fns[suite_callee]
                             ret_info = [(t, None, None) for t in call_ret_types]
                     else:
-                        _, call_ret_types, _, _ = public_fns[suite_callee]
+                        _, call_ret_types, _, _, _ = public_fns[suite_callee]
                         ret_info = [(t, None, None) for t in call_ret_types]
                     # entry_postfix is the scheme-level entry point suffix
                     # (e.g. "_init" for initialize, "_finalize" for finalize,

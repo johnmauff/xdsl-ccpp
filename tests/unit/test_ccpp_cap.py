@@ -94,6 +94,7 @@ class TestBuildCapVarMap:
                 [],
                 [None] * len(callee_input_names),
                 callee_input_names,
+                [{}] * len(callee_input_names),
             ),
         }
 
@@ -169,6 +170,7 @@ class TestBuildCapVarMapFlattensSubcycles:
                 [],
                 [None] * len(callee_input_names),
                 callee_input_names,
+                [{}] * len(callee_input_names),
             ),
         }
 
