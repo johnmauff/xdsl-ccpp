@@ -28,7 +28,9 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _CCPP_DDT_MODS,
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
-    LIFECYCLE_POSTFIX_ALIASES,
+    SUITE_ARG_INTENT,
+    SUITE_ARG_STD_NAME,
+    SchemeArgsByStd,
     _assert_call_arg_count_matches_signature,
     _bare,
     _build_ddt_resolution_maps,
@@ -155,59 +157,16 @@ def _generate_lifecycle_fn(
     _lc_instances_alloc_emitted = False
 
     host_var_map_all = _build_host_var_map(meta_data, include_host=True)
-    # Inverted (local var name -> standard_name) fallback for callee args no
-    # scheme's own entry-point metadata declares at all for THIS phase --
-    # e.g. instance_number/number_of_instances (real capgen-v1's
-    # multi-instance model, "instances/instances_advection" entry):
-    # suite_cap.py's
-    # _synthesize_instance_number_arg/_synthesize_number_of_instances_arg
-    # add them straight to the suite callee's own signature for every
-    # lifecycle phase, not because any scheme's _init/_finalize/
-    # _timestep_init/_timestep_final entry point declares them (only _run
-    # ever does, and only instance_number at that) -- so _std_name_of below
-    # never has an entry for them, even though the callee's real signature
-    # now requires a value. Mirrors run_dispatch.py's own HOST/MODULE/DDT
-    # table name-matching fallback for the identical problem on the _run
-    # side (_build_per_suite_run_info).
-    name_to_std_all: dict = {v: k for k, (v, _m) in host_var_map_all.items()}
+    # The suite callee records each dummy argument's standard name and
+    # intent (suite_arg_attrs) -- including the args suite_cap.py adds itself
+    # (e.g. instance_number/number_of_instances), which no scheme entry
+    # point of these phases declares.
     extra_host_args: dict = {}  # bare_name -> (arg_type, intent)
     for _sn, _suite_callee, _ret, _scheme_names, _entry_postfix, _ri in suite_entries:
-        _, _, _callee_in_types, _callee_in_names, _ = public_fns[_suite_callee]
-        _std_name_of: dict = {}
-        _intent_of: dict = {}
-        # _entry_postfix is None for a phase with no scheme-level arg table
-        # to scan at all (ccpp_init/ccpp_final, once
-        # suite_cap.py stopped emitting scheme calls for them -- see
-        # emit_scheme_calls there and this file's own table_postfix=None
-        # comment in ccpp_cap.py). _std_name_of/_intent_of just stay empty
-        # in that case -- the loop below still needs to run regardless,
-        # since it's ALSO where instance_number/number_of_instances (see
-        # this function's own docstring comment above) get threaded, and
-        # those never come from a scheme table anyway.
-        if _entry_postfix is not None:
-            _lc_candidates = [_entry_postfix]
-            if _entry_postfix in LIFECYCLE_POSTFIX_ALIASES:
-                _lc_candidates.append(LIFECYCLE_POSTFIX_ALIASES[_entry_postfix])
-            for _scheme_name in _scheme_names:
-                if _scheme_name not in meta_data:
-                    continue
-                for _lc_cand in _lc_candidates:
-                    _entry_name = _scheme_name + _lc_cand
-                    if _entry_name not in meta_data[_scheme_name].arg_tables:
-                        continue
-                    for _fn_arg in (
-                        meta_data[_scheme_name].getArgTable(_entry_name).getFunctionArguments()
-                    ):
-                        _bare_name = _bare(_fn_arg.name)
-                        if _bare_name not in _std_name_of and _fn_arg.hasAttr("standard_name"):
-                            _std_name_of[_bare_name] = _fn_arg.getAttr("standard_name").lower()
-                            _intent_of[_bare_name] = (
-                                _fn_arg.getAttr("intent") if _fn_arg.hasAttr("intent") else "in"
-                            )
-                    break
-        for _arg_name, _arg_type in zip(_callee_in_names, _callee_in_types):
+        _, _, _callee_in_types, _callee_in_names, _callee_attrs = public_fns[_suite_callee]
+        for _arg_name, _arg_type, _attrs in zip(_callee_in_names, _callee_in_types, _callee_attrs):
             _bare_name = _bare(_arg_name)
-            _std_name = _std_name_of.get(_bare_name) or name_to_std_all.get(_bare_name)
+            _std_name = _attrs.get(SUITE_ARG_STD_NAME)
             if (
                 _std_name
                 and _std_name in host_var_map_all
@@ -215,7 +174,7 @@ def _generate_lifecycle_fn(
                 and _bare_name not in extra_host_args
                 and not (_ccpp_info_type_for_scan is not None and _std_name == "host_standard_ccpp_type")
             ):
-                extra_host_args[_bare_name] = (_arg_type, _intent_of.get(_bare_name, "in"))
+                extra_host_args[_bare_name] = (_arg_type, _attrs.get(SUITE_ARG_INTENT, "in"))
     extra_host_arg_names = list(extra_host_args.keys())
     extra_host_arg_types = [extra_host_args[n][0] for n in extra_host_arg_names]
     # Only inout/out extra args need to be threaded back out through
@@ -285,77 +244,25 @@ def _generate_lifecycle_fn(
 
     for suite_name, suite_callee, call_ret_types, scheme_names, entry_postfix, ret_info \
             in reversed(suite_entries):
-        _, _, callee_input_types, callee_input_names, _ = public_fns[suite_callee]
-
-        # Build {bare_arg_name → standard_name} from the scheme entry-point tables
-        std_name_of: dict = {}
-        # {bare_arg_name → intent} from the same scan -- needed to gate the
-        # cap_var_map input-resolution branch below to genuine
-        # intent(in)/intent(inout) reads only. An intent(out)-only arg (e.g.
-        # environ_conditions_init's own "o3"/"hno3" outputs, real examples
-        # in examples/ddthost) just needs a fresh writable local, exactly as
-        # before -- it must not be redirected to whatever cap_var_map's
-        # standard_name lookup happens to return, since that's this suite's
-        # OWN unrelated cap-var namespace and can collide by std_name with a
-        # completely different call's own output-only arg (confirmed via a
-        # real regression while verifying this fix: environ_conditions's
-        # "ozone"/"nitric_acid" outputs got wrongly rewired to a same-named,
-        # unrelated cap_var_map entry).
-        intent_of: dict = {}
-        # {bare_arg_name → (model_var_name, model_module_name)} for args
-        # HostVariableMatchPass resolved to a DDT member (e.g. var_compat's
-        # scheme_order, matched to phys_state%scheme_order) -- module-level
-        # host vars are already handled below via host_var_map, but nothing
-        # in this function previously resolved a DDT-member match at all, so
-        # such an arg silently fell through to a fresh, uninitialized local
-        # alloca instead (a real runtime bug: any inout scalar threaded this
-        # way, like a scheme-call-order sanity counter, starts from garbage
-        # instead of the host's actual persisted value).
-        ddt_member_info: dict = {}
-        if entry_postfix is not None:
-            # atmospheric_physics uses _timestep_init/_timestep_final/_final;
-            # accept all of LIFECYCLE_POSTFIX_ALIASES' short forms too.
-            _lc_candidates = [entry_postfix]
-            if entry_postfix in LIFECYCLE_POSTFIX_ALIASES:
-                _lc_candidates.append(LIFECYCLE_POSTFIX_ALIASES[entry_postfix])
-            for scheme_name in scheme_names:
-                if scheme_name not in meta_data:
-                    continue
-                for _lc_cand in _lc_candidates:
-                    entry_name = scheme_name + _lc_cand
-                    if entry_name not in meta_data[scheme_name].arg_tables:
-                        continue
-                    for fn_arg in (
-                        meta_data[scheme_name]
-                        .getArgTable(entry_name)
-                        .getFunctionArguments()
-                    ):
-                        # Strip __alloc/__opt suffix used for allocatable/optional name_hints
-                        bare = _bare(fn_arg.name)
-                        if bare not in std_name_of and fn_arg.hasAttr("standard_name"):
-                            std_name_of[bare] = fn_arg.getAttr("standard_name").lower()
-                        if bare not in intent_of:
-                            intent_of[bare] = (
-                                fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in"
-                            )
-                        if (
-                            bare not in ddt_member_info
-                            and fn_arg.hasAttr("model_var_is_ddt")
-                            and fn_arg.hasAttr("model_var_name")
-                        ):
-                            ddt_member_info[bare] = (
-                                fn_arg.getAttr("model_var_name"),
-                                fn_arg.getAttr("model_module_name"),
-                            )
-                    break  # found entry for this scheme; stop trying candidates
+        _, _, callee_input_types, callee_input_names, callee_arg_attrs = public_fns[suite_callee]
+        # Each callee arg's standard name and intent come from the suite
+        # callee (suite_arg_attrs); host matches are looked up by standard
+        # name. The intent gates the cap_var_map input resolution below to
+        # genuine reads (in/inout): an intent(out)-only arg (e.g.
+        # environ_conditions_init's "o3"/"hno3" in examples/ddthost) needs a
+        # fresh writable local, not a cap variable that happens to share its
+        # standard name.
+        by_std = SchemeArgsByStd(scheme_names, meta_data, entry_postfix)
 
         # Resolve each input arg: host-mapped → HostVarRefOp, other → alloca
         true_branch_pre_ops: list = []
         call_inputs: list = []
 
-        for arg_name, arg_type in zip(callee_input_names, callee_input_types):
+        for arg_name, arg_type, attrs in zip(callee_input_names, callee_input_types, callee_arg_attrs):
             bare = _bare(arg_name)
-            std_name = std_name_of.get(bare)
+            std_name = attrs.get(SUITE_ARG_STD_NAME)
+            intent = attrs.get(SUITE_ARG_INTENT, "in")
+            host_match = by_std.host.get(std_name)
 
             if std_name and std_name in host_var_map:
                 host_var_name, host_module_name = host_var_map[std_name]
@@ -373,13 +280,13 @@ def _generate_lifecycle_fn(
                     )
                     glob.attributes["module"] = StringAttr(host_module_name)
                     all_host_global_ops.append(glob)
-            elif bare in ddt_member_info:
+            elif host_match is not None and host_match[2]:
                 # Host-matched to a DDT member (e.g. var_compat's
                 # scheme_order, resolved to phys_state%scheme_order) --
                 # mirrors run_dispatch.py's own DdtMember resolution for the
                 # "_run" dispatch. Follows parent DDTs for nested types
                 # (A contains B contains x -> a%b%x), same as there.
-                model_var_name, model_module_name = ddt_member_info[bare]
+                model_var_name, model_module_name, _ = host_match
                 result = _resolve_ddt_access_path(
                     model_module_name, ddt_instance_map, ddt_parent_map
                 )
@@ -426,7 +333,7 @@ def _generate_lifecycle_fn(
                 std_name
                 and std_name in FRAMEWORK_STD_NAME_TO_CAP_VAR
                 and std_name in _cap_var_map
-                and intent_of.get(bare, "in") in ("in", "inout")
+                and intent in ("in", "inout")
             ):
                 # A well-known framework array (ccpp_constituents,
                 # ccpp_constituent_tendencies, ...) needed as a genuine READ
@@ -458,7 +365,7 @@ def _generate_lifecycle_fn(
                 # identity guarantee -- they always denote the one shared,
                 # always-declared framework array, by design.
                 # Also gated to in/inout only -- an intent(out)-only arg just
-                # needs a fresh writable local (see intent_of's own comment
+                # needs a fresh writable local (see the comment on intent
                 # above).
                 var_name, var_type, _ftn = _cap_var_map[std_name]
                 cap_ref = CapVarRefOp(var_name, var_type or arg_type)

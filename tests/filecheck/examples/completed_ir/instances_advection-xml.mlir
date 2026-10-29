@@ -25,7 +25,7 @@
 // CHECK-NEXT:      }) {module = "data"} : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "tcld", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cld_liq_tend", base_type = "real", rank = 2 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.standard_name = "dynamic_constituents_for_cld_liq", ccpp.dim_names = [":"]}, %instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "suite_register"} {
+// CHECK-LABEL:     func.func public @cld_suite_register(%dyn_const__alloc : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.standard_name = "dynamic_constituents_for_cld_liq", ccpp.intent = "out", ccpp.dim_names = [":"]}, %instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "suite_register"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -39,7 +39,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_initialize(%instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
+// CHECK-LABEL:     func.func public @cld_suite_initialize(%instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_initialize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -70,7 +70,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_finalize(%instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
+// CHECK-LABEL:     func.func public @cld_suite_finalize(%instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "suite_finalize"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -99,7 +99,7 @@
 // CHECK-NEXT:        "llvm.store"(%11, %12) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_init_physics(%tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "water_temperature_at_freezing"}, %instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
+// CHECK-LABEL:     func.func public @cld_suite_init_physics(%tfreeze : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "water_temperature_at_freezing", ccpp.intent = "in"}, %instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "group_init"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -133,7 +133,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_physics(%ncol : memref<i32> {ccpp.standard_name = "horizontal_dimension"}, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "time_step_for_physics"}, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "temperature", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "water_vapor_specific_humidity", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "surface_air_pressure", ccpp.dim_names = ["horizontal_dimension"]}, %cld_liq_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "cloud_liquid_dry_mixing_ratio", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "tendency_of_cloud_liquid_dry_mixing_ratio", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ccpp_constituent_tendencies", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ccpp_constituents", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @cld_suite_physics(%ncol : memref<i32> {ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "time_step_for_physics", ccpp.intent = "in"}, %temp : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "temperature", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %qv : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "water_vapor_specific_humidity", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %ps__in : memref<?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "surface_air_pressure", ccpp.intent = "in", ccpp.dim_names = ["horizontal_dimension"]}, %cld_liq_array : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "cloud_liquid_dry_mixing_ratio", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %cld_liq_tend : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "tendency_of_cloud_liquid_dry_mixing_ratio", ccpp.intent = "out", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}, %const_tend : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ccpp_constituent_tendencies", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %const : memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "ccpp_constituents", ccpp.intent = "inout", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension", "number_of_ccpp_constituents"]}, %instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errcode = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -170,7 +170,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_timestep_init_physics(%instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
+// CHECK-LABEL:     func.func public @cld_suite_timestep_init_physics(%instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_init"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -186,7 +186,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_timestep_final_physics(%instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
+// CHECK-LABEL:     func.func public @cld_suite_timestep_final_physics(%instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "timestep_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
@@ -202,7 +202,7 @@
 // CHECK-NEXT:        "llvm.store"(%2, %3) <{ordering = 0 : i64}> : (!llvm.array<16 x i8>, !llvm.ptr) -> ()
 // CHECK-NEXT:        func.return %errflg, %errmsg : memref<i32>, memref<512xi8>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @cld_suite_final_physics(%instance : memref<i32> {ccpp.standard_name = "instance_number"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
+// CHECK-LABEL:     func.func public @cld_suite_final_physics(%instance : memref<i32> {ccpp.standard_name = "instance_number", ccpp.intent = "in"}, %ninstances : memref<i32> {ccpp.standard_name = "number_of_instances", ccpp.intent = "in"}) -> (memref<i32>, memref<512xi8>) attributes {ccpp_phase = "group_final"} {
 // CHECK:             %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32

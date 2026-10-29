@@ -16,6 +16,7 @@ from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_DIM_NAMES,
+    SUITE_ARG_INTENT,
     SUITE_ARG_STD_NAME,
     FN_PHASE_ATTR,
     LIFECYCLE_POSTFIX_ALIASES,
@@ -80,8 +81,9 @@ _SYNTHETIC_ARG_STD_NAMES = {
 
 def suite_arg_attrs(input_arg_list) -> ArrayAttr:
     """Per-argument attributes for a suite subroutine: each dummy
-    argument's standard name and dimension standard names, from the scheme
-    argument it was built from. The host cap (run_dispatch) reads these
+    argument's standard name, dimension standard names and intent (merged
+    across the schemes that share it), from the scheme argument it was
+    built from. The host cap (run_dispatch) reads these
     instead of re-deriving the suite cap's argument naming from scheme
     metadata."""
     attrs = []
@@ -91,6 +93,8 @@ def suite_arg_attrs(input_arg_list) -> ArrayAttr:
                else _SYNTHETIC_ARG_STD_NAMES.get(a.name))
         if std:
             entries[SUITE_ARG_STD_NAME] = StringAttr(std)
+        if a.hasAttr("intent"):
+            entries[SUITE_ARG_INTENT] = StringAttr(a.getAttr("intent"))
         if (a.hasAttr("dim_names") and a.hasAttr("dimensions")
                 and a.getAttr("dimensions") >= 1):
             entries[SUITE_ARG_DIM_NAMES] = ArrayAttr(

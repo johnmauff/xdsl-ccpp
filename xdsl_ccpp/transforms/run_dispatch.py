@@ -43,6 +43,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_STD_NAME,
+    SchemeArgsByStd,
     _assert_call_arg_count_matches_signature,
     _bare,
     _build_ddt_resolution_maps,
@@ -197,41 +198,8 @@ def _build_per_suite_run_info(
         # (suitecap/phase_functions.py suite_arg_attrs). Read them directly:
         # several schemes may use one local name for different standard
         # names, so nothing below is keyed by a scheme's local name.
-        # Host matching is per standard name, so any scheme arg with that
-        # standard name carries the same host match and layout.
-        host_by_std: dict = {}
-        layout_by_std: dict = {}
-        scheme_std_names: set = set()
-        for scheme_name in scheme_names:
-            table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, phase_postfix)
-            if table_name is None:
-                continue
-            for fn_arg in (
-                meta_data[scheme_name]
-                .getArgTable(table_name)
-                .getFunctionArguments()
-            ):
-                if not fn_arg.hasAttr("standard_name"):
-                    continue
-                std = fn_arg.getAttr("standard_name").lower()
-                scheme_std_names.add(std)
-                if fn_arg.hasAttr("model_var_name"):
-                    host_by_std.setdefault(std, (
-                        fn_arg.getAttr("model_var_name"),
-                        fn_arg.getAttr("model_module_name"),
-                        fn_arg.hasAttr("model_var_is_ddt"),
-                    ))
-                if (
-                    fn_arg.hasAttr("model_var_array_layout")
-                    and fn_arg.getAttr("model_var_array_layout") == "row_major"
-                    and fn_arg.hasAttr("dim_names")
-                    and fn_arg.hasAttr("dimensions")
-                    and fn_arg.getAttr("dimensions") >= 2
-                ):
-                    layout_by_std.setdefault(std, (
-                        fn_arg.getAttr("dim_names"),
-                        fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in",
-                    ))
+        by_std = SchemeArgsByStd(scheme_names, meta_data, phase_postfix)
+        host_by_std, layout_by_std, scheme_std_names = by_std.host, by_std.layout, by_std.names
 
         std_name_of = {}
         local_to_host_info: dict = {}

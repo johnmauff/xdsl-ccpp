@@ -65,7 +65,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-fphystest-kessler` | umbrella, ~25-45 days in total: `gpu-sync-intent-aware`, `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `gpu-sync-intent-aware` | 2-4 days | S |
-| `lifecycle-cap-arg-std-names` | 2-3 days (same change as `rk-top-lev-host-match`, for the non-run phases; capcmp all suites) | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `gpu-data-arg-std-names` | 3-5 days (GPU data pass and the suite cap's local-name `data_ops` keys; GPU directive old-vs-new diff on the GPU testmods) | S-M |
@@ -1717,19 +1716,12 @@ name, each with its own collision rules, and disagreed with it. Since
 name and dimension names as `arg_attrs` (`suite_arg_attrs`,
 `SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES`); the items below move the
 remaining consumers onto it and remove the guessing. Suggested order:
-`lifecycle-cap-arg-std-names`, `cap-oracle-check`, then
 `gpu-data-arg-std-names`/`chost-arg-std-names`, then
 `arg-flags-not-in-names`; the rest opportunistically.
 
-- `lifecycle-cap-arg-std-names` — **The non-run phases still guess
-  standard names by local name.** `lifecycle_cap.py` builds `_std_name_of`
-  (~L200, extra host args) and `std_name_of` (~L290, callee input
-  resolution) as "first scheme arg with this bare local name wins" -- the
-  logic that bound the wrong host variable in rasch_kristjansson and cam4,
-  for init, finalize and timestep phases. Latent: the capgen comparisons
-  (all phases) are equivalent today. Fix: read the callee's `arg_attrs`
-  (fifth `public_fns` element), look host matches up by standard name, as
-  `run_dispatch` now does.
+- `lifecycle-cap-arg-std-names` — resolved 2026-10-28 (it was
+  `ccpp_register`/`ccpp_init`/`ccpp_final`, not the group phases).
+  CHANGELOG.md L13011.
 - `cap-oracle-check` — resolved 2026-10-28: `xdsl_ccpp/tools/cap_oracle.py`
   (`diff`, `capgen`), usage in DEVELOPERS.md. CHANGELOG.md L12972.
 - `cap-oracle-ci` — **Run cap_oracle in CI.** Today it runs on Derecho
