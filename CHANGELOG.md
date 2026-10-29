@@ -13088,3 +13088,27 @@ against `dfa15a2` (before PR #164) advection is DIFFERENT
 (`cld_suite_cap.F90`, `test_host_ccpp_cap.F90`) and the exit status is 1.
 The CMake side is not yet exercised: it takes a configure. 3 new unit
 tests; pytest 1140 passed.
+## `chost-arg-std-names`: the C++ host cap reads suite argument standard names (2026-10-28)
+
+`cpp_interop.py` built the C++ host cap's map from a suite cap function's
+dummy arguments to their standard names and dimension names by re-deriving
+them from scheme metadata: a per-group scan grouped by local name
+(`_chost_scan_scheme_phase_args`), a collision-aware resolve step keyed by
+host variable name when local names collided
+(`_chost_resolve_scheme_arg_identities`), filters mirroring the suite cap's
+input-argument rules, a cross-check against the real signature, and a
+list of accepted phase suffixes (`_chost_scheme_phase_suffixes`) -- a third
+copy of what `run_dispatch` and `lifecycle_cap` used to do.
+
+Now `_chost_callee_identities` reads them from the function's `arg_attrs`
+(the fifth `public_fns` element). The HOST/MODULE/DDT fallback map stays
+for names that are not suite arguments (DDT members). Removed: the scan,
+the resolve step, the phase-suffix list and its alias table.
+
+Tests: `test_chost_identity_collision.py` (16 tests of the removed
+functions) replaced by `test_chost_callee_identities.py`. Generated output
+of every `examples/*/CMakeLists.txt` `xdsl_ccpp_capgen()` call that could
+be resolved (14 calls, 9 of them generating C++ host caps: capgen,
+chararg, constadv, constprop, ddthost, kessler, nestedddt, tinyddt)
+identical to `main`, by a generation-only old-vs-new diff. pytest 1123
+passed.
