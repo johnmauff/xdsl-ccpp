@@ -906,6 +906,51 @@ def resolve_capscratch_cap_var_name(
 # (suitecap/phase_functions.py suite_arg_attrs), read by the host cap.
 SUITE_ARG_STD_NAME = "ccpp.standard_name"
 SUITE_ARG_DIM_NAMES = "ccpp.dim_names"
+SUITE_ARG_INTENT = "ccpp.intent"
+
+
+class SchemeArgsByStd:
+    """What the scheme args of one phase say about each standard name.
+    Host matching is per standard name, so every scheme arg with a given
+    standard name carries the same host match and layout.
+
+    host:    std -> (model_var_name, model_module_name, is_ddt)
+    layout:  std -> (dim_names, intent) for rank>=2 row_major host arrays
+    names:   the standard names the phase's scheme args declare
+    """
+
+    def __init__(self, scheme_names, meta_data, postfix):
+        self.host: dict = {}
+        self.layout: dict = {}
+        self.names: set = set()
+        if postfix is None:
+            return
+        for scheme_name in scheme_names:
+            table_name = _resolve_lifecycle_table_name(scheme_name, meta_data, postfix)
+            if table_name is None:
+                continue
+            for fn_arg in meta_data[scheme_name].getArgTable(table_name).getFunctionArguments():
+                if not fn_arg.hasAttr("standard_name"):
+                    continue
+                std = fn_arg.getAttr("standard_name").lower()
+                self.names.add(std)
+                if fn_arg.hasAttr("model_var_name"):
+                    self.host.setdefault(std, (
+                        fn_arg.getAttr("model_var_name"),
+                        fn_arg.getAttr("model_module_name"),
+                        fn_arg.hasAttr("model_var_is_ddt"),
+                    ))
+                if (
+                    fn_arg.hasAttr("model_var_array_layout")
+                    and fn_arg.getAttr("model_var_array_layout") == "row_major"
+                    and fn_arg.hasAttr("dim_names")
+                    and fn_arg.hasAttr("dimensions")
+                    and fn_arg.getAttr("dimensions") >= 2
+                ):
+                    self.layout.setdefault(std, (
+                        fn_arg.getAttr("dim_names"),
+                        fn_arg.getAttr("intent") if fn_arg.hasAttr("intent") else "in",
+                    ))
 
 
 def is_constituent_view_arg(arg) -> bool:

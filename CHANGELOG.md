@@ -13007,3 +13007,30 @@ including production cam4, adiabatic, held_suarez_1994 and tj2016, except
 Kessler, which capgen rejects (`memory_space`) (1 min). Against `65e24d8`
 (before `rk-top-lev-host-match`), `capgen` reports exactly the four known
 binding differences. 11 unit tests (`test_cap_oracle.py`); pytest 1135 passed.
+
+## `lifecycle-cap-arg-std-names`: ccpp_register/ccpp_init/ccpp_final read suite argument standard names (2026-10-28)
+
+`lifecycle_cap._generate_lifecycle_fn` builds the host cap's `ccpp_register`,
+`ccpp_init` and `ccpp_final` (the group phases go through `run_dispatch`).
+Like `run_dispatch` before `rk-top-lev-host-match`, it guessed each suite
+callee argument's standard name, intent and DDT host match from scheme
+metadata keyed by local name ("first scheme arg with this local name"),
+plus a reverse lookup by host variable name for arguments no scheme
+declares. When two schemes' `_register` entry points use one local name
+for different host variables, the suite cap names the dummy arguments
+after the host variables, the lookup found neither, and `ccpp_register`
+passed uninitialized locals (`lc_host_a`, `lc_host_b`). Latent: no current
+suite does this.
+
+Fix: read the callee's `arg_attrs`. `suite_arg_attrs` now also records each
+argument's intent as the suite cap merged it (`SUITE_ARG_INTENT`); host
+matches are looked up by standard name through `SchemeArgsByStd`
+(`cap_shared.py`), now shared with `run_dispatch`. The local-name maps and
+the reverse lookup are gone.
+
+Tests: new `test_lifecycle_arg_std_names.py` (fails on the previous code:
+`ccpp_register` passes `lc_host_a, lc_host_b`); suite-function signatures
+in 10 `completed_ir` goldens gain `ccpp.intent`; no generated Fortran
+changes in `examples/`. `cap_oracle` on the 92 built aux_sima/package-cap
+cases: `diff` against `main` all IDENTICAL, `capgen` all EQUIVALENT (Kessler
+NO CAPGEN). pytest 1136 passed.
