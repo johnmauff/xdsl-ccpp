@@ -75,5 +75,18 @@ class ArgOwnershipPass(ModulePass):
                         f"'{arg_op.arg_name.data}' ({arg_op.standard_name.data}) -- "
                         f"constituent data is not available in the _register phase."
                     )
+                # A constituent tendency is a view of lc_const_tend at its
+                # constituent's index, so the constituent must be one the
+                # cap registers (as original capgen requires: "No
+                # associated state variable for tendency variable").
+                std = arg_op.standard_name.data.lower() if arg_op.standard_name else ""
+                if (arg_op.constituent is not None
+                        and std.startswith("tendency_of_")
+                        and std[len("tendency_of_"):] not in host_bound_constituents):
+                    errors.append(
+                        f"  '{table_name}': constituent tendency "
+                        f"'{arg_op.arg_name.data}' ({std}) -- no scheme in the suite "
+                        f"declares '{std[len('tendency_of_'):]}' as an advected constituent."
+                    )
         if errors:
             raise ValueError("Invalid constituent arguments:\n" + "\n".join(errors))

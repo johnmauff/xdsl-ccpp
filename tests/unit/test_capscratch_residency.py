@@ -74,6 +74,13 @@ _TEND_SCHEME = f"""\
 [ccpp-arg-table]
   name = test_capscratch_tend_scheme_run
   type = scheme
+[ qbase ]
+  standard_name = test_capscratch_quantity
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = in
+  advected = True
 [ tend ]
   standard_name = tendency_of_test_capscratch_quantity
   units = kg kg-1 s-1
@@ -210,6 +217,13 @@ _OR_SCHEME_A = f"""\
 [ccpp-arg-table]
   name = test_capscratch_or_scheme_a_run
   type = scheme
+[ qbase ]
+  standard_name = test_capscratch_or_quantity
+  units = kg kg-1
+  type = real | kind = kind_phys
+  dimensions = (horizontal_loop_extent, vertical_layer_dimension)
+  intent = in
+  advected = True
 [ tend_a ]
   standard_name = tendency_of_test_capscratch_or_quantity
   units = kg kg-1 s-1
