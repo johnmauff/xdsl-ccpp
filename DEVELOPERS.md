@@ -207,6 +207,10 @@ compiles nothing.
 # IDENTICAL everywhere.
 python -m xdsl_ccpp.tools.cap_oracle diff [--base REV] CASE_DIR...
 
+# The same for examples/: every xdsl_ccpp_capgen() call of a configured build
+# tree of this repository (cmake -S . -B build; no build needed).
+python -m xdsl_ccpp.tools.cap_oracle diff [--base REV] --examples build
+
 # Against original capgen (CAM-SIMA's bundled ccpp_framework): compare what
 # the code does (scheme calls per phase, and what each argument receives).
 python -m xdsl_ccpp.tools.cap_oracle capgen CASE_DIR...
@@ -222,6 +226,11 @@ python -m xdsl_ccpp.tools.cap_oracle capgen CASE_DIR...
 - Differences are written to `diff.txt` / `differences.txt` under `--out`
   (default: a new temporary directory). The exit status is 1 if anything
   differs.
+- `--examples` reads the command each `xdsl_ccpp_capgen()` call records at
+  configure time (`<output dir>/xdsl_ccpp_command.txt`, written by
+  `cmake/xdsl_ccpp_capgen.cmake`), so it covers exactly what CMake would
+  run; reconfigure after changing an example's `CMakeLists.txt`. Both
+  revisions read the example inputs from the working tree.
 - A full aux_sima set (about 90 built cases, 29 distinct) takes about 2
   minutes for `diff` and 1 minute for `capgen` on a login node.
 
