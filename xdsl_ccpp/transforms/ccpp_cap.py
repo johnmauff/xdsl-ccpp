@@ -2,13 +2,14 @@ import re
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import arith, builtin, func, llvm, memref
+from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     IndexType,
     IntegerAttr,
     StringAttr,
     UnitAttr,
+    i1,
     i8,
 )
 from xdsl.ir import Block, Region
@@ -20,20 +21,27 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccExitDataOp,
-    CamClearErrStateOp,
+    AllocateOp,
+    AssignOp,
+    CallExprOp,
     CamDirectCallOp,
     CamQminPostambleOp,
     CamQminPreambleOp,
     CamSuiteDispatchOp,
     CamSuiteSchemeListOp,
+    ClearErrStateOp,
     ClearStringOp,
     ConstituentFunctionOp,
     DerivedType,
     ErrorPropagateOp,
     HostVarRefOp,
-    RawFortranLinesOp,
+    IndexExprOp,
     SetStringOp,
+    StrCmpOp,
+    StringLiteralExprOp,
     SuiteVariablesOp,
+    TrimOp,
+    VarRefExprOp,
 )
 from xdsl_ccpp.transforms.constituent_cap import (
     _collect_constituent_info,
@@ -48,12 +56,15 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     SUITE_ARG_NAME,
     SUITE_FN_INFIX,
+    _assign_const,
     _build_host_var_map,
+    _build_no_suite_matched_false_ops,
     _collect_ddt_use_stubs,
     _get_suite_lifecycle_ret_info,
     _iter_schemes,
     _rank_of,
     _resolve_lifecycle_table_name,
+    _scf_if,
     arg_attr_values,
     derive_camel_case_name,
     iter_arg_tables,
@@ -349,7 +360,10 @@ def _build_cap_var_map(
     return cap_var_map, host_var_map_lc, [tuple(e) for e in scratch_var_list], framework_var_residency
 
 
-def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var_residency, scratch_var_list):
+def _inject_capscratch_gpu_exit(
+    all_definitions, finalize_fn_name, framework_var_residency, scratch_var_list,
+    instance_local_name: "str | None" = None,
+):
     """Emit AccExitDataOp for CapScratch cap-module arrays whose enter-data copyin
 
     actually fired (CapScratch GPU residency backlog item), in the generated
@@ -364,6 +378,11 @@ def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var
     Fortran pointer slices into ``lc_const_tend`` -- already covered via
     ``framework_var_residency["lc_const_tend"]`` -- so only generic scratch
     vars need their own entry here.
+
+    instance_local_name -- set for a multi-instance cap, whose arrays are
+    components of lc_instances(<instance>) (constituent_cap.py), the same
+    reference the matching AccEnterDataOp in initialize_constituents uses;
+    the finalize function must then take that instance argument.
     """
     resident: dict = {
         name: 3 for name, needed in framework_var_residency.items() if needed
@@ -384,9 +403,21 @@ def _inject_capscratch_gpu_exit(all_definitions, finalize_fn_name, framework_var
         ret_op = next((bop for bop in block.ops if isa(bop, func.ReturnOp)), None)
         if ret_op is None:
             continue
+        if instance_local_name is not None and instance_local_name not in (
+            a.get(SUITE_ARG_NAME) for a in arg_attr_values(fn)
+        ):
+            raise ValueError(
+                f"{finalize_fn_name} has no '{instance_local_name}' argument "
+                f"to select the lc_instances entry whose device-resident "
+                f"arrays it must exit-data."
+            )
         for var_name in sorted(resident):
             var_type = TypeConversions.convert("real", "kind_phys", resident[var_name])
-            ref_op = HostVarRefOp(var_name, "", var_type)
+            if instance_local_name is not None:
+                ref_op = HostVarRefOp("lc_instances", "", var_type,
+                                      member_name=var_name, index_expr=instance_local_name)
+            else:
+                ref_op = HostVarRefOp(var_name, "", var_type)
             Rewriter.insert_op(ref_op, InsertPoint.before(ret_op))
             Rewriter.insert_op(
                 AccExitDataOp(delete=[ref_op.res]), InsertPoint.before(ret_op)
@@ -737,42 +768,70 @@ def _render_suite_variables_subroutine(suite_vars) -> "SuiteVariablesOp":
     holding a ConstituentFunctionOp for ccpp_physics_suite_variables."""
     suite_var_name_len = 36  # character length matching cm=36 in test driver
 
-    body_lines: list[str] = []
-    body_lines.append("errmsg = ''")
-    body_lines.append("errflg = 0")
-    body_lines.append("do_input = .true.")
-    body_lines.append("do_output = .true.")
-    body_lines.append("if (present(input_vars)) do_input = input_vars")
-    body_lines.append("if (present(output_vars)) do_output = output_vars")
+    char_base = TypeConversions.getBaseType("character")
+    suite_name_ref = HostVarRefOp(
+        "suite_name", "", memref.MemRefType(char_base, [DYNAMIC_INDEX]))
+    errmsg_ref = HostVarRefOp(
+        "errmsg", "", memref.MemRefType(char_base, [CCPP_ERRMSG_LEN]))
+    errflg_ref = HostVarRefOp(
+        "errflg", "", memref.MemRefType(TypeConversions.getBaseType("integer"), []))
 
-    for idx, (suite_name, (in_v, out_v, req_v)) in enumerate(suite_vars.items()):
-        kw = "if" if idx == 0 else "else if"
-        body_lines.append(f"{kw} (trim(suite_name) .eq. '{suite_name}') then")
-        for branch_name, cond in (
-            ("input only",  "do_input .and. .not. do_output"),
-            ("output only", ".not. do_input .and. do_output"),
-            ("required",    None),
-        ):
-            if branch_name == "input only":
-                body_lines.append(f"  if ({cond}) then")
-                vlist = in_v
-            elif branch_name == "output only":
-                body_lines.append(f"  else if ({cond}) then")
-                vlist = out_v
-            else:
-                body_lines.append("  else")
-                vlist = req_v
-            body_lines.append(f"    allocate(var_list({len(vlist)}))")
-            for j, v in enumerate(vlist):
-                body_lines.append(f"    var_list({j + 1}) = '{v:<{suite_var_name_len}}'")
-        body_lines.append("  end if")
+    def _flag(name: str):
+        return VarRefExprOp(name, result_type=i1)
 
-    body_lines.append("else")
-    body_lines.append(
-        '  write(errmsg, \'(3a)\') "No suite named ", trim(suite_name), " found"'
-    )
-    body_lines.append("  errflg = 1")
-    body_lines.append("end if")
+    def _not(cond):
+        return arith.XOrIOp(cond, arith.ConstantOp(IntegerAttr.from_int_and_width(1, 1)))
+
+    def _var_list_ops(names: list) -> list:
+        """allocate(var_list(n)) and one var_list(j) = '<name>' per name."""
+        ops: list = [AllocateOp("var_list", dim_ops=[
+            arith.ConstantOp(IntegerAttr.from_int_and_width(len(names), 32))
+        ])]
+        for j, v in enumerate(names):
+            ops.append(AssignOp(
+                lhs_op=IndexExprOp(VarRefExprOp("var_list"), [
+                    arith.ConstantOp(IntegerAttr.from_int_and_width(j + 1, 32))
+                ]),
+                rhs_op=StringLiteralExprOp(f"{v:<{suite_var_name_len}}"),
+            ))
+        return ops
+
+    body_ops: list = [
+        suite_name_ref, errmsg_ref, errflg_ref,
+        ClearErrStateOp("errflg", "errmsg"),
+        _assign_const("do_input", True),
+        _assign_const("do_output", True),
+    ]
+    for flag, arg in (("do_input", "input_vars"), ("do_output", "output_vars")):
+        body_ops += _scf_if(
+            CallExprOp("present", [VarRefExprOp(arg)], result_type=i1),
+            [AssignOp(lhs_op=VarRefExprOp(flag), rhs_op=VarRefExprOp(arg))],
+        )
+
+    # One branch per suite, built inside-out: the innermost else is the
+    # "no suite matched" error, as in the dispatchers (run_dispatch.py).
+    trim_suite_name = TrimOp(suite_name_ref.res)
+    current_false_ops = _build_no_suite_matched_false_ops(
+        errmsg_ref.res, trim_suite_name.res, errflg_ref.res,
+    )[:-1]
+    for suite_name, (in_v, out_v, req_v) in reversed(list(suite_vars.items())):
+        # input only / output only / required
+        selected = _scf_if(
+            arith.AndIOp(_flag("do_input"), _not(_flag("do_output"))),
+            _var_list_ops(in_v),
+            _scf_if(
+                arith.AndIOp(_not(_flag("do_input")), _flag("do_output")),
+                _var_list_ops(out_v),
+                _var_list_ops(req_v),
+            ),
+        )
+        strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite_name)
+        current_false_ops = [
+            strcmp_op,
+            scf.IfOp(strcmp_op.res, [], [*selected, scf.YieldOp()],
+                     [*current_false_ops, scf.YieldOp()]),
+        ]
+    body_ops += [trim_suite_name, *current_false_ops]
 
     fn_op = ConstituentFunctionOp(
         fn_name="ccpp_physics_suite_variables",
@@ -788,7 +847,7 @@ def _render_suite_variables_subroutine(suite_vars) -> "SuiteVariablesOp":
             "logical, optional, intent(in) :: output_vars",
         ],
         local_decls=["logical :: do_input, do_output"],
-        body_ops=[RawFortranLinesOp("\n".join(body_lines))],
+        body_ops=body_ops,
         result_name=None,
         result_decl=None,
     )
@@ -1125,7 +1184,7 @@ class CCPPCAP(ModulePass):
                 ),
             ]
         else:
-            _tsinit_body = [CamClearErrStateOp("errcode", "errmsg")]
+            _tsinit_body = [ClearErrStateOp("errcode", "errmsg")]
         _tsinit_body.append(func.ReturnOp())
         wrappers.append(_build_funcop(
             "cam_ccpp_physics_timestep_initial",
@@ -1172,7 +1231,7 @@ class CCPPCAP(ModulePass):
                 ),
             ]
         else:
-            _tsfinal_body = [CamClearErrStateOp("errcode", "errmsg")]
+            _tsfinal_body = [ClearErrStateOp("errcode", "errmsg")]
         _tsfinal_body.append(func.ReturnOp())
         wrappers.append(_build_funcop(
             "cam_ccpp_physics_timestep_final",
@@ -1631,6 +1690,7 @@ class CCPPCAP(ModulePass):
         _inject_capscratch_gpu_exit(
             all_definitions, "ccpp_final",
             framework_var_residency, scratch_var_list,
+            instance_local_name=instance_local_name,
         )
 
         # Emit USE-association stubs for DDT types used in any scheme across all suites.

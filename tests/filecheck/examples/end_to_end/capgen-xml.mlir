@@ -771,76 +771,86 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
 // CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
-// CHECK-NEXT:      if (present(input_vars)) do_input = input_vars
-// CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
+// CHECK-NEXT:      if (present(input_vars)) then
+// CHECK-NEXT:        do_input = input_vars
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (present(output_vars)) then
+// CHECK-NEXT:        do_output = output_vars
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
+// CHECK-NEXT:        if (do_input .and. (.NOT. (do_output))) then
 // CHECK-NEXT:          allocate(var_list(3))
 // CHECK-NEXT:          var_list(1) = 'model_times                         '
 // CHECK-NEXT:          var_list(2) = 'number_of_model_times               '
 // CHECK-NEXT:          var_list(3) = 'surface_air_pressure                '
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(5))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'model_times                         '
-// CHECK-NEXT:          var_list(4) = 'number_of_model_times               '
-// CHECK-NEXT:          var_list(5) = 'surface_air_pressure                '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(5))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'model_times                         '
-// CHECK-NEXT:          var_list(4) = 'number_of_model_times               '
-// CHECK-NEXT:          var_list(5) = 'surface_air_pressure                '
-// CHECK-NEXT:        end if
-// CHECK-NEXT:      else if (trim(suite_name) .eq. 'temp_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
-// CHECK-NEXT:          allocate(var_list(10))
-// CHECK-NEXT:          var_list(1) = 'array_variable_for_testing          '
-// CHECK-NEXT:          var_list(2) = 'coefficients_for_interpolation      '
-// CHECK-NEXT:          var_list(3) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(4) = 'potential_temperature_at_interface  '
-// CHECK-NEXT:          var_list(5) = 'potential_temperature_increment     '
-// CHECK-NEXT:          var_list(6) = 'soil_levels                         '
-// CHECK-NEXT:          var_list(7) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(8) = 'temperature_at_diagnostic_levels    '
-// CHECK-NEXT:          var_list(9) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(10) = 'water_vapor_specific_humidity       '
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(10))
-// CHECK-NEXT:          var_list(1) = 'array_variable_for_testing          '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(4) = 'coefficients_for_interpolation      '
-// CHECK-NEXT:          var_list(5) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(6) = 'potential_temperature_at_interface  '
-// CHECK-NEXT:          var_list(7) = 'soil_levels                         '
-// CHECK-NEXT:          var_list(8) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(9) = 'temperature_at_diagnostic_levels    '
-// CHECK-NEXT:          var_list(10) = 'water_vapor_specific_humidity       '
-// CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(12))
-// CHECK-NEXT:          var_list(1) = 'array_variable_for_testing          '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(4) = 'coefficients_for_interpolation      '
-// CHECK-NEXT:          var_list(5) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(6) = 'potential_temperature_at_interface  '
-// CHECK-NEXT:          var_list(7) = 'potential_temperature_increment     '
-// CHECK-NEXT:          var_list(8) = 'soil_levels                         '
-// CHECK-NEXT:          var_list(9) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(10) = 'temperature_at_diagnostic_levels    '
-// CHECK-NEXT:          var_list(11) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(12) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:            allocate(var_list(5))
+// CHECK-NEXT:            var_list(1) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(2) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(3) = 'model_times                         '
+// CHECK-NEXT:            var_list(4) = 'number_of_model_times               '
+// CHECK-NEXT:            var_list(5) = 'surface_air_pressure                '
+// CHECK-NEXT:          else
+// CHECK-NEXT:            allocate(var_list(5))
+// CHECK-NEXT:            var_list(1) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(2) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(3) = 'model_times                         '
+// CHECK-NEXT:            var_list(4) = 'number_of_model_times               '
+// CHECK-NEXT:            var_list(5) = 'surface_air_pressure                '
+// CHECK-NEXT:          end if
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
-// CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
-// CHECK-NEXT:        errflg = 1
+// CHECK-NEXT:        if (trim(suite_name) .eq. 'temp_suite') then
+// CHECK-NEXT:          if (do_input .and. (.NOT. (do_output))) then
+// CHECK-NEXT:            allocate(var_list(10))
+// CHECK-NEXT:            var_list(1) = 'array_variable_for_testing          '
+// CHECK-NEXT:            var_list(2) = 'coefficients_for_interpolation      '
+// CHECK-NEXT:            var_list(3) = 'potential_temperature               '
+// CHECK-NEXT:            var_list(4) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:            var_list(5) = 'potential_temperature_increment     '
+// CHECK-NEXT:            var_list(6) = 'soil_levels                         '
+// CHECK-NEXT:            var_list(7) = 'surface_air_pressure                '
+// CHECK-NEXT:            var_list(8) = 'temperature_at_diagnostic_levels    '
+// CHECK-NEXT:            var_list(9) = 'time_step_for_physics               '
+// CHECK-NEXT:            var_list(10) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          else
+// CHECK-NEXT:            if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:              allocate(var_list(10))
+// CHECK-NEXT:              var_list(1) = 'array_variable_for_testing          '
+// CHECK-NEXT:              var_list(2) = 'ccpp_error_code                     '
+// CHECK-NEXT:              var_list(3) = 'ccpp_error_message                  '
+// CHECK-NEXT:              var_list(4) = 'coefficients_for_interpolation      '
+// CHECK-NEXT:              var_list(5) = 'potential_temperature               '
+// CHECK-NEXT:              var_list(6) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:              var_list(7) = 'soil_levels                         '
+// CHECK-NEXT:              var_list(8) = 'surface_air_pressure                '
+// CHECK-NEXT:              var_list(9) = 'temperature_at_diagnostic_levels    '
+// CHECK-NEXT:              var_list(10) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:            else
+// CHECK-NEXT:              allocate(var_list(12))
+// CHECK-NEXT:              var_list(1) = 'array_variable_for_testing          '
+// CHECK-NEXT:              var_list(2) = 'ccpp_error_code                     '
+// CHECK-NEXT:              var_list(3) = 'ccpp_error_message                  '
+// CHECK-NEXT:              var_list(4) = 'coefficients_for_interpolation      '
+// CHECK-NEXT:              var_list(5) = 'potential_temperature               '
+// CHECK-NEXT:              var_list(6) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:              var_list(7) = 'potential_temperature_increment     '
+// CHECK-NEXT:              var_list(8) = 'soil_levels                         '
+// CHECK-NEXT:              var_list(9) = 'surface_air_pressure                '
+// CHECK-NEXT:              var_list(10) = 'temperature_at_diagnostic_levels    '
+// CHECK-NEXT:              var_list(11) = 'time_step_for_physics               '
+// CHECK-NEXT:              var_list(12) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:            end if
+// CHECK-NEXT:          end if
+// CHECK-NEXT:        else
+// CHECK-NEXT:          write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
+// CHECK-NEXT:          errflg = 1
+// CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
 // CHECK-NEXT:  end module Ddt_ccpp_cap

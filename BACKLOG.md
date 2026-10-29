@@ -67,7 +67,11 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `raw-fortran-in-ir` | 5-10 days (mostly `constituent_cap.py`'s 24 raw blocks into ops) | M |
+| `fortran-decls-as-text` | 10-20 days (constituent API, `suite_variables` and the BIND(C) module as `func.FuncOp`s with typed args + `arg_attrs`; module structure as ops) | L |
+| `fortran-exprs-as-text` | 5-10 days (convert ~45 callers to expression ops, then delete the text forms) | M |
+| `cpp-text-in-ir` | 5-10 days | M |
+| `gpu-debug-text` | 2-4 days | S |
+| `printer-trailing-whitespace` | <1 day | XS |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
@@ -1734,10 +1738,47 @@ opportunistically.
 - `chost-arg-std-names` — resolved 2026-10-28. CHANGELOG.md L13091.
 - `cap-oracle-examples` — resolved 2026-10-28. CHANGELOG.md L13067.
 - `arg-flags-not-in-names` — resolved 2026-10-29. CHANGELOG.md L13116.
-- `raw-fortran-in-ir` — **Logic as raw text.** 29 `RawFortranLinesOp`s, 24
-  in `constituent_cap.py` (including the constituent-lookup error paths),
-  are invisible to passes and verifiers. Replace with ops where they carry
-  logic rather than boilerplate.
+- `raw-fortran-in-ir` — resolved 2026-10-29. CHANGELOG.md L13162.
+- `fortran-decls-as-text` — **Declarations built as Fortran text.** About
+  107 string literals in the middle layer are declarations:
+  `ConstituentFunctionOp`'s `arg_decls`/`local_decls`/`use_stmts`/
+  `result_decl` (`constituent_cap.py`, `ccpp_cap.py`'s
+  `ccpp_physics_suite_variables`), `ScopedBlockOp` locals,
+  `DdtComponentDeclOp` initialisers, and `cpp_interop.py`'s BIND(C) module
+  (including its header -- `module`/`use`/`implicit none`/`public` -- and
+  `end module`, the last two `RawFortranLinesOp`s). The suite and host caps
+  instead build `func.FuncOp`s with typed block arguments and `arg_attrs`
+  (intent, optional, allocatable), and the printer spells the
+  declarations. Build these the same way; module structure as ops.
+- `fortran-exprs-as-text` — **Expressions passed as Fortran text.** About
+  45 sites: the text form of `AssignOp` (25, mostly `cpp_interop.py`, e.g.
+  `"real(x, kind_phys)"`), `TextBoundedDoLoopOp` bounds, `AllocateOp`
+  dimension strings (scratch `alloc_dims`), `VarRefExprOp`s holding an
+  expression (`ref()`'s `lc_instances(i)%x` text into `_allocated_cond`),
+  `WriteStmtOp` items, `CallStatementOp`'s `call_args` and the text
+  conditions of `ErrorGuardOp`/`ActiveCheckOp`. Convert each caller to the
+  expression-op form (most of these ops already have one), then delete the
+  text forms.
+- `cpp-text-in-ir` — **C++ syntax in the middle layer.** `cpp_interop.py`
+  builds the C++ host cap partly from `RawCppLinesOp` and C++ text
+  (`static_cast<...>`, `return {errflg, ...}`, `std::vector<...>`): the
+  same problem for the C++ backend.
+- `gpu-debug-text` — **GPU debug instrumentation as text.**
+  `gpu_debug_print_pass.py` builds `GPUDebugPrintOp`s from `!$acc
+  parallel present(...)`/`write(*,*)` text. Use the `Acc*` ops and a
+  write/print op.
+- `printer-trailing-whitespace` — **`memref.StoreOp` lines end in
+  spaces.** The Fortran printer's `memref.StoreOp` case finishes the line
+  with `self.print("")`, which appends the indentation, so e.g. every
+  dispatcher's `errflg = 1` ends in trailing whitespace (21 times in a
+  Kessler cap). Harmless; FileCheck ignores it.
+
+To re-measure the first four: scan the string literals (not docstrings) of
+`xdsl_ccpp/transforms/` for Fortran/C++ syntax (`::`, `intent(`,
+`.true.`, `/=`, statement keywords, intrinsic calls, `!$`), excluding the
+frontends that parse Fortran input (`fparser2_to_meta`, `fir_to_meta`,
+`fortran_preprocess`, `validate_fir`, `module_dependency_resolver`),
+diagnostic messages and single-token metadata keys.
 - `suite-cap-mode-flags` — **One generator, several products.** The
   suite-cap generator branches on `instance_local_name` (71 uses),
   `physics_mode` (38), `cam_host` (18), `emit_scheme_calls` (16) and

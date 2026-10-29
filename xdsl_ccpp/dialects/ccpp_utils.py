@@ -8,6 +8,7 @@ from xdsl.dialects.builtin import (
     IntegerType,
     MemRefType,
     StringAttr,
+    UnitAttr,
     i1,
 )
 from xdsl.dialects.llvm import LLVMArrayType
@@ -1210,13 +1211,21 @@ class NullifyPointerOp(IRDLOperation):
     Emits::
 
         nullify({ptr_name})
+
+    or, with if_associated::
+
+        if (associated({ptr_name})) nullify({ptr_name})
     """
 
     name = "ccpp_utils.nullify_pointer"
     ptr_name = prop_def(StringAttr)
+    if_associated = opt_prop_def(UnitAttr)
 
-    def __init__(self, ptr_name: str):
-        super().__init__(properties={"ptr_name": StringAttr(ptr_name)})
+    def __init__(self, ptr_name: str, *, if_associated: bool = False):
+        props = {"ptr_name": StringAttr(ptr_name)}
+        if if_associated:
+            props["if_associated"] = UnitAttr()
+        super().__init__(properties=props)
 
 
 @irdl_op_definition
@@ -1363,23 +1372,43 @@ class AssignOp(IRDLOperation):
 
         {lhs_expr} = {rhs_expr}
 
-    Both sides are printed verbatim -- this deliberately does not attempt
-    to structurally model the assigned expression; a real language-neutral
-    expression IR (distinguishing operators/literals/references instead of
-    opaque text) is a separate, much larger effort. Covers plain-value
+    Either both sides are expression ops (lhs_op/rhs_op: VarRefExprOp,
+    IndexExprOp, arith constants and operators, ...), which the printer
+    renders -- no Fortran syntax in the IR -- or, the older form, both are
+    text printed verbatim (lhs_expr/rhs_expr). Covers plain-value
     assignment; use PointerAssignOp/PointerSliceAssignOp instead for `=>`
     pointer association.
     """
 
     name = "ccpp_utils.assign"
-    lhs_expr = prop_def(StringAttr)
-    rhs_expr = prop_def(StringAttr)
+    lhs_expr = opt_prop_def(StringAttr)
+    rhs_expr = opt_prop_def(StringAttr)
+    lhs = opt_region_def("single_block")
+    rhs = opt_region_def("single_block")
 
-    def __init__(self, lhs_expr: str, rhs_expr: str):
-        super().__init__(properties={
-            "lhs_expr": StringAttr(lhs_expr),
-            "rhs_expr": StringAttr(rhs_expr),
-        })
+    irdl_options = [AttrSizedRegionSegments()]
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, lhs_expr: "str | None" = None, rhs_expr: "str | None" = None,
+        *, lhs_op=None, rhs_op=None,
+    ):
+        text = lhs_expr is not None and rhs_expr is not None
+        ops = lhs_op is not None and rhs_op is not None
+        if text == ops or (lhs_expr is None) != (rhs_expr is None) \
+                or (lhs_op is None) != (rhs_op is None):
+            raise ValueError(
+                "AssignOp: pass both lhs_expr/rhs_expr or both lhs_op/rhs_op"
+            )
+        if text:
+            super().__init__(
+                properties={"lhs_expr": StringAttr(lhs_expr), "rhs_expr": StringAttr(rhs_expr)},
+                regions=[None, None],
+            )
+        else:
+            super().__init__(
+                regions=[_single_op_region([lhs_op]), _single_op_region([rhs_op])]
+            )
 
 
 @irdl_op_definition
@@ -1587,6 +1616,10 @@ class RawFortranLinesOp(IRDLOperation):
     The ``lines`` property holds raw Fortran text (one or more lines, newline-
     separated).  The printer emits each line at the current indentation level;
     preprocessor directives (starting with ``#``) are emitted at column 0.
+
+    Its last users are cpp_interop.py's BIND(C) module header and ``end
+    module`` (BACKLOG ``fortran-decls-as-text``); do not add new ones --
+    statements and expressions have ops, which passes can see.
     """
 
     name = "ccpp_utils.raw_fortran_lines"
@@ -2572,6 +2605,21 @@ class VarRefExprOp(IRDLOperation):
 
 
 @irdl_op_definition
+class ValueExprOp(IRDLOperation):
+    """An existing SSA value (a block argument, a HostVarRefOp result, an
+    array section, ...) as an expression leaf: the printer renders it as
+    it renders that value anywhere else, so its spelling is never decided
+    here. VarRefExprOp is the counterpart for a name that is not an SSA
+    value."""
+
+    name = "ccpp_utils.value_expr"
+    value = operand_def()
+
+    def __init__(self, value):
+        super().__init__(operands=[value])
+
+
+@irdl_op_definition
 class MemberAccessExprOp(IRDLOperation):
     """Derived-type/struct member access.
 
@@ -3136,35 +3184,48 @@ class CallStatementOp(IRDLOperation):
     risked destabilizing its own already-proven single-line output format
     across its existing callers, same reasoning BindCSubroutineOp was kept
     separate from ConstituentFunctionOp).
+
+    The arguments are expression ops (arg_ops: StringLiteralExprOp,
+    ValueExprOp, ...), which the printer renders, or, the older form,
+    text printed verbatim (call_args).
     """
 
     name = "ccpp_utils.call_statement"
 
     callee    = prop_def(StringAttr)
-    call_args = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    call_args = opt_prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    arg_exprs = var_region_def("single_block")
 
-    def __init__(self, callee: str, call_args: "list[str]"):
-        super().__init__(properties={
-            "callee":    StringAttr(callee),
-            "call_args": ArrayAttr([StringAttr(a) for a in call_args]),
-        })
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, callee: str, call_args: "list[str] | None" = None, *, arg_ops=None):
+        if (call_args is None) == (arg_ops is None):
+            raise ValueError("CallStatementOp: pass exactly one of call_args or arg_ops")
+        props = {"callee": StringAttr(callee)}
+        if call_args is not None:
+            props["call_args"] = ArrayAttr([StringAttr(a) for a in call_args])
+        super().__init__(
+            properties=props,
+            regions=[[_single_op_region([o]) for o in (arg_ops or [])]],
+        )
 
 
 @irdl_op_definition
-class CamClearErrStateOp(IRDLOperation):
-    """Emit the no-dispatch error-state reset for timestep lifecycle wrappers.
+class ClearErrStateOp(IRDLOperation):
+    """Reset the error state.
 
     Prints as::
 
         {errcode_var} = 0
         {errmsg_var} = ''
 
-    Used when a timestep-init or timestep-final wrapper has no per-group
-    dispatcher (no scheme registered a timestep-init/final hook), so the
-    wrapper must still zero out the error state before returning.
+    E.g. at the top of each constituent-API subroutine, or in a CAM
+    timestep-init/final wrapper with no per-group dispatcher (no scheme
+    registered a timestep-init/final hook), which must still zero out the
+    error state before returning.
     """
 
-    name = "ccpp_utils.cam_clear_err_state"
+    name = "ccpp_utils.clear_err_state"
 
     errcode_var = prop_def(StringAttr)
     errmsg_var  = prop_def(StringAttr)
@@ -3246,6 +3307,68 @@ class ErrorPropagateOp(IRDLOperation):
 
     def __init__(self, errcode_var: str):
         super().__init__(properties={"errcode_var": StringAttr(errcode_var)})
+
+
+@irdl_op_definition
+class ReturnStmtOp(IRDLOperation):
+    """A Fortran RETURN statement in generated source (not func.ReturnOp,
+    which ends a generated function and carries its outputs).
+
+    Prints as ``return``, or with condition_op (an i1 expression)::
+
+        if ({condition}) return
+    """
+
+    name = "ccpp_utils.return_stmt"
+    condition = opt_region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, condition_op=None):
+        cond_region = (
+            _single_op_region([condition_op]) if condition_op is not None else None
+        )
+        super().__init__(regions=[cond_region])
+
+
+@irdl_op_definition
+class ErrorExitOp(IRDLOperation):
+    """Set the error state and return.
+
+    Prints as::
+
+        {errflg_var} = 1
+        {errmsg_var} = '{errmsg_text}'      (or = <message_op>)
+        return
+
+    errflg_var is omitted when the flag is already set, e.g. by an
+    allocate's stat=. The message is a static literal (errmsg_text) or a
+    string expression (message_op, e.g. a StringConcatExprOp); exactly one
+    of the two must be given. ErrorGuardOp is this op's body behind an
+    `if (.not. condition)`.
+    """
+
+    name = "ccpp_utils.error_exit"
+    errflg_var = opt_prop_def(StringAttr)
+    errmsg_var = prop_def(StringAttr)
+    errmsg_text = opt_prop_def(StringAttr)
+    message = opt_region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(
+        self, errmsg_text: "str | None" = None, *, message_op=None,
+        errflg_var: "str | None" = None, errmsg_var: str = "errmsg",
+    ):
+        if (errmsg_text is None) == (message_op is None):
+            raise ValueError("ErrorExitOp: pass exactly one of errmsg_text or message_op")
+        props: dict = {"errmsg_var": StringAttr(errmsg_var)}
+        if errflg_var is not None:
+            props["errflg_var"] = StringAttr(errflg_var)
+        if errmsg_text is not None:
+            props["errmsg_text"] = StringAttr(errmsg_text)
+        message = _single_op_region([message_op]) if message_op is not None else None
+        super().__init__(properties=props, regions=[message])
 
 
 @irdl_op_definition
@@ -3457,6 +3580,7 @@ CCPPUtils = Dialect(
         StringLiteralExprOp,
         StringConcatExprOp,
         VarRefExprOp,
+        ValueExprOp,
         MemberAccessExprOp,
         IndexExprOp,
         SliceExprOp,
@@ -3471,10 +3595,12 @@ CCPPUtils = Dialect(
         VerticalFlipWriteBackOp,
         CamDirectCallOp,
         CallStatementOp,
-        CamClearErrStateOp,
+        ClearErrStateOp,
         CamQminPreambleOp,
         CamQminPostambleOp,
         ErrorPropagateOp,
+        ReturnStmtOp,
+        ErrorExitOp,
         CamSuiteDispatchOp,
         CamSuiteSchemeListOp,
     ],

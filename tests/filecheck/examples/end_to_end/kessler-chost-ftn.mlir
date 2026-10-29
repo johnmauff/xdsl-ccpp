@@ -572,14 +572,18 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
 // CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
-// CHECK-NEXT:      if (present(input_vars)) do_input = input_vars
-// CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
+// CHECK-NEXT:      if (present(input_vars)) then
+// CHECK-NEXT:        do_input = input_vars
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (present(output_vars)) then
+// CHECK-NEXT:        do_output = output_vars
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'kessler_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
+// CHECK-NEXT:        if (do_input .and. (.NOT. (do_output))) then
 // CHECK-NEXT:          allocate(var_list(22))
 // CHECK-NEXT:          var_list(1) = 'air_potential_temperature           '
 // CHECK-NEXT:          var_list(2) = 'air_temperature                     '
@@ -603,50 +607,52 @@
 // CHECK-NEXT:          var_list(20) = 'vertical_index_at_top_adjacent_layer'
 // CHECK-NEXT:          var_list(21) = 'vertical_layer_dimension            '
 // CHECK-NEXT:          var_list(22) = 'water_vapor_mixing_ratio_wrt_dry_air'
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(12))
-// CHECK-NEXT:          var_list(1) = 'air_potential_temperature           '
-// CHECK-NEXT:          var_list(2) = 'air_temperature_on_previous_timestep'
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(4) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(5) = 'cloud_liquid_water_mixing_ratio_wrt_dry_air'
-// CHECK-NEXT:          var_list(6) = 'dry_static_energy                   '
-// CHECK-NEXT:          var_list(7) = 'rain_mixing_ratio_wrt_dry_air       '
-// CHECK-NEXT:          var_list(8) = 'relative_humidity                   '
-// CHECK-NEXT:          var_list(9) = 'scheme_name                         '
-// CHECK-NEXT:          var_list(10) = 'tendency_of_air_temperature_due_to_model_physics'
-// CHECK-NEXT:          var_list(11) = 'total_precipitation_rate_at_surface '
-// CHECK-NEXT:          var_list(12) = 'water_vapor_mixing_ratio_wrt_dry_air'
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(28))
-// CHECK-NEXT:          var_list(1) = 'air_potential_temperature           '
-// CHECK-NEXT:          var_list(2) = 'air_temperature                     '
-// CHECK-NEXT:          var_list(3) = 'air_temperature_on_previous_timestep'
-// CHECK-NEXT:          var_list(4) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(5) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(6) = 'cloud_liquid_water_mixing_ratio_wrt_dry_air'
-// CHECK-NEXT:          var_list(7) = 'composition_dependent_gas_constant_of_dry_air'
-// CHECK-NEXT:          var_list(8) = 'composition_dependent_specific_heat_of_dry_air_at_constant_pressure'
-// CHECK-NEXT:          var_list(9) = 'dimensionless_exner_function        '
-// CHECK-NEXT:          var_list(10) = 'dry_air_density                     '
-// CHECK-NEXT:          var_list(11) = 'dry_static_energy                   '
-// CHECK-NEXT:          var_list(12) = 'fresh_liquid_water_density_at_0c    '
-// CHECK-NEXT:          var_list(13) = 'geopotential_height_wrt_surface     '
-// CHECK-NEXT:          var_list(14) = 'horizontal_dimension                '
-// CHECK-NEXT:          var_list(15) = 'latent_heat_of_vaporization_of_water_at_0c'
-// CHECK-NEXT:          var_list(16) = 'rain_mixing_ratio_wrt_dry_air       '
-// CHECK-NEXT:          var_list(17) = 'relative_humidity                   '
-// CHECK-NEXT:          var_list(18) = 'scheme_name                         '
-// CHECK-NEXT:          var_list(19) = 'standard_gravitational_acceleration '
-// CHECK-NEXT:          var_list(20) = 'surface_geopotential                '
-// CHECK-NEXT:          var_list(21) = 'surface_reference_pressure          '
-// CHECK-NEXT:          var_list(22) = 'tendency_of_air_temperature_due_to_model_physics'
-// CHECK-NEXT:          var_list(23) = 'timestep_for_physics                '
-// CHECK-NEXT:          var_list(24) = 'total_precipitation_rate_at_surface '
-// CHECK-NEXT:          var_list(25) = 'vertical_index_at_surface_adjacent_layer'
-// CHECK-NEXT:          var_list(26) = 'vertical_index_at_top_adjacent_layer'
-// CHECK-NEXT:          var_list(27) = 'vertical_layer_dimension            '
-// CHECK-NEXT:          var_list(28) = 'water_vapor_mixing_ratio_wrt_dry_air'
+// CHECK-NEXT:          if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:            allocate(var_list(12))
+// CHECK-NEXT:            var_list(1) = 'air_potential_temperature           '
+// CHECK-NEXT:            var_list(2) = 'air_temperature_on_previous_timestep'
+// CHECK-NEXT:            var_list(3) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(4) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(5) = 'cloud_liquid_water_mixing_ratio_wrt_dry_air'
+// CHECK-NEXT:            var_list(6) = 'dry_static_energy                   '
+// CHECK-NEXT:            var_list(7) = 'rain_mixing_ratio_wrt_dry_air       '
+// CHECK-NEXT:            var_list(8) = 'relative_humidity                   '
+// CHECK-NEXT:            var_list(9) = 'scheme_name                         '
+// CHECK-NEXT:            var_list(10) = 'tendency_of_air_temperature_due_to_model_physics'
+// CHECK-NEXT:            var_list(11) = 'total_precipitation_rate_at_surface '
+// CHECK-NEXT:            var_list(12) = 'water_vapor_mixing_ratio_wrt_dry_air'
+// CHECK-NEXT:          else
+// CHECK-NEXT:            allocate(var_list(28))
+// CHECK-NEXT:            var_list(1) = 'air_potential_temperature           '
+// CHECK-NEXT:            var_list(2) = 'air_temperature                     '
+// CHECK-NEXT:            var_list(3) = 'air_temperature_on_previous_timestep'
+// CHECK-NEXT:            var_list(4) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(5) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(6) = 'cloud_liquid_water_mixing_ratio_wrt_dry_air'
+// CHECK-NEXT:            var_list(7) = 'composition_dependent_gas_constant_of_dry_air'
+// CHECK-NEXT:            var_list(8) = 'composition_dependent_specific_heat_of_dry_air_at_constant_pressure'
+// CHECK-NEXT:            var_list(9) = 'dimensionless_exner_function        '
+// CHECK-NEXT:            var_list(10) = 'dry_air_density                     '
+// CHECK-NEXT:            var_list(11) = 'dry_static_energy                   '
+// CHECK-NEXT:            var_list(12) = 'fresh_liquid_water_density_at_0c    '
+// CHECK-NEXT:            var_list(13) = 'geopotential_height_wrt_surface     '
+// CHECK-NEXT:            var_list(14) = 'horizontal_dimension                '
+// CHECK-NEXT:            var_list(15) = 'latent_heat_of_vaporization_of_water_at_0c'
+// CHECK-NEXT:            var_list(16) = 'rain_mixing_ratio_wrt_dry_air       '
+// CHECK-NEXT:            var_list(17) = 'relative_humidity                   '
+// CHECK-NEXT:            var_list(18) = 'scheme_name                         '
+// CHECK-NEXT:            var_list(19) = 'standard_gravitational_acceleration '
+// CHECK-NEXT:            var_list(20) = 'surface_geopotential                '
+// CHECK-NEXT:            var_list(21) = 'surface_reference_pressure          '
+// CHECK-NEXT:            var_list(22) = 'tendency_of_air_temperature_due_to_model_physics'
+// CHECK-NEXT:            var_list(23) = 'timestep_for_physics                '
+// CHECK-NEXT:            var_list(24) = 'total_precipitation_rate_at_surface '
+// CHECK-NEXT:            var_list(25) = 'vertical_index_at_surface_adjacent_layer'
+// CHECK-NEXT:            var_list(26) = 'vertical_index_at_top_adjacent_layer'
+// CHECK-NEXT:            var_list(27) = 'vertical_layer_dimension            '
+// CHECK-NEXT:            var_list(28) = 'water_vapor_mixing_ratio_wrt_dry_air'
+// CHECK-NEXT:          end if
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"

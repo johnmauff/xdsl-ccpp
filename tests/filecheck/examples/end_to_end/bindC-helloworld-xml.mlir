@@ -517,14 +517,18 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
 // CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
-// CHECK-NEXT:      if (present(input_vars)) do_input = input_vars
-// CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
+// CHECK-NEXT:      if (present(input_vars)) then
+// CHECK-NEXT:        do_input = input_vars
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (present(output_vars)) then
+// CHECK-NEXT:        do_output = output_vars
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'hello_world_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
+// CHECK-NEXT:        if (do_input .and. (.NOT. (do_output))) then
 // CHECK-NEXT:          allocate(var_list(6))
 // CHECK-NEXT:          var_list(1) = 'horizontal_dimension                '
 // CHECK-NEXT:          var_list(2) = 'potential_temperature               '
@@ -532,29 +536,31 @@
 // CHECK-NEXT:          var_list(4) = 'time_step_for_physics               '
 // CHECK-NEXT:          var_list(5) = 'vertical_interface_dimension        '
 // CHECK-NEXT:          var_list(6) = 'vertical_layer_dimension            '
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(4))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(4) = 'potential_temperature_at_interface  '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(8))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'horizontal_dimension                '
-// CHECK-NEXT:          var_list(4) = 'potential_temperature               '
-// CHECK-NEXT:          var_list(5) = 'potential_temperature_at_interface  '
-// CHECK-NEXT:          var_list(6) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(7) = 'vertical_interface_dimension        '
-// CHECK-NEXT:          var_list(8) = 'vertical_layer_dimension            '
+// CHECK-NEXT:          if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:            allocate(var_list(4))
+// CHECK-NEXT:            var_list(1) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(2) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(3) = 'potential_temperature               '
+// CHECK-NEXT:            var_list(4) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:          else
+// CHECK-NEXT:            allocate(var_list(8))
+// CHECK-NEXT:            var_list(1) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(2) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(3) = 'horizontal_dimension                '
+// CHECK-NEXT:            var_list(4) = 'potential_temperature               '
+// CHECK-NEXT:            var_list(5) = 'potential_temperature_at_interface  '
+// CHECK-NEXT:            var_list(6) = 'time_step_for_physics               '
+// CHECK-NEXT:            var_list(7) = 'vertical_interface_dimension        '
+// CHECK-NEXT:            var_list(8) = 'vertical_layer_dimension            '
+// CHECK-NEXT:          end if
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_suite_variables
-// CHECK:  end module HelloWorld_ccpp_cap
+// CHECK-NEXT:  end module HelloWorld_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90
 // CHECK-LABEL: module ccpp_kinds

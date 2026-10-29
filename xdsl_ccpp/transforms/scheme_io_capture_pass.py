@@ -125,7 +125,7 @@ from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects import builtin, func, llvm
-from xdsl.dialects.builtin import StringAttr, i8
+from xdsl.dialects.builtin import StringAttr, i1, i8
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -137,14 +137,18 @@ from xdsl_ccpp.backend.print_ftn import (
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateSelfOp,
+    CallStatementOp,
     OmpTargetUpdateFromOp,
-    RawFortranLinesOp,
+    StringLiteralExprOp,
+    ValueExprOp,
+    VarRefExprOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     _call_args,
     _call_param_names,
     _device_arg_names,
     _expr_text,
+    _scf_if,
     directive_op,
     iter_scheme_call_sites,
 )
@@ -441,8 +445,8 @@ class SchemeIOCapturePass(ModulePass):
                 rank = arg.getAttr("dimensions") if arg.hasAttr("dimensions") else 0
                 if not _is_capture_supported(arg_type, kind, rank):
                     continue
-                expr_text = _expr_text(value)
-                if expr_text is None:
+                # Only values with a definite Fortran name can be captured.
+                if _expr_text(value) is None:
                     continue
 
                 self._ensure_capture_decl(call_op, declared_decls)
@@ -451,12 +455,12 @@ class SchemeIOCapturePass(ModulePass):
                 mpi_root_var = mpi_root_ref[0] if mpi_root_ref is not None else None
                 if intent in ("in", "inout"):
                     self._insert_capture(
-                        value, expr_text, table_name, param_name, intent,
+                        value, table_name, param_name, intent,
                         "before", param_name in device_names, call_op, mpi_root_var,
                     )
                 if intent in ("out", "inout"):
                     self._insert_capture(
-                        value, expr_text, table_name, param_name, intent,
+                        value, table_name, param_name, intent,
                         "after", param_name in device_names, call_op, mpi_root_var,
                     )
 
@@ -569,7 +573,7 @@ class SchemeIOCapturePass(ModulePass):
             f.write(source)
 
     def _insert_capture(
-        self, value, expr_text, table_name, param_name, intent,
+        self, value, table_name, param_name, intent,
         timing, is_device, call_op, mpi_root_var,
     ) -> None:
         """Insert one capture call immediately before/after call_op
@@ -612,7 +616,13 @@ class SchemeIOCapturePass(ModulePass):
             Rewriter.insert_op(sync_op, capture_anchor)
             capture_anchor = InsertPoint.after(sync_op)
         tag = f"{table_name}:{param_name}:{intent}:{timing}"
-        call_text = f'call ccpp_capture("{tag}", {expr_text})'
-        if mpi_root_var is not None:
-            call_text = f"if ({mpi_root_var}) then\n  {call_text}\nend if"
-        Rewriter.insert_op(RawFortranLinesOp(call_text), capture_anchor)
+        capture = CallStatementOp(
+            "ccpp_capture", arg_ops=[StringLiteralExprOp(tag), ValueExprOp(value)],
+        )
+        if mpi_root_var is None:
+            capture_ops = [capture]
+        else:
+            capture_ops = _scf_if(VarRefExprOp(mpi_root_var, result_type=i1), [capture])
+        for op in capture_ops:
+            Rewriter.insert_op(op, capture_anchor)
+            capture_anchor = InsertPoint.after(op)

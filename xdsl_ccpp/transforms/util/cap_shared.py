@@ -19,6 +19,7 @@ from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind, ArgOwnershipOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
+    AssignOp,
     CallExprOp,
     HostVarRefOp,
     KeywordCallOp,
@@ -97,7 +98,17 @@ def _trim_eq_cond(lhs_name: str, rhs_name: str) -> arith.CmpiOp:
     return arith.CmpiOp(lhs, rhs, "eq")
 
 
-def _scf_if(condition_op, body_ops: list) -> list:
+def _assign_const(var_name: str, value: "bool | int") -> AssignOp:
+    """var_name = <constant>: a logical for a bool, else a default integer;
+    the printer spells the constant."""
+    width = 1 if isinstance(value, bool) else 32
+    return AssignOp(
+        lhs_op=VarRefExprOp(var_name),
+        rhs_op=arith.ConstantOp(IntegerAttr.from_int_and_width(int(value), width)),
+    )
+
+
+def _scf_if(condition_op, body_ops: list, else_ops: "list | None" = None) -> list:
     """Convert an (condition_op, body_ops) pair -- the exact call shape
     the retired IfThenOp took -- into the flat list of explicit sibling
     ops a real scf.IfOp needs: [*condition_op's floating dependencies,
@@ -114,11 +125,16 @@ def _scf_if(condition_op, body_ops: list) -> list:
     since condition_op's own dependency ops must land in that same block,
     not be hidden inside a sub-region the way IfThenOp's condition region
     used to hide them.
+
+    else_ops, when given, become the scf.IfOp's else region.
     """
     from xdsl_ccpp.dialects.ccpp_utils import _flatten_floating_deps
 
     cond_ops = _flatten_floating_deps(condition_op)
-    return [*cond_ops, scf.IfOp(cond_ops[-1].results[0], [], [*body_ops, scf.YieldOp()])]
+    false_region = [*else_ops, scf.YieldOp()] if else_ops is not None else None
+    return [*cond_ops, scf.IfOp(
+        cond_ops[-1].results[0], [], [*body_ops, scf.YieldOp()], false_region,
+    )]
 
 
 def iter_arg_tables(ccpp_mod, table_type=None, table_name_in=None):

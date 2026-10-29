@@ -457,14 +457,18 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
 // CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
-// CHECK-NEXT:      if (present(input_vars)) do_input = input_vars
-// CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
+// CHECK-NEXT:      if (present(input_vars)) then
+// CHECK-NEXT:        do_input = input_vars
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (present(output_vars)) then
+// CHECK-NEXT:        do_output = output_vars
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
+// CHECK-NEXT:        if (do_input .and. (.NOT. (do_output))) then
 // CHECK-NEXT:          allocate(var_list(12))
 // CHECK-NEXT:          var_list(1) = 'banana_array_dim                    '
 // CHECK-NEXT:          var_list(2) = 'ccpp_constituent_tendencies         '
@@ -478,41 +482,43 @@
 // CHECK-NEXT:          var_list(10) = 'time_step_for_physics               '
 // CHECK-NEXT:          var_list(11) = 'water_temperature_at_freezing       '
 // CHECK-NEXT:          var_list(12) = 'water_vapor_specific_humidity       '
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(13))
-// CHECK-NEXT:          var_list(1) = 'ccpp_constituent_tendencies         '
-// CHECK-NEXT:          var_list(2) = 'ccpp_constituents                   '
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(4) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(5) = 'cloud_ice_dry_mixing_ratio          '
-// CHECK-NEXT:          var_list(6) = 'cloud_liquid_dry_mixing_ratio       '
-// CHECK-NEXT:          var_list(7) = 'dynamic_constituents_for_cld_ice    '
-// CHECK-NEXT:          var_list(8) = 'dynamic_constituents_for_cld_liq    '
-// CHECK-NEXT:          var_list(9) = 'temperature                         '
-// CHECK-NEXT:          var_list(10) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
-// CHECK-NEXT:          var_list(11) = 'test_banana_constituent_index       '
-// CHECK-NEXT:          var_list(12) = 'test_banana_constituent_indices     '
-// CHECK-NEXT:          var_list(13) = 'water_vapor_specific_humidity       '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(18))
-// CHECK-NEXT:          var_list(1) = 'banana_array_dim                    '
-// CHECK-NEXT:          var_list(2) = 'ccpp_constituent_tendencies         '
-// CHECK-NEXT:          var_list(3) = 'ccpp_constituents                   '
-// CHECK-NEXT:          var_list(4) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(5) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(6) = 'cloud_ice_dry_mixing_ratio          '
-// CHECK-NEXT:          var_list(7) = 'cloud_liquid_dry_mixing_ratio       '
-// CHECK-NEXT:          var_list(8) = 'dynamic_constituents_for_cld_ice    '
-// CHECK-NEXT:          var_list(9) = 'dynamic_constituents_for_cld_liq    '
-// CHECK-NEXT:          var_list(10) = 'number_of_ccpp_constituents         '
-// CHECK-NEXT:          var_list(11) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(12) = 'temperature                         '
-// CHECK-NEXT:          var_list(13) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
-// CHECK-NEXT:          var_list(14) = 'test_banana_constituent_index       '
-// CHECK-NEXT:          var_list(15) = 'test_banana_constituent_indices     '
-// CHECK-NEXT:          var_list(16) = 'time_step_for_physics               '
-// CHECK-NEXT:          var_list(17) = 'water_temperature_at_freezing       '
-// CHECK-NEXT:          var_list(18) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:            allocate(var_list(13))
+// CHECK-NEXT:            var_list(1) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:            var_list(2) = 'ccpp_constituents                   '
+// CHECK-NEXT:            var_list(3) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(4) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(5) = 'cloud_ice_dry_mixing_ratio          '
+// CHECK-NEXT:            var_list(6) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:            var_list(7) = 'dynamic_constituents_for_cld_ice    '
+// CHECK-NEXT:            var_list(8) = 'dynamic_constituents_for_cld_liq    '
+// CHECK-NEXT:            var_list(9) = 'temperature                         '
+// CHECK-NEXT:            var_list(10) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:            var_list(11) = 'test_banana_constituent_index       '
+// CHECK-NEXT:            var_list(12) = 'test_banana_constituent_indices     '
+// CHECK-NEXT:            var_list(13) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          else
+// CHECK-NEXT:            allocate(var_list(18))
+// CHECK-NEXT:            var_list(1) = 'banana_array_dim                    '
+// CHECK-NEXT:            var_list(2) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:            var_list(3) = 'ccpp_constituents                   '
+// CHECK-NEXT:            var_list(4) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(5) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(6) = 'cloud_ice_dry_mixing_ratio          '
+// CHECK-NEXT:            var_list(7) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:            var_list(8) = 'dynamic_constituents_for_cld_ice    '
+// CHECK-NEXT:            var_list(9) = 'dynamic_constituents_for_cld_liq    '
+// CHECK-NEXT:            var_list(10) = 'number_of_ccpp_constituents         '
+// CHECK-NEXT:            var_list(11) = 'surface_air_pressure                '
+// CHECK-NEXT:            var_list(12) = 'temperature                         '
+// CHECK-NEXT:            var_list(13) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:            var_list(14) = 'test_banana_constituent_index       '
+// CHECK-NEXT:            var_list(15) = 'test_banana_constituent_indices     '
+// CHECK-NEXT:            var_list(16) = 'time_step_for_physics               '
+// CHECK-NEXT:            var_list(17) = 'water_temperature_at_freezing       '
+// CHECK-NEXT:            var_list(18) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          end if
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
@@ -576,8 +582,12 @@
 // CHECK-NEXT:      errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      lc_num_consts = size(host_constituents)
-// CHECK-NEXT:      if (allocated(lc_dyn_const)) lc_num_consts = lc_num_consts + size(lc_dyn_const)
-// CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) lc_num_consts = lc_num_consts + size(lc_dyn_const_ice)
+// CHECK-NEXT:      if (allocated(lc_dyn_const)) then
+// CHECK-NEXT:        lc_num_consts = lc_num_consts + size(lc_dyn_const)
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (allocated(lc_dyn_const_ice)) then
+// CHECK-NEXT:        lc_num_consts = lc_num_consts + size(lc_dyn_const_ice)
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      lc_num_consts = lc_num_consts + 2
 // CHECK-NEXT:      call cam_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
@@ -662,7 +672,7 @@
 // CHECK-NEXT:          cam_model_const_indices(lc_i) = field_ind
 // CHECK-NEXT:        else
 // CHECK-NEXT:          errcode = 1
-// CHECK-NEXT:          errmsg = 'No field index for '//trim(cam_model_const_stdnames(lc_i))
+// CHECK-NEXT:          errmsg = 'No field index for ' // trim(cam_model_const_stdnames(lc_i))
 // CHECK-NEXT:          return
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do

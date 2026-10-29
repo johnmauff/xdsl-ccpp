@@ -375,14 +375,18 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
 // CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
-// CHECK-NEXT:      if (present(input_vars)) do_input = input_vars
-// CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
+// CHECK-NEXT:      if (present(input_vars)) then
+// CHECK-NEXT:        do_input = input_vars
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (present(output_vars)) then
+// CHECK-NEXT:        do_output = output_vars
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'ddt_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
+// CHECK-NEXT:        if (do_input .and. (.NOT. (do_output))) then
 // CHECK-NEXT:          allocate(var_list(10))
 // CHECK-NEXT:          var_list(1) = 'horizontal_dimension                '
 // CHECK-NEXT:          var_list(2) = 'horizontal_loop_begin               '
@@ -394,29 +398,31 @@
 // CHECK-NEXT:          var_list(8) = 'ozone                               '
 // CHECK-NEXT:          var_list(9) = 'surface_air_pressure                '
 // CHECK-NEXT:          var_list(10) = 'volume_mixing_ratio_ddt             '
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(7))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'model_times                         '
-// CHECK-NEXT:          var_list(4) = 'nitric_acid                         '
-// CHECK-NEXT:          var_list(5) = 'number_of_model_times               '
-// CHECK-NEXT:          var_list(6) = 'ozone                               '
-// CHECK-NEXT:          var_list(7) = 'volume_mixing_ratio_ddt             '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(12))
-// CHECK-NEXT:          var_list(1) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(2) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(3) = 'horizontal_dimension                '
-// CHECK-NEXT:          var_list(4) = 'horizontal_loop_begin               '
-// CHECK-NEXT:          var_list(5) = 'horizontal_loop_end                 '
-// CHECK-NEXT:          var_list(6) = 'host_standard_ccpp_type             '
-// CHECK-NEXT:          var_list(7) = 'model_times                         '
-// CHECK-NEXT:          var_list(8) = 'nitric_acid                         '
-// CHECK-NEXT:          var_list(9) = 'number_of_model_times               '
-// CHECK-NEXT:          var_list(10) = 'ozone                               '
-// CHECK-NEXT:          var_list(11) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(12) = 'volume_mixing_ratio_ddt             '
+// CHECK-NEXT:          if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:            allocate(var_list(7))
+// CHECK-NEXT:            var_list(1) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(2) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(3) = 'model_times                         '
+// CHECK-NEXT:            var_list(4) = 'nitric_acid                         '
+// CHECK-NEXT:            var_list(5) = 'number_of_model_times               '
+// CHECK-NEXT:            var_list(6) = 'ozone                               '
+// CHECK-NEXT:            var_list(7) = 'volume_mixing_ratio_ddt             '
+// CHECK-NEXT:          else
+// CHECK-NEXT:            allocate(var_list(12))
+// CHECK-NEXT:            var_list(1) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(2) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(3) = 'horizontal_dimension                '
+// CHECK-NEXT:            var_list(4) = 'horizontal_loop_begin               '
+// CHECK-NEXT:            var_list(5) = 'horizontal_loop_end                 '
+// CHECK-NEXT:            var_list(6) = 'host_standard_ccpp_type             '
+// CHECK-NEXT:            var_list(7) = 'model_times                         '
+// CHECK-NEXT:            var_list(8) = 'nitric_acid                         '
+// CHECK-NEXT:            var_list(9) = 'number_of_model_times               '
+// CHECK-NEXT:            var_list(10) = 'ozone                               '
+// CHECK-NEXT:            var_list(11) = 'surface_air_pressure                '
+// CHECK-NEXT:            var_list(12) = 'volume_mixing_ratio_ddt             '
+// CHECK-NEXT:          end if
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
