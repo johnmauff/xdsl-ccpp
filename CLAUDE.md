@@ -11,7 +11,8 @@ than one language.
 
 Do not hardcode language constructs in transforms:
 
-- no new `RawFortranLinesOp` / `RawCppLinesOp`;
+- no raw-text statement ops (no new `RawCppLinesOp`; don't reintroduce the
+  removed `RawFortranLinesOp`);
 - no syntax inside the string fields of typed ops: `AssignOp("x", ".true.")`,
   `"integer, intent(in) :: n"`, `"size(x)"`, `"n + 1"`, `"if (...) return"`,
   `"!$acc enter data ..."`, `"real(x, kind_phys)"`;

@@ -770,8 +770,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
-// CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      logical :: do_input
+// CHECK-NEXT:      logical :: do_output
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.

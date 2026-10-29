@@ -103,22 +103,14 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     DerivedTypeDefOp as CCPPDerivedTypeDefOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
-    ConstituentFunctionOp as CCPPConstituentFunctionOp,
-)
-from xdsl_ccpp.dialects.ccpp_utils import (
-    BindCSubroutineOp as CCPPBindCSubroutineOp,
-)
-from xdsl_ccpp.dialects.ccpp_utils import (
     CToFortranStringCopyOp as CCPPCToFortranStringCopyOp,
 )
 from xdsl_ccpp.dialects.ccpp_utils import (
     FortranToCStringCopyOp as CCPPFortranToCStringCopyOp,
 )
-from xdsl_ccpp.dialects.ccpp_utils import RawFortranLinesOp as CCPPRawFortranLinesOp
 from xdsl_ccpp.dialects.ccpp_utils import SetStringOp as CCPPSetStringOp
 from xdsl_ccpp.dialects.ccpp_utils import StrCmpOp as CCPPStrCmpOp
 from xdsl_ccpp.dialects.ccpp_utils import SubcycleLoopOp as CCPPSubcycleLoopOp
-from xdsl_ccpp.dialects.ccpp_utils import SuiteVariablesOp as CCPPSuiteVariablesOp
 from xdsl_ccpp.dialects.ccpp_utils import TrimOp as CCPPTrimOp
 from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp as CCPPUnitConvertOp
 from xdsl_ccpp.dialects.ccpp_utils import UnitWriteBackOp as CCPPUnitWriteBackOp
@@ -130,11 +122,17 @@ from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteStmtOp as CCPPWriteStmtOp
 from xdsl_ccpp.backend import expr_precedence
 from xdsl_ccpp.util.ccpp_conventions import (
+    FN_FIXED_INTERFACE,
+    FN_RESULT,
+    FN_USES,
     arg_attr_values,
     arg_decl,
     is_allocatable_local,
+    is_pointer_local,
     local_name,
 )
+# print_op has its own local_name variables, which would shadow this there.
+from xdsl_ccpp.util.ccpp_conventions import local_name as recorded_local_name
 
 _MAX_LINE_LEN = 99
 
@@ -154,11 +152,9 @@ def wrap_paren_list(
     ``print_cpp_header.py``, which imports this cross-module the same way
     that module already imports ``classify_arg_intent`` from here).
 
-    Shared by BindCSubroutineOp's header-signature printing and its
-    suite-cap call-emission printing -- previously two independently
-    hand-rolled copies of the same wrap loop in cpp_interop.py
-    (``_emit_subr_header``/``_emit_call``), differing only in
-    prefix/suffix/budget/indent.
+    Used by CallStatementOp's printing (and the C++ printer's
+    CppCallStatementOp) -- replacing hand-rolled copies of the same wrap
+    loop that cpp_interop.py once had (``_emit_subr_header``/``_emit_call``).
     """
     single = prefix + ", ".join(items) + suffix
     if len(single) <= max_col:
@@ -213,8 +209,9 @@ def _ddt_component_fortran_type(op: CCPPDdtComponentDeclOp) -> str:
         ftn = f"type({ddt})"
     elif kind is not None:
         if base == "character":
-            len_spec = kind if kind.startswith("len=") else f"len={kind}"
-            ftn = f"character({len_spec})"
+            # "kind=..." is a kind (e.g. c_char); otherwise a length.
+            spec = kind if kind.startswith(("len=", "kind=")) else f"len={kind}"
+            ftn = f"character({spec})"
         else:
             ftn = f"{base}(kind={kind})"
     else:
@@ -699,6 +696,7 @@ def classify_arg_intent(
     is_in: bool,
     has_array_dims: bool,
     is_inout_return: bool,
+    declared_intent: "str | None" = None,
 ) -> str:
     """Return the CCPP-cap intent ('in'/'inout'/'out') for a block argument.
 
@@ -731,7 +729,11 @@ def classify_arg_intent(
     is_inout_return -- True when this block arg is echoed back in the
         function's own ReturnOp (see `_print_fn`'s `inout_block_args`
         scan): intent(inout).
+    declared_intent -- the intent the function's arg_attrs fix for this
+        argument (arg_decl), which overrides everything above.
     """
+    if declared_intent is not None:
+        return declared_intent
     if is_allocatable_char:
         return "out"
     if is_alloc:
@@ -1386,8 +1388,16 @@ class ftnPrintContext:
                 return f"{op.arg_name.data}={self._render_expr(value_op)}"
             case CCPPArrayConstructorExprOp():
                 elems = [self._render_expr(r.block.last_op) for r in op.elements]
-                prefix = f"{op.elem_type.data} :: " if op.elem_type is not None else ""
-                return f"[ {prefix}{', '.join(elems)} ]"
+                prefix = (
+                    f"{self.mlir_type_to_ftn_type(op.elem_type)} :: "
+                    if op.elem_type is not None else ""
+                )
+                # One element per continuation line: the elements are often
+                # long string literals (cam_model_const_stdnames), and the
+                # automatic continuation (_write_with_continuation) can only
+                # split at a comma within the first _MAX_LINE_LEN columns.
+                sep = ", &\n      "
+                return f"[ {prefix}{sep.join(elems)} ]"
             case _:
                 raise AssertionError(f"Unhandled op in print_expr: {type(op)}")
 
@@ -1793,59 +1803,15 @@ class ftnPrintContext:
             case CCPPScopedBlockOp():
                 self.print("block")
                 with self.descend() as blk:
-                    for decl in op.local_decls.data:
-                        blk.print(decl.data)
+                    for local in op.body.block.ops:
+                        if isa(local, memref.AllocaOp):
+                            name = blk._get_variable_name_for(
+                                local.memref,
+                                hint=recorded_local_name(local) or local.memref.name_hint,
+                            )
+                            blk.print(ftnPrintContext._local_decl_line(blk, local, name))
                     blk.print_block(op.body.block)
                 self.print("end block")
-            case CCPPRawFortranLinesOp():
-                for line in op.lines.data.splitlines():
-                    if line.lstrip().startswith("#"):
-                        self.print(line.lstrip(), use_prefix=False)
-                    else:
-                        self.print(line)
-            case CCPPConstituentFunctionOp():
-                fn_name = op.fn_name.data
-                is_func = op.is_function.value.data
-                kw = "function" if is_func else "subroutine"
-                args_str = ", ".join(a.data for a in op.args.data)
-                result_part = (
-                    f" result({op.result_name.data})" if op.result_name is not None else ""
-                )
-                self.print(f"{kw} {fn_name}({args_str}){result_part}")
-                with self.descend() as fn_inner:
-                    for use in op.use_stmts.data:
-                        fn_inner.print(use.data)
-                    if op.result_decl is not None:
-                        fn_inner.print(op.result_decl.data)
-                    for decl in op.arg_decls.data:
-                        fn_inner.print(decl.data)
-                    for decl in op.local_decls.data:
-                        fn_inner.print(decl.data)
-                    fn_inner.print_block(op.body.block)
-                self.print(f"end {kw} {fn_name}")
-            case CCPPBindCSubroutineOp():
-                fn_name = op.fn_name.data
-                is_func = op.is_function.value.data
-                kw = "function" if is_func else "subroutine"
-                vnames = [a.data for a in op.args.data]
-                result_part = (
-                    f" result({op.result_name.data})" if op.result_name is not None else ""
-                )
-                header_lines = wrap_paren_list(
-                    f"{kw} {fn_name}(", vnames, f"){result_part} &", 92, "    "
-                )
-                for line in header_lines:
-                    self.print(line)
-                with self.descend() as fn_inner:
-                    fn_inner.print(f"bind(C, name='{op.bind_name.data}')")
-                    if op.result_decl is not None:
-                        fn_inner.print(op.result_decl.data)
-                    for decl in op.arg_decls.data:
-                        fn_inner.print(decl.data)
-                    for decl in op.local_decls.data:
-                        fn_inner.print(decl.data)
-                    fn_inner.print_block(op.body.block)
-                self.print(f"end {kw} {fn_name}")
             case CCPPCToFortranStringCopyOp():
                 c_var = op.c_var.data
                 f_var = op.f_var.data
@@ -2019,8 +1985,6 @@ class ftnPrintContext:
                 with self.descend() as inner:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
-            case CCPPSuiteVariablesOp():
-                self.print_block(op.body.block)
             case CCPPGPUDebugPrintOp():
                 # Preprocessor directives (`#ifdef USE_GPU`/`#endif`,
                 # string-templated directly into this op's raw-text body)
@@ -2514,33 +2478,41 @@ class ftnPrintContext:
         # Also its own reason Fortran forbids a `type :: ... end type`
         # block inside CONTAINS in the first place, hence needing this
         # separate emission point at all.
-        for op in body.ops:
-            if not isa(op, CCPPNonCamHostConstituentApiOp):
-                continue
-            for child in op.body.block.ops:
-                if not isa(child, CCPPDerivedTypeDefOp):
+        type_defs = [op for op in body.ops if isa(op, CCPPDerivedTypeDefOp)] + [
+            child
+            for op in body.ops if isa(op, CCPPNonCamHostConstituentApiOp)
+            for child in op.body.block.ops if isa(child, CCPPDerivedTypeDefOp)
+        ]
+        for child in type_defs:
+            attrs = (", public" if child.is_public is not None else "") + (
+                ", bind(c)" if child.bind_c is not None else "")
+            self.print(f"type{attrs} :: {child.type_name.data}", prefix="  ")
+            for comp in child.body.block.ops:
+                if not isa(comp, CCPPDdtComponentDeclOp):
                     continue
-                self.print(f"type :: {child.type_name.data}", prefix="  ")
-                for comp in child.body.block.ops:
-                    if not isa(comp, CCPPDdtComponentDeclOp):
-                        continue
-                    rank      = comp.rank.value.data
-                    ftn_type  = _ddt_component_fortran_type(comp)
-                    var_name  = comp.var_name.data
-                    is_ptr    = comp.is_pointer is not None and comp.is_pointer.value.data
-                    if comp.fixed_dim is not None:
-                        dim = comp.fixed_dim.value.data
-                        init_part = f" = {comp.init_value.data}" if comp.init_value else ""
-                        self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="    ")
-                    elif rank == 0:
-                        self.print(f"{ftn_type} :: {var_name}", prefix="    ")
+                rank      = comp.rank.value.data
+                ftn_type  = _ddt_component_fortran_type(comp)
+                var_name  = comp.var_name.data
+                is_ptr    = comp.is_pointer is not None and comp.is_pointer.value.data
+                if comp.fixed_dim is not None:
+                    dim = comp.fixed_dim.value.data
+                    if comp.init_value is not None:
+                        init_part = f" = {comp.init_value.data}"
+                    elif comp.init_value_region is not None:
+                        init_part = " = " + self._render_expr(
+                            comp.init_value_region.block.last_op)
                     else:
-                        shape = ", ".join([":"] * rank)
-                        if is_ptr:
-                            self.print(f"{ftn_type} :: {var_name}({shape}) => null()", prefix="    ")
-                        else:
-                            self.print(f"{ftn_type}, allocatable :: {var_name}({shape})", prefix="    ")
-                self.print(f"end type {child.type_name.data}", prefix="  ")
+                        init_part = ""
+                    self.print(f"{ftn_type} :: {var_name}({dim}){init_part}", prefix="    ")
+                elif rank == 0:
+                    self.print(f"{ftn_type} :: {var_name}", prefix="    ")
+                else:
+                    shape = ", ".join([":"] * rank)
+                    if is_ptr:
+                        self.print(f"{ftn_type} :: {var_name}({shape}) => null()", prefix="    ")
+                    else:
+                        self.print(f"{ftn_type}, allocatable :: {var_name}({shape})", prefix="    ")
+            self.print(f"end type {child.type_name.data}", prefix="  ")
 
         # Emit module-level variable declarations (unified ModuleVarOp).
         # rank=0: scalar, fixed_dim set: fixed-size non-allocatable array,
@@ -2612,10 +2584,6 @@ class ftnPrintContext:
                 and op.sym_visibility.data == "public"
             )
         ] + [
-            "ccpp_physics_suite_variables"
-            for op in body.ops
-            if isa(op, CCPPSuiteVariablesOp)
-        ] + [
             name.data
             for op in body.ops
             if isa(op, CCPPCamHostConstituentApiOp)
@@ -2632,7 +2600,6 @@ class ftnPrintContext:
         # Only emit CONTAINS when there are subroutine definitions to print
         has_func_defs = any(
             (isa(op, func.FuncOp) and not op.is_declaration)
-            or isa(op, CCPPSuiteVariablesOp)
             or isa(op, CCPPCamHostConstituentApiOp)
             or isa(op, CCPPNonCamHostConstituentApiOp)
             for op in body.ops
@@ -2797,7 +2764,7 @@ class ftnPrintContext:
 
     def _bind_c_arg_decl_line(
         self, arg_type: Attribute, arg_name: str, intent: str, is_opt: bool = False,
-        explicit_dims: "list[str] | None" = None,
+        explicit_dims: "list[str] | None" = None, keep_derived: bool = False,
     ) -> str:
         """Return a BIND(C)-compatible Fortran argument declaration line.
 
@@ -2815,10 +2782,16 @@ class ftnPrintContext:
         chost path's own ftn_decl. None (unresolved) keeps today's exact
         (*) output -- Fortran's explicit-shape declarator has no partial
         form, so a partially-resolved dimension list is never passed here.
+
+        keep_derived -- a derived type is passed as itself (a BIND(C) struct
+        of a fixed interface), not as an opaque type(c_ptr).
         """
         opt_clause = ", optional" if is_opt else ""
         ftn_type = self.mlir_type_to_ftn_type(arg_type)
         dim_suffix = self._ftn_dim_suffix(arg_type)
+        if keep_derived and ftn_type.startswith("type("):
+            dims = f"({', '.join(explicit_dims)})" if explicit_dims else dim_suffix
+            return f"{ftn_type}, intent({intent}){opt_clause} :: {arg_name}{dims}"
 
         if ftn_type.startswith("character"):
             # All character arguments → c_char assumed-size array
@@ -2936,10 +2909,13 @@ class ftnPrintContext:
         # (col_end - col_start + 1) allocates its own local nested inside the
         # suite_name/suite_part dispatch chain's scf.IfOps -- same reasoning as
         # the CCPPKindCastOp/CCPPUnitConvertOp walk() below.
+        # A BLOCK construct's own locals (ScopedBlockOp) are declared in the
+        # block, not here.
         local_allocas = [
             op
             for op in bdy.block.walk()
             if isa(op, memref.AllocaOp) and op.memref not in output_ret_vals
+            and not isa(op.parent_op(), CCPPScopedBlockOp)
         ]
 
         # Collect call results that have no CopyOp consumer — they become anonymous locals
@@ -3038,16 +3014,17 @@ class ftnPrintContext:
         # Exception: memref<memref<?xi8>> is an allocatable character array
         # passed intent(out) — the callee allocates and fills it.
         for idx, (arg, decl) in enumerate(zip(bdy.block.args, analysis.arg_decls)):
-            arg_name, is_alloc, is_opt, is_in = decl
+            arg_name, is_alloc, is_opt = decl.name, decl.is_alloc, decl.is_opt
             type_str = inner.mlir_type_to_ftn_type(arg.type)
             dim_suffix = inner._ftn_dim_suffix(arg.type)
             is_allocatable_char = ftnPrintContext._is_allocatable_char(arg.type)
             intent = classify_arg_intent(
                 is_allocatable_char=is_allocatable_char,
                 is_alloc=is_alloc,
-                is_in=is_in,
+                is_in=decl.is_in,
                 has_array_dims=bool(dim_suffix),
                 is_inout_return=arg in analysis.inout_block_args,
+                declared_intent=decl.declared_intent,
             )
             if is_allocatable_char or is_alloc:
                 type_str = type_str + ", allocatable"
@@ -3059,13 +3036,31 @@ class ftnPrintContext:
                         explicit_dims = raw.split(",")
                 inner.print(inner._bind_c_arg_decl_line(
                     arg.type, arg_name, intent, is_opt, explicit_dims=explicit_dims,
+                    keep_derived=decl.declared_intent is not None,
                 ))
             else:
                 if is_opt:
                     type_str = type_str + ", optional"
-                if dim_suffix and not is_alloc and not ftnPrintContext._is_allocatable_char(arg.type):
+                if decl.declared_intent is not None:
+                    # A fixed interface: exactly the attributes it declares.
+                    if decl.is_pointer:
+                        type_str = type_str + ", pointer"
+                    if decl.is_target:
+                        type_str = type_str + ", target"
+                elif dim_suffix and not is_alloc and not ftnPrintContext._is_allocatable_char(arg.type):
                     type_str = type_str + ", target"
                 inner.print(f"{type_str}, intent({intent}) :: {arg_name}{dim_suffix}")
+
+        # A function's result variable (FN_RESULT): its alloca's own type and
+        # attributes, no intent.
+        if fn_op is not None and FN_RESULT in fn_op.attributes:
+            for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
+                if bind_c:
+                    c_type = inner._map_ftn_to_c_type(inner.mlir_type_to_ftn_type(ret_val.type))
+                    inner.print(f"{c_type} :: {out_name}")
+                else:
+                    inner.print(ftnPrintContext._local_decl_line(inner, ret_val.owner, out_name))
+            return
 
         # Declare output arguments with intent(out) (always scalars)
         for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
@@ -3077,6 +3072,23 @@ class ftnPrintContext:
                 if dim_suffix:
                     type_str = type_str + ", target"
                 inner.print(f"{type_str}, intent(out) :: {out_name}{dim_suffix}")
+
+    @staticmethod
+    def _local_decl_line(inner: "ftnPrintContext", alloca_op, ftn_name: str) -> str:
+        """Declaration of the variable an alloca stands for: a local, or a
+        function's result. An allocatable or pointer one is deferred-shape:
+        its memref shape encodes only the rank (via [0]*rank static zeros to
+        satisfy MLIR verification), so the base type comes from the element
+        type and no shape literal leaks into the type string."""
+        memref_type = alloca_op.memref.type
+        for marked, attr in ((is_allocatable_local(alloca_op), "allocatable"),
+                             (is_pointer_local(alloca_op), "pointer")):
+            if marked:
+                rank = len(memref_type.shape.data)
+                type_str = inner.mlir_type_to_ftn_type(memref_type.element_type)
+                dims = "(" + ", ".join(":" for _ in range(rank)) + ")" if rank else ""
+                return f"{type_str}, {attr} :: {ftn_name}{dims}"
+        return f"{inner.mlir_type_to_ftn_type(memref_type)} :: {ftn_name}"
 
     def _declare_fn_locals(
         self,
@@ -3109,20 +3121,8 @@ class ftnPrintContext:
                 or alloca_op.memref.name_hint
                 or f"local_{id(alloca_op)}"
             )
-            is_alloc = is_allocatable_local(alloca_op)
             ftn_name = inner._get_variable_name_for(alloca_op.memref, hint=hint)
-            if is_alloc:
-                # For local allocatable declarations the memref shape encodes
-                # only rank (via [0]*rank static zeros to satisfy MLIR
-                # verification); use element_type for the base Fortran type so
-                # no shape literal leaks into the type string.
-                rank = len(alloca_op.memref.type.shape.data)
-                type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type.element_type)
-                dim_suffix = "(" + ", ".join(":" for _ in range(rank)) + ")"
-                inner.print(f"{type_str}, allocatable :: {ftn_name}{dim_suffix}")
-            else:
-                type_str = inner.mlir_type_to_ftn_type(alloca_op.memref.type)
-                inner.print(f"{type_str} :: {ftn_name}")
+            inner.print(ftnPrintContext._local_decl_line(inner, alloca_op, ftn_name))
 
         # Declare kind-cast and unit-convert temporaries. These are usually
         # top-level ops in suite caps (the suite-boundary conversion), but
@@ -3279,15 +3279,25 @@ class ftnPrintContext:
         """
         analysis = self._analyze_fn_body(bdy, fn_op)
 
-        args_str = ", ".join(analysis.input_names + analysis.output_names)
+        # FN_RESULT: a Fortran function, whose returned alloca is its result
+        # variable rather than an intent(out) argument.
+        is_function = fn_op is not None and FN_RESULT in fn_op.attributes
+        if is_function:
+            kw = "function"
+            args_str = ", ".join(analysis.input_names)
+            result_part = f" result({analysis.output_names[0]})"
+        else:
+            kw = "subroutine"
+            args_str = ", ".join(analysis.input_names + analysis.output_names)
+            result_part = ""
         if bind_c:
             start_signature = (
-                f"\nsubroutine {fn_name.data}({args_str})"
+                f"\n{kw} {fn_name.data}({args_str}){result_part}"
                 f" BIND(C, name='{fn_name.data}')"
             )
         else:
-            start_signature = f"\nsubroutine {fn_name.data}({args_str})"
-        end_signature = f"end subroutine {fn_name.data}"
+            start_signature = f"\n{kw} {fn_name.data}({args_str}){result_part}"
+        end_signature = f"end {kw} {fn_name.data}"
 
         with self.descend(start_signature, end_signature) as inner:
             # Register input block args so downstream ops can look them up by name
@@ -3302,10 +3312,16 @@ class ftnPrintContext:
             for ret_val, out_name in zip(analysis.output_ret_vals, analysis.output_names):
                 inner.variables[ret_val] = out_name
 
+            # A fixed interface's body does its own character copies.
+            fixed = fn_op is not None and FN_FIXED_INTERFACE in fn_op.attributes
             bind_c_char_conversions = self._setup_bind_c_char_conversions(
-                inner, bdy, analysis, bind_c
+                inner, bdy, analysis, bind_c and not fixed
             )
 
+            uses = fn_op.attributes.get(FN_USES) if fn_op is not None else None
+            if uses is not None:
+                for module, names in uses.data.items():
+                    inner.print(f"use {module}, only: {', '.join(n.data for n in names.data)}")
             self._declare_fn_arguments(inner, bdy, analysis, bind_c, fn_op)
             self._declare_fn_locals(inner, bdy, analysis, bind_c_char_conversions)
 

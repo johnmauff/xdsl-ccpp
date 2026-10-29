@@ -6,21 +6,22 @@ a registered pass) -- called directly from generate-ccpp-cap's final
 module assembly.
 """
 
-from xdsl.dialects import arith, llvm
-from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
+from xdsl.dialects import arith, llvm, memref
+from xdsl.dialects.builtin import DYNAMIC_INDEX, IntegerAttr, StringAttr, i1, i8, i32
 
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccEnterDataOp,
     ActiveCheckOp,
     AllocateOp,
+    ArrayConstructorExprOp,
     AssignOp,
     CallExprOp,
     CamDirectCallOp,
     CamHostConstituentApiOp,
     ClearErrStateOp,
-    ConstituentFunctionOp,
     DdtComponentDeclOp,
     DdtMethodCallOp,
+    DerivedType,
     DerivedTypeDefOp,
     ErrorExitOp,
     ErrorGuardOp,
@@ -51,11 +52,12 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _int_var_cmp_zero,
     _not_allocated_cond,
     _scf_if,
+    fixed_interface_fn,
     _trim_eq_cond,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.transforms.util.typing import TypeConversions
-from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN
+from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN, mark_pointer_local, name_local
 
 
 def _errcode_errmsg_kwargs(
@@ -311,6 +313,16 @@ def _generate_constituent_api(
     # component of a new DerivedTypeDefOp bundle type instead (built below,
     # wired into NonCamHostConstituentApiOp's body), and the only actual
     # module variable is the single lc_instances(:) array.
+    # The fixed-advected constituents' standard names, as the initial value
+    # of cam_model_const_stdnames: [ character(len=<longest>) :: 'a', ... ].
+    _max_std_len = max((len(s) for s, *_ in fixed_advected), default=0)
+
+    def _std_names_init():
+        return ArrayConstructorExprOp(
+            [StringLiteralExprOp(s) for s, *_ in fixed_advected],
+            elem_type=memref.MemRefType(i8, [_max_std_len]),
+        )
+
     module_var_ops: list = []
     component_ops: list = []
     if not multi_instance:
@@ -351,15 +363,11 @@ def _generate_constituent_api(
                             is_pointer=bool(_cst_std), rank=rank)
             )
         if n_fixed > 0:
-            _max_std_len = max(len(s) for s, *_ in fixed_advected)
-            _names_parts = [f"'{s}'" for s, *_ in fixed_advected]
-            _names_str = (_names_parts[0] if n_fixed == 1
-                          else ", &\n      ".join(_names_parts))
             module_var_ops.append(ModuleVarOp(
                 "cam_model_const_stdnames", "character",
                 kind=str(_max_std_len),
                 fixed_dim=n_fixed,
-                init_value=f"[ character(len={_max_std_len}) :: {_names_str} ]",
+                init_value_op=_std_names_init(),
             ))
             module_var_ops.append(ModuleVarOp(
                 "cam_model_const_indices", "integer",
@@ -404,43 +412,42 @@ def _generate_constituent_api(
                                    is_pointer=bool(_cst_std), rank=rank)
             )
         if n_fixed > 0:
-            _max_std_len = max(len(s) for s, *_ in fixed_advected)
-            _names_parts = [f"'{s}'" for s, *_ in fixed_advected]
-            _names_str = (_names_parts[0] if n_fixed == 1
-                          else ", &\n      ".join(_names_parts))
             component_ops.append(DdtComponentDeclOp(
                 "cam_model_const_stdnames", "character",
                 kind=str(_max_std_len),
                 fixed_dim=n_fixed,
-                init_value=f"[ character(len={_max_std_len}) :: {_names_str} ]",
+                init_value_op=_std_names_init(),
             ))
             component_ops.append(DdtComponentDeclOp(
                 "cam_model_const_indices", "integer",
                 fixed_dim=n_fixed,
-                init_value="-1",
+                init_value_op=arith.ConstantOp(IntegerAttr.from_int_and_width(-1, 32)),
             ))
         module_var_ops.append(
             ModuleVarOp("lc_instances", "type", ddt_name=instance_type_name,
                         is_target=True, rank=1)
         )
 
-    _instance_arg = f", {instance_local_name}" if multi_instance else ""
-    _instance_decl = (
-        [f"    integer, intent(in) :: {instance_local_name}"] if multi_instance else []
+    # Argument and local types of the API functions (fixed_interface_fn).
+    _char = TypeConversions.getBaseType("character")
+    _string = memref.MemRefType(_char, [DYNAMIC_INDEX])          # character(len=*)
+    _errmsg = memref.MemRefType(_char, [CCPP_ERRMSG_LEN])
+    _int = memref.MemRefType(TypeConversions.getBaseType("integer"), [])
+    _logical = memref.MemRefType(i1, [])
+    _real3 = TypeConversions.convert("real", "kind_phys", 3)
+    _props = DerivedType("ccpp_constituent_properties_t")
+    _prop_ptr = DerivedType("ccpp_constituent_prop_ptr_t")
+    _instance_args = (
+        [(instance_local_name, _int, "in", ())] if multi_instance else []
     )
-    # Sole-arg form (no leading comma): shared by constituents_array/
-    # model_const_properties below, the only two subroutines here with a
-    # single, optional instance parameter and no other args to comma-append
-    # after -- everything else uses _instance_arg's comma-prefixed form.
-    _instance_sole_arg = instance_local_name if multi_instance else ""
+
+    def _local(name: str, elem, shape=(), pointer: bool = False):
+        """A named local; a pointer array's shape gives only its rank."""
+        alloca = memref.AllocaOp.get(elem, shape=list(shape))
+        (mark_pointer_local if pointer else name_local)(alloca, name)
+        return alloca
 
     # ── 1. is_scheme_constituent ─────────────────────────────────────────
-    isc_arg_decls = [
-        "character(len=*), intent(in) :: std_name",
-        "logical, intent(out) :: is_const",
-        "integer, intent(out) :: errflg",
-        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
     isc_body_ops: list = [
         ClearErrStateOp("errflg", "errmsg"),
         _assign_const("is_const", False),
@@ -485,15 +492,15 @@ def _generate_constituent_api(
             isc_body_ops.extend(_scf_if(_allocated_cond("lc_instances"), dyn_check_ops))
         else:
             isc_body_ops.extend(dyn_check_ops)
-    isc_op = ConstituentFunctionOp(
-        fn_name=f"{h}_ccpp_is_scheme_constituent",
-        is_function=False,
-        args=["std_name", "is_const", "errflg", "errmsg"]
-            + ([instance_local_name] if multi_instance else []),
-        use_stmts=[],
-        arg_decls=isc_arg_decls,
-        local_decls=["integer :: lc_idx", "character(len=256) :: lc_std_name"],
-        body_ops=isc_body_ops,
+    isc_op = fixed_interface_fn(
+        f"{h}_ccpp_is_scheme_constituent",
+        [("std_name", _string, "in", ()),
+         ("is_const", _logical, "out", ()),
+         ("errflg", _int, "out", ()),
+         ("errmsg", _errmsg, "out", ()),
+         *_instance_args],
+        isc_body_ops,
+        locals_=[_local("lc_idx", i32), _local("lc_std_name", i8, [256])],
     )
 
     # ── 2. deallocate_dynamic_constituents ───────────────────────────────
@@ -518,14 +525,8 @@ def _generate_constituent_api(
         else:
             da_body_ops.append(SafeDeallocOp(lc_ref))
     da_body_ops.append(CamDirectCallOp(f"{ref('cam_constituents_obj')}%reset", []))
-    da_op = ConstituentFunctionOp(
-        fn_name=f"{h}_ccpp_deallocate_dynamic_constituents",
-        is_function=False,
-        args=[instance_local_name] if multi_instance else [],
-        use_stmts=[],
-        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
-        local_decls=[],
-        body_ops=da_body_ops,
+    da_op = fixed_interface_fn(
+        f"{h}_ccpp_deallocate_dynamic_constituents", _instance_args, da_body_ops,
     )
 
     # ── 3. register_constituents ─────────────────────────────────────────
@@ -533,25 +534,19 @@ def _generate_constituent_api(
     _lc_all = ref("lc_all_constituents")
     _lc_props = ref("lc_const_props")
     _cam_obj = ref("cam_constituents_obj")
+    _host_constituents = (
+        "host_constituents", memref.MemRefType(_props, [DYNAMIC_INDEX]), "in", ("target",),
+    )
     if cam_host:
         # CAM callers use (host_constituents, errcode, errmsg) positional order;
         # preserve it so existing callers that don't use keyword args still compile.
-        rc_arg_decls = [
-            f"type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
-            "integer, intent(out) :: errcode",
-            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        ]
+        rc_args = [_host_constituents, ("errcode", _int, "out", ()),
+                   ("errmsg", _errmsg, "out", ())]
     else:
-        rc_arg_decls = [
-            f"type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)",
-            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-            "integer, intent(out) :: errcode",
-        ]
+        rc_args = [_host_constituents, ("errmsg", _errmsg, "out", ()),
+                   ("errcode", _int, "out", ())]
         if multi_instance:
-            rc_arg_decls += [
-                f"integer, intent(in) :: {instance_local_name}",
-                f"integer, intent(in) :: {ninstances_local_name}",
-            ]
+            rc_args += [*_instance_args, (ninstances_local_name, _int, "in", ())]
     rc_body_ops: list = [ClearErrStateOp("errcode", "errmsg")]
     if multi_instance:
         rc_body_ops.extend(_scf_if(
@@ -718,25 +713,23 @@ def _generate_constituent_api(
                 ),
             ],
         ))
-    rc_local_decls = [
-        "integer :: lc_i, lc_num_consts" + (", field_ind" if n_fixed > 0 else ""),
-        "type(ccpp_constituent_properties_t), pointer :: const_prop",
-        "type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)",
-    ]
-    rc_op = ConstituentFunctionOp(
-        fn_name=f"{h}_ccpp_register_constituents",
-        is_function=False,
-        args=(["host_constituents", "errcode", "errmsg"] if cam_host
-              else ["host_constituents", "errmsg", "errcode"]
-                   + ([instance_local_name, ninstances_local_name] if multi_instance else [])),
-        use_stmts=[
-            "use ccpp_constituent_prop_mod, only: ccpp_constituent_properties_t, ccpp_constituent_prop_ptr_t",
-            "use ccpp_scheme_utils, only: ccpp_initialize_constituent_ptr" if cam_host
-            else "use ccpp_scheme_utils, only: ccpp_scheme_utils_set_constituents",
+    rc_op = fixed_interface_fn(
+        f"{h}_ccpp_register_constituents",
+        rc_args,
+        rc_body_ops,
+        locals_=[
+            _local("lc_i", i32),
+            _local("lc_num_consts", i32),
+            *([_local("field_ind", i32)] if n_fixed > 0 else []),
+            _local("const_prop", _props, pointer=True),
+            _local("lc_props_ptr", _prop_ptr, [0], pointer=True),
         ],
-        arg_decls=rc_arg_decls,
-        local_decls=rc_local_decls,
-        body_ops=rc_body_ops,
+        uses={
+            _CCPP_CONSTITUENT_MOD: ["ccpp_constituent_properties_t",
+                                    "ccpp_constituent_prop_ptr_t"],
+            "ccpp_scheme_utils": ["ccpp_initialize_constituent_ptr" if cam_host
+                                  else "ccpp_scheme_utils_set_constituents"],
+        },
     )
 
     # ── 4. number_constituents ───────────────────────────────────────────
@@ -757,12 +750,6 @@ def _generate_constituent_api(
     # left its tail uninitialized, crashing with a garbage out-of-bounds
     # index -- confirmed on a real QPC4 (RRTMGP + non-advected rad_climate
     # gases) MPAS case.
-    nc_arg_decls = [
-        "integer, intent(out) :: num_advected",
-        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-        "integer, intent(out) :: errcode",
-        "logical, optional, intent(in) :: advected",
-    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
     _nc_call = DdtMethodCallOp(
         obj_expr_op=_ref_expr("cam_constituents_obj"), method="num_constituents",
         arg_ops=[VarRefExprOp("num_advected")],
@@ -778,27 +765,20 @@ def _generate_constituent_api(
         ))
     else:
         nc_body_ops.append(_nc_call)
-    nc_op = ConstituentFunctionOp(
-        fn_name=f"{h}_ccpp_number_constituents",
-        is_function=False,
-        args=["num_advected", "errmsg", "errcode", "advected"]
-            + ([instance_local_name] if multi_instance else []),
-        use_stmts=[],
-        arg_decls=nc_arg_decls,
-        local_decls=[],
-        body_ops=nc_body_ops,
+    nc_op = fixed_interface_fn(
+        f"{h}_ccpp_number_constituents",
+        [("num_advected", _int, "out", ()),
+         ("errmsg", _errmsg, "out", ()),
+         ("errcode", _int, "out", ()),
+         ("advected", _logical, "in", ("optional",)),
+         *_instance_args],
+        nc_body_ops,
     )
 
     # ── 5. initialize_constituents ───────────────────────────────────────
     _cam_obj = ref("cam_constituents_obj")
     _lc_all = ref("lc_all_constituents")
     _lc_props = ref("lc_const_props")
-    ic_arg_decls = [
-        "integer, intent(in) :: ncols",
-        "integer, intent(in) :: pver",
-        "integer, intent(out) :: errflg",
-        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
     ic_body_ops: list = [ClearErrStateOp("errflg", "errmsg")]
     if multi_instance:
         ic_body_ops.append(ErrorGuardOp(
@@ -852,7 +832,7 @@ def _generate_constituent_api(
                 errflg_var="errflg",
             )]
             ic_body_ops.append(ScopedBlockOp(
-                ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"],
+                [_local("lc_tend_idx", i32), _local("lc_tend_errmsg", i8, [CCPP_ERRMSG_LEN])],
                 [
                     NullifyPointerOp(lc_ref),
                     DdtMethodCallOp(
@@ -891,28 +871,21 @@ def _generate_constituent_api(
             ]
             if needs_gpu:
                 ic_body_ops += _enter_data_copyin(lc_name, rank)
-    ic_op = ConstituentFunctionOp(
-        fn_name=f"{h}_ccpp_initialize_constituents",
-        is_function=False,
-        args=["ncols", "pver", "errflg", "errmsg"]
-            + ([instance_local_name] if multi_instance else []),
-        use_stmts=[],
-        arg_decls=ic_arg_decls,
-        local_decls=[],
-        body_ops=ic_body_ops,
+    ic_op = fixed_interface_fn(
+        f"{h}_ccpp_initialize_constituents",
+        [("ncols", _int, "in", ()),
+         ("pver", _int, "in", ()),
+         ("errflg", _int, "out", ()),
+         ("errmsg", _errmsg, "out", ()),
+         *_instance_args],
+        ic_body_ops,
     )
 
     # ── 6. constituents_array ────────────────────────────────────────────
-    ca_op = ConstituentFunctionOp(
-        fn_name=f"{h}_constituents_array",
-        is_function=True,
-        args=[instance_local_name] if multi_instance else [],
-        use_stmts=[],
-        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
-        local_decls=[],
-        result_name="ptr",
-        result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        body_ops=[PointerAssignOp("ptr", rhs_expr_op=_ref_expr("lc_constituent_array"))],
+    ca_op = fixed_interface_fn(
+        f"{h}_constituents_array", _instance_args,
+        [PointerAssignOp("ptr", rhs_expr_op=_ref_expr("lc_constituent_array"))],
+        result=_local("ptr", _real3.element_type, [0, 0, 0], pointer=True),
     )
 
     # ── 6b. advected_constituents_array ──────────────────────────────────
@@ -931,32 +904,20 @@ def _generate_constituent_api(
     # module-level pointer, unlike ca_op/lc_constituent_array) -- matches
     # capgen-v1's own simpler direct-call shape, and nothing else in this
     # generator currently needs an advected-only view cached anywhere else.
-    aca_op = ConstituentFunctionOp(
-        fn_name=f"{h}_advected_constituents_array",
-        is_function=True,
-        args=[instance_local_name] if multi_instance else [],
-        use_stmts=[],
-        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
-        local_decls=[],
-        result_name="ptr",
-        result_decl="real(kind=kind_phys), pointer :: ptr(:, :, :)",
-        body_ops=[PointerAssignOp(
+    aca_op = fixed_interface_fn(
+        f"{h}_advected_constituents_array", _instance_args,
+        [PointerAssignOp(
             "ptr",
             rhs_expr_op=MemberAccessExprOp(
                 _ref_expr("cam_constituents_obj"), "advected_constituents_ptr()"
             ),
         )],
+        result=_local("ptr", _real3.element_type, [0, 0, 0], pointer=True),
     )
 
     # ── 7. const_get_index ───────────────────────────────────────────────
     # Delegate to cam_constituents_obj%const_index (hash lookup) instead of
     # linear scan.  Hash keys are stored lowercase, so pass to_lower(std_name).
-    ci_arg_decls = [
-        "character(len=*), intent(in) :: std_name",
-        "integer, intent(out) :: index",
-        "integer, intent(out) :: errflg",
-        f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-    ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
     ci_body_ops: list = [ClearErrStateOp("errflg", "errmsg"), _assign_const("index", -1)]
     if multi_instance:
         ci_body_ops.append(ErrorGuardOp(
@@ -990,28 +951,22 @@ def _generate_constituent_api(
             ],
         ),
     ]
-    ci_op = ConstituentFunctionOp(
-        fn_name=f"{h}_const_get_index",
-        is_function=False,
-        args=["std_name", "index", "errflg", "errmsg"]
-            + ([instance_local_name] if multi_instance else []),
-        use_stmts=["use ccpp_constituent_prop_mod, only: to_lower"],
-        arg_decls=ci_arg_decls,
-        local_decls=[],
-        body_ops=ci_body_ops,
+    ci_op = fixed_interface_fn(
+        f"{h}_const_get_index",
+        [("std_name", _string, "in", ()),
+         ("index", _int, "out", ()),
+         ("errflg", _int, "out", ()),
+         ("errmsg", _errmsg, "out", ()),
+         *_instance_args],
+        ci_body_ops,
+        uses={_CCPP_CONSTITUENT_MOD: ["to_lower"]},
     )
 
     # ── 8. model_const_properties ────────────────────────────────────────
-    mp_op = ConstituentFunctionOp(
-        fn_name=f"{h}_model_const_properties",
-        is_function=True,
-        args=[instance_local_name] if multi_instance else [],
-        use_stmts=[],
-        arg_decls=[f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [],
-        local_decls=[],
-        result_name="ptr",
-        result_decl="type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)",
-        body_ops=[PointerAssignOp("ptr", rhs_expr_op=_ref_expr("lc_const_props"))],
+    mp_op = fixed_interface_fn(
+        f"{h}_model_const_properties", _instance_args,
+        [PointerAssignOp("ptr", rhs_expr_op=_ref_expr("lc_const_props"))],
+        result=_local("ptr", _prop_ptr, [0], pointer=True),
     )
 
     # ── 9. gather_constituents / 10. update_constituents (cam_host only) ──
@@ -1020,34 +975,22 @@ def _generate_constituent_api(
         # to avoid a latent reference to lc_instances(instance)%cam_constituents_obj
         # in a subroutine that has no instance argument.
         _cam_obj_ref = "cam_constituents_obj"
-        gc_op = ConstituentFunctionOp(
-            fn_name=f"{h}_ccpp_gather_constituents",
-            is_function=False,
-            args=["const_array", "errcode", "errmsg"],
-            use_stmts=[],
-            arg_decls=[
-                "real(kind=kind_phys), intent(out) :: const_array(:, :, :)",
-                "integer, intent(out) :: errcode",
-                f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-            ],
-            local_decls=[],
-            body_ops=[DdtMethodCallOp(
+        gc_op = fixed_interface_fn(
+            f"{h}_ccpp_gather_constituents",
+            [("const_array", _real3, "out", ()),
+             ("errcode", _int, "out", ()),
+             ("errmsg", _errmsg, "out", ())],
+            [DdtMethodCallOp(
                 obj_expr_op=VarRefExprOp(_cam_obj_ref), method="copy_in",
                 arg_ops=[VarRefExprOp("const_array")], kwarg_ops=_errcode_errmsg_kwargs(),
             )],
         )
-        uc_op = ConstituentFunctionOp(
-            fn_name=f"{h}_ccpp_update_constituents",
-            is_function=False,
-            args=["const_array", "errcode", "errmsg"],
-            use_stmts=[],
-            arg_decls=[
-                "real(kind=kind_phys), intent(in) :: const_array(:, :, :)",
-                "integer, intent(out) :: errcode",
-                f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-            ],
-            local_decls=[],
-            body_ops=[DdtMethodCallOp(
+        uc_op = fixed_interface_fn(
+            f"{h}_ccpp_update_constituents",
+            [("const_array", _real3, "in", ()),
+             ("errcode", _int, "out", ()),
+             ("errmsg", _errmsg, "out", ())],
+            [DdtMethodCallOp(
                 obj_expr_op=VarRefExprOp(_cam_obj_ref), method="copy_out",
                 arg_ops=[VarRefExprOp("const_array")], kwarg_ops=_errcode_errmsg_kwargs(),
             )],

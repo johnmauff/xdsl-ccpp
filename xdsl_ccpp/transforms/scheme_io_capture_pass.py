@@ -114,9 +114,7 @@ print_ftn.render_scheme_io_capture_test_driver, which is the one place
 that knows how to render a declaration, an allocate statement, or the
 driver's overall program structure as text. (The per-argument capture
 calls apply() inserts directly into the IR, below, are a different case:
-those go through RawFortranLinesOp, this dialect's own established escape
-hatch for a short, already-final snippet inserted into the generated
-cap's own IR tree -- not a full, hand-assembled program text.)
+those are CallStatementOps in the generated cap's own IR tree.)
 """
 
 import os
@@ -390,7 +388,7 @@ class SchemeIOCapturePass(ModulePass):
 
         # Tracks which enclosing suite-cap modules already have which
         # `use <module>, only: <name>` declarations inserted -- a capture
-        # call's own raw text (RawFortranLinesOp, below) has no `use`
+        # call (a CallStatementOp, below) has no `use`
         # statement of its own, so without an explicit declaration the
         # enclosing module would never get one (see _ensure_capture_decl/
         # _ensure_host_var_decl). Keyed by (module_op id, name) since this
@@ -487,8 +485,8 @@ class SchemeIOCapturePass(ModulePass):
         declaration (func.FuncOp.external + a `module` attribute), which
         is what print_ftn.py's _print_module reads to generate this
         module's own `use ccpp_capture_mod, only: ccpp_capture` line.
-        Without this, a capture call's own raw text (RawFortranLinesOp)
-        has no `use` statement backing it at all, and the module-mangled
+        Without this, a capture call (a CallStatementOp) has no `use`
+        statement backing it at all, and the module-mangled
         symbol ccpp_capture_mod actually compiles to is unresolvable at
         link time. Idempotent per module (declared_decls, keyed by
         (module id, "ccpp_capture")) -- every capture call in a module

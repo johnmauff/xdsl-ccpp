@@ -15,6 +15,7 @@ from xdsl_ccpp.backend.print_ftn import ftnPrintContext
 from xdsl_ccpp.transforms.util.cap_shared import value_name
 from xdsl_ccpp.util.ccpp_conventions import (
     SUITE_ARG_ALLOCATABLE,
+    SUITE_ARG_DECLARED_INTENT,
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_INTENT,
     SUITE_ARG_NAME,
@@ -49,6 +50,16 @@ def test_allocatable_over_optional_over_intent_in():
     opt_in = {SUITE_ARG_NAME: "x", SUITE_ARG_OPTIONAL: True,
               SUITE_ARG_INTENT: "in", SUITE_ARG_DIM_NAMES: _DIMS}
     assert arg_decl(opt_in, "x", 0) == ArgDecl("x", False, True, False)
+
+
+def test_declared_intent_is_printed_as_given():
+    # errmsg of a fixed interface: a scalar the function never returns,
+    # which would otherwise be inferred intent(in).
+    fn = _fn([{SUITE_ARG_NAME: "errmsg", SUITE_ARG_DECLARED_INTENT: "out"}])
+    assert arg_decl(arg_attr_values(fn)[0], "errmsg", 0).declared_intent == "out"
+    out = StringIO()
+    ftnPrintContext(output=out).print_op(fn)
+    assert "intent(out) :: errmsg(:)" in out.getvalue()
 
 
 def test_name_hint_fallback_without_recorded_name():

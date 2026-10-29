@@ -537,6 +537,7 @@ def _intent_from_arg(arg: object, decl: ArgDecl, inout_block_args: set) -> str:
         is_in=decl.is_in,
         has_array_dims=_has_array_dims(mlir_type),
         is_inout_return=arg in inout_block_args,
+        declared_intent=decl.declared_intent,
     )
 
 

@@ -67,7 +67,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `fortran-decls-as-text` | 10-20 days (constituent API, `suite_variables` and the BIND(C) module as `func.FuncOp`s with typed args + `arg_attrs`; module structure as ops) | L |
 | `fortran-exprs-as-text` | 5-10 days (convert ~45 callers to expression ops, then delete the text forms) | M |
 | `cpp-text-in-ir` | 5-10 days | M |
 | `gpu-debug-text` | 2-4 days | S |
@@ -1739,17 +1738,7 @@ opportunistically.
 - `cap-oracle-examples` — resolved 2026-10-28. CHANGELOG.md L13067.
 - `arg-flags-not-in-names` — resolved 2026-10-29. CHANGELOG.md L13116.
 - `raw-fortran-in-ir` — resolved 2026-10-29. CHANGELOG.md L13162.
-- `fortran-decls-as-text` — **Declarations built as Fortran text.** About
-  107 string literals in the middle layer are declarations:
-  `ConstituentFunctionOp`'s `arg_decls`/`local_decls`/`use_stmts`/
-  `result_decl` (`constituent_cap.py`, `ccpp_cap.py`'s
-  `ccpp_physics_suite_variables`), `ScopedBlockOp` locals,
-  `DdtComponentDeclOp` initialisers, and `cpp_interop.py`'s BIND(C) module
-  (including its header -- `module`/`use`/`implicit none`/`public` -- and
-  `end module`, the last two `RawFortranLinesOp`s). The suite and host caps
-  instead build `func.FuncOp`s with typed block arguments and `arg_attrs`
-  (intent, optional, allocatable), and the printer spells the
-  declarations. Build these the same way; module structure as ops.
+- `fortran-decls-as-text` — resolved 2026-10-29. CHANGELOG.md L13210.
 - `fortran-exprs-as-text` — **Expressions passed as Fortran text.** About
   45 sites: the text form of `AssignOp` (25, mostly `cpp_interop.py`, e.g.
   `"real(x, kind_phys)"`), `TextBoundedDoLoopOp` bounds, `AllocateOp`

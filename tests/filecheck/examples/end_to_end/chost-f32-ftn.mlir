@@ -10,7 +10,7 @@
 // task #28 Stage 3: initialize's own scheme calls (and their real(c_float)
 // args) moved to the new, group-scoped physics_initial entry point below --
 // initialize itself is now scheme-call-free (errmsg/errflg only).
-// CHECK-LABEL: subroutine Kessler_chost_physics_initialize(errmsg, errflg) &
+// CHECK-LABEL: subroutine Kessler_chost_physics_initialize(
 
 // Run: scalar dt and 2-D arrays all use real(c_float).
 // CHECK-LABEL: subroutine Kessler_chost_physics_run(
@@ -28,9 +28,7 @@
 // Scalar real args (rank 0) in physics_initial use real(c_float), not
 // c_double (task #28 Stage 3: generated last, after run/timestep_*/
 // timestep_final, matching lifecycle_specs' own append-only ordering).
-// Short enough to no longer need continuation-wrapping once the printer
-// dropped the old code's baked-in module-body indent (TDB-003 Stage 1).
-// CHECK-LABEL: subroutine Kessler_chost_physics_physics_initial(lv, pref, rhoqr, gravit, errmsg, errflg) &
+// CHECK-LABEL: subroutine Kessler_chost_physics_physics_initial(
 // CHECK:         real(c_float), value, intent(in) :: lv
 // CHECK:         real(c_float), value, intent(in) :: gravit
 

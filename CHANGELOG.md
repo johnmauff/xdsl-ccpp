@@ -13206,3 +13206,52 @@ header (with its RUN line) restored after the update script dropped it.
 `cap_oracle diff` against `main` (aux_sima gnu/intel/nvhpc, package-cap,
 GPU package-cap, 16 example calls): every differing line is one of the
 re-spellings above. pytest 1141 passed.
+
+## `fortran-decls-as-text`: generated declarations from types and attributes, not Fortran text (2026-10-29)
+
+About 107 middle-layer string literals were Fortran declarations:
+`ConstituentFunctionOp`'s `arg_decls`/`local_decls`/`use_stmts`/
+`result_decl` (the constituent API, `ccpp_physics_suite_variables`),
+`ScopedBlockOp` locals, `DdtComponentDeclOp` and `ModuleVarOp` initialisers,
+`ArrayConstructorExprOp`'s element type, and `cpp_interop.py`'s whole
+BIND(C) module (`BindCSubroutineOp` declarations and the module header and
+`end module`, the last two `RawFortranLinesOp`s). None remain.
+
+- `cap_shared.fixed_interface_fn` builds a public `func.FuncOp` with a fixed
+  interface: typed arguments with declared intents and flags
+  (`ccpp.declared_intent`, `ccpp.pointer`, `ccpp.target`), named locals, an
+  optional function result (`ccpp.function_result`) and function-local
+  `use`s (`ccpp.uses`). `ccpp_physics_suite_variables`, the 11 constituent
+  API routines and the C++ host's BIND(C) routines are built with it.
+- Printer: Fortran `function ... result(...)`, pointer/target attributes,
+  declared intents printed as given, BIND(C) derived-type arguments and C
+  result types, `block`-local declarations, `[ type :: ... ]` constructors
+  laid out one element per line, `type, public, bind(c)` definitions.
+- The C++ host's Fortran module is a `builtin.ModuleOp` printed like every
+  other cap module (USE stubs, the `bind(c)` struct as a `DerivedTypeDefOp`,
+  module arrays as `ModuleVarOp`s).
+- Removed: `ConstituentFunctionOp`, `BindCSubroutineOp`, `SuiteVariablesOp`,
+  `RawFortranLinesOp`; `ScopedBlockOp`'s and `ArrayConstructorExprOp`'s text
+  fields.
+
+Generated Fortran changes only in layout, verified line by line with
+`cap_oracle diff` against `main`: blank lines around routines, trailing
+spaces after signatures, one local per declaration line, the `result`
+declaration after the arguments, BIND(C) signatures continued after
+`BIND(C,`, and in the C++ host module `use ccpp_kinds`, `CONTAINS`,
+`real(kind=c_double)` for `real(c_double)` and no redundant `save`. One
+regression was caught and fixed on the way: printing the
+`cam_model_const_stdnames` constructor on one line made a 141-character line
+(Fortran's limit is 132); the printer now lays multi-element constructors
+out one element per line, as the old text did. No generated cap has a new
+line over 132 characters.
+
+Tests: new `test_fixed_interface_printing.py` (function results, `block`
+locals, constructor layout) and a declared-intent test in
+`test_arg_decl.py`; `test_constituent_gpu_residency.py` covers the exit
+side. Goldens regenerated with their headers checked against `HEAD`; the
+hand-written `chost-f32-ftn.mlir` and `ddt-redef-dedup-xml.mlir` edited by
+hand. A string-literal scan of `xdsl_ccpp/transforms/` finds no Fortran
+declaration left (43 literals of other kinds remain, tracked in
+`fortran-exprs-as-text`, `cpp-text-in-ir` and `gpu-debug-text`). pytest
+1145 passed.

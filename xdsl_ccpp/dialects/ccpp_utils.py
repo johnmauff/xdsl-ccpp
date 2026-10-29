@@ -598,9 +598,8 @@ class GPUDebugPrintOp(IRDLOperation):
     gpu_debug_print_pass.py, enabled by xdsl_ccpp's own --gpu-debug-prints
     CLI flag, never emitted otherwise).
 
-    Follows the same raw-text-emission shape as RawFortranLinesOp/
-    NonCamHostConstituentApiOp's type_defs (also plain strings, printed
-    verbatim) rather than a fully-structured nested-region
+    Raw text, printed verbatim (BACKLOG ``gpu-debug-text``), rather than a
+    fully-structured nested-region
     IR for the `!$acc parallel ... end parallel` block this needs --
     unnecessary complexity for a debug-only feature when a flat text block
     already has first-class printer support.
@@ -1246,8 +1245,7 @@ class AllocateOp(IRDLOperation):
     ``"ncols"``, ``"size(lc_const_props)"``). ``stat_var`` is the
     STAT= clause's variable name (opaque text, same declaration-stays-text
     convention as everywhere else in this codebase) -- covers the
-    recurring ``allocate(const_prop, stat=errcode)`` idiom, previously a
-    one-off ``RawFortranLinesOp`` leaf.
+    recurring ``allocate(const_prop, stat=errcode)`` idiom.
 
     lang-neutral-expr-ir Stage 3a adds a structured alternative for
     ``dims`` (same shape as other ops in this round): pass ``dim_ops``
@@ -1582,184 +1580,25 @@ class ScopedBlockOp(IRDLOperation):
     Emits::
 
         block
-          {local_decls[0]}
-          {local_decls[1]}
-          ...
+          <declaration of each local>
           {body ops}
         end block
 
-    ``local_decls`` is an ArrayAttr of StringAttr complete Fortran declaration
-    lines (e.g. ``"integer :: lc_tend_idx"``).  Body ops are emitted at +1
-    indent after the declarations.
+    The locals are named allocas (name_local and friends) placed first in
+    the body; the printer declares them here, in the block's own
+    specification part, not in the enclosing function's.
     """
 
     name = "ccpp_utils.scoped_block"
 
-    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
     body        = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, local_decls: "list[str]", body_ops: list):
+    def __init__(self, local_allocas: list, body_ops: list):
         from xdsl.ir import Block, Region
-        body = Region([Block(body_ops)])
-        super().__init__(
-            properties={"local_decls": ArrayAttr([StringAttr(d) for d in local_decls])},
-            regions=[body],
-        )
-
-
-@irdl_op_definition
-class RawFortranLinesOp(IRDLOperation):
-    """Escape hatch for Fortran content not yet converted to structured ops.
-
-    The ``lines`` property holds raw Fortran text (one or more lines, newline-
-    separated).  The printer emits each line at the current indentation level;
-    preprocessor directives (starting with ``#``) are emitted at column 0.
-
-    Its last users are cpp_interop.py's BIND(C) module header and ``end
-    module`` (BACKLOG ``fortran-decls-as-text``); do not add new ones --
-    statements and expressions have ops, which passes can see.
-    """
-
-    name = "ccpp_utils.raw_fortran_lines"
-
-    lines = prop_def(StringAttr)
-
-    def __init__(self, text: str):
-        super().__init__(properties={"lines": StringAttr(text)})
-
-
-@irdl_op_definition
-class ConstituentFunctionOp(IRDLOperation):
-    """One subroutine or function in the constituent registration API.
-
-    ``fn_name``     — Fortran identifier of the subroutine/function.
-    ``is_function`` — True for FUNCTION, False for SUBROUTINE.
-    ``args``        — argument names for the signature line.
-    ``use_stmts``   — complete USE statement lines (no trailing newline).
-    ``arg_decls``   — argument declaration lines (no leading/trailing whitespace).
-    ``local_decls`` — local variable declaration lines.
-    ``result_name`` — (functions only) name of the RESULT variable.
-    ``result_decl`` — (functions only) type declaration for the result variable.
-    ``body``        — single-block Region of statement ops.
-    """
-
-    name = "ccpp_utils.constituent_function"
-
-    fn_name     = prop_def(StringAttr)
-    is_function = prop_def(BoolAttr)
-    args        = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — arg name list
-    use_stmts   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — USE statement lines
-    arg_decls   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — argument declaration lines
-    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] — local variable declarations
-    result_name = opt_prop_def(StringAttr)  # for functions: result variable name
-    result_decl = opt_prop_def(StringAttr)  # for functions: result variable type declaration
-    body        = region_def("single_block")
-
-    traits = traits_def(NoTerminator())
-
-    def __init__(
-        self,
-        fn_name: str,
-        is_function: bool,
-        args: "list[str]",
-        use_stmts: "list[str]",
-        arg_decls: "list[str]",
-        local_decls: "list[str]",
-        body_ops: list,
-        result_name: "str | None" = None,
-        result_decl: "str | None" = None,
-    ):
-        from xdsl.ir import Block, Region
-        body = Region([Block(body_ops)])
-        props: dict = {
-            "fn_name":     StringAttr(fn_name),
-            "is_function": BoolAttr.from_bool(is_function),
-            "args":        ArrayAttr([StringAttr(a) for a in args]),
-            "use_stmts":   ArrayAttr([StringAttr(u) for u in use_stmts]),
-            "arg_decls":   ArrayAttr([StringAttr(d) for d in arg_decls]),
-            "local_decls": ArrayAttr([StringAttr(d) for d in local_decls]),
-        }
-        if result_name is not None:
-            props["result_name"] = StringAttr(result_name)
-        if result_decl is not None:
-            props["result_decl"] = StringAttr(result_decl)
-        super().__init__(properties=props, regions=[body])
-
-
-@irdl_op_definition
-class BindCSubroutineOp(IRDLOperation):
-    """A Fortran subroutine or function with a ``bind(C, name='...')``
-    interface, e.g. the chost BIND(C) cap's own per-lifecycle entry
-    points and its constituent-query functions.
-
-    ``fn_name``     — Fortran identifier of the subroutine/function.
-    ``bind_name``   — the C-visible symbol name (``bind(C, name=...)``).
-    ``is_function`` — True for FUNCTION, False (default) for SUBROUTINE.
-    ``args``        — argument names for the signature line (printer
-                       column-wraps this across Fortran continuation
-                       lines when it would otherwise exceed the line
-                       budget -- see the shared ``wrap_paren_list``
-                       helper in print_ftn.py).
-    ``arg_decls``   — argument declaration lines.
-    ``local_decls`` — local variable declaration lines.
-    ``result_name`` — (functions only) name of the RESULT variable.
-    ``result_decl`` — (functions only) type declaration for the result
-                       variable.
-    ``body``        — single-block Region of statement ops.
-
-    Distinct from ConstituentFunctionOp (no bind(C) support, and its
-    printer joins the argument list on one line with no wrapping at all
-    -- retrofitting it risked destabilizing its own already-proven output
-    format across every existing caller, so this is a separate op rather
-    than an extension). ``is_function``/``result_name``/``result_decl``
-    were added here rather than on a third op since this op had zero real
-    callers yet when the chost constituent-query functions (which need
-    both RESULT(...) and bind(C) together) were reached -- no proven
-    output format at risk.
-    """
-
-    name = "ccpp_utils.bind_c_subroutine"
-
-    fn_name     = prop_def(StringAttr)
-    bind_name   = prop_def(StringAttr)
-    is_function = prop_def(BoolAttr)
-    args        = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    arg_decls   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    local_decls = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    result_name = opt_prop_def(StringAttr)
-    result_decl = opt_prop_def(StringAttr)
-    body        = region_def("single_block")
-
-    traits = traits_def(NoTerminator())
-
-    def __init__(
-        self,
-        fn_name: str,
-        bind_name: str,
-        args: "list[str]",
-        arg_decls: "list[str]",
-        local_decls: "list[str]",
-        body_ops: list,
-        is_function: bool = False,
-        result_name: "str | None" = None,
-        result_decl: "str | None" = None,
-    ):
-        from xdsl.ir import Block, Region
-        props: dict = {
-            "fn_name":     StringAttr(fn_name),
-            "bind_name":   StringAttr(bind_name),
-            "is_function": BoolAttr.from_bool(is_function),
-            "args":        ArrayAttr([StringAttr(a) for a in args]),
-            "arg_decls":   ArrayAttr([StringAttr(d) for d in arg_decls]),
-            "local_decls": ArrayAttr([StringAttr(d) for d in local_decls]),
-        }
-        if result_name is not None:
-            props["result_name"] = StringAttr(result_name)
-        if result_decl is not None:
-            props["result_decl"] = StringAttr(result_decl)
-        super().__init__(properties=props, regions=[Region([Block(body_ops)])])
+        body = Region([Block([*local_allocas, *body_ops])])
+        super().__init__(regions=[body])
 
 
 @irdl_op_definition
@@ -1862,11 +1701,18 @@ class DdtComponentDeclOp(IRDLOperation):
     rank       = prop_def(IntegerAttr)
     fixed_dim  = opt_prop_def(IntegerAttr)
     init_value = opt_prop_def(StringAttr)
+    # Structured alternative to init_value (as ModuleVarOp's): pass
+    # init_value_op= instead. At most one of the two may be given.
+    init_value_region = opt_region_def("single_block")
+
+    traits = traits_def(NoTerminator())
 
     def __init__(self, var_name: str, base_type: str, *, kind: str | None = None,
                  ddt_name: str | None = None, is_pointer: bool = False,
                  rank: int = 0, fixed_dim: int | None = None,
-                 init_value: str | None = None):
+                 init_value: str | None = None, init_value_op=None):
+        if init_value is not None and init_value_op is not None:
+            raise ValueError("DdtComponentDeclOp: pass at most one of init_value or init_value_op")
         props: dict = {
             "var_name":  StringAttr(var_name),
             "base_type": StringAttr(base_type),
@@ -1882,7 +1728,10 @@ class DdtComponentDeclOp(IRDLOperation):
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
         if init_value is not None:
             props["init_value"] = StringAttr(init_value)
-        super().__init__(properties=props)
+        init_region = (
+            _single_op_region([init_value_op]) if init_value_op is not None else None
+        )
+        super().__init__(properties=props, regions=[init_region])
 
 
 @irdl_op_definition
@@ -1894,7 +1743,7 @@ class DerivedTypeDefOp(IRDLOperation):
 
     Emits::
 
-        type :: {type_name}
+        type[, public][, bind(c)] :: {type_name}
           {component declarations}
         end type {type_name}
 
@@ -1909,16 +1758,21 @@ class DerivedTypeDefOp(IRDLOperation):
     name = "ccpp_utils.derived_type_def"
 
     type_name = prop_def(StringAttr)
+    is_public = opt_prop_def(UnitAttr)
+    bind_c    = opt_prop_def(UnitAttr)   # interoperable with a C struct
     body      = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, type_name: str, component_ops: list):
+    def __init__(self, type_name: str, component_ops: list, *,
+                 is_public: bool = False, bind_c: bool = False):
         from xdsl.ir import Block, Region
-        super().__init__(
-            properties={"type_name": StringAttr(type_name)},
-            regions=[Region([Block(component_ops)])],
-        )
+        props: dict = {"type_name": StringAttr(type_name)}
+        if is_public:
+            props["is_public"] = UnitAttr()
+        if bind_c:
+            props["bind_c"] = UnitAttr()
+        super().__init__(properties=props, regions=[Region([Block(component_ops)])])
 
 
 @irdl_op_definition
@@ -1926,7 +1780,8 @@ class CamHostConstituentApiOp(IRDLOperation):
     """Container for the cam_host=True constituent registration API.
 
     ``public_names`` — names to export with ``public ::`` in the module preamble.
-    ``body``         — single-block Region of ``ConstituentFunctionOp`` children.
+    ``body``         — single-block Region of the API's ``func.FuncOp`` s
+                       (cap_shared.fixed_interface_fn).
     """
 
     name = "ccpp_utils.cam_host_constituent_api"
@@ -1950,7 +1805,8 @@ class NonCamHostConstituentApiOp(IRDLOperation):
     """Container for the non-cam_host constituent registration API.
 
     ``public_names`` — names to export with ``public ::`` in the module preamble.
-    ``body``         — single-block Region of ``ConstituentFunctionOp`` children,
+    ``body``         — single-block Region of the API's ``func.FuncOp`` s
+                       (cap_shared.fixed_interface_fn),
                        optionally preceded by one DerivedTypeDefOp (the
                        multi-instance per-instance bundle type, when present --
                        the printer's module-preamble pre-scan looks for it here
@@ -1975,24 +1831,6 @@ class NonCamHostConstituentApiOp(IRDLOperation):
             "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
         }
         super().__init__(properties=props, regions=[body])
-
-
-@irdl_op_definition
-class SuiteVariablesOp(IRDLOperation):
-    """Carries the generated ccpp_physics_suite_variables subroutine as IR.
-
-    The `body` region holds a single ConstituentFunctionOp representing the
-    ccpp_physics_suite_variables subroutine; the printer delegates to it.
-    """
-
-    name = "ccpp_utils.suite_variables"
-
-    body   = region_def("single_block")
-    traits = traits_def(NoTerminator())
-
-    def __init__(self, fn_op):
-        from xdsl.ir import Block, Region
-        super().__init__(regions=[Region([Block([fn_op])])])
 
 
 @irdl_op_definition
@@ -2400,13 +2238,12 @@ class CppConstructorOp(IRDLOperation):
 class RawCppLinesOp(IRDLOperation):
     """Escape hatch for C++ content not yet converted to structured ops.
 
-    The C++ sibling of ``RawFortranLinesOp``: holds raw C++ text (one or
-    more lines, newline-separated), printed verbatim by
-    ``print_cpp_header.py`` with no added indentation or punctuation.
-    Permanent escape hatch (comments, section-header banners, local
-    buffer declarations with varied initializer shapes, simple
-    ``return``/one-off ``if (...) foo();`` lines) -- not just a staging
-    device, same role ``RawFortranLinesOp`` already plays in ``ftn_body``.
+    Holds raw C++ text (one or more lines, newline-separated), printed
+    verbatim by ``print_cpp_header.py`` with no added indentation or
+    punctuation: comments, section-header banners, local buffer
+    declarations, simple ``return``/one-off ``if (...) foo();`` lines.
+    Language syntax in the middle layer, to be replaced by ops (BACKLOG
+    ``cpp-text-in-ir``); do not add new uses.
     """
 
     name = "ccpp_utils.raw_cpp_lines"
@@ -2614,9 +2451,15 @@ class ValueExprOp(IRDLOperation):
 
     name = "ccpp_utils.value_expr"
     value = operand_def()
+    res = opt_result_def()
 
-    def __init__(self, value):
-        super().__init__(operands=[value])
+    def __init__(self, value, result_type=None):
+        """result_type, as for VarRefExprOp: pass it when this leaf is an
+        operand of an arith op (e.g. a logical in an .and.)."""
+        super().__init__(
+            operands=[value],
+            result_types=[result_type] if result_type is not None else [None],
+        )
 
 
 @irdl_op_definition
@@ -2800,23 +2643,24 @@ class CallExprOp(IRDLOperation):
 @irdl_op_definition
 class ArrayConstructorExprOp(IRDLOperation):
     """Fortran array-constructor literal: ``[ {elem_type} :: e0, e1, ... ]``
-    (``elem_type`` omitted when not given). C++: ``{ e0, e1, ... }``
-    brace-init-list -- imperfect but reasonable; no real C++ call site
-    needs this yet.
+    (``elem_type`` omitted when not given). ``elem_type`` is a type (e.g.
+    ``memref<32xi8>`` for ``character(len=32)``), spelled by the printer.
+    C++: ``{ e0, e1, ... }`` brace-init-list -- imperfect but reasonable;
+    no real C++ call site needs this yet.
     """
 
     name = "ccpp_utils.array_constructor_expr"
-    elem_type = opt_prop_def(StringAttr)
+    elem_type = opt_prop_def(TypeAttribute)
     # One region per element (see StringConcatExprOp.pieces's own
     # comment for why).
     elements = var_region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, element_ops: "list", elem_type: "str | None" = None):
+    def __init__(self, element_ops: "list", elem_type=None):
         props: dict = {}
         if elem_type is not None:
-            props["elem_type"] = StringAttr(elem_type)
+            props["elem_type"] = elem_type
         super().__init__(
             properties=props,
             regions=[[_single_op_region([e]) for e in element_ops]],
@@ -3175,15 +3019,13 @@ class CallStatementOp(IRDLOperation):
         call {callee}(a, b, c)
 
     or, when the single-line form would exceed the printer's column
-    budget, Fortran-continuation-wraps the argument list the same way
-    BindCSubroutineOp's own header does (shared ``wrap_paren_list``
-    helper in print_ftn.py) -- replaces cpp_interop.py's own
+    budget, Fortran-continuation-wraps the argument list (shared
+    ``wrap_paren_list`` helper in print_ftn.py) -- replaces cpp_interop.py's own
     independently hand-rolled ``_emit_call`` wrap loop.
 
     Distinct from CamDirectCallOp (no wrapping at all -- retrofitting it
     risked destabilizing its own already-proven single-line output format
-    across its existing callers, same reasoning BindCSubroutineOp was kept
-    separate from ConstituentFunctionOp).
+    across its existing callers).
 
     The arguments are expression ops (arg_ops: StringLiteralExprOp,
     ValueExprOp, ...), which the printer renders, or, the older form,
@@ -3553,16 +3395,12 @@ CCPPUtils = Dialect(
         ErrorGuardOp,
         TextBoundedDoLoopOp,
         ScopedBlockOp,
-        RawFortranLinesOp,
-        ConstituentFunctionOp,
-        BindCSubroutineOp,
         CToFortranStringCopyOp,
         FortranToCStringCopyOp,
         CamHostConstituentApiOp,
         NonCamHostConstituentApiOp,
         DdtComponentDeclOp,
         DerivedTypeDefOp,
-        SuiteVariablesOp,
         CppIncludeOp,
         ExternCGuardOp,
         CFunctionSigOp,

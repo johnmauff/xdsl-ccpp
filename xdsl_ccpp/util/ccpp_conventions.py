@@ -489,6 +489,24 @@ SUITE_ARG_DIM_NAMES = "ccpp.dim_names"      # dimension standard names
 SUITE_ARG_INTENT = "ccpp.intent"            # merged across the schemes sharing it
 SUITE_ARG_OPTIONAL = "ccpp.optional"        # UnitAttr
 SUITE_ARG_ALLOCATABLE = "ccpp.allocatable"  # UnitAttr
+# The intent to declare, as given -- for a generated function whose interface
+# is fixed (e.g. ccpp_physics_suite_variables). Without it the printers infer
+# intent from how the function uses the argument (classify_arg_intent).
+SUITE_ARG_DECLARED_INTENT = "ccpp.declared_intent"
+SUITE_ARG_POINTER = "ccpp.pointer"          # UnitAttr; also on allocas (locals, results)
+SUITE_ARG_TARGET = "ccpp.target"            # UnitAttr
+
+# Function-level attributes of a generated func.FuncOp.
+# FN_RESULT: the function's single returned alloca is a Fortran FUNCTION
+# result (printed `function f(...) result(<name>)`), not an intent(out)
+# argument.
+FN_RESULT = "ccpp.function_result"          # UnitAttr
+# FN_USES: modules the function itself USEs, {module: [names]}.
+FN_USES = "ccpp.uses"                       # DictionaryAttr[str, ArrayAttr[StringAttr]]
+# FN_FIXED_INTERFACE: built by cap_shared.fixed_interface_fn -- its body does
+# everything itself (e.g. a BIND(C) routine's own character copies), so the
+# printer adds nothing it would infer for other functions.
+FN_FIXED_INTERFACE = "ccpp.fixed_interface"  # UnitAttr
 
 
 
@@ -532,6 +550,9 @@ class ArgDecl(NamedTuple):
     is_alloc: bool  # allocatable (intent(inout))
     is_opt: bool    # optional
     is_in: bool     # an array narrowed to intent(in)
+    declared_intent: "str | None" = None  # SUITE_ARG_DECLARED_INTENT, if any
+    is_pointer: bool = False
+    is_target: bool = False
 
 
 def arg_decl(attrs: dict, name_hint: "str | None", idx: int) -> ArgDecl:
@@ -539,14 +560,18 @@ def arg_decl(attrs: dict, name_hint: "str | None", idx: int) -> ArgDecl:
     arg_attrs (*attrs*, plain values). A function that records no name
     for it (e.g. one built by hand in a test) gets its name hint, or a
     positional name. Allocatable takes precedence over optional, and
-    either over intent(in), which narrows only arrays."""
+    either over intent(in), which narrows only arrays. A declared intent
+    (SUITE_ARG_DECLARED_INTENT) overrides all of them."""
     name = attrs.get(SUITE_ARG_NAME) or name_hint or f"arg_{idx}"
     is_alloc = bool(attrs.get(SUITE_ARG_ALLOCATABLE))
     is_opt = not is_alloc and bool(attrs.get(SUITE_ARG_OPTIONAL))
     is_in = (not is_alloc and not is_opt
              and attrs.get(SUITE_ARG_INTENT) == "in"
              and bool(attrs.get(SUITE_ARG_DIM_NAMES)))
-    return ArgDecl(name, is_alloc, is_opt, is_in)
+    return ArgDecl(
+        name, is_alloc, is_opt, is_in, attrs.get(SUITE_ARG_DECLARED_INTENT),
+        bool(attrs.get(SUITE_ARG_POINTER)), bool(attrs.get(SUITE_ARG_TARGET)),
+    )
 
 
 def name_local(alloca, name: str) -> None:
@@ -561,6 +586,18 @@ def mark_allocatable_local(alloca, name: str) -> None:
     """name_local, and make the local allocatable (SUITE_ARG_ALLOCATABLE)."""
     name_local(alloca, name)
     alloca.attributes[SUITE_ARG_ALLOCATABLE] = builtin.UnitAttr()
+
+
+def mark_pointer_local(alloca, name: str) -> None:
+    """name_local, and make the local a POINTER (SUITE_ARG_POINTER); an
+    array one is deferred-shape, its rank given by the alloca's shape."""
+    name_local(alloca, name)
+    alloca.attributes[SUITE_ARG_POINTER] = builtin.UnitAttr()
+
+
+def is_pointer_local(alloca) -> bool:
+    """Whether mark_pointer_local marked a memref.AllocaOp a pointer."""
+    return SUITE_ARG_POINTER in alloca.attributes
 
 
 def local_name(alloca) -> "str | None":

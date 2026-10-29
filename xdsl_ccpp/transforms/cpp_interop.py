@@ -10,14 +10,18 @@ generate-ccpp-cap in the pipeline.
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import arith, builtin, func
+from xdsl.dialects import arith, builtin, func, llvm, memref
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     Float32Type,
     IntegerAttr,
     IntegerType,
     MemRefType,
+    f32,
+    f64,
     i1,
+    i8,
+    i32,
 )
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
@@ -26,7 +30,6 @@ from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AllocateOp,
     AssignOp,
-    BindCSubroutineOp,
     CallStatementOp,
     CFunctionSigOp,
     CHostCapOp,
@@ -38,13 +41,15 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CppNamespaceOp,
     CppStructDefOp,
     CToFortranStringCopyOp,
+    DdtComponentDeclOp,
     DdtMethodCallOp,
     DerivedType,
+    DerivedTypeDefOp,
     ExternCGuardOp,
     FortranToCStringCopyOp,
     MemberAccessExprOp,
+    ModuleVarOp,
     RawCppLinesOp,
-    RawFortranLinesOp,
     ReturnStmtOp,
     RealKindType,
     TextBoundedDoLoopOp,
@@ -60,6 +65,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _allocated_cond,
     _int_var_cmp,
     _scf_if,
+    fixed_interface_fn,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     BuildMetaDataDescriptions,
@@ -78,8 +84,10 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_PRIMITIVE_TYPES,
     CCPP_SCHEME_NAME_LEN,
     CCPP_VERT_DIM_STD_NAME,
+    CCPP_KIND_PHYS,
     CCPP_VERTICAL_DIMENSIONS,
     arg_decl,
+    name_local,
     real_kind_width,
 )
 from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
@@ -103,9 +111,9 @@ _CONSTITUENT_STRUCT_FIELDS = [
     ("thermo_active",    "logical", None),
 ]
 
-# Maps each _CONSTITUENT_STRUCT_FIELDS field name to (real bound-procedure
-# name on ccpp_constituent_properties_t, Fortran declaration for a local
-# temp to hold its output). Every field's data is `private` on the real
+# Maps each _CONSTITUENT_STRUCT_FIELDS field name to the real bound-procedure
+# name on ccpp_constituent_properties_t; the local temp holding its output
+# is typed like the struct field. Every field's data is `private` on the real
 # module (xdsl_ccpp/framework_src/ccpp_constituent_prop_mod.F90) -- direct
 # `%fname` component access (this code's own behavior before this fix)
 # does not compile; every accessor is a *subroutine*
@@ -126,23 +134,23 @@ _CONSTITUENT_STRUCT_FIELDS = [
 # promise, even though neither driver_constprop_chost.cpp nor
 # driver_constadv_chost.cpp currently reads it.
 _CONSTITUENT_ACCESSORS = {
-    "std_name":         ("standard_name",     "character(len=128)"),
-    "long_name":        ("long_name",         "character(len=128)"),
-    "units":            ("units",             "character(len=32)"),
-    "default_val":      ("default_value",     "real(kind=kind_phys)"),
-    "min_val":          ("minimum",           "real(kind=kind_phys)"),
-    "is_advected_flag": ("is_advected",       "logical"),
-    "is_water":         ("is_water_species",  "logical"),
-    "mix_ratio_type":   (None,                "character(len=32)"),  # derived, see comment above
-    "vert_dim":         ("vertical_dimension", "character(len=64)"),
-    "default_val_set":  ("has_default",       "logical"),
-    "molar_mass_val":   ("molar_mass",        "real(kind=kind_phys)"),
-    "thermo_active":    ("is_thermo_active",  "logical"),
+    "std_name":         "standard_name",
+    "long_name":        "long_name",
+    "units":            "units",
+    "default_val":      "default_value",
+    "min_val":          "minimum",
+    "is_advected_flag": "is_advected",
+    "is_water":         "is_water_species",
+    "mix_ratio_type":   None,  # derived, see comment above
+    "vert_dim":         "vertical_dimension",
+    "default_val_set":  "has_default",
+    "molar_mass_val":   "molar_mass",
+    "thermo_active":    "is_thermo_active",
 }
 
 
 # _emit_subr_header/_emit_call (hand-rolled column-wrap loops) removed:
-# superseded by BindCSubroutineOp/CallStatementOp, which share the
+# superseded by CallStatementOp, which shares the
 # wrap_paren_list helper in print_ftn.py instead of each hand-rolling its
 # own copy.
 
@@ -1216,15 +1224,11 @@ class CPPInteropCap(ModulePass):
     ):
         """Build the complete Fortran BIND(C) chost cap module as typed ops.
 
-        Returns a list of ops for ``CHostCapOp.ftn_body``. The module
-        preamble (``module``/``use``/``implicit none``/``private``/
-        ``public``/the BIND(C) struct type def/module-level allocatable
-        decls) stays as a single ``RawFortranLinesOp`` -- declaration-only
-        boilerplate, kept as opaque text by the same convention every other
-        op in this area already uses for ``arg_decls``/``local_decls``/
-        ``use_stmts`` (see ConstituentFunctionOp/BindCSubroutineOp). Each
-        per-lifecycle subroutine body, and the two constituent-query
-        functions, are built from real statement ops
+        Returns ``CHostCapOp.ftn_body``: one builtin.ModuleOp, printed like
+        every other cap module -- USE stubs, the BIND(C) struct type
+        (DerivedTypeDefOp), module variables (ModuleVarOp), and one BIND(C)
+        func.FuncOp (cap_shared.fixed_interface_fn) per lifecycle routine
+        and constituent query, built from statement ops
         (AssignOp/CallStatementOp/CToFortranStringCopyOp/
         FortranToCStringCopyOp/scf.IfOp/TextBoundedDoLoopOp/AllocateOp).
 
@@ -1235,41 +1239,53 @@ class CPPInteropCap(ModulePass):
         metadata maps and called ``_chost_fn_contexts`` on identical inputs.
         """
 
-        def ftn_decl(ai):
+        _int = MemRefType(i32, [])
+        _string = MemRefType(i8, [DYNAMIC_INDEX])
+
+        def ftn_arg(ai):
+            """(name, type, intent, flags, explicit dims) of one BIND(C)
+            dummy argument; the printer spells the C-interop declaration
+            (integer(c_int), value / real(c_double), target / c_char)."""
             host = ai["host"]
             if ai["is_ncol"] or ai["is_nz"] or (ai["is_int"] and not ai["is_errflg"]):
-                return f"    integer(c_int), value, intent(in) :: {host}"
+                return (host, _int, "in", (), "")
             if ai["is_real"]:
-                c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
+                real = f32 if ai.get("real_width", 64) == 32 else f64
+                rank = ai["rank"]
+                if rank == 0:
+                    return (host, MemRefType(real, []), "in", (), "")
                 _dn = ai.get("dim_ncol") or ncol_var
                 _dz = ai.get("dim_nz")   or nz_var
-                if ai["rank"] == 0:
-                    return f"    real({c_real}), value, intent(in) :: {host}"
-                if ai["rank"] == 1:
-                    return (f"    real({c_real}), target,"
-                            f" intent({ai['intent']}) :: {host}({_dn})")
-                if ai["rank"] == 2:
-                    return (f"    real({c_real}), target,"
-                            f" intent({ai['intent']}) :: {host}({_dn}, {_dz})")
-                # rank >= 3: use explicit shape for the 3rd dim when known so the
+                # rank >= 3: explicit shape for the 3rd dim when known so the
                 # array can be passed to assumed-shape (:,:,:) suite cap dummies.
-                _n3 = ai.get("dim_n3")
-                if _n3:
-                    return (f"    real({c_real}), target,"
-                            f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, {_n3})")
-                return (f"    real({c_real}), target,"
-                        f" intent({ai['intent']}) :: {host}({_dn}, {_dz}, *)")
+                dims = [_dn, _dz, ai.get("dim_n3") or "*"][:rank]
+                return (host, MemRefType(real, [DYNAMIC_INDEX] * rank), ai["intent"], (),
+                        ",".join(dims))
             if ai.get("is_logical"):
-                return f"    logical(c_bool), value, intent({ai['intent']}) :: {host}"
+                return (host, MemRefType(i1, []), ai["intent"], (), "")
             if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
-                return f"    character(kind=c_char, len=1), intent({ai['intent']}) :: {host}(*)"
-            if ai["is_sname"]:
-                return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
-            if ai["is_errmsg"]:
-                return f"    character(kind=c_char, len=1), intent(out) :: {host}(*)"
+                return (host, _string, ai["intent"], (), "")
+            if ai["is_sname"] or ai["is_errmsg"]:
+                return (host, _string, "out", (), "")
             if ai["is_errflg"]:
-                return f"    integer(c_int),               intent(out) :: {host}"
-            return f"    ! unclassified arg: {host}"
+                return (host, _int, "out", (), "")
+            raise ValueError(f"chost cap: unclassified argument {host!r}")
+
+        def bind_c_fn(name, args, body, *, locals_=(), result=None):
+            """A fixed-interface BIND(C) routine; args as ftn_arg returns."""
+            fn = fixed_interface_fn(
+                name, [a[:4] for a in args], body, locals_=locals_, result=result,
+            )
+            fn.attributes["bind_c"] = builtin.UnitAttr()
+            fn.attributes["bind_c_dim_exprs"] = builtin.ArrayAttr(
+                [builtin.StringAttr(a[4]) for a in args]
+            )
+            return fn
+
+        def local(name, elem, shape=()):
+            alloca = memref.AllocaOp.get(elem, shape=list(shape))
+            name_local(alloca, name)
+            return alloca
 
         # ── Collect suite cap functions referenced ──────────────────────────────
         used_suite_fns: list = []
@@ -1297,47 +1313,39 @@ class CPPInteropCap(ModulePass):
                     _seen_cv.add(cv)
                     all_constituent_vars.append(cv)
 
-        # ── Module header (declaration-only boilerplate; stays as text) ─────────
-        H: list = []
-        HA = H.append
+        # ── Module specification part ────────────────────────────────────────
+        # A builtin.ModuleOp printed like every other cap module: USE lines
+        # from llvm.GlobalOp stubs (plus ccpp_kinds and iso_c_binding, which
+        # the printer adds), the BIND(C) struct type, module variables, and
+        # a public line per public routine.
+        def use_stub(name: str, module: str):
+            stub = llvm.GlobalOp(
+                llvm.LLVMArrayType.from_size_and_type(1, i8), name, "external",
+            )
+            stub.attributes["module"] = builtin.StringAttr(module)
+            return stub
 
-        HA(f"module {mod_name}")
-        HA("")
-        HA("  use ccpp_kinds, only: kind_phys")
-        HA("  use iso_c_binding")
-        for tn, mod in sorted(ddt_uses.items()):
-            HA(f"  use {mod}, only: {tn}")
+        module_ops: list = [use_stub(tn, mod) for tn, mod in sorted(ddt_uses.items())]
         if all_constituent_vars:
-            HA(f"  use {_CCPP_CONSTITUENT_MOD}, only: {_CONSTITUENT_DDT_NAME}")
-        for sfn in used_suite_fns:
-            HA(f"  use {suite_cap_mod_name}, only: {sfn}")
-        HA("")
-        HA("  implicit none")
-        HA("  private")
-        HA("")
-        for fn_op in bind_c_fns:
-            HA(f"  public :: {_chost_fn_name(camel_name, _lc_of(fn_op.sym_name.data))}")
+            module_ops.append(use_stub(_CONSTITUENT_DDT_NAME, _CCPP_CONSTITUENT_MOD))
+        module_ops += [use_stub(sfn, suite_cap_mod_name) for sfn in used_suite_fns]
         if all_constituent_vars:
-            HA(f"  public :: {mod_name}_nconstituents")
-            HA(f"  public :: {mod_name}_get_constituent_info")
-            HA("")
-            HA("  ! BIND(C) struct mirroring CcppConstituentInfo on the C++ side")
-            HA("  type, public, bind(c) :: chost_constituent_info_t")
-            for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
-                if fkind == "char":
-                    HA(f"    character(kind=c_char) :: {fname}({flen + 1})")
-                elif fkind == "real":
-                    HA(f"    real(c_double)         :: {fname}")
-                else:  # logical
-                    HA(f"    logical(c_bool)        :: {fname}")
-            HA("  end type chost_constituent_info_t")
-            HA("")
-            for cv in all_constituent_vars:
-                HA(f"  type({_CONSTITUENT_DDT_NAME}), allocatable, save :: chost_{cv}(:)")
-        HA("")
-        HA("contains")
-
-        module_ops: list = [RawFortranLinesOp("\n".join(H))]
+            # BIND(C) struct mirroring CcppConstituentInfo on the C++ side.
+            module_ops.append(DerivedTypeDefOp(
+                "chost_constituent_info_t",
+                [
+                    DdtComponentDeclOp(fname, "character", kind="kind=c_char",
+                                       fixed_dim=flen + 1) if fkind == "char"
+                    else DdtComponentDeclOp(fname, "real", kind="c_double") if fkind == "real"
+                    else DdtComponentDeclOp(fname, "logical", kind="c_bool")
+                    for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS
+                ],
+                is_public=True, bind_c=True,
+            ))
+            module_ops += [
+                ModuleVarOp(f"chost_{cv}", "type", ddt_name=_CONSTITUENT_DDT_NAME, rank=1)
+                for cv in all_constituent_vars
+            ]
 
         # ── Subroutines ─────────────────────────────────────────────────────────
         for ctx in fn_ctxs:
@@ -1356,19 +1364,19 @@ class CPPInteropCap(ModulePass):
             em = next((ai["host"] for ai in visible if ai["is_errmsg"]), None)
 
             # ── Declarations ─────────────────────────────────────────────────
-            arg_decls = [ftn_decl(ai).lstrip() for ai in visible]
-            local_decls: list = []
+            args = [ftn_arg(ai) for ai in visible]
+            locals_: list = []
             if has_errmsg or has_sname or plain_char_args:
-                local_decls.append("integer :: i")
+                locals_.append(local("i", i32))
             if has_sname:
-                local_decls.append(f"character(len={CCPP_SCHEME_NAME_LEN})  :: {sn}_f")
+                locals_.append(local(f"{sn}_f", i8, [CCPP_SCHEME_NAME_LEN]))
             if has_errmsg:
-                local_decls.append(f"character(len={CCPP_ERRMSG_LEN}) :: {em}_f")
+                locals_.append(local(f"{em}_f", i8, [CCPP_ERRMSG_LEN]))
             for ai in plain_char_args:
                 cl = ai.get("char_len") or CCPP_ERRMSG_LEN
-                local_decls.append(f"character(len={cl}) :: {ai['host']}_f")
+                locals_.append(local(f"{ai['host']}_f", i8, [cl]))
             for li in ddt_locals.values():
-                local_decls.append(f"type({li['ddt_type']}) :: {li['local_name']}")
+                locals_.append(local(li["local_name"], DerivedType(li["ddt_type"])))
 
             # ── Body initialization ───────────────────────────────────────────
             body_ops: list = []
@@ -1487,12 +1495,7 @@ class CPPInteropCap(ModulePass):
                     h = ai["host"]
                     body_ops.append(FortranToCStringCopyOp(c_var=h, f_var=f"{h}_f"))
 
-            module_ops.append(BindCSubroutineOp(
-                fn_name=cfn, bind_name=cfn,
-                args=[ai["host"] for ai in visible],
-                arg_decls=arg_decls, local_decls=local_decls,
-                body_ops=body_ops,
-            ))
+            module_ops.append(bind_c_fn(cfn, args, body_ops, locals_=locals_))
 
         # ── Constituent query functions ──────────────────────────────────────────
         # Every local/module variable name built below must NOT start with a
@@ -1514,13 +1517,8 @@ class CPPInteropCap(ModulePass):
                         lhs_expr="n", rhs_expr=f"n + int(size(chost_{cv}), c_int)"
                     )],
                 ))
-            module_ops.append(BindCSubroutineOp(
-                fn_name=f"{mod_name}_nconstituents",
-                bind_name=f"{mod_name}_nconstituents",
-                args=[], arg_decls=[], local_decls=[],
-                body_ops=nc_body,
-                is_function=True, result_name="n",
-                result_decl="integer(c_int) :: n",
+            module_ops.append(bind_c_fn(
+                f"{mod_name}_nconstituents", [], nc_body, result=local("n", i32),
             ))
 
             gci_body: list = [AssignOp(lhs_expr="chost_idx", rhs_expr="0")]
@@ -1533,7 +1531,7 @@ class CPPInteropCap(ModulePass):
                     ),
                 ]
                 for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
-                    accessor, _decl = _CONSTITUENT_ACCESSORS[fname]
+                    accessor = _CONSTITUENT_ACCESSORS[fname]
                     src = f"chost_v_{fname}"
                     dst = f"buf(chost_idx)%{fname}"
                     if fname == "mix_ratio_type":
@@ -1589,30 +1587,31 @@ class CPPInteropCap(ModulePass):
                         body_ops=inner_do_body,
                     )],
                 ))
-            _field_temp_decls = [
-                f"{decl} :: chost_v_{fname}" for fname, (_a, decl) in _CONSTITUENT_ACCESSORS.items()
+            # One temporary per struct field, typed like the field itself.
+            _field_temps = [
+                local(f"chost_v_{fname}", *(
+                    (i8, [flen]) if fkind == "char"
+                    else (RealKindType(CCPP_KIND_PHYS), []) if fkind == "real"
+                    else (i1, [])
+                ))
+                for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS
             ]
-            module_ops.append(BindCSubroutineOp(
-                fn_name=f"{mod_name}_get_constituent_info",
-                bind_name=f"{mod_name}_get_constituent_info",
-                args=["buf", "n"],
-                arg_decls=[
-                    "type(chost_constituent_info_t), intent(out) :: buf(n)",
-                    "integer(c_int), value, intent(in) :: n",
+            module_ops.append(bind_c_fn(
+                f"{mod_name}_get_constituent_info",
+                [("buf", MemRefType(DerivedType("chost_constituent_info_t"), [DYNAMIC_INDEX]),
+                  "out", (), "n"),
+                 ("n", _int, "in", (), "")],
+                gci_body,
+                locals_=[
+                    *(local(n, i32) for n in
+                      ("chost_idx", "chost_j", "chost_slen", "chost_i", "chost_errcode")),
+                    local("chost_errmsg", i8, [CCPP_ERRMSG_LEN]),
+                    local("chost_v_mix_pred", i1),
+                    *_field_temps,
                 ],
-                local_decls=[
-                    "integer :: chost_idx, chost_j, chost_slen, chost_i",
-                    "integer :: chost_errcode",
-                    "character(len=512) :: chost_errmsg",
-                    "logical :: chost_v_mix_pred",
-                    *_field_temp_decls,
-                ],
-                body_ops=gci_body,
             ))
 
-        module_ops.append(RawFortranLinesOp(f"end module {mod_name}"))
-
-        return module_ops
+        return [builtin.ModuleOp(module_ops, sym_name=builtin.StringAttr(mod_name))]
 
     def _build_chost_cpp_text(self, mod_name, fn_ctxs):
         """Build the complete C++ header for the chost cap as typed ops.

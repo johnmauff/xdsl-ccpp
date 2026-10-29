@@ -534,8 +534,9 @@
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
-// CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      logical :: do_input
+// CHECK-NEXT:      logical :: do_output
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
@@ -582,7 +583,7 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer :: lc_idx
 // CHECK-NEXT:      character(len=256) :: lc_std_name
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      is_const = .false.
 // CHECK-NEXT:    end subroutine DdtIn_ccpp_is_scheme_constituent
@@ -600,10 +601,11 @@
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), target, intent(in) :: host_constituents(:)
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
-// CHECK-NEXT:      integer :: lc_i, lc_num_consts
+// CHECK-NEXT:      integer :: lc_i
+// CHECK-NEXT:      integer :: lc_num_consts
 // CHECK-NEXT:      type(ccpp_constituent_properties_t), pointer :: const_prop
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: lc_props_ptr(:)
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      lc_num_consts = size(host_constituents)
 // CHECK-NEXT:      lc_num_consts = lc_num_consts + 0
@@ -637,7 +639,7 @@
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
 // CHECK-NEXT:      integer, intent(out) :: errcode
 // CHECK-NEXT:      logical, optional, intent(in) :: advected
-// CHECK-NEXT:      errcode = 0
+// CHECK:           errcode = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      call cam_constituents_obj%num_constituents(num_advected, advected=advected, errcode=errcode,  &
 // CHECK-NEXT:        errmsg=errmsg)
@@ -647,7 +649,7 @@
 // CHECK-NEXT:      integer, intent(in) :: pver
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      if (.not. allocated(lc_all_constituents)) then
 // CHECK-NEXT:        errflg = 1
@@ -664,13 +666,13 @@
 // CHECK-NEXT:      allocate(lc_HNO3(ncols))
 // CHECK-NEXT:      lc_HNO3 = 0.0_kind_phys
 // CHECK-NEXT:    end subroutine DdtIn_ccpp_initialize_constituents
-// CHECK-NEXT:    function DdtIn_constituents_array() result(ptr)
+// CHECK:         function DdtIn_constituents_array() result(ptr)
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
-// CHECK-NEXT:      ptr => lc_constituent_array
+// CHECK:           ptr => lc_constituent_array
 // CHECK-NEXT:    end function DdtIn_constituents_array
-// CHECK-NEXT:    function DdtIn_advected_constituents_array() result(ptr)
+// CHECK:         function DdtIn_advected_constituents_array() result(ptr)
 // CHECK-NEXT:      real(kind=kind_phys), pointer :: ptr(:, :, :)
-// CHECK-NEXT:      ptr => cam_constituents_obj%advected_constituents_ptr()
+// CHECK:           ptr => cam_constituents_obj%advected_constituents_ptr()
 // CHECK-NEXT:    end function DdtIn_advected_constituents_array
 // CHECK-LABEL:   subroutine DdtIn_const_get_index(std_name, index, errflg, errmsg)
 // CHECK:           use ccpp_constituent_prop_mod, only: to_lower
@@ -678,7 +680,7 @@
 // CHECK-NEXT:      integer, intent(out) :: index
 // CHECK-NEXT:      integer, intent(out) :: errflg
 // CHECK-NEXT:      character(len=512), intent(out) :: errmsg
-// CHECK-NEXT:      errflg = 0
+// CHECK:           errflg = 0
 // CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      index = -1
 // CHECK-NEXT:      if (.not. allocated(lc_all_constituents)) then
@@ -692,26 +694,26 @@
 // CHECK-NEXT:        write(errmsg, '(3a)') 'const_get_index: constituent ', trim(std_name), ' not found'
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine DdtIn_const_get_index
-// CHECK-NEXT:    function DdtIn_model_const_properties() result(ptr)
+// CHECK:         function DdtIn_model_const_properties() result(ptr)
 // CHECK-NEXT:      type(ccpp_constituent_prop_ptr_t), pointer :: ptr(:)
-// CHECK-NEXT:      ptr => lc_const_props
+// CHECK:           ptr => lc_const_props
 // CHECK-NEXT:    end function DdtIn_model_const_properties
 // CHECK-NEXT:  end module DdtIn_ccpp_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: DdtIn_ccpp_chost_cap.F90
 // CHECK-LABEL: module DdtIn_ccpp_chost_cap
-// CHECK:         use ccpp_kinds, only: kind_phys
+// CHECK:         use ccpp_kinds
 // CHECK-NEXT:    use iso_c_binding
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_final_physics
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_finalize
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_init_physics
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_initialize
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_physics
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_register
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_timestep_final_physics
+// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_timestep_init_physics
 // CHECK-NEXT:    use host_ccpp_ddt, only: ccpp_info_t
 // CHECK-NEXT:    use make_ddt, only: vmr_type
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_register
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_initialize
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_finalize
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_physics
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_timestep_init_physics
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_timestep_final_physics
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_init_physics
-// CHECK-NEXT:    use ddt_in_suite_cap, only: ddt_in_suite_final_physics
 // CHECK:         implicit none
 // CHECK-NEXT:    private
 // CHECK:         public :: DdtIn_chost_physics_register
@@ -722,158 +724,155 @@
 // CHECK-NEXT:    public :: DdtIn_chost_physics_timestep_final
 // CHECK-NEXT:    public :: DdtIn_chost_physics_physics_initial
 // CHECK-NEXT:    public :: DdtIn_chost_physics_physics_final
-// CHECK:       contains
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_register(errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_register')
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    call ddt_in_suite_register(errflg, errmsg_f)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_register
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_initialize(errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_initialize')
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    call ddt_in_suite_initialize(errflg, errmsg_f)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_initialize
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_finalize(errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_finalize')
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    call ddt_in_suite_finalize(errflg, errmsg_f)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_finalize
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_run( &
-// CHECK-NEXT:      ncols, vmr_nvmr, col_start, col_end, O3, HNO3, vmr_vmr_array, errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_run')
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: ncols
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: vmr_nvmr
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: col_start
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: col_end
-// CHECK-NEXT:    real(c_double), target, intent(in) :: O3(ncols)
-// CHECK-NEXT:    real(c_double), target, intent(in) :: HNO3(ncols)
-// CHECK-NEXT:    real(c_double), target, intent(inout) :: vmr_vmr_array(ncols, vmr_nvmr)
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    type(vmr_type) :: vmr_local
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    vmr_local%nvmr = vmr_nvmr
-// CHECK-NEXT:    allocate(vmr_local%vmr_array(ncols, vmr_nvmr))
-// CHECK-NEXT:    vmr_local%vmr_array = real(vmr_vmr_array, kind_phys)
-// CHECK-NEXT:    call ddt_in_suite_physics( &
-// CHECK-NEXT:        col_start, col_end, O3, HNO3, vmr_local, errmsg_f, errflg)
-// CHECK-NEXT:    vmr_vmr_array = real(vmr_local%vmr_array, c_double)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_run
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_timestep_initial(errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_timestep_initial')
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    call ddt_in_suite_timestep_init_physics(errflg, errmsg_f)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_timestep_initial
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_timestep_final( &
-// CHECK-NEXT:      ncols, vmr_nvmr, vmr_vmr_array, errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_timestep_final')
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: ncols
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: vmr_nvmr
-// CHECK-NEXT:    real(c_double), target, intent(in) :: vmr_vmr_array(ncols, vmr_nvmr)
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    type(vmr_type) :: vmr_local
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    vmr_local%nvmr = vmr_nvmr
-// CHECK-NEXT:    allocate(vmr_local%vmr_array(ncols, vmr_nvmr))
-// CHECK-NEXT:    vmr_local%vmr_array = real(vmr_vmr_array, kind_phys)
-// CHECK-NEXT:    call ddt_in_suite_timestep_final_physics(ncols, vmr_local, errmsg_f, errflg)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_timestep_final
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_physics_initial( &
-// CHECK-NEXT:      ncols, vmr_nvmr, ccpp_info_col_start, ccpp_info_col_end, ccpp_info_errflg,  &
-// CHECK-NEXT:      vmr_vmr_array, errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_physics_initial')
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: ncols
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: vmr_nvmr
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: ccpp_info_col_start
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: ccpp_info_col_end
-// CHECK-NEXT:    integer(c_int), value, intent(in) :: ccpp_info_errflg
-// CHECK-NEXT:    real(c_double), target, intent(out) :: vmr_vmr_array(ncols, vmr_nvmr)
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    type(ccpp_info_t) :: ccpp_info_local
-// CHECK-NEXT:    type(vmr_type) :: vmr_local
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    ccpp_info_local%errmsg = ' '
-// CHECK-NEXT:    ccpp_info_local%col_start = ccpp_info_col_start
-// CHECK-NEXT:    ccpp_info_local%col_end = ccpp_info_col_end
-// CHECK-NEXT:    ccpp_info_local%errflg = ccpp_info_errflg
-// CHECK-NEXT:    vmr_local%nvmr = vmr_nvmr
-// CHECK-NEXT:    call ddt_in_suite_init_physics( &
-// CHECK-NEXT:        ncols, ccpp_info_local, vmr_local, errmsg_f, errflg)
-// CHECK-NEXT:    vmr_vmr_array = real(vmr_local%vmr_array, c_double)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_physics_initial
-// CHECK-NEXT:  subroutine DdtIn_chost_physics_physics_final(errmsg, errflg) &
-// CHECK-NEXT:    bind(C, name='DdtIn_chost_physics_physics_final')
-// CHECK-NEXT:    character(kind=c_char, len=1), intent(out) :: errmsg(*)
-// CHECK-NEXT:    integer(c_int),               intent(out) :: errflg
-// CHECK-NEXT:    integer :: i
-// CHECK-NEXT:    character(len=512) :: errmsg_f
-// CHECK-NEXT:    errmsg_f = ' '
-// CHECK-NEXT:    errflg = 0
-// CHECK-NEXT:    call ddt_in_suite_final_physics(errflg, errmsg_f)
-// CHECK-NEXT:    do i = 1, len_trim(errmsg_f)
-// CHECK-NEXT:      errmsg(i) = errmsg_f(i:i)
-// CHECK-NEXT:    end do
-// CHECK-NEXT:    errmsg(len_trim(errmsg_f)+1) = c_null_char
-// CHECK-NEXT:  end subroutine DdtIn_chost_physics_physics_final
+// CHECK:       CONTAINS
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_register(errmsg, errflg) BIND(C,                                 &
+// CHECK:           name='DdtIn_chost_physics_register')
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      call ddt_in_suite_register(errflg, errmsg_f)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_register
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_initialize(errmsg, errflg) BIND(C,                               &
+// CHECK:           name='DdtIn_chost_physics_initialize')
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      call ddt_in_suite_initialize(errflg, errmsg_f)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_initialize
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_finalize(errmsg, errflg) BIND(C,                                 &
+// CHECK:           name='DdtIn_chost_physics_finalize')
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      call ddt_in_suite_finalize(errflg, errmsg_f)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_finalize
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_run(ncols, vmr_nvmr, col_start, col_end, O3, HNO3,               &
+// CHECK:           vmr_vmr_array, errmsg, errflg) BIND(C, name='DdtIn_chost_physics_run')
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: ncols
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: vmr_nvmr
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: col_start
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: col_end
+// CHECK-NEXT:      real(c_double), target, intent(in) :: O3(ncols)
+// CHECK-NEXT:      real(c_double), target, intent(in) :: HNO3(ncols)
+// CHECK-NEXT:      real(c_double), target, intent(inout) :: vmr_vmr_array(ncols, vmr_nvmr)
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK-NEXT:      type(vmr_type) :: vmr_local
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      vmr_local%nvmr = vmr_nvmr
+// CHECK-NEXT:      allocate(vmr_local%vmr_array(ncols, vmr_nvmr))
+// CHECK-NEXT:      vmr_local%vmr_array = real(vmr_vmr_array, kind_phys)
+// CHECK-NEXT:      call ddt_in_suite_physics( &
+// CHECK-NEXT:          col_start, col_end, O3, HNO3, vmr_local, errmsg_f, errflg)
+// CHECK-NEXT:      vmr_vmr_array = real(vmr_local%vmr_array, c_double)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_run
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_timestep_initial(errmsg, errflg) BIND(C,                         &
+// CHECK:           name='DdtIn_chost_physics_timestep_initial')
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      call ddt_in_suite_timestep_init_physics(errflg, errmsg_f)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_timestep_initial
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_timestep_final(ncols, vmr_nvmr, vmr_vmr_array, errmsg,           &
+// CHECK:           errflg) BIND(C, name='DdtIn_chost_physics_timestep_final')
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: ncols
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: vmr_nvmr
+// CHECK-NEXT:      real(c_double), target, intent(in) :: vmr_vmr_array(ncols, vmr_nvmr)
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK-NEXT:      type(vmr_type) :: vmr_local
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      vmr_local%nvmr = vmr_nvmr
+// CHECK-NEXT:      allocate(vmr_local%vmr_array(ncols, vmr_nvmr))
+// CHECK-NEXT:      vmr_local%vmr_array = real(vmr_vmr_array, kind_phys)
+// CHECK-NEXT:      call ddt_in_suite_timestep_final_physics(ncols, vmr_local, errmsg_f, errflg)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_timestep_final
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_physics_initial(ncols, vmr_nvmr, ccpp_info_col_start,            &
+// CHECK:           ccpp_info_col_end, ccpp_info_errflg, vmr_vmr_array, errmsg, errflg) BIND(C,                   &
+// CHECK-NEXT:      name='DdtIn_chost_physics_physics_initial')
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: ncols
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: vmr_nvmr
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: ccpp_info_col_start
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: ccpp_info_col_end
+// CHECK-NEXT:      integer(c_int), value, intent(in) :: ccpp_info_errflg
+// CHECK-NEXT:      real(c_double), target, intent(out) :: vmr_vmr_array(ncols, vmr_nvmr)
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK-NEXT:      type(ccpp_info_t) :: ccpp_info_local
+// CHECK-NEXT:      type(vmr_type) :: vmr_local
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      ccpp_info_local%errmsg = ' '
+// CHECK-NEXT:      ccpp_info_local%col_start = ccpp_info_col_start
+// CHECK-NEXT:      ccpp_info_local%col_end = ccpp_info_col_end
+// CHECK-NEXT:      ccpp_info_local%errflg = ccpp_info_errflg
+// CHECK-NEXT:      vmr_local%nvmr = vmr_nvmr
+// CHECK-NEXT:      call ddt_in_suite_init_physics( &
+// CHECK-NEXT:          ncols, ccpp_info_local, vmr_local, errmsg_f, errflg)
+// CHECK-NEXT:      vmr_vmr_array = real(vmr_local%vmr_array, c_double)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_physics_initial
+// CHECK-LABEL:   subroutine DdtIn_chost_physics_physics_final(errmsg, errflg) BIND(C,                            &
+// CHECK:           name='DdtIn_chost_physics_physics_final')
+// CHECK-NEXT:      character(kind=c_char, len=1), intent(out) :: errmsg(*)
+// CHECK-NEXT:      integer(c_int), intent(out) :: errflg
+// CHECK-NEXT:      integer :: i
+// CHECK-NEXT:      character(len=512) :: errmsg_f
+// CHECK:           errmsg_f = ' '
+// CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      call ddt_in_suite_final_physics(errflg, errmsg_f)
+// CHECK-NEXT:      do i = 1, len_trim(errmsg_f)
+// CHECK-NEXT:        errmsg(i) = errmsg_f(i:i)
+// CHECK-NEXT:      end do
+// CHECK-NEXT:      errmsg(len_trim(errmsg_f)+1) = c_null_char
+// CHECK-NEXT:    end subroutine DdtIn_chost_physics_physics_final
 // CHECK-NEXT:  end module DdtIn_ccpp_chost_cap
 // CHECK:       // -----
 // CHECK-LABEL: // FILE: ccpp_kinds.F90

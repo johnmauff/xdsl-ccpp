@@ -31,7 +31,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CamSuiteSchemeListOp,
     ClearErrStateOp,
     ClearStringOp,
-    ConstituentFunctionOp,
     DerivedType,
     ErrorPropagateOp,
     HostVarRefOp,
@@ -39,9 +38,8 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     SetStringOp,
     StrCmpOp,
     StringLiteralExprOp,
-    SuiteVariablesOp,
     TrimOp,
-    VarRefExprOp,
+    ValueExprOp,
 )
 from xdsl_ccpp.transforms.constituent_cap import (
     _collect_constituent_info,
@@ -56,7 +54,6 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     SUITE_ARG_NAME,
     SUITE_FN_INFIX,
-    _assign_const,
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
     _collect_ddt_use_stubs,
@@ -67,6 +64,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _scf_if,
     arg_attr_values,
     derive_camel_case_name,
+    fixed_interface_fn,
     iter_arg_tables,
     resolve_capscratch_cap_var_name,
 )
@@ -93,6 +91,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_LOOP_EXTENT_STD_NAME,
     CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
+    name_local,
 )
 
 
@@ -762,96 +761,95 @@ def _add_dimension_only_names(
             input_vars.add(dim_name)
 
 
-def _render_suite_variables_subroutine(suite_vars) -> "SuiteVariablesOp":
-    """Render the per-suite (input, output, required) variable-name lists
-    computed by _build_suite_variables_fn's passes into a SuiteVariablesOp
-    holding a ConstituentFunctionOp for ccpp_physics_suite_variables."""
+def _render_suite_variables_subroutine(suite_vars) -> func.FuncOp:
+    """Build ccpp_physics_suite_variables from the per-suite (input, output,
+    required) variable-name lists computed by _build_suite_variables_fn's
+    passes.
+
+    Its interface is fixed (hosts call it with errmsg/errflg positionally,
+    before the optional input_vars/output_vars), so it is a
+    fixed_interface_fn: errmsg/errflg are intent(out) block arguments, not
+    returned values -- those would be printed after all the inputs."""
     suite_var_name_len = 36  # character length matching cm=36 in test driver
 
     char_base = TypeConversions.getBaseType("character")
-    suite_name_ref = HostVarRefOp(
-        "suite_name", "", memref.MemRefType(char_base, [DYNAMIC_INDEX]))
-    errmsg_ref = HostVarRefOp(
-        "errmsg", "", memref.MemRefType(char_base, [CCPP_ERRMSG_LEN]))
-    errflg_ref = HostVarRefOp(
-        "errflg", "", memref.MemRefType(TypeConversions.getBaseType("integer"), []))
+    char_type = memref.MemRefType(char_base, [DYNAMIC_INDEX])
+    logical_type = memref.MemRefType(i1, [])
+    args = [
+        ("suite_name", char_type, "in", ()),
+        ("var_list", memref.MemRefType(char_type, []), "out", ()),
+        ("errmsg", memref.MemRefType(char_base, [CCPP_ERRMSG_LEN]), "out", ()),
+        ("errflg", memref.MemRefType(TypeConversions.getBaseType("integer"), []), "out", ()),
+        ("input_vars", logical_type, "in", ("optional",)),
+        ("output_vars", logical_type, "in", ("optional",)),
+    ]
+    do_input = memref.AllocaOp.get(i1, shape=[])
+    name_local(do_input, "do_input")
+    do_output = memref.AllocaOp.get(i1, shape=[])
+    name_local(do_output, "do_output")
 
-    def _flag(name: str):
-        return VarRefExprOp(name, result_type=i1)
+    def _const(value: int, width: int = 32):
+        return arith.ConstantOp(IntegerAttr.from_int_and_width(value, width))
+
+    def _flag(alloca):
+        return ValueExprOp(alloca.memref, result_type=i1)
 
     def _not(cond):
-        return arith.XOrIOp(cond, arith.ConstantOp(IntegerAttr.from_int_and_width(1, 1)))
+        return arith.XOrIOp(cond, _const(1, 1))
 
-    def _var_list_ops(names: list) -> list:
-        """allocate(var_list(n)) and one var_list(j) = '<name>' per name."""
-        ops: list = [AllocateOp("var_list", dim_ops=[
-            arith.ConstantOp(IntegerAttr.from_int_and_width(len(names), 32))
-        ])]
-        for j, v in enumerate(names):
-            ops.append(AssignOp(
-                lhs_op=IndexExprOp(VarRefExprOp("var_list"), [
-                    arith.ConstantOp(IntegerAttr.from_int_and_width(j + 1, 32))
-                ]),
-                rhs_op=StringLiteralExprOp(f"{v:<{suite_var_name_len}}"),
-            ))
-        return ops
+    def _body(block_args) -> list:
+        suite_name, var_list, errmsg, errflg, input_vars, output_vars = block_args
 
-    body_ops: list = [
-        suite_name_ref, errmsg_ref, errflg_ref,
-        ClearErrStateOp("errflg", "errmsg"),
-        _assign_const("do_input", True),
-        _assign_const("do_output", True),
-    ]
-    for flag, arg in (("do_input", "input_vars"), ("do_output", "output_vars")):
-        body_ops += _scf_if(
-            CallExprOp("present", [VarRefExprOp(arg)], result_type=i1),
-            [AssignOp(lhs_op=VarRefExprOp(flag), rhs_op=VarRefExprOp(arg))],
-        )
+        def _var_list_ops(names: list) -> list:
+            """allocate(var_list(n)) and one var_list(j) = '<name>' per name."""
+            ops: list = [AllocateOp("var_list", dim_ops=[_const(len(names))])]
+            for j, v in enumerate(names):
+                ops.append(AssignOp(
+                    lhs_op=IndexExprOp(ValueExprOp(var_list), [_const(j + 1)]),
+                    rhs_op=StringLiteralExprOp(f"{v:<{suite_var_name_len}}"),
+                ))
+            return ops
 
-    # One branch per suite, built inside-out: the innermost else is the
-    # "no suite matched" error, as in the dispatchers (run_dispatch.py).
-    trim_suite_name = TrimOp(suite_name_ref.res)
-    current_false_ops = _build_no_suite_matched_false_ops(
-        errmsg_ref.res, trim_suite_name.res, errflg_ref.res,
-    )[:-1]
-    for suite_name, (in_v, out_v, req_v) in reversed(list(suite_vars.items())):
-        # input only / output only / required
-        selected = _scf_if(
-            arith.AndIOp(_flag("do_input"), _not(_flag("do_output"))),
-            _var_list_ops(in_v),
-            _scf_if(
-                arith.AndIOp(_not(_flag("do_input")), _flag("do_output")),
-                _var_list_ops(out_v),
-                _var_list_ops(req_v),
-            ),
-        )
-        strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite_name)
-        current_false_ops = [
-            strcmp_op,
-            scf.IfOp(strcmp_op.res, [], [*selected, scf.YieldOp()],
-                     [*current_false_ops, scf.YieldOp()]),
+        ops: list = [
+            AssignOp(lhs_op=ValueExprOp(errflg), rhs_op=_const(0)),
+            AssignOp(lhs_op=ValueExprOp(errmsg), rhs_op=StringLiteralExprOp("")),
+            AssignOp(lhs_op=ValueExprOp(do_input.memref), rhs_op=_const(1, 1)),
+            AssignOp(lhs_op=ValueExprOp(do_output.memref), rhs_op=_const(1, 1)),
         ]
-    body_ops += [trim_suite_name, *current_false_ops]
+        for flag, arg in ((do_input, input_vars), (do_output, output_vars)):
+            ops += _scf_if(
+                CallExprOp("present", [ValueExprOp(arg)], result_type=i1),
+                [AssignOp(lhs_op=ValueExprOp(flag.memref), rhs_op=ValueExprOp(arg))],
+            )
 
-    fn_op = ConstituentFunctionOp(
-        fn_name="ccpp_physics_suite_variables",
-        is_function=False,
-        args=["suite_name", "var_list", "errmsg", "errflg", "input_vars", "output_vars"],
-        use_stmts=[],
-        arg_decls=[
-            "character(len=*), intent(in) :: suite_name",
-            "character(len=*), allocatable, intent(out) :: var_list(:)",
-            f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
-            "integer, intent(out) :: errflg",
-            "logical, optional, intent(in) :: input_vars",
-            "logical, optional, intent(in) :: output_vars",
-        ],
-        local_decls=["logical :: do_input, do_output"],
-        body_ops=body_ops,
-        result_name=None,
-        result_decl=None,
+        # One branch per suite, built inside-out: the innermost else is the
+        # "no suite matched" error, as in the dispatchers (run_dispatch.py).
+        trim_suite_name = TrimOp(suite_name)
+        current_false_ops = _build_no_suite_matched_false_ops(
+            errmsg, trim_suite_name.res, errflg,
+        )[:-1]
+        for suite, (in_v, out_v, req_v) in reversed(list(suite_vars.items())):
+            # input only / output only / required
+            selected = _scf_if(
+                arith.AndIOp(_flag(do_input), _not(_flag(do_output))),
+                _var_list_ops(in_v),
+                _scf_if(
+                    arith.AndIOp(_not(_flag(do_input)), _flag(do_output)),
+                    _var_list_ops(out_v),
+                    _var_list_ops(req_v),
+                ),
+            )
+            strcmp_op = StrCmpOp(trim_suite_name.res, literal=suite)
+            current_false_ops = [
+                strcmp_op,
+                scf.IfOp(strcmp_op.res, [], [*selected, scf.YieldOp()],
+                         [*current_false_ops, scf.YieldOp()]),
+            ]
+        return [*ops, trim_suite_name, *current_false_ops]
+
+    return fixed_interface_fn(
+        "ccpp_physics_suite_variables", args, _body, locals_=[do_input, do_output],
     )
-    return SuiteVariablesOp(fn_op)
 
 
 @dataclass(frozen=True)
@@ -894,7 +892,7 @@ class CCPPCAP(ModulePass):
         return derive_camel_case_name(suite_name)
 
     def _build_suite_variables_fn(self, suite_descriptions, ccpp_mod,
-                                   host_std_names, protected_std_names) -> "SuiteVariablesOp":
+                                   host_std_names, protected_std_names) -> func.FuncOp:
         """Build the ccpp_physics_suite_variables subroutine for all suites.
 
         Scans the MLIR IR directly (ArgumentOp properties) rather than going

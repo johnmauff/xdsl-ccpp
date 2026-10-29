@@ -15,9 +15,7 @@ from xdsl.ir import Block, Region
 from xdsl_ccpp.backend.print_ftn import ftnPrintContext
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccEnterDataOp,
-    ConstituentFunctionOp,
     HostVarRefOp,
-    RawFortranLinesOp,
 )
 from xdsl_ccpp.transforms.ccpp_cap import _inject_capscratch_gpu_exit
 from xdsl_ccpp.transforms.constituent_cap import _generate_constituent_api
@@ -28,15 +26,15 @@ _RESIDENT = {"lc_constituent_array": True, "lc_const_tend": True}
 _SCRATCH = [("lc_scratch", 2, "ncols, pver", None, True, None)]
 
 
-def _init_fn(**kwargs) -> ConstituentFunctionOp:
+def _init_fn(**kwargs) -> func.FuncOp:
     _, api_op, _ = _generate_constituent_api(
         "TestHost", [], [], scratch_vars=_SCRATCH,
         framework_var_residency=_RESIDENT, needs_const_tend=True, **kwargs,
     )
     return next(
         op for op in api_op.walk()
-        if isinstance(op, ConstituentFunctionOp)
-        and op.fn_name.data.endswith("_ccpp_initialize_constituents")
+        if isinstance(op, func.FuncOp)
+        and op.sym_name.data.endswith("_ccpp_initialize_constituents")
     )
 
 
@@ -62,8 +60,7 @@ def _printed(fn) -> str:
 def test_residency_is_ops_not_raw_text():
     fn = _init_fn()
     assert _entered(fn) == ["lc_constituent_array", "lc_const_tend", "lc_scratch"]
-    raw = [op.lines.data for op in fn.walk() if isinstance(op, RawFortranLinesOp)]
-    assert not any("acc" in text for text in raw)
+    assert "!$acc" not in str(fn)  # no directive text in the IR
 
 
 def test_printed_directives():
