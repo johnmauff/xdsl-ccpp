@@ -50,6 +50,7 @@ from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.tools.ccpp_dsl import ccppMain
+from xdsl_ccpp.tools.cam_case import generator_options, read_case
 from xdsl_ccpp.tools.py2sdf import add_import_path, build_module, suite_xml
 from xdsl_ccpp.transforms.util.cap_shared import split_scheme_table_name
 
@@ -208,22 +209,8 @@ def _compare(xml_module, py_module) -> tuple[str, list]:
 def _case_options(case_dir: str) -> tuple[str, dict]:
     """(suite name, generator options) a built CAM-SIMA case generated its
     caps with, from its build cache (host metadata, scheme files, GPU)."""
-    exeroot = os.path.join(case_dir, "bld")
-    cache = ET.parse(os.path.join(exeroot, "atm", "obj", "cam_build_cache.xml")).getroot()
-    paths = lambda tag: [e.get("file_path") for e in cache.iter(tag) if e.get("file_path")]
-    sdf = os.path.basename(paths("SDF")[0])
-    suite = sdf[len("suite_"):].rsplit(".", 1)[0]
-    env = open(os.path.join(case_dir, "env_build.xml")).read()
-    srcroot = re.search(r'id="SRCROOT"[^>]*value="([^"]*)"',
-                        open(os.path.join(case_dir, "env_case.xml")).read()).group(1)
-    options = {"scheme_files": paths("scheme"),
-               "host_files": paths("host") + paths("scheme_namelist_meta_file"),
-               "host_name": "cam", "cam_host": True, "legacy_mode": True,
-               "framework_src_dir": os.path.join(srcroot, "ccpp_framework", "src"),
-               "kind_map": ["r8:REAL64"], "verbose": 0}
-    if re.search(r'id="OPENACC_GPU_OFFLOAD"[^>]*value="TRUE"', env):
-        options["directive"] = "acc"
-    return suite, options
+    case = read_case(case_dir)
+    return case.suite, generator_options(case)
 
 
 def _generate(options: dict, out_dir: str, **source) -> dict[str, list[str]]:

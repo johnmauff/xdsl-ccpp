@@ -193,6 +193,40 @@ printer can interpret the type without parsing Fortran syntax.
 
 ---
 
+## Checking generated caps against real CAM-SIMA cases
+
+The FileCheck goldens cover `examples/` only. For a change to the cap
+generators, also check the caps of real CAM-SIMA suites with
+`xdsl_ccpp/tools/cap_oracle.py`. It needs built CAM-SIMA case directories,
+whose build cache records the generator inputs. It only generates caps and
+compiles nothing.
+
+```bash
+# Old vs new: generate each case with a base revision (default main) and with
+# the working tree, and diff the generated files. A refactor should report
+# IDENTICAL everywhere.
+python -m xdsl_ccpp.tools.cap_oracle diff [--base REV] CASE_DIR...
+
+# Against original capgen (CAM-SIMA's bundled ccpp_framework): compare what
+# the code does (scheme calls per phase, and what each argument receives).
+python -m xdsl_ccpp.tools.cap_oracle capgen CASE_DIR...
+```
+
+- Cases with the same inputs (e.g. the gnu, intel and nvhpc copies of an
+  FPHYStest case) are generated once. Distinct cases run in parallel
+  (`-j N`). The default is half the CPUs available to you: 4 on a Derecho
+  login node, whose per-user quota is 8.
+- `capgen` skips Python-suite and package-cap cases, and compares GPU cases
+  without `--directive`. Suites capgen rejects (Kessler's `memory_space`)
+  are reported as `NO CAPGEN`, not as failures.
+- Differences are written to `diff.txt` / `differences.txt` under `--out`
+  (default: a new temporary directory). The exit status is 1 if anything
+  differs.
+- A full aux_sima set (about 90 built cases, 29 distinct) takes about 2
+  minutes for `diff` and 1 minute for `capgen` on a login node.
+
+---
+
 ## Linting
 
 ```bash

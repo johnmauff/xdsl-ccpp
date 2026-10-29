@@ -12968,3 +12968,42 @@ Tests: suite-function signatures in 10 `completed_ir` goldens gain the
 `ccpp.standard_name` attributes; the run-dispatch unit tests pass the
 recorded standard names; new `TestMergedArgDoesNotShadowSameLocalName`;
 pytest 1124 passed.
+
+## `cap-oracle-check`: check generated caps against real CAM-SIMA cases (2026-10-28)
+
+The FileCheck goldens cover `examples/` only, and missed the three binding
+bugs of 2026-10-28 (cloud_water, rasch_kristjansson `top_lev`, cam4 `dlf`)
+and the spurious GPU `copy(qc, qr, qv)`; those were found by hand-run
+comparisons on CAM-SIMA suites. They are now a tool:
+`python -m xdsl_ccpp.tools.cap_oracle` (usage in DEVELOPERS.md).
+
+- `diff` -- generates each built CAM-SIMA case's caps with a base revision
+  (`git archive`, default `main`) and with the working tree, each in its own
+  subprocess, and diffs the generated files (run-specific paths in
+  `ccpp_datatable.xml` normalized). For a refactor the expected result is
+  IDENTICAL everywhere.
+- `capgen` -- generates each case with original capgen (from the case's own
+  CAM-SIMA checkout, exit status 2 when capgen rejects the input) and with
+  the working tree, and compares what the code does
+  (`xdsl_ccpp/tools/cap_compare.py`): scheme calls per phase with loop
+  depth, and the expression each argument finally receives, resolved
+  through the host cap; cap-owned variables may be renamed consistently.
+  Group names come from the suite definition file; the correspondence
+  between the generators' constituent containers is an explicit table.
+  Python-suite and package-cap cases are skipped, GPU cases compared
+  without `--directive`.
+- Case inputs: `xdsl_ccpp/tools/cam_case.py` reads a case's build cache and
+  XML variables (suite files or Python suite and its `suites-py` library,
+  scheme and host metadata, preprocessor definitions, GPU, package caps)
+  and builds the `ccpp_dsl` command line `cam_autogen.py` uses;
+  `verify_py_suites --case` now uses it too. Cases are grouped by input
+  file contents (each case has its own copy of the registry metadata), and
+  distinct cases run in parallel (`-j`, default half the user's CPU quota:
+  4 on a Derecho login node).
+
+Results on the xdsl58g/i/n and package-cap cases (92 built, 29 distinct):
+`diff` against `main` all IDENTICAL (2 min); `capgen` all EQUIVALENT,
+including production cam4, adiabatic, held_suarez_1994 and tj2016, except
+Kessler, which capgen rejects (`memory_space`) (1 min). Against `65e24d8`
+(before `rk-top-lev-host-match`), `capgen` reports exactly the four known
+binding differences. 11 unit tests (`test_cap_oracle.py`); pytest 1135 passed.
