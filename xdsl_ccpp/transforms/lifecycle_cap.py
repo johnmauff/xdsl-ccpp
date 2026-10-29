@@ -19,7 +19,6 @@ from xdsl.dialects.builtin import (
 from xdsl.ir import Block, Region
 
 from xdsl_ccpp.dialects.ccpp_utils import (
-    CapVarRefOp,
     DerivedType,
     HostVarRefOp,
     LazyAllocOp,
@@ -33,6 +32,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_INTENT,
     SUITE_ARG_NAME,
     SUITE_ARG_STD_NAME,
+    CapVarRef,
     SchemeArgsByStd,
     _assert_call_arg_count_matches_signature,
     _build_ddt_resolution_maps,
@@ -367,8 +367,8 @@ def _generate_lifecycle_fn(
                 # Also gated to in/inout only -- an intent(out)-only arg just
                 # needs a fresh writable local (see the comment on intent
                 # above).
-                var_name, var_type, _ftn = _cap_var_map[std_name]
-                cap_ref = CapVarRefOp(var_name, var_type or arg_type)
+                cv_ref, var_type, _ftn = _cap_var_map[std_name]
+                cap_ref = cv_ref.ref_op(var_type or arg_type)
                 true_branch_pre_ops.append(cap_ref)
                 call_inputs.append(cap_ref.res)
             elif (
@@ -409,12 +409,7 @@ def _generate_lifecycle_fn(
                     # must match that exactly, or it's a reference to a
                     # symbol that no longer exists (confirmed the hard way
                     # in real CI: "has no IMPLICIT type").
-                    _lc_name = f"lc_{arg_name}"
-                    cap_ref_name = (
-                        f"lc_instances({instance_local_name})%{_lc_name}"
-                        if instance_local_name is not None
-                        else _lc_name
-                    )
+                    cv_ref = CapVarRef(f"lc_{arg_name}", instance_local_name)
                     if (
                         instance_local_name is not None
                         and not _lc_instances_alloc_emitted
@@ -439,14 +434,13 @@ def _generate_lifecycle_fn(
                         hoisted_alloc_ops.append(
                             LazyAllocOp(
                                 var_name="lc_instances",
-                                kind_name="type",
                                 dim_var_refs=[
                                     new_block.args[extra_host_arg_index[ninstances_local_name]]
                                 ],
                             )
                         )
                         _lc_instances_alloc_emitted = True
-                    cap_ref = CapVarRefOp(cap_ref_name, arg_type)
+                    cap_ref = cv_ref.ref_op(arg_type)
                     hoisted_alloc_ops.append(cap_ref)
                     call_inputs.append(cap_ref.res)
                     _ddt_mod = _CCPP_CONSTITUENT_MOD
@@ -525,8 +519,8 @@ def _generate_lifecycle_fn(
                 # Use the SSA result type; cap_var_map may store None for
                 # framework-managed and scratch vars whose type is only
                 # known from the actual return value.
-                var_name, var_type, _ftn = _cap_var_map[std_name]
-                cap_ref = CapVarRefOp(var_name, var_type or ret_type)
+                cv_ref, var_type, _ftn = _cap_var_map[std_name]
+                cap_ref = cv_ref.ref_op(var_type or ret_type)
                 copy_pre_ops.append(cap_ref)
                 copy_ops.append(memref.CopyOp(result, cap_ref.res))
             elif std_name and std_name in _host_var_map_lc:

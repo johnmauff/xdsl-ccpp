@@ -69,8 +69,7 @@ class _PendingAlloc:
     var_name: str
     std_key: str
     alloc_dim_names: list
-    kind_name: object
-    init_value: object
+    init_value: object   # the .meta default_value literal, or None
     needs_device_residency: bool
     producer_scheme: str
     is_run_local: bool = False

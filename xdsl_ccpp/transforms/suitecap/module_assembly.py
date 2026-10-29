@@ -98,6 +98,12 @@ class ModuleAssemblyMixin:
                     ModuleVarOp(entry.local_name, "integer", rank=entry.rank,
                                 needs_device_residency=entry.needs_device_residency)
                 )
+            elif entry.fortran_type == "character":
+                allocatable_mod_vars.append(
+                    ModuleVarOp(entry.local_name, "character",
+                                char_len=TypeConversions.char_len(entry.kind), rank=entry.rank,
+                                needs_device_residency=entry.needs_device_residency)
+                )
             else:
                 allocatable_mod_vars.append(
                     ModuleVarOp(entry.local_name, entry.fortran_type,

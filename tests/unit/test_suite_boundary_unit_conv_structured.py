@@ -1,23 +1,15 @@
-"""lang-neutral-expr-ir Stage 3c: UnitConvertOp's structured conversion_op
-path, driven through the real metadata pipeline (not just pure op
-construction -- see test_expr_ir_dual_print.py's TestUnitConvertRegionShape
-for that).
-
-Only a scalar arg whose own declared kind is a bare numeric literal (e.g.
-`kind = 8`) with no preceding kind-cast is eligible for the structured
-`arith` form (see suite_cap.py's `_apply_kind_and_unit_casts`); every
-other real kind (named, e.g. kind_phys) and every array-shaped arg keeps
-the opaque-text `to_scheme_expr`/`to_host_expr` form permanently. This
-module proves: the eligible case actually takes the structured path, its
-printed Fortran is byte-identical to what the opaque-text path would have
-produced for the same inputs, and both ineligible cases (named kind,
-array shape) still take the opaque-text path.
+"""A unit conversion at the suite boundary is data on UnitConvertOp -- an
+operation ("add", "sub", "mul") and a factor -- driven through the real
+metadata pipeline, for every argument shape: a scalar with a bare-digit
+kind, a named kind, an exponent-form factor, and an array. The printed
+Fortran gives the factor the argument's kind, keeping the factor's
+spelling (1.0E6 stays 1.0E6).
 """
 
 from io import StringIO
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS
-from xdsl.dialects import arith
+import pytest
 from xdsl_ccpp.backend.print_ftn import print_to_ftn
 from xdsl_ccpp.dialects.ccpp_utils import UnitConvertOp
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
@@ -90,83 +82,21 @@ def _fn_body(fortran: str, fn_name: str) -> str:
     return fortran.split(f"subroutine {fn_name}")[1].split(f"end subroutine {fn_name}")[0]
 
 
-class TestScalarBareDigitKindTakesStructuredPath:
-    """scheme_a's own kind (8) matches the host's (8, both bare digits) --
-    no kind mismatch at all, only a unit mismatch (cm vs m) -- so `cur` is
-    a plain block argument and the structured path's gate is fully met."""
-
-    def test_builds_a_conversion_region_not_opaque_text(self, run_host_match, ccpp_context):
-        unit_convert_op, _fortran = _run(
-            run_host_match, ccpp_context, scheme_kind="8", host_kind="8", dimensions="()",
-        )
-        assert unit_convert_op.to_scheme_expr is None
-        assert unit_convert_op.conversion is not None
-        root = unit_convert_op.conversion.block.last_op
-        assert isinstance(root, arith.MulfOp)
-        assert isinstance(root.rhs.owner, arith.ConstantOp)
-        assert root.rhs.owner.value.value.data == 100.0
-
-    def test_printed_fortran_matches_opaque_path_text_exactly(self, run_host_match, ccpp_context):
-        # UNIT_CONVERSIONS[("cm", "m")] == ("* 100.0", "* 0.01") -- the
-        # opaque-text path would print this exact suffixed literal
-        # ("* 100.0_8") for a kind=8 arg; the structured path must print
-        # byte-identically, since both paths must agree on output text.
-        _unit_convert_op, fortran = _run(
-            run_host_match, ccpp_context, scheme_kind="8", host_kind="8", dimensions="()",
-        )
-        fn = _fn_body(fortran, "test_suite_physics")
-        unit_conv_line = next(l for l in fn.splitlines() if "x_unit_conv = " in l)
-        assert "x * 100.0_8" in unit_conv_line
-
-
-class TestNamedKindStaysOnOpaquePath:
-    """kind_phys is a named kind -- real_kind_width returns None, so even
-    with the identical unit mismatch, the structured path's gate is not
-    met and the opaque-text form is used, exactly as before this change."""
-
-    def test_builds_opaque_text_not_a_conversion_region(self, run_host_match, ccpp_context):
-        unit_convert_op, _fortran = _run(
-            run_host_match, ccpp_context,
-            scheme_kind="kind_phys", host_kind="kind_phys", dimensions="()",
-        )
-        assert unit_convert_op.to_scheme_expr is not None
-        assert unit_convert_op.conversion is None
-
-
-class TestExponentFormLiteralStaysOnOpaquePath:
-    """(um, m) uses exponent-form literals ("* 1.0E6" / "* 1.0E-6") whose
-    spelling Python's float-to-str round trip can't reproduce exactly
-    ("1.0E6" -> "1000000.0", "1.0E-6" -> "1e-06") -- _parse_unit_conversion
-    must recognize this and stay on the opaque-text path rather than
-    silently emitting a differently-spelled (if numerically equal)
-    literal (Copilot PR #115 review)."""
-
-    def test_builds_opaque_text_not_a_conversion_region(self, run_host_match, ccpp_context):
-        unit_convert_op, _fortran = _run(
-            run_host_match, ccpp_context, scheme_kind="8", host_kind="8", dimensions="()",
-            scheme_units="um", host_units="m",
-        )
-        assert unit_convert_op.to_scheme_expr is not None
-        assert unit_convert_op.conversion is None
-
-    def test_printed_fortran_keeps_the_original_literal_spelling(self, run_host_match, ccpp_context):
-        _unit_convert_op, fortran = _run(
-            run_host_match, ccpp_context, scheme_kind="8", host_kind="8", dimensions="()",
-            scheme_units="um", host_units="m",
-        )
-        fn = _fn_body(fortran, "test_suite_physics")
-        unit_conv_line = next(l for l in fn.splitlines() if "x_unit_conv = " in l)
-        assert "x * 1.0E6_8" in unit_conv_line
-
-
-class TestArrayShapedArgStaysOnOpaquePath:
-    """A bare-digit kind on an array-shaped arg is still ineligible -- one
-    arith op cannot represent an array-wide "+ 273.15"-style assignment."""
-
-    def test_builds_opaque_text_not_a_conversion_region(self, run_host_match, ccpp_context):
-        unit_convert_op, _fortran = _run(
-            run_host_match, ccpp_context, scheme_kind="8", host_kind="8",
-            dimensions="(horizontal_dimension)",
-        )
-        assert unit_convert_op.to_scheme_expr is not None
-        assert unit_convert_op.conversion is None
+@pytest.mark.parametrize("kind, dimensions, scheme_units, factor, printed", [
+    ("8", "()", "cm", "100.0", "x * 100.0_8"),
+    ("kind_phys", "()", "cm", "100.0", "x * 100.0_kind_phys"),
+    ("8", "()", "um", "1.0E6", "x * 1.0E6_8"),
+    ("8", "(horizontal_dimension)", "cm", "100.0", "x * 100.0_8"),
+])
+def test_conversion_is_operation_and_factor(
+    run_host_match, ccpp_context, kind, dimensions, scheme_units, factor, printed,
+):
+    unit_convert_op, fortran = _run(
+        run_host_match, ccpp_context, scheme_kind=kind, host_kind=kind,
+        dimensions=dimensions, scheme_units=scheme_units,
+    )
+    assert unit_convert_op.operation.data == "mul"
+    assert unit_convert_op.factor.data == factor
+    fn = _fn_body(fortran, "test_suite_physics")
+    unit_conv_line = next(l for l in fn.splitlines() if "x_unit_conv = " in l)
+    assert printed in unit_conv_line

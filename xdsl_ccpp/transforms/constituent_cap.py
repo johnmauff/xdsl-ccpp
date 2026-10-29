@@ -16,31 +16,33 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ArrayConstructorExprOp,
     AssignOp,
     CallExprOp,
-    CamDirectCallOp,
+    CallStatementOp,
     CamHostConstituentApiOp,
     ClearErrStateOp,
     DdtComponentDeclOp,
     DdtMethodCallOp,
     DerivedType,
     DerivedTypeDefOp,
+    DoLoopOp,
     ErrorExitOp,
     ErrorGuardOp,
     ErrorPropagateOp,
     HostVarRefOp,
     IndexExprOp,
     KeywordArgExprOp,
+    MetadataLiteralExprOp,
+    MethodCallExprOp,
     MemberAccessExprOp,
     ModuleVarOp,
     NonCamHostConstituentApiOp,
     NullifyPointerOp,
     PointerAssignOp,
-    PointerSliceAssignOp,
     ReturnStmtOp,
     SafeDeallocOp,
     ScopedBlockOp,
+    SliceExprOp,
     StringConcatExprOp,
     StringLiteralExprOp,
-    TextBoundedDoLoopOp,
     VarRefExprOp,
     WriteStmtOp,
     ZeroFillOp,
@@ -57,7 +59,14 @@ from xdsl_ccpp.transforms.util.cap_shared import (
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
 from xdsl_ccpp.transforms.util.typing import TypeConversions
-from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN, mark_pointer_local, name_local
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_ERRMSG_LEN,
+    CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_LOOP_EXTENT_STD_NAME,
+    CCPP_VERT_DIM_STD_NAME,
+    mark_pointer_local,
+    name_local,
+)
 
 
 def _errcode_errmsg_kwargs(
@@ -271,33 +280,42 @@ def _generate_constituent_api(
     n_fixed = len(fixed_advected)
     framework_var_residency = framework_var_residency or {}
     scratch_vars = scratch_vars or []
-    dyn_lc = [f"lc_{n}" for n in dynamic_array_names]
     multi_instance = instance_local_name is not None
     instance_type_name = f"{h}_lc_instance_t"
 
-    def ref(name: str) -> str:
-        """Return the reference text for module-level array `name` --
-        lc_instances(<instance>)%name when multi-instance, else the bare
-        module-var name unchanged."""
-        if multi_instance:
-            return f"lc_instances({instance_local_name})%{name}"
-        return name
-
-    def _ref_expr(name: str):
-        """Structured counterpart of ref(name): a plain VarRefExprOp when
-        not multi-instance, else a MemberAccessExprOp chained on a fresh
-        lc_instances(instance) IndexExprOp -- used for DdtMethodCallOp's
-        obj_expr_op (Stage 3a), not for the still-raw-text ref() call
-        sites elsewhere in this function."""
+    def _ref_expr(name: str, result_type=None):
+        """A reference to module-level variable `name`: a plain
+        VarRefExprOp when not multi-instance, else a MemberAccessExprOp
+        chained on a fresh lc_instances(instance) IndexExprOp. Each call
+        builds new ops, so call it once per use."""
         if multi_instance:
             idx = IndexExprOp(VarRefExprOp("lc_instances"), [VarRefExprOp(instance_local_name)])
-            return MemberAccessExprOp(idx, name)
-        return VarRefExprOp(name)
+            return MemberAccessExprOp(idx, name, result_type=result_type)
+        return VarRefExprOp(name, result_type=result_type)
+
+    def _size_of(name: str):
+        """size(<reference to name>), a default integer."""
+        return CallExprOp("size", [_ref_expr(name)], result_type=i32)
+
+    def _alloc_extent(dim_std_name: str):
+        """The extent this API allocates a scratch array with along the
+        dimension named dim_std_name; 1 for one it has no extent for."""
+        if dim_std_name in (CCPP_LOOP_EXTENT_STD_NAME, CCPP_HORIZ_DIM_STD_NAME):
+            return VarRefExprOp("ncols")
+        if dim_std_name == CCPP_VERT_DIM_STD_NAME:
+            return VarRefExprOp("pver")
+        if dim_std_name == "number_of_ccpp_constituents":
+            return _size_of("lc_all_constituents")
+        return arith.ConstantOp(IntegerAttr.from_int_and_width(1, 32))
+
+    def _allocated(name: str):
+        """allocated(<reference to name>), an i1 condition."""
+        return CallExprOp("allocated", [_ref_expr(name)], result_type=i1)
 
     def _enter_data_copyin(name: str, rank: int) -> list:
         """Make module-level real array `name` device-resident: a reference
-        to it (the same lc_instances(instance)%name form ref() gives when
-        multi-instance) and an AccEnterDataOp copyin. ccpp_cap.py's
+        to it (the same lc_instances(instance)%name form _ref_expr() gives
+        when multi-instance) and an AccEnterDataOp copyin. ccpp_cap.py's
         _inject_capscratch_gpu_exit emits the matching AccExitDataOp."""
         var_type = TypeConversions.convert("real", "kind_phys", rank)
         if multi_instance:
@@ -365,7 +383,7 @@ def _generate_constituent_api(
         if n_fixed > 0:
             module_var_ops.append(ModuleVarOp(
                 "cam_model_const_stdnames", "character",
-                kind=str(_max_std_len),
+                char_len=_max_std_len,
                 fixed_dim=n_fixed,
                 init_value_op=_std_names_init(),
             ))
@@ -414,7 +432,7 @@ def _generate_constituent_api(
         if n_fixed > 0:
             component_ops.append(DdtComponentDeclOp(
                 "cam_model_const_stdnames", "character",
-                kind=str(_max_std_len),
+                char_len=_max_std_len,
                 fixed_dim=n_fixed,
                 init_value_op=_std_names_init(),
             ))
@@ -454,7 +472,7 @@ def _generate_constituent_api(
     ]
     if n_fixed > 0:
         any_eq = arith.CmpiOp(
-            VarRefExprOp(ref("cam_model_const_stdnames"), result_type=i32),
+            _ref_expr("cam_model_const_stdnames", result_type=i32),
             VarRefExprOp("std_name", result_type=i32),
             "eq",
         )
@@ -462,22 +480,21 @@ def _generate_constituent_api(
             CallExprOp("any", [any_eq], result_type=i1),
             [_assign_const("is_const", True), ReturnStmtOp()],
         )
-        # ref() expands to lc_instances(instance)%... — guard allocated(lc_instances)
+        # The reference is lc_instances(instance)%... -- guard allocated(lc_instances)
         # before dereferencing, matching the same guard the dynamic-name loops use.
         if multi_instance:
             isc_body_ops.extend(_scf_if(_allocated_cond("lc_instances"), fixed_check_ops))
         else:
             isc_body_ops.extend(fixed_check_ops)
     for n in dynamic_array_names:
-        dyn_ref = ref(f"lc_{n}")
         inner_trim_check_ops = _scf_if(
             _trim_eq_cond("lc_std_name", "std_name"),
             [_assign_const("is_const", True), ReturnStmtOp()],
         )
         dyn_check_ops = _scf_if(
-            _allocated_cond(dyn_ref),
-            [TextBoundedDoLoopOp(
-                "lc_idx", f"size({dyn_ref})",
+            _allocated(f"lc_{n}"),
+            [DoLoopOp(
+                "lc_idx", _size_of(f"lc_{n}"),
                 [
                     DdtMethodCallOp(
                         obj_expr_op=IndexExprOp(_ref_expr(f"lc_{n}"), [VarRefExprOp("lc_idx")]),
@@ -508,32 +525,30 @@ def _generate_constituent_api(
     if multi_instance:
         da_body_ops.append(ReturnStmtOp(_not_allocated_cond("lc_instances")))
     for n in dynamic_array_names:
-        da_body_ops.append(SafeDeallocOp(ref(f"lc_{n}")))
+        da_body_ops.append(SafeDeallocOp(target_op=_ref_expr(f"lc_{n}")))
     da_body_ops += [
-        SafeDeallocOp(ref("lc_all_constituents")),
-        SafeDeallocOp(ref("lc_const_props")),
+        SafeDeallocOp(target_op=_ref_expr("lc_all_constituents")),
+        SafeDeallocOp(target_op=_ref_expr("lc_const_props")),
         # lc_constituent_array is a pointer into cam_constituents_obj storage;
         # nullify it before reset() to avoid a dangling pointer.
-        NullifyPointerOp(ref("lc_constituent_array"), if_associated=True),
+        NullifyPointerOp(target_op=_ref_expr("lc_constituent_array"), if_associated=True),
     ]
     if needs_const_tend:
-        da_body_ops.append(SafeDeallocOp(ref("lc_const_tend")))
+        da_body_ops.append(SafeDeallocOp(target_op=_ref_expr("lc_const_tend")))
     for lc_name, _rank, _alloc_dims, _cst_std, _needs_gpu, _base in scratch_vars:
-        lc_ref = ref(lc_name)
         if _cst_std:
-            da_body_ops.append(NullifyPointerOp(lc_ref))
+            da_body_ops.append(NullifyPointerOp(target_op=_ref_expr(lc_name)))
         else:
-            da_body_ops.append(SafeDeallocOp(lc_ref))
-    da_body_ops.append(CamDirectCallOp(f"{ref('cam_constituents_obj')}%reset", []))
+            da_body_ops.append(SafeDeallocOp(target_op=_ref_expr(lc_name)))
+    da_body_ops.append(DdtMethodCallOp(
+        obj_expr_op=_ref_expr("cam_constituents_obj"), method="reset",
+    ))
     da_op = fixed_interface_fn(
         f"{h}_ccpp_deallocate_dynamic_constituents", _instance_args, da_body_ops,
     )
 
     # ── 3. register_constituents ─────────────────────────────────────────
     # Uses ccpp_model_constituents_t (new_field handles dedup internally).
-    _lc_all = ref("lc_all_constituents")
-    _lc_props = ref("lc_const_props")
-    _cam_obj = ref("cam_constituents_obj")
     _host_constituents = (
         "host_constituents", memref.MemRefType(_props, [DYNAMIC_INDEX]), "in", ("target",),
     )
@@ -586,7 +601,7 @@ def _generate_constituent_api(
         and each fixed-advected constituent below. const_prop_op is the
         expression for the properties copied in."""
         return [
-            AllocateOp("const_prop", [], stat_var="errcode"),
+            AllocateOp("const_prop", stat_var="errcode"),
             *_scf_if(_int_var_cmp_zero("errcode", "ne"), [
                 ErrorExitOp("ERROR allocating const_prop"),
             ]),
@@ -600,18 +615,19 @@ def _generate_constituent_api(
         ]
 
     # Host constituents
-    rc_body_ops.append(TextBoundedDoLoopOp(
-        "lc_i", "size(host_constituents)", _new_field_from(
+    rc_body_ops.append(DoLoopOp(
+        "lc_i",
+        CallExprOp("size", [VarRefExprOp("host_constituents")], result_type=i32),
+        _new_field_from(
             IndexExprOp(VarRefExprOp("host_constituents"), [VarRefExprOp("lc_i")])
         ),
     ))
     # Dynamic scheme arrays
     for n in dynamic_array_names:
-        dyn_ref = ref(f"lc_{n}")
         rc_body_ops.extend(_scf_if(
-            _allocated_cond(dyn_ref),
-            [TextBoundedDoLoopOp(
-                "lc_i", f"size({dyn_ref})", _new_field_from(
+            _allocated(f"lc_{n}"),
+            [DoLoopOp(
+                "lc_i", _size_of(f"lc_{n}"), _new_field_from(
                     IndexExprOp(_ref_expr(f"lc_{n}"), [VarRefExprOp("lc_i")])
                 ),
             )],
@@ -629,11 +645,11 @@ def _generate_constituent_api(
         ]
         if default_val_f is not None:
             instantiate_kwargs.append(
-                KeywordArgExprOp("default_value", VarRefExprOp(default_val_f))
+                KeywordArgExprOp("default_value", MetadataLiteralExprOp(default_val_f))
             )
         instantiate_kwargs += _errcode_errmsg_kwargs()
         rc_body_ops += [
-            AllocateOp("const_prop", [], stat_var="errcode"),
+            AllocateOp("const_prop", stat_var="errcode"),
             *_scf_if(_int_var_cmp_zero("errcode", "ne"), [
                 ErrorExitOp("ERROR allocating const_prop"),
             ]),
@@ -657,32 +673,37 @@ def _generate_constituent_api(
         ErrorPropagateOp("errcode"),
         PointerAssignOp(
             "lc_props_ptr",
-            rhs_expr_op=MemberAccessExprOp(
-                _ref_expr("cam_constituents_obj"), "constituent_props_ptr()"
+            rhs_expr_op=MethodCallExprOp(
+                _ref_expr("cam_constituents_obj"), "constituent_props_ptr"
             ),
         ),
-        SafeDeallocOp(_lc_props),
-        AllocateOp(_lc_props, dim_ops=[CallExprOp("size", [VarRefExprOp("lc_props_ptr")])]),
+        SafeDeallocOp(target_op=_ref_expr("lc_const_props")),
+        AllocateOp(target_op=_ref_expr("lc_const_props"),
+                   dim_ops=[CallExprOp("size", [VarRefExprOp("lc_props_ptr")])]),
         AssignOp(lhs_op=_ref_expr("lc_const_props"), rhs_op=VarRefExprOp("lc_props_ptr")),
         NullifyPointerOp("lc_props_ptr"),
     ]
     if cam_host:
-        rc_body_ops.append(CamDirectCallOp("ccpp_initialize_constituent_ptr", [_cam_obj]))
+        rc_body_ops.append(CallStatementOp(
+            "ccpp_initialize_constituent_ptr", arg_ops=[_ref_expr("cam_constituents_obj")],
+        ))
     else:
-        rc_body_ops.append(CamDirectCallOp("ccpp_scheme_utils_set_constituents", [_lc_props]))
+        rc_body_ops.append(CallStatementOp(
+            "ccpp_scheme_utils_set_constituents", arg_ops=[_ref_expr("lc_const_props")],
+        ))
     rc_body_ops += [
         DdtMethodCallOp(
             obj_expr_op=_ref_expr("cam_constituents_obj"), method="num_constituents",
             arg_ops=[VarRefExprOp("lc_num_consts")], kwarg_ops=_errcode_errmsg_kwargs(),
         ),
         ErrorPropagateOp("errcode"),
-        SafeDeallocOp(_lc_all),
-        AllocateOp(_lc_all, dim_ops=[VarRefExprOp("lc_num_consts")]),
+        SafeDeallocOp(target_op=_ref_expr("lc_all_constituents")),
+        AllocateOp(target_op=_ref_expr("lc_all_constituents"),
+                   dim_ops=[VarRefExprOp("lc_num_consts")]),
     ]
     if n_fixed > 0:
-        _cmi = ref("cam_model_const_indices")
-        rc_body_ops.append(TextBoundedDoLoopOp(
-            "lc_i", f"size({_cmi})",
+        rc_body_ops.append(DoLoopOp(
+            "lc_i", _size_of("cam_model_const_indices"),
             [
                 DdtMethodCallOp(
                     obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
@@ -776,9 +797,6 @@ def _generate_constituent_api(
     )
 
     # ── 5. initialize_constituents ───────────────────────────────────────
-    _cam_obj = ref("cam_constituents_obj")
-    _lc_all = ref("lc_all_constituents")
-    _lc_props = ref("lc_const_props")
     ic_body_ops: list = [ClearErrStateOp("errflg", "errmsg")]
     if multi_instance:
         ic_body_ops.append(ErrorGuardOp(
@@ -786,7 +804,7 @@ def _generate_constituent_api(
             errmsg_text="ccpp_initialize_constituents: register_constituents not called",
         ))
     ic_body_ops.append(ErrorGuardOp(
-        condition_op=_allocated_cond(_lc_all),
+        condition_op=_allocated("lc_all_constituents"),
         errmsg_text="ccpp_initialize_constituents: register_constituents not called",
     ))
     # lock_data allocates the internal data array and applies defaults.
@@ -798,9 +816,9 @@ def _generate_constituent_api(
         ),
         ErrorPropagateOp("errflg"),
         PointerAssignOp(
-            ref('lc_constituent_array'),
-            rhs_expr_op=MemberAccessExprOp(
-                _ref_expr("cam_constituents_obj"), "field_data_ptr()"
+            target_op=_ref_expr("lc_constituent_array"),
+            rhs_expr_op=MethodCallExprOp(
+                _ref_expr("cam_constituents_obj"), "field_data_ptr"
             ),
         ),
     ]
@@ -808,17 +826,16 @@ def _generate_constituent_api(
         ic_body_ops += _enter_data_copyin("lc_constituent_array", 3)
     if needs_const_tend:
         ic_body_ops += [
-            SafeDeallocOp(ref('lc_const_tend')),
-            AllocateOp(ref('lc_const_tend'), dim_ops=[
+            SafeDeallocOp(target_op=_ref_expr("lc_const_tend")),
+            AllocateOp(target_op=_ref_expr("lc_const_tend"), dim_ops=[
                 VarRefExprOp("ncols"), VarRefExprOp("pver"),
                 CallExprOp("size", [_ref_expr("lc_all_constituents")]),
             ]),
-            ZeroFillOp(ref('lc_const_tend')),
+            ZeroFillOp(target_op=_ref_expr("lc_const_tend")),
         ]
         if framework_var_residency.get("lc_const_tend"):
             ic_body_ops += _enter_data_copyin("lc_const_tend", 3)
     for lc_name, rank, alloc_dims, _cst_std, needs_gpu, base in scratch_vars:
-        lc_ref = ref(lc_name)
         if _cst_std:
             # A constituent view: a pointer slice of its base array
             # (lc_constituent_array for an advected arg, lc_const_tend for a
@@ -834,7 +851,7 @@ def _generate_constituent_api(
             ic_body_ops.append(ScopedBlockOp(
                 [_local("lc_tend_idx", i32), _local("lc_tend_errmsg", i8, [CCPP_ERRMSG_LEN])],
                 [
-                    NullifyPointerOp(lc_ref),
+                    NullifyPointerOp(target_op=_ref_expr(lc_name)),
                     DdtMethodCallOp(
                         obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
                         arg_ops=[VarRefExprOp("lc_tend_idx"), StringLiteralExprOp(_cst_std)],
@@ -845,7 +862,12 @@ def _generate_constituent_api(
                             _int_var_cmp_zero("errflg", "eq"),
                             _int_var_cmp_zero("lc_tend_idx", "sgt"),
                         ),
-                        with_body_ops=[PointerSliceAssignOp(lc_ref, ref(base), "lc_tend_idx")],
+                        with_body_ops=[PointerAssignOp(
+                            target_op=_ref_expr(lc_name),
+                            rhs_expr_op=IndexExprOp(_ref_expr(base), [
+                                SliceExprOp(), SliceExprOp(), VarRefExprOp("lc_tend_idx"),
+                            ]),
+                        )],
                         without_body_ops=not_found_ops,
                     ),
                 ],
@@ -855,19 +877,11 @@ def _generate_constituent_api(
             # residency by the underlying array's actual memory, not the
             # pointer name used to reference a slice of it.
         else:
-            # alloc_dims may reference lc_num; replace with size(lc_all_constituents)
-            alloc_str = alloc_dims.replace("lc_num", f"size({_lc_all})")
             ic_body_ops += [
-                SafeDeallocOp(lc_ref),
-                # alloc_str is a single already-comma-joined dims string
-                # from the external scratch_vars data (may itself contain
-                # multiple dims) -- not safely splittable into separate
-                # dim expressions here, so it stays one verbatim-text
-                # VarRefExprOp atom (prints identically either way, same
-                # as the legacy single-ArrayAttr-element idiom it
-                # replaces).
-                AllocateOp(lc_ref, dim_ops=[VarRefExprOp(alloc_str)]),
-                ZeroFillOp(lc_ref),
+                SafeDeallocOp(target_op=_ref_expr(lc_name)),
+                AllocateOp(target_op=_ref_expr(lc_name),
+                           dim_ops=[_alloc_extent(d) for d in alloc_dims]),
+                ZeroFillOp(target_op=_ref_expr(lc_name)),
             ]
             if needs_gpu:
                 ic_body_ops += _enter_data_copyin(lc_name, rank)
@@ -908,8 +922,8 @@ def _generate_constituent_api(
         f"{h}_advected_constituents_array", _instance_args,
         [PointerAssignOp(
             "ptr",
-            rhs_expr_op=MemberAccessExprOp(
-                _ref_expr("cam_constituents_obj"), "advected_constituents_ptr()"
+            rhs_expr_op=MethodCallExprOp(
+                _ref_expr("cam_constituents_obj"), "advected_constituents_ptr"
             ),
         )],
         result=_local("ptr", _real3.element_type, [0, 0, 0], pointer=True),
@@ -925,7 +939,7 @@ def _generate_constituent_api(
             errmsg_text="const_get_index: constituents not registered",
         ))
     ci_body_ops.append(ErrorGuardOp(
-        condition_op=_allocated_cond(ref('lc_all_constituents')),
+        condition_op=_allocated("lc_all_constituents"),
         errmsg_text="const_get_index: constituents not registered",
     ))
     ci_body_ops += [
@@ -943,11 +957,12 @@ def _generate_constituent_api(
                 _int_var_cmp_zero("index", "sle"),
             ),
             [
-                AssignOp(lhs_expr="errflg", rhs_expr="1"),
-                WriteStmtOp(
-                    dest="errmsg", format_spec="(3a)",
-                    items=["'const_get_index: constituent '", "trim(std_name)", "' not found'"],
-                ),
+                _assign_const("errflg", 1),
+                WriteStmtOp(VarRefExprOp("errmsg"), [
+                    StringLiteralExprOp("const_get_index: constituent "),
+                    CallExprOp("trim", [VarRefExprOp("std_name")]),
+                    StringLiteralExprOp(" not found"),
+                ]),
             ],
         ),
     ]
@@ -971,7 +986,7 @@ def _generate_constituent_api(
 
     # ── 9. gather_constituents / 10. update_constituents (cam_host only) ──
     if cam_host:
-        # cam_host never supports multi-instance (asserted above), so bypass ref()
+        # cam_host never supports multi-instance (asserted above), so bypass _ref_expr()
         # to avoid a latent reference to lc_instances(instance)%cam_constituents_obj
         # in a subroutine that has no instance argument.
         _cam_obj_ref = "cam_constituents_obj"

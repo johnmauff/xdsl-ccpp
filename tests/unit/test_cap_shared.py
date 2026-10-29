@@ -37,7 +37,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _collect_ddt_use_stubs,
     _iter_schemes,
     _rank_of,
-    resolve_dim_exprs,
+    resolve_dim_extents,
     split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -307,7 +307,7 @@ class TestSplitSchemeTableNameFinalAlias:
 
 
 class TestResolveDimExprs:
-    """resolve_dim_exprs: per-dimension standard_name -> Fortran expression
+    """resolve_dim_extents: per-dimension standard_name -> extent
     resolution for the plain --bind-c explicit-shape fix (chost-rank3-bindc).
     Pipeline-free -- exercises the function directly against constructed
     dicts, matching each of the 3 real shapes found in this session's
@@ -324,10 +324,10 @@ class TestResolveDimExprs:
             "horizontal_loop_end": "col_end",
             "vertical_layer_dimension": "nz",
         }
-        assert resolve_dim_exprs(
+        assert resolve_dim_extents(
             ["horizontal_loop_extent", "vertical_layer_dimension"],
             non_host_std_to_canonical,
-        ) == ["col_end - col_start + 1", "nz"]
+        ) == [("col_start", "col_end"), ("nz",)]
 
     def test_chost_r3_shaped_direct_sibling_preferred_over_synthesis(self):
         """A --legacy-mode scheme that still declares its own literal
@@ -342,17 +342,17 @@ class TestResolveDimExprs:
             "vertical_layer_dimension": "nz",
             "number_of_spectral_bands": "nbands",
         }
-        assert resolve_dim_exprs(
+        assert resolve_dim_extents(
             ["horizontal_loop_extent", "vertical_layer_dimension",
              "number_of_spectral_bands"],
             non_host_std_to_canonical,
-        ) == ["ncol", "nz", "nbands"]
+        ) == [("ncol",), ("nz",), ("nbands",)]
 
     def test_unresolvable_dimension_returns_none(self):
         """No sibling, no host var, not a horizontal std_name -- the whole
         array must fall back to assumed-size (*); Fortran's explicit-shape
         declarator has no partial form."""
-        assert resolve_dim_exprs(
+        assert resolve_dim_extents(
             ["some_unresolvable_extra_dim"],
             {"horizontal_loop_begin": "col_start", "horizontal_loop_end": "col_end"},
         ) is None
@@ -360,7 +360,7 @@ class TestResolveDimExprs:
     def test_one_unresolvable_dimension_fails_the_whole_array(self):
         """Even when the first N-1 dimensions resolve fine, one failure
         anywhere in the list must still return None for the whole array."""
-        assert resolve_dim_exprs(
+        assert resolve_dim_extents(
             ["vertical_layer_dimension", "some_unresolvable_extra_dim"],
             {"vertical_layer_dimension": "nz"},
         ) is None
@@ -373,13 +373,13 @@ class TestResolveDimExprs:
         resolving via a bare host-var lookup here could reference an
         unimported identifier. Falling back to None (-> assumed-size (*))
         is the safe choice."""
-        assert resolve_dim_exprs(["number_of_tracers"], {}) is None
+        assert resolve_dim_extents(["number_of_tracers"], {}) is None
 
     def test_resolved_sibling_name_used_as_is(self):
         """non_host_std_to_canonical's values are the dummy-argument names
         exactly as printed (recorded in arg_attrs), so they are used
         unchanged -- including one ending in "_<digits>"."""
-        assert resolve_dim_exprs(
+        assert resolve_dim_extents(
             ["number_of_model_times"],
             {"number_of_model_times": "ntimes_2"},
-        ) == ["ntimes_2"]
+        ) == [("ntimes_2",)]

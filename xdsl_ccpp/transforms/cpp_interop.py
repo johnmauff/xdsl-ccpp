@@ -30,6 +30,7 @@ from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
     AllocateOp,
     AssignOp,
+    CallExprOp,
     CallStatementOp,
     CFunctionSigOp,
     CHostCapOp,
@@ -45,14 +46,17 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     DdtMethodCallOp,
     DerivedType,
     DerivedTypeDefOp,
+    DoLoopOp,
     ExternCGuardOp,
     FortranToCStringCopyOp,
+    IndexExprOp,
     MemberAccessExprOp,
     ModuleVarOp,
     RawCppLinesOp,
     ReturnStmtOp,
     RealKindType,
-    TextBoundedDoLoopOp,
+    SliceExprOp,
+    StringLiteralExprOp,
     VarRefExprOp,
 )
 from xdsl_ccpp.transforms.ccpp_cap import _collect_public_suite_functions
@@ -65,6 +69,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _allocated_cond,
     _int_var_cmp,
     _scf_if,
+    bind_c_extents_attr,
     fixed_interface_fn,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -295,7 +300,7 @@ class ChostArgInfo:
     dim_n3: str | None = None
     dim_ncol: str | None = None
     char_len: int | None = None
-    _ddt_member: str | None = None
+    _ddt_member: tuple | None = None   # member path, outermost first
     _ddt_local: str | None = None
     _ddt_prefix: str | None = None
 
@@ -474,7 +479,7 @@ def _chost_expand_ddt_arg(
     member_ais = []
     flat_nz_var = None
     dim_scalars_used: set = set()   # flat names of scalars referenced as dim_nz
-    char_member_blanks: list = []   # character members — not exposed, init to ' '
+    char_member_blanks: list = []   # character member paths — not exposed, init to ' '
 
     for var in arg_table.getFunctionArguments():
         flat_name = f"{prefix}_{var.name}"
@@ -499,18 +504,18 @@ def _chost_expand_ddt_arg(
                 original_intent=original_intent,
             )
             for nai in nested_ais:
-                nai["_ddt_member"] = f"{var.name}%{nai['_ddt_member']}"
+                nai["_ddt_member"] = (var.name, *nai["_ddt_member"])
                 nai["_ddt_local"]  = f"{prefix}_local"
                 nai["_ddt_prefix"] = prefix
             member_ais.extend(nested_ais)
             for cmn in nested_li.get("char_member_blanks", []):
-                char_member_blanks.append(f"{var.name}%{cmn}")
+                char_member_blanks.append((var.name, *cmn))
             continue
 
         if vtype == "character":
             # Character members (e.g. ccpp_info_t%errmsg) are not exposed in the
             # C interface; the chost cap initialises them to blank instead.
-            char_member_blanks.append(var.name)
+            char_member_blanks.append((var.name,))
             continue
 
         real_width = 64
@@ -552,7 +557,7 @@ def _chost_expand_ddt_arg(
             is_errmsg=False, is_errflg=False, is_sname=False,
             is_char=False, is_int=is_int, is_real=is_real, is_logical=is_logical,
             real_width=real_width, rank=ndim, intent=intent,
-            _ddt_member=var.name,
+            _ddt_member=(var.name,),
             _ddt_local=f"{prefix}_local",
             _ddt_prefix=prefix,
             dim_ncol=dim_ncol,
@@ -1230,7 +1235,7 @@ class CPPInteropCap(ModulePass):
         func.FuncOp (cap_shared.fixed_interface_fn) per lifecycle routine
         and constituent query, built from statement ops
         (AssignOp/CallStatementOp/CToFortranStringCopyOp/
-        FortranToCStringCopyOp/scf.IfOp/TextBoundedDoLoopOp/AllocateOp).
+        FortranToCStringCopyOp/scf.IfOp/DoLoopOp/AllocateOp).
 
         ``fn_ctxs``/``ncol_var``/``nz_var`` are computed once in
         ``_generate_chost_cap_module`` and shared with
@@ -1243,32 +1248,34 @@ class CPPInteropCap(ModulePass):
         _string = MemRefType(i8, [DYNAMIC_INDEX])
 
         def ftn_arg(ai):
-            """(name, type, intent, flags, explicit dims) of one BIND(C)
+            """(name, type, intent, flags, explicit extents) of one BIND(C)
             dummy argument; the printer spells the C-interop declaration
             (integer(c_int), value / real(c_double), target / c_char)."""
             host = ai["host"]
             if ai["is_ncol"] or ai["is_nz"] or (ai["is_int"] and not ai["is_errflg"]):
-                return (host, _int, "in", (), "")
+                return (host, _int, "in", (), None)
             if ai["is_real"]:
                 real = f32 if ai.get("real_width", 64) == 32 else f64
                 rank = ai["rank"]
                 if rank == 0:
-                    return (host, MemRefType(real, []), "in", (), "")
+                    return (host, MemRefType(real, []), "in", (), None)
                 _dn = ai.get("dim_ncol") or ncol_var
                 _dz = ai.get("dim_nz")   or nz_var
                 # rank >= 3: explicit shape for the 3rd dim when known so the
-                # array can be passed to assumed-shape (:,:,:) suite cap dummies.
-                dims = [_dn, _dz, ai.get("dim_n3") or "*"][:rank]
+                # array can be passed to assumed-shape (:,:,:) suite cap dummies;
+                # else assumed size, ().
+                _d3 = ai.get("dim_n3")
+                extents = [(_dn,), (_dz,), (_d3,) if _d3 else ()][:rank]
                 return (host, MemRefType(real, [DYNAMIC_INDEX] * rank), ai["intent"], (),
-                        ",".join(dims))
+                        extents)
             if ai.get("is_logical"):
-                return (host, MemRefType(i1, []), ai["intent"], (), "")
+                return (host, MemRefType(i1, []), ai["intent"], (), None)
             if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
-                return (host, _string, ai["intent"], (), "")
+                return (host, _string, ai["intent"], (), None)
             if ai["is_sname"] or ai["is_errmsg"]:
-                return (host, _string, "out", (), "")
+                return (host, _string, "out", (), None)
             if ai["is_errflg"]:
-                return (host, _int, "out", (), "")
+                return (host, _int, "out", (), None)
             raise ValueError(f"chost cap: unclassified argument {host!r}")
 
         def bind_c_fn(name, args, body, *, locals_=(), result=None):
@@ -1277,15 +1284,44 @@ class CPPInteropCap(ModulePass):
                 name, [a[:4] for a in args], body, locals_=locals_, result=result,
             )
             fn.attributes["bind_c"] = builtin.UnitAttr()
-            fn.attributes["bind_c_dim_exprs"] = builtin.ArrayAttr(
-                [builtin.StringAttr(a[4]) for a in args]
-            )
+            fn.attributes["bind_c_extents"] = bind_c_extents_attr([a[4] for a in args])
             return fn
 
         def local(name, elem, shape=()):
             alloca = memref.AllocaOp.get(elem, shape=list(shape))
             name_local(alloca, name)
             return alloca
+
+        # Expression builders for the routine bodies.
+        def var(name: str, result_type=None):
+            return VarRefExprOp(name, result_type=result_type)
+
+        def member(base: str, path: tuple):
+            """base%path[0]%path[1]..."""
+            op = var(base)
+            for name in path:
+                op = MemberAccessExprOp(op, name)
+            return op
+
+        def convert(x_op, kind: str, intrinsic: str = "real"):
+            """real(x, kind) / logical(x, kind) / int(x, kind)."""
+            return CallExprOp(intrinsic, [x_op, var(kind)], result_type=i32)
+
+        def const(value: int):
+            return arith.ConstantOp(IntegerAttr.from_int_and_width(value, 32))
+
+        def assign(lhs_op, rhs_op):
+            return AssignOp(lhs_op=lhs_op, rhs_op=rhs_op)
+
+        def call_arg(ai):
+            """How the chost routine passes one of its arguments on."""
+            if ai["is_col_start"] or ai["is_col_end"]:
+                return var(ai["host"])
+            if ai["is_real"] and ai["rank"] == 0:
+                return convert(var(ai["host"]), "kind_phys")
+            if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
+                return var(f"{ai['host']}_f")
+            return var(ai["host"])
 
         # ── Collect suite cap functions referenced ──────────────────────────────
         used_suite_fns: list = []
@@ -1334,7 +1370,7 @@ class CPPInteropCap(ModulePass):
             module_ops.append(DerivedTypeDefOp(
                 "chost_constituent_info_t",
                 [
-                    DdtComponentDeclOp(fname, "character", kind="kind=c_char",
+                    DdtComponentDeclOp(fname, "character", kind="c_char",
                                        fixed_dim=flen + 1) if fkind == "char"
                     else DdtComponentDeclOp(fname, "real", kind="c_double") if fkind == "real"
                     else DdtComponentDeclOp(fname, "logical", kind="c_bool")
@@ -1349,10 +1385,8 @@ class CPPInteropCap(ModulePass):
 
         # ── Subroutines ─────────────────────────────────────────────────────────
         for ctx in fn_ctxs:
-            cfn, lc, sfns = ctx["cfn"], ctx["lc"], ctx["sfns"]
-            suite_fn, infos, out_infos, visible = (
-                ctx["suite_fn"], ctx["infos"], ctx["out_infos"], ctx["visible"]
-            )
+            cfn, sfns = ctx["cfn"], ctx["sfns"]
+            infos, out_infos, visible = ctx["infos"], ctx["out_infos"], ctx["visible"]
             ddt_locals      = ctx.get("ddt_locals", {})
             suite_call_pcs  = ctx.get("suite_call_pieces", [])
 
@@ -1381,12 +1415,12 @@ class CPPInteropCap(ModulePass):
             # ── Body initialization ───────────────────────────────────────────
             body_ops: list = []
             if has_errmsg:
-                body_ops.append(AssignOp(lhs_expr=f"{em}_f", rhs_expr="' '"))
+                body_ops.append(assign(var(f"{em}_f"), StringLiteralExprOp(" ")))
             if has_sname:
-                body_ops.append(AssignOp(lhs_expr=f"{sn}_f", rhs_expr="' '"))
+                body_ops.append(assign(var(f"{sn}_f"), StringLiteralExprOp(" ")))
             if any(ai["is_errflg"] for ai in visible):
                 ef = next(ai["host"] for ai in visible if ai["is_errflg"])
-                body_ops.append(AssignOp(lhs_expr=ef, rhs_expr="0"))
+                body_ops.append(assign(var(ef), const(0)))
             # C→F copy-in for plain character(len=N) args (intent=in or intent=inout)
             for ai in plain_char_args:
                 if ai.get("intent") in ("in", "inout"):
@@ -1398,69 +1432,50 @@ class CPPInteropCap(ModulePass):
                 lname = li["local_name"]
                 # Character members are not in the C interface; initialise blank.
                 for mn in li.get("char_member_blanks", []):
-                    body_ops.append(AssignOp(lhs_expr=f"{lname}%{mn}", rhs_expr="' '"))
+                    body_ops.append(assign(member(lname, mn), StringLiteralExprOp(" ")))
                 for ai in li["member_ais"]:
                     mn = ai["_ddt_member"]
                     fn_ = ai["bare"]
                     if ai["rank"] == 0:
-                        body_ops.append(AssignOp(lhs_expr=f"{lname}%{mn}", rhs_expr=fn_))
+                        body_ops.append(assign(member(lname, mn), var(fn_)))
                     else:
-                        _dn = ai.get("dim_ncol") or ncol_var
-                        _dz = ai.get("dim_nz")   or nz_var
-                        if ai["rank"] == 1:
-                            dims = [_dn]
-                        elif ai["rank"] == 2:
-                            dims = [_dn, _dz]
-                        else:
-                            dims = [_dn, _dz, "*"]
+                        dims = [ai.get("dim_ncol") or ncol_var, ai.get("dim_nz") or nz_var,
+                                ai.get("dim_n3")][:ai["rank"]]
+                        if None in dims:
+                            raise ValueError(
+                                f"chost cap: DDT member {'%'.join((lname, *mn))} has rank "
+                                f"{ai['rank']} but no known extent for dimension 3"
+                            )
                         if ai["intent"] != "out":
                             # intent=out: scheme allocates internally; skip pre-alloc.
-                            body_ops.append(AllocateOp(var_name=f"{lname}%{mn}", dims=dims))
-                            body_ops.append(AssignOp(
-                                lhs_expr=f"{lname}%{mn}", rhs_expr=f"real({fn_}, kind_phys)"
+                            body_ops.append(AllocateOp(
+                                target_op=member(lname, mn), dim_ops=[var(d) for d in dims],
+                            ))
+                            body_ops.append(assign(
+                                member(lname, mn), convert(var(fn_), "kind_phys"),
                             ))
 
             # ── Suite cap calls ───────────────────────────────────────────────
             for sfn_i in sfns:
                 if sfn_i not in public_fns:
                     continue
-                call_exprs = []
                 if suite_call_pcs:
-                    for piece in suite_call_pcs:
-                        if piece["kind"] == "ddt_local":
-                            call_exprs.append(piece["name"])
-                        elif piece["kind"] == "constituent_mod_var":
-                            call_exprs.append(piece["name"])
-                        else:
-                            ai = piece["ai"]
-                            if ai["is_col_start"] or ai["is_col_end"]:
-                                call_exprs.append(ai["host"])
-                            elif ai["is_real"] and ai["rank"] == 0:
-                                call_exprs.append(f"real({ai['host']}, kind_phys)")
-                            elif ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
-                                call_exprs.append(f"{ai['host']}_f")
-                            else:
-                                call_exprs.append(ai["host"])
+                    call_ops = [
+                        var(piece["name"]) if piece["kind"] in ("ddt_local", "constituent_mod_var")
+                        else call_arg(piece["ai"])
+                        for piece in suite_call_pcs
+                    ]
                 else:
-                    for ai in infos:
-                        if ai["is_col_start"] or ai["is_col_end"]:
-                            call_exprs.append(ai["host"])
-                        elif ai["is_real"] and ai["rank"] == 0:
-                            call_exprs.append(f"real({ai['host']}, kind_phys)")
-                        elif ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
-                            call_exprs.append(f"{ai['host']}_f")
-                        else:
-                            call_exprs.append(ai["host"])
+                    call_ops = [call_arg(ai) for ai in infos]
                 # intent=out DDT locals come before errmsg/errflg in the call.
-                for ddt_local_name in ctx.get("ddt_out_locals", []):
-                    call_exprs.append(ddt_local_name)
+                call_ops += [var(n) for n in ctx.get("ddt_out_locals", [])]
                 # Output args (suite cap output order: errmsg_f / scheme_name_f / errflg)
-                for oai in out_infos:
-                    if oai["is_errmsg"] or oai["is_sname"]:
-                        call_exprs.append(f"{oai['host']}_f")
-                    else:
-                        call_exprs.append(oai["host"])
-                body_ops.append(CallStatementOp(callee=sfn_i, call_args=call_exprs))
+                call_ops += [
+                    var(f"{oai['host']}_f") if oai["is_errmsg"] or oai["is_sname"]
+                    else var(oai["host"])
+                    for oai in out_infos
+                ]
+                body_ops.append(CallStatementOp(sfn_i, arg_ops=call_ops))
 
             # ── DDT cleanup: writeback inout arrays ───────────────────────────
             # No explicit deallocate here: lname is a local, non-SAVE derived-
@@ -1481,9 +1496,7 @@ class CPPInteropCap(ModulePass):
                     fn_ = ai["bare"]
                     if ai["intent"] != "in":
                         c_real = "c_float" if ai.get("real_width", 64) == 32 else "c_double"
-                        body_ops.append(AssignOp(
-                            lhs_expr=fn_, rhs_expr=f"real({lname}%{mn}, {c_real})"
-                        ))
+                        body_ops.append(assign(var(fn_), convert(member(lname, mn), c_real)))
 
             # ── F→C string copy loops ─────────────────────────────────────────
             if has_sname:
@@ -1509,22 +1522,23 @@ class CPPInteropCap(ModulePass):
         # than as part of a longer, letter-led name -- confirmed the sole
         # root cause of constadv/constprop's compile failures.
         if all_constituent_vars:
-            nc_body: list = [AssignOp(lhs_expr="n", rhs_expr="0_c_int")]
+            nc_body: list = [assign(var("n"), const(0))]
             for cv in all_constituent_vars:
                 nc_body.extend(_scf_if(
                     _allocated_cond(f"chost_{cv}"),
-                    [AssignOp(
-                        lhs_expr="n", rhs_expr=f"n + int(size(chost_{cv}), c_int)"
-                    )],
+                    [assign(var("n"), arith.AddiOp(
+                        var("n", i32),
+                        convert(CallExprOp("size", [var(f"chost_{cv}")]), "c_int", "int"),
+                    ))],
                 ))
             module_ops.append(bind_c_fn(
                 f"{mod_name}_nconstituents", [], nc_body, result=local("n", i32),
             ))
 
-            gci_body: list = [AssignOp(lhs_expr="chost_idx", rhs_expr="0")]
+            gci_body: list = [assign(var("chost_idx"), const(0))]
             for cv in all_constituent_vars:
                 inner_do_body: list = [
-                    AssignOp(lhs_expr="chost_idx", rhs_expr="chost_idx + 1"),
+                    assign(var("chost_idx"), arith.AddiOp(var("chost_idx", i32), const(1))),
                     *_scf_if(
                         _int_var_cmp("chost_idx", "n", "sgt"),
                         [ReturnStmtOp()],
@@ -1533,58 +1547,62 @@ class CPPInteropCap(ModulePass):
                 for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
                     accessor = _CONSTITUENT_ACCESSORS[fname]
                     src = f"chost_v_{fname}"
-                    dst = f"buf(chost_idx)%{fname}"
+
+                    def dst(fname=fname):
+                        """buf(chost_idx)%<field>"""
+                        return MemberAccessExprOp(
+                            IndexExprOp(var("buf"), [var("chost_idx")]), fname)
+
+                    def element(cv=cv):
+                        """chost_<cv>(chost_i)"""
+                        return IndexExprOp(var(f"chost_{cv}"), [var("chost_i")])
+
                     if fname == "mix_ratio_type":
                         # No 1:1 accessor -- derive 'dry'/'wet'/'moist' from
                         # the three mutually-exclusive predicates instead
                         # (see _CONSTITUENT_ACCESSORS' own comment).
-                        inner_do_body.append(AssignOp(lhs_expr=src, rhs_expr="''"))
+                        inner_do_body.append(assign(var(src), StringLiteralExprOp("")))
                         for _pred, _label in (
                             ("is_dry", "dry"), ("is_wet", "wet"), ("is_moist", "moist"),
                         ):
                             inner_do_body.append(DdtMethodCallOp(
-                                obj_expr=f"chost_{cv}(chost_i)", method=_pred,
-                                args=["chost_v_mix_pred", "chost_errcode", "chost_errmsg"],
+                                obj_expr_op=element(), method=_pred,
+                                arg_ops=[var("chost_v_mix_pred"), var("chost_errcode"),
+                                         var("chost_errmsg")],
                             ))
                             inner_do_body.extend(_scf_if(
-                                VarRefExprOp("chost_v_mix_pred", result_type=i1),
-                                [AssignOp(lhs_expr=src, rhs_expr=f"'{_label}'")],
+                                var("chost_v_mix_pred", i1),
+                                [assign(var(src), StringLiteralExprOp(_label))],
                             ))
                     elif accessor is None:
-                        inner_do_body.append(AssignOp(lhs_expr=src, rhs_expr="''"))
+                        inner_do_body.append(assign(var(src), StringLiteralExprOp("")))
                     else:
                         inner_do_body.append(DdtMethodCallOp(
-                            obj_expr=f"chost_{cv}(chost_i)", method=accessor,
-                            args=[src, "chost_errcode", "chost_errmsg"],
+                            obj_expr_op=element(), method=accessor,
+                            arg_ops=[var(src), var("chost_errcode"), var("chost_errmsg")],
                         ))
                     if fkind == "char":
-                        inner_do_body.append(AssignOp(
-                            lhs_expr="chost_slen", rhs_expr=f"min(len_trim({src}), {flen})"
-                        ))
-                        inner_do_body.append(TextBoundedDoLoopOp(
-                            loop_var="chost_j", upper_expr="chost_slen",
-                            body_ops=[AssignOp(
-                                lhs_expr=f"{dst}(chost_j)",
-                                rhs_expr=f"{src}(chost_j:chost_j)",
-                            )],
-                        ))
-                        inner_do_body.append(AssignOp(
-                            lhs_expr=f"{dst}(min(chost_slen+1,{flen+1}))",
-                            rhs_expr="c_null_char",
+                        inner_do_body.append(assign(var("chost_slen"), CallExprOp(
+                            "min", [CallExprOp("len_trim", [var(src)]), const(flen)],
+                        )))
+                        inner_do_body.append(DoLoopOp("chost_j", var("chost_slen"), [assign(
+                            IndexExprOp(dst(), [var("chost_j")]),
+                            IndexExprOp(var(src), [SliceExprOp(var("chost_j"), var("chost_j"))]),
+                        )]))
+                        inner_do_body.append(assign(
+                            IndexExprOp(dst(), [CallExprOp("min", [
+                                arith.AddiOp(var("chost_slen", i32), const(1)), const(flen + 1),
+                            ])]),
+                            var("c_null_char"),
                         ))
                     elif fkind == "real":
-                        inner_do_body.append(AssignOp(
-                            lhs_expr=dst, rhs_expr=f"real({src}, c_double)"
-                        ))
+                        inner_do_body.append(assign(dst(), convert(var(src), "c_double")))
                     else:  # logical
-                        inner_do_body.append(AssignOp(
-                            lhs_expr=dst, rhs_expr=f"logical({src}, c_bool)"
-                        ))
+                        inner_do_body.append(assign(dst(), convert(var(src), "c_bool", "logical")))
                 gci_body.extend(_scf_if(
                     _allocated_cond(f"chost_{cv}"),
-                    [TextBoundedDoLoopOp(
-                        loop_var="chost_i", upper_expr=f"size(chost_{cv})",
-                        body_ops=inner_do_body,
+                    [DoLoopOp(
+                        "chost_i", CallExprOp("size", [var(f"chost_{cv}")]), inner_do_body,
                     )],
                 ))
             # One temporary per struct field, typed like the field itself.

@@ -202,15 +202,14 @@ class TestDivergentUnitsHostMatchesNeither:
         )
 
 
-class TestDivergentBareDigitKindUnitMismatchTakesStructuredPath:
-    """lang-neutral-expr-ir Stage 3c, _apply_divergent_marshaling's own
-    retrofit: scheme_a matches the host exactly (kind=8, meters); scheme_b
-    shares scheme_a's kind (8, no kind mismatch at all) but diverges on
-    units alone (centimeters) -- the exact shape _apply_kind_and_unit_casts'
-    own structured path already covers, now proven here for the per-call-
-    site divergent-marshaling analog too."""
+class TestDivergentUnitMismatchIsOperationAndFactor:
+    """_apply_divergent_marshaling's per-call-site conversion: scheme_a
+    matches the host exactly (kind=8, meters); scheme_b shares scheme_a's
+    kind (8, no kind mismatch at all) but diverges on units alone
+    (centimeters) -- the conversion is an operation and a factor on
+    UnitConvertOp, as at the suite boundary."""
 
-    def test_scheme_b_call_builds_a_conversion_region_not_opaque_text(
+    def test_scheme_b_call_converts_by_operation_and_factor(
         self, run_host_match, ccpp_context,
     ):
         module, _fortran = _module_and_fortran_output(
@@ -219,10 +218,10 @@ class TestDivergentBareDigitKindUnitMismatchTakesStructuredPath:
             [_host_meta("m", kind="8")],
         )
         (unit_convert_op,) = [op for op in module.walk() if isinstance(op, UnitConvertOp)]
-        assert unit_convert_op.to_scheme_expr is None
-        assert unit_convert_op.conversion is not None
+        assert unit_convert_op.operation.data == "mul"
+        assert unit_convert_op.factor.data == "100.0"
 
-    def test_scheme_b_call_printed_fortran_matches_opaque_path_text_exactly(
+    def test_scheme_b_call_printed_fortran(
         self, run_host_match, ccpp_context,
     ):
         _module, fortran = _module_and_fortran_output(

@@ -1,4 +1,5 @@
-from xdsl.dialects.arith import ConstantOp as ArithConstantOp
+import re
+
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     ArrayAttr,
@@ -13,9 +14,11 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.dialects.llvm import LLVMArrayType
 from xdsl.ir import (
+    Block,
     Dialect,
     Operation,
     ParametrizedAttribute,
+    Region,
     SSAValue,
     TypeAttribute,
     VerifyException,
@@ -117,13 +120,11 @@ def _single_op_region(ops: "list | None", *, required: bool = True) -> "Region":
     raises ValueError for an invariant IRDL can't express.
 
     The single op given may itself be the root of a freshly-built
-    arith/math expression tree (e.g. UnitConvertOp's `conversion_op`) --
+    arith/math expression tree (e.g. an AssignOp's arith.AddiOp rhs) --
     see _flatten_floating_deps for
     why its unattached operand-providing ops must also become block
     siblings here, not just the root itself.
     """
-    from xdsl.ir import Block, Region
-
     ops = list(ops or [])
     if required and len(ops) != 1:
         raise ValueError(f"expected exactly one op in expression slot, got {len(ops)}")
@@ -133,6 +134,27 @@ def _single_op_region(ops: "list | None", *, required: bool = True) -> "Region":
         return Region([Block()])
     (root,) = ops
     return Region([Block(_flatten_floating_deps(root))])
+
+
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _name_or_target(op_name: str, field: str, name, target_op) -> tuple:
+    """(properties, target region) for an op that names a variable either by
+    a plain identifier (*name*, the property *field*) or by a reference
+    expression (*target_op*, e.g. a MemberAccessExprOp for
+    ``lc_instances(instance)%x``). A reference is never text: a *name* that
+    is not an identifier is rejected."""
+    if (name is None) == (target_op is None):
+        raise ValueError(f"{op_name}: pass exactly one of {field} or target_op")
+    if name is not None:
+        if not _IDENTIFIER.match(name):
+            raise ValueError(
+                f"{op_name}: {field} {name!r} is not an identifier; pass the "
+                f"reference as target_op (an expression op) instead"
+            )
+        return {field: StringAttr(name)}, None
+    return {}, _single_op_region([target_op])
 
 
 @irdl_attr_definition
@@ -315,32 +337,27 @@ class WriteErrMsgOp(IRDLOperation):
 
 @irdl_op_definition
 class WriteStmtOp(IRDLOperation):
-    """A Fortran formatted ``write`` statement with an arbitrary item list.
+    """A list of character expressions written into a character variable.
 
     Emits::
 
-        write({dest}, '{format_spec}') {items[0]}, {items[1]}, ...
+        write({dest}, '(<n>a)') {item_0}, {item_1}, ...
 
-    Sibling of ``WriteErrMsgOp`` for files with no SSA locals to wrap in
-    operands (e.g. ``constituent_cap.py`` -- "every reference is a plain
-    text name," per ``TextBoundedDoLoopOp``'s own docstring): ``dest`` and
-    every item are opaque text, same declaration-stays-text convention
-    used throughout this codebase. Use ``WriteErrMsgOp`` instead when the
-    dynamic part is a real SSA buffer value.
+    dest and every item are expression ops; the printer spells the format.
+    Use WriteErrMsgOp instead when the dynamic part is an SSA buffer value.
     """
 
     name = "ccpp_utils.write_stmt"
 
-    dest        = prop_def(StringAttr)
-    format_spec = prop_def(StringAttr)
-    items       = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    dest  = region_def("single_block")
+    items = var_region_def("single_block")
 
-    def __init__(self, dest: str, format_spec: str, items: "list[str]"):
-        super().__init__(properties={
-            "dest":        StringAttr(dest),
-            "format_spec": StringAttr(format_spec),
-            "items":       ArrayAttr([StringAttr(i) for i in items]),
-        })
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, dest_op, item_ops: list):
+        super().__init__(regions=[
+            _single_op_region([dest_op]), [_single_op_region([i]) for i in item_ops],
+        ])
 
 
 @irdl_op_definition
@@ -727,6 +744,23 @@ class OmpTargetExitDataOp(IRDLOperation):
             list(release or []),
         ])
 
+def _kind_and_char_len_props(op_name: str, base_type: str, kind, char_len) -> dict:
+    """A declaration's kind (an identifier, e.g. kind_phys or c_char, or an
+    integer kind such as 8) and character length (a positive integer)
+    properties."""
+    props: dict = {}
+    if kind is not None:
+        if not (_IDENTIFIER.match(kind) or (kind.isdigit() and base_type != "character")):
+            raise ValueError(f"{op_name}: kind {kind!r} is not an identifier or integer; "
+                             "pass a character length as char_len")
+        props["kind"] = StringAttr(kind)
+    if char_len is not None:
+        if char_len <= 0:
+            raise ValueError(f"{op_name}: char_len must be positive, got {char_len}")
+        props["char_len"] = IntegerAttr.from_int_and_width(char_len, 64)
+    return props
+
+
 @irdl_op_definition
 class ModuleVarOp(IRDLOperation):
     """Unified module-level variable declaration, covering both real vars and
@@ -737,7 +771,8 @@ class ModuleVarOp(IRDLOperation):
 
         base_type  — CCPP base type: "real", "integer", "character",
                      "logical", or "type" (for DDTs)
-        kind       — optional kind name ("kind_phys") or character length ("512")
+        kind       — optional kind name, an identifier ("kind_phys", "c_char")
+        char_len   — character length (512) when base_type == "character"
         ddt_name   — DDT type name when base_type == "type" (e.g. "vmr_type")
         is_pointer — True when the variable carries the Fortran POINTER attribute
         is_target  — True when the variable carries the Fortran TARGET attribute
@@ -762,17 +797,14 @@ class ModuleVarOp(IRDLOperation):
     name = "ccpp_utils.module_var"
     var_name   = prop_def(StringAttr)
     base_type  = prop_def(StringAttr)        # "real"|"integer"|"character"|"logical"|"type"
-    kind       = opt_prop_def(StringAttr)    # kind name or char length; None if not applicable
+    kind       = opt_prop_def(StringAttr)    # kind name; None if not applicable
+    char_len   = opt_prop_def(IntegerAttr)   # character length
     ddt_name   = opt_prop_def(StringAttr)    # DDT type name when base_type == "type"
     is_pointer = opt_prop_def(BoolAttr)      # True → Fortran POINTER attribute
     is_target  = opt_prop_def(BoolAttr)      # True → Fortran TARGET attribute
     rank       = prop_def(IntegerAttr)       # 0 = scalar, >0 = allocatable array
     fixed_dim  = opt_prop_def(IntegerAttr)   # if set: fixed-size non-allocatable 1D array
-    init_value = opt_prop_def(StringAttr)    # optional Fortran initializer (for fixed_dim vars)
-    # lang-neutral-expr-ir Stage 3a: structured alternative to init_value,
-    # pass init_value_op= instead. At most one of the two may be given.
-    # Kept as an independent opt slot (not exactly-one) since most real
-    # call sites set neither.
+    # Optional initial value (for fixed_dim vars), an expression op.
     init_value_region = opt_region_def("single_block")
     needs_device_residency = opt_prop_def(BoolAttr)  # True -> also emit a
                                 # module-level `!$acc declare create(var_name)`
@@ -803,24 +835,21 @@ class ModuleVarOp(IRDLOperation):
         base_type: str,
         *,
         kind: str | None = None,
+        char_len: int | None = None,
         ddt_name: str | None = None,
         is_pointer: bool = False,
         is_target: bool = False,
         rank: int = 0,
         fixed_dim: int | None = None,
-        init_value: str | None = None,
         init_value_op=None,
         needs_device_residency: bool = False,
     ):
-        if init_value is not None and init_value_op is not None:
-            raise ValueError("ModuleVarOp: pass at most one of init_value or init_value_op")
         props: dict = {
             "var_name":  StringAttr(var_name),
             "base_type": StringAttr(base_type),
             "rank":      IntegerAttr.from_int_and_width(rank, 64),
+            **_kind_and_char_len_props("ModuleVarOp", base_type, kind, char_len),
         }
-        if kind is not None:
-            props["kind"] = StringAttr(kind)
         if ddt_name is not None:
             props["ddt_name"] = StringAttr(ddt_name)
         if is_pointer:
@@ -829,11 +858,9 @@ class ModuleVarOp(IRDLOperation):
             props["is_target"] = BoolAttr.from_bool(True)
         if fixed_dim is not None:
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
-        init_region = None
-        if init_value is not None:
-            props["init_value"] = StringAttr(init_value)
-        elif init_value_op is not None:
-            init_region = _single_op_region([init_value_op])
+        init_region = (
+            _single_op_region([init_value_op]) if init_value_op is not None else None
+        )
         if needs_device_residency:
             props["needs_device_residency"] = BoolAttr.from_bool(True)
         super().__init__(properties=props, regions=[init_region])
@@ -877,10 +904,7 @@ class LazyAllocOp(IRDLOperation):
 
     name = "ccpp_utils.lazy_alloc"
     var_name   = prop_def(StringAttr)
-    kind_name  = prop_def(StringAttr)
-    init_value = opt_prop_def(StringAttr)  # Fortran literal, e.g. "0.0_kind_phys"
-    # lang-neutral-expr-ir Stage 5: structured alternative to init_value,
-    # pass init_value_op= instead. At most one of the two may be given.
+    # Optional initial value, an expression op (e.g. a .meta default_value).
     init_value_region = opt_region_def("single_block")
     needs_device_residency = opt_prop_def(BoolAttr)
     is_run_local = opt_prop_def(BoolAttr)  # when True: plain allocate(), no lazy guard
@@ -889,21 +913,13 @@ class LazyAllocOp(IRDLOperation):
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, var_name: str, kind_name: str, dim_var_refs: list,
-                 init_value: str | None = None,
+    def __init__(self, var_name: str, dim_var_refs: list,
                  needs_device_residency: bool = False,
                  is_run_local: bool = False, *, init_value_op=None):
-        if init_value is not None and init_value_op is not None:
-            raise ValueError("LazyAllocOp: pass at most one of init_value or init_value_op")
-        props: dict = {
-            "var_name":  StringAttr(var_name),
-            "kind_name": StringAttr(kind_name),
-        }
-        init_region = None
-        if init_value is not None:
-            props["init_value"] = StringAttr(init_value)
-        elif init_value_op is not None:
-            init_region = _single_op_region([init_value_op])
+        props: dict = {"var_name": StringAttr(var_name)}
+        init_region = (
+            _single_op_region([init_value_op]) if init_value_op is not None else None
+        )
         if needs_device_residency:
             props["needs_device_residency"] = BoolAttr.from_bool(needs_device_residency)
         if is_run_local:
@@ -919,13 +935,20 @@ class SafeDeallocOp(IRDLOperation):
 
     Emitted inside _suite_timestep_final:
         if (allocated(var_name)) deallocate(var_name)
+
+    The variable is an identifier (var_name) or a reference expression
+    (target_op), see _name_or_target.
     """
 
     name = "ccpp_utils.safe_dealloc"
-    var_name = prop_def(StringAttr)
+    var_name = opt_prop_def(StringAttr)
+    target = opt_region_def("single_block")
 
-    def __init__(self, var_name: str):
-        super().__init__(properties={"var_name": StringAttr(var_name)})
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, var_name: "str | None" = None, *, target_op=None):
+        props, target = _name_or_target("SafeDeallocOp", "var_name", var_name, target_op)
+        super().__init__(properties=props, regions=[target])
 
 
 @irdl_op_definition
@@ -1092,7 +1115,6 @@ class SubcycleLoopOp(IRDLOperation):
                 "SubcycleLoopOp: pass exactly one of loop_count or loop_count_op"
             )
         if isinstance(body_ops, list):
-            from xdsl.ir import Block, Region
             body = Region([Block(body_ops)])
         else:
             body = body_ops
@@ -1217,14 +1239,18 @@ class NullifyPointerOp(IRDLOperation):
     """
 
     name = "ccpp_utils.nullify_pointer"
-    ptr_name = prop_def(StringAttr)
+    ptr_name = opt_prop_def(StringAttr)
     if_associated = opt_prop_def(UnitAttr)
+    target = opt_region_def("single_block")   # see _name_or_target
 
-    def __init__(self, ptr_name: str, *, if_associated: bool = False):
-        props = {"ptr_name": StringAttr(ptr_name)}
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, ptr_name: "str | None" = None, *, target_op=None,
+                 if_associated: bool = False):
+        props, target = _name_or_target("NullifyPointerOp", "ptr_name", ptr_name, target_op)
         if if_associated:
             props["if_associated"] = UnitAttr()
-        super().__init__(properties=props)
+        super().__init__(properties=props, regions=[target])
 
 
 @irdl_op_definition
@@ -1232,51 +1258,38 @@ class AllocateOp(IRDLOperation):
     """Allocate a Fortran allocatable or pointer variable, with an
     optional shape and an optional STAT= clause.
 
-    Emits, with one or more ``dims`` (an array/array-of-arrays allocation)::
+    Emits, with one or more dimension extents (expression ops, ``dim_ops``)::
 
-        allocate({var_name}({dims[0]}, {dims[1]}, ...)[, stat={stat_var}])
+        allocate({var_name}({dim0}, {dim1}, ...)[, stat={stat_var}])
 
-    or, with zero ``dims`` (a scalar allocatable/pointer allocation, e.g.
-    a derived-type pointer target)::
+    or, with none (a scalar allocatable/pointer allocation, e.g. a
+    derived-type pointer target)::
 
         allocate({var_name}[, stat={stat_var}])
 
-    ``dims`` is an ArrayAttr of StringAttr Fortran expressions (e.g.
-    ``"ncols"``, ``"size(lc_const_props)"``). ``stat_var`` is the
-    STAT= clause's variable name (opaque text, same declaration-stays-text
-    convention as everywhere else in this codebase) -- covers the
-    recurring ``allocate(const_prop, stat=errcode)`` idiom.
-
-    lang-neutral-expr-ir Stage 3a adds a structured alternative for
-    ``dims`` (same shape as other ops in this round): pass ``dim_ops``
-    (a list of expression ops, one per dimension) instead. ``var_name``
-    and ``stat_var`` stay plain text -- every real call site uses a bare
-    variable name for both, never a computed expression.
+    The variable is an identifier (``var_name``) or a reference expression
+    (``target_op``, see _name_or_target); ``stat_var`` is the identifier of
+    the STAT= variable.
     """
 
     name = "ccpp_utils.allocate"
-    var_name = prop_def(StringAttr)
-    dims     = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr]
-    dims_region = var_region_def("single_block")   # structured dim expr ops
+    var_name = opt_prop_def(StringAttr)
+    target = opt_region_def("single_block")   # see _name_or_target
+    dims_region = var_region_def("single_block")   # one expression op per dimension
     stat_var = opt_prop_def(StringAttr)
 
+    irdl_options = [AttrSizedRegionSegments()]
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, var_name: str, dims: "list[str] | None" = None,
-        stat_var: "str | None" = None, *, dim_ops: "list | None" = None,
+        self, var_name: "str | None" = None, *, dim_ops: "list | None" = None,
+        stat_var: "str | None" = None, target_op=None,
     ):
-        if dims is not None and dim_ops is not None:
-            raise ValueError("AllocateOp: pass at most one of dims or dim_ops")
-        props: dict = {"var_name": StringAttr(var_name)}
-        if dim_ops is not None:
-            dims_regions = [_single_op_region([d]) for d in dim_ops]
-        else:
-            props["dims"] = ArrayAttr([StringAttr(d) for d in (dims or [])])
-            dims_regions = []
+        props, target = _name_or_target("AllocateOp", "var_name", var_name, target_op)
+        dims_regions = [_single_op_region([d]) for d in (dim_ops or [])]
         if stat_var is not None:
             props["stat_var"] = StringAttr(stat_var)
-        super().__init__(properties=props, regions=[dims_regions])
+        super().__init__(properties=props, regions=[target, dims_regions])
 
 
 @irdl_op_definition
@@ -1289,34 +1302,14 @@ class ZeroFillOp(IRDLOperation):
     """
 
     name = "ccpp_utils.zero_fill"
-    var_name = prop_def(StringAttr)
+    var_name = opt_prop_def(StringAttr)
+    target = opt_region_def("single_block")   # see _name_or_target
 
-    def __init__(self, var_name: str):
-        super().__init__(properties={"var_name": StringAttr(var_name)})
+    traits = traits_def(NoTerminator())
 
-
-@irdl_op_definition
-class PointerSliceAssignOp(IRDLOperation):
-    """Associate a pointer with a trailing-index slice of a 3-D array.
-
-    Emits::
-
-        {ptr_name} => {array_name}(:, :, {index_var})
-
-    Used to assign constituent-tendency pointer slices into ``lc_const_tend``.
-    """
-
-    name = "ccpp_utils.pointer_slice_assign"
-    ptr_name   = prop_def(StringAttr)
-    array_name = prop_def(StringAttr)
-    index_var  = prop_def(StringAttr)
-
-    def __init__(self, ptr_name: str, array_name: str, index_var: str):
-        super().__init__(properties={
-            "ptr_name":   StringAttr(ptr_name),
-            "array_name": StringAttr(array_name),
-            "index_var":  StringAttr(index_var),
-        })
+    def __init__(self, var_name: "str | None" = None, *, target_op=None):
+        props, target = _name_or_target("ZeroFillOp", "var_name", var_name, target_op)
+        super().__init__(properties=props, regions=[target])
 
 
 @irdl_op_definition
@@ -1325,41 +1318,26 @@ class PointerAssignOp(IRDLOperation):
 
     Emits::
 
-        {ptr_name} => {rhs_expr}
+        {ptr_name} => {rhs}
 
-    ``rhs_expr`` is printed verbatim -- deliberately general (a bare
-    pointer name, a type-bound function-call result, a DDT member access,
-    etc.), since composing a fully-structured RHS expression is out of
-    scope here. Distinct from PointerSliceAssignOp (which has a fixed
-    ``{ptr} => {array}(:, :, {index_var})`` shape); use that one instead
-    when the RHS really is a trailing-index 3-D slice.
-
-    lang-neutral-expr-ir Stage 3a adds a structured alternative for
-    ``rhs_expr`` (same shape as other ops in this round): pass
-    ``rhs_expr_op`` instead. ``ptr_name`` stays plain text -- every real
-    call site uses a bare pointer-variable name, never a computed
-    expression, so there is nothing for a structured form to buy there.
+    The right-hand side is an expression op (``rhs_expr_op``): a variable,
+    a member access, a function result, or a slice such as
+    ``{array}(:, :, {index})`` (an IndexExprOp with SliceExprOp
+    subscripts). The pointer is an identifier (``ptr_name``) or a
+    reference expression (``target_op``, see _name_or_target).
     """
 
     name = "ccpp_utils.pointer_assign"
-    ptr_name = prop_def(StringAttr)
-    rhs_expr = opt_prop_def(StringAttr)
-    rhs_expr_region = opt_region_def("single_block")
+    ptr_name = opt_prop_def(StringAttr)
+    target = opt_region_def("single_block")   # see _name_or_target
+    rhs_expr_region = region_def("single_block")
 
+    irdl_options = [AttrSizedRegionSegments()]
     traits = traits_def(NoTerminator())
 
-    def __init__(self, ptr_name: str, rhs_expr: "str | None" = None, *, rhs_expr_op=None):
-        if (rhs_expr is None) == (rhs_expr_op is None):
-            raise ValueError(
-                "PointerAssignOp: pass exactly one of rhs_expr or rhs_expr_op"
-            )
-        props: dict = {"ptr_name": StringAttr(ptr_name)}
-        rhs_region = None
-        if rhs_expr is not None:
-            props["rhs_expr"] = StringAttr(rhs_expr)
-        else:
-            rhs_region = _single_op_region([rhs_expr_op])
-        super().__init__(properties=props, regions=[rhs_region])
+    def __init__(self, ptr_name: "str | None" = None, *, rhs_expr_op, target_op=None):
+        props, target = _name_or_target("PointerAssignOp", "ptr_name", ptr_name, target_op)
+        super().__init__(properties=props, regions=[target, _single_op_region([rhs_expr_op])])
 
 
 @irdl_op_definition
@@ -1368,45 +1346,22 @@ class AssignOp(IRDLOperation):
 
     Emits::
 
-        {lhs_expr} = {rhs_expr}
+        {lhs} = {rhs}
 
-    Either both sides are expression ops (lhs_op/rhs_op: VarRefExprOp,
-    IndexExprOp, arith constants and operators, ...), which the printer
-    renders -- no Fortran syntax in the IR -- or, the older form, both are
-    text printed verbatim (lhs_expr/rhs_expr). Covers plain-value
-    assignment; use PointerAssignOp/PointerSliceAssignOp instead for `=>`
-    pointer association.
+    Both sides are expression ops (VarRefExprOp, IndexExprOp, arith
+    constants and operators, ...), which the printer renders. Covers
+    plain-value assignment; use PointerAssignOp instead for ``=>`` pointer
+    association.
     """
 
     name = "ccpp_utils.assign"
-    lhs_expr = opt_prop_def(StringAttr)
-    rhs_expr = opt_prop_def(StringAttr)
-    lhs = opt_region_def("single_block")
-    rhs = opt_region_def("single_block")
+    lhs = region_def("single_block")
+    rhs = region_def("single_block")
 
-    irdl_options = [AttrSizedRegionSegments()]
     traits = traits_def(NoTerminator())
 
-    def __init__(
-        self, lhs_expr: "str | None" = None, rhs_expr: "str | None" = None,
-        *, lhs_op=None, rhs_op=None,
-    ):
-        text = lhs_expr is not None and rhs_expr is not None
-        ops = lhs_op is not None and rhs_op is not None
-        if text == ops or (lhs_expr is None) != (rhs_expr is None) \
-                or (lhs_op is None) != (rhs_op is None):
-            raise ValueError(
-                "AssignOp: pass both lhs_expr/rhs_expr or both lhs_op/rhs_op"
-            )
-        if text:
-            super().__init__(
-                properties={"lhs_expr": StringAttr(lhs_expr), "rhs_expr": StringAttr(rhs_expr)},
-                regions=[None, None],
-            )
-        else:
-            super().__init__(
-                regions=[_single_op_region([lhs_op]), _single_op_region([rhs_op])]
-            )
+    def __init__(self, *, lhs_op, rhs_op):
+        super().__init__(regions=[_single_op_region([lhs_op]), _single_op_region([rhs_op])])
 
 
 @irdl_op_definition
@@ -1416,71 +1371,37 @@ class DdtMethodCallOp(IRDLOperation):
 
     Emits::
 
-        call {obj_expr}%{method}({args joined with kwargs, comma-separated})
+        call {obj}%{method}({args joined with kwargs, comma-separated})
 
-    ``obj_expr`` is the object expression text (may itself be a resolved
-    reference like ``lc_instances(instance)%cam_constituents_obj``).
-    ``args`` are positional argument expressions; ``kwargs`` are already-
-    formatted ``name=expr`` strings. Distinct from CamDirectCallOp (a plain
-    ``call {callee}(...)`` with positional-only args, no ``%`` receiver
-    convention implied).
-
-    lang-neutral-expr-ir Stage 3a adds a structured alternative for each
-    of the three text slots independently (object expression, positional
-    args, keyword args) -- not one all-or-nothing switch, since real call
-    sites mix e.g. a plain-text ``obj_expr`` with structured ``kwargs``.
-    Pass ``obj_expr_op`` instead of ``obj_expr``; ``arg_ops`` instead of
-    ``args``; ``kwarg_ops`` (a list of ``KeywordArgExprOp``) instead of
-    ``kwargs``. Each slot accepts at most one of its two forms.
+    The object (``obj_expr_op``, e.g. ``lc_instances(instance)%obj`` as a
+    MemberAccessExprOp), the positional arguments (``arg_ops``) and the
+    keyword arguments (``kwarg_ops``, KeywordArgExprOps) are expression
+    ops. Distinct from CamDirectCallOp (a plain ``call {callee}(...)`` with
+    positional-only args, no ``%`` receiver convention implied).
     """
 
     name = "ccpp_utils.ddt_method_call"
-    obj_expr = opt_prop_def(StringAttr)
-    obj_expr_region = opt_region_def("single_block")
+    obj_expr_region = region_def("single_block")
     method   = prop_def(StringAttr)
-    args     = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr], positional
-    args_region = var_region_def("single_block")   # structured positional arg exprs
-    kwargs   = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr], "name=expr"
-    kwargs_region = var_region_def("single_block")  # structured KeywordArgExprOp children
+    args_region = var_region_def("single_block")
+    kwargs_region = var_region_def("single_block")
 
     irdl_options = [AttrSizedRegionSegments()]
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, obj_expr: "str | None" = None, method: str = "",
-        args: "list[str] | None" = None, kwargs: "list[str] | None" = None,
-        *, obj_expr_op=None, arg_ops: "list | None" = None, kwarg_ops: "list | None" = None,
+        self, *, obj_expr_op, method: str,
+        arg_ops: "list | None" = None, kwarg_ops: "list | None" = None,
     ):
-        if (obj_expr is None) == (obj_expr_op is None):
-            raise ValueError(
-                "DdtMethodCallOp: pass exactly one of obj_expr or obj_expr_op"
-            )
-        if args is not None and arg_ops is not None:
-            raise ValueError("DdtMethodCallOp: pass at most one of args or arg_ops")
-        if kwargs is not None and kwarg_ops is not None:
-            raise ValueError("DdtMethodCallOp: pass at most one of kwargs or kwarg_ops")
-
-        props: dict = {}
-        obj_region = None
-        if obj_expr is not None:
-            props["obj_expr"] = StringAttr(obj_expr)
-        else:
-            obj_region = _single_op_region([obj_expr_op])
-        props["method"] = StringAttr(method)
-        if arg_ops is not None:
-            args_regions = [_single_op_region([a]) for a in arg_ops]
-        else:
-            props["args"] = ArrayAttr([StringAttr(a) for a in (args or [])])
-            args_regions = []
-        if kwarg_ops is not None:
-            kwargs_regions = [_single_op_region([k]) for k in kwarg_ops]
-        else:
-            props["kwargs"] = ArrayAttr([StringAttr(k) for k in (kwargs or [])])
-            kwargs_regions = []
-
+        if not _IDENTIFIER.match(method):
+            raise ValueError(f"DdtMethodCallOp: method {method!r} is not an identifier")
         super().__init__(
-            properties=props,
-            regions=[obj_region, args_regions, kwargs_regions],
+            properties={"method": StringAttr(method)},
+            regions=[
+                _single_op_region([obj_expr_op]),
+                [_single_op_region([a]) for a in (arg_ops or [])],
+                [_single_op_region([k]) for k in (kwarg_ops or [])],
+            ],
         )
 
 
@@ -1496,20 +1417,12 @@ class ErrorGuardOp(IRDLOperation):
           return
         end if
 
-    Replaces constituent_cap.py's own ``_error_guard()`` Python helper,
-    which built exactly this 5-line block as a joined string.
-
-    lang-neutral-expr-ir Stage 3a adds a structured alternative to the
-    opaque ``condition`` text: pass ``condition_op`` instead. Exactly one
-    of the two must be given.
-    ``errmsg_text`` stays a plain string in both cases -- every real call
-    site uses a static literal message, never a computed expression, so
-    there is nothing for a structured form to buy here.
+    The condition is an expression op (``condition_op``); ``errmsg_text``
+    is the message, data.
     """
 
     name = "ccpp_utils.error_guard"
-    condition   = opt_prop_def(StringAttr)
-    condition_region = opt_region_def("single_block")
+    condition_region = region_def("single_block")
     errmsg_text = prop_def(StringAttr)
     errflg_var  = opt_prop_def(StringAttr)  # default "errflg" if unset
     errmsg_var  = opt_prop_def(StringAttr)  # default "errmsg" if unset
@@ -1517,59 +1430,43 @@ class ErrorGuardOp(IRDLOperation):
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, condition: "str | None" = None, errmsg_text: "str | None" = None,
-        errflg_var: str = "errflg", errmsg_var: str = "errmsg", *, condition_op=None,
+        self, *, condition_op, errmsg_text: str,
+        errflg_var: str = "errflg", errmsg_var: str = "errmsg",
     ):
-        if (condition is None) == (condition_op is None):
-            raise ValueError(
-                "ErrorGuardOp: pass exactly one of condition or condition_op"
-            )
-        props: dict = {}
-        cond_region = None
-        if condition is not None:
-            props["condition"] = _coerce_str_attr(condition)
-        else:
-            cond_region = _single_op_region([condition_op])
-        props["errmsg_text"] = StringAttr(errmsg_text)
+        props: dict = {"errmsg_text": StringAttr(errmsg_text)}
         if errflg_var != "errflg":
             props["errflg_var"] = StringAttr(errflg_var)
         if errmsg_var != "errmsg":
             props["errmsg_var"] = StringAttr(errmsg_var)
-        super().__init__(properties=props, regions=[cond_region])
+        super().__init__(properties=props, regions=[_single_op_region([condition_op])])
 
 
 @irdl_op_definition
-class TextBoundedDoLoopOp(IRDLOperation):
-    """Fortran ``do {loop_var} = 1, {upper_expr}`` whose trip count is a
-    runtime Fortran text expression (e.g. ``size(x)``), not an SSA value.
+class DoLoopOp(IRDLOperation):
+    """Fortran ``do {loop_var} = 1, {upper}`` whose trip count is an
+    expression op (e.g. a CallExprOp for ``size(x)``), not an SSA value.
 
     Emits::
 
-        do {loop_var} = 1, {upper_expr}
+        do {loop_var} = 1, {upper}
           {body}
         end do
 
     Distinct from PromotionLoopOp/SubcycleLoopOp, which loop over SSA-valued
-    bounds -- constituent_cap.py has no SSA values for its locals at all
-    (every reference is a plain text name via its own ``ref()`` helper), so
-    those two ops don't apply here.
+    bounds.
     """
 
-    name = "ccpp_utils.text_bounded_do_loop"
-    loop_var   = prop_def(StringAttr)
-    upper_expr = prop_def(StringAttr)
-    body       = region_def("single_block")
+    name = "ccpp_utils.do_loop"
+    loop_var = prop_def(StringAttr)
+    upper    = region_def("single_block")
+    body     = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, loop_var: str, upper_expr: str, body_ops: list):
-        from xdsl.ir import Block, Region
+    def __init__(self, loop_var: str, upper_op, body_ops: list):
         super().__init__(
-            properties={
-                "loop_var":   StringAttr(loop_var),
-                "upper_expr": StringAttr(upper_expr),
-            },
-            regions=[Region([Block(body_ops)])],
+            properties={"loop_var": StringAttr(loop_var)},
+            regions=[_single_op_region([upper_op]), Region([Block(body_ops)])],
         )
 
 
@@ -1596,7 +1493,6 @@ class ScopedBlockOp(IRDLOperation):
     traits = traits_def(NoTerminator())
 
     def __init__(self, local_allocas: list, body_ops: list):
-        from xdsl.ir import Block, Region
         body = Region([Block([*local_allocas, *body_ops])])
         super().__init__(regions=[body])
 
@@ -1676,8 +1572,8 @@ class FortranToCStringCopyOp(IRDLOperation):
 class DdtComponentDeclOp(IRDLOperation):
     """One component declaration inside a DerivedTypeDefOp.
 
-    Same shape as ModuleVarOp (base_type/kind/ddt_name/is_pointer/rank/
-    fixed_dim/init_value) but deliberately has no is_target/
+    Same shape as ModuleVarOp (base_type/kind/char_len/ddt_name/is_pointer/
+    rank/fixed_dim/init_value) but deliberately has no is_target/
     needs_device_residency properties at all -- TARGET is illegal on a
     Fortran derived-type component (gfortran: "Attribute at (1) is not
     allowed in a TYPE definition"); omitting the property entirely (not
@@ -1696,38 +1592,31 @@ class DdtComponentDeclOp(IRDLOperation):
     var_name   = prop_def(StringAttr)
     base_type  = prop_def(StringAttr)
     kind       = opt_prop_def(StringAttr)
+    char_len   = opt_prop_def(IntegerAttr)
     ddt_name   = opt_prop_def(StringAttr)
     is_pointer = opt_prop_def(BoolAttr)
     rank       = prop_def(IntegerAttr)
     fixed_dim  = opt_prop_def(IntegerAttr)
-    init_value = opt_prop_def(StringAttr)
-    # Structured alternative to init_value (as ModuleVarOp's): pass
-    # init_value_op= instead. At most one of the two may be given.
-    init_value_region = opt_region_def("single_block")
+    init_value_region = opt_region_def("single_block")   # as ModuleVarOp's
 
     traits = traits_def(NoTerminator())
 
     def __init__(self, var_name: str, base_type: str, *, kind: str | None = None,
+                 char_len: int | None = None,
                  ddt_name: str | None = None, is_pointer: bool = False,
-                 rank: int = 0, fixed_dim: int | None = None,
-                 init_value: str | None = None, init_value_op=None):
-        if init_value is not None and init_value_op is not None:
-            raise ValueError("DdtComponentDeclOp: pass at most one of init_value or init_value_op")
+                 rank: int = 0, fixed_dim: int | None = None, init_value_op=None):
         props: dict = {
             "var_name":  StringAttr(var_name),
             "base_type": StringAttr(base_type),
             "rank":      IntegerAttr.from_int_and_width(rank, 64),
+            **_kind_and_char_len_props("DdtComponentDeclOp", base_type, kind, char_len),
         }
-        if kind is not None:
-            props["kind"] = StringAttr(kind)
         if ddt_name is not None:
             props["ddt_name"] = StringAttr(ddt_name)
         if is_pointer:
             props["is_pointer"] = BoolAttr.from_bool(True)
         if fixed_dim is not None:
             props["fixed_dim"] = IntegerAttr.from_int_and_width(fixed_dim, 64)
-        if init_value is not None:
-            props["init_value"] = StringAttr(init_value)
         init_region = (
             _single_op_region([init_value_op]) if init_value_op is not None else None
         )
@@ -1766,7 +1655,6 @@ class DerivedTypeDefOp(IRDLOperation):
 
     def __init__(self, type_name: str, component_ops: list, *,
                  is_public: bool = False, bind_c: bool = False):
-        from xdsl.ir import Block, Region
         props: dict = {"type_name": StringAttr(type_name)}
         if is_public:
             props["is_public"] = UnitAttr()
@@ -1792,7 +1680,6 @@ class CamHostConstituentApiOp(IRDLOperation):
     traits = traits_def(NoTerminator())
 
     def __init__(self, public_names_list: "list[str]", fn_ops: list):
-        from xdsl.ir import Block, Region
         body = Region([Block(fn_ops)])
         super().__init__(
             properties={"public_names": ArrayAttr([StringAttr(n) for n in public_names_list])},
@@ -1825,7 +1712,6 @@ class NonCamHostConstituentApiOp(IRDLOperation):
         public_names_list: "list[str]",
         fn_ops: list,
     ):
-        from xdsl.ir import Block, Region
         body = Region([Block(fn_ops)])
         props: dict = {
             "public_names": ArrayAttr([StringAttr(n) for n in public_names_list]),
@@ -1881,7 +1767,6 @@ class ExternCGuardOp(IRDLOperation):
     traits = traits_def(NoTerminator())
 
     def __init__(self, body_ops: list):
-        from xdsl.ir import Block, Region
         super().__init__(regions=[Region([Block(body_ops)])])
 
 
@@ -1939,7 +1824,6 @@ class CFunctionSigOp(IRDLOperation):
         param_comments: "list[str]", body_ops: list,
         return_type: str = "void", is_inline: bool = False, is_const: bool = False,
     ):
-        from xdsl.ir import Block, Region
         props: dict = {
             "fn_name":        StringAttr(fn_name),
             "return_type":    StringAttr(return_type),
@@ -2048,7 +1932,6 @@ class CppStructDefOp(IRDLOperation):
         self, struct_name: str, member_ops: list, is_pod: bool = True,
         method_ops: "list | None" = None, private_member_ops: "list | None" = None,
     ):
-        from xdsl.ir import Block, Region
         method_ops = method_ops or []
         private_member_ops = private_member_ops or []
         if is_pod and (method_ops or private_member_ops):
@@ -2091,7 +1974,6 @@ class CppNamespaceOp(IRDLOperation):
     traits = traits_def(NoTerminator())
 
     def __init__(self, ns_name: str, body_ops: list):
-        from xdsl.ir import Block, Region
         super().__init__(
             properties={"ns_name": StringAttr(ns_name)},
             regions=[Region([Block(body_ops)])],
@@ -2221,7 +2103,6 @@ class CppConstructorOp(IRDLOperation):
         param_defaults: "list[str]", init_members: "list[str]",
         init_exprs: "list[str]", body_ops: list,
     ):
-        from xdsl.ir import Block, Region
         super().__init__(
             properties={
                 "param_names":    ArrayAttr([StringAttr(n) for n in param_names]),
@@ -2279,7 +2160,6 @@ class CHostCapOp(IRDLOperation):
 
     def __init__(self, ftn_body_ops: list, cpp_body_ops: list, mod_name: str,
                  wrapper_body_ops: list = ()):
-        from xdsl.ir import Block, Region
         super().__init__(
             properties={
                 "mod_name": StringAttr(mod_name),
@@ -2297,20 +2177,24 @@ class CapVarRefOp(IRDLOperation):
     """Reference to a module-level variable declared in the same cap module.
 
     Like HostVarRefOp but no USE statement is generated — the variable is
-    in the current module.  The printer registers the variable name so that
-    downstream ops emit it correctly.
+    in the current module.  The printer registers the reference as the
+    result's text so that downstream ops emit it correctly. The reference is
+    the variable's identifier (``var_name``) or an expression op
+    (``target_op``, see _name_or_target): a multi-instance component, a
+    whole-array section, or a count such as ``size(lc_all_constituents)``.
     """
 
     name = "ccpp_utils.cap_var_ref"
 
-    var_name = prop_def(StringAttr)
+    var_name = opt_prop_def(StringAttr)
+    target = opt_region_def("single_block")   # see _name_or_target
     res = result_def()
 
-    def __init__(self, var_name: str, result_type):
-        super().__init__(
-            properties={"var_name": StringAttr(var_name)},
-            result_types=[result_type],
-        )
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, var_name: "str | None", result_type, *, target_op=None):
+        props, target = _name_or_target("CapVarRefOp", "var_name", var_name, target_op)
+        super().__init__(properties=props, regions=[target], result_types=[result_type])
 
 
 @irdl_op_definition
@@ -2418,9 +2302,8 @@ class VarRefExprOp(IRDLOperation):
     never a real SSA value.
 
     Emits the bare name verbatim. Covers e.g. constituent_cap.py's
-    locals -- "every reference is a plain text name," per
-    TextBoundedDoLoopOp's own docstring -- as a structured expression
-    leaf instead of raw text.
+    locals, which are plain names rather than SSA values, as a structured
+    expression leaf.
 
     ``result_type`` is optional (``res``, like ``CapVarRefOp``/
     ``HostVarRefOp``, carries "type set at construction to match callee
@@ -2437,6 +2320,49 @@ class VarRefExprOp(IRDLOperation):
     def __init__(self, var_name: str, result_type=None):
         super().__init__(
             properties={"var_name": StringAttr(var_name)},
+            result_types=[result_type] if result_type is not None else [None],
+        )
+
+
+@irdl_op_definition
+class MetadataLiteralExprOp(IRDLOperation):
+    """A literal copied verbatim from the generator's input: the metadata
+    (e.g. a scheme argument's ``default_value``, which the CCPP metadata
+    format defines as a Fortran literal) or the suite definition (a Python
+    suite's keyword-argument override, e.g. ``hello_scheme(ncol=5)``). The
+    generator never writes this text itself."""
+
+    name = "ccpp_utils.metadata_literal_expr"
+    text = prop_def(StringAttr)
+    res = opt_result_def()
+
+    def __init__(self, text: str, result_type=None):
+        super().__init__(
+            properties={"text": StringAttr(text)},
+            result_types=[result_type] if result_type is not None else [None],
+        )
+
+
+@irdl_op_definition
+class MethodCallExprOp(IRDLOperation):
+    """A type-bound function call as an expression: ``{base}%{method}(args)``
+    (e.g. ``cam_constituents_obj%field_data_ptr()``). DdtMethodCallOp is the
+    statement form (``call base%method(...)``)."""
+
+    name = "ccpp_utils.method_call_expr"
+    base = region_def("single_block")
+    method = prop_def(StringAttr)
+    args = var_region_def("single_block")
+    res = opt_result_def()
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, base_op, method: str, arg_ops: "list" = (), result_type=None):
+        if not _IDENTIFIER.match(method):
+            raise ValueError(f"MethodCallExprOp: method {method!r} is not an identifier")
+        super().__init__(
+            properties={"method": StringAttr(method)},
+            regions=[_single_op_region([base_op]), [_single_op_region([a]) for a in arg_ops]],
             result_types=[result_type] if result_type is not None else [None],
         )
 
@@ -2490,6 +2416,8 @@ class MemberAccessExprOp(IRDLOperation):
     def __init__(
         self, base_op, member: str, via: "str | None" = None, result_type=None
     ):
+        if not _IDENTIFIER.match(member):
+            raise ValueError(f"MemberAccessExprOp: member {member!r} is not an identifier")
         props: dict = {"member": StringAttr(member)}
         if via is not None:
             if via not in ("value", "pointer"):
@@ -2670,17 +2598,36 @@ class ArrayConstructorExprOp(IRDLOperation):
 ### end lang-neutral-expr-ir Stage 1b new expression ops #####################
 
 
+_UNIT_OPERATIONS = ("add", "sub", "mul")
+_REAL_LITERAL = re.compile(r"^[0-9]+\.[0-9]*([Ee][-+]?[0-9]+)?$")
+
+
+def _unit_conversion_props(op_name: str, operation, factor) -> dict:
+    """Properties of a unit conversion by `operation` ("add", "sub" or "mul")
+    with `factor`, an unsigned real literal kept as written (e.g. "1.0E6");
+    none when both are None (no conversion)."""
+    if operation is None and factor is None:
+        return {}
+    if operation not in _UNIT_OPERATIONS:
+        raise ValueError(f"{op_name}: operation must be one of {_UNIT_OPERATIONS}, "
+                         f"got {operation!r}")
+    if factor is None or not _REAL_LITERAL.match(factor):
+        raise ValueError(f"{op_name}: factor {factor!r} is not an unsigned real literal")
+    return {"operation": StringAttr(operation), "factor": StringAttr(factor)}
+
+
 @irdl_op_definition
 class UnitConvertOp(IRDLOperation):
     """Allocate a local temp and optionally apply a host→scheme unit conversion.
 
-    For ``intent(in)`` / ``intent(inout)``::
+    With a conversion (``intent(in)`` / ``intent(inout)``), e.g. operation
+    "mul" and factor "0.01"::
 
         allocate(result(size(source,1), ...))   ! arrays only
-        result = source <to_scheme_expr>         ! e.g. "* 0.01_kind_phys"
+        result = source * 0.01_kind_phys
 
-    For ``intent(out)`` (scheme does not read the value), pass an empty
-    ``to_scheme_expr`` and only the allocation is emitted::
+    Without one (``intent(out)``: the scheme does not read the value), only
+    the allocation is emitted::
 
         allocate(result(size(source,1), ...))   ! arrays only
 
@@ -2688,59 +2635,25 @@ class UnitConvertOp(IRDLOperation):
     declared as a local (allocatable for arrays, plain for scalars) in the
     enclosing function.  Use ``UnitWriteBackOp`` to write back after the
     scheme call for ``intent(inout)`` / ``intent(out)`` arguments.
-
-    lang-neutral-expr-ir Stage 1b adds a structured alternative to the
-    opaque ``to_scheme_expr`` text fragment: pass ``conversion_op`` (a
-    real ``arith.AddfOp``/``SubfOp`` whose ``lhs`` operand is this op's
-    own ``source`` operand -- ordinary MLIR semantics, since nested
-    regions in this dialect are not isolated-from-above, same as
-    e.g. TextBoundedDoLoopOp's body) instead of ``to_scheme_expr``. Exactly one of
-    the two must be given. The structured form has no real call site yet
-    (retrofitting one is Stage 3c); the opaque-text form remains fully
-    supported so every existing caller is unaffected.
     """
 
     name = "ccpp_utils.unit_convert"
 
-    source         = operand_def()
-    to_scheme_expr = opt_prop_def(StringAttr)  # e.g. "+ 273.15" or "" for out-only
-    conversion     = opt_region_def("single_block")  # structured alternative
-
+    source    = operand_def()
+    operation = opt_prop_def(StringAttr)   # "add" | "sub" | "mul"; unset: no conversion
+    factor    = opt_prop_def(StringAttr)   # unsigned real literal, e.g. "273.15"
     res = result_def()
-
-    traits = traits_def(NoTerminator())
 
     def __init__(
         self,
         source: "SSAValue | IRDLOperation",
-        to_scheme_expr: "str | StringAttr | None" = None,
-        result_type=None,
-        *,
-        conversion_op=None,
+        result_type,
+        operation: "str | None" = None,
+        factor: "str | None" = None,
     ):
-        if (to_scheme_expr is None) == (conversion_op is None):
-            raise ValueError(
-                "UnitConvertOp: pass exactly one of to_scheme_expr or conversion_op"
-            )
-        props: dict = {}
-        region = None
-        if to_scheme_expr is not None:
-            props["to_scheme_expr"] = _coerce_str_attr(to_scheme_expr)
-        else:
-            if not isinstance(conversion_op.rhs.owner, ArithConstantOp):
-                raise ValueError(
-                    "UnitConvertOp: conversion_op.rhs must be a plain "
-                    "arith.ConstantOp -- a compound rhs would lose its own "
-                    "grouping when flattened into the printed suffix "
-                    "fragment (e.g. 'source - a + b' instead of "
-                    "'source - (a + b)'), and _suffix_kind_in_expr's kind "
-                    "suffix is only meaningful on a literal"
-                )
-            region = _single_op_region([conversion_op])
         super().__init__(
             operands=[source],
-            properties=props,
-            regions=[region],
+            properties=_unit_conversion_props("UnitConvertOp", operation, factor),
             result_types=[result_type],
         )
 
@@ -2749,59 +2662,32 @@ class UnitConvertOp(IRDLOperation):
 class UnitWriteBackOp(IRDLOperation):
     """Write a unit-converted value back to the original host variable.
 
-    Represents::
+    Represents, e.g. for operation "sub" and factor "273.15"::
 
-        original_dest = conv_result <to_host_expr>   ! e.g. "conv_result - 273.15"
+        original_dest = conv_result - 273.15_kind_phys
         deallocate(conv_result)                       ! arrays only
 
     Emitted after the scheme call for ``intent(inout)`` / ``intent(out)``
     arguments that required a unit conversion.
-
-    lang-neutral-expr-ir Stage 1b sibling of ``UnitConvertOp``'s own
-    structured alternative: pass ``conversion_op`` (a real
-    ``arith.AddfOp``/``SubfOp`` whose ``lhs`` operand is this op's own
-    ``conv_result`` operand) instead of ``to_host_expr``. Exactly one of
-    the two must be given; the opaque-text form remains fully supported.
     """
 
     name = "ccpp_utils.unit_write_back"
 
     conv_result   = operand_def()
     original_dest = operand_def()
-
-    to_host_expr = opt_prop_def(StringAttr)   # e.g. "- 273.15"
-    conversion   = opt_region_def("single_block")  # structured alternative
-
-    traits = traits_def(NoTerminator())
+    operation     = prop_def(StringAttr)   # "add" | "sub" | "mul"
+    factor        = prop_def(StringAttr)   # unsigned real literal
 
     def __init__(
         self,
         conv_result:   "SSAValue | IRDLOperation",
         original_dest: "SSAValue | IRDLOperation",
-        to_host_expr:  "str | StringAttr | None" = None,
-        *,
-        conversion_op=None,
+        operation: str,
+        factor: str,
     ):
-        if (to_host_expr is None) == (conversion_op is None):
-            raise ValueError(
-                "UnitWriteBackOp: pass exactly one of to_host_expr or conversion_op"
-            )
-        props: dict = {}
-        region = None
-        if to_host_expr is not None:
-            props["to_host_expr"] = _coerce_str_attr(to_host_expr)
-        else:
-            if not isinstance(conversion_op.rhs.owner, ArithConstantOp):
-                raise ValueError(
-                    "UnitWriteBackOp: conversion_op.rhs must be a plain "
-                    "arith.ConstantOp -- see UnitConvertOp's own identical "
-                    "check for why a compound rhs is rejected"
-                )
-            region = _single_op_region([conversion_op])
         super().__init__(
             operands=[conv_result, original_dest],
-            regions=[region],
-            properties=props,
+            properties=_unit_conversion_props("UnitWriteBackOp", operation, factor),
         )
 
 
@@ -2987,27 +2873,29 @@ class RowMajorWriteBackOp(IRDLOperation):
 
 @irdl_op_definition
 class CamDirectCallOp(IRDLOperation):
-    """Emit a direct Fortran subroutine call with positional string arguments.
+    """Emit a direct Fortran subroutine call, on one line.
 
     Prints as::
 
         call {callee}(arg0, arg1, ...)
 
-    Unlike ``func.CallOp``, arguments are stored as Fortran expression strings
+    Unlike ``func.CallOp``, the arguments are expression ops (``arg_ops``)
     rather than SSA values — suitable for calls where the arguments are
     module-scope variables accessed by name (e.g. ``errmsg``, ``errcode``).
     """
 
     name = "ccpp_utils.cam_direct_call"
 
-    callee    = prop_def(StringAttr)
-    call_args = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    callee   = prop_def(StringAttr)
+    arg_exprs = var_region_def("single_block")
 
-    def __init__(self, callee: str, call_args: "list[str]"):
-        super().__init__(properties={
-            "callee":    StringAttr(callee),
-            "call_args": ArrayAttr([StringAttr(a) for a in call_args]),
-        })
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, callee: str, arg_ops: list):
+        super().__init__(
+            properties={"callee": StringAttr(callee)},
+            regions=[[_single_op_region([a]) for a in arg_ops]],
+        )
 
 
 @irdl_op_definition
@@ -3027,28 +2915,21 @@ class CallStatementOp(IRDLOperation):
     risked destabilizing its own already-proven single-line output format
     across its existing callers).
 
-    The arguments are expression ops (arg_ops: StringLiteralExprOp,
-    ValueExprOp, ...), which the printer renders, or, the older form,
-    text printed verbatim (call_args).
+    The arguments are expression ops (arg_ops: VarRefExprOp,
+    StringLiteralExprOp, CallExprOp, ...), which the printer renders.
     """
 
     name = "ccpp_utils.call_statement"
 
     callee    = prop_def(StringAttr)
-    call_args = opt_prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
     arg_exprs = var_region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
-    def __init__(self, callee: str, call_args: "list[str] | None" = None, *, arg_ops=None):
-        if (call_args is None) == (arg_ops is None):
-            raise ValueError("CallStatementOp: pass exactly one of call_args or arg_ops")
-        props = {"callee": StringAttr(callee)}
-        if call_args is not None:
-            props["call_args"] = ArrayAttr([StringAttr(a) for a in call_args])
+    def __init__(self, callee: str, *, arg_ops):
         super().__init__(
-            properties=props,
-            regions=[[_single_op_region([o]) for o in (arg_ops or [])]],
+            properties={"callee": StringAttr(callee)},
+            regions=[[_single_op_region([o]) for o in arg_ops]],
         )
 
 
@@ -3246,10 +3127,11 @@ class CamSuiteDispatchOp(IRDLOperation):
         Outer array has one inner ArrayAttr per suite.  In each inner array,
         element [0] is the suite name and elements [1:] are the group names
         that have a generated dispatcher for this lifecycle phase.
-    call_args_template : ArrayAttr[StringAttr]
-        Fortran expressions for the dispatcher call arguments, in order.
-        The element whose value is the sentinel ``"__suite_part__"`` is
-        replaced by the quoted group name literal for each call in the chain.
+    suite_part_index : IntegerAttr
+        Position of the suite-part argument in the dispatcher call: the
+        group name literal, for each call in the chain.
+    arg_exprs : regions
+        The other dispatcher call arguments, in order, as expression ops.
     """
 
     name = "ccpp_utils.cam_suite_dispatch"
@@ -3259,7 +3141,10 @@ class CamSuiteDispatchOp(IRDLOperation):
     errcode_var        = prop_def(StringAttr)
     errmsg_var         = prop_def(StringAttr)
     suite_groups       = prop_def(ArrayAttr)   # ArrayAttr[ArrayAttr[StringAttr]]
-    call_args_template = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    suite_part_index   = prop_def(IntegerAttr)
+    arg_exprs          = var_region_def("single_block")
+
+    traits = traits_def(NoTerminator())
 
     def __init__(
         self,
@@ -3268,29 +3153,34 @@ class CamSuiteDispatchOp(IRDLOperation):
         errcode_var: str,
         errmsg_var: str,
         suite_groups: "list[tuple[str, list[str]]]",
-        call_args_template: "list[str]",
+        arg_ops: list,
+        suite_part_index: int,
     ):
         """
         Parameters
         ----------
         suite_groups
             List of (suite_name, [group1, group2, ...]) tuples.
-        call_args_template
-            Fortran arg expressions; use ``"__suite_part__"`` where the quoted
-            group name should be substituted.
+        arg_ops
+            The dispatcher call arguments other than the suite part.
+        suite_part_index
+            Where the suite part (the quoted group name) goes among them.
         """
         groups_attr = ArrayAttr([
             ArrayAttr([StringAttr(sn)] + [StringAttr(g) for g in groups])
             for sn, groups in suite_groups
         ])
-        super().__init__(properties={
-            "dispatcher_fn":      StringAttr(dispatcher_fn),
-            "wrapper_fn":         StringAttr(wrapper_fn),
-            "errcode_var":        StringAttr(errcode_var),
-            "errmsg_var":         StringAttr(errmsg_var),
-            "suite_groups":       groups_attr,
-            "call_args_template": ArrayAttr([StringAttr(a) for a in call_args_template]),
-        })
+        super().__init__(
+            properties={
+                "dispatcher_fn":    StringAttr(dispatcher_fn),
+                "wrapper_fn":       StringAttr(wrapper_fn),
+                "errcode_var":      StringAttr(errcode_var),
+                "errmsg_var":       StringAttr(errmsg_var),
+                "suite_groups":     groups_attr,
+                "suite_part_index": IntegerAttr.from_int_and_width(suite_part_index, 32),
+            },
+            regions=[[_single_op_region([a]) for a in arg_ops]],
+        )
 
 
 @irdl_op_definition
@@ -3388,12 +3278,11 @@ CCPPUtils = Dialect(
         NullifyPointerOp,
         AllocateOp,
         ZeroFillOp,
-        PointerSliceAssignOp,
         PointerAssignOp,
         AssignOp,
         DdtMethodCallOp,
         ErrorGuardOp,
-        TextBoundedDoLoopOp,
+        DoLoopOp,
         ScopedBlockOp,
         CToFortranStringCopyOp,
         FortranToCStringCopyOp,
@@ -3419,6 +3308,8 @@ CCPPUtils = Dialect(
         StringConcatExprOp,
         VarRefExprOp,
         ValueExprOp,
+        MetadataLiteralExprOp,
+        MethodCallExprOp,
         MemberAccessExprOp,
         IndexExprOp,
         SliceExprOp,

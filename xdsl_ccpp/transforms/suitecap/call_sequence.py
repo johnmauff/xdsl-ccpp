@@ -7,12 +7,11 @@ from xdsl.dialects import arith, builtin, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
     DictionaryAttr,
-    FloatAttr,
     IntegerAttr,
     StringAttr,
     i8,
 )
-from xdsl.ir import BlockArgument, SSAValue
+from xdsl.ir import SSAValue
 
 from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp_utils import (
@@ -21,6 +20,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     KeywordCallOp,
     KindCastOp,
     KindWriteBackOp,
+    MetadataLiteralExprOp,
     SubcycleLoopOp,
     UnitConvertOp,
     UnitWriteBackOp,
@@ -40,14 +40,12 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_MESSAGE,
     CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT,
     UNIT_CONVERSIONS,
-    real_kind_width,
 )
 from xdsl_ccpp.transforms.suitecap.active import (
     _resolve_active_condition,
 )
 from xdsl_ccpp.transforms.suitecap.block_args import (
     _arg_dims,
-    _parse_unit_conversion,
     _std_key,
     _vertical_dim_index,
 )
@@ -308,33 +306,16 @@ class CallSequenceMixin:
                 cur = cast_op.res
             if arg.hasAttr("model_var_unit_mismatch"):
                 scheme_units, host_units = arg.getAttr("model_var_unit_mismatch").split(":", 1)
-                to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+                to_scheme, to_host = UNIT_CONVERSIONS[(scheme_units, host_units)]
                 kind_str = arg.getAttr("kind") if arg.hasAttr("kind") else None
                 arg_type = TypeConversions.convert(
                     arg.getAttr("type"), kind_str, _arg_dims(arg),
                 )
-                pre_expr = "" if intent == "out" else to_scheme_expr
-                # Same gate as _apply_kind_and_unit_casts; see its comment.
-                structured_conv = None
-                if (
-                    kind_str is not None
-                    and real_kind_width(kind_str) is not None
-                    and _arg_dims(arg) == 0
-                    and intent != "out"
-                    and isinstance(cur, BlockArgument)
-                ):
-                    structured_conv = _parse_unit_conversion(to_scheme_expr)
-                if structured_conv is not None:
-                    op_cls, value = structured_conv
-                    load_op = memref.LoadOp.get(cur, [])
-                    const_op = arith.ConstantOp(FloatAttr(value, arg_type.element_type))
-                    conv_arith_op = op_cls(load_op, const_op)
-                    conv_op = UnitConvertOp(cur, result_type=arg_type, conversion_op=conv_arith_op)
-                else:
-                    conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+                # intent(out): the scheme does not read the value, so no conversion in.
+                conv_op = UnitConvertOp(cur, arg_type, *(() if intent == "out" else to_scheme))
                 conv_op.res.name_hint = f"{arg.name}_unit_conv"
                 cast_ops.append(conv_op)
-                chain.append(("unit", conv_op.res, cur, to_host_expr))
+                chain.append(("unit", conv_op.res, cur, to_host))
                 cur = conv_op.res
             if arg.hasAttr("top_at_one"):
                 vert_dim = _vertical_dim_index(arg)
@@ -352,7 +333,7 @@ class CallSequenceMixin:
                         )
                     elif kind_or_unit == "unit":
                         divergent_writeback_ops.append(
-                            UnitWriteBackOp(result_ssa, source_ssa, param)
+                            UnitWriteBackOp(result_ssa, source_ssa, *param)
                         )
                     else:
                         divergent_writeback_ops.append(
@@ -407,11 +388,11 @@ class CallSequenceMixin:
             None if overrides else DictionaryAttr({}),
             in_ssa,
             [],
-            # Overrides are literals of unknown type, kept as verbatim
-            # VarRefExprOps. None (not []) when empty, to keep the legacy
-            # overrides={} property shape.
+            # Overrides are literals of unknown type from the suite
+            # definition, kept verbatim. None (not []) when empty, to keep
+            # the legacy overrides={} property shape.
             override_ops=(
-                [KeywordArgExprOp(k, VarRefExprOp(v)) for k, v in overrides.items()]
+                [KeywordArgExprOp(k, MetadataLiteralExprOp(v)) for k, v in overrides.items()]
                 if overrides else None
             ),
         )

@@ -88,9 +88,9 @@
 // CHECK-NEXT:        %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        "ccpp_utils.clear_string"(%errmsg) : (memref<512xi8>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%nbox) <{var_name = "o3", kind_name = "kind_phys"}> : (memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%nbox) <{var_name = "hno3", kind_name = "kind_phys"}> : (memref<i32>) -> ()
-// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ntimes) <{var_name = "model_times", kind_name = "kind_phys"}> : (memref<i32>) -> ()
+// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%nbox) <{var_name = "o3"}> : (memref<i32>) -> ()
+// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%nbox) <{var_name = "hno3"}> : (memref<i32>) -> ()
+// CHECK-NEXT:        "ccpp_utils.lazy_alloc"(%ntimes) <{var_name = "model_times"}> : (memref<i32>) -> ()
 // CHECK-NEXT:        %1 = "llvm.mlir.addressof"() <{global_name = @const_initialized}> : () -> !llvm.ptr
 // CHECK-NEXT:        %2 = "llvm.load"(%1) <{ordering = 0 : i64}> : (!llvm.ptr) -> !llvm.array<16 x i8>
 // CHECK-NEXT:        %3 = "llvm.mlir.addressof"() <{global_name = @ccpp_suite_state}> : () -> !llvm.ptr
@@ -285,7 +285,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -317,7 +317,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -341,7 +341,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ncols : memref<i32> {ccpp.name = "ncols", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ncols : memref<i32> {ccpp.name = "ncols", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -366,7 +366,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %nbox : memref<i32> {ccpp.name = "nbox", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info", ccpp.standard_name = "host_standard_ccpp_type", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "out", ccpp.dim_names = ["number_of_model_times"]}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "", "", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %nbox : memref<i32> {ccpp.name = "nbox", ccpp.standard_name = "horizontal_dimension", ccpp.intent = "in"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info", ccpp.standard_name = "host_standard_ccpp_type", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "out", ccpp.dim_names = ["number_of_model_times"]}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [], [], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -392,7 +392,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ntimes : memref<i32> {ccpp.name = "ntimes", ccpp.standard_name = "number_of_model_times", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "in", ccpp.dim_names = ["number_of_model_times"]}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_dim_exprs = ["", "", "", "ntimes", "", ""]} {
+// CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ntimes : memref<i32> {ccpp.name = "ntimes", ccpp.standard_name = "number_of_model_times", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "in", ccpp.dim_names = ["number_of_model_times"]}, %errmsg : memref<512xi8> {ccpp.name = "errmsg"}, %errflg : memref<i32> {ccpp.name = "errflg"}) -> (memref<512xi8>, memref<i32>) attributes {bind_c_extents = [[], [], [], [["ntimes"]], [], []]} {
 // CHECK:             %0 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %0, %errflg[] : memref<i32>
 // CHECK-NEXT:        %1 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -453,22 +453,22 @@
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%errflg) : (memref<i32>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %0 = arith.constant 0 : i32
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.assign"() ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%errmsg) : (memref<512xi8>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          "ccpp_utils.string_literal_expr"() <{text = ""}> : () -> ()
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.assign"() ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%do_input) : (memref<i1>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %1 = arith.constant true
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        "ccpp_utils.assign"() ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%do_output) : (memref<i1>) -> ()
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %2 = arith.constant true
-// CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:        %3 = "ccpp_utils.call_expr"() <{callee = "present"}> ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%input_vars) : (memref<i1>) -> ()
 // CHECK-NEXT:        }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
@@ -477,7 +477,7 @@
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%do_input) : (memref<i1>) -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%input_vars) : (memref<i1>) -> ()
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %4 = "ccpp_utils.call_expr"() <{callee = "present"}> ({
 // CHECK-NEXT:          "ccpp_utils.value_expr"(%output_vars) : (memref<i1>) -> ()
@@ -487,7 +487,7 @@
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%do_output) : (memref<i1>) -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.value_expr"(%output_vars) : (memref<i1>) -> ()
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%5) <{literal = "ddt_suite"}> : (memref<?xi8>) -> i1
@@ -500,7 +500,7 @@
 // CHECK-NEXT:          scf.if %11 {
 // CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
 // CHECK-NEXT:              %12 = arith.constant 10 : i32
-// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -509,7 +509,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "horizontal_dimension                "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -518,7 +518,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "horizontal_loop_begin               "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -527,7 +527,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "horizontal_loop_end                 "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -536,7 +536,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "host_standard_ccpp_type             "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -545,7 +545,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "model_times                         "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -554,7 +554,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "nitric_acid                         "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -563,7 +563,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "number_of_model_times               "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -572,7 +572,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "ozone                               "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -581,7 +581,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "surface_air_pressure                "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -590,7 +590,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "volume_mixing_ratio_ddt             "}> : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          } else {
 // CHECK-NEXT:            %23 = "ccpp_utils.value_expr"(%do_input) : (memref<i1>) -> i1
 // CHECK-NEXT:            %24 = arith.constant true
@@ -600,7 +600,7 @@
 // CHECK-NEXT:            scf.if %27 {
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
 // CHECK-NEXT:                %28 = arith.constant 7 : i32
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -609,7 +609,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_code                     "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -618,7 +618,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_message                  "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -627,7 +627,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "model_times                         "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -636,7 +636,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "nitric_acid                         "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -645,7 +645,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "number_of_model_times               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -654,7 +654,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ozone                               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -663,11 +663,11 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "volume_mixing_ratio_ddt             "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            } else {
 // CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
 // CHECK-NEXT:                %36 = arith.constant 12 : i32
-// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -676,7 +676,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_code                     "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -685,7 +685,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_message                  "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -694,7 +694,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "horizontal_dimension                "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -703,7 +703,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "horizontal_loop_begin               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -712,7 +712,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "horizontal_loop_end                 "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -721,7 +721,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "host_standard_ccpp_type             "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -730,7 +730,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "model_times                         "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -739,7 +739,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "nitric_acid                         "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -748,7 +748,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "number_of_model_times               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -757,7 +757,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "ozone                               "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -766,7 +766,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "surface_air_pressure                "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.value_expr"(%var_list) : (memref<memref<?xi8>>) -> ()
@@ -775,7 +775,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "volume_mixing_ratio_ddt             "}> : () -> ()
-// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }
 // CHECK-NEXT:          }
 // CHECK-NEXT:        } else {
@@ -804,20 +804,40 @@
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "is_const"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            %0 = arith.constant false
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          func.return
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.func public @Ddt_ccpp_deallocate_dynamic_constituents() attributes {ccpp.fixed_interface} {
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_all_constituents"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_props"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_constituent_array", if_associated}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_cols"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_cole"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_O3"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_HNO3"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_vmr"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_psurf"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.cam_direct_call"() <{callee = "cam_constituents_obj%reset", call_args = []}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{if_associated}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_constituent_array"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cols"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cole"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_O3"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_HNO3"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_vmr"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_psurf"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "reset"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0, 0>} : () -> ()
 // CHECK-NEXT:          func.return
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.func public @Ddt_ccpp_register_constituents(%host_constituents : memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">> {ccpp.name = "host_constituents", ccpp.declared_intent = "in", ccpp.target}, %errmsg : memref<512xi8> {ccpp.name = "errmsg", ccpp.declared_intent = "out"}, %errcode : memref<i32> {ccpp.name = "errcode", ccpp.declared_intent = "out"}) attributes {ccpp.fixed_interface, ccpp.uses = {ccpp_constituent_prop_mod = ["ccpp_constituent_properties_t", "ccpp_constituent_prop_ptr_t"], ccpp_scheme_utils = ["ccpp_scheme_utils_set_constituents"]}} {
@@ -832,25 +852,29 @@
 // CHECK-NEXT:            %0 = "ccpp_utils.call_expr"() <{callee = "size"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "host_constituents"}> : () -> ()
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.assign"() ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            %1 = "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> i32
 // CHECK-NEXT:            %2 = arith.constant 0 : i32
 // CHECK-NEXT:            %3 = arith.addi %1, %2 : i32
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "initialize_table", kwargs = []}> ({
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "initialize_table"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 0>} : () -> ()
-// CHECK-NEXT:          "ccpp_utils.text_bounded_do_loop"() <{loop_var = "lc_i", upper_expr = "size(host_constituents)"}> ({
-// CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", dims = [], stat_var = "errcode"}> : () -> ()
-// CHECK-NEXT:            %4 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
-// CHECK-NEXT:            %5 = arith.constant 0 : i32
-// CHECK-NEXT:            %6 = arith.cmpi ne, %4, %5 : i32
-// CHECK-NEXT:            scf.if %6 {
+// CHECK-NEXT:          "ccpp_utils.do_loop"() <{loop_var = "lc_i"}> ({
+// CHECK-NEXT:            %4 = "ccpp_utils.call_expr"() <{callee = "size"}> ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "host_constituents"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.allocate"() <{var_name = "const_prop", stat_var = "errcode"}> {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
+// CHECK-NEXT:            %5 = "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> i32
+// CHECK-NEXT:            %6 = arith.constant 0 : i32
+// CHECK-NEXT:            %7 = arith.cmpi ne, %5, %6 : i32
+// CHECK-NEXT:            scf.if %7 {
 // CHECK-NEXT:              "ccpp_utils.error_exit"() <{errmsg_var = "errmsg", errmsg_text = "ERROR allocating const_prop"}> : () -> ()
 // CHECK-NEXT:            }
 // CHECK-NEXT:            "ccpp_utils.assign"() ({
@@ -861,7 +885,7 @@
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_i"}> : () -> ()
 // CHECK-NEXT:              }) : () -> ()
-// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }, {
@@ -878,7 +902,7 @@
 // CHECK-NEXT:            "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_table", args = []}> ({
+// CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_table"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
@@ -891,23 +915,29 @@
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0, 2>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_props_ptr"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "constituent_props_ptr()"}> ({
+// CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "constituent_props_ptr"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_const_props"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_const_props"}> ({
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.call_expr"() <{callee = "size"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_props_ptr"}> : () -> ()
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.assign"() ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_props_ptr"}> : () -> ()
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "lc_props_ptr"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.cam_direct_call"() <{callee = "ccpp_scheme_utils_set_constituents", call_args = ["lc_const_props"]}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.call_statement"() <{callee = "ccpp_scheme_utils_set_constituents"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
@@ -922,10 +952,14 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 2>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_all_constituents"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_all_constituents"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
 // CHECK-NEXT:          func.return
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.func public @Ddt_ccpp_number_constituents(%num_advected : memref<i32> {ccpp.name = "num_advected", ccpp.declared_intent = "out"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg", ccpp.declared_intent = "out"}, %errcode : memref<i32> {ccpp.name = "errcode", ccpp.declared_intent = "out"}, %advected : memref<i1> {ccpp.name = "advected", ccpp.declared_intent = "in", ccpp.optional}) attributes {ccpp.fixed_interface} {
@@ -972,57 +1006,101 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2, 2>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errflg"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_constituent_array"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "field_data_ptr()"}> ({
+// CHECK-NEXT:          "ccpp_utils.pointer_assign"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_constituent_array"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "field_data_ptr"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cols"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_cols"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_cols"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols, pver"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_cols"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_cole"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_cole"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols, pver"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_cole"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_O3"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_O3"}> ({
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cols"}> : () -> ()
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "pver"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cols"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_O3"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_HNO3"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_HNO3"}> ({
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cole"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cole"}> : () -> ()
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "pver"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_cole"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_HNO3"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_vmr"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_vmr"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols, pver"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_O3"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_vmr"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() <{var_name = "lc_psurf"}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.allocate"() <{var_name = "lc_psurf"}> ({
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_O3"}> : () -> ()
+// CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_O3"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.zero_fill"() <{var_name = "lc_psurf"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_HNO3"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_HNO3"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_HNO3"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_vmr"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_vmr"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "pver"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 2>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_vmr"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_psurf"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          "ccpp_utils.allocate"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_psurf"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.zero_fill"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_psurf"}> : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          func.return
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.func public @Ddt_constituents_array() -> memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">> attributes {ccpp.fixed_interface, ccpp.function_result} {
 // CHECK-NEXT:          %ptr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "ptr", ccpp.pointer} : () -> memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_constituent_array"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:          func.return %ptr : memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.func public @Ddt_advected_constituents_array() -> memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">> attributes {ccpp.fixed_interface, ccpp.function_result} {
 // CHECK-NEXT:          %ptr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "ptr", ccpp.pointer} : () -> memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "advected_constituents_ptr()"}> ({
+// CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "advected_constituents_ptr"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:          func.return %ptr : memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.func public @Ddt_const_get_index(%std_name : memref<?xi8> {ccpp.name = "std_name", ccpp.declared_intent = "in"}, %index : memref<i32> {ccpp.name = "index", ccpp.declared_intent = "out"}, %errflg : memref<i32> {ccpp.name = "errflg", ccpp.declared_intent = "out"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg", ccpp.declared_intent = "out"}) attributes {ccpp.fixed_interface, ccpp.uses = {ccpp_constituent_prop_mod = ["to_lower"]}} {
@@ -1031,7 +1109,7 @@
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            %0 = arith.constant -1 : i32
-// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_guard"() <{errmsg_text = "const_get_index: constituents not registered"}> ({
 // CHECK-NEXT:            %1 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "lc_all_constituents"}> : () -> ()
@@ -1062,8 +1140,22 @@
 // CHECK-NEXT:          %7 = arith.cmpi sle, %5, %6 : i32
 // CHECK-NEXT:          %8 = arith.ori %4, %7 : i1
 // CHECK-NEXT:          scf.if %8 {
-// CHECK-NEXT:            "ccpp_utils.assign"() <{lhs_expr = "errflg", rhs_expr = "1"}> {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
-// CHECK-NEXT:            "ccpp_utils.write_stmt"() <{dest = "errmsg", format_spec = "(3a)", items = ["'const_get_index: constituent '", "trim(std_name)", "' not found'"]}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.assign"() ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errflg"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              %9 = arith.constant 1 : i32
+// CHECK-NEXT:            }) : () -> ()
+// CHECK-NEXT:            "ccpp_utils.write_stmt"() ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errmsg"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "const_get_index: constituent "}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.call_expr"() <{callee = "trim"}> ({
+// CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "std_name"}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = " not found"}> : () -> ()
+// CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }
 // CHECK-NEXT:          func.return
 // CHECK-NEXT:        }
@@ -1071,7 +1163,7 @@
 // CHECK-NEXT:          %ptr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "ptr", ccpp.pointer} : () -> memref<0x!ccpp_utils.derived_type<"ccpp_constituent_prop_ptr_t">>
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:          func.return %ptr : memref<0x!ccpp_utils.derived_type<"ccpp_constituent_prop_ptr_t">>
 // CHECK-NEXT:        }
 // CHECK-NEXT:      }) : () -> ()

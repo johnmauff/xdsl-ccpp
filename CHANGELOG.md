@@ -13255,3 +13255,68 @@ hand. A string-literal scan of `xdsl_ccpp/transforms/` finds no Fortran
 declaration left (43 literals of other kinds remain, tracked in
 `fortran-exprs-as-text`, `cpp-text-in-ir` and `gpu-debug-text`). pytest
 1145 passed.
+
+## `fortran-exprs-as-text`: expressions as ops, not Fortran text (2026-10-29)
+
+The middle layer passed Fortran expressions as strings in about 45 places:
+references such as `lc_instances(instance)%x` in place of variable names,
+assignment sides, call arguments, loop bounds, `write` items, `size(...)` and
+`(:, :)` sections inside cap-variable names, the CAM wrappers' argument
+templates, BIND(C) dimension lists, unit-conversion fragments (`+ 273.15`)
+and declaration lengths (`len=64`, `kind=c_char`). All are now ops or typed
+attributes, and the text forms are deleted.
+
+- References: `SafeDeallocOp`, `NullifyPointerOp`, `ZeroFillOp`,
+  `AllocateOp`, `PointerAssignOp` and `CapVarRefOp` take an identifier or a
+  reference expression op (`target_op`), and reject a name that is not an
+  identifier. `PointerSliceAssignOp` is gone (a slice is an `IndexExprOp`
+  with `SliceExprOp` subscripts).
+- Statements: `AssignOp`, `CallStatementOp`, `DdtMethodCallOp`,
+  `ErrorGuardOp`, `CamDirectCallOp` and `CamSuiteDispatchOp` take expression
+  ops only. New `DoLoopOp` (replaces `TextBoundedDoLoopOp`),
+  `MethodCallExprOp` (`obj%field_data_ptr()`) and `MetadataLiteralExprOp`
+  (a literal copied from the input: a `.meta` `default_value`, a Python
+  suite's keyword override); `WriteStmtOp` is built from expression ops.
+  `MemberAccessExprOp` and method names must be identifiers -- which caught
+  the C++ host passing a nested DDT member as the one name `inner%nz`
+  (member paths are now tuples).
+- Cap variables: `cap_var_map` holds `cap_shared.CapVarRef` (name,
+  multi-instance component, count). `number_of_ccpp_constituents` maps to
+  `lc_all_constituents` with `FRAMEWORK_COUNT_STD_NAMES` marking it a count,
+  so under multi-instance it is `size(lc_instances(i)%lc_all_constituents)`;
+  the old text wrapping would have made `lc_instances(i)%size(...)`.
+- BIND(C): `bind_c_extents` (per argument, extents `(n,)`, `(lo, hi)` or
+  `()` for assumed size) replaces the comma-joined `bind_c_dim_exprs`;
+  constituent scratch arrays carry dimension standard names, not
+  `"ncols, pver"`.
+- Unit conversions: `UNIT_CONVERSIONS` holds `(operation, factor)` pairs;
+  `UnitConvertOp`/`UnitWriteBackOp` carry `operation` (`add`/`sub`/`mul`)
+  and `factor` (a real literal kept as written, so `1.0E6` prints
+  unchanged). The text form, the scalar-only `arith` region form and
+  `_parse_unit_conversion` are removed.
+- Declarations: `ModuleVarOp`/`DdtComponentDeclOp` take `char_len` and a
+  `kind` that is an identifier (or an integer for non-character types);
+  `TypeConversions.char_len` reads `.meta`'s `len=N`. `LazyAllocOp.kind_name`
+  (never read) and the unused text `init_value` forms are removed.
+- The C++ host cap: a rank-3 DDT member without a known third extent is now
+  a generation error instead of an invalid `*` extent in `allocate`.
+
+Generated Fortran is unchanged apart from 12 lines in the C++ host caps
+(constadv, constprop): `n = 0_c_int` is now `n = 0` (assigned to an
+`integer(c_int)`), and `min(chost_slen+1,129)` gains the printer's spacing,
+`min(chost_slen + 1, 129)`. Verified with `cap_oracle diff` against `main`
+after every stage (44 identical, 2 different, 6 skipped); no new line over
+132 characters.
+
+Not done here: `ActiveCheckOp.condition_expr` and the subscripted
+`HostVarRefOp.member_name` (`q(:, :, index_qv)`) are expressions from `.meta`
+files and need a parser (`active-condition-ir`); `VarRefExprOp` can't
+require an identifier until the C++ cap stops passing `&errflg`
+(`cpp-text-in-ir`).
+
+Tests: new `test_reference_targets.py`, `test_structured_statements.py` and
+`test_ir_names_are_identifiers.py`. The last scans the completed_ir goldens:
+naming properties must be identifiers and the removed text properties must
+be absent (it flags 15 of `main`'s goldens). Unit-conversion tests now cover
+every argument shape with the one form. Goldens regenerated (only failing
+ones) with their headers checked against `HEAD`. pytest 1194 passed.

@@ -165,8 +165,12 @@ class PromotionMixin:
                 if dims_compatible(dim_name, promoted_dim):
                     int_type = TypeConversions.getBaseType("integer")
                     size_ref = ccpp_utils.CapVarRefOp(
-                        f"size({arg.name}, {idx})",
+                        None,
                         memref.MemRefType(int_type, []),
+                        target_op=ccpp_utils.CallExprOp("size", [
+                            ccpp_utils.VarRefExprOp(arg.name),
+                            arith.ConstantOp.from_int_and_width(idx, 32),
+                        ]),
                     )
                     if framework_ref_ops is not None:
                         framework_ref_ops.append(size_ref)

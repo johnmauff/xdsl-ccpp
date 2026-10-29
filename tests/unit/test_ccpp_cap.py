@@ -8,6 +8,7 @@ via end-to-end examples.
 
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.ccpp_cap import _build_cap_var_map
+from xdsl_ccpp.transforms.util.cap_shared import CapVarRef
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
     CCPPArgumentTable,
@@ -17,6 +18,7 @@ from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     XMLSubcycle,
     XMLSuite,
 )
+from xdsl_ccpp.util.ccpp_conventions import CCPP_HORIZ_DIM_STD_NAME, CCPP_VERT_DIM_STD_NAME
 
 
 def _make_arg(name, **attrs):
@@ -105,12 +107,12 @@ class TestBuildCapVarMap:
 
     def test_framework_array_maps_to_known_cap_var(self):
         cap_var_map, _host_var_map_lc, _scratch, _residency = self._build()
-        assert cap_var_map["ccpp_constituents"] == ("lc_constituent_array", None, None)
+        assert cap_var_map["ccpp_constituents"] == (CapVarRef("lc_constituent_array"), None, None)
 
     def test_unmatched_scratch_var_becomes_cap_owned(self):
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
-        assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
-        assert ("lc_scratch1", 0, "ncols, pver", None, False, None) in scratch_var_list
+        assert cap_var_map["some_scratch_quantity"] == (CapVarRef("lc_scratch1"), None, None)
+        assert ("lc_scratch1", 0, (CCPP_HORIZ_DIM_STD_NAME, CCPP_VERT_DIM_STD_NAME), None, False, None) in scratch_var_list
 
     def test_host_matched_arg_is_excluded(self):
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
@@ -119,8 +121,8 @@ class TestBuildCapVarMap:
 
     def test_constituent_tendency_scratch_var_records_const_std_name(self):
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = self._build()
-        assert cap_var_map["tendency_of_water_vapor"] == ("lc_tend1", None, None)
-        assert ("lc_tend1", 0, "ncols, pver", "water_vapor", False, "lc_const_tend") in scratch_var_list
+        assert cap_var_map["tendency_of_water_vapor"] == (CapVarRef("lc_tend1"), None, None)
+        assert ("lc_tend1", 0, (CCPP_HORIZ_DIM_STD_NAME, CCPP_VERT_DIM_STD_NAME), "water_vapor", False, "lc_const_tend") in scratch_var_list
 
     def test_host_var_map_lc_empty_when_no_module_tables(self):
         _cap_var_map, host_var_map_lc, _scratch, _residency = self._build()
@@ -178,5 +180,5 @@ class TestBuildCapVarMapFlattensSubcycles:
         cap_var_map, _host_var_map_lc, scratch_var_list, _residency = _build_cap_var_map(
             self._meta_data(), self._suite_descriptions(), self._public_fns()
         )
-        assert cap_var_map["some_scratch_quantity"] == ("lc_scratch1", None, None)
-        assert ("lc_scratch1", 0, "ncols, pver", None, False, None) in scratch_var_list
+        assert cap_var_map["some_scratch_quantity"] == (CapVarRef("lc_scratch1"), None, None)
+        assert ("lc_scratch1", 0, (CCPP_HORIZ_DIM_STD_NAME, CCPP_VERT_DIM_STD_NAME), None, False, None) in scratch_var_list

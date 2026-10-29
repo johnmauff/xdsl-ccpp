@@ -19,11 +19,16 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.ccpp_cap import _inject_capscratch_gpu_exit
 from xdsl_ccpp.transforms.constituent_cap import _generate_constituent_api
-from xdsl_ccpp.util.ccpp_conventions import SUITE_ARG_NAME, arg_attr_dict
+from xdsl_ccpp.util.ccpp_conventions import (
+    CCPP_HORIZ_DIM_STD_NAME,
+    CCPP_VERT_DIM_STD_NAME,
+    SUITE_ARG_NAME,
+    arg_attr_dict,
+)
 
 _RESIDENT = {"lc_constituent_array": True, "lc_const_tend": True}
 # (lc_name, rank, alloc_dims, const_std_name, needs_gpu, base)
-_SCRATCH = [("lc_scratch", 2, "ncols, pver", None, True, None)]
+_SCRATCH = [("lc_scratch", 2, (CCPP_HORIZ_DIM_STD_NAME, CCPP_VERT_DIM_STD_NAME), None, True, None)]
 
 
 def _init_fn(**kwargs) -> func.FuncOp:

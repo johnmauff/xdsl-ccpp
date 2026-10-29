@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 
-from xdsl.dialects import arith, memref
+from xdsl.dialects import memref
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
-    FloatAttr,
     i8,
 )
-from xdsl.ir import Block, BlockArgument
+from xdsl.ir import Block
 
 from xdsl_ccpp.dialects.ccpp_utils import (
     KindCastOp,
@@ -24,7 +23,6 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_MESSAGE,
     UNIT_CONVERSIONS,
     is_vertical_dimension,
-    real_kind_width,
 )
 
 
@@ -139,23 +137,6 @@ def _build_block_and_name_hints(input_arg_list) -> tuple:
     return new_block, input_arg_types, data_ops, final_values, names
 
 
-_UNIT_CONV_OP_MAP = {"+": arith.AddfOp, "-": arith.SubfOp, "*": arith.MulfOp}
-
-
-def _parse_unit_conversion(expr: str) -> "tuple | None":
-    """Split a UNIT_CONVERSIONS value ("+ 273.15") into (arith op class, float).
-
-    Returns None if the literal doesn't round-trip through str(float)
-    (e.g. "1.0E6"), so output stays byte-identical to the opaque-text path.
-    An unknown operator (e.g. '/') raises KeyError rather than mis-parsing.
-    """
-    op_str, value_str = expr.split(" ", 1)
-    value = float(value_str)
-    if str(value) != value_str:
-        return None
-    return _UNIT_CONV_OP_MAP[op_str], value
-
-
 def _apply_kind_and_unit_casts(
     input_arg_list, new_block, data_ops, final_values, divergent_std_keys,
 ) -> tuple:
@@ -196,36 +177,16 @@ def _apply_kind_and_unit_casts(
 
         if fn_arg.hasAttr("model_var_unit_mismatch"):
             scheme_units, host_units = fn_arg.getAttr("model_var_unit_mismatch").split(":", 1)
-            to_scheme_expr, to_host_expr = UNIT_CONVERSIONS[(scheme_units, host_units)]
+            to_scheme, to_host = UNIT_CONVERSIONS[(scheme_units, host_units)]
             kind_str = fn_arg.getAttr("kind") if fn_arg.hasAttr("kind") else None
             arg_type = TypeConversions.convert(
                 fn_arg.getAttr("type"), kind_str, _arg_dims(fn_arg),
             )
-            pre_expr = "" if intent == "out" else to_scheme_expr
-            # Structured arith conversion only for scalars with a bare-digit
-            # kind (an arith-compatible float); otherwise opaque text. `cur`
-            # must be a plain block arg, or _single_op_region would pull an
-            # unattached KindCastOp into this op's region (double-attach).
-            structured_conv = None
-            if (
-                kind_str is not None
-                and real_kind_width(kind_str) is not None
-                and _arg_dims(fn_arg) == 0
-                and intent != "out"
-                and isinstance(cur, BlockArgument)
-            ):
-                structured_conv = _parse_unit_conversion(to_scheme_expr)
-            if structured_conv is not None:
-                op_cls, value = structured_conv
-                load_op = memref.LoadOp.get(cur, [])
-                const_op = arith.ConstantOp(FloatAttr(value, arg_type.element_type))
-                conv_arith_op = op_cls(load_op, const_op)
-                conv_op = UnitConvertOp(cur, result_type=arg_type, conversion_op=conv_arith_op)
-            else:
-                conv_op = UnitConvertOp(cur, pre_expr, arg_type)
+            # intent(out): the scheme does not read the value, so no conversion in.
+            conv_op = UnitConvertOp(cur, arg_type, *(() if intent == "out" else to_scheme))
             conv_op.res.name_hint = f"{fn_arg.name}_unit_conv"
             unit_convert_ops.append(conv_op)
-            chain.append(("unit", conv_op.res, cur, to_host_expr))
+            chain.append(("unit", conv_op.res, cur, to_host))
             cur = conv_op.res
 
         if not chain:
@@ -239,7 +200,7 @@ def _apply_kind_and_unit_casts(
                 if kind_or_unit == "kind":
                     writeback_ops.append(KindWriteBackOp(result_ssa, source_ssa, param))
                 else:
-                    writeback_ops.append(UnitWriteBackOp(result_ssa, source_ssa, param))
+                    writeback_ops.append(UnitWriteBackOp(result_ssa, source_ssa, *param))
 
     return kind_cast_ops, unit_convert_ops, writeback_ops
 

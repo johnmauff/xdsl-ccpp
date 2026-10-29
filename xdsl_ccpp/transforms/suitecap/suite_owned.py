@@ -9,13 +9,13 @@ from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp_utils import (
     ClearStringOp,
     LazyAllocOp,
+    MetadataLiteralExprOp,
     RankReducingSliceOp,
     VarRefExprOp,
 )
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_HORIZ_DIM_STD_NAME,
-    CCPP_KIND_PHYS,
     CCPP_LOOP_BEGIN_STD_NAME,
     CCPP_LOOP_END_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
@@ -94,10 +94,9 @@ class SuiteOwnedMixin:
                 ops.append(
                     LazyAllocOp(
                         var_name=_pending.var_name,
-                        kind_name=_pending.kind_name,
                         dim_var_refs=_dim_var_refs,
                         init_value_op=(
-                            VarRefExprOp(_pending.init_value)
+                            MetadataLiteralExprOp(_pending.init_value)
                             if _pending.init_value is not None else None
                         ),
                         needs_device_residency=_pending.needs_device_residency,
@@ -209,8 +208,12 @@ class SuiteOwnedMixin:
                     )
                     if _dim_ssa is None:
                         _size_ref = ccpp_utils.CapVarRefOp(
-                            f"size({_var_name}, {_idx})",
+                            None,
                             memref.MemRefType(TypeConversions.getBaseType("integer"), []),
+                            target_op=ccpp_utils.CallExprOp("size", [
+                                VarRefExprOp(_var_name),
+                                arith.ConstantOp.from_int_and_width(_idx, 32),
+                            ]),
                         )
                         framework_ref_ops.append(_size_ref)
                         _dim_ssa = _size_ref.res
@@ -310,10 +313,6 @@ class SuiteOwnedMixin:
                     var_name=var_name,
                     std_key=fw_std_key,
                     alloc_dim_names=list(_alloc_dim_names),
-                    kind_name=(
-                        fw_arg.getAttr("kind") if fw_arg.hasAttr("kind")
-                        else CCPP_KIND_PHYS
-                    ),
                     init_value=(
                         fw_arg.getAttr("default_value")
                         if fw_arg.hasAttr("default_value") else None
@@ -327,7 +326,6 @@ class SuiteOwnedMixin:
                 )
             )
         elif dim_var_refs and not pending_only:
-            kind = fw_arg.getAttr("kind") if fw_arg.hasAttr("kind") else CCPP_KIND_PHYS
             init_val = (
                 fw_arg.getAttr("default_value")
                 if fw_arg.hasAttr("default_value")
@@ -336,10 +334,9 @@ class SuiteOwnedMixin:
             lazy_alloc_ops.append(
                 LazyAllocOp(
                     var_name=var_name,
-                    kind_name=kind,
                     dim_var_refs=dim_var_refs,
                     init_value_op=(
-                        VarRefExprOp(init_val) if init_val is not None else None
+                        MetadataLiteralExprOp(init_val) if init_val is not None else None
                     ),
                     needs_device_residency=(
                         suite_entry.needs_device_residency
@@ -402,20 +399,16 @@ class SuiteOwnedMixin:
                         var_name=entry.local_name,
                         std_key=entry.standard_name,
                         alloc_dim_names=list(entry.alloc_dim_std_names),
-                        kind_name=entry.kind if entry.kind else CCPP_KIND_PHYS,
                         init_value=None,
                         needs_device_residency=entry.needs_device_residency,
                         producer_scheme=_pending_producer,
                     )
                 )
             elif dim_var_refs:
-                kind = entry.kind if entry.kind else CCPP_KIND_PHYS
                 lazy_alloc_ops.append(
                     LazyAllocOp(
                         var_name=entry.local_name,
-                        kind_name=kind,
                         dim_var_refs=dim_var_refs,
-                        init_value=None,
                         needs_device_residency=entry.needs_device_residency,
                     )
                 )
