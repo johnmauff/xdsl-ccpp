@@ -1142,7 +1142,7 @@ def _chost_fn_contexts(
                 for grp in suite_descriptions.get(suite_name, [])
                 for s in _iter_schemes(grp)
             ]
-        _, pfn_out_types, pfn_types, pfn_hints = public_fns[suite_fn]
+        _, pfn_out_types, pfn_types, pfn_hints, _ = public_fns[suite_fn]
         phase_suffixes = _chost_scheme_phase_suffixes(lc)
         _by_bare = (
             _chost_scan_scheme_phase_args(scheme_names_for_fn, meta_data, phase_suffixes)

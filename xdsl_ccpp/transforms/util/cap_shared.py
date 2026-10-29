@@ -902,6 +902,12 @@ def resolve_capscratch_cap_var_name(
     return None
 
 
+# Per-argument attributes the suite cap records on each suite subroutine
+# (suitecap/phase_functions.py suite_arg_attrs), read by the host cap.
+SUITE_ARG_STD_NAME = "ccpp.standard_name"
+SUITE_ARG_DIM_NAMES = "ccpp.dim_names"
+
+
 def is_constituent_view_arg(arg) -> bool:
     """True for a host-bound advected arg: a CapScratch pointer view into
     lc_constituent_array (see classify_arg_ownership).

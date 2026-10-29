@@ -102,7 +102,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @kw_suite_physics(%col_start : memref<i32>, %col_end : memref<i32>, %lev : memref<i32>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @kw_suite_physics(%col_start : memref<i32> {ccpp.standard_name = "horizontal_loop_begin"}, %col_end : memref<i32> {ccpp.standard_name = "horizontal_loop_end"}, %lev : memref<i32> {ccpp.standard_name = "vertical_layer_dimension"}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32

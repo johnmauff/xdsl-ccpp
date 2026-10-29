@@ -1,9 +1,17 @@
-"""Unit tests for two real bugs in run_dispatch.py's
+"""Unit tests for run_dispatch.py's
 _build_per_suite_run_info -- the host-facing ccpp_cap wrapper's own
 resolution of the *outer* dummy arguments it dispatches into each suite
 callee, a separate layer from suite_cap.py's dummy-argument collision
 handling (see test_suite_arg_name_collision.py, which covers the *inner*
 suite subroutine's own signature).
+
+Since rk-top-lev-host-match (2026-10-28) the resolution no longer guesses
+from scheme local names: the suite cap records each dummy argument's
+standard name on the suite subroutine (suite_arg_attrs), and the host match
+is looked up by that standard name. The two historical bugs below, and the
+rasch_kristjansson case at the end, are kept as regression tests; each test
+passes the recorded standard names (callee_std_names) the way the suite cap
+now does.
 
 Found while porting examples/var_compat and diagnosing why
 scalar_varA/scalar_varB/scalar_varC/num_subcycles still showed up as
@@ -53,6 +61,7 @@ from xdsl_ccpp.transforms.run_dispatch import (
     _build_per_suite_run_info,
     _RunMetadataMaps,
 )
+from xdsl_ccpp.transforms.util.cap_shared import SUITE_ARG_STD_NAME
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
     CCPPArgumentTable,
@@ -101,13 +110,18 @@ def _assert_resolved_arg_op(
     assert (op.std_name.data if op.std_name is not None else None) == std_name
 
 
-def _run(callee_input_names, meta_data, maps, scheme_names, cap_var_map=None):
+def _run(callee_input_names, meta_data, maps, scheme_names, cap_var_map=None,
+         callee_std_names=None):
+    """callee_std_names: each callee arg's standard name, as the suite cap
+    records it on the suite subroutine (suite_arg_attrs)."""
+    std_names = callee_std_names or [None] * len(callee_input_names)
     public_fns = {
         "test_suite_callee": (
             "test_suite_cap_mod",
             [],
             [None] * len(callee_input_names),
             callee_input_names,
+            [{SUITE_ARG_STD_NAME: std} if std else {} for std in std_names],
         ),
     }
     suite_run_entries = [("test_suite", "run", "test_suite_callee", scheme_names)]
@@ -180,7 +194,7 @@ class TestBareNameCollisionAcrossSchemes:
         callee_input_names = ["host_a", "x", "host_c"]
         ops = _run(callee_input_names, self._meta_data(), _bare_maps(), scheme_names=[
             "scheme_a", "scheme_b", "scheme_c",
-        ])
+        ], callee_std_names=["std_a", "std_b", "std_c"])
         assert len(ops) == 3
         _assert_resolved_arg_op(
             ops[0], "host_a", ArgSourceKind.Host,
@@ -201,7 +215,7 @@ class TestBareNameCollisionAcrossSchemes:
         callee_input_names = ["host_a", "x", "host_c"]
         ops = _run(callee_input_names, self._meta_data(), _bare_maps(), scheme_names=[
             "scheme_c", "scheme_b", "scheme_a",
-        ])
+        ], callee_std_names=["std_a", "std_b", "std_c"])
         assert len(ops) == 3
         _assert_resolved_arg_op(
             ops[0], "host_a", ArgSourceKind.Host,
@@ -246,7 +260,7 @@ class TestRepeatedIdenticalMatchIsNotACollision:
     def test_resolves_via_bare_name(self):
         ops = _run(["ncol"], self._meta_data(), _bare_maps(), scheme_names=[
             "scheme_a", "scheme_b",
-        ])
+        ], callee_std_names=["horizontal_dimension"])
         assert len(ops) == 1
         _assert_resolved_arg_op(
             ops[0], "ncol", ArgSourceKind.Host,
@@ -296,10 +310,62 @@ class TestSynthesizedArgResolvesThroughDDTTable:
 
     def test_resolves_as_ddt_member_not_block(self):
         # No scheme declares this arg at all -- scheme_names is empty.
-        ops = _run(["num_subcycles"], self._meta_data(), self._maps(), scheme_names=[])
+        ops = _run(["num_subcycles"], self._meta_data(), self._maps(), scheme_names=[],
+                   callee_std_names=["num_subcycles_for_effr"])
         assert len(ops) == 1
         _assert_resolved_arg_op(
             ops[0], "num_subcycles", ArgSourceKind.DdtMember,
             var_name="phys_state", module_name="test_host_mod",
             member_path="num_subcycles",
+        )
+
+
+# ---------------------------------------------------------------------------
+# rk-top-lev-host-match: a local name shared by a merged arg and another
+# standard name
+# ---------------------------------------------------------------------------
+
+class TestMergedArgDoesNotShadowSameLocalName:
+    """rasch_kristjansson: rk_stratiform's top_lev_cloudphys and
+    cloud_fraction_fice's top_lev share one standard name, so the suite cap
+    has one dummy argument for them, named top_lev_cloudphys.
+    prognostic_cloud_water's top_lev has a different standard name and keeps
+    the dummy argument name top_lev. Guessing standard names from local
+    names gave top_lev the cloud-fraction one and no host match, so the host
+    cap passed top_lev_cloudphys for it; the recorded standard names give
+    each its own host variable."""
+
+    def _meta_data(self):
+        cf, trop = "cloud_fraction_top", "troposphere_cloud_physics_top"
+        return {
+            "rk_stratiform": _make_scheme_props("rk_stratiform", [
+                _make_arg("top_lev_cloudphys", standard_name=cf,
+                          model_var_name="top_lev_cloudphys",
+                          model_module_name="physics_types"),
+            ]),
+            "cloud_fraction_fice": _make_scheme_props("cloud_fraction_fice", [
+                _make_arg("top_lev", standard_name=cf,
+                          model_var_name="top_lev_cloudphys",
+                          model_module_name="physics_types"),
+            ]),
+            "prognostic_cloud_water": _make_scheme_props("prognostic_cloud_water", [
+                _make_arg("top_lev", standard_name=trop,
+                          model_var_name="trop_cloud_top_lev",
+                          model_module_name="ref_pres"),
+            ]),
+        }
+
+    def test_each_dummy_gets_its_own_host_var(self):
+        ops = _run(
+            ["top_lev_cloudphys", "top_lev"], self._meta_data(), _bare_maps(),
+            scheme_names=["rk_stratiform", "cloud_fraction_fice", "prognostic_cloud_water"],
+            callee_std_names=["cloud_fraction_top", "troposphere_cloud_physics_top"],
+        )
+        _assert_resolved_arg_op(
+            ops[0], "top_lev_cloudphys", ArgSourceKind.Host,
+            var_name="top_lev_cloudphys", module_name="physics_types",
+        )
+        _assert_resolved_arg_op(
+            ops[1], "top_lev", ArgSourceKind.Host,
+            var_name="trop_cloud_top_lev", module_name="ref_pres",
         )

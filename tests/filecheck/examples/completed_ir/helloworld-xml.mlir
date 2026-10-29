@@ -107,7 +107,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
-// CHECK-LABEL:     func.func public @hello_world_suite_physics(%ncol : memref<i32>, %lev : memref<i32>, %ilev : memref<i32>, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">>, %temp_level : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, %temp_layer : memref<?x?x!ccpp_utils.real_kind<"kind_phys">>) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
+// CHECK-LABEL:     func.func public @hello_world_suite_physics(%ncol : memref<i32> {ccpp.standard_name = "horizontal_dimension"}, %lev : memref<i32> {ccpp.standard_name = "vertical_layer_dimension"}, %ilev : memref<i32> {ccpp.standard_name = "vertical_interface_dimension"}, %timestep : memref<!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "time_step_for_physics"}, %temp_level : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "potential_temperature_at_interface", ccpp.dim_names = ["horizontal_dimension", "vertical_interface_dimension"]}, %temp_layer : memref<?x?x!ccpp_utils.real_kind<"kind_phys">> {ccpp.standard_name = "potential_temperature", ccpp.dim_names = ["horizontal_dimension", "vertical_layer_dimension"]}) -> (memref<512xi8>, memref<i32>) attributes {ccpp_phase = "run"} {
 // CHECK:             %errmsg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<512xi8>
 // CHECK-NEXT:        %errflg = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> : () -> memref<i32>
 // CHECK-NEXT:        %0 = arith.constant 0 : i32

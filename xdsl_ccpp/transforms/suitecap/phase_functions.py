@@ -6,6 +6,7 @@ from __future__ import annotations
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
+    DictionaryAttr,
     StringAttr,
     i8,
 )
@@ -14,6 +15,8 @@ from xdsl.ir import Region
 from xdsl_ccpp.dialects import ccpp_utils
 from xdsl_ccpp.dialects.ccpp import ArgOwnershipKind
 from xdsl_ccpp.transforms.util.cap_shared import (
+    SUITE_ARG_DIM_NAMES,
+    SUITE_ARG_STD_NAME,
     FN_PHASE_ATTR,
     LIFECYCLE_POSTFIX_ALIASES,
     SUITE_FN_INFIX,
@@ -66,6 +69,36 @@ _SUITE_PHASE_TAGS = {"_register": "suite_register", "_init": "suite_initialize",
 _GROUP_PHASE_TAGS = {"_init": "group_init", "_run": "run",
                      "_timestep_initialize": "timestep_init",
                      "_timestep_finalize": "timestep_final", "_finalize": "group_final"}
+
+
+# The synthetic column-range arguments replacing horizontal_loop_extent.
+_SYNTHETIC_ARG_STD_NAMES = {
+    "col_start": CCPP_LOOP_BEGIN_STD_NAME,
+    "col_end": CCPP_LOOP_END_STD_NAME,
+}
+
+
+def suite_arg_attrs(input_arg_list) -> ArrayAttr:
+    """Per-argument attributes for a suite subroutine: each dummy
+    argument's standard name and dimension standard names, from the scheme
+    argument it was built from. The host cap (run_dispatch) reads these
+    instead of re-deriving the suite cap's argument naming from scheme
+    metadata."""
+    attrs = []
+    for a in input_arg_list:
+        entries = {}
+        std = (a.getAttr("standard_name").lower() if a.hasAttr("standard_name")
+               else _SYNTHETIC_ARG_STD_NAMES.get(a.name))
+        if std:
+            entries[SUITE_ARG_STD_NAME] = StringAttr(std)
+        if (a.hasAttr("dim_names") and a.hasAttr("dimensions")
+                and a.getAttr("dimensions") >= 1):
+            entries[SUITE_ARG_DIM_NAMES] = ArrayAttr(
+                [StringAttr(d.strip().lower()) for d in a.getAttr("dim_names")]
+            )
+        attrs.append(DictionaryAttr(entries))
+    return ArrayAttr(attrs)
+
 
 class PhaseFunctionsMixin:
     """Suite and group phase subroutines: argument tables, signatures, state checks and assembly."""
@@ -440,6 +473,7 @@ class PhaseFunctionsMixin:
             new_fn_type,
             body,
             visibility="public",
+            arg_attrs=suite_arg_attrs(input_arg_list),
         )
 
     def _record_resolved_vars_for_phase(

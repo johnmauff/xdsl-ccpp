@@ -47,7 +47,6 @@ measured data, and will drift as items are reassessed.
 | `nvhpc-ncdata-roundoff` | 1-2 days (tolerance and per-testmod overrides in place; confirm in the next nvhpc and an intel regression) | XS |
 | `pumas-ncdata-diffs` | 1-3 days (covered by the cross-compiler tolerance; confirm in a run) | XS-S |
 | `zm-ncdata-diffs` | 5-10 days (cause not yet known; fails on every compiler) | M |
-| `rk-top-lev-host-match` | 1-2 days remaining (fix implemented on branch `rk-top-lev-host-match`; PR, then a cam4 run to see the effect of ZM's corrected `dlf`) | XS |
 | `suites-py-xml-omissions` | <1 day (raise two likely cam5 XML omissions with the atmospheric_physics developers) | XS |
 | `generation-error-output` | 2-4 days (legacy warnings tied to `--verbose`, carried to the `ccpp_opt` subprocess; plain error exit without a traceback; quiet the fparser2 warning) | S |
 | `rrtmgp-wrapper-acc-trigger` | 1-2 days (one confirming GPU run, then a one-line `Depends.nvhpc` change if confirmed) | XS |
@@ -66,6 +65,14 @@ measured data, and will drift as items are reassessed.
 | `gpu-port-shared-utility-schemes` | 6-12 days (small kernels incl. the 10 state converters, but used by every suite: regression on CPU and GPU) | M |
 | `gpu-fphystest-kessler` | umbrella, ~25-45 days in total: `gpu-sync-intent-aware`, `scheme-io-capture-ddt-args` (constituent-properties case), `scheme-io-capture-group-replay`, `acc-derive-memory-space`, Kessler's 12 of `gpu-port-shared-utility-schemes` and `constituent-device-residency` (most shared with the PUMAS and RRTMGP umbrellas; count once) | L-XL |
 | `gpu-sync-intent-aware` | 2-4 days | S |
+| `lifecycle-cap-arg-std-names` | 2-3 days (same change as `rk-top-lev-host-match`, for the non-run phases; capcmp all suites) | S |
+| `cap-oracle-check` | 4-8 days (scripts exist in a session scratchpad; needs a ccpp_framework checkout and CAM-SIMA build caches, or committed fixtures, for CI) | S-M |
+| `gpu-data-arg-std-names` | 3-5 days (GPU data pass and the suite cap's local-name `data_ops` keys; GPU directive old-vs-new diff on the GPU testmods) | S-M |
+| `chost-arg-std-names` | 4-8 days (replace the chost identity scan and fallback; chost examples) | M |
+| `arg-flags-not-in-names` | 5-10 days (intent/optional/allocatable/hostarg into `arg_attrs`; printer and 9 `_bare()` callers; goldens) | M |
+| `raw-fortran-in-ir` | 5-10 days (mostly `constituent_cap.py`'s 24 raw blocks into ops) | M |
+| `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
+| `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
@@ -174,7 +181,6 @@ separately), CHANGELOG.md L5850.
 | `nvhpc-ncdata-roundoff` | 7 nvhpc FPHYStest cases abort on `ncdata_check` differences vs gnu snapshots (5 at <=4.2e-12; uw_vdiff 1.4e-10, rrtmgp 1.6e-9) | S; cross-compiler tolerance 1e-11 (CAM-SIMA, uncommitted), awaiting gnu/intel/nvhpc regressions | -- |
 | `pumas-ncdata-diffs` | `SMS_D` pumas FPHYStest aborts on small `ncdata_check` differences, gnu and nvhpc | S; its snapshot is intel-made, so likely rounding; covered by `cross_compiler_check_tolerance`, awaiting a run | -- |
 | `zm-ncdata-diffs` | zm FPHYStest differs from its snapshot on every compiler; `ncdata_check_err` now on, so it fails until fixed | M; xdsl55n, xdsl56g/i/n | -- |
-| `rk-top-lev-host-match` | The host cap can pass the wrong host variable when schemes share a local name (rasch_kristjansson `top_lev`, cam4 ZM `dlf`) | XS; found 2026-10-28; fix on branch `rk-top-lev-host-match` | -- |
 | `suites-py-xml-omissions` | cam5's XML (and its Python copy) likely omits two schemes cam4 and cam7 have | XS; raise with the atmospheric_physics developers | -- |
 | `generation-error-output` | A failed cap generation buries a good error message in ~1,600 warning lines and two tracebacks | S; found 2026-10-24 comparing gw_cam7 failures (xdsl57n vs capgen); design: legacy warnings follow `--verbose`; deferred | -- |
 | `rrtmgp-wrapper-acc-trigger` | GPU RRTMGP 'partially present' abort apparently happens only because our `ccs_config` compiles the RRTMGP `ccpp_*` wrappers with `-acc` | XS; found 2026-10-24 (tpr_n capgen GPU RRTMGP passes without the fix) | -- |
@@ -273,31 +279,6 @@ testmod sets `! cross_compiler_min_difference = 1e-9` (see
 `nvhpc-ncdata-roundoff`); with 1e-8, gnu and nvhpc reached `END OF MODEL
 RUN` (xdsl56g, xdsl56n). Close once they also pass with 1e-9.
 
-**`rk-top-lev-host-match`** -- found 2026-10-28 comparing the caps of
-the atmospheric_physics test suites with original capgen (CAM-SIMA's
-bundled `ccpp_framework`). Root cause: `run_dispatch._build_per_suite_run_info`
-does not know each suite subroutine argument's standard name, and
-re-derives it from scheme metadata by local name, guessing how
-`suite_cap.py` named and merged the arguments. When schemes reuse one local
-name for different standard names, the guess can bind the wrong host
-variable. Two cases:
-- rasch_kristjansson: `prognostic_cloud_water`'s `top_lev`
-  (`vertical_layer_index_of_troposphere_cloud_physics_top`, host
-  `trop_cloud_top_lev` in `ref_pres`) gets `top_lev_cloudphys` (the
-  cloud-fraction top), because `cloud_fraction_fice` also has a local
-  `top_lev` with the cloud-fraction standard name. rk_stratiform still
-  passes, presumably because the two levels coincide there.
-- production cam4: `zm_convr`, `zm_diagnostics` and
-  `convect_shallow_sum_to_deep` get `dlf` (detrainment from all
-  convection) instead of `dlfzm` (deep convection), because the
-  rk_stratiform schemes also use the local name `dlf`. Not caught by any
-  test (the cam4 QPC4 tests are smoke tests).
-
-Fix (branch `rk-top-lev-host-match`, in progress): the suite cap records
-each argument's standard name on the suite subroutine (`arg_attrs`) and
-`run_dispatch` reads it, looking up host matches by standard name; with it,
-rasch_kristjansson and cam4 caps are equivalent to original capgen.
-
 **`zm-ncdata-diffs`** -- `SMS_Ln2...cam-outfrq_zm_derecho` differs from its
 (gnu-made) snapshot under gnu, intel and nvhpc alike: 16-18 variables in
 xdsl56g/i/n (42 in xdsl55n), e.g. `air_temperature` at ~3400-3800 points,
@@ -318,6 +299,8 @@ against ZM changes).
 **ID: `cloud-water-ncdata-diffs`. Resolved (2026-10-28)** -- fixed by `advected-constituent-host-binding`; gnu cloud_water clean in xdsl58g. CHANGELOG.md L12823.
 
 **ID: `advected-constituent-host-binding`. Resolved (2026-10-28, PR #164)** -- advected args are host-cap constituent views, as in original capgen. CHANGELOG.md L12823.
+
+**ID: `rk-top-lev-host-match`. Resolved (2026-10-28)** -- the host cap reads suite argument standard names recorded by the suite cap; rasch_kristjansson and cam4 caps match original capgen. CHANGELOG.md L12925.
 
 **ID: `tendency-view-lookup-silent`. Resolved (2026-10-28)** -- a tendency without its advected constituent is a generation error (as in original capgen); a failed run-time lookup now sets `errflg`. CHANGELOG.md L12900.
 
@@ -1721,3 +1704,78 @@ Supporting items (not tracked elsewhere):
 | `rrtmgp_sw_diagnostics` | `schemes/sima_diagnostics/rrtmgp_sw_diagnostics.F90` | rrtmgp | none: stays on host (history output) |
 | `sima_state_diagnostics` | `schemes/sima_diagnostics/sima_state_diagnostics.F90` | kessler, pumas | none: stays on host (history output) |
 | `solar_irradiance_data` | `schemes/radiation_utils/solar_irradiance_data.F90` | rrtmgp | none: likely stays on host (1-D spectral data from file, no column loop; confirm), small `update device` of its output |
+
+## Design problems: re-derived information and special-casing (review 2026-10-28)
+
+Found while fixing `advected-constituent-host-binding` and
+`rk-top-lev-host-match`, which had one root cause: a decision one pass made
+(how the suite cap names, merges and classifies arguments) was not recorded
+in the IR, so later passes re-derived it from scheme metadata keyed by local
+name, each with its own collision rules, and disagreed with it. Since
+`rk-top-lev-host-match`, suite subroutines carry each argument's standard
+name and dimension names as `arg_attrs` (`suite_arg_attrs`,
+`SUITE_ARG_STD_NAME`/`SUITE_ARG_DIM_NAMES`); the items below move the
+remaining consumers onto it and remove the guessing. Suggested order:
+`lifecycle-cap-arg-std-names`, `cap-oracle-check`, then
+`gpu-data-arg-std-names`/`chost-arg-std-names`, then
+`arg-flags-not-in-names`; the rest opportunistically.
+
+- `lifecycle-cap-arg-std-names` — **The non-run phases still guess
+  standard names by local name.** `lifecycle_cap.py` builds `_std_name_of`
+  (~L200, extra host args) and `std_name_of` (~L290, callee input
+  resolution) as "first scheme arg with this bare local name wins" -- the
+  logic that bound the wrong host variable in rasch_kristjansson and cam4,
+  for init, finalize and timestep phases. Latent: the capgen comparisons
+  (all phases) are equivalent today. Fix: read the callee's `arg_attrs`
+  (fifth `public_fns` element), look host matches up by standard name, as
+  `run_dispatch` now does.
+- `cap-oracle-check` — **No systematic check against a reference.** The
+  cloud_water, rasch_kristjansson `top_lev` and cam4 `dlf` binding bugs were
+  invisible to the unit tests and the aux_sima regressions; they surfaced
+  only by comparing generated caps with original capgen's (`capcmp.py`),
+  and the spurious GPU `copy(qc, qr, qv)` only by diffing GPU directives
+  between versions (`gpugen.py`). Make both a routine pre-merge check: (1)
+  semantic comparison with original capgen for the atmospheric_physics test
+  suites and the production suites (cam4, Kessler, adiabatic, ...), (2)
+  old-vs-new generated-code diff (CPU and `--directive acc`) for the same
+  inputs, reported per suite. Needs the inputs (CAM-SIMA build caches or
+  committed file lists) and a ccpp_framework checkout; start as a script
+  the reviewer runs, CI later.
+- `gpu-data-arg-std-names` — **The GPU data pass resolves arguments by
+  trying local names.** `gpu_data_pass._resolve_canonical_ref` "tries every
+  local name until one resolves" to a suite block argument (12 scheme-table
+  lookups in the pass); this produced the spurious `copy(qc, qr, qv)` of
+  the moist constituent views around `kessler_run` (fixed in PR #164 by
+  skipping suite-owned args, not by resolving correctly). Resolve each
+  scheme arg to its block argument by standard name via `arg_attrs`, and
+  drop `_resolve_canonical_ref`. Same for the suite cap's own `data_ops`,
+  keyed both by local name and by `("std_name", ...)`; `promotion.py`
+  still uses the local-name key.
+- `chost-arg-std-names` — **A third copy for the C++ host.**
+  `cpp_interop.py` (`_chost_scan_scheme_phase_args`,
+  `_chost_resolve_scheme_arg_identities`, plus a flat fallback merged under
+  it) re-derives argument identities by local name with its own collision
+  handling. Replace with `arg_attrs`.
+- `arg-flags-not-in-names` — **Argument properties carried as name
+  suffixes.** `intent(in)`, `optional`, `allocatable` and host-arg status
+  travel as `__in`/`__opt`/`__alloc`/`__hostarg` suffixes on block-argument
+  name hints; the printers and passes parse them back (`_bare()` in 9
+  files; `block_args.py` detects collisions on the stripped "printed"
+  name). Put them in `arg_attrs` and print names as they are.
+- `raw-fortran-in-ir` — **Logic as raw text.** 29 `RawFortranLinesOp`s, 24
+  in `constituent_cap.py` (including the constituent-lookup error paths),
+  are invisible to passes and verifiers. Replace with ops where they carry
+  logic rather than boilerplate.
+- `suite-cap-mode-flags` — **One generator, several products.** The
+  suite-cap generator branches on `instance_local_name` (71 uses),
+  `physics_mode` (38), `cam_host` (18), `emit_scheme_calls` (16) and
+  `getattr(self, "generating_package_cap", False)`. Special-purpose paths
+  accumulate there (e.g. the removed `ConstituentsMixin`). Separate the
+  products (suite cap, package cap, CAM wrappers) over a shared core.
+- `split-large-generators` — **Very large functions** where special cases
+  collect: `_generate_constituent_api` (904 lines),
+  `_generate_lifecycle_fn` (657), `_generate_ccpp_cap_module` (454),
+  `_build_chost_ftn_text` (404), `_generate_cam_lifecycle_wrappers` (354).
+  Split by responsibility when touched. Related: comments and docstrings
+  often narrate history (review rounds, earlier fix attempts) rather than
+  describe the current design; trim them in the same edits.
