@@ -446,14 +446,18 @@
 // CHECK-NEXT:      logical, optional, intent(in) :: input_vars
 // CHECK-NEXT:      logical, optional, intent(in) :: output_vars
 // CHECK-NEXT:      logical :: do_input, do_output
-// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      errflg = 0
+// CHECK-NEXT:      errmsg = ''
 // CHECK-NEXT:      do_input = .true.
 // CHECK-NEXT:      do_output = .true.
-// CHECK-NEXT:      if (present(input_vars)) do_input = input_vars
-// CHECK-NEXT:      if (present(output_vars)) do_output = output_vars
+// CHECK-NEXT:      if (present(input_vars)) then
+// CHECK-NEXT:        do_input = input_vars
+// CHECK-NEXT:      end if
+// CHECK-NEXT:      if (present(output_vars)) then
+// CHECK-NEXT:        do_output = output_vars
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      if (trim(suite_name) .eq. 'cld_suite') then
-// CHECK-NEXT:        if (do_input .and. .not. do_output) then
+// CHECK-NEXT:        if (do_input .and. (.NOT. (do_output))) then
 // CHECK-NEXT:          allocate(var_list(7))
 // CHECK-NEXT:          var_list(1) = 'ccpp_constituent_tendencies         '
 // CHECK-NEXT:          var_list(2) = 'ccpp_constituents                   '
@@ -462,30 +466,32 @@
 // CHECK-NEXT:          var_list(5) = 'surface_air_pressure                '
 // CHECK-NEXT:          var_list(6) = 'temperature                         '
 // CHECK-NEXT:          var_list(7) = 'water_vapor_specific_humidity       '
-// CHECK-NEXT:        else if (.not. do_input .and. do_output) then
-// CHECK-NEXT:          allocate(var_list(9))
-// CHECK-NEXT:          var_list(1) = 'ccpp_constituent_tendencies         '
-// CHECK-NEXT:          var_list(2) = 'ccpp_constituents                   '
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(4) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(5) = 'cloud_liquid_dry_mixing_ratio       '
-// CHECK-NEXT:          var_list(6) = 'dynamic_constituents_for_cld_liq    '
-// CHECK-NEXT:          var_list(7) = 'temperature                         '
-// CHECK-NEXT:          var_list(8) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
-// CHECK-NEXT:          var_list(9) = 'water_vapor_specific_humidity       '
 // CHECK-NEXT:        else
-// CHECK-NEXT:          allocate(var_list(11))
-// CHECK-NEXT:          var_list(1) = 'ccpp_constituent_tendencies         '
-// CHECK-NEXT:          var_list(2) = 'ccpp_constituents                   '
-// CHECK-NEXT:          var_list(3) = 'ccpp_error_code                     '
-// CHECK-NEXT:          var_list(4) = 'ccpp_error_message                  '
-// CHECK-NEXT:          var_list(5) = 'cloud_liquid_dry_mixing_ratio       '
-// CHECK-NEXT:          var_list(6) = 'dynamic_constituents_for_cld_liq    '
-// CHECK-NEXT:          var_list(7) = 'number_of_ccpp_constituents         '
-// CHECK-NEXT:          var_list(8) = 'surface_air_pressure                '
-// CHECK-NEXT:          var_list(9) = 'temperature                         '
-// CHECK-NEXT:          var_list(10) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
-// CHECK-NEXT:          var_list(11) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          if ((.NOT. (do_input)) .and. do_output) then
+// CHECK-NEXT:            allocate(var_list(9))
+// CHECK-NEXT:            var_list(1) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:            var_list(2) = 'ccpp_constituents                   '
+// CHECK-NEXT:            var_list(3) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(4) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(5) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:            var_list(6) = 'dynamic_constituents_for_cld_liq    '
+// CHECK-NEXT:            var_list(7) = 'temperature                         '
+// CHECK-NEXT:            var_list(8) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:            var_list(9) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          else
+// CHECK-NEXT:            allocate(var_list(11))
+// CHECK-NEXT:            var_list(1) = 'ccpp_constituent_tendencies         '
+// CHECK-NEXT:            var_list(2) = 'ccpp_constituents                   '
+// CHECK-NEXT:            var_list(3) = 'ccpp_error_code                     '
+// CHECK-NEXT:            var_list(4) = 'ccpp_error_message                  '
+// CHECK-NEXT:            var_list(5) = 'cloud_liquid_dry_mixing_ratio       '
+// CHECK-NEXT:            var_list(6) = 'dynamic_constituents_for_cld_liq    '
+// CHECK-NEXT:            var_list(7) = 'number_of_ccpp_constituents         '
+// CHECK-NEXT:            var_list(8) = 'surface_air_pressure                '
+// CHECK-NEXT:            var_list(9) = 'temperature                         '
+// CHECK-NEXT:            var_list(10) = 'tendency_of_cloud_liquid_dry_mixing_ratio'
+// CHECK-NEXT:            var_list(11) = 'water_vapor_specific_humidity       '
+// CHECK-NEXT:          end if
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      else
 // CHECK-NEXT:        write(errmsg, '(3a)') "No suite named ", trim(suite_name), " found"
@@ -523,7 +529,7 @@
 // CHECK-NEXT:    end subroutine Cld_ccpp_is_scheme_constituent
 // CHECK-LABEL:   subroutine Cld_ccpp_deallocate_dynamic_constituents(instance)
 // CHECK:           integer, intent(in) :: instance
-// CHECK-NEXT:      if (.not. allocated(lc_instances)) return
+// CHECK-NEXT:      if (.NOT. (allocated(lc_instances))) return
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_dyn_const)) deallocate(lc_instances(instance)%lc_dyn_const)
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_all_constituents)) deallocate(lc_instances(instance)%lc_all_constituents)
 // CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_const_props)) deallocate(lc_instances(instance)%lc_const_props)
@@ -551,7 +557,9 @@
 // CHECK-NEXT:        allocate(lc_instances(ninstances))
 // CHECK-NEXT:      end if
 // CHECK-NEXT:      lc_num_consts = size(host_constituents)
-// CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_dyn_const)) lc_num_consts = lc_num_consts + size(lc_instances(instance)%lc_dyn_const)
+// CHECK-NEXT:      if (allocated(lc_instances(instance)%lc_dyn_const)) then
+// CHECK-NEXT:        lc_num_consts = lc_num_consts + size(lc_instances(instance)%lc_dyn_const)
+// CHECK-NEXT:      end if
 // CHECK-NEXT:      lc_num_consts = lc_num_consts + 1
 // CHECK-NEXT:      call lc_instances(instance)%cam_constituents_obj%initialize_table(lc_num_consts)
 // CHECK-NEXT:      do lc_i = 1, size(host_constituents)
@@ -614,7 +622,7 @@
 // CHECK-NEXT:          lc_instances(instance)%cam_model_const_indices(lc_i) = field_ind
 // CHECK-NEXT:        else
 // CHECK-NEXT:          errcode = 1
-// CHECK-NEXT:          errmsg = 'No field index for '//trim(lc_instances(instance)%cam_model_const_stdnames(lc_i))
+// CHECK-NEXT:          errmsg = 'No field index for ' // trim(lc_instances(instance)%cam_model_const_stdnames(lc_i))
 // CHECK-NEXT:          return
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end do

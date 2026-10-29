@@ -153,7 +153,7 @@ def test_no_effect_for_unmatched_scheme_name(run_host_match, ccpp_context):
 def test_intent_in_scalar_captured_before_only(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     call = 'call test_io_capture_scheme_run('
-    before_tag = '"test_io_capture_scheme_run:in_var:in:before"'
+    before_tag = "'test_io_capture_scheme_run:in_var:in:before'"
     assert before_tag in fortran
     # Exactly one capture for an in-only scalar -- no :after tag at all.
     assert 'in_var:in:after' not in fortran
@@ -165,7 +165,7 @@ def test_intent_in_scalar_captured_before_only(run_host_match, ccpp_context):
 def test_intent_out_scalar_captured_after_only(run_host_match, ccpp_context):
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     call = 'call test_io_capture_scheme_run('
-    after_tag = '"test_io_capture_scheme_run:out_var:out:after"'
+    after_tag = "'test_io_capture_scheme_run:out_var:out:after'"
     assert after_tag in fortran
     assert 'out_var:out:before' not in fortran
     assert f'call ccpp_capture({after_tag}, out_var)' in fortran
@@ -176,8 +176,8 @@ def test_intent_inout_array_captured_both_with_device_sync(run_host_match, ccpp_
     fortran = _fortran_output(
         run_host_match, ccpp_context, scheme="test_io_capture_scheme", directive="acc",
     )
-    before_tag = '"test_io_capture_scheme_run:io_var:inout:before"'
-    after_tag = '"test_io_capture_scheme_run:io_var:inout:after"'
+    before_tag = "'test_io_capture_scheme_run:io_var:inout:before'"
+    after_tag = "'test_io_capture_scheme_run:io_var:inout:after'"
     assert f'call ccpp_capture({before_tag}, io_var)' in fortran
     assert f'call ccpp_capture({after_tag}, io_var)' in fortran
     # A device-resident arg must get an update-self sync immediately
@@ -200,7 +200,7 @@ def test_no_device_sync_without_directive(run_host_match, ccpp_context):
     # declared memory_space=device.
     fortran = _fortran_output(run_host_match, ccpp_context, scheme="test_io_capture_scheme")
     assert "update self(io_var)" not in fortran
-    assert '"test_io_capture_scheme_run:io_var:inout:before"' in fortran
+    assert "'test_io_capture_scheme_run:io_var:inout:before'" in fortran
 
 
 def test_optional_argument_never_captured(run_host_match, ccpp_context):
@@ -279,7 +279,7 @@ def test_capture_guarded_by_host_mpi_root_flag(run_host_match, ccpp_context):
     fortran = out.getvalue()
 
     assert "use test_io_capture_host, only: masterproc" in fortran
-    before_tag = '"test_io_capture_scheme_run:in_var:in:before"'
+    before_tag = "'test_io_capture_scheme_run:in_var:in:before'"
     call_text = f"call ccpp_capture({before_tag}, in_var)"
     assert call_text in fortran
     # The guard must actually wrap this specific capture call, not just

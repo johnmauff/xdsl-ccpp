@@ -191,6 +191,11 @@ printer can interpret the type without parsing Fortran syntax.
 3. Register the pass in `xdsl_ccpp/tools/ccpp_opt.py`.
 4. Add FileCheck tests under `tests/filecheck/examples/` covering the new pass.
 
+A pass builds language-neutral IR: no Fortran or C++ syntax in transforms, as raw-text
+ops or inside typed ops' string fields -- compose existing ops, or add a reusable op
+and its printer case. The full rule is in [`CLAUDE.md`](CLAUDE.md) (read by coding
+agents too).
+
 ---
 
 ## Checking generated caps against real CAM-SIMA cases

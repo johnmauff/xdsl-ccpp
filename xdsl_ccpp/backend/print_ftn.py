@@ -29,7 +29,9 @@ from xdsl_ccpp.dialects.ccpp_utils import AccExitDataOp as CCPPAccExitDataOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
-from xdsl_ccpp.dialects.ccpp_utils import CamClearErrStateOp as CCPPCamClearErrStateOp
+from xdsl_ccpp.dialects.ccpp_utils import ClearErrStateOp as CCPPClearErrStateOp
+from xdsl_ccpp.dialects.ccpp_utils import ErrorExitOp as CCPPErrorExitOp
+from xdsl_ccpp.dialects.ccpp_utils import ReturnStmtOp as CCPPReturnStmtOp
 from xdsl_ccpp.dialects.ccpp_utils import CamDirectCallOp as CCPPCamDirectCallOp
 from xdsl_ccpp.dialects.ccpp_utils import CallStatementOp as CCPPCallStatementOp
 from xdsl_ccpp.dialects.ccpp_utils import CamQminPostambleOp as CCPPCamQminPostambleOp
@@ -75,6 +77,7 @@ from xdsl_ccpp.dialects.ccpp_utils import MemberAccessExprOp as CCPPMemberAccess
 from xdsl_ccpp.dialects.ccpp_utils import SliceExprOp as CCPPSliceExprOp
 from xdsl_ccpp.dialects.ccpp_utils import StringConcatExprOp as CCPPStringConcatExprOp
 from xdsl_ccpp.dialects.ccpp_utils import StringLiteralExprOp as CCPPStringLiteralExprOp
+from xdsl_ccpp.dialects.ccpp_utils import ValueExprOp as CCPPValueExprOp
 from xdsl_ccpp.dialects.ccpp_utils import VarRefExprOp as CCPPVarRefExprOp
 from xdsl_ccpp.dialects.ccpp_utils import AllocateOp as CCPPAllocateOp
 from xdsl_ccpp.dialects.ccpp_utils import DdtMethodCallOp as CCPPDdtMethodCallOp
@@ -1362,6 +1365,8 @@ class ftnPrintContext:
                 return f"'{escaped}'"
             case CCPPVarRefExprOp():
                 return op.var_name.data
+            case CCPPValueExprOp():
+                return self._render_value(op.value)
             case CCPPStringConcatExprOp():
                 pieces = [self._render_expr(r.block.last_op) for r in op.pieces]
                 return " // ".join(pieces)
@@ -1703,7 +1708,11 @@ class ftnPrintContext:
                 vname = op.var_name.data
                 self.print(f"if (allocated({vname})) deallocate({vname})")
             case CCPPNullifyPointerOp():
-                self.print(f"nullify({op.ptr_name.data})")
+                ptr = op.ptr_name.data
+                if op.if_associated is not None:
+                    self.print(f"if (associated({ptr})) nullify({ptr})")
+                else:
+                    self.print(f"nullify({ptr})")
             case CCPPAllocateOp():
                 if op.dims is not None:
                     dims = ", ".join(d.data for d in op.dims.data)
@@ -1728,7 +1737,12 @@ class ftnPrintContext:
                     rhs_str = self._render_expr(op.rhs_expr_region.block.last_op)
                 self.print(f"{op.ptr_name.data} => {rhs_str}")
             case CCPPAssignOp():
-                self.print(f"{op.lhs_expr.data} = {op.rhs_expr.data}")
+                if op.lhs_expr is not None:
+                    self.print(f"{op.lhs_expr.data} = {op.rhs_expr.data}")
+                else:
+                    lhs = self._render_expr(op.lhs.block.last_op)
+                    rhs = self._render_expr(op.rhs.block.last_op)
+                    self.print(f"{lhs} = {rhs}")
             case CCPPDdtMethodCallOp():
                 if op.obj_expr is not None:
                     obj_str = op.obj_expr.data
@@ -1857,13 +1871,16 @@ class ftnPrintContext:
                 args = ", ".join(a.data for a in op.call_args.data)
                 self.print(f"call {op.callee.data}({args})")
             case CCPPCallStatementOp():
-                call_args = [a.data for a in op.call_args.data]
+                if op.call_args is not None:
+                    call_args = [a.data for a in op.call_args.data]
+                else:
+                    call_args = [self._render_expr(r.block.last_op) for r in op.arg_exprs]
                 lines = wrap_paren_list(
                     f"call {op.callee.data}(", call_args, ")", 80, "    "
                 )
                 for line in lines:
                     self.print(line)
-            case CCPPCamClearErrStateOp():
+            case CCPPClearErrStateOp():
                 self.print(f"{op.errcode_var.data} = 0")
                 self.print(f"{op.errmsg_var.data} = ''")
             case CCPPCamQminPreambleOp():
@@ -1896,6 +1913,21 @@ class ftnPrintContext:
             case CCPPErrorPropagateOp():
                 ev = op.errcode_var.data
                 self.print(f"if ({ev} /= 0) return")
+            case CCPPReturnStmtOp():
+                if op.condition is None:
+                    self.print("return")
+                else:
+                    cond = self._render_expr(op.condition.block.last_op)
+                    self.print(f"if ({cond}) return")
+            case CCPPErrorExitOp():
+                if op.errflg_var is not None:
+                    self.print(f"{op.errflg_var.data} = 1")
+                if op.errmsg_text is not None:
+                    message = f"'{op.errmsg_text.data}'"
+                else:
+                    message = self._render_expr(op.message.block.last_op)
+                self.print(f"{op.errmsg_var.data} = {message}")
+                self.print("return")
             case CCPPCamSuiteDispatchOp():
                 dispatcher = op.dispatcher_fn.data
                 wrapper    = op.wrapper_fn.data

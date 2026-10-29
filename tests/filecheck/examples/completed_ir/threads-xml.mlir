@@ -384,7 +384,154 @@
 // CHECK-NEXT:      }
 // CHECK-NEXT:      "ccpp_utils.suite_variables"() ({
 // CHECK-NEXT:        "ccpp_utils.constituent_function"() <{fn_name = "ccpp_physics_suite_variables", is_function = false, args = ["suite_name", "var_list", "errmsg", "errflg", "input_vars", "output_vars"], use_stmts = [], arg_decls = ["character(len=*), intent(in) :: suite_name", "character(len=*), allocatable, intent(out) :: var_list(:)", "character(len=512), intent(out) :: errmsg", "integer, intent(out) :: errflg", "logical, optional, intent(in) :: input_vars", "logical, optional, intent(in) :: output_vars"], local_decls = ["logical :: do_input, do_output"]}> ({
-// CHECK-NEXT:          "ccpp_utils.raw_fortran_lines"() <{lines = "errmsg = ''\nerrflg = 0\ndo_input = .true.\ndo_output = .true.\nif (present(input_vars)) do_input = input_vars\nif (present(output_vars)) do_output = output_vars\nif (trim(suite_name) .eq. 'thread_suite') then\n  if (do_input .and. .not. do_output) then\n    allocate(var_list(2))\n    var_list(1) = 'data_array                          '\n    var_list(2) = 'horizontal_dimension                '\n  else if (.not. do_input .and. do_output) then\n    allocate(var_list(3))\n    var_list(1) = 'ccpp_error_code                     '\n    var_list(2) = 'ccpp_error_message                  '\n    var_list(3) = 'data_array                          '\n  else\n    allocate(var_list(4))\n    var_list(1) = 'ccpp_error_code                     '\n    var_list(2) = 'ccpp_error_message                  '\n    var_list(3) = 'data_array                          '\n    var_list(4) = 'horizontal_dimension                '\n  end if\nelse\n  write(errmsg, '(3a)') \"No suite named \", trim(suite_name), \" found\"\n  errflg = 1\nend if"}> : () -> ()
+// CHECK-NEXT:          %0 = "ccpp_utils.host_var_ref"() <{var_name = "suite_name", module_name = ""}> : () -> memref<?xi8>
+// CHECK-NEXT:          %1 = "ccpp_utils.host_var_ref"() <{var_name = "errmsg", module_name = ""}> : () -> memref<512xi8>
+// CHECK-NEXT:          %2 = "ccpp_utils.host_var_ref"() <{var_name = "errflg", module_name = ""}> : () -> memref<i32>
+// CHECK-NEXT:          "ccpp_utils.clear_err_state"() <{errcode_var = "errflg", errmsg_var = "errmsg"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.assign"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "do_input"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            %3 = arith.constant true
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          "ccpp_utils.assign"() ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "do_output"}> : () -> ()
+// CHECK-NEXT:          }, {
+// CHECK-NEXT:            %4 = arith.constant true
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          %5 = "ccpp_utils.call_expr"() <{callee = "present"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "input_vars"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %5 {
+// CHECK-NEXT:            "ccpp_utils.assign"() ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "do_input"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "input_vars"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }
+// CHECK-NEXT:          %6 = "ccpp_utils.call_expr"() <{callee = "present"}> ({
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "output_vars"}> : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
+// CHECK-NEXT:          scf.if %6 {
+// CHECK-NEXT:            "ccpp_utils.assign"() ({
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "do_output"}> : () -> ()
+// CHECK-NEXT:            }, {
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "output_vars"}> : () -> ()
+// CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:          }
+// CHECK-NEXT:          %7 = "ccpp_utils.trim"(%0) : (memref<?xi8>) -> memref<?xi8>
+// CHECK-NEXT:          %8 = "ccpp_utils.strcmp"(%7) <{literal = "thread_suite"}> : (memref<?xi8>) -> i1
+// CHECK-NEXT:          scf.if %8 {
+// CHECK-NEXT:            %9 = "ccpp_utils.var_ref_expr"() <{var_name = "do_input"}> : () -> i1
+// CHECK-NEXT:            %10 = "ccpp_utils.var_ref_expr"() <{var_name = "do_output"}> : () -> i1
+// CHECK-NEXT:            %11 = arith.constant true
+// CHECK-NEXT:            %12 = arith.xori %10, %11 : i1
+// CHECK-NEXT:            %13 = arith.andi %9, %12 : i1
+// CHECK-NEXT:            scf.if %13 {
+// CHECK-NEXT:              "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
+// CHECK-NEXT:                %14 = arith.constant 2 : i32
+// CHECK-NEXT:              }) : () -> ()
+// CHECK-NEXT:              "ccpp_utils.assign"() ({
+// CHECK-NEXT:                "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  %15 = arith.constant 1 : i32
+// CHECK-NEXT:                }) : () -> ()
+// CHECK-NEXT:              }, {
+// CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "data_array                          "}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              "ccpp_utils.assign"() ({
+// CHECK-NEXT:                "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  %16 = arith.constant 2 : i32
+// CHECK-NEXT:                }) : () -> ()
+// CHECK-NEXT:              }, {
+// CHECK-NEXT:                "ccpp_utils.string_literal_expr"() <{text = "horizontal_dimension                "}> : () -> ()
+// CHECK-NEXT:              }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:            } else {
+// CHECK-NEXT:              %17 = "ccpp_utils.var_ref_expr"() <{var_name = "do_input"}> : () -> i1
+// CHECK-NEXT:              %18 = arith.constant true
+// CHECK-NEXT:              %19 = arith.xori %17, %18 : i1
+// CHECK-NEXT:              %20 = "ccpp_utils.var_ref_expr"() <{var_name = "do_output"}> : () -> i1
+// CHECK-NEXT:              %21 = arith.andi %19, %20 : i1
+// CHECK-NEXT:              scf.if %21 {
+// CHECK-NEXT:                "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
+// CHECK-NEXT:                  %22 = arith.constant 3 : i32
+// CHECK-NEXT:                }) : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %23 = arith.constant 1 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_code                     "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %24 = arith.constant 2 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_message                  "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %25 = arith.constant 3 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "data_array                          "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              } else {
+// CHECK-NEXT:                "ccpp_utils.allocate"() <{var_name = "var_list"}> ({
+// CHECK-NEXT:                  %26 = arith.constant 4 : i32
+// CHECK-NEXT:                }) : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %27 = arith.constant 1 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_code                     "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %28 = arith.constant 2 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "ccpp_error_message                  "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %29 = arith.constant 3 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "data_array                          "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:                "ccpp_utils.assign"() ({
+// CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
+// CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "var_list"}> : () -> ()
+// CHECK-NEXT:                  }, {
+// CHECK-NEXT:                    %30 = arith.constant 4 : i32
+// CHECK-NEXT:                  }) : () -> ()
+// CHECK-NEXT:                }, {
+// CHECK-NEXT:                  "ccpp_utils.string_literal_expr"() <{text = "horizontal_dimension                "}> : () -> ()
+// CHECK-NEXT:                }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
+// CHECK-NEXT:              }
+// CHECK-NEXT:            }
+// CHECK-NEXT:          } else {
+// CHECK-NEXT:            "ccpp_utils.write_errmsg"(%1, %7) <{prefix = "No suite named ", suffix = " found"}> : (memref<512xi8>, memref<?xi8>) -> ()
+// CHECK-NEXT:            %31 = arith.constant 1 : i32
+// CHECK-NEXT:            memref.store %31, %2[] : memref<i32>
+// CHECK-NEXT:          }
 // CHECK-NEXT:        }) : () -> ()
 // CHECK-NEXT:      }) : () -> ()
 // CHECK-LABEL:     func.func private @thread_suite_register(memref<i32>, memref<i32>) -> (memref<i32>, memref<512xi8>) attributes {module = "thread_suite_cap"}

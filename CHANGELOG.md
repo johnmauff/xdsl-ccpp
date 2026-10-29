@@ -13158,3 +13158,51 @@ and the new attributes only); `end_to_end` goldens unchanged. `cap_oracle
 diff` against `main` on the built aux_sima (gnu/intel/nvhpc), package-cap
 and GPU package-cap cases plus 16 example calls (opt_arg added): all 46
 IDENTICAL after each of the four stages. pytest 1135 passed.
+
+## `raw-fortran-in-ir`: generated statements as ops, not raw Fortran text (2026-10-29)
+
+28 `RawFortranLinesOp`s carried logic as Fortran text that passes and
+verifiers could not see: 23 in `constituent_cap.py` (GPU residency, the
+constituent-lookup error exits, error-state resets, counting and copying
+constituents), `ccpp_physics_suite_variables`' whole body (`ccpp_cap.py`),
+the scheme I/O capture call and a `return` in `cpp_interop.py`. All but
+`cpp_interop.py`'s BIND(C) module header and `end module` are now ops, and
+none of the replacements carries Fortran syntax as text -- names and
+message strings are data; literals, operators and keywords come from the
+printer.
+
+- GPU residency: `initialize_constituents`' `!$acc enter data copyin`
+  blocks are `AccEnterDataOp`s on `HostVarRefOp`s, built like the
+  `AccExitDataOp`s `_inject_capscratch_gpu_exit` puts in `ccpp_final`.
+  Fixed on the way: in a multi-instance cap that exit named a module
+  variable that only exists as `lc_instances(instance)%<name>`.
+- New ops: `ReturnStmtOp` (optionally `if (<cond>) return`), `ErrorExitOp`
+  (set flag and message, return), `ValueExprOp` (an existing SSA value as
+  an expression leaf). `NullifyPointerOp` gains `if_associated`;
+  `CamClearErrStateOp` is renamed `ClearErrStateOp`. `AssignOp` and
+  `CallStatementOp` gain an expression-op form beside their text form.
+- `ccpp_physics_suite_variables` is built from `scf.if`/`StrCmpOp`/
+  `AllocateOp`/`AssignOp` and the dispatchers' shared "no suite named"
+  ops; `_scf_if` takes `else_ops`; `_assign_const` moved to `cap_shared`.
+
+Generated Fortran changes only in spelling, verified line by line: one-line
+`if (...) stmt` guards become `if ... then`/`end if` blocks, `else if`
+chains become nested `if`/`else` (as the dispatchers already print),
+`.not. x` becomes `.NOT. (x)`, `'a'//b` becomes `'a' // b`, the error-state
+reset prints `errflg` before `errmsg`, and the capture tag is quoted `'...'`.
+
+Measuring "raw Fortran" by `RawFortranLinesOp` alone undercounted it: about
+179 middle-layer string literals still hold Fortran or C++ syntax. They are
+now the backlog items `fortran-decls-as-text`, `fortran-exprs-as-text`,
+`cpp-text-in-ir` and `gpu-debug-text` (plus `printer-trailing-whitespace`,
+found here).
+
+Tests: new `test_constituent_gpu_residency.py` (enter/exit as ops, single
+and multi-instance, missing instance argument); `test_scheme_io_capture_pass.py`
+updated for the quote style. Goldens: generated `completed_ir`/`end_to_end`
+regenerated and reviewed as net added/removed lines; the hand-maintained
+`ddt-redef-dedup-xml.mlir` edited by hand; `helloworld-composite-py.mlir`'s
+header (with its RUN line) restored after the update script dropped it.
+`cap_oracle diff` against `main` (aux_sima gnu/intel/nvhpc, package-cap,
+GPU package-cap, 16 example calls): every differing line is one of the
+re-spellings above. pytest 1141 passed.

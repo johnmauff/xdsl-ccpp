@@ -10,18 +10,22 @@ from xdsl.dialects import arith, llvm
 from xdsl.dialects.builtin import IntegerAttr, StringAttr, i1, i8, i32
 
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AccEnterDataOp,
     ActiveCheckOp,
     AllocateOp,
     AssignOp,
     CallExprOp,
     CamDirectCallOp,
     CamHostConstituentApiOp,
+    ClearErrStateOp,
     ConstituentFunctionOp,
     DdtComponentDeclOp,
     DdtMethodCallOp,
     DerivedTypeDefOp,
+    ErrorExitOp,
     ErrorGuardOp,
     ErrorPropagateOp,
+    HostVarRefOp,
     IndexExprOp,
     KeywordArgExprOp,
     MemberAccessExprOp,
@@ -30,9 +34,10 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     NullifyPointerOp,
     PointerAssignOp,
     PointerSliceAssignOp,
-    RawFortranLinesOp,
+    ReturnStmtOp,
     SafeDeallocOp,
     ScopedBlockOp,
+    StringConcatExprOp,
     StringLiteralExprOp,
     TextBoundedDoLoopOp,
     VarRefExprOp,
@@ -42,12 +47,14 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _allocated_cond,
+    _assign_const,
     _int_var_cmp_zero,
     _not_allocated_cond,
     _scf_if,
     _trim_eq_cond,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType
+from xdsl_ccpp.transforms.util.typing import TypeConversions
 from xdsl_ccpp.util.ccpp_conventions import CCPP_ERRMSG_LEN
 
 
@@ -191,17 +198,15 @@ def _generate_constituent_api(
 
     framework_var_residency: cap var name ("lc_constituent_array",
     "lc_const_tend") -> True if CapScratch GPU residency should be
-    established for it (see ccpp_cap.py's _build_cap_var_map) -- emitted as
-    plain text (`#ifdef USE_GPU` / `!$acc enter data copyin(...)` /
-    `#endif`) directly after each array's existing allocate-and-initialize
-    block in ic_lines, matching the surrounding generation style: this whole
-    subsystem builds Fortran source as raw text (the constituent API op body is
-    a plain StringAttr), there's no IR op to attach a residency property to
-    the way SuiteOwned's LazyAllocOp allowed. `copyin`, not `create`: each
-    array is host-initialized (a default-value loop or a `= 0.0_kind_phys`
-    fill) immediately before this directive, and `create` would allocate
-    uninitialized device memory without transferring that initialized state
-    -- caught by Copilot review on PR #38.
+    established for it (see ccpp_cap.py's _build_cap_var_map): an
+    AccEnterDataOp copyin directly after the array's allocate-and-initialize
+    block in initialize_constituents (scratch vars with needs_gpu likewise),
+    balanced by the AccExitDataOp ccpp_cap.py's _inject_capscratch_gpu_exit
+    emits in ccpp_final. `copyin`, not `create`: each array is
+    host-initialized (a default-value loop or a `= 0.0_kind_phys` fill)
+    immediately before, and `create` would allocate uninitialized device
+    memory without transferring that initialized state -- caught by Copilot
+    review on PR #38.
 
     instance_local_name/ninstances_local_name -- real capgen-v1's
     multi-instance model: when set (the host declares
@@ -286,6 +291,19 @@ def _generate_constituent_api(
             idx = IndexExprOp(VarRefExprOp("lc_instances"), [VarRefExprOp(instance_local_name)])
             return MemberAccessExprOp(idx, name)
         return VarRefExprOp(name)
+
+    def _enter_data_copyin(name: str, rank: int) -> list:
+        """Make module-level real array `name` device-resident: a reference
+        to it (the same lc_instances(instance)%name form ref() gives when
+        multi-instance) and an AccEnterDataOp copyin. ccpp_cap.py's
+        _inject_capscratch_gpu_exit emits the matching AccExitDataOp."""
+        var_type = TypeConversions.convert("real", "kind_phys", rank)
+        if multi_instance:
+            ref_op = HostVarRefOp("lc_instances", "", var_type,
+                                  member_name=name, index_expr=instance_local_name)
+        else:
+            ref_op = HostVarRefOp(name, "", var_type)
+        return [ref_op, AccEnterDataOp(copyin=[ref_op.res])]
 
     # ── Module-level variable declarations ──────────────────────────────
     # Non-multi-instance: unchanged -- one plain ModuleVarOp per array.
@@ -424,7 +442,8 @@ def _generate_constituent_api(
         f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
     ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
     isc_body_ops: list = [
-        RawFortranLinesOp("errflg = 0\nerrmsg = ''\nis_const = .false."),
+        ClearErrStateOp("errflg", "errmsg"),
+        _assign_const("is_const", False),
     ]
     if n_fixed > 0:
         any_eq = arith.CmpiOp(
@@ -434,7 +453,7 @@ def _generate_constituent_api(
         )
         fixed_check_ops = _scf_if(
             CallExprOp("any", [any_eq], result_type=i1),
-            [RawFortranLinesOp("is_const = .true.\nreturn")],
+            [_assign_const("is_const", True), ReturnStmtOp()],
         )
         # ref() expands to lc_instances(instance)%... — guard allocated(lc_instances)
         # before dereferencing, matching the same guard the dynamic-name loops use.
@@ -446,7 +465,7 @@ def _generate_constituent_api(
         dyn_ref = ref(f"lc_{n}")
         inner_trim_check_ops = _scf_if(
             _trim_eq_cond("lc_std_name", "std_name"),
-            [RawFortranLinesOp("is_const = .true.\nreturn")],
+            [_assign_const("is_const", True), ReturnStmtOp()],
         )
         dyn_check_ops = _scf_if(
             _allocated_cond(dyn_ref),
@@ -480,26 +499,15 @@ def _generate_constituent_api(
     # ── 2. deallocate_dynamic_constituents ───────────────────────────────
     da_body_ops: list = []
     if multi_instance:
-        # Plain conditional early-return, no errflg/errmsg to set -- doesn't
-        # fit any typed op yet (ErrorGuardOp, landing alongside this file's
-        # other new ops, is specifically the errflg/errmsg-setting shape);
-        # left as a raw line for now rather than forcing an ill-fitting op.
-        da_body_ops.append(RawFortranLinesOp("if (.not. allocated(lc_instances)) return"))
+        da_body_ops.append(ReturnStmtOp(_not_allocated_cond("lc_instances")))
     for n in dynamic_array_names:
         da_body_ops.append(SafeDeallocOp(ref(f"lc_{n}")))
     da_body_ops += [
         SafeDeallocOp(ref("lc_all_constituents")),
         SafeDeallocOp(ref("lc_const_props")),
         # lc_constituent_array is a pointer into cam_constituents_obj storage;
-        # nullify it before reset() to avoid a dangling pointer. Guarded by
-        # associated() in real Fortran -- NullifyPointerOp only emits a bare
-        # nullify(x), so this one line stays raw rather than dropping the
-        # guard (semantically required: nullifying an already-disassociated
-        # pointer is legal but the guard documents intent and matches every
-        # other conditional dealloc/nullify in this function).
-        RawFortranLinesOp(
-            f"if (associated({ref('lc_constituent_array')})) nullify({ref('lc_constituent_array')})"
-        ),
+        # nullify it before reset() to avoid a dangling pointer.
+        NullifyPointerOp(ref("lc_constituent_array"), if_associated=True),
     ]
     if needs_const_tend:
         da_body_ops.append(SafeDeallocOp(ref("lc_const_tend")))
@@ -544,35 +552,50 @@ def _generate_constituent_api(
                 f"integer, intent(in) :: {instance_local_name}",
                 f"integer, intent(in) :: {ninstances_local_name}",
             ]
-    rc_body_ops: list = [RawFortranLinesOp("errcode = 0\nerrmsg = ''")]
+    rc_body_ops: list = [ClearErrStateOp("errcode", "errmsg")]
     if multi_instance:
         rc_body_ops.extend(_scf_if(
             _not_allocated_cond("lc_instances"),
-            [RawFortranLinesOp(f"allocate(lc_instances({ninstances_local_name}))")],
+            [AllocateOp("lc_instances", dim_ops=[VarRefExprOp(ninstances_local_name)])],
         ))
     # Count total constituents (upper bound for initialize_table)
-    rc_body_ops.append(RawFortranLinesOp("lc_num_consts = size(host_constituents)"))
+    def _add_to_num_consts(term_op) -> AssignOp:
+        """lc_num_consts = lc_num_consts + <term_op>."""
+        return AssignOp(
+            lhs_op=VarRefExprOp("lc_num_consts"),
+            rhs_op=arith.AddiOp(VarRefExprOp("lc_num_consts", result_type=i32), term_op),
+        )
+
+    rc_body_ops.append(AssignOp(
+        lhs_op=VarRefExprOp("lc_num_consts"),
+        rhs_op=CallExprOp("size", [VarRefExprOp("host_constituents")], result_type=i32),
+    ))
     for n in dynamic_array_names:
-        dyn_ref = ref(f"lc_{n}")
-        rc_body_ops.append(RawFortranLinesOp(
-            f"if (allocated({dyn_ref})) lc_num_consts = lc_num_consts + size({dyn_ref})"
+        rc_body_ops.extend(_scf_if(
+            CallExprOp("allocated", [_ref_expr(f"lc_{n}")], result_type=i1),
+            [_add_to_num_consts(
+                CallExprOp("size", [_ref_expr(f"lc_{n}")], result_type=i32)
+            )],
         ))
-    rc_body_ops.append(RawFortranLinesOp(f"lc_num_consts = lc_num_consts + {n_fixed}"))
+    rc_body_ops.append(_add_to_num_consts(
+        arith.ConstantOp(IntegerAttr.from_int_and_width(n_fixed, 32))
+    ))
     rc_body_ops.append(DdtMethodCallOp(
         obj_expr_op=_ref_expr("cam_constituents_obj"), method="initialize_table",
         arg_ops=[VarRefExprOp("lc_num_consts")],
     ))
 
-    def _new_field_from(const_prop_expr: str) -> list:
+    def _new_field_from(const_prop_op) -> list:
         """The recurring 'allocate const_prop, copy in, register, nullify'
         idiom -- identical across host constituents, each dynamic array,
-        and each fixed-advected constituent below."""
+        and each fixed-advected constituent below. const_prop_op is the
+        expression for the properties copied in."""
         return [
             AllocateOp("const_prop", [], stat_var="errcode"),
             *_scf_if(_int_var_cmp_zero("errcode", "ne"), [
-                RawFortranLinesOp("errmsg = 'ERROR allocating const_prop'\nreturn"),
+                ErrorExitOp("ERROR allocating const_prop"),
             ]),
-            RawFortranLinesOp(f"const_prop = {const_prop_expr}"),
+            AssignOp(lhs_op=VarRefExprOp("const_prop"), rhs_op=const_prop_op),
             DdtMethodCallOp(
                 obj_expr_op=_ref_expr("cam_constituents_obj"), method="new_field",
                 arg_ops=[VarRefExprOp("const_prop")], kwarg_ops=_errcode_errmsg_kwargs(),
@@ -583,7 +606,9 @@ def _generate_constituent_api(
 
     # Host constituents
     rc_body_ops.append(TextBoundedDoLoopOp(
-        "lc_i", "size(host_constituents)", _new_field_from("host_constituents(lc_i)"),
+        "lc_i", "size(host_constituents)", _new_field_from(
+            IndexExprOp(VarRefExprOp("host_constituents"), [VarRefExprOp("lc_i")])
+        ),
     ))
     # Dynamic scheme arrays
     for n in dynamic_array_names:
@@ -591,7 +616,9 @@ def _generate_constituent_api(
         rc_body_ops.extend(_scf_if(
             _allocated_cond(dyn_ref),
             [TextBoundedDoLoopOp(
-                "lc_i", f"size({dyn_ref})", _new_field_from(f"{dyn_ref}(lc_i)"),
+                "lc_i", f"size({dyn_ref})", _new_field_from(
+                    IndexExprOp(_ref_expr(f"lc_{n}"), [VarRefExprOp("lc_i")])
+                ),
             )],
         ))
     # Fixed advected constituents
@@ -613,7 +640,7 @@ def _generate_constituent_api(
         rc_body_ops += [
             AllocateOp("const_prop", [], stat_var="errcode"),
             *_scf_if(_int_var_cmp_zero("errcode", "ne"), [
-                RawFortranLinesOp("errmsg = 'ERROR allocating const_prop'\nreturn"),
+                ErrorExitOp("ERROR allocating const_prop"),
             ]),
             DdtMethodCallOp(
                 obj_expr_op=VarRefExprOp("const_prop"), method="instantiate",
@@ -641,7 +668,7 @@ def _generate_constituent_api(
         ),
         SafeDeallocOp(_lc_props),
         AllocateOp(_lc_props, dim_ops=[CallExprOp("size", [VarRefExprOp("lc_props_ptr")])]),
-        RawFortranLinesOp(f"{_lc_props} = lc_props_ptr"),
+        AssignOp(lhs_op=_ref_expr("lc_const_props"), rhs_op=VarRefExprOp("lc_props_ptr")),
         NullifyPointerOp("lc_props_ptr"),
     ]
     if cam_host:
@@ -659,7 +686,6 @@ def _generate_constituent_api(
     ]
     if n_fixed > 0:
         _cmi = ref("cam_model_const_indices")
-        _cms = ref("cam_model_const_stdnames")
         rc_body_ops.append(TextBoundedDoLoopOp(
             "lc_i", f"size({_cmi})",
             [
@@ -674,9 +700,20 @@ def _generate_constituent_api(
                 ErrorPropagateOp("errcode"),
                 ActiveCheckOp(
                     condition_op=_int_var_cmp_zero("field_ind", "sgt"),
-                    with_body_ops=[RawFortranLinesOp(f"{_cmi}(lc_i) = field_ind")],
-                    without_body_ops=[RawFortranLinesOp(
-                        f"errcode = 1\nerrmsg = 'No field index for '//trim({_cms}(lc_i))\nreturn"
+                    with_body_ops=[AssignOp(
+                        lhs_op=IndexExprOp(_ref_expr("cam_model_const_indices"),
+                                           [VarRefExprOp("lc_i")]),
+                        rhs_op=VarRefExprOp("field_ind"),
+                    )],
+                    without_body_ops=[ErrorExitOp(
+                        message_op=StringConcatExprOp([
+                            StringLiteralExprOp("No field index for "),
+                            CallExprOp("trim", [IndexExprOp(
+                                _ref_expr("cam_model_const_stdnames"),
+                                [VarRefExprOp("lc_i")],
+                            )]),
+                        ]),
+                        errflg_var="errcode",
                     )],
                 ),
             ],
@@ -732,12 +769,12 @@ def _generate_constituent_api(
         kwarg_ops=[KeywordArgExprOp("advected", VarRefExprOp("advected"))]
         + _errcode_errmsg_kwargs(),
     )
-    nc_body_ops: list = [RawFortranLinesOp("errcode = 0\nerrmsg = ''")]
+    nc_body_ops: list = [ClearErrStateOp("errcode", "errmsg")]
     if multi_instance:
         nc_body_ops.append(ActiveCheckOp(
             condition_op=_allocated_cond("lc_instances"),
             with_body_ops=[_nc_call],
-            without_body_ops=[RawFortranLinesOp("num_advected = 0")],
+            without_body_ops=[_assign_const("num_advected", 0)],
         ))
     else:
         nc_body_ops.append(_nc_call)
@@ -762,7 +799,7 @@ def _generate_constituent_api(
         "integer, intent(out) :: errflg",
         f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
     ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
-    ic_body_ops: list = [RawFortranLinesOp("errflg = 0\nerrmsg = ''")]
+    ic_body_ops: list = [ClearErrStateOp("errflg", "errmsg")]
     if multi_instance:
         ic_body_ops.append(ErrorGuardOp(
             condition_op=_allocated_cond("lc_instances"),
@@ -788,9 +825,7 @@ def _generate_constituent_api(
         ),
     ]
     if framework_var_residency.get("lc_constituent_array"):
-        ic_body_ops.append(RawFortranLinesOp(
-            f"#ifdef USE_GPU\n!$acc enter data copyin({ref('lc_constituent_array')})\n#endif"
-        ))
+        ic_body_ops += _enter_data_copyin("lc_constituent_array", 3)
     if needs_const_tend:
         ic_body_ops += [
             SafeDeallocOp(ref('lc_const_tend')),
@@ -801,10 +836,8 @@ def _generate_constituent_api(
             ZeroFillOp(ref('lc_const_tend')),
         ]
         if framework_var_residency.get("lc_const_tend"):
-            ic_body_ops.append(RawFortranLinesOp(
-                f"#ifdef USE_GPU\n!$acc enter data copyin({ref('lc_const_tend')})\n#endif"
-            ))
-    for lc_name, _rank, alloc_dims, _cst_std, needs_gpu, base in scratch_vars:
+            ic_body_ops += _enter_data_copyin("lc_const_tend", 3)
+    for lc_name, rank, alloc_dims, _cst_std, needs_gpu, base in scratch_vars:
         lc_ref = ref(lc_name)
         if _cst_std:
             # A constituent view: a pointer slice of its base array
@@ -814,10 +847,9 @@ def _generate_constituent_api(
             # constituent is an error: otherwise the view stays null and a
             # scheme writing through it fails later, far from the cause.
             what = "constituent" if base == "lc_constituent_array" else "constituent for tendency"
-            not_found_ops = [RawFortranLinesOp(
-                "errflg = 1\n"
-                f"errmsg = 'ccpp_initialize_constituents: no {what} {_cst_std}'\n"
-                "return"
+            not_found_ops = [ErrorExitOp(
+                f"ccpp_initialize_constituents: no {what} {_cst_std}",
+                errflg_var="errflg",
             )]
             ic_body_ops.append(ScopedBlockOp(
                 ["integer :: lc_tend_idx", "character(len=512) :: lc_tend_errmsg"],
@@ -858,9 +890,7 @@ def _generate_constituent_api(
                 ZeroFillOp(lc_ref),
             ]
             if needs_gpu:
-                ic_body_ops.append(RawFortranLinesOp(
-                    f"#ifdef USE_GPU\n!$acc enter data copyin({lc_ref})\n#endif"
-                ))
+                ic_body_ops += _enter_data_copyin(lc_name, rank)
     ic_op = ConstituentFunctionOp(
         fn_name=f"{h}_ccpp_initialize_constituents",
         is_function=False,
@@ -927,7 +957,7 @@ def _generate_constituent_api(
         "integer, intent(out) :: errflg",
         f"character(len={CCPP_ERRMSG_LEN}), intent(out) :: errmsg",
     ] + ([f"integer, intent(in) :: {instance_local_name}"] if multi_instance else [])
-    ci_body_ops: list = [RawFortranLinesOp("errflg = 0\nerrmsg = ''\nindex = -1")]
+    ci_body_ops: list = [ClearErrStateOp("errflg", "errmsg"), _assign_const("index", -1)]
     if multi_instance:
         ci_body_ops.append(ErrorGuardOp(
             condition_op=_allocated_cond("lc_instances"),

@@ -45,6 +45,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     MemberAccessExprOp,
     RawCppLinesOp,
     RawFortranLinesOp,
+    ReturnStmtOp,
     RealKindType,
     TextBoundedDoLoopOp,
     VarRefExprOp,
@@ -1528,7 +1529,7 @@ class CPPInteropCap(ModulePass):
                     AssignOp(lhs_expr="chost_idx", rhs_expr="chost_idx + 1"),
                     *_scf_if(
                         _int_var_cmp("chost_idx", "n", "sgt"),
-                        [RawFortranLinesOp("return")],
+                        [ReturnStmtOp()],
                     ),
                 ]
                 for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
