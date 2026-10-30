@@ -60,6 +60,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     derive_camel_case_name,
     fixed_interface_fn,
     framework_cap_var_ref,
+    host_instance_pair,
     iter_arg_tables,
     resolve_capscratch_cap_var_name,
 )
@@ -80,9 +81,7 @@ from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERROR_MESSAGE,
     CCPP_ERROR_STD_NAMES,
     CCPP_HORIZ_DIM_STD_NAME,
-    CCPP_INSTANCE_NUMBER_STD_NAME,
     CCPP_LOOP_EXTENT_STD_NAME,
-    CCPP_NUMBER_OF_INSTANCES_STD_NAME,
     CCPP_VERT_DIM_STD_NAME,
     name_local,
 )
@@ -1033,36 +1032,11 @@ class CCPPCAP(ModulePass):
         # a DDT instance used in the run function may also appear in lifecycle functions).
         shared_seen_host_globals: set = set()
 
-        # Real capgen-v1's multi-instance model: resolved once
-        # for the whole host (instance_number/number_of_instances are
-        # HOST-declared scalars, not suite-scoped), same lookup shape as
-        # suite_cap.py's own _resolve_host_only_std_name -- scans every
-        # non-scheme table (module/host/ddt) for the standard name. None for
-        # a non-multi-instance host, in which case every downstream
-        # constituent-API/cap-var-map consumer below takes its original,
-        # unchanged codepath.
-        # instance_local_name/ninstances_local_name form one paired contract
-        # -- every downstream consumer (cap_var_map's lc_instances(instance)%
-        # wrapping, constituent_cap.py's lc_instances bundle/allocation,
-        # lifecycle_cap.py's LazyAllocOp guard) assumes BOTH are set or
-        # NEITHER is. A host declaring only one of the two standard names
-        # (unusual, but nothing stops a .meta file from doing it) would
-        # otherwise enable multi-instance wrapping with no matching
-        # allocation/signature support -- e.g. a literal "None" spliced into
-        # a generated Fortran signature, or a reference to lc_instances that
-        # is never declared. Caught by Copilot review on PR #77; normalize
-        # to the pair here, once, so every downstream site's own "is this
-        # multi-instance" check (instance_local_name is not None) stays a
-        # reliable proxy for "both names are present."
-        _host_var_map_all_for_instance = _build_host_var_map(meta_data, include_host=True)
-        _instance_match = _host_var_map_all_for_instance.get(CCPP_INSTANCE_NUMBER_STD_NAME)
-        _ninstances_match = _host_var_map_all_for_instance.get(CCPP_NUMBER_OF_INSTANCES_STD_NAME)
-        if _instance_match is not None and _ninstances_match is not None:
-            instance_local_name = _instance_match[0]
-            ninstances_local_name = _ninstances_match[0]
-        else:
-            instance_local_name = None
-            ninstances_local_name = None
+        # Real capgen-v1's multi-instance model: resolved once for the whole
+        # host (instance_number/number_of_instances are host-declared
+        # scalars, not suite-scoped). None for a single-instance host.
+        instances = host_instance_pair(meta_data)
+        instance_local_name = instances.instance if instances else None
 
         cap_var_map, host_var_map_lc, scratch_var_list, framework_var_residency = _build_cap_var_map(
             meta_data, suite_descriptions, public_fns, instance_local_name=instance_local_name,
@@ -1193,8 +1167,7 @@ class CCPPCAP(ModulePass):
                     host_var_map_lc=host_var_map_lc,
                     ccpp_info_type=ccpp_info_type,
                     ccpp_info_module=ccpp_info_module_name,
-                    instance_local_name=instance_local_name,
-                    ninstances_local_name=ninstances_local_name,
+                    instances=instances,
                     **common,
                 )
                 all_globals.extend(lc_host_ops)
@@ -1302,8 +1275,7 @@ class CCPPCAP(ModulePass):
             const_var_ops, const_api_op, const_global_stubs = _generate_constituent_api(
                 camel_name, dyn_names, fixed_adv, scratch_vars=scratch_var_list,
                 framework_var_residency=framework_var_residency,
-                instance_local_name=instance_local_name,
-                ninstances_local_name=ninstances_local_name,
+                instances=instances,
                 capgen_api=self.capgen_api,
                 needs_const_tend=needs_const_tend,
                 ddt_source_module=ddt_source_module,

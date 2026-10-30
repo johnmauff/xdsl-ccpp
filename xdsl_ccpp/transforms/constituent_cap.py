@@ -49,6 +49,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 from xdsl_ccpp.transforms.capgen_api import capgen_constituent_routines
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
+    InstancePair,
     _allocated_cond,
     _assign_const,
     _int_var_cmp_zero,
@@ -199,8 +200,7 @@ def _generate_constituent_api(
     fixed_advected: list,
     scratch_vars: list | None = None,
     framework_var_residency: dict | None = None,
-    instance_local_name: "str | None" = None,
-    ninstances_local_name: "str | None" = None,
+    instances: "InstancePair | None" = None,
     capgen_api: bool = False,
     needs_const_tend: bool = False,
     ddt_source_module: dict | None = None,
@@ -219,8 +219,7 @@ def _generate_constituent_api(
     memory without transferring that initialized state -- caught by Copilot
     review on PR #38.
 
-    instance_local_name/ninstances_local_name -- real capgen-v1's
-    multi-instance model: when set (the host declares
+    instances -- real capgen-v1's multi-instance model: when set (the host declares
     instance_number/number_of_instances), every module-level array this API
     owns (lc_all_constituents, lc_constituent_array, lc_const_tend,
     lc_const_props, each scheme's own dynamic-array, and any scratch var)
@@ -230,12 +229,12 @@ def _generate_constituent_api(
     examples/instances' own host-declared instance_data already establishes
     for this codebase, just cap-owned/generated here instead of
     host-declared. lc_instances is lazily allocated (sized by
-    ninstances_local_name) inside register_constituents only -- the one
+    instances.count) inside register_constituents only -- the one
     entry point the driver always calls first, with ninstances, before any
     other constituent-API call for a given instance; every other subroutine
     treats "lc_instances not yet allocated" as "register_constituents not
     called," matching the existing single-instance code's own precondition
-    checks. When both are None (a non-multi-instance host, by far the common
+    checks. When None (a non-multi-instance host, by far the common
     case), every array stays a plain module-scope variable exactly as
     before -- this whole codepath is unreachable and output is
     byte-identical to before this feature existed.
@@ -251,24 +250,8 @@ def _generate_constituent_api(
 
     Returns (module_var_ops, constituent_api_op, global_stub_ops).
     """
-    # instance_local_name/ninstances_local_name are a paired contract, not
-    # two independent optionals -- multi_instance below gates the whole
-    # per-instance bundle (declarations, register_constituents' own
-    # allocate(lc_instances(ninstances)), every other subroutine's `instance`
-    # arg) on instance_local_name alone; if ninstances_local_name were ever
-    # missing while instance_local_name was set, that allocate call would
-    # get a literal "None" spliced into generated Fortran. ccpp_cap.py's own
-    # resolution site normalizes both to None together, but assert the
-    # invariant here too, matching this codebase's existing
-    # _assert_call_arg_count_matches_signature precedent for guarding a
-    # coupled-parameter contract at the point that actually relies on it.
-    # Caught by Copilot review on PR #77.
-    assert (instance_local_name is None) == (ninstances_local_name is None), (
-        "instance_local_name and ninstances_local_name must both be set or "
-        "both be None -- got "
-        f"instance_local_name={instance_local_name!r}, "
-        f"ninstances_local_name={ninstances_local_name!r}"
-    )
+    instance_local_name = instances.instance if instances else None
+    ninstances_local_name = instances.count if instances else None
 
     if capgen_api and instance_local_name is not None:
         raise ValueError(
