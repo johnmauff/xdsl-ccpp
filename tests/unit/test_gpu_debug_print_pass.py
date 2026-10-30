@@ -37,9 +37,22 @@ separately covered here.
 from io import StringIO
 
 import pytest
+from xdsl.dialects import arith
+from xdsl.dialects.builtin import MemRefType, f64
+from xdsl.ir import Block
+from xdsl.utils.hints import isa
 
 from tests.unit.helpers import CCPP_MANDATORY_ARGS, minimal_suite_xml
-from xdsl_ccpp.backend.print_ftn import print_to_ftn
+from xdsl_ccpp.backend.print_ftn import ftnPrintContext, print_to_ftn
+from xdsl_ccpp.dialects.ccpp_utils import (
+    AccParallelOp,
+    CallExprOp,
+    ExprTextLiteralOp,
+    PrintStmtOp,
+    StringLiteralExprOp,
+    ValueExprOp,
+    VarRefExprOp,
+)
 from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.gpu_ccpp_cap_pass import GPUCcppCapPass
@@ -177,3 +190,61 @@ def test_device_arg_names_and_call_param_names_after_refactor(run_host_match, cc
     assert len(_call_args(call_op)) == len(param_names)
     assert "hosted" in param_names
     assert "host_only" in param_names
+
+
+def test_diagnostics_are_ops_not_text(run_host_match, ccpp_context):
+    """gpu-debug-text: each diagnostic is a PrintStmtOp in an AccParallelOp
+    whose present clause holds the array's SSA value."""
+    module = _build_module(run_host_match, ccpp_context)
+    GPUDebugPrintPass().apply(ccpp_context, module)
+    parallels = [o for o in module.walk() if isa(o, AccParallelOp)]
+    assert parallels
+    for par in parallels:
+        assert [type(o) for o in par.body.block.ops] == [PrintStmtOp]
+    arrays = [p for p in parallels if p.present_arrays]
+    assert arrays
+    for par in arrays:
+        (ref,) = par.present_arrays
+        assert len(ref.type.shape.data) > 0
+    assert "gpu_debug_print" not in str(module)
+
+
+def _printed(op) -> list[str]:
+    out = StringIO()
+    ctx = ftnPrintContext(output=out)
+    ctx.register_binops()
+    ctx.print_op(op)
+    return [line.strip() for line in out.getvalue().splitlines()]
+
+
+def _array_arg(name: str, rank: int):
+    block = Block(arg_types=[MemRefType(f64, [-1] * rank)])
+    arg = block.args[0]
+    arg.name_hint = name
+    return block, arg
+
+
+def test_printer_spells_parallel_print_and_label():
+    _block, x = _array_arg("x", 2)
+    op = AccParallelOp([PrintStmtOp([
+        ExprTextLiteralOp(ValueExprOp(x), prefix="CCPPDBG array ", suffix=" device size:"),
+        StringLiteralExprOp(" dim1="),
+        CallExprOp("size", [ValueExprOp(x), arith.ConstantOp.from_int_and_width(1, 32)]),
+    ])], present=[x])
+    assert _printed(op) == [
+        "!$acc parallel present(x)",
+        "write(*,*) 'CCPPDBG array x device size:', ' dim1=', size(x, 1)",
+        "!$acc end parallel",
+    ]
+
+
+def test_parallel_without_present_and_label_quoting():
+    op = AccParallelOp([PrintStmtOp([
+        ExprTextLiteralOp(VarRefExprOp("n"), prefix="it's ", suffix="="),
+        VarRefExprOp("n"),
+    ])])
+    assert _printed(op) == [
+        "!$acc parallel",
+        "write(*,*) 'it''s n=', n",
+        "!$acc end parallel",
+    ]

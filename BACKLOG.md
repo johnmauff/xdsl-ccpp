@@ -67,11 +67,11 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `gpu-debug-text` | 2-4 days | S |
 | `active-condition-ir` | 3-6 days (parser for `active` expressions and member subscripts, tests, convert `ActiveCheckOp` and DDT-member `HostVarRefOp`s and their identity keys) | S |
 | `printer-trailing-whitespace` | <1 day | XS |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
+| `dead-code-coverage` | 2-4 days for the coverage run and report; reviewing and removing what it finds is sized per finding | S |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
@@ -1752,17 +1752,14 @@ opportunistically.
   hand-written parser with `filename:line` errors, like `parse_meta_file`)
   into `arith` comparisons/logic, index/slice and reference ops, so passes
   can inspect them and other printers can spell them.
-- `gpu-debug-text` — **GPU debug instrumentation as text.**
-  `gpu_debug_print_pass.py` builds `GPUDebugPrintOp`s from `!$acc
-  parallel present(...)`/`write(*,*)` text. Use the `Acc*` ops and a
-  write/print op.
+- `gpu-debug-text` — resolved 2026-10-30. CHANGELOG.md L13371.
 - `printer-trailing-whitespace` — **`memref.StoreOp` lines end in
   spaces.** The Fortran printer's `memref.StoreOp` case finishes the line
   with `self.print("")`, which appends the indentation, so e.g. every
   dispatcher's `errflg = 1` ends in trailing whitespace (21 times in a
   Kessler cap). Harmless; FileCheck ignores it.
 
-To re-measure the first two: scan the transformed IR's string properties
+To re-measure the remaining text: scan the transformed IR's string properties
 (`tests/unit/test_ir_names_are_identifiers.py` does this for the
 completed_ir goldens and a C++-host example) and the string literals (not docstrings) of
 `xdsl_ccpp/transforms/` for Fortran/C++ syntax (`::`, `intent(`,
@@ -1783,3 +1780,17 @@ diagnostic messages and single-token metadata keys.
   Split by responsibility when touched. Related: comments and docstrings
   often narrate history (review rounds, earlier fix attempts) rather than
   describe the current design; trim them in the same edits.
+- `dead-code-coverage` — **Find dead code with a coverage run.** Measure
+  which code in `xdsl_ccpp/` the generator actually runs, using
+  `coverage.py` with branch coverage, behind an opt-in flag (e.g. an
+  environment variable) so normal runs are unchanged. `ccpp_opt` runs its
+  passes in a subprocess and `cap_oracle` runs parallel jobs, so coverage
+  must follow subprocesses and combine the per-process data files. Measure
+  two inputs separately, the `cap_oracle` runs and the pytest suite, and
+  report whole functions and branches in three groups: run by the oracle
+  (live in CAM-SIMA), run only by tests (a feature CAM-SIMA doesn't use, or
+  dead code a test keeps alive), and run by nothing (removal candidates).
+  Then check each candidate by reading the code: unreached is not the same
+  as dead (error paths, unused options), and the result depends on which
+  cases the oracle covers. `vulture`, a static check for unreferenced
+  functions and attributes, can complement it.

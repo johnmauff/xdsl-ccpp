@@ -13367,3 +13367,38 @@ C++-host IR of `examples/constadv` and checks it has no text-form
 properties, no string-typed C++ types and no `raw_cpp_lines`. Goldens
 `advection-xml`/`instances_advection-xml` regenerated (`ReturnStmtOp`'s
 region segment sizes), headers checked against `HEAD`. pytest 1205 passed.
+
+## `gpu-debug-text`: GPU debug diagnostics from ops, not Fortran text (2026-10-30)
+
+`--gpu-debug-prints` (`gpu_debug_print_pass.py`) built each diagnostic as a
+`GPUDebugPrintOp` holding Fortran text (`!$acc parallel present(...)`,
+`write(*,*) ...`, `size(x, i)`), spelling array names and sections with
+`cap_shared._expr_text`. Each diagnostic is now a `PrintStmtOp` inside an
+`AccParallelOp`; `GPUDebugPrintOp` is deleted, with its printer cases and
+its never-filled `scratch_decls` declarations.
+
+- New ops: `AccParallelOp` (`!$acc parallel present(...)` region; the
+  present values are SSA values, as in `AccDataBeginOp`), `PrintStmtOp`
+  (`write(*,*) item, ...`, items are expression ops) and
+  `ExprTextLiteralOp` (a string literal holding an expression's printed
+  spelling between message text, for labels such as `'CCPPDBG array
+  phys_state%t device size:'`; Fortran and C++ printers). Arrays and
+  slices are `ValueExprOp`s, `size(x, i)` a `CallExprOp`, module scalars
+  `VarRefExprOp`s. `_expr_text` is only used to check that a value has a
+  definite name; `cap_shared._named_bounds` is removed.
+- Sliced scheme-argument diagnostics are inserted before the scheme call,
+  inside its error guard, instead of before the guard: they now reference
+  the slice's SSA value, which is defined there.
+- Fixed in passing: for a DDT member with a subscripted local name,
+  `_expr_text` spelled the section as `phys_state%q(:, :,
+  index_qv)(col_start:col_end, 1:pver, 1:ncnst)` (invalid Fortran); the
+  printer's spelling, `phys_state%q(col_start:col_end, 1:pver, index_qv)`,
+  is now used.
+
+Verified by generating with `--gpu-debug-prints` from `main` and this
+change: examples advection, advection_flat_host and Kessler, and the
+CAM-SIMA nvhpc GPU Kessler case (62 array, 20 scalar and 10 sliced-argument
+diagnostics). Output is identical apart from the two changes above.
+`tests/unit/test_gpu_debug_print_pass.py` gains a structural test (no
+`gpu_debug_print` op; each diagnostic an `AccParallelOp` holding a
+`PrintStmtOp`) and printer tests for the new ops. pytest: 1208 passed.
