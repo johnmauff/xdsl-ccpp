@@ -15,6 +15,11 @@ from xdsl_ccpp.dialects.ccpp import (
     SuiteOp,
     TablePropertiesOp,
 )
+from xdsl_ccpp.frontend.meta_expr import (
+    MetaExprError,
+    parse_active_expr,
+    parse_local_name,
+)
 from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value, set_legacy_mode
 from xdsl_ccpp.util.ccpp_item import CCPPArgument, CCPPItem, CCPPType
 from xdsl_ccpp.util.options_db import coerce_list_option
@@ -431,6 +436,15 @@ class MetaParseState(Enum):
     NONE = 4        # Not yet inside any block
 
 
+def _check_meta_expr(parse, text, filename, line_no) -> None:
+    """Reject a malformed local name or ``active`` expression here, with
+    its file and line, rather than when a transform resolves it."""
+    try:
+        parse(text)
+    except MetaExprError as e:
+        raise ValueError(f"{filename}:{line_no}: {e}") from None
+
+
 def parse_meta_file(filename, is_scheme):
     """Parse a ``.meta`` file and return a list of `MetaData` objects.
 
@@ -512,6 +526,7 @@ def parse_meta_file(filename, is_scheme):
                         raise ValueError(
                             f"{filename}:{line_no}: empty argument name '[{token}]'"
                         )
+                    _check_meta_expr(parse_local_name, arg_name, filename, line_no)
                     if current_arg is not None:
                         current_arg_table.setFunctionArgument(current_arg)
                     parse_state = MetaParseState.ARG
@@ -533,6 +548,8 @@ def parse_meta_file(filename, is_scheme):
                         current_arg_table.setAttr(key, value)
                     elif parse_state == MetaParseState.ARG:
                         assert current_arg is not None
+                        if key.lower() == "active":
+                            _check_meta_expr(parse_active_expr, value, filename, line_no)
                         current_arg.setAttr(key, value)
 
     if current_arg is not None:

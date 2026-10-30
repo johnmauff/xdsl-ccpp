@@ -513,7 +513,7 @@ def _chost_expand_ddt_arg(
         if vtype not in CCPP_PRIMITIVE_TYPES:
             # Nested DDT member: expand recursively, re-root paths under this local.
             # Option B (direct path): nested members are accessed as
-            # outer_local%member_name%leaf so no separate inner local is declared.
+            # outer_local%member%leaf so no separate inner local is declared.
             nested_ais, nested_li = _chost_expand_ddt_arg(
                 f"{prefix}_{var.name}", vtype, meta_data,
                 local_to_std, std_to_host, kind_iso_map, ncol_var, nz_var,

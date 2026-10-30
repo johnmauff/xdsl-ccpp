@@ -237,7 +237,7 @@
 // CHECK-NEXT:        call temp_calc_adjust_run(nbox=nbox, timestep=timestep, temp_level=temp_level,              &
 // CHECK-NEXT:          temp_calc=temp_calc, errmsg=errmsg, errflg=errflg)
 // CHECK-NEXT:      end if
-// CHECK-NEXT:      if ((index_qv > 0)) then
+// CHECK-NEXT:      if (index_qv .gt. 0) then
 // CHECK-NEXT:        if (errflg .eq. 0) then
 // CHECK-NEXT:          call temp_adjust_run(foo=nbox, timestep=timestep, interstitial_var=interstitial_var,      &
 // CHECK-NEXT:            temp_prev=temp_calc, temp_layer=temp_layer, qv=qv, ps=ps, to_promote=to_promote,        &
@@ -588,9 +588,8 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_run
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
-// CHECK:           errflg)
-// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end

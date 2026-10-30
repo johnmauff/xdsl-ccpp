@@ -244,9 +244,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_run
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
-// CHECK:           errflg)
-// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end

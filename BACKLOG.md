@@ -67,11 +67,10 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `active-condition-ir` | 3-6 days (parser for `active` expressions and member subscripts, tests, convert `ActiveCheckOp` and DDT-member `HostVarRefOp`s and their identity keys) | S |
-| `printer-trailing-whitespace` | <1 day | XS |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
 | `dead-code-coverage` | 2-4 days for the coverage run and report; reviewing and removing what it finds is sized per finding | S |
+| `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
 | `suite-cap-loop-gpu-sync` | 3-5 days | S |
@@ -1740,26 +1739,11 @@ opportunistically.
 - `fortran-decls-as-text` — resolved 2026-10-29. CHANGELOG.md L13210.
 - `fortran-exprs-as-text` — resolved 2026-10-29. CHANGELOG.md L13259.
 - `cpp-text-in-ir` — resolved 2026-10-29. CHANGELOG.md L13324.
-- `active-condition-ir` — **Expressions from `.meta` files are Fortran
-  text.** Two kinds: a host variable's `active` attribute, such as
-  `(flag_a .and. n > 0)` (`suitecap/active.py` `_resolve_active_condition`
-  rewrites its tokens to host references; `ActiveCheckOp.condition_expr`
-  carries the result), and a DDT member's subscripted local name, such as
-  `q(:, :, index_of_water_vapor)` (`cap_shared._resolve_member_subscripts`
-  rewrites the standard names; `HostVarRefOp.member_name` carries
-  `q(:, :, index_qv)`, and the `{var}%{member}` text doubles as a host-var
-  identity key, `_resolve_host_var_key`). Parse both in the frontend (a
-  hand-written parser with `filename:line` errors, like `parse_meta_file`)
-  into `arith` comparisons/logic, index/slice and reference ops, so passes
-  can inspect them and other printers can spell them.
+- `active-condition-ir` — resolved 2026-10-30. CHANGELOG.md L13406.
 - `gpu-debug-text` — resolved 2026-10-30. CHANGELOG.md L13371.
-- `printer-trailing-whitespace` — **`memref.StoreOp` lines end in
-  spaces.** The Fortran printer's `memref.StoreOp` case finishes the line
-  with `self.print("")`, which appends the indentation, so e.g. every
-  dispatcher's `errflg = 1` ends in trailing whitespace (21 times in a
-  Kessler cap). Harmless; FileCheck ignores it.
+- `printer-trailing-whitespace` — resolved 2026-10-30. CHANGELOG.md L13406.
 
-To re-measure the remaining text: scan the transformed IR's string properties
+To re-measure target-language text in the IR: scan the transformed IR's string properties
 (`tests/unit/test_ir_names_are_identifiers.py` does this for the
 completed_ir goldens and a C++-host example) and the string literals (not docstrings) of
 `xdsl_ccpp/transforms/` for Fortran/C++ syntax (`::`, `intent(`,
@@ -1794,3 +1778,19 @@ diagnostic messages and single-token metadata keys.
   as dead (error paths, unused options), and the result depends on which
   cases the oracle covers. `vulture`, a static check for unreferenced
   functions and attributes, can complement it.
+- `active-pointer-association` — **Pass `active`-gated optional
+  arguments by pointer association, as capgen-v1 does.** xdsl-ccpp wraps
+  the scheme call in one `ActiveCheckOp` per distinct condition and emits a
+  copy of the call for each combination, omitting the inactive arguments
+  (`suitecap/call_sequence.py` `_build_active_gated_call_ops`): 2**N calls
+  for N conditions. capgen-v1 (`capgen/generator/suite_resolver.py`
+  transform cases 2 and 4, `group_cap.py`) makes one call: each optional
+  argument is passed through a pointer wrapper (types generated in
+  `ccpp_<suite>_types.F90`), associated with the host variable (or a
+  transform temporary declared `target`) when the condition holds and
+  nullified otherwise; a disassociated pointer passed to a non-pointer
+  optional dummy is not present. It also guards a non-optional argument
+  whose host declares `active`: if the condition is false it sets
+  errflg/errmsg and returns. xdsl-ccpp has no such guard. Build it from
+  `scf.if`, `PointerAssignOp` and `NullifyPointerOp`; host variables must
+  then be `target`s. Changes var_compat, instances and advection output.

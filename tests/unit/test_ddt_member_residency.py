@@ -5,7 +5,7 @@ _analyze_one_suite_residency + _wrap_scheme_call/_wrap_residency_directives)
 keyed its lifetime dicts by the raw model_var_name -- for a DDT member this
 is just the bare member name (e.g. "Temp"), while the actual HostVarRefOp
 built for that scheme-call argument carries the DDT INSTANCE name (e.g.
-"phys_state") with a separate member_name attribute ("Temp"). Every scan
+"phys_state") with a separate member path (["Temp"]). Every scan
 that matched a HostVarRefOp against the lifetime dict compared on var_name
 alone, so it never matched a DDT member -- classification was computed
 correctly, but directive insertion silently found nothing to attach to.
@@ -22,7 +22,7 @@ already-resolved suite_cap-level block arguments, never scans HostVarRefOp
 by name.
 
 Fixed by resolving the DDT type name to its actual module-level instance
-(cap_shared.py's _resolve_ddt_access_path/_resolve_member_subscripts,
+(cap_shared.py's _resolve_ddt_access_path/resolve_member,
 extracted from run_dispatch.py, which already needed this to build the real
 HostVarRefOp) and using that same resolved "instance%member" identity as
 the dict key on both the metadata side (_resolve_host_var_key) and the

@@ -51,8 +51,9 @@ def _entered(fn) -> list[str]:
             for v in op.copyin_arrays:
                 ref = v.owner
                 assert isinstance(ref, HostVarRefOp)
-                member = ref.attributes.get("member_name")
-                names.append(member.data if member is not None else ref.var_name.data)
+                path = ref.member_path
+                names.append("%".join(m.data for m in path.data) if path is not None
+                             else ref.var_name.data)
     return names
 
 

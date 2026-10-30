@@ -7,7 +7,7 @@ runs. These tests cover the functions that operate on plain data (dicts,
 descriptor objects, strings) rather than live xDSL IR/Block objects:
 
   - _resolve_ddt_access_path   -- recursive DDT type -> Fortran accessor path
-  - _resolve_member_subscripts -- standard_name token rewriting in subscripts
+  - resolve_member            -- a DDT member's path and resolved subscripts
   - _build_run_metadata_maps   -- host/DDT/constituent lookup maps from meta_data
   - _build_per_suite_run_info  -- per-arg host/DDT/cap-var/block classification
                                    (needs a few llvm.GlobalOps but no Block/FuncOp
@@ -26,9 +26,12 @@ from xdsl_ccpp.transforms.run_dispatch import (
     _build_per_suite_run_info,
     _build_run_metadata_maps,
     _resolve_ddt_access_path,
-    _resolve_member_subscripts,
 )
-from xdsl_ccpp.transforms.util.cap_shared import SUITE_ARG_STD_NAME
+from xdsl_ccpp.transforms.util.cap_shared import (
+    SUITE_ARG_STD_NAME,
+    host_ref_key,
+    resolve_member,
+)
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPArgument,
     CCPPArgumentTable,
@@ -91,7 +94,7 @@ class TestResolveDDTAccessPath:
         ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         ddt_parent_map = {}
         result = _resolve_ddt_access_path("phys_state_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "", None)
+        assert result == ("phys_state", "test_host_mod", (), None)
 
     def test_one_level_nested_ddt(self):
         """A type nested one level inside a module-level instance builds a '%'-prefix."""
@@ -99,7 +102,7 @@ class TestResolveDDTAccessPath:
         ddt_instance_map = {"phys_state_t": ("phys_state", "test_host_mod", None)}
         ddt_parent_map = {"rad_t": [("rad", "phys_state_t")]}
         result = _resolve_ddt_access_path("rad_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "rad%", None)
+        assert result == ("phys_state", "test_host_mod", ("rad",), None)
 
     def test_two_level_nested_ddt(self):
         """Two levels of nesting concatenate the path prefix in outer-to-inner order."""
@@ -111,7 +114,7 @@ class TestResolveDDTAccessPath:
             "temp_t": [("temp_field", "rad_t")],
         }
         result = _resolve_ddt_access_path("temp_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "rad%temp_field%", None)
+        assert result == ("phys_state", "test_host_mod", ("rad", "temp_field"), None)
 
     def test_unreachable_type_returns_none(self):
         """A type with no module-level instance anywhere in its ancestry returns None."""
@@ -145,7 +148,7 @@ class TestResolveDDTAccessPath:
             ],
         }
         result = _resolve_ddt_access_path("rad_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("phys_state", "test_host_mod", "rad_b%", None)
+        assert result == ("phys_state", "test_host_mod", ("rad_b",), None)
 
     def test_array_instance_dim_reported_at_direct_level(self):
         """An array-of-DDT instance (real capgen-v1's multi-instance model)
@@ -155,7 +158,7 @@ class TestResolveDDTAccessPath:
         }
         ddt_parent_map = {}
         result = _resolve_ddt_access_path("instance_type", ddt_instance_map, ddt_parent_map)
-        assert result == ("instance_data", "data", "", "number_of_instances")
+        assert result == ("instance_data", "data", (), "number_of_instances")
 
     def test_array_instance_dim_propagates_through_nesting(self):
         """The array-dim marker describes the base instance, so it propagates
@@ -165,57 +168,52 @@ class TestResolveDDTAccessPath:
         }
         ddt_parent_map = {"member_t": [("data_array", "instance_type")]}
         result = _resolve_ddt_access_path("member_t", ddt_instance_map, ddt_parent_map)
-        assert result == ("instance_data", "data", "data_array%", "number_of_instances")
+        assert result == ("instance_data", "data", ("data_array",), "number_of_instances")
 
 
 # ---------------------------------------------------------------------------
-# _resolve_member_subscripts
+# resolve_member
 # ---------------------------------------------------------------------------
 
-class TestResolveMemberSubscripts:
-    """_resolve_member_subscripts rewrites standard_name subscript tokens to local names."""
+def _member(local_name, host_var_map, path=()):
+    """(the member's text below its instance, use vars) -- the text is the
+    identity key's, the same spelling the printer gives."""
+    member, use_vars = resolve_member(path, local_name, host_var_map)
+    return host_ref_key("x", member).removeprefix("x%"), use_vars
 
-    def test_no_parens_passes_through_unchanged(self):
-        """A bare member name with no subscript is returned unchanged, with no sub_vars."""
-        result, sub_vars = _resolve_member_subscripts("temp", {})
-        assert result == "temp"
-        assert sub_vars == []
 
-    def test_bare_colons_pass_through(self):
-        """Bare ':' tokens in the subscript are preserved as-is."""
-        result, sub_vars = _resolve_member_subscripts("q(:,:)", {})
-        assert result == "q(:, :)"
-        assert sub_vars == []
+class TestResolveMember:
+    """resolve_member parses a DDT member's local name and resolves the
+    standard names in its subscripts to local names."""
 
-    def test_integer_literal_passes_through(self):
-        """Integer literal subscripts are preserved as-is."""
-        result, sub_vars = _resolve_member_subscripts("q(:,1)", {})
-        assert result == "q(:, 1)"
-        assert sub_vars == []
+    def test_no_parens(self):
+        assert _member("temp", {}) == ("temp", [])
 
-    def test_standard_name_token_resolved_to_local_var(self):
-        """A standard_name token in the subscript resolves to its local var name."""
+    def test_nested_path(self):
+        assert _member("temp", {}, ("rad",)) == ("rad%temp", [])
+
+    def test_bare_colons(self):
+        assert _member("q(:,:)", {}) == ("q(:, :)", [])
+
+    def test_integer_literal(self):
+        assert _member("q(:,1)", {}) == ("q(:, 1)", [])
+
+    def test_standard_name_resolved_to_local_var(self):
         host_var_map = {
             "index_of_water_vapor_specific_humidity": ("index_qv", "test_host_mod"),
         }
-        result, sub_vars = _resolve_member_subscripts(
-            "q(:,:,index_of_water_vapor_specific_humidity)", host_var_map
+        assert _member("q(:,:,index_of_water_vapor_specific_humidity)", host_var_map) == (
+            "q(:, :, index_qv)", [("index_qv", "test_host_mod")],
         )
-        assert result == "q(:, :, index_qv)"
-        assert sub_vars == [("index_qv", "test_host_mod")]
 
-    def test_unresolved_token_passes_through_unchanged(self):
-        """A subscript token not present in host_var_map is left as written."""
-        result, sub_vars = _resolve_member_subscripts("q(:,unknown_token)", {})
-        assert result == "q(:, unknown_token)"
-        assert sub_vars == []
+    def test_unresolved_name_kept(self):
+        assert _member("q(:,unknown_token)", {}) == ("q(:, unknown_token)", [])
 
     def test_case_insensitive_lookup(self):
-        """host_var_map lookup is case-insensitive (token is lowercased before lookup)."""
         host_var_map = {"some_standard_name": ("local_var", "some_mod")}
-        result, sub_vars = _resolve_member_subscripts("arr(SOME_STANDARD_NAME)", host_var_map)
-        assert result == "arr(local_var)"
-        assert sub_vars == [("local_var", "some_mod")]
+        assert _member("arr(SOME_STANDARD_NAME)", host_var_map) == (
+            "arr(local_var)", [("local_var", "some_mod")],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +358,14 @@ class TestBuildRunMetadataMaps:
 # fields directly.
 # ---------------------------------------------------------------------------
 
+def _member_text(op):
+    """A ResolvedArgOp's member as "parent%leaf", or None."""
+    if op.member_local_name is None:
+        return None
+    path = [m.data for m in op.member_path.data] if op.member_path is not None else []
+    return "%".join([*path, op.member_local_name.data])
+
+
 def _assert_resolved_arg_op(
     op, arg_name, kind, *, var_name=None, module_name=None, member_path=None, std_name=None
 ):
@@ -369,7 +375,7 @@ def _assert_resolved_arg_op(
     assert op.source_kind.data == kind
     assert (op.var_name.data if op.var_name is not None else None) == var_name
     assert (op.module_name.data if op.module_name is not None else None) == module_name
-    assert (op.member_path.data if op.member_path is not None else None) == member_path
+    assert _member_text(op) == member_path
     assert (op.std_name.data if op.std_name is not None else None) == std_name
 
 

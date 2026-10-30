@@ -7,7 +7,7 @@ RankReducingSliceOp instead computes its result rank from dim_pattern.count
 ("R") -- correct for its original, only prior use (CCPP variable promotion),
 but wrong whenever a source's own declared rank doesn't match the pattern's
 'R' count. A real instance of that mismatch (a DDT member ref whose own
-member_name already carries a baked-in fixed-index subscript, interacting
+member subscripts already include a fixed index, interacting
 with print_ftn.py's existing-subscript merge logic to silently discard an
 over-resolved extra dimension) was found via a real
 xdsl.utils.exceptions.VerifyException ("operand type mismatch ...") while

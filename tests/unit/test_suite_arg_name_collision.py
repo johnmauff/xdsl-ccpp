@@ -361,7 +361,7 @@ class TestNoFalseCollisionWithDDTMember:
     both lack model_var_is_host_table, so a DDT member match was
     incorrectly folded into the same "occupies module scope" set as a real
     MODULE match. A DDT member is only ever accessed as
-    `instance%member_name` (e.g. `phys_state%ps`) -- its own bare member
+    `instance%member` (e.g. `phys_state%ps`) -- its own bare member
     name is never itself `use`-associated at suite-cap module scope, so an
     unrelated SuiteOwned var coincidentally sharing that bare name (a
     realistic case: short member names like "ps" get reused across many

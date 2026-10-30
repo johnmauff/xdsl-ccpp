@@ -29,7 +29,7 @@ counter.
 
 Fixed by teaching _generate_lifecycle_fn the same DDT-member resolution
 run_dispatch.py already has (via cap_shared.py's _build_ddt_resolution_maps/
-_resolve_ddt_access_path/_resolve_member_subscripts, shared rather than
+_resolve_ddt_access_path/resolve_member, shared rather than
 duplicated): the scheme-arg scan now also captures each arg's own
 model_var_name/model_module_name/model_var_is_ddt (previously discarded,
 only standard_name was kept), and the resolution loop tries DDT-member

@@ -62,13 +62,14 @@ class TestDdtMemberConstruction:
             ArgSourceKind.DdtMember,
             var_name="phys_state",
             module_name="test_host_mod",
-            member_path="rad%temp",
+            member_path=["rad"], member_local_name="temp",
         )
         op.verify()
         assert op.source_kind.data == ArgSourceKind.DdtMember
         assert op.var_name.data == "phys_state"
         assert op.module_name.data == "test_host_mod"
-        assert op.member_path.data == "rad%temp"
+        assert [m.data for m in op.member_path.data] == ["rad"]
+        assert op.member_local_name.data == "temp"
         assert op.std_name is None
 
     def test_construct_from_string_kind(self):
@@ -82,7 +83,7 @@ class TestDdtMemberConstruction:
             "ddt_member",
             var_name="phys_state",
             module_name="test_host_mod",
-            member_path="rad%temp",
+            member_path=["rad"], member_local_name="temp",
         )
         op.verify()
         assert op.source_kind.data == ArgSourceKind.DdtMember
@@ -95,7 +96,7 @@ class TestDdtMemberConstruction:
             ArgSourceKind.DdtMember,
             var_name="instance_data",
             module_name="data",
-            member_path="data_array",
+            member_local_name="data_array",
             index_std_name="instance_number",
         )
         op.verify()
@@ -109,7 +110,7 @@ class TestDdtMemberConstruction:
             ArgSourceKind.DdtMember,
             var_name="phys_state",
             module_name="test_host_mod",
-            member_path="rad%temp",
+            member_path=["rad"], member_local_name="temp",
         )
         op.verify()
         assert op.index_std_name is None
@@ -169,9 +170,9 @@ class TestVerifyRejectsInvalidCombinations:
             op.verify()
 
     def test_host_with_member_path_rejected(self):
-        """member_path is a DdtMember-only field; Host must not set it."""
+        """A member is a DdtMember-only field; Host must not set one."""
         op = ResolvedArgOp(
-            "x", ArgSourceKind.Host, var_name="v", module_name="m", member_path="p"
+            "x", ArgSourceKind.Host, var_name="v", module_name="m", member_local_name="p"
         )
         with pytest.raises(VerifyException, match="must not set"):
             op.verify()
@@ -196,7 +197,7 @@ class TestVerifyRejectsInvalidCombinations:
         """std_name is a CapVar-only field; DdtMember must not set it."""
         op = ResolvedArgOp(
             "x", ArgSourceKind.DdtMember,
-            var_name="v", module_name="m", member_path="p", std_name="s",
+            var_name="v", module_name="m", member_local_name="p", std_name="s",
         )
         with pytest.raises(VerifyException, match="must not set"):
             op.verify()

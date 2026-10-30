@@ -253,8 +253,8 @@
 // CHECK-NEXT:      "llvm.mlir.global"() <{global_type = !llvm.array<0 x i8>, sym_name = "physics_state", linkage = #llvm.linkage<"internal">, addr_space = 0 : i32}> ({
 // CHECK-NEXT:      }) {module = "test_host_data"} : () -> ()
 // CHECK-LABEL:     func.func public @ccpp_register(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %2 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %2, %1[] : memref<i32>
 // CHECK-NEXT:        %3 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -271,8 +271,8 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %2 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %2, %1[] : memref<i32>
 // CHECK-NEXT:        %3 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -289,8 +289,8 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %2 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %2, %1[] : memref<i32>
 // CHECK-NEXT:        %3 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -307,17 +307,17 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_physics_run(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_extents = [[], [], []]} {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_start"} : () -> memref<i32>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_end"} : () -> memref<i32>
-// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_start"]}> : () -> memref<i32>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_end"]}> : () -> memref<i32>
+// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %4 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %4, %3[] : memref<i32>
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
 // CHECK-NEXT:        %6 = "ccpp_utils.strcmp"(%5) <{literal = "ddt_suite"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:        scf.if %6 {
 // CHECK-NEXT:          %7 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
-// CHECK-NEXT:          %8 = "ccpp_utils.host_var_ref"() <{var_name = "phys_state", module_name = "test_host_mod"}> {member_name = "ps"} : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %8 = "ccpp_utils.host_var_ref"() <{var_name = "phys_state", module_name = "test_host_mod", member_path = ["ps"]}> : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %9 = "ccpp_utils.rank_reducing_slice"(%8, %0, %1) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %10 = "ccpp_utils.strcmp"(%7) <{literal = "data_prep"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %10 {
@@ -337,10 +337,10 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_physics_timestep_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_extents = [[], [], []]} {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_start"} : () -> memref<i32>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_end"} : () -> memref<i32>
-// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_start"]}> : () -> memref<i32>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_end"]}> : () -> memref<i32>
+// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %4 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %4, %3[] : memref<i32>
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -365,10 +365,10 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_physics_timestep_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_extents = [[], [], []]} {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_start"} : () -> memref<i32>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_end"} : () -> memref<i32>
-// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_start"]}> : () -> memref<i32>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_end"]}> : () -> memref<i32>
+// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %4 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %4, %3[] : memref<i32>
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -394,10 +394,10 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_physics_init(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info", ccpp.standard_name = "host_standard_ccpp_type", ccpp.intent = "in"}, %model_times : memref<?xi32> {ccpp.name = "model_times", ccpp.standard_name = "model_times", ccpp.intent = "out", ccpp.dim_names = ["number_of_model_times"], ccpp.allocatable}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_extents = [[], [], [], []]} {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_start"} : () -> memref<i32>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_end"} : () -> memref<i32>
-// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_start"]}> : () -> memref<i32>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_end"]}> : () -> memref<i32>
+// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %4 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %4, %3[] : memref<i32>
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>
@@ -425,10 +425,10 @@
 // CHECK-NEXT:        func.return %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">>
 // CHECK-NEXT:      }
 // CHECK-LABEL:     func.func public @ccpp_physics_final(%suite_name : memref<?xi8> {ccpp.name = "suite_name"}, %suite_part : memref<?xi8> {ccpp.name = "suite_part"}, %ccpp_info : memref<!ccpp_utils.derived_type<"ccpp_info_t">> {ccpp.name = "ccpp_info"}) -> memref<!ccpp_utils.derived_type<"ccpp_info_t">> attributes {bind_c_extents = [[], [], []]} {
-// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_start"} : () -> memref<i32>
-// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "col_end"} : () -> memref<i32>
-// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errmsg"} : () -> memref<512xi8>
-// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt"}> {member_name = "errflg"} : () -> memref<i32>
+// CHECK:             %0 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_start"]}> : () -> memref<i32>
+// CHECK-NEXT:        %1 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["col_end"]}> : () -> memref<i32>
+// CHECK-NEXT:        %2 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errmsg"]}> : () -> memref<512xi8>
+// CHECK-NEXT:        %3 = "ccpp_utils.host_var_ref"() <{var_name = "ccpp_info", module_name = "host_ccpp_ddt", member_path = ["errflg"]}> : () -> memref<i32>
 // CHECK-NEXT:        %4 = arith.constant 0 : i32
 // CHECK-NEXT:        memref.store %4, %3[] : memref<i32>
 // CHECK-NEXT:        %5 = "ccpp_utils.trim"(%suite_name) : (memref<?xi8>) -> memref<?xi8>

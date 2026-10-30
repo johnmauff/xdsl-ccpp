@@ -1396,6 +1396,75 @@ class ftnPrintContext:
             case _:
                 raise AssertionError(f"Unhandled op in print_expr: {type(op)}")
 
+    def _host_ref_base(self, op) -> str:
+        """A HostVarRefOp's reference without the leaf's subscripts:
+        var_name, var_name(index_expr), then %member for each member."""
+        index_expr = op.attributes.get("index_expr")
+        base = op.var_name.data
+        if index_expr is not None:
+            base = f"{base}({index_expr.data})"
+        if op.member_path is not None:
+            base = "%".join([base, *(m.data for m in op.member_path.data)])
+        return base
+
+    def _subscripted(self, val: SSAValue) -> tuple[str, list] | None:
+        """(base, [(is_range, text), ...]) for a value whose reference ends
+        in subscripts -- a DDT member with subscripts (HostVarRefOp) or an
+        array section (RankReducingSliceOp) -- else None.
+
+        A section of an already-subscripted value merges into its
+        subscripts instead of adding a second set of parentheses: each new
+        subscript, in order, replaces the next range-shaped one (``:`` or
+        ``lo:hi``), and a fixed index stays in place. Three real shapes
+        reach this: a DDT member with a constituent index
+        (``q(:, :, index_qv)`` sliced to
+        ``q(col_start:col_end, 1:pver, index_qv)``), a cap variable's
+        whole-array section (``lc_qv(:, :)``, a CapVarRefOp), and a section
+        of a section (suite_cap.py's _build_promoted_call_ops).
+        """
+        owner = val.owner
+        if isa(owner, CCPPHostVarRefOp):
+            if not owner.member_subscripts:
+                return None
+            subs = [r.block.last_op for r in owner.member_subscripts]
+            return self._host_ref_base(owner), self._index_pieces(subs)
+        if isa(owner, CCPPCapVarRefOp) and owner.target is not None:
+            # A cap variable's whole-array section, e.g. lc_qv(:, :).
+            target = owner.target.block.last_op
+            if not isa(target, CCPPIndexExprOp):
+                return None
+            return self._render_base_expr(target.base), self._index_pieces(
+                [r.block.last_op for r in target.indices]
+            )
+        if not isa(owner, CCPPRankReducingSliceOp):
+            return None
+        r_lowers = iter(owner.range_lowers)
+        r_uppers = iter(owner.range_uppers)
+        scalars = iter(owner.scalar_indices)
+        new = []
+        for ch in owner.dim_pattern.data:
+            if ch == "R":
+                lo = self._value_to_expr_str(next(r_lowers))
+                hi = self._value_to_expr_str(next(r_uppers))
+                new.append((True, f"{lo}:{hi}"))
+            else:  # 'S'
+                new.append((False, self._get_variable_name_for(next(scalars))))
+        source = self._subscripted(owner.source)
+        if source is None:
+            return self._value_to_expr_str(owner.source), new
+        base, existing = source
+        replacements = iter(new)
+        merged = [next(replacements, sub) if sub[0] else sub for sub in existing]
+        return base, merged
+
+    def _index_pieces(self, subs: list) -> list:
+        """(is_range, text) for each subscript op."""
+        return [(isa(sub, CCPPSliceExprOp), self._render_index_piece(sub)) for sub in subs]
+
+    @staticmethod
+    def _subscripted_text(base: str, subscripts: list) -> str:
+        return f"{base}({', '.join(text for _is_range, text in subscripts)})"
+
     def _render_index_piece(self, op: Operation) -> str:
         """Render one child of an IndexExprOp.indices region: either a
         plain expression op, or a SliceExprOp (Fortran range syntax)."""
@@ -1583,26 +1652,13 @@ class ftnPrintContext:
                 # Register the cap module variable reference — no Fortran code emitted
                 self.variables[op.res] = self._target_text(op, op.var_name)
             case CCPPHostVarRefOp():
-                # Register the host variable name for the result — no Fortran emitted.
-                # When member_name is set the reference is var_name%member_name (DDT).
-                # When index_expr is also set (real capgen-v1's multi-instance
-                # model: var_name is itself a HOST-owned array of DDT, one
-                # entry per model instance -- see HostVarRefOp's own
-                # docstring), var_name is first subscripted:
-                # var_name(index_expr)%member_name.
-                member = op.attributes.get("member_name")
-                index_expr = op.attributes.get("index_expr")
-                base_name = (
-                    f"{op.var_name.data}({index_expr.data})"
-                    if index_expr is not None
-                    else op.var_name.data
+                # Register the host variable reference for the result -- no
+                # Fortran emitted (see HostVarRefOp).
+                parts = self._subscripted(op.res)
+                self.variables[op.res] = (
+                    self._subscripted_text(*parts) if parts is not None
+                    else self._host_ref_base(op)
                 )
-                ref_name = (
-                    f"{base_name}%{member.data}"
-                    if member is not None
-                    else base_name
-                )
-                self.variables[op.res] = ref_name
             case CCPPClearStringOp():
                 dest_name = self._get_variable_name_for(op.dest)
                 self.print(f"{dest_name} = ''")
@@ -1930,11 +1986,8 @@ class ftnPrintContext:
                     inner.print_block(op.without_body.blocks[0])
                 self.print("end if")
             case CCPPActiveCheckOp():
-                if op.condition_expr is not None:
-                    condition_expr = op.condition_expr.data
-                else:
-                    condition_expr = self._render_expr(op.condition.block.last_op)
-                self.print(f"if ({condition_expr}) then")
+                condition = self._render_expr(op.condition.block.last_op)
+                self.print(f"if ({condition}) then")
                 with self.descend() as inner:
                     inner.print_block(op.with_body.blocks[0])
                 self.print("else")
@@ -1964,84 +2017,11 @@ class ftnPrintContext:
                 # here too in case the op appears inside a module body.
                 self.print_block(op.ftn_body.block)
             case CCPPRankReducingSliceOp():
-                # Register the Fortran array-section expression for the result.
-                # Scan dim_pattern left-to-right, consuming range pairs and
-                # scalar indices to build subscript strings like:
-                #   "RS" → source(lower:upper, scalar)
-                #   "SR" → source(scalar, lower:upper)
-                #   "RSS" → source(lower:upper, scalar1, scalar2)
-                # (task70-arraysection: an all-'R' pattern with no scalar
-                # indices is exactly the former ArraySectionOp's own case --
-                # this op absorbed it, including its existing-subscript merge
-                # behavior below, ported verbatim.)
-                source_name = self._value_to_expr_str(op.source)
-                pattern = op.dim_pattern.data
-                r_lowers = list(op.range_lowers)
-                r_uppers = list(op.range_uppers)
-                scalars  = list(op.scalar_indices)
-                r_idx = 0
-                s_idx = 0
-                subscripts = []
-                for ch in pattern:
-                    if ch == "R":
-                        lo = self._value_to_expr_str(r_lowers[r_idx])
-                        hi = self._value_to_expr_str(r_uppers[r_idx])
-                        subscripts.append(f"{lo}:{hi}")
-                        r_idx += 1
-                    else:  # 'S'
-                        subscripts.append(
-                            self._get_variable_name_for(scalars[s_idx])
-                        )
-                        s_idx += 1
-                # If source already has subscripts, merge the new subscripts
-                # INTO those by replacing each range-shaped token in order,
-                # rather than appending a second set of parens. Two real
-                # shapes reach here: a DDT member with a constituent-index
-                # subscript baked in as a literal ':' placeholder (e.g.
-                # "q(:,:,index_qv)"), and -- since this op's all-'R' case
-                # absorbed ArraySectionOp -- a module-level var already
-                # sliced by a prior RankReducingSliceOp, whose own text is
-                # an already-resolved range like "a(col_start:col_end, 1:nz)"
-                # (suite_cap.py's _build_promoted_call_ops chains onto
-                # exactly this shape -- see its own "Module-level vars
-                # (HostVarRefOp, RankReducingSliceOp)" comment). A token is
-                # "replaceable" whenever it's range-shaped (contains ':'),
-                # whether a bare placeholder or an already-resolved range --
-                # checking only for a bare ':' left every already-resolved
-                # range token un-replaced and never consumed from the new
-                # subscripts, silently discarding the outer slice entirely
-                # and reprinting the unreduced inner expression (Copilot
-                # review, PR #121). A non-range (fixed-index) token is never
-                # replaced, and -- unlike an earlier version of this code,
-                # which moved every fixed token to the end -- every token
-                # (replaced or not) stays in its own original position.
-                # Search for that subscript's '(' only after the last '%' --
-                # source_name may ALSO have an earlier, unrelated '(' from
-                # HostVarRefOp's own index_expr (real capgen-v1's multi-instance
-                # model: arr(instance)%member), which must not be mistaken for
-                # the member's own subscript (that bug silently dropped
-                # "%member" entirely -- base ended up just "arr(instance)").
-                percent_pos = source_name.rfind("%")
-                paren_pos = source_name.find("(", percent_pos + 1 if percent_pos >= 0 else 0)
-                if paren_pos >= 0:
-                    base = source_name[:paren_pos]
-                    existing = source_name[paren_pos + 1: source_name.rfind(")")]
-                    section_iter = iter(subscripts)
-                    merged = []
-                    for tok in existing.split(","):
-                        t = tok.strip()
-                        if ":" in t:
-                            try:
-                                merged.append(next(section_iter))
-                            except StopIteration:
-                                merged.append(t)
-                        else:
-                            merged.append(t)
-                    self.variables[op.res] = f"{base}({', '.join(merged)})"
-                else:
-                    self.variables[op.res] = (
-                        f"{source_name}({', '.join(subscripts)})"
-                    )
+                # Register the Fortran array-section expression for the
+                # result, e.g. "RS" -> source(lower:upper, scalar); see
+                # _subscripted for how it merges into a source that is
+                # already subscripted.
+                self.variables[op.res] = self._subscripted_text(*self._subscripted(op.res))
             case CCPPAccParallelOp():
                 present_names = [self._get_variable_name_for(v) for v in op.present_arrays]
                 if present_names:
@@ -3385,8 +3365,11 @@ class ftnPrintContext:
             self._emit_line()
 
     def _emit_line(self):
-        """Flush the line buffer, splitting at commas if the line is too long."""
-        line = self._line_buf
+        """Flush the line buffer, splitting at commas if the line is too long.
+        Trailing whitespace is dropped: a statement ended by an empty print
+        (e.g. ``self.print("")`` after ``end=""``) or a blank line would
+        otherwise end in its indentation."""
+        line = self._line_buf.rstrip()
         self._line_buf = ""
         self._write_with_continuation(line, self._prefix + self._INDENT)
 
