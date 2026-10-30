@@ -1,55 +1,29 @@
-"""GPU residency debug-print diagnostics -- opt-in only, never emitted
-unless xdsl_ccpp's own --gpu-debug-prints CLI flag is passed (see
-ccpp_dsl.py). Added to debug a persistent "PRESENT clause was not found on
-device" runtime failure that survived several source-level fixes to the
-actual GPU data-movement directives: rather than keep hand-editing
-generated Fortran with one-off diagnostic prints (fragile, wiped by
-regeneration, not reusable), this gives xdsl_ccpp a real, reusable
-mechanism for answering "is this variable/slice actually present and the
-right size on the device" directly from a run, for any future GPU
-residency bug too.
+"""GPU residency diagnostics, emitted only with xdsl_ccpp's
+--gpu-debug-prints flag (see ccpp_dsl.py). They answer "is this variable
+or slice present on the device, at the expected size, at this point in the
+call sequence" from a run. Each diagnostic is a PrintStmtOp inside an
+AccParallelOp, so the value printed is read on the device (nvfortran
+allows output statements in an OpenACC compute region).
 
-All diagnostics print from *inside* the `!$acc parallel` region itself
-(confirmed working in practice, not just theoretically -- nvfortran
-supports a `write`/`print` statement inside an OpenACC compute region), so
-no host-scratch-and-copy-back indirection is needed: the value printed is
-read directly on the device, at the exact point the region executes.
-
-Three diagnostics:
-1. Array size diagnostics: for every existing `AccUpdateSelfOp`/
-   `AccUpdateDeviceOp`/`AccEnterDataOp` (copyin)/`AccDataBeginOp` (copy/
-   copyin/copyout) already in the generated IR -- i.e. every op that
-   ESTABLISHES device residency -- insert a diagnostic right after it
-   printing that array's per-dimension `size(...)` from inside a
-   `present(...)` region -- confirms whether the *whole* array is actually
-   registered on the device at the size expected at that exact point in
-   the call sequence. Deliberately excludes `AccExitDataOp`/`AccDataEndOp`
-   (which REMOVE a device mapping): testing presence right after one of
-   those is a guaranteed false-positive crash regardless of whether
-   anything is actually wrong -- confirmed the hard way against a real
-   CAM-SIMA build (phys_tend%dTdt_total is genuinely, correctly exit-data'd
-   at that point; this pass's own diagnostic was the only thing testing it
-   afterward).
-2. Scalar diagnostics: for every module-scope scalar (`ModuleVarOp` with
-   rank 0), one diagnostic at the top of each GPU-call-bearing lifecycle
-   function, printing its host value alongside a device-read value --
-   catches the general class of bug where a module-scope scalar's value is
-   undefined/stale on the device (missing `declare create`/`update
-   device`), independent of this specific crash.
-3. Scheme-call slice diagnostics: for every array-section argument (e.g.
-   `exner(col_start:col_end, 1:nz)`) passed directly to a scheme call --
-   the actual shape of the motivating "PRESENT clause not found: pk" crash,
-   which is a *slice*, not a bare whole-array reference like (1) covers --
-   insert a diagnostic right before the call testing `present()` of that
-   exact slice expression, printing its per-dimension size and the runtime
-   value of every named bound the slice uses (e.g. col_start/col_end/nz),
-   all read from inside the same region.
+1. Array sizes: after every op that establishes device residency
+   (AccUpdateSelfOp/AccUpdateDeviceOp, AccEnterDataOp copyin,
+   AccDataBeginOp copy/copyin/copyout), print each array's per-dimension
+   size inside a present(...) region. Ops that remove a mapping
+   (AccExitDataOp, AccDataEndOp) are excluded: a present() check after
+   them fails even when nothing is wrong.
+2. Module scalars: at the top of each GPU-call-bearing function, print
+   every module-scope real/integer scalar's host value and device value,
+   to catch a scalar missing from the device or stale there.
+3. Sliced scheme arguments: before each scheme call, for every array
+   section passed for an argument the scheme declares memory_space =
+   device, print the section's size and the values of its named bounds
+   (col_start, col_end, nz, ...) inside a present(...) region.
 """
 
 from dataclasses import dataclass
 
 from xdsl.context import Context
-from xdsl.dialects import builtin, func
+from xdsl.dialects import arith, builtin, func
 from xdsl.passes import ModulePass
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.utils.hints import isa
@@ -57,11 +31,17 @@ from xdsl.utils.hints import isa
 from xdsl_ccpp.dialects.ccpp_utils import (
     AccDataBeginOp,
     AccEnterDataOp,
+    AccParallelOp,
     AccUpdateDeviceOp,
     AccUpdateSelfOp,
-    GPUDebugPrintOp,
+    CallExprOp,
+    ExprTextLiteralOp,
     ModuleVarOp,
+    PrintStmtOp,
     RankReducingSliceOp,
+    StringLiteralExprOp,
+    ValueExprOp,
+    VarRefExprOp,
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     is_gpu_call_bearing_fn,
@@ -71,33 +51,38 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _call_param_names,
     _device_arg_names,
     _expr_text,
-    _named_bounds,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import BuildMetaDataDescriptions
 from xdsl_ccpp.transforms.util.ir_utils import find_ccpp_module
-from xdsl_ccpp.util.ccpp_conventions import CCPP_KIND_PHYS
-
-# _GPU_CALL_BEARING_FN_MARKERS, _expr_text, _array_rank, _device_arg_names,
-# _named_bounds, _call_args, _call_param_names, and scheme-call-site
-# discovery (iter_scheme_call_sites) all used to be local copies here,
-# deliberately not imported from cap_shared.py (to avoid a hard dependency
-# for what's "purely an optional debug aid"). Moved to cap_shared.py
-# 2026-10-17 once a second real consumer (scheme_io_capture_pass.py)
-# needed the identical logic -- cap_shared.py is already a neutral leaf
-# module (no dependency on any cap-generation file), so centralizing there
-# doesn't introduce the coupling the original comment was guarding
-# against. See cap_shared.py's own "Scheme call-site discovery" section
-# for the full extraction note.
 
 
-def _ftn_scalar_type_str(base_type: str, kind) -> str:
-    """Fortran type string for a scratch scalar matching a real/integer
-    ModuleVarOp's own declared type -- only these two base_types are ever
-    passed in (see apply()'s own filter)."""
-    if base_type == "real":
-        k = kind.data if kind is not None else CCPP_KIND_PHYS
-        return f"real(kind={k})"
-    return "integer"
+def _size_items(ref, rank: int) -> list:
+    """' dim<i>=', size(ref, i) for each dimension of ref."""
+    items = []
+    for i in range(1, rank + 1):
+        items.append(StringLiteralExprOp(f" dim{i}="))
+        items.append(CallExprOp("size", [
+            ValueExprOp(ref), arith.ConstantOp.from_int_and_width(i, 32),
+        ]))
+    return items
+
+
+def _named_bounds(slice_value) -> list:
+    """The non-literal bounds and indices of a slice (col_start, col_end,
+    nz, ...), in encounter order, one per name."""
+    owner = slice_value.owner
+    seen = set()
+    bounds = []
+    for bound in (
+        list(owner.range_lowers) + list(owner.range_uppers) + list(owner.scalar_indices)
+    ):
+        if isa(bound.owner, arith.ConstantOp):
+            continue
+        key = _expr_text(bound)
+        if key is not None and key not in seen:
+            seen.add(key)
+            bounds.append(bound)
+    return bounds
 
 
 @dataclass(frozen=True)
@@ -156,15 +141,16 @@ class GPUDebugPrintPass(ModulePass):
                 if first_op is not None:
                     for entry in scalar_entries:
                         name = entry.var_name.data
-                        text = (
-                            f"write(*,*) 'CCPPDBG scalar {name} host=', {name}\n"
-                            f"!$acc parallel\n"
-                            f"write(*,*) 'CCPPDBG scalar {name} device=', {name}\n"
-                            f"!$acc end parallel"
-                        )
+                        host_print = PrintStmtOp([
+                            StringLiteralExprOp(f"CCPPDBG scalar {name} host="),
+                            VarRefExprOp(name),
+                        ])
+                        device_print = AccParallelOp([PrintStmtOp([
+                            StringLiteralExprOp(f"CCPPDBG scalar {name} device="),
+                            VarRefExprOp(name),
+                        ])])
                         Rewriter.insert_op(
-                            GPUDebugPrintOp([], text),
-                            InsertPoint.before(first_op),
+                            [host_print, device_print], InsertPoint.before(first_op),
                         )
 
                 # --- Part A: array size diagnostics ---
@@ -201,24 +187,17 @@ class GPUDebugPrintPass(ModulePass):
                         rank = _array_rank(ref)
                         if rank == 0:
                             continue
-                        name = _expr_text(ref)
-                        if name is None:
-                            # Can't confidently resolve a literal Fortran
-                            # identifier for this ref -- skip rather than
-                            # emit an undefined-identifier reference.
+                        if _expr_text(ref) is None:
+                            # No definite Fortran name for this ref -- skip
+                            # rather than emit an undefined identifier.
                             continue
-                        size_prints = ", ".join(
-                            f"' dim{i + 1}=', size({name}, {i + 1})" for i in range(rank)
-                        )
-                        text = (
-                            f"!$acc parallel present({name})\n"
-                            f"write(*,*) 'CCPPDBG array {name} device size:', {size_prints}\n"
-                            f"!$acc end parallel"
-                        )
-                        Rewriter.insert_op(
-                            GPUDebugPrintOp([], text),
-                            InsertPoint.after(block_op),
-                        )
+                        diagnostic = AccParallelOp([PrintStmtOp([
+                            ExprTextLiteralOp(
+                                ValueExprOp(ref), prefix="CCPPDBG array ", suffix=" device size:",
+                            ),
+                            *_size_items(ref, rank),
+                        ])], present=[ref])
+                        Rewriter.insert_op(diagnostic, InsertPoint.after(block_op))
 
         # --- Part C: scheme-call slice diagnostics ---
         # The actual shape of the motivating crash: an array SECTION (not a
@@ -236,7 +215,7 @@ class GPUDebugPrintPass(ModulePass):
         # already handled correctly by GPUCcppCapPass's own narrower-scoped
         # residency) produces guaranteed false-positive crashes, not
         # diagnostics.
-        for if_op, call_op, scheme_name, _phase, table_name in iter_scheme_call_sites(op):
+        for _if_op, call_op, scheme_name, _phase, table_name in iter_scheme_call_sites(op):
             device_names = _device_arg_names(scheme_name, table_name, meta_data)
             if not device_names:
                 continue
@@ -252,24 +231,21 @@ class GPUDebugPrintPass(ModulePass):
                 rank = _array_rank(arg)
                 if rank == 0:
                     continue
-                slice_text = _expr_text(arg)
-                if slice_text is None:
+                if _expr_text(arg) is None:
                     continue
-                named_bounds = _named_bounds(arg, set())
-                size_prints = ", ".join(
-                    f"' dim{i + 1}=', size({slice_text}, {i + 1})"
-                    for i in range(rank)
-                )
-                bound_prints = "".join(
-                    f", ' {b}=', {b}" for b in named_bounds
-                )
-                text = (
-                    f"!$acc parallel present({slice_text})\n"
-                    f"write(*,*) 'CCPPDBG call-arg {slice_text} device size:', "
-                    f"{size_prints}{bound_prints}\n"
-                    f"!$acc end parallel"
-                )
-                Rewriter.insert_op(
-                    GPUDebugPrintOp([], text),
-                    InsertPoint.before(if_op),
-                )
+                bound_items = []
+                for bound in _named_bounds(arg):
+                    bound_items.append(
+                        ExprTextLiteralOp(ValueExprOp(bound), prefix=" ", suffix="=")
+                    )
+                    bound_items.append(ValueExprOp(bound))
+                diagnostic = AccParallelOp([PrintStmtOp([
+                    ExprTextLiteralOp(
+                        ValueExprOp(arg), prefix="CCPPDBG call-arg ", suffix=" device size:",
+                    ),
+                    *_size_items(arg, rank),
+                    *bound_items,
+                ])], present=[arg])
+                # Before the call itself, inside its error guard: the slice
+                # is defined there, but not necessarily before the guard.
+                Rewriter.insert_op(diagnostic, InsertPoint.before(call_op))

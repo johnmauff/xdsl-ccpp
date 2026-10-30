@@ -42,6 +42,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CppNamespaceOp,
     CppStructDefOp,
     DdtMethodCallOp,
+    ExprTextLiteralOp,
     DerivedType,
     ExternCGuardOp,
     IndexExprOp,
@@ -347,6 +348,9 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                 )
             case StringLiteralExprOp():
                 return _cpp_string_literal(o.text.data)
+            case ExprTextLiteralOp():
+                expr = render(o.expr.block.last_op)
+                return _cpp_string_literal(o.prefix.data + expr + o.suffix.data)
             case VarRefExprOp():
                 return o.var_name.data
             case AddressOfExprOp():

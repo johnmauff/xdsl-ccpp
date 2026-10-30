@@ -394,6 +394,27 @@ class WriteStmtOp(IRDLOperation):
 
 
 @irdl_op_definition
+class PrintStmtOp(IRDLOperation):
+    """List-directed output of expressions to standard output.
+
+    Emits::
+
+        write(*,*) {item_0}, {item_1}, ...
+
+    Every item is an expression op.
+    """
+
+    name = "ccpp_utils.print_stmt"
+
+    items = var_region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, item_ops: list):
+        super().__init__(regions=[[_single_op_region([i]) for i in item_ops]])
+
+
+@irdl_op_definition
 class KindDefOp(IRDLOperation):
     """Declare a named Fortran kind parameter in the @ccpp_kinds module.
 
@@ -643,40 +664,30 @@ class AccExitDataOp(IRDLOperation):
         ])
 
 @irdl_op_definition
-class GPUDebugPrintOp(IRDLOperation):
-    """Raw-text GPU residency diagnostic block (debug builds only -- see
-    gpu_debug_print_pass.py, enabled by xdsl_ccpp's own --gpu-debug-prints
-    CLI flag, never emitted otherwise).
+class AccParallelOp(IRDLOperation):
+    """An OpenACC compute region around ``body``.
 
-    Raw text, printed verbatim (BACKLOG ``gpu-debug-text``), rather than a
-    fully-structured nested-region
-    IR for the `!$acc parallel ... end parallel` block this needs --
-    unnecessary complexity for a debug-only feature when a flat text block
-    already has first-class printer support.
+    Emits::
 
-    `scratch_decls` is a semicolon-joined list of "name:fortran_type" pairs
-    this block's own `text` references (e.g. "ccpp_dbg_sz1:integer") -- the
-    printer declares these as ordinary local scalars alongside the
-    function's other locals (print_ftn.py's _declare_fn_locals), since
-    Fortran requires every declaration to precede all executable statements
-    in a subprogram regardless of where in the executable section this op
-    itself is inserted.
+        !$acc parallel present(...)
+        <body>
+        !$acc end parallel
 
-    `text` is the literal (possibly multi-line) Fortran source emitted
-    verbatim at this point -- the assignments/parallel-region/write
-    statements that do the actual diagnostic work.
+    ``present_arrays`` are the values asserted to be on the device (SSA
+    values, as for AccDataBeginOp); with none, the clause is omitted.
     """
 
-    name = "ccpp_utils.gpu_debug_print"
+    name = "ccpp_utils.acc_parallel"
+    present_arrays = var_operand_def()
+    body = region_def("single_block")
 
-    scratch_decls = prop_def(StringAttr)
-    text          = prop_def(StringAttr)
+    traits = traits_def(NoTerminator())
 
-    def __init__(self, scratch_decls: "list[tuple[str, str]]", text: str):
-        super().__init__(properties={
-            "scratch_decls": StringAttr(";".join(f"{n}:{t}" for n, t in scratch_decls)),
-            "text": StringAttr(text),
-        })
+    def __init__(self, body_ops: list, present=None):
+        super().__init__(
+            operands=[list(present or [])],
+            regions=[Region([Block(list(body_ops))])],
+        )
 
 @irdl_op_definition
 class OmpTargetDataBeginOp(IRDLOperation):
@@ -2519,6 +2530,28 @@ class ValueExprOp(IRDLOperation):
 
 
 @irdl_op_definition
+class ExprTextLiteralOp(IRDLOperation):
+    """A string literal holding an expression's printed spelling, between
+    ``prefix`` and ``suffix`` message text -- e.g. a diagnostic label that
+    names the variable it reports on. The printer spells ``expr`` as it
+    would anywhere else, then quotes the whole as one literal.
+    """
+
+    name = "ccpp_utils.expr_text_literal"
+    prefix = prop_def(StringAttr)
+    suffix = prop_def(StringAttr)
+    expr = region_def("single_block")
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, expr_op, prefix: str = "", suffix: str = ""):
+        super().__init__(
+            properties={"prefix": StringAttr(prefix), "suffix": StringAttr(suffix)},
+            regions=[_single_op_region([expr_op])],
+        )
+
+
+@irdl_op_definition
 class MemberAccessExprOp(IRDLOperation):
     """Derived-type/struct member access.
 
@@ -3386,6 +3419,7 @@ CCPPUtils = Dialect(
         ClearStringOp,
         WriteErrMsgOp,
         WriteStmtOp,
+        PrintStmtOp,
         KindDefOp,
         SetStringOp,
         KeywordCallOp,
@@ -3395,7 +3429,7 @@ CCPPUtils = Dialect(
         AccUpdateDeviceOp,
         AccEnterDataOp,
         AccExitDataOp,
-        GPUDebugPrintOp,
+        AccParallelOp,
         OmpTargetDataBeginOp,
         OmpTargetDataEndOp,
         OmpTargetUpdateFromOp,
@@ -3442,6 +3476,7 @@ CCPPUtils = Dialect(
         StringConcatExprOp,
         VarRefExprOp,
         ValueExprOp,
+        ExprTextLiteralOp,
         MetadataLiteralExprOp,
         MethodCallExprOp,
         AddressOfExprOp,

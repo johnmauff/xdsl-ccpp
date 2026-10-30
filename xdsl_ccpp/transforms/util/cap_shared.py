@@ -819,29 +819,6 @@ def _rank_reducing_slice_subscripts(owner, render) -> "list[str] | None":
     return subscripts
 
 
-def _named_bounds(value, seen: set) -> list:
-    """Collect every named (non-literal) bound/index expression referenced
-    by a RankReducingSliceOp chain, in encounter order, de-duplicated --
-    these are the col_start/col_end/nz-style scalars worth printing
-    alongside a slice's size, since they're exactly what determines the
-    slice itself.
-    """
-    owner = value.owner
-    if not isa(owner, RankReducingSliceOp):
-        return []
-    names = []
-    for bound in (
-        list(owner.range_lowers) + list(owner.range_uppers) + list(owner.scalar_indices)
-    ):
-        if isa(bound.owner, arith.ConstantOp):
-            continue
-        text = _expr_text(bound)
-        if text is not None and text not in seen:
-            seen.add(text)
-            names.append(text)
-    return names
-
-
 def _array_rank(ref) -> int:
     return len(ref.type.shape.data)
 

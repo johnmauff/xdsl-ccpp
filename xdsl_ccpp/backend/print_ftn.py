@@ -26,6 +26,7 @@ from xdsl_ccpp.dialects.ccpp_utils import AccDataBeginOp as CCPPAccDataBeginOp
 from xdsl_ccpp.dialects.ccpp_utils import AccDataEndOp as CCPPAccDataEndOp
 from xdsl_ccpp.dialects.ccpp_utils import AccEnterDataOp as CCPPAccEnterDataOp
 from xdsl_ccpp.dialects.ccpp_utils import AccExitDataOp as CCPPAccExitDataOp
+from xdsl_ccpp.dialects.ccpp_utils import AccParallelOp as CCPPAccParallelOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateDeviceOp as CCPPAccUpdateDeviceOp
 from xdsl_ccpp.dialects.ccpp_utils import AccUpdateSelfOp as CCPPAccUpdateSelfOp
 from xdsl_ccpp.dialects.ccpp_utils import ActiveCheckOp as CCPPActiveCheckOp
@@ -43,7 +44,7 @@ from xdsl_ccpp.dialects.ccpp_utils import CHostCapOp as CCPPCHostCapOp
 from xdsl_ccpp.dialects.ccpp_utils import ClearStringOp as CCPPClearStringOp
 from xdsl_ccpp.dialects.ccpp_utils import DerivedType as CCPPDerivedType
 from xdsl_ccpp.dialects.ccpp_utils import ErrorPropagateOp as CCPPErrorPropagateOp
-from xdsl_ccpp.dialects.ccpp_utils import GPUDebugPrintOp as CCPPGPUDebugPrintOp
+from xdsl_ccpp.dialects.ccpp_utils import ExprTextLiteralOp as CCPPExprTextLiteralOp
 from xdsl_ccpp.dialects.ccpp_utils import HostVarRefOp as CCPPHostVarRefOp
 from xdsl_ccpp.dialects.ccpp_utils import KeywordCallOp as CCPPKeywordCallOp
 from xdsl_ccpp.dialects.ccpp_utils import KindCastOp as CCPPKindCastOp
@@ -122,6 +123,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.dialects.ccpp_utils import WriteErrMsgOp as CCPPWriteErrMsgOp
 from xdsl_ccpp.dialects.ccpp_utils import WriteStmtOp as CCPPWriteStmtOp
+from xdsl_ccpp.dialects.ccpp_utils import PrintStmtOp as CCPPPrintStmtOp
 from xdsl_ccpp.backend import expr_precedence
 from xdsl_ccpp.util.ccpp_conventions import (
     FN_FIXED_INTERFACE,
@@ -1350,6 +1352,10 @@ class ftnPrintContext:
                 return op.var_name.data
             case CCPPValueExprOp():
                 return self._render_value(op.value)
+            case CCPPExprTextLiteralOp():
+                text = op.prefix.data + self._render_expr(op.expr.block.last_op) + op.suffix.data
+                escaped = text.replace("'", "''")
+                return f"'{escaped}'"
             case CCPPMetadataLiteralExprOp():
                 return op.text.data
             case CCPPNullPointerExprOp():
@@ -1609,6 +1615,9 @@ class ftnPrintContext:
                 dest = self._render_expr(op.dest.block.last_op)
                 items = [self._render_expr(r.block.last_op) for r in op.items]
                 self.print(f"write({dest}, '({len(items)}a)') {', '.join(items)}")
+            case CCPPPrintStmtOp():
+                items = [self._render_expr(r.block.last_op) for r in op.items]
+                self.print(f"write(*,*) {', '.join(items)}")
             case builtin.UnrealizedConversionCastOp():
                 # Type annotation cast — transparent to Fortran; map each result
                 # to the same variable name as the corresponding input operand.
@@ -1949,21 +1958,6 @@ class ftnPrintContext:
                 with self.descend() as inner:
                     inner.print_block(op.body.blocks[0])
                 self.print("end do")
-            case CCPPGPUDebugPrintOp():
-                # Preprocessor directives (`#ifdef USE_GPU`/`#endif`,
-                # string-templated directly into this op's raw-text body)
-                # must stay at column 0 -- gfortran's -cpp rejects an
-                # indented '#' as invalid Fortran source, unlike every
-                # other emitted case here which goes through dedicated
-                # printer branches that already pass use_prefix=False for
-                # exactly this reason. Its own scratch-var declarations are
-                # handled separately by _declare_fn_locals, since Fortran
-                # requires them in the specification part, not here.
-                for line in op.text.data.splitlines():
-                    if line.lstrip().startswith("#"):
-                        self.print(line.lstrip(), use_prefix=False)
-                    else:
-                        self.print(line)
             case CCPPCHostCapOp():
                 # Complete standalone Fortran module — emit ftn_body verbatim.
                 # Normally emitted via print_to_ftn at the top level, but handled
@@ -2048,6 +2042,14 @@ class ftnPrintContext:
                     self.variables[op.res] = (
                         f"{source_name}({', '.join(subscripts)})"
                     )
+            case CCPPAccParallelOp():
+                present_names = [self._get_variable_name_for(v) for v in op.present_arrays]
+                if present_names:
+                    self._emit_acc_directive("parallel", [("present", present_names)])
+                else:
+                    self.print("!$acc parallel")
+                self.print_block(op.body.block)
+                self.print("!$acc end parallel")
             case CCPPAccUpdateSelfOp():
                 var_names = [self._get_variable_name_for(v) for v in op.arrays]
                 self._emit_acc_directive("update", [("self", var_names)])
@@ -3057,10 +3059,6 @@ class ftnPrintContext:
         vertical-flip temporaries, row-major transpose temporaries, anonymous
         locals for untracked call results, and (BIND(C) only) the character
         marshaling buffers + loop counter."""
-        # De-duplicates GPUDebugPrintOp's own scratch-var declarations below
-        # -- the debug-print pass may reuse the same scratch name across
-        # multiple diagnostic blocks in one function.
-        seen_debug_scratch_names: set = set()
         # Declare local variables (non-returned allocas, e.g. computed scalars).
         #
         # Two or more sibling subcycles (nested or not) each allocate their
@@ -3133,20 +3131,6 @@ class ftnPrintContext:
                 type_str = inner.mlir_type_to_ftn_type(op.res.type)
                 dim_suffix = inner._ftn_dim_suffix(op.res.type)
                 inner.print(f"{type_str}, allocatable :: {var_name}{dim_suffix}")
-            elif isa(op, CCPPGPUDebugPrintOp):
-                # scratch_decls: "name1:type1;name2:type2;..." -- declare
-                # each referenced scratch scalar as an ordinary local,
-                # de-duplicated (the debug-print pass may reuse the same
-                # scratch name across multiple diagnostic blocks in one
-                # function).
-                for pair in op.scratch_decls.data.split(";"):
-                    if not pair:
-                        continue
-                    var_name, type_str = pair.split(":", 1)
-                    if var_name in seen_debug_scratch_names:
-                        continue
-                    seen_debug_scratch_names.add(var_name)
-                    inner.print(f"{type_str} :: {var_name}")
 
         # Declare row-major transpose temps (may be nested inside scf.IfOps in CCPP caps)
         for op in bdy.block.walk():
