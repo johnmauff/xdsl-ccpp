@@ -118,7 +118,7 @@ class CallSequenceMixin:
         one scheme's optional args can depend on different conditions (e.g.
         examples/var_compat's effr_calc_run: has_graupel vs. has_ice).
         """
-        active_gated_names: dict = {}  # raw condition_expr -> [arg_name, ...]
+        active_gated_names: dict = {}  # raw active expression -> [arg_name, ...]
         for arg in arg_table.getFunctionArguments():
             if arg.hasAttr("optional") and arg.hasAttr("model_var_active_expr"):
                 active_gated_names.setdefault(
@@ -132,7 +132,6 @@ class CallSequenceMixin:
             )
 
         raw_conditions = list(active_gated_names)
-        resolved_conditions: dict[int, str] = {}
 
         def _build_leaf(excluded_names: frozenset) -> list:
             if excluded_names:
@@ -150,17 +149,17 @@ class CallSequenceMixin:
             if level == len(raw_conditions):
                 return _build_leaf(excluded_names)
             raw_condition_expr = raw_conditions[level]
-            if level not in resolved_conditions:
-                resolved_conditions[level] = _resolve_active_condition(
-                    self.meta_data, raw_condition_expr, suite_use_stubs, arg_table
-                )
-            condition_expr = resolved_conditions[level]
+            # Built afresh for each ActiveCheckOp: a level below the first
+            # appears once per branch above it, and an op has one parent.
+            condition_op = _resolve_active_condition(
+                self.meta_data, raw_condition_expr, suite_use_stubs, arg_table
+            )
             with_ops = _build_level(level + 1, excluded_names)
             without_ops = _build_level(
                 level + 1,
                 excluded_names | frozenset(active_gated_names[raw_condition_expr]),
             )
-            return [ActiveCheckOp(condition_expr, with_ops, without_ops)]
+            return [ActiveCheckOp(condition_op, with_ops, without_ops)]
 
         return _build_level(0, frozenset())
 

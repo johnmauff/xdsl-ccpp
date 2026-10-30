@@ -31,6 +31,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_host_var_key,
     directive_op,
     find_diverged_suite_vars,
+    host_var_ref_key,
     split_scheme_table_name,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
@@ -309,9 +310,9 @@ class GPUCcppCapPass(ModulePass):
         (find_diverged_suite_vars's own convention, shared with GPUDataPass
         -- must not change). Everything downstream of that check keys on
         _resolve_host_var_key's resolved identity instead: for a plain host
-        var this is the same bare name, but for a DDT member it's
-        "instance_var%member_name" -- exactly what the real HostVarRefOp for
-        that arg carries (see _ref_key), so present/update/copy directives
+        var this is the same bare name, but for a DDT member it's the
+        instance plus member path and subscripts -- the same key the real
+        HostVarRefOp for that arg gives (see _ref_key), so present/update/copy directives
         can actually find their reference to attach to (backlog gap #5).
         """
         needs_in: dict = {}   # host_var -> bool
@@ -681,16 +682,14 @@ class GPUCcppCapPass(ModulePass):
 
     @staticmethod
     def _ref_key(op) -> str:
-        """Identity key for a HostVarRefOp, matching _resolve_host_var_key's
-        metadata-side key exactly: the bare var_name unchanged for a plain
-        host var, or "var_name%member_name" when the op's member_name
-        attribute is set (a DDT member) -- exactly what print_ftn.py prints
-        as the Fortran reference. Every scan below that matches a
+        """Identity key for a HostVarRefOp (cap_shared.host_var_ref_key),
+        matching _resolve_host_var_key's metadata-side key exactly: the bare
+        var_name for a plain host var, or the instance plus member path and
+        subscripts for a DDT member. Every scan below that matches a
         HostVarRefOp against a lifetime/residency-lifetime/donor dict must
         use this, not op.var_name.data alone, or DDT members silently never
         match (backlog gap #5)."""
-        member = op.attributes.get("member_name")
-        return f"{op.var_name.data}%{member.data}" if member is not None else op.var_name.data
+        return host_var_ref_key(op)
 
     def _ref_used_by_call(self, true_block, host_var, suite_call) -> bool:
         """True iff some HostVarRefOp for host_var in true_block is actually
@@ -843,8 +842,8 @@ class GPUCcppCapPass(ModulePass):
         return refs
 
     def _collect_donor_host_var_refs(self, top_module):
-        """One-time module-wide scan: host var name -> (module_name, result
-        type, member_name) for the first HostVarRefOp found anywhere.
+        """One-time module-wide scan: host var key -> the first HostVarRefOp
+        found anywhere for it.
 
         Used by _synthesize_ref to clone a reference into a phase's block
         where a hoisted variable has no natural scheme-arg reference -- the
@@ -858,36 +857,22 @@ class GPUCcppCapPass(ModulePass):
         donors = {}
         for op in top_module.walk():
             if isa(op, HostVarRefOp):
-                key = self._ref_key(op)
-                if key not in donors:
-                    member = op.attributes.get("member_name")
-                    donors[key] = (
-                        op.module_name,
-                        op.res.type,
-                        member.data if member is not None else None,
-                    )
+                donors.setdefault(self._ref_key(op), op)
         return donors
 
     def _synthesize_ref(self, true_block, var_name, donor_refs):
-        """Clone a fresh HostVarRefOp for var_name into true_block, using a
-        donor (module_name, type, member_name) triple found elsewhere in the
-        module. Returns the new op's result, or None if no donor exists
-        (shouldn't happen in practice -- would mean the variable was never
-        referenced anywhere, contradicting it being in phases_used).
-
-        var_name may be a composite "instance%member" key (see _ref_key) --
-        splitting on the first "%" always recovers the true instance
-        variable name, even for a nested-DDT member path (itself containing
-        further "%" separators), since HostVarRefOp's own first positional
-        arg must be the bare instance name, with the rest carried separately
-        via member_name.
+        """Clone a fresh HostVarRefOp for the key var_name into true_block
+        from its donor elsewhere in the module, without the donor's
+        index_expr (the index variable belongs to the donor's function).
+        Returns the new op's result, or None if no donor exists (shouldn't
+        happen in practice -- would mean the variable was never referenced
+        anywhere, contradicting it being in phases_used).
         """
         donor = donor_refs.get(var_name)
         if donor is None:
             return None
-        module_name, res_type, member_name = donor
-        instance_name = var_name.split("%", 1)[0]
-        new_ref = HostVarRefOp(instance_name, module_name, res_type, member_name=member_name)
+        new_ref = donor.clone()
+        new_ref.attributes.pop("index_expr", None)
         Rewriter.insert_op(new_ref, InsertPoint.at_start(true_block))
         return new_ref.res
 

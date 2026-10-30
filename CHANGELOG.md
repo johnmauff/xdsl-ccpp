@@ -13402,3 +13402,64 @@ diagnostics). Output is identical apart from the two changes above.
 `tests/unit/test_gpu_debug_print_pass.py` gains a structural test (no
 `gpu_debug_print` op; each diagnostic an `AccParallelOp` holding a
 `PrintStmtOp`) and printer tests for the new ops. pytest: 1208 passed.
+
+## `active-condition-ir`: `.meta` expressions parsed into ops, not carried as Fortran text (2026-10-30)
+
+Two kinds of `.meta` expression reached the IR as Fortran text: a host
+variable's `active` condition (`ActiveCheckOp.condition_expr`, built by a
+regex substituting standard names in the raw text) and a DDT member's
+subscripted local name (`HostVarRefOp.member_name`, e.g.
+`q(:, :, index_qv)` or `fluxSW%sfc_down_sw`, built by string slicing in
+`_resolve_member_subscripts`). The member text was also the identity key the
+GPU residency pass matched on, and the Fortran printer re-parsed it to merge
+a column section into the subscripts. All are now structure.
+
+- Parser: new `xdsl_ccpp/frontend/meta_expr.py`, a hand-written tokenizer
+  and recursive-descent parser for `active` expressions (standard names,
+  integer and logical literals, `.and.`/`.or.`/`.not.`/`.eqv.`/`.neqv.`,
+  relational operators in both spellings, parentheses; Fortran precedence)
+  and subscripted local names (`:`, integers, standard names).
+  `parse_meta_file` parses every argument's local name and `active` value
+  and reports a malformed one as `file.meta:LINE: ... at column N`. All 512
+  `.meta` files in the examples, CAM-SIMA `src` and ccpp-framework parse.
+- `active` conditions: `suitecap/active.py` builds an i1 expression from
+  the syntax tree: `VarRefExprOp` (or a member access chain for a DDT
+  member) typed logical/integer/real from the metadata, and `arith`
+  logic and comparisons. Literal operands of `.eqv.`/`.neqv.` fold away.
+  New errors for a name that is no host or module variable, a logical
+  compared with an ordering operator, an integer used as a logical and a
+  character variable. `ActiveCheckOp.condition_expr` is removed; the
+  condition region is required.
+- DDT members: `HostVarRefOp` carries `member_path` (identifiers) and
+  `member_subscripts` (`SliceExprOp`, constant or `VarRefExprOp` regions);
+  `index_expr` must be an identifier. `ResolvedArgOp` carries the parent
+  path and the leaf's `.meta` local name. `_resolve_ddt_access_path`
+  returns the parent path as a tuple. `cap_shared.resolve_member` replaces
+  `_resolve_member_subscripts`; `host_ref_key` builds the identity key for
+  both `_resolve_host_var_key` (metadata) and `host_var_ref_key` (ops,
+  `gpu_ccpp_cap_pass._ref_key`); the GPU pass clones its donor reference
+  instead of splitting the key on `%`. The Fortran printer spells the
+  reference from its parts, and `RankReducingSliceOp` merges a section into
+  existing subscripts structurally (a member with subscripts, a cap
+  variable's whole-array view `lc_qv(:, :)`, a section of a section).
+  `resolved_vars.json`'s `call_expr` is built by `host_ref_key`.
+- Fixed in passing (`printer-trailing-whitespace`): the Fortran printer
+  strips trailing whitespace from every line (9125 such lines across the
+  oracle cases: blank lines holding indentation, `errflg = 1`, `end do`).
+  Five subroutine headers that were 100 characters only because of a
+  trailing space now fit on one line.
+
+Output: `cap_oracle diff` against `main` on all examples and CAM-SIMA cases
+differs only in whitespace, the joined headers and the `active` conditions
+(`if ((index_qv > 0)) then` -> `if (index_qv .gt. 0) then`;
+var_compat's `if ((has_ice)) then` -> `if (has_ice) then`).
+`--gpu-debug-prints` output is unchanged. Goldens: 6 `completed_ir`
+(member paths, condition ops) and 9 `end_to_end` regenerated, headers
+checked against `HEAD` (helloworld-composite-py's RUN header restored by
+hand). The IR scan (`test_ir_names_are_identifiers.py`) drops its two
+exceptions and checks `member_path` elements and `index_expr`; the
+transformed IR of every example and CAM case has no expression text left
+(remaining non-identifier strings: messages, unit-conversion factors, a
+`.meta` default value, `stdbool.h`). New tests: `test_meta_expr.py`,
+`test_active_condition_ops.py`, `test_host_var_ref_members.py`. pytest:
+1266 passed.

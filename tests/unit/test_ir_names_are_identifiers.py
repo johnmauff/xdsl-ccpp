@@ -1,13 +1,10 @@
 """The transformed IR carries no Fortran or C++ text (fortran-exprs-as-text,
-cpp-text-in-ir): scan the completed_ir FileCheck goldens -- the IR every
-example's pipeline produces before printing -- and the IR of a C++-host
-example (constadv; no golden covers the C++ host cap), and check that the
-properties naming a variable, member, method or kind hold plain
-identifiers, and that the removed text properties are gone.
-
-Two known exceptions, tracked in BACKLOG.md as active-condition-ir:
-ActiveCheckOp.condition_expr and HostVarRefOp.member_name, both expressions
-copied from .meta files. (VarRefExprOp's constructor also rejects a
+cpp-text-in-ir, active-condition-ir): scan the completed_ir FileCheck
+goldens -- the IR every example's pipeline produces before printing -- and
+the IR of a C++-host example (constadv; no golden covers the C++ host cap),
+and check that the properties naming a variable, member, method or kind
+hold plain identifiers, and that the removed text properties are gone.
+(VarRefExprOp's and HostVarRefOp's constructors also reject a
 non-identifier name; this scan catches the other ops.)
 """
 
@@ -45,6 +42,12 @@ _IDENTIFIER_PROPS = {
     "lazy_alloc": ("var_name",),
     "module_var": ("var_name", "kind"),
     "ddt_component_decl": ("var_name", "kind"),
+    "host_var_ref": ("var_name", "index_expr"),
+}
+
+# op -> the list properties whose elements must be identifiers.
+_IDENTIFIER_LIST_PROPS = {
+    "host_var_ref": ("member_path",),
 }
 
 # Text-form properties this item removed; none may come back.
@@ -65,6 +68,8 @@ _REMOVED_PROPS = {
     "cpp_call_statement": ("call_args",),
     "cpp_brace_init_call": ("field_values",),
     "cpp_field_decl": ("cpp_type", "array_suffix", "init_expr"),
+    "active_check": ("condition_expr",),
+    "host_var_ref": ("member_name",),
 }
 
 # C++ ops whose types must be MLIR types, not strings.
@@ -76,7 +81,8 @@ _TYPED_PROPS = {
 }
 
 _OP = re.compile(r'"ccpp_utils\.([a-z_]+)"')
-_PROPS = re.compile(r"<\{(.*?)\}>")
+# Properties, then (HostVarRefOp's index_expr) the attribute dictionary.
+_PROPS = re.compile(r"<\{(.*?)\}>(?: \{(.*?)\})?")
 _STRING_PROP = re.compile(r'([A-Za-z_][\w]*) = "((?:[^"\\]|\\.)*)"')
 
 
@@ -86,7 +92,14 @@ def _ops_with_props(path: Path):
         op = _OP.search(line)
         props = _PROPS.search(line)
         if op and props:
-            yield op.group(1), dict(_STRING_PROP.findall(props.group(1)))
+            text = props.group(1) + ", " + (props.group(2) or "")
+            yield op.group(1), dict(_STRING_PROP.findall(text))
+
+
+def _list_props(line: str, key: str) -> "list[str] | None":
+    """The string elements of a list property on an op line, or None."""
+    m = re.search(rf"\b{key} = \[([^\]]*)\]", line)
+    return None if m is None else re.findall(r'"([^"]*)"', m.group(1))
 
 
 @pytest.mark.parametrize("golden", _GOLDENS, ids=lambda p: p.name)
@@ -100,6 +113,12 @@ def test_names_are_identifiers(golden):
             if key == "kind" and _INTEGER.match(value) and op != "ddt_component_decl":
                 continue  # an integer kind, e.g. real(kind=8)
             bad.append(f"{op}.{key} = {value!r}")
+    for line in golden.read_text().splitlines():
+        op = _OP.search(line)
+        for key in _IDENTIFIER_LIST_PROPS.get(op.group(1) if op else "", ()):
+            for value in _list_props(line, key) or ():
+                if not _IDENTIFIER.match(value):
+                    bad.append(f"{op.group(1)}.{key} element {value!r}")
     assert not bad, f"{golden.name}: expression text in IR names:\n  " + "\n  ".join(bad)
 
 
@@ -110,7 +129,7 @@ def test_removed_text_properties_are_gone(golden):
         f"{op}.{key}"
         for op, keys in _REMOVED_PROPS.items()
         for key in keys
-        if re.search(rf'"ccpp_utils\.{op}".*<\{{[^}}]*\b{key} = ', text)
+        if re.search(rf'"ccpp_utils\.{op}"[^\n]*\b{key} = ', text)
     ]
     bad += ["bind_c_dim_exprs"] if "bind_c_dim_exprs" in text else []
     assert not bad, f"{golden.name}: removed text properties present: {bad}"
@@ -120,7 +139,13 @@ def test_the_scan_sees_the_ops():
     """Guard against a format change silently making the scan vacuous."""
     seen = {op for golden in _GOLDENS for op, _ in _ops_with_props(golden)}
     assert {"var_ref_expr", "member_access_expr", "cap_var_ref", "module_var",
-            "ddt_method_call", "allocate", "lazy_alloc"} <= seen
+            "ddt_method_call", "allocate", "lazy_alloc", "host_var_ref"} <= seen
+    assert any('"ccpp_utils.active_check"' in golden.read_text() for golden in _GOLDENS)
+    members = [
+        _list_props(line, "member_path") for golden in _GOLDENS
+        for line in golden.read_text().splitlines() if '"ccpp_utils.host_var_ref"' in line
+    ]
+    assert ["fluxSW", "sfc_down_sw"] in members
 
 
 @pytest.fixture(scope="module")

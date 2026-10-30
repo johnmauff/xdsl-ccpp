@@ -296,9 +296,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_final
-// CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, lb, ub, instance, ninstances, errmsg,       &
-// CHECK:           errflg)
-// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-LABEL:   subroutine ccpp_physics_run(suite_name, suite_part, lb, ub, instance, ninstances, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      integer, intent(in) :: lb
 // CHECK-NEXT:      integer, intent(in) :: ub

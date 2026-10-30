@@ -282,20 +282,25 @@ class HostVarRefOp(IRDLOperation):
 
     Produces an SSA value of the given result type representing `var_name`
     from `module_name`.  No Fortran code is emitted — the printer registers
-    `var_name` as the variable name for the result so that downstream ops
-    (e.g. call arguments) print the correct host variable name.
+    the reference as the variable name for the result so that downstream
+    ops (e.g. call arguments) print the correct host variable name.
 
-    When `member_name` is set the variable is a DDT member accessed as
-    ``var_name%member_name`` (e.g. ``phys_state%ps``).  The USE statement
-    is still generated for `var_name` (the DDT instance), not the member.
+    When `member_path` is set the variable is a DDT member: the member
+    names from `var_name` down to the leaf, printed ``var_name%a%b``
+    (e.g. ``phys_state%ps``). `member_subscripts` holds the leaf's
+    subscripts, one expression op each (a SliceExprOp for ``:``, a constant,
+    or a VarRefExprOp), e.g. ``phys_state%q(:, :, index_qv)``. The USE
+    statement is still generated for `var_name` (the DDT instance), not
+    the member.
 
     When `index_expr` is also set (real capgen-v1's multi-instance model:
     `var_name` is itself a HOST-owned array of DDT, one entry per model
     instance -- see cap_shared.py's _build_ddt_resolution_maps and
     run_dispatch.py's CCPP_INSTANCE_NUMBER_STD_NAME handling), the printed
-    reference becomes ``var_name(index_expr)%member_name`` -- `var_name` is
+    reference becomes ``var_name(index_expr)%member`` -- `var_name` is
     subscripted before the member access, matching real capgen-v1's own
-    ``instance_data(instance)%data_array`` shape.
+    ``instance_data(instance)%data_array`` shape. `index_expr` is the
+    index variable's name.
 
     A corresponding llvm.GlobalOp stub (with a 'module' attribute) is placed
     at the enclosing module level to drive 'use module, only: var' generation
@@ -306,26 +311,41 @@ class HostVarRefOp(IRDLOperation):
 
     var_name = prop_def(StringAttr)
     module_name = prop_def(StringAttr)
-    # member_name and index_expr are stored in the attributes dict (not
-    # formal properties): member_name when this op references a DDT member
-    # (reference emitted as var_name%member_name), index_expr when var_name
-    # is itself an array that must be subscripted first (see class docstring
-    # -- not yet consumed by the printer).
+    member_path = opt_prop_def(ArrayAttr[StringAttr])
+    member_subscripts = var_region_def("single_block")
+    # index_expr is stored in the attributes dict (not a formal property).
     res = result_def()  # type set at construction to match callee expectation
+
+    traits = traits_def(NoTerminator())
 
     def __init__(
         self, var_name: str | StringAttr, module_name: str | StringAttr,
-        result_type, member_name: str | None = None, index_expr: str | None = None,
+        result_type, member_path: "str | list[str] | tuple | None" = None,
+        index_expr: str | None = None, subscript_ops: "list | None" = None,
     ):
         var_name = _coerce_str_attr(var_name)
         module_name = _coerce_str_attr(module_name)
+        props: dict = {"var_name": var_name, "module_name": module_name}
+        if isinstance(member_path, str):
+            member_path = [member_path]
+        if member_path is not None:
+            for member in member_path:
+                if not _IDENTIFIER.match(member):
+                    raise ValueError(
+                        f"HostVarRefOp: member {member!r} is not an identifier; "
+                        "pass the path as a list and subscripts as subscript_ops"
+                    )
+            props["member_path"] = ArrayAttr([StringAttr(m) for m in member_path])
+        elif subscript_ops:
+            raise ValueError("HostVarRefOp: subscript_ops needs a member_path")
         super().__init__(
-            properties={"var_name": var_name, "module_name": module_name},
+            properties=props,
+            regions=[[_single_op_region([s]) for s in subscript_ops or []]],
             result_types=[result_type],
         )
-        if member_name is not None:
-            self.attributes["member_name"] = StringAttr(member_name)
         if index_expr is not None:
+            if not _IDENTIFIER.match(index_expr):
+                raise ValueError(f"HostVarRefOp: index_expr {index_expr!r} is not an identifier")
             self.attributes["index_expr"] = StringAttr(index_expr)
 
 
@@ -1071,8 +1091,8 @@ class RankReducingSliceOp(IRDLOperation):
             # own case) -- mirror its exact type semantics, copying the
             # source's own type verbatim rather than recomputing rank from
             # dim_pattern's length. Not just equivalent: when source is
-            # already a DDT-member ref whose own member_name carries a
-            # baked-in fixed-index subscript (e.g. "q(:, :, index_qv)"),
+            # already a DDT-member ref whose own member subscripts include
+            # a fixed index (e.g. "q(:, :, index_qv)"),
             # the printer's existing-subscript merge (print_ftn.py) only
             # consumes as many range parts as there are ':' placeholders
             # already in that subscript, silently discarding the rest --
@@ -1215,34 +1235,28 @@ class ActiveCheckOp(IRDLOperation):
 
     Generates::
 
-        if ({condition_expr}) then
+        if ({condition}) then
           ... with_body ...
         else
           ... without_body ...
         end if
 
-    Distinct from PresentCheckOp: this tests an arbitrary host-declared
-    Fortran logical expression (from an ArgumentOp's own 'active' property,
-    e.g. 'flag_for_opt_arg', copied onto a matched scheme arg as
+    Distinct from PresentCheckOp: this tests a host-declared logical
+    expression (from an ArgumentOp's own 'active' property, e.g.
+    'flag_for_opt_arg', copied onto a matched scheme arg as
     model_var_active_expr by HostVariableMatchPass), not whether the current
     subroutine's own optional dummy argument was passed by its caller --
     conceptually related but a different runtime condition, so kept as a
     separate op rather than generalizing PresentCheckOp.
 
-    ``condition_expr`` is printed verbatim as the if-condition. ``with_body``
-    contains the slice op(s) + scheme call that include the active-gated
-    arg(s). ``without_body`` contains the scheme call that omits them.
-
-    lang-neutral-expr-ir Stage 3a adds a structured alternative to the
-    opaque ``condition_expr`` text: pass ``condition_op`` instead.
-    Exactly one of the two must be given; the opaque-text form remains
-    fully supported so suite_cap.py's own caller is unaffected.
+    ``condition`` holds an i1 expression op. ``with_body`` contains the
+    slice op(s) + scheme call that include the active-gated arg(s).
+    ``without_body`` contains the scheme call that omits them.
     """
 
     name = "ccpp_utils.active_check"
 
-    condition_expr = opt_prop_def(StringAttr)
-    condition = opt_region_def("single_block")
+    condition = region_def("single_block")
 
     with_body    = region_def("single_block")
     without_body = region_def("single_block")
@@ -1250,22 +1264,12 @@ class ActiveCheckOp(IRDLOperation):
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, condition_expr: "str | None" = None, with_body_ops: "list | None" = None,
-        without_body_ops: "list | None" = None, *, condition_op=None,
+        self, condition_op, with_body_ops: "list | None" = None,
+        without_body_ops: "list | None" = None,
     ):
-        if (condition_expr is None) == (condition_op is None):
-            raise ValueError(
-                "ActiveCheckOp: pass exactly one of condition_expr or condition_op"
-            )
-        props: dict = {}
-        cond_region = None
-        if condition_expr is not None:
-            props["condition_expr"] = _coerce_str_attr(condition_expr)
-        else:
-            cond_region = _single_op_region([condition_op])
         super().__init__(
-            properties=props,
-            regions=[cond_region, with_body_ops or [], without_body_ops or []],
+            regions=[_single_op_region([condition_op]), with_body_ops or [],
+                     without_body_ops or []],
         )
 
 

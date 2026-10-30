@@ -320,7 +320,7 @@ def _generate_constituent_api(
         var_type = TypeConversions.convert("real", "kind_phys", rank)
         if multi_instance:
             ref_op = HostVarRefOp("lc_instances", "", var_type,
-                                  member_name=name, index_expr=instance_local_name)
+                                  member_path=name, index_expr=instance_local_name)
         else:
             ref_op = HostVarRefOp(name, "", var_type)
         return [ref_op, AccEnterDataOp(copyin=[ref_op.res])]

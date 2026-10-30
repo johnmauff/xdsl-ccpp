@@ -638,20 +638,25 @@ class ResolvedArgOp(IRDLOperation):
     callee input arg, classifying it as a host module variable, a DDT member,
     a cap-owned variable, or a caller-supplied block argument) and read by
     _build_run_dispatch_chain when constructing the actual SSA reference
-    (e.g. ``HostVarRefOp``, which accepts a ``member_name`` for the
+    (e.g. ``HostVarRefOp``, which takes a member path and subscripts for the
     DdtMember case) -- this op makes that resolution decision durable and
     inspectable on its own, independent of that later construction step.
 
     Required properties by ``source_kind``:
       - Host:      ``var_name``, ``module_name``
-      - DdtMember: ``var_name``, ``module_name``, ``member_path``, and
+      - DdtMember: ``var_name``, ``module_name``, ``member_local_name``
+                   (the leaf member's .meta local name, e.g.
+                   ``q(:,:,index_of_water_vapor_specific_humidity)``, its
+                   subscripts still in standard-name space), optionally
+                   ``member_path`` (the parent members between the
+                   instance and the leaf, for a nested DDT) and
                    optionally ``index_std_name`` (real capgen-v1's
                    multi-instance model: set when ``var_name`` is itself a
                    HOST-owned array of DDT, one entry per model instance --
                    see cap_shared.py's _build_ddt_resolution_maps -- and this
                    call already resolves a sibling scalar with this standard
-                   name; ``instance_std_name%member_path`` on ``var_name``
-                   becomes ``var_name(<local index>)%member_path`` once
+                   name; the member on ``var_name`` becomes a member of
+                   ``var_name(<local index>)`` once
                    _build_run_dispatch_chain resolves the standard name to a
                    local Fortran reference)
       - CapVar:    ``std_name``
@@ -664,7 +669,8 @@ class ResolvedArgOp(IRDLOperation):
     source_kind = prop_def(ArgSourceKindAttr)
     var_name = opt_prop_def(StringAttr)
     module_name = opt_prop_def(StringAttr)
-    member_path = opt_prop_def(StringAttr)
+    member_path = opt_prop_def(ArrayAttr[StringAttr])
+    member_local_name = opt_prop_def(StringAttr)
     std_name = opt_prop_def(StringAttr)
     index_std_name = opt_prop_def(StringAttr)
 
@@ -674,9 +680,10 @@ class ResolvedArgOp(IRDLOperation):
         source_kind: "str | ArgSourceKind | ArgSourceKindAttr",
         var_name: str | StringAttr | None = None,
         module_name: str | StringAttr | None = None,
-        member_path: str | StringAttr | None = None,
+        member_local_name: str | None = None,
         std_name: str | StringAttr | None = None,
         index_std_name: str | StringAttr | None = None,
+        member_path: tuple[str, ...] | list[str] = (),
     ):
         if isa(arg_name, str):
             arg_name = StringAttr(arg_name)
@@ -690,8 +697,10 @@ class ResolvedArgOp(IRDLOperation):
             properties["var_name"] = StringAttr(var_name) if isa(var_name, str) else var_name
         if module_name is not None:
             properties["module_name"] = StringAttr(module_name) if isa(module_name, str) else module_name
-        if member_path is not None:
-            properties["member_path"] = StringAttr(member_path) if isa(member_path, str) else member_path
+        if member_local_name is not None:
+            properties["member_local_name"] = StringAttr(member_local_name)
+            if member_path:
+                properties["member_path"] = ArrayAttr([StringAttr(m) for m in member_path])
         if std_name is not None:
             properties["std_name"] = StringAttr(std_name) if isa(std_name, str) else std_name
         if index_std_name is not None:
@@ -705,7 +714,7 @@ class ResolvedArgOp(IRDLOperation):
         kind = self.source_kind.data
         has_var = self.var_name is not None
         has_mod = self.module_name is not None
-        has_member = self.member_path is not None
+        has_member = self.member_local_name is not None or self.member_path is not None
         has_std = self.std_name is not None
         has_index_std = self.index_std_name is not None
 
@@ -716,14 +725,14 @@ class ResolvedArgOp(IRDLOperation):
                 )
             if has_member or has_std or has_index_std:
                 raise VerifyException(
-                    "ResolvedArgOp: source_kind=Host must not set member_path, "
+                    "ResolvedArgOp: source_kind=Host must not set a member, "
                     "std_name, or index_std_name"
                 )
         elif kind == ArgSourceKind.DdtMember:
-            if not (has_var and has_mod and has_member):
+            if not (has_var and has_mod and self.member_local_name is not None):
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=DdtMember requires var_name, "
-                    "module_name, and member_path"
+                    "module_name, and member_local_name"
                 )
             if has_std:
                 raise VerifyException(
@@ -737,7 +746,7 @@ class ResolvedArgOp(IRDLOperation):
             if has_var or has_mod or has_member or has_index_std:
                 raise VerifyException(
                     "ResolvedArgOp: source_kind=CapVar must not set var_name, "
-                    "module_name, member_path, or index_std_name"
+                    "module_name, a member, or index_std_name"
                 )
         elif kind == ArgSourceKind.Block:
             if has_var or has_mod or has_member or has_std or has_index_std:

@@ -381,7 +381,7 @@ class SuiteVariableModel:
             if arg.hasAttr("model_var_name"):
                 # Record MODULE-type matches only (not HOST-type, which are
                 # passed through the call chain, and not DDT-member matches,
-                # which are accessed via `instance%member_name` -- neither
+                # which are accessed via `instance%member` -- neither
                 # ever gets a bare `use module, only: <name>` at suite-cap
                 # module scope, unlike a genuine MODULE-type match) -- see
                 # _resolve_name_collisions. Without also excluding DDT

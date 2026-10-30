@@ -410,7 +410,7 @@ def _inject_capscratch_gpu_exit(
             var_type = TypeConversions.convert("real", "kind_phys", resident[var_name])
             if instance_local_name is not None:
                 ref_op = HostVarRefOp("lc_instances", "", var_type,
-                                      member_name=var_name, index_expr=instance_local_name)
+                                      member_path=var_name, index_expr=instance_local_name)
             else:
                 ref_op = HostVarRefOp(var_name, "", var_type)
             Rewriter.insert_op(ref_op, InsertPoint.before(ret_op))

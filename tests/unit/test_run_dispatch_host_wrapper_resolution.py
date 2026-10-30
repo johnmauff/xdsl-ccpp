@@ -98,6 +98,14 @@ def _make_scheme_props(scheme_name, args):
     return props
 
 
+def _member_text(op):
+    """A ResolvedArgOp's member as "parent%leaf", or None."""
+    if op.member_local_name is None:
+        return None
+    path = [m.data for m in op.member_path.data] if op.member_path is not None else []
+    return "%".join([*path, op.member_local_name.data])
+
+
 def _assert_resolved_arg_op(
     op, arg_name, kind, *, var_name=None, module_name=None, member_path=None, std_name=None
 ):
@@ -106,7 +114,7 @@ def _assert_resolved_arg_op(
     assert op.source_kind.data == kind
     assert (op.var_name.data if op.var_name is not None else None) == var_name
     assert (op.module_name.data if op.module_name is not None else None) == module_name
-    assert (op.member_path.data if op.member_path is not None else None) == member_path
+    assert _member_text(op) == member_path
     assert (op.std_name.data if op.std_name is not None else None) == std_name
 
 

@@ -39,7 +39,8 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _build_host_var_map,
     _build_no_suite_matched_false_ops,
     _resolve_ddt_access_path,
-    _resolve_member_subscripts,
+    member_subscript_ops,
+    resolve_member,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRMSG_LEN,
@@ -197,10 +198,10 @@ def _generate_lifecycle_fn(
         new_block = Block(arg_types=[suite_name_type, ccpp_info_type] + extra_host_arg_types)
         arg_names = ["suite_name", "ccpp_info", *extra_host_arg_names]
         errmsg_alloc = HostVarRefOp(
-            "ccpp_info", ccpp_info_module, errmsg_type, member_name="errmsg"
+            "ccpp_info", ccpp_info_module, errmsg_type, member_path="errmsg"
         )
         errflg_alloc = HostVarRefOp(
-            "ccpp_info", ccpp_info_module, errflg_type, member_name="errflg"
+            "ccpp_info", ccpp_info_module, errflg_type, member_path="errflg"
         )
     else:
         # capgen pattern: function returns errmsg/errflg as separate outputs.
@@ -291,13 +292,12 @@ def _generate_lifecycle_fn(
                     model_module_name, ddt_instance_map, ddt_parent_map
                 )
                 if result is not None:
-                    instance_var, instance_module, path_prefix, _instance_array_dim = result
-                    resolved_member, sub_vars = _resolve_member_subscripts(
-                        path_prefix + model_var_name, host_var_map
-                    )
+                    instance_var, instance_module, ddt_path, _instance_array_dim = result
+                    member, sub_vars = resolve_member(ddt_path, model_var_name, host_var_map)
                     ref_op = HostVarRefOp(
                         instance_var, instance_module, arg_type,
-                        member_name=resolved_member,
+                        member_path=member.path,
+                        subscript_ops=member_subscript_ops(member),
                     )
                     true_branch_pre_ops.append(ref_op)
                     call_inputs.append(ref_op.res)

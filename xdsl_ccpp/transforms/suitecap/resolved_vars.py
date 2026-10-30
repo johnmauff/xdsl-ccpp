@@ -4,9 +4,11 @@ from __future__ import annotations
 
 
 
+from xdsl_ccpp.frontend.meta_expr import parse_local_name, standard_names
 from xdsl_ccpp.transforms.util.cap_shared import (
     _resolve_ddt_access_path,
-    _resolve_member_subscripts,
+    host_ref_key,
+    resolve_member,
 )
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_DEPRECATED_STD_NAMES,
@@ -67,24 +69,6 @@ def _resolved_var_record(arg) -> "dict | None":
     }
 
 
-def _ddt_member_subscript_std_names(member_expr: str) -> list:
-    """Extract the raw standard-name subscript tokens from a DDT member's
-    array-section expression (e.g. "t(:,:,index_of_potential_temperature)"
-    -> ["index_of_potential_temperature"]).
-
-    Mirrors cap_shared.py's _resolve_member_subscripts tokenization, but
-    keeps standard names (not local names) for write_init_files.py.
-    """
-    paren = member_expr.find("(")
-    if paren < 0:
-        return []
-    subscript = member_expr[paren + 1: member_expr.rfind(")")]
-    return [
-        t for t in (tok.strip() for tok in subscript.split(","))
-        if t and t != ":" and not t.isdigit()
-    ]
-
-
 def _apply_ddt_chain(record: dict, arg, ddt_resolution_maps) -> None:
     """Patch <record> in place for a DDT member match, resolving the DDT
     type name left in model_module_name into the real Fortran chain, e.g.
@@ -104,13 +88,14 @@ def _apply_ddt_chain(record: dict, arg, ddt_resolution_maps) -> None:
     result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
     if result is None:
         return
-    instance_var, instance_module, path_prefix, _instance_array_dim = result
-    member_expr = path_prefix + record["model_var_name"]
-    resolved_member, _sub_vars = _resolve_member_subscripts(member_expr, ddt_host_var_map)
+    instance_var, instance_module, ddt_path, _instance_array_dim = result
+    member, _sub_vars = resolve_member(ddt_path, record["model_var_name"], ddt_host_var_map)
     record["model_module_name"] = instance_module
     record["import_name"] = instance_var
-    record["call_expr"] = f"{instance_var}%{resolved_member}"
-    record["array_ref_dims"] = _ddt_member_subscript_std_names(member_expr)
+    # The JSON's Fortran reference (read by CAM's write_init_files).
+    record["call_expr"] = host_ref_key(instance_var, member)
+    # The subscripts' standard names, as the .meta file names them.
+    record["array_ref_dims"] = standard_names(parse_local_name(record["model_var_name"]))
     if instance_module in host_table_names:
         record["is_host_table_var"] = True
 

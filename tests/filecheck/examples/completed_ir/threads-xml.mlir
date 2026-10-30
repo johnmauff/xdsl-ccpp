@@ -237,7 +237,7 @@
 // CHECK-NEXT:        %2 = "ccpp_utils.strcmp"(%1) <{literal = "thread_suite"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:        scf.if %2 {
 // CHECK-NEXT:          %3 = "ccpp_utils.trim"(%suite_part) : (memref<?xi8>) -> memref<?xi8>
-// CHECK-NEXT:          %4 = "ccpp_utils.host_var_ref"() <{var_name = "thread_data", module_name = "data"}> {member_name = "data_array", index_expr = "thread"} : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
+// CHECK-NEXT:          %4 = "ccpp_utils.host_var_ref"() <{var_name = "thread_data", module_name = "data", member_path = ["data_array"]}> {index_expr = "thread"} : () -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %5 = "ccpp_utils.rank_reducing_slice"(%4, %lb, %ub) <{dim_pattern = "R"}> {operandSegmentSizes = array<i32: 1, 1, 1, 0>} : (memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<i32>) -> memref<?x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          %6 = "ccpp_utils.strcmp"(%3) <{literal = "thread_group"}> : (memref<?xi8>) -> i1
 // CHECK-NEXT:          scf.if %6 {

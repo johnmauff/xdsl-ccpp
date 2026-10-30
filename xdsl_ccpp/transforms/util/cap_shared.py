@@ -35,6 +35,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     VarRefExprOp,
     WriteErrMsgOp,
 )
+from xdsl_ccpp.frontend.meta_expr import FullSlice, IntLiteral, Name, parse_local_name
 from xdsl_ccpp.transforms.util.ccpp_descriptors import CCPPType, XMLSubcycle
 from xdsl_ccpp.transforms.util.typing import TypeConversions
 # The arg_attrs keys and helpers are re-exported for the passes that
@@ -733,12 +734,9 @@ def _expr_text(value) -> "str | None":
       suite_cap.py's SuiteOwned residency injection both construct
       references this way -- the real name lives in the defining op's own
       var_name property, not on the SSA value's name_hint, which
-      HostVarRefOp's constructor never sets). When the op's member_name
-      attribute is set, the reference is a DDT member access
-      (var_name%member_name, e.g. phys_state%exner) -- print_ftn.py's own
-      CCPPHostVarRefOp case resolves it exactly this way. When index_expr
-      is also set (multi-instance host arrays), the reference is
-      var_name(index_expr)%member_name.
+      HostVarRefOp's constructor never sets). A DDT member's text is its
+      identity key (host_ref_key), with index_expr subscripting the
+      instance for multi-instance host arrays.
     - Plain block arguments (dummy args of the enclosing FuncOp), which do
       carry a real name_hint (same convention gpu_data_pass.py's
       arg_by_name already relies on).
@@ -750,14 +748,13 @@ def _expr_text(value) -> "str | None":
     """
     owner = value.owner
     if isa(owner, HostVarRefOp):
-        member = owner.attributes.get("member_name")
         index_expr = owner.attributes.get("index_expr")
         base_name = (
             f"{owner.var_name.data}({index_expr.data})"
             if index_expr is not None
             else owner.var_name.data
         )
-        return f"{base_name}%{member.data}" if member is not None else base_name
+        return host_ref_key(base_name, member_ref_of(owner))
     if isa(owner, arith.ConstantOp):
         return str(owner.value.value.data)
     if isa(owner, RankReducingSliceOp):
@@ -1376,15 +1373,16 @@ def _resolve_ddt_access_path(
     ddt_instance_map: dict,
     ddt_parent_map: dict,
     _depth: int = 0,
-) -> "tuple[str, str, str, str | None] | None":
-    """Resolve a DDT type name to (instance_var, instance_module, path_prefix,
+) -> "tuple[str, str, tuple[str, ...], str | None] | None":
+    """Resolve a DDT type name to (instance_var, instance_module, path,
     instance_array_dim_std_name).
 
-    For a type that has a direct module-level instance, path_prefix is "".
-    For a nested DDT — e.g. type B is a member of type A, and A has a
-    module-level instance — path_prefix is "b_member%" so the full Fortran
-    accessor becomes ``instance_var%path_prefix%leaf_member``
-    (e.g. ``phys_state%rad%temperature``).
+    For a type that has a direct module-level instance, path is (). For a
+    nested DDT — e.g. type B is a member of type A, and A has a
+    module-level instance — path is ("b_member",): the member names from
+    the instance down to the type, so a leaf member of B is reached as
+    instance_var, then each name in path, then the leaf
+    (e.g. phys_state, rad, temperature).
 
     instance_array_dim_std_name is ddt_instance_map's own per-instance value
     (see _build_ddt_resolution_maps) propagated through unchanged at any
@@ -1399,69 +1397,128 @@ def _resolve_ddt_access_path(
         return None
     if ddt_type_name in ddt_instance_map:
         instance_var, instance_module, instance_array_dim = ddt_instance_map[ddt_type_name]
-        return instance_var, instance_module, "", instance_array_dim
+        return instance_var, instance_module, (), instance_array_dim
     for member_var_name, parent_ddt_type in ddt_parent_map.get(ddt_type_name, []):
         result = _resolve_ddt_access_path(
             parent_ddt_type, ddt_instance_map, ddt_parent_map, _depth + 1
         )
         if result is not None:
-            instance_var, instance_module, parent_prefix, instance_array_dim = result
+            instance_var, instance_module, parent_path, instance_array_dim = result
             return (
                 instance_var, instance_module,
-                parent_prefix + member_var_name + "%",
+                (*parent_path, member_var_name),
                 instance_array_dim,
             )
     return None
 
 
-def _resolve_member_subscripts(member_name: str, host_var_map: dict) -> tuple:
-    """Resolve standard_name tokens in a DDT member subscript to local var names.
+@dataclass(frozen=True)
+class MemberRef:
+    """A DDT member below an instance variable: the member names from the
+    instance down to the leaf, and the leaf's subscripts -- each FullSlice,
+    IntLiteral or the local name (str) of an index variable."""
 
-    For 'q(:,:,index_of_water_vapor_specific_humidity)' with a host_var_map that
-    maps the standard_name to ('index_qv', 'test_host_mod'), returns
-    ('q(:,:,index_qv)', [('index_qv', 'test_host_mod')]).
+    path: tuple
+    subscripts: tuple = ()
 
-    Bare colons and integer literals are passed through unchanged.
+
+def resolve_member(path: tuple, local_name: str, host_var_map: dict) -> tuple:
+    """The MemberRef for a DDT member whose .meta local name is
+    <local_name> (e.g. "q(:,:,index_of_water_vapor_specific_humidity)"),
+    reached through the parent members <path>; and the (local_name,
+    module_name) of each index variable its subscripts use.
+
+    Each standard name in a subscript resolves through <host_var_map>
+    (standard_name -> (local_name, module_name)); one it lacks stays as
+    written.
     """
-    paren = member_name.find("(")
-    if paren < 0:
-        return member_name, []
-    base = member_name[:paren]
-    subscript = member_name[paren + 1: member_name.rfind(")")]
-    resolved_tokens = []
-    sub_vars = []
-    for token in subscript.split(","):
-        t = token.strip()
-        if t == ":" or t.isdigit():
-            resolved_tokens.append(t)
-        else:
-            t_lower = t.lower()
-            if t_lower in host_var_map:
-                local_name, module_name = host_var_map[t_lower]
-                resolved_tokens.append(local_name)
-                sub_vars.append((local_name, module_name))
+    parsed = parse_local_name(local_name)
+    subscripts = []
+    use_vars = []
+    for sub in parsed.subscripts:
+        if isinstance(sub, Name):
+            entry = host_var_map.get(sub.std_name)
+            if entry is None:
+                subscripts.append(sub.std_name)
             else:
-                resolved_tokens.append(t)
-    return f"{base}({', '.join(resolved_tokens)})", sub_vars
+                subscripts.append(entry[0])
+                use_vars.append(entry)
+        else:
+            subscripts.append(sub)
+    return MemberRef((*path, parsed.name), tuple(subscripts)), use_vars
+
+
+def member_subscript_ops(member: MemberRef) -> list:
+    """Fresh expression ops for <member>'s subscripts (HostVarRefOp's
+    subscript_ops)."""
+    ops = []
+    for sub in member.subscripts:
+        if isinstance(sub, FullSlice):
+            ops.append(SliceExprOp())
+        elif isinstance(sub, IntLiteral):
+            ops.append(arith.ConstantOp(IntegerAttr.from_int_and_width(sub.value, 32)))
+        else:
+            ops.append(VarRefExprOp(sub, result_type=i32))
+    return ops
+
+
+def member_ref_of(op) -> "MemberRef | None":
+    """The MemberRef a HostVarRefOp carries, or None for a plain host
+    variable."""
+    if op.member_path is None:
+        return None
+    subscripts = []
+    for region in op.member_subscripts:
+        sub = region.block.last_op
+        if isa(sub, SliceExprOp):
+            subscripts.append(FullSlice())
+        elif isa(sub, arith.ConstantOp):
+            subscripts.append(IntLiteral(sub.value.value.data))
+        else:
+            subscripts.append(sub.var_name.data)
+    return MemberRef(tuple(a.data for a in op.member_path.data), tuple(subscripts))
+
+
+def host_ref_key(var_name: str, member: "MemberRef | None") -> str:
+    """Identity key for a host variable or a DDT member of one, the same
+    whether built from metadata (_resolve_host_var_key) or from a
+    HostVarRefOp (host_var_ref_key): e.g. "phys_state%q(:, :, index_qv)".
+    A key, not Fortran: nothing prints it into a cap."""
+    if member is None:
+        return var_name
+    key = "%".join((var_name, *member.path))
+    if member.subscripts:
+        key += "(" + ", ".join(_subscript_key(s) for s in member.subscripts) + ")"
+    return key
+
+
+def _subscript_key(sub) -> str:
+    if isinstance(sub, FullSlice):
+        return ":"
+    if isinstance(sub, IntLiteral):
+        return str(sub.value)
+    return sub
+
+
+def host_var_ref_key(op) -> str:
+    """host_ref_key for a HostVarRefOp."""
+    return host_ref_key(op.var_name.data, member_ref_of(op))
 
 
 def _resolve_host_var_key(arg, ddt_instance_map: dict, ddt_parent_map: dict, host_var_map: dict) -> str:
     """Identity key for a host-matched ArgumentOp, matching exactly what the
-    real HostVarRefOp built for the same host var carries.
+    real HostVarRefOp built for the same host var carries (host_ref_key).
 
     For a plain host var, this is just its bare model_var_name, unchanged.
     For a DDT member (model_var_is_ddt set), model_module_name is the DDT
     TYPE table's name, not the actual Fortran instance variable -- this
     resolves that type name to its module-level instance (following nested
-    DDTs via _resolve_ddt_access_path) and any array-section subscript
-    tokens (via _resolve_member_subscripts), returning
-    "{instance_var}%{resolved_member}" -- exactly what run_dispatch.py's own
-    HostVarRefOp construction produces (var_name=instance_var,
-    member_name=resolved_member) and what print_ftn.py prints
-    (var_name%member_name). Any code that needs to recognize "is this
-    HostVarRefOp the same host var as this metadata arg" must compare
-    against this key, not the bare model_var_name -- see
-    gpu_ccpp_cap_pass.py's _ref_key, its IR-side counterpart.
+    DDTs via _resolve_ddt_access_path) and the member's subscripts (via
+    resolve_member), as run_dispatch.py does when it builds the
+    HostVarRefOp. Any code that needs to recognize "is this HostVarRefOp
+    the same host var as this metadata arg" must compare against this key,
+    not the bare model_var_name -- see gpu_ccpp_cap_pass.py's _ref_key, its
+    IR-side counterpart.
 
     Falls back to the bare model_var_name if no module-level instance is
     reachable (matches run_dispatch.py's own soft-fail behavior for this
@@ -1475,9 +1532,9 @@ def _resolve_host_var_key(arg, ddt_instance_map: dict, ddt_parent_map: dict, hos
     result = _resolve_ddt_access_path(ddt_type_name, ddt_instance_map, ddt_parent_map)
     if result is None:
         return host_var
-    instance_var, _instance_module, path_prefix, _instance_array_dim = result
-    resolved_member, _sub_vars = _resolve_member_subscripts(path_prefix + host_var, host_var_map)
-    return f"{instance_var}%{resolved_member}"
+    instance_var, _instance_module, path, _instance_array_dim = result
+    member, _use_vars = resolve_member(path, host_var, host_var_map)
+    return host_ref_key(instance_var, member)
 
 
 def _get_suite_lifecycle_ret_info(scheme_names, meta_data, table_postfix):

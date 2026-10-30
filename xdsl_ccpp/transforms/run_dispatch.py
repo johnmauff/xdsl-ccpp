@@ -39,6 +39,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     TrimOp,
     WriteErrMsgOp,
 )
+from xdsl_ccpp.frontend.meta_expr import parse_local_name
 from xdsl_ccpp.transforms.util.cap_shared import (
     SUITE_ARG_DIM_NAMES,
     SUITE_ARG_NAME,
@@ -56,11 +57,13 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     _rank_of,
     _resolve_ddt_access_path,
     _resolve_lifecycle_table_name,
-    _resolve_member_subscripts,
     arg_attr_dict,
     build_ncol_compute_ops,
     classify_host_table_vars,
+    host_ref_key,
+    member_subscript_ops,
     resolve_dim_extents,
+    resolve_member,
 )
 from xdsl_ccpp.transforms.util.ccpp_descriptors import (
     CCPPType,
@@ -276,8 +279,7 @@ def _build_per_suite_run_info(
                         ddt_type_name, ddt_instance_map, ddt_parent_map
                     )
                     if result is not None:
-                        instance_var, instance_module, path_prefix, instance_array_dim = result
-                        full_member = path_prefix + host_var
+                        instance_var, instance_module, ddt_path, instance_array_dim = result
                         # Real capgen-v1's registered-scalar-index-dimension
                         # model (CCPP_SCALAR_INDEX_DIMS): instance_var is
                         # itself a HOST-owned array of DDT (one entry per
@@ -309,7 +311,8 @@ def _build_per_suite_run_info(
                                     ArgSourceKind.DdtMember,
                                     var_name=instance_var,
                                     module_name=instance_module,
-                                    member_path=full_member,
+                                    member_path=ddt_path,
+                                    member_local_name=host_var,
                                     index_std_name=index_std_name,
                                 )
                             )
@@ -333,7 +336,8 @@ def _build_per_suite_run_info(
                                     ArgSourceKind.DdtMember,
                                     var_name=instance_var,
                                     module_name=instance_module,
-                                    member_path=full_member,
+                                    member_path=ddt_path,
+                                    member_local_name=host_var,
                                 )
                             )
                     else:
@@ -426,6 +430,11 @@ def _build_per_suite_run_info(
         )
 
     return per_suite, host_global_ops
+
+
+def _ddt_path(op) -> tuple:
+    """A DdtMember ResolvedArgOp's parent members, () for a direct member."""
+    return tuple(m.data for m in op.member_path.data) if op.member_path is not None else ()
 
 
 def _ddt_type_name_of(arg_type) -> "str | None":
@@ -645,10 +654,10 @@ def _build_run_block_signature(
         # Loop bounds from ccpp_info%col_start / col_end
         int_type = memref.MemRefType(int_base, [])
         col_start_ref = HostVarRefOp(
-            "ccpp_info", ccpp_info_module, int_type, member_name="col_start"
+            "ccpp_info", ccpp_info_module, int_type, member_path="col_start"
         )
         col_end_ref = HostVarRefOp(
-            "ccpp_info", ccpp_info_module, int_type, member_name="col_end"
+            "ccpp_info", ccpp_info_module, int_type, member_path="col_end"
         )
         col_begin_key = non_host_std_to_canonical.get(CCPP_LOOP_BEGIN_STD_NAME)
         col_end_key = non_host_std_to_canonical.get(CCPP_LOOP_END_STD_NAME)
@@ -663,10 +672,10 @@ def _build_run_block_signature(
 
         # errmsg/errflg from ccpp_info members (no separate block args)
         errmsg_alloc = HostVarRefOp(
-            "ccpp_info", ccpp_info_module, errmsg_type, member_name="errmsg"
+            "ccpp_info", ccpp_info_module, errmsg_type, member_path="errmsg"
         )
         errflg_alloc = HostVarRefOp(
-            "ccpp_info", ccpp_info_module, errflg_type, member_name="errflg"
+            "ccpp_info", ccpp_info_module, errflg_type, member_path="errflg"
         )
         errmsg_arg = errmsg_alloc.res
         errflg_arg = errflg_alloc.res
@@ -889,12 +898,10 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
                 host_var_ref_results[arg_name] = ref_op.res
                 host_name_to_ref_result[host_var_name] = ref_op.res
         elif op.source_kind.data == ArgSourceKind.DdtMember:
-            instance_var, instance_module, member_name = (
-                op.var_name.data, op.module_name.data, op.member_path.data
-            )
+            instance_var, instance_module = op.var_name.data, op.module_name.data
             # Resolve std_name tokens in subscript to local variable names
-            resolved_member, sub_vars = _resolve_member_subscripts(
-                member_name, ctx.host_var_map
+            member, sub_vars = resolve_member(
+                _ddt_path(op), op.member_local_name.data, ctx.host_var_map
             )
             # Real capgen-v1's multi-instance model: instance_var is
             # itself a HOST-owned array of DDT, indexed by whichever
@@ -912,11 +919,12 @@ def _build_host_var_refs(ctx, info, cap_var_std_to_dims) -> tuple:
                     index_expr = index_canonical
             ref_op = HostVarRefOp(
                 instance_var, instance_module, arg_type,
-                member_name=resolved_member, index_expr=index_expr,
+                member_path=member.path, index_expr=index_expr,
+                subscript_ops=member_subscript_ops(member),
             )
             host_var_ref_ops.append(ref_op)
             host_var_ref_results[arg_name] = ref_op.res
-            host_name_to_ref_result[f"{instance_var}%{resolved_member}"] = ref_op.res
+            host_name_to_ref_result[host_ref_key(instance_var, member)] = ref_op.res
             # Emit USE stubs for subscript variables (already resolved to local names)
             for local_name, module_name in sub_vars:
                 key = (local_name, module_name)
@@ -1046,14 +1054,10 @@ def _build_array_section_ops(
             host_var_name, host_module_name = op.var_name.data, op.module_name.data
             lookup_var, lookup_mod = host_var_name, host_module_name
         elif op.source_kind.data == ArgSourceKind.DdtMember:
-            _instance_var, instance_module, member_name = (
-                op.var_name.data, op.module_name.data, op.member_path.data
-            )
-            # For nested paths like "b%x" or "b%x(ncol)", strip the
-            # chain prefix and any array subscripts to get the leaf
-            # member name for the var descriptor lookup.
-            leaf = member_name.rsplit("%", 1)[-1].split("(")[0]
-            lookup_var, lookup_mod = leaf, instance_module
+            # The leaf member's name, without subscripts, for the var
+            # descriptor lookup.
+            leaf = parse_local_name(op.member_local_name.data).name
+            lookup_var, lookup_mod = leaf, op.module_name.data
         elif op.source_kind.data == ArgSourceKind.CapVar:
             std_name_cv = op.std_name.data
             _cv_dims = cap_var_std_to_dims.get(std_name_cv, [])

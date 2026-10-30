@@ -258,8 +258,8 @@
 // CHECK-NEXT:        end if
 // CHECK-NEXT:        do ccpp_loop_cnt0 = 1, 2
 // CHECK-NEXT:          do ccpp_loop_cnt = 1, 2
-// CHECK-NEXT:            if ((has_graupel)) then
-// CHECK-NEXT:              if ((has_ice)) then
+// CHECK-NEXT:            if (has_graupel) then
+// CHECK-NEXT:              if (has_ice) then
 // CHECK-NEXT:                if (errflg .eq. 0) then
 // CHECK-NEXT:                  if (allocated(effrr_in_unit_conv)) deallocate(effrr_in_unit_conv)
 // CHECK-NEXT:                  allocate(effrr_in_unit_conv(size(effrr_inout, 1), size(effrr_inout, 2)))
@@ -324,7 +324,7 @@
 // CHECK-NEXT:                end if
 // CHECK-NEXT:              end if
 // CHECK-NEXT:            else
-// CHECK-NEXT:              if ((has_ice)) then
+// CHECK-NEXT:              if (has_ice) then
 // CHECK-NEXT:                if (errflg .eq. 0) then
 // CHECK-NEXT:                  if (allocated(effrr_in_unit_conv8)) deallocate(effrr_in_unit_conv8)
 // CHECK-NEXT:                  allocate(effrr_in_unit_conv8(size(effrr_inout, 1), size(effrr_inout, 2)))
@@ -565,9 +565,8 @@
 // CHECK-NEXT:        errflg = 1
 // CHECK-NEXT:      end if
 // CHECK-NEXT:    end subroutine ccpp_physics_run
-// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg,       &
-// CHECK:           errflg)
-// CHECK-NEXT:      character(len=*), intent(in) :: suite_name
+// CHECK-LABEL:   subroutine ccpp_physics_timestep_init(suite_name, suite_part, col_start, col_end, errmsg, errflg)
+// CHECK:           character(len=*), intent(in) :: suite_name
 // CHECK-NEXT:      character(len=*), intent(in) :: suite_part
 // CHECK-NEXT:      integer, intent(in) :: col_start
 // CHECK-NEXT:      integer, intent(in) :: col_end
