@@ -265,25 +265,26 @@ class ccppMain:
                  "(<HostName>_ccpp_cap.h and ccpp_kinds.h). Requires a host file.",
         )
         parser.add_argument(
-            "--cam-host",
+            "--capgen-api", "--cam-host",
+            dest="capgen_api",
             action="store_true",
             default=False,
-            help="Generate CAM-SIMA-specific cam_ccpp_physics_* lifecycle wrapper "
-                 "subroutines in the ccpp_cap module.  These wrappers read "
-                 "errmsg/errcode from the physics_types module and col_start/col_end "
-                 "from physics_grid (CAM-SIMA module-level variables) rather than "
-                 "receiving them as dummy arguments.  Off by default so non-CAM "
-                 "builds are not required to provide those modules.",
+            help="Also generate original capgen's host API in the ccpp_cap module "
+                 "(<host>_ccpp_physics_* and <host>_ccpp_*_constituents, as "
+                 "CAM-SIMA calls them), on top of the default capgen-v1 API. The "
+                 "wrappers read errmsg/errcode and col_start/col_end from the "
+                 "host's module variables rather than receiving them as dummy "
+                 "arguments. --cam-host is the former name.",
         )
         parser.add_argument(
             "--framework-src-dir",
             default="",
             metavar="DIR",
-            help="Path to the real ccpp_framework/src directory.  When --cam-host "
-                 "is set, the real framework F90 files (ccpp_hashable.F90, "
+            help="Path to a ccpp_framework/src directory (CAM-SIMA's own). When "
+                 "given, its framework F90 files (ccpp_hashable.F90, "
                  "ccpp_hash_table.F90, ccpp_constituent_prop_mod.F90, "
-                 "ccpp_scheme_utils.F90) from this directory are listed in the "
-                 "datatable utility files instead of the bundled xdsl_ccpp stubs.",
+                 "ccpp_scheme_utils.F90) are listed in the datatable utility "
+                 "files instead of the bundled xdsl_ccpp copies.",
         )
         parser.add_argument(
             "--legacy-mode",
@@ -379,6 +380,9 @@ class ccppMain:
         a valid "I have no host files" config, becomes [] here) instead of
         crashing downstream the moment something does `list(...)` on it.
         """
+        if "cam_host" in options_db:  # the former name of capgen_api
+            options_db["capgen_api"] = (options_db.get("capgen_api")
+                                        or options_db.pop("cam_host"))
         if options_db.get("py"):
             # --py mode: --suites and --scheme-files are not required
             if options_db.get("suites"):
@@ -747,8 +751,8 @@ class ccppMain:
             cap_opts.append(f"host_name={self.options_db['host_name']}")
         if bind_c:
             cap_opts.append("bind_c=true")
-        if self.options_db.get("cam_host"):
-            cap_opts.append("cam_host=true")
+        if self.options_db.get("capgen_api"):
+            cap_opts.append("capgen_api=true")
         if cap_opts:
             ccpp_cap_pass += "{" + " ".join(cap_opts) + "}"
         directive = self.options_db.get("directive")
@@ -1191,7 +1195,6 @@ class ccppMain:
         host_name = self.options_db.get("host_name") or ""
         root_el = build_datatable(
             mlir_text, cap_files, host_name=host_name,
-            cam_host=bool(self.options_db.get("cam_host")),
             framework_src_dir=self.options_db.get("framework_src_dir") or "",
         )
         write_datatable(root_el, datatable_path)

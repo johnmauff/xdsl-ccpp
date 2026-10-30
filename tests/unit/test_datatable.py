@@ -203,6 +203,18 @@ class TestCapgenFilesSection:
         # suite cap, not a utility.
         assert "caps/s1_cap.F90" not in utility_paths
 
+    def test_framework_src_dir_files_replace_the_bundled_ones(self, build_module, tmp_path):
+        """--framework-src-dir (CAM-SIMA's own ccpp_framework) selects its
+        framework files, whatever the host API."""
+        from xdsl_ccpp.tools.ccpp_datatable import _REAL_FRAMEWORK_F90_FILES
+        for name in _REAL_FRAMEWORK_F90_FILES:
+            (tmp_path / name).write_text("")
+        module = build_module([_scheme_meta("s1")], [], None)
+        root = build_datatable(_module_to_mlir(module), [], framework_src_dir=str(tmp_path))
+        utility_paths = [el.text for el in root.findall("./capgen_files/utilities/file")]
+        for name in _REAL_FRAMEWORK_F90_FILES:
+            assert str(tmp_path / name) in utility_paths
+
     def test_utilities_contains_vendored_framework_files(self, build_module):
         module = build_module([_scheme_meta("s1")], [], None)
         mlir_text = _module_to_mlir(module)

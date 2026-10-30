@@ -1,8 +1,8 @@
 """Regression tests for the CAM-host branch of _generate_constituent_api.
 
 Copilot PR #97 comment (line 850): the unified implementation has no automated
-coverage for cam_host=True.  All existing FileCheck fixtures exercise
-NonCamHostConstituentApiOp; no test invokes CCPPCAP(cam_host=True).
+coverage for capgen_api=True.  All existing FileCheck fixtures exercise
+ConstituentApiOp without --capgen-api; no test invokes CCPPCAP(capgen_api=True).
 
 Tests here cover the three CAM-specific invariants called out in that comment:
   1. CAM positional signature in register_constituents: (host_constituents,
@@ -10,7 +10,7 @@ Tests here cover the three CAM-specific invariants called out in that comment:
   2. register body calls ccpp_initialize_constituent_ptr (not
      ccpp_scheme_utils_set_constituents).
   3. gather_constituents and update_constituents subroutines are emitted and
-     contain copy_in / copy_out calls on cam_constituents_obj.
+     contain copy_in / copy_out calls on <host>_constituents_obj.
 """
 
 from io import StringIO
@@ -21,13 +21,15 @@ from xdsl_ccpp.transforms.arg_ownership_pass import ArgOwnershipPass
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 
+# Module variables, as CAM-SIMA's physics_types declares them: the
+# --capgen-api wrappers use-associate the host's errmsg/errcode.
 _HOST_META = """\
 [ccpp-table-properties]
   name = test_host
-  type = host
+  type = module
 [ccpp-arg-table]
   name = test_host
-  type = host
+  type = module
 [ errmsg ]
   standard_name = ccpp_error_message
   units = none
@@ -41,9 +43,9 @@ _HOST_META = """\
   type = integer
 """
 
-# The run entry intentionally uses only the mandatory args so the CAM lifecycle
-# wrapper (_generate_cam_lifecycle_wrappers) does not need host variables beyond
-# what _CAM_STD_EXPRS provides.  The tests here are about the constituent API
+# The run entry intentionally uses only the mandatory args so the capgen-API
+# lifecycle wrapper (_generate_cam_lifecycle_wrappers) needs no host variables
+# beyond errmsg/errcode.  The tests here are about the constituent API
 # module-level subroutines (register/gather/update), not the run dispatcher.
 _SCHEME_META = f"""\
 [ccpp-table-properties]
@@ -83,7 +85,7 @@ def _fortran_output(run_host_match, ccpp_context) -> str:
     )
     ArgOwnershipPass().apply(ccpp_context, module)
     SuiteCAP().apply(ccpp_context, module)
-    CCPPCAP(cam_host=True).apply(ccpp_context, module)
+    CCPPCAP(capgen_api=True).apply(ccpp_context, module)
     out = StringIO()
     print_to_ftn(module, out)
     return out.getvalue()
@@ -140,10 +142,10 @@ class TestCamHostGatherUpdateRoutines:
         assert f"subroutine {_GATHER_FN}" in fortran
 
     def test_gather_constituents_calls_copy_in(self, run_host_match, ccpp_context):
-        """gather_constituents body must call cam_constituents_obj%copy_in."""
+        """gather_constituents body must call <host>_constituents_obj%copy_in."""
         fortran = _fortran_output(run_host_match, ccpp_context)
         body = _fn_body(fortran, _GATHER_FN)
-        assert "cam_constituents_obj%copy_in" in body
+        assert "Test_constituents_obj%copy_in" in body
 
     def test_update_constituents_is_emitted(self, run_host_match, ccpp_context):
         """update_constituents subroutine must be present in CAM-host output."""
@@ -151,10 +153,10 @@ class TestCamHostGatherUpdateRoutines:
         assert f"subroutine {_UPDATE_FN}" in fortran
 
     def test_update_constituents_calls_copy_out(self, run_host_match, ccpp_context):
-        """update_constituents body must call cam_constituents_obj%copy_out."""
+        """update_constituents body must call <host>_constituents_obj%copy_out."""
         fortran = _fortran_output(run_host_match, ccpp_context)
         body = _fn_body(fortran, _UPDATE_FN)
-        assert "cam_constituents_obj%copy_out" in body
+        assert "Test_constituents_obj%copy_out" in body
 
     def test_gather_update_in_public_names(self, run_host_match, ccpp_context):
         """Both gather and update routine names must appear in explicit

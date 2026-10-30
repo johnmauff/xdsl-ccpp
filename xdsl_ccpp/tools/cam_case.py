@@ -145,7 +145,7 @@ def generator_options(case: CamCase) -> dict:
     options = {
         "scheme_files": list(case.scheme_files),
         "host_files": list(case.host_files),
-        "host_name": "cam", "cam_host": True, "legacy_mode": True,
+        "host_name": "cam", "capgen_api": True, "legacy_mode": True,
         "framework_src_dir": case.framework_src_dir,
         "kind_map": ["r8:REAL64"], "verbose": 0,
     }

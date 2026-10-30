@@ -92,12 +92,7 @@ from xdsl_ccpp.dialects.ccpp_utils import MetadataLiteralExprOp as CCPPMetadataL
 from xdsl_ccpp.dialects.ccpp_utils import NullPointerExprOp as CCPPNullPointerExprOp
 from xdsl_ccpp.dialects.ccpp_utils import MethodCallExprOp as CCPPMethodCallExprOp
 from xdsl_ccpp.dialects.ccpp_utils import ZeroFillOp as CCPPZeroFillOp
-from xdsl_ccpp.dialects.ccpp_utils import (
-    CamHostConstituentApiOp as CCPPCamHostConstituentApiOp,
-)
-from xdsl_ccpp.dialects.ccpp_utils import (
-    NonCamHostConstituentApiOp as CCPPNonCamHostConstituentApiOp,
-)
+from xdsl_ccpp.dialects.ccpp_utils import ConstituentApiOp as CCPPConstituentApiOp
 from xdsl_ccpp.dialects.ccpp_utils import (
     DdtComponentDeclOp as CCPPDdtComponentDeclOp,
 )
@@ -1841,9 +1836,7 @@ class ftnPrintContext:
                     inner.print(f"{c_var}(i) = {f_var}(i:i)")
                 self.print("end do")
                 self.print(f"{c_var}(len_trim({f_var})+1) = c_null_char")
-            case CCPPCamHostConstituentApiOp():
-                self.print_block(op.body.block)
-            case CCPPNonCamHostConstituentApiOp():
+            case CCPPConstituentApiOp():
                 self.print_block(op.body.block)
             case CCPPCamDirectCallOp():
                 args = ", ".join(self._render_expr(r.block.last_op) for r in op.arg_exprs)
@@ -2390,7 +2383,7 @@ class ftnPrintContext:
                             prefix="  ",
                         )
 
-        # Emit derived-type definitions a NonCamHostConstituentApiOp needs
+        # Emit derived-type definitions a ConstituentApiOp needs
         # declared in the specification part (before CONTAINS) -- e.g. the
         # multi-instance constituent-API fix's own per-instance bundle
         # type. Must come BEFORE the plain ModuleVarOp declarations below:
@@ -2404,7 +2397,7 @@ class ftnPrintContext:
         # separate emission point at all.
         type_defs = [op for op in body.ops if isa(op, CCPPDerivedTypeDefOp)] + [
             child
-            for op in body.ops if isa(op, CCPPNonCamHostConstituentApiOp)
+            for op in body.ops if isa(op, CCPPConstituentApiOp)
             for child in op.body.block.ops if isa(child, CCPPDerivedTypeDefOp)
         ]
         for child in type_defs:
@@ -2506,12 +2499,7 @@ class ftnPrintContext:
         ] + [
             name.data
             for op in body.ops
-            if isa(op, CCPPCamHostConstituentApiOp)
-            for name in op.public_names.data
-        ] + [
-            name.data
-            for op in body.ops
-            if isa(op, CCPPNonCamHostConstituentApiOp)
+            if isa(op, CCPPConstituentApiOp)
             for name in op.public_names.data
         ]
         for proc in public_procs:
@@ -2520,8 +2508,7 @@ class ftnPrintContext:
         # Only emit CONTAINS when there are subroutine definitions to print
         has_func_defs = any(
             (isa(op, func.FuncOp) and not op.is_declaration)
-            or isa(op, CCPPCamHostConstituentApiOp)
-            or isa(op, CCPPNonCamHostConstituentApiOp)
+            or isa(op, CCPPConstituentApiOp)
             for op in body.ops
         )
         if has_func_defs:

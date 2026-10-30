@@ -785,7 +785,7 @@
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return
 // CHECK-NEXT:      }
-// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "cam_constituents_obj", base_type = "type", rank = 0 : i64, ddt_name = "ccpp_model_constituents_t", is_target = true}> : () -> ()
+// CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "Ddt_constituents_obj", base_type = "type", rank = 0 : i64, ddt_name = "ccpp_model_constituents_t", is_target = true}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_all_constituents", base_type = "integer", rank = 1 : i64}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_constituent_array", base_type = "real", rank = 3 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_const_props", base_type = "type", rank = 1 : i64, ddt_name = "ccpp_constituent_prop_ptr_t", is_target = true}> : () -> ()
@@ -795,7 +795,7 @@
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_HNO3", base_type = "real", rank = 1 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_vmr", base_type = "real", rank = 0 : i64, kind = "kind_phys"}> : () -> ()
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_psurf", base_type = "real", rank = 1 : i64, kind = "kind_phys"}> : () -> ()
-// CHECK-NEXT:      "ccpp_utils.non_cam_host_constituent_api"() <{public_names = ["Ddt_ccpp_is_scheme_constituent", "Ddt_ccpp_deallocate_dynamic_constituents", "Ddt_ccpp_register_constituents", "Ddt_ccpp_number_constituents", "Ddt_ccpp_initialize_constituents", "Ddt_constituents_array", "Ddt_advected_constituents_array", "Ddt_const_get_index", "Ddt_model_const_properties"]}> ({
+// CHECK-NEXT:      "ccpp_utils.constituent_api"() <{public_names = ["Ddt_ccpp_is_scheme_constituent", "Ddt_ccpp_deallocate_dynamic_constituents", "Ddt_ccpp_register_constituents", "Ddt_ccpp_number_constituents", "Ddt_ccpp_initialize_constituents", "Ddt_constituents_array", "Ddt_advected_constituents_array", "Ddt_const_get_index", "Ddt_model_const_properties"]}> ({
 // CHECK-NEXT:        func.func public @Ddt_ccpp_is_scheme_constituent(%std_name : memref<?xi8> {ccpp.name = "std_name", ccpp.declared_intent = "in"}, %is_const : memref<i1> {ccpp.name = "is_const", ccpp.declared_intent = "out"}, %errflg : memref<i32> {ccpp.name = "errflg", ccpp.declared_intent = "out"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg", ccpp.declared_intent = "out"}) attributes {ccpp.fixed_interface} {
 // CHECK-NEXT:          %lc_idx = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "lc_idx"} : () -> memref<i32>
 // CHECK-NEXT:          %lc_std_name = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "lc_std_name"} : () -> memref<256xi8>
@@ -836,7 +836,7 @@
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_psurf"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "reset"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0, 0>} : () -> ()
 // CHECK-NEXT:          func.return
 // CHECK-NEXT:        }
@@ -861,7 +861,7 @@
 // CHECK-NEXT:            %3 = arith.addi %1, %2 : i32
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "initialize_table"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1, 0>} : () -> ()
@@ -887,7 +887,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:            }, {
@@ -903,7 +903,7 @@
 // CHECK-NEXT:            "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_table"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.keyword_arg_expr"() <{arg_name = "errcode"}> ({
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "errcode"}> : () -> ()
@@ -916,7 +916,7 @@
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_props_ptr"}> ({
 // CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "constituent_props_ptr"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
@@ -939,7 +939,7 @@
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_const_props"}> : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_num_consts"}> : () -> ()
 // CHECK-NEXT:          }, {
@@ -965,7 +965,7 @@
 // CHECK-NEXT:        func.func public @Ddt_ccpp_number_constituents(%num_advected : memref<i32> {ccpp.name = "num_advected", ccpp.declared_intent = "out"}, %errmsg : memref<512xi8> {ccpp.name = "errmsg", ccpp.declared_intent = "out"}, %errcode : memref<i32> {ccpp.name = "errcode", ccpp.declared_intent = "out"}, %advected : memref<i1> {ccpp.name = "advected", ccpp.declared_intent = "in", ccpp.optional}) attributes {ccpp.fixed_interface} {
 // CHECK-NEXT:          "ccpp_utils.clear_err_state"() <{errcode_var = "errcode", errmsg_var = "errmsg"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "num_advected"}> : () -> ()
 // CHECK-NEXT:          }, {
@@ -991,7 +991,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_data"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "ncols"}> : () -> ()
 // CHECK-NEXT:          }, {
@@ -1010,7 +1010,7 @@
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_constituent_array"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "field_data_ptr"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
@@ -1098,7 +1098,7 @@
 // CHECK-NEXT:          %ptr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "ptr", ccpp.pointer} : () -> memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
 // CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "advected_constituents_ptr"}> ({
-// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 0, 1>} : () -> ()
 // CHECK-NEXT:          func.return %ptr : memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
@@ -1116,7 +1116,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
-// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "cam_constituents_obj"}> : () -> ()
+// CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "Ddt_constituents_obj"}> : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "index"}> : () -> ()
 // CHECK-NEXT:          }, {

@@ -853,9 +853,9 @@
 // CHECK-NEXT:        func.return
 // CHECK-NEXT:      }
 // CHECK-NEXT:      "ccpp_utils.module_var"() <{var_name = "lc_instances", base_type = "type", rank = 1 : i64, ddt_name = "Cld_lc_instance_t", is_target = true}> : () -> ()
-// CHECK-NEXT:      "ccpp_utils.non_cam_host_constituent_api"() <{public_names = ["Cld_ccpp_is_scheme_constituent", "Cld_ccpp_deallocate_dynamic_constituents", "Cld_ccpp_register_constituents", "Cld_ccpp_number_constituents", "Cld_ccpp_initialize_constituents", "Cld_constituents_array", "Cld_advected_constituents_array", "Cld_const_get_index", "Cld_model_const_properties"]}> ({
+// CHECK-NEXT:      "ccpp_utils.constituent_api"() <{public_names = ["Cld_ccpp_is_scheme_constituent", "Cld_ccpp_deallocate_dynamic_constituents", "Cld_ccpp_register_constituents", "Cld_ccpp_number_constituents", "Cld_ccpp_initialize_constituents", "Cld_constituents_array", "Cld_advected_constituents_array", "Cld_const_get_index", "Cld_model_const_properties"]}> ({
 // CHECK-NEXT:        "ccpp_utils.derived_type_def"() <{type_name = "Cld_lc_instance_t"}> ({
-// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "cam_constituents_obj", base_type = "type", rank = 0 : i64, ddt_name = "ccpp_model_constituents_t"}> : () -> ()
+// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "Cld_constituents_obj", base_type = "type", rank = 0 : i64, ddt_name = "ccpp_model_constituents_t"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_dyn_const", base_type = "type", rank = 1 : i64, ddt_name = "ccpp_constituent_properties_t"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_all_constituents", base_type = "integer", rank = 1 : i64}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_constituent_array", base_type = "real", rank = 3 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
@@ -863,12 +863,12 @@
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_const_props", base_type = "type", rank = 1 : i64, ddt_name = "ccpp_constituent_prop_ptr_t"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_cld_liq_array", base_type = "real", rank = 2 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "lc_cld_liq_tend", base_type = "real", rank = 2 : i64, kind = "kind_phys", is_pointer = true}> : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "cam_model_const_stdnames", base_type = "character", rank = 0 : i64, char_len = 29 : i64, fixed_dim = 1 : i64}> ({
+// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "Cld_model_const_stdnames", base_type = "character", rank = 0 : i64, char_len = 29 : i64, fixed_dim = 1 : i64}> ({
 // CHECK-NEXT:            "ccpp_utils.array_constructor_expr"() <{elem_type = memref<29xi8>}> ({
 // CHECK-NEXT:              "ccpp_utils.string_literal_expr"() <{text = "cloud_liquid_dry_mixing_ratio"}> : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) : () -> ()
-// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "cam_model_const_indices", base_type = "integer", rank = 0 : i64, fixed_dim = 1 : i64}> ({
+// CHECK-NEXT:          "ccpp_utils.ddt_component_decl"() <{var_name = "Cld_model_const_indices", base_type = "integer", rank = 0 : i64, fixed_dim = 1 : i64}> ({
 // CHECK-NEXT:            %0 = arith.constant -1 : i32
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:        }) : () -> ()
@@ -886,7 +886,7 @@
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          scf.if %2 {
 // CHECK-NEXT:            %3 = "ccpp_utils.call_expr"() <{callee = "any"}> ({
-// CHECK-NEXT:              %4 = "ccpp_utils.member_access_expr"() <{member = "cam_model_const_stdnames"}> ({
+// CHECK-NEXT:              %4 = "ccpp_utils.member_access_expr"() <{member = "Cld_model_const_stdnames"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1037,7 +1037,7 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "reset"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {
@@ -1105,7 +1105,7 @@
 // CHECK-NEXT:            %11 = arith.addi %9, %10 : i32
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "initialize_table"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {
@@ -1137,7 +1137,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1202,7 +1202,7 @@
 // CHECK-NEXT:                }) : () -> ()
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:              "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
-// CHECK-NEXT:                "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:                "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                  }, {
@@ -1268,7 +1268,7 @@
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0, 8>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "new_field"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {
@@ -1289,7 +1289,7 @@
 // CHECK-NEXT:          "ccpp_utils.nullify_pointer"() <{ptr_name = "const_prop"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_table"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {
@@ -1308,7 +1308,7 @@
 // CHECK-NEXT:          "ccpp_utils.error_propagate"() <{errcode_var = "errcode"}> : () -> ()
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "lc_props_ptr"}> ({
 // CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "constituent_props_ptr"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1361,7 +1361,7 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {
@@ -1402,7 +1402,7 @@
 // CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 1>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.do_loop"() <{loop_var = "lc_i"}> ({
 // CHECK-NEXT:            %25 = "ccpp_utils.call_expr"() <{callee = "size"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_model_const_indices"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_model_const_indices"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1412,7 +1412,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i32
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1423,7 +1423,7 @@
 // CHECK-NEXT:              "ccpp_utils.var_ref_expr"() <{var_name = "field_ind"}> : () -> ()
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
-// CHECK-NEXT:                "ccpp_utils.member_access_expr"() <{member = "cam_model_const_stdnames"}> ({
+// CHECK-NEXT:                "ccpp_utils.member_access_expr"() <{member = "Cld_model_const_stdnames"}> ({
 // CHECK-NEXT:                  "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                    "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                  }, {
@@ -1450,7 +1450,7 @@
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              "ccpp_utils.assign"() ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
-// CHECK-NEXT:                  "ccpp_utils.member_access_expr"() <{member = "cam_model_const_indices"}> ({
+// CHECK-NEXT:                  "ccpp_utils.member_access_expr"() <{member = "Cld_model_const_indices"}> ({
 // CHECK-NEXT:                    "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                      "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                    }, {
@@ -1470,7 +1470,7 @@
 // CHECK-NEXT:                }, {
 // CHECK-NEXT:                  "ccpp_utils.call_expr"() <{callee = "trim"}> ({
 // CHECK-NEXT:                    "ccpp_utils.index_expr"() ({
-// CHECK-NEXT:                      "ccpp_utils.member_access_expr"() <{member = "cam_model_const_stdnames"}> ({
+// CHECK-NEXT:                      "ccpp_utils.member_access_expr"() <{member = "Cld_model_const_stdnames"}> ({
 // CHECK-NEXT:                        "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                          "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                        }, {
@@ -1495,7 +1495,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "num_constituents"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1545,7 +1545,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "lock_data"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {
@@ -1576,7 +1576,7 @@
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }, {
 // CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "field_data_ptr"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1639,7 +1639,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1710,7 +1710,7 @@
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:            "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1787,7 +1787,7 @@
 // CHECK-NEXT:          %ptr = "memref.alloca"() <{operandSegmentSizes = array<i32: 0, 0>}> {ccpp.name = "ptr", ccpp.pointer} : () -> memref<0x0x0x!ccpp_utils.real_kind<"kind_phys">>
 // CHECK-NEXT:          "ccpp_utils.pointer_assign"() <{ptr_name = "ptr"}> ({
 // CHECK-NEXT:            "ccpp_utils.method_call_expr"() <{method = "advected_constituents_ptr"}> ({
-// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:              "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:                "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                  "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:                }, {
@@ -1822,7 +1822,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:          }) : () -> ()
 // CHECK-NEXT:          "ccpp_utils.ddt_method_call"() <{method = "const_index"}> ({
-// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "cam_constituents_obj"}> ({
+// CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "Cld_constituents_obj"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({
 // CHECK-NEXT:                "ccpp_utils.var_ref_expr"() <{var_name = "lc_instances"}> : () -> ()
 // CHECK-NEXT:              }, {

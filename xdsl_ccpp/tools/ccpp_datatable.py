@@ -57,7 +57,7 @@ _FRAMEWORK_F90_FILES = (
     "ccpp_scheme_utils.F90",
 )
 
-# Real CCPP framework files needed when cam_host=True (in compile order so
+# Framework files listed from --framework-src-dir (in compile order so
 # ccpp_hashable is ready before ccpp_hash_table, and both before
 # ccpp_constituent_prop_mod which depends on them).
 _REAL_FRAMEWORK_F90_FILES = (
@@ -288,7 +288,6 @@ def build_datatable(
     mlir_text: str,
     cap_files: list[str],
     host_name: str = "",
-    cam_host: bool = False,
     framework_src_dir: str = "",
 ) -> ET.Element:
     """Build an ``ElementTree`` element tree representing the datatable.
@@ -297,10 +296,9 @@ def build_datatable(
         mlir_text: The frontend MLIR text (before optimization passes).
         cap_files: Absolute or relative paths to the generated ``.F90`` files.
         host_name: Optional host model name written into the root element.
-        cam_host: When True, replace the bundled framework F90 stub files with
-            real ccpp_framework source files from ``framework_src_dir``.
-        framework_src_dir: Path to the real ccpp_framework/src directory.
-            Required when cam_host=True; ignored otherwise.
+        framework_src_dir: Path to a ccpp_framework/src directory (CAM-SIMA's
+            own). When given, its framework F90 files are listed instead of
+            the bundled ones.
 
     Returns:
         An ``xml.etree.ElementTree.Element`` for the ``<datatable>`` root.
@@ -333,25 +331,24 @@ def build_datatable(
     for cap in sorted(cap_files):
         if os.path.basename(str(cap)) == "ccpp_kinds.F90":
             utility_file_texts.append(str(cap))
-    if cam_host:
-        if framework_src_dir:
-            for name in _REAL_FRAMEWORK_F90_FILES:
-                path = os.path.join(framework_src_dir, name)
-                if not os.path.isfile(path):
-                    raise FileNotFoundError(
-                        f"cam_host=True: real framework file not found: {path!r}\n"
-                        f"  (framework_src_dir={framework_src_dir!r})"
-                    )
-                utility_file_texts.append(os.path.abspath(path))
+    if framework_src_dir:
+        for name in _REAL_FRAMEWORK_F90_FILES:
+            path = os.path.join(framework_src_dir, name)
+            if not os.path.isfile(path):
+                raise FileNotFoundError(
+                    f"real framework file not found: {path!r}\n"
+                    f"  (framework_src_dir={framework_src_dir!r})"
+                )
+            utility_file_texts.append(os.path.abspath(path))
         # ccpp_capture_mod.F90 (--capture-scheme's runtime library) is
         # xdsl_ccpp's own file, never part of the real upstream NCAR
-        # ccpp-framework a cam-host build points framework_src_dir at --
+        # ccpp-framework framework_src_dir points at --
         # confirmed the hard way against a real CAM-SIMA build ("Cannot
         # open module file 'ccpp_capture_mod.mod'"), since
         # _REAL_FRAMEWORK_F90_FILES above only ever resolves against that
         # external submodule path, which will never contain it. Sourced
         # instead from xdsl_ccpp's own internal _FRAMEWORK_SRC_DIR -- the
-        # same place the non-cam-host branch below already sources its
+        # same place the branch below already sources its
         # own framework files from. Included unconditionally (not only
         # when --capture-scheme is actually active for this build): it's
         # small and self-contained (depends only on ccpp_kinds), so

@@ -17,7 +17,6 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     AssignOp,
     CallExprOp,
     CallStatementOp,
-    CamHostConstituentApiOp,
     ClearErrStateOp,
     DdtComponentDeclOp,
     DdtMethodCallOp,
@@ -34,7 +33,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     MethodCallExprOp,
     MemberAccessExprOp,
     ModuleVarOp,
-    NonCamHostConstituentApiOp,
+    ConstituentApiOp,
     NullifyPointerOp,
     PointerAssignOp,
     ReturnStmtOp,
@@ -47,6 +46,7 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     WriteStmtOp,
     ZeroFillOp,
 )
+from xdsl_ccpp.transforms.capgen_api import capgen_constituent_routines
 from xdsl_ccpp.transforms.util.cap_shared import (
     _CCPP_CONSTITUENT_MOD,
     _allocated_cond,
@@ -201,7 +201,7 @@ def _generate_constituent_api(
     framework_var_residency: dict | None = None,
     instance_local_name: "str | None" = None,
     ninstances_local_name: "str | None" = None,
-    cam_host: bool = False,
+    capgen_api: bool = False,
     needs_const_tend: bool = False,
     ddt_source_module: dict | None = None,
 ):
@@ -270,9 +270,9 @@ def _generate_constituent_api(
         f"ninstances_local_name={ninstances_local_name!r}"
     )
 
-    if cam_host and instance_local_name is not None:
+    if capgen_api and instance_local_name is not None:
         raise ValueError(
-            "cam_host=True with multi-instance metadata is not supported; "
+            "capgen_api=True with multi-instance metadata is not supported; "
             "CAM does not use per-instance constituent containers"
         )
 
@@ -282,6 +282,10 @@ def _generate_constituent_api(
     scratch_vars = scratch_vars or []
     multi_instance = instance_local_name is not None
     instance_type_name = f"{h}_lc_instance_t"
+    # Module variables named after the host, as capgen names them.
+    const_obj = f"{h}_constituents_obj"
+    const_stdnames = f"{h}_model_const_stdnames"
+    const_indices = f"{h}_model_const_indices"
 
     def _ref_expr(name: str, result_type=None):
         """A reference to module-level variable `name`: a plain
@@ -329,10 +333,10 @@ def _generate_constituent_api(
     # Non-multi-instance: unchanged -- one plain ModuleVarOp per array.
     # Multi-instance: every one of these becomes a DdtComponentDeclOp
     # component of a new DerivedTypeDefOp bundle type instead (built below,
-    # wired into NonCamHostConstituentApiOp's body), and the only actual
+    # wired into ConstituentApiOp's body), and the only actual
     # module variable is the single lc_instances(:) array.
     # The fixed-advected constituents' standard names, as the initial value
-    # of cam_model_const_stdnames: [ character(len=<longest>) :: 'a', ... ].
+    # of <host>_model_const_stdnames: [ character(len=<longest>) :: 'a', ... ].
     _max_std_len = max((len(s) for s, *_ in fixed_advected), default=0)
 
     def _std_names_init():
@@ -344,11 +348,11 @@ def _generate_constituent_api(
     module_var_ops: list = []
     component_ops: list = []
     if not multi_instance:
-        # cam_constituents_obj: scalar ccpp_model_constituents_t with target
+        # <host>_constituents_obj: scalar ccpp_model_constituents_t with target
         # (so that field_data_ptr() and constituent_props_ptr() pointer results
         # remain valid as long as this module-level variable lives).
         module_var_ops.append(
-            ModuleVarOp("cam_constituents_obj", "type",
+            ModuleVarOp(const_obj, "type",
                         ddt_name="ccpp_model_constituents_t", is_target=True, rank=0)
         )
         for n in dynamic_array_names:
@@ -362,9 +366,9 @@ def _generate_constituent_api(
         # to signal that registration is complete; used as guard in
         # initialize_constituents and number_constituents.
         module_var_ops.append(ModuleVarOp("lc_all_constituents", "integer", rank=1))
-        # lc_constituent_array: pointer into cam_constituents_obj internal storage
+        # lc_constituent_array: pointer into <host>_constituents_obj internal storage
         # (set by field_data_ptr() in initialize_constituents; must be pointer not
-        # allocatable because the memory is owned by cam_constituents_obj).
+        # allocatable because the memory is owned by <host>_constituents_obj).
         module_var_ops.append(
             ModuleVarOp("lc_constituent_array", "real", kind="kind_phys", is_pointer=True, rank=3)
         )
@@ -382,18 +386,18 @@ def _generate_constituent_api(
             )
         if n_fixed > 0:
             module_var_ops.append(ModuleVarOp(
-                "cam_model_const_stdnames", "character",
+                const_stdnames, "character",
                 char_len=_max_std_len,
                 fixed_dim=n_fixed,
                 init_value_op=_std_names_init(),
             ))
             module_var_ops.append(ModuleVarOp(
-                "cam_model_const_indices", "integer",
+                const_indices, "integer",
                 fixed_dim=n_fixed,
                 init_value_op=arith.ConstantOp(IntegerAttr.from_int_and_width(-1, 32)),
             ))
     else:
-        # cam_constituents_obj as a non-pointer, non-target DDT component.
+        # <host>_constituents_obj as a non-pointer, non-target DDT component.
         # TARGET is NOT allowed on derived-type components (gfortran: "Attribute
         # at (1) is not allowed in a TYPE definition").  TARGET instead goes on
         # the lc_instances(:) module variable itself below -- the standard's
@@ -401,7 +405,7 @@ def _generate_constituent_api(
         # (including allocatable/ordinary components) is what makes the
         # field_data_ptr() and constituent_props_ptr() pointer results valid.
         component_ops.append(
-            DdtComponentDeclOp("cam_constituents_obj", "type",
+            DdtComponentDeclOp(const_obj, "type",
                                ddt_name="ccpp_model_constituents_t", rank=0)
         )
         for n in dynamic_array_names:
@@ -410,7 +414,7 @@ def _generate_constituent_api(
                                    ddt_name="ccpp_constituent_properties_t", rank=1)
             )
         component_ops.append(DdtComponentDeclOp("lc_all_constituents", "integer", rank=1))
-        # lc_constituent_array: pointer component (points into cam_constituents_obj
+        # lc_constituent_array: pointer component (points into <host>_constituents_obj
         # internal storage after lock_data; TARGET propagates from lc_instances).
         component_ops.append(
             DdtComponentDeclOp("lc_constituent_array", "real", kind="kind_phys",
@@ -431,13 +435,13 @@ def _generate_constituent_api(
             )
         if n_fixed > 0:
             component_ops.append(DdtComponentDeclOp(
-                "cam_model_const_stdnames", "character",
+                const_stdnames, "character",
                 char_len=_max_std_len,
                 fixed_dim=n_fixed,
                 init_value_op=_std_names_init(),
             ))
             component_ops.append(DdtComponentDeclOp(
-                "cam_model_const_indices", "integer",
+                const_indices, "integer",
                 fixed_dim=n_fixed,
                 init_value_op=arith.ConstantOp(IntegerAttr.from_int_and_width(-1, 32)),
             ))
@@ -472,7 +476,7 @@ def _generate_constituent_api(
     ]
     if n_fixed > 0:
         any_eq = arith.CmpiOp(
-            _ref_expr("cam_model_const_stdnames", result_type=i32),
+            _ref_expr(const_stdnames, result_type=i32),
             VarRefExprOp("std_name", result_type=i32),
             "eq",
         )
@@ -529,7 +533,7 @@ def _generate_constituent_api(
     da_body_ops += [
         SafeDeallocOp(target_op=_ref_expr("lc_all_constituents")),
         SafeDeallocOp(target_op=_ref_expr("lc_const_props")),
-        # lc_constituent_array is a pointer into cam_constituents_obj storage;
+        # lc_constituent_array is a pointer into <host>_constituents_obj storage;
         # nullify it before reset() to avoid a dangling pointer.
         NullifyPointerOp(target_op=_ref_expr("lc_constituent_array"), if_associated=True),
     ]
@@ -541,7 +545,7 @@ def _generate_constituent_api(
         else:
             da_body_ops.append(SafeDeallocOp(target_op=_ref_expr(lc_name)))
     da_body_ops.append(DdtMethodCallOp(
-        obj_expr_op=_ref_expr("cam_constituents_obj"), method="reset",
+        obj_expr_op=_ref_expr(const_obj), method="reset",
     ))
     da_op = fixed_interface_fn(
         f"{h}_ccpp_deallocate_dynamic_constituents", _instance_args, da_body_ops,
@@ -552,7 +556,7 @@ def _generate_constituent_api(
     _host_constituents = (
         "host_constituents", memref.MemRefType(_props, [DYNAMIC_INDEX]), "in", ("target",),
     )
-    if cam_host:
+    if capgen_api:
         # CAM callers use (host_constituents, errcode, errmsg) positional order;
         # preserve it so existing callers that don't use keyword args still compile.
         rc_args = [_host_constituents, ("errcode", _int, "out", ()),
@@ -591,7 +595,7 @@ def _generate_constituent_api(
         arith.ConstantOp(IntegerAttr.from_int_and_width(n_fixed, 32))
     ))
     rc_body_ops.append(DdtMethodCallOp(
-        obj_expr_op=_ref_expr("cam_constituents_obj"), method="initialize_table",
+        obj_expr_op=_ref_expr(const_obj), method="initialize_table",
         arg_ops=[VarRefExprOp("lc_num_consts")],
     ))
 
@@ -607,7 +611,7 @@ def _generate_constituent_api(
             ]),
             AssignOp(lhs_op=VarRefExprOp("const_prop"), rhs_op=const_prop_op),
             DdtMethodCallOp(
-                obj_expr_op=_ref_expr("cam_constituents_obj"), method="new_field",
+                obj_expr_op=_ref_expr(const_obj), method="new_field",
                 arg_ops=[VarRefExprOp("const_prop")], kwarg_ops=_errcode_errmsg_kwargs(),
             ),
             NullifyPointerOp("const_prop"),
@@ -659,7 +663,7 @@ def _generate_constituent_api(
             ),
             ErrorPropagateOp("errcode"),
             DdtMethodCallOp(
-                obj_expr_op=_ref_expr("cam_constituents_obj"), method="new_field",
+                obj_expr_op=_ref_expr(const_obj), method="new_field",
                 arg_ops=[VarRefExprOp("const_prop")], kwarg_ops=_errcode_errmsg_kwargs(),
             ),
             NullifyPointerOp("const_prop"),
@@ -667,14 +671,14 @@ def _generate_constituent_api(
         ]
     rc_body_ops += [
         DdtMethodCallOp(
-            obj_expr_op=_ref_expr("cam_constituents_obj"), method="lock_table",
+            obj_expr_op=_ref_expr(const_obj), method="lock_table",
             kwarg_ops=_errcode_errmsg_kwargs(),
         ),
         ErrorPropagateOp("errcode"),
         PointerAssignOp(
             "lc_props_ptr",
             rhs_expr_op=MethodCallExprOp(
-                _ref_expr("cam_constituents_obj"), "constituent_props_ptr"
+                _ref_expr(const_obj), "constituent_props_ptr"
             ),
         ),
         SafeDeallocOp(target_op=_ref_expr("lc_const_props")),
@@ -683,17 +687,19 @@ def _generate_constituent_api(
         AssignOp(lhs_op=_ref_expr("lc_const_props"), rhs_op=VarRefExprOp("lc_props_ptr")),
         NullifyPointerOp("lc_props_ptr"),
     ]
-    if cam_host:
-        rc_body_ops.append(CallStatementOp(
-            "ccpp_initialize_constituent_ptr", arg_ops=[_ref_expr("cam_constituents_obj")],
-        ))
+    # Hand the constituents to the schemes' ccpp_scheme_utils: original
+    # capgen's (CAM-SIMA's framework) takes the constituents object, the
+    # bundled framework the property array.
+    if capgen_api:
+        set_constituents, set_constituents_arg = "ccpp_initialize_constituent_ptr", const_obj
     else:
-        rc_body_ops.append(CallStatementOp(
-            "ccpp_scheme_utils_set_constituents", arg_ops=[_ref_expr("lc_const_props")],
-        ))
+        set_constituents, set_constituents_arg = "ccpp_scheme_utils_set_constituents", "lc_const_props"
+    rc_body_ops.append(CallStatementOp(
+        set_constituents, arg_ops=[_ref_expr(set_constituents_arg)],
+    ))
     rc_body_ops += [
         DdtMethodCallOp(
-            obj_expr_op=_ref_expr("cam_constituents_obj"), method="num_constituents",
+            obj_expr_op=_ref_expr(const_obj), method="num_constituents",
             arg_ops=[VarRefExprOp("lc_num_consts")], kwarg_ops=_errcode_errmsg_kwargs(),
         ),
         ErrorPropagateOp("errcode"),
@@ -703,13 +709,13 @@ def _generate_constituent_api(
     ]
     if n_fixed > 0:
         rc_body_ops.append(DoLoopOp(
-            "lc_i", _size_of("cam_model_const_indices"),
+            "lc_i", _size_of(const_indices),
             [
                 DdtMethodCallOp(
-                    obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
+                    obj_expr_op=_ref_expr(const_obj), method="const_index",
                     arg_ops=[
                         VarRefExprOp("field_ind"),
-                        IndexExprOp(_ref_expr("cam_model_const_stdnames"), [VarRefExprOp("lc_i")]),
+                        IndexExprOp(_ref_expr(const_stdnames), [VarRefExprOp("lc_i")]),
                     ],
                     kwarg_ops=_errcode_errmsg_kwargs(),
                 ),
@@ -717,7 +723,7 @@ def _generate_constituent_api(
                 ActiveCheckOp(
                     condition_op=_int_var_cmp_zero("field_ind", "sgt"),
                     with_body_ops=[AssignOp(
-                        lhs_op=IndexExprOp(_ref_expr("cam_model_const_indices"),
+                        lhs_op=IndexExprOp(_ref_expr(const_indices),
                                            [VarRefExprOp("lc_i")]),
                         rhs_op=VarRefExprOp("field_ind"),
                     )],
@@ -725,7 +731,7 @@ def _generate_constituent_api(
                         message_op=StringConcatExprOp([
                             StringLiteralExprOp("No field index for "),
                             CallExprOp("trim", [IndexExprOp(
-                                _ref_expr("cam_model_const_stdnames"),
+                                _ref_expr(const_stdnames),
                                 [VarRefExprOp("lc_i")],
                             )]),
                         ]),
@@ -748,8 +754,7 @@ def _generate_constituent_api(
         uses={
             _CCPP_CONSTITUENT_MOD: ["ccpp_constituent_properties_t",
                                     "ccpp_constituent_prop_ptr_t"],
-            "ccpp_scheme_utils": ["ccpp_initialize_constituent_ptr" if cam_host
-                                  else "ccpp_scheme_utils_set_constituents"],
+            "ccpp_scheme_utils": [set_constituents],
         },
     )
 
@@ -772,7 +777,7 @@ def _generate_constituent_api(
     # index -- confirmed on a real QPC4 (RRTMGP + non-advected rad_climate
     # gases) MPAS case.
     _nc_call = DdtMethodCallOp(
-        obj_expr_op=_ref_expr("cam_constituents_obj"), method="num_constituents",
+        obj_expr_op=_ref_expr(const_obj), method="num_constituents",
         arg_ops=[VarRefExprOp("num_advected")],
         kwarg_ops=[KeywordArgExprOp("advected", VarRefExprOp("advected"))]
         + _errcode_errmsg_kwargs(),
@@ -810,7 +815,7 @@ def _generate_constituent_api(
     # lock_data allocates the internal data array and applies defaults.
     ic_body_ops += [
         DdtMethodCallOp(
-            obj_expr_op=_ref_expr("cam_constituents_obj"), method="lock_data",
+            obj_expr_op=_ref_expr(const_obj), method="lock_data",
             arg_ops=[VarRefExprOp("ncols"), VarRefExprOp("pver")],
             kwarg_ops=_errcode_errmsg_kwargs("errflg", "errmsg"),
         ),
@@ -818,7 +823,7 @@ def _generate_constituent_api(
         PointerAssignOp(
             target_op=_ref_expr("lc_constituent_array"),
             rhs_expr_op=MethodCallExprOp(
-                _ref_expr("cam_constituents_obj"), "field_data_ptr"
+                _ref_expr(const_obj), "field_data_ptr"
             ),
         ),
     ]
@@ -839,7 +844,7 @@ def _generate_constituent_api(
         if _cst_std:
             # A constituent view: a pointer slice of its base array
             # (lc_constituent_array for an advected arg, lc_const_tend for a
-            # tendency), found with cam_constituents_obj%const_index; the
+            # tendency), found with <host>_constituents_obj%const_index; the
             # block construct avoids polluting the outer scope. A missing
             # constituent is an error: otherwise the view stays null and a
             # scheme writing through it fails later, far from the cause.
@@ -853,7 +858,7 @@ def _generate_constituent_api(
                 [
                     NullifyPointerOp(target_op=_ref_expr(lc_name)),
                     DdtMethodCallOp(
-                        obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
+                        obj_expr_op=_ref_expr(const_obj), method="const_index",
                         arg_ops=[VarRefExprOp("lc_tend_idx"), StringLiteralExprOp(_cst_std)],
                         kwarg_ops=_errcode_errmsg_kwargs("errflg", "lc_tend_errmsg"),
                     ),
@@ -923,14 +928,14 @@ def _generate_constituent_api(
         [PointerAssignOp(
             "ptr",
             rhs_expr_op=MethodCallExprOp(
-                _ref_expr("cam_constituents_obj"), "advected_constituents_ptr"
+                _ref_expr(const_obj), "advected_constituents_ptr"
             ),
         )],
         result=_local("ptr", _real3.element_type, [0, 0, 0], pointer=True),
     )
 
     # ── 7. const_get_index ───────────────────────────────────────────────
-    # Delegate to cam_constituents_obj%const_index (hash lookup) instead of
+    # Delegate to <host>_constituents_obj%const_index (hash lookup) instead of
     # linear scan.  Hash keys are stored lowercase, so pass to_lower(std_name).
     ci_body_ops: list = [ClearErrStateOp("errflg", "errmsg"), _assign_const("index", -1)]
     if multi_instance:
@@ -944,7 +949,7 @@ def _generate_constituent_api(
     ))
     ci_body_ops += [
         DdtMethodCallOp(
-            obj_expr_op=_ref_expr("cam_constituents_obj"), method="const_index",
+            obj_expr_op=_ref_expr(const_obj), method="const_index",
             arg_ops=[
                 VarRefExprOp("index"),
                 CallExprOp("to_lower", [VarRefExprOp("std_name")]),
@@ -984,33 +989,6 @@ def _generate_constituent_api(
         result=_local("ptr", _prop_ptr, [0], pointer=True),
     )
 
-    # ── 9. gather_constituents / 10. update_constituents (cam_host only) ──
-    if cam_host:
-        # cam_host never supports multi-instance (asserted above), so bypass _ref_expr()
-        # to avoid a latent reference to lc_instances(instance)%cam_constituents_obj
-        # in a subroutine that has no instance argument.
-        _cam_obj_ref = "cam_constituents_obj"
-        gc_op = fixed_interface_fn(
-            f"{h}_ccpp_gather_constituents",
-            [("const_array", _real3, "out", ()),
-             ("errcode", _int, "out", ()),
-             ("errmsg", _errmsg, "out", ())],
-            [DdtMethodCallOp(
-                obj_expr_op=VarRefExprOp(_cam_obj_ref), method="copy_in",
-                arg_ops=[VarRefExprOp("const_array")], kwarg_ops=_errcode_errmsg_kwargs(),
-            )],
-        )
-        uc_op = fixed_interface_fn(
-            f"{h}_ccpp_update_constituents",
-            [("const_array", _real3, "in", ()),
-             ("errcode", _int, "out", ()),
-             ("errmsg", _errmsg, "out", ())],
-            [DdtMethodCallOp(
-                obj_expr_op=VarRefExprOp(_cam_obj_ref), method="copy_out",
-                arg_ops=[VarRefExprOp("const_array")], kwarg_ops=_errcode_errmsg_kwargs(),
-            )],
-        )
-
     public_names_list = [
         f"{h}_ccpp_is_scheme_constituent",
         f"{h}_ccpp_deallocate_dynamic_constituents",
@@ -1022,22 +1000,14 @@ def _generate_constituent_api(
         f"{h}_const_get_index",
         f"{h}_model_const_properties",
     ]
-    if cam_host:
-        public_names_list += [
-            f"{h}_ccpp_gather_constituents",
-            f"{h}_ccpp_update_constituents",
-        ]
-
-    if cam_host:
-        api_op = CamHostConstituentApiOp(
-            public_names_list,
-            [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op, gc_op, uc_op],
-        )
-    else:
-        _nc_fn_ops = [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op]
-        if multi_instance:
-            _nc_fn_ops = [DerivedTypeDefOp(instance_type_name, component_ops)] + _nc_fn_ops
-        api_op = NonCamHostConstituentApiOp(public_names_list, _nc_fn_ops)
+    api_fn_ops = [isc_op, da_op, rc_op, nc_op, ic_op, ca_op, aca_op, ci_op, mp_op]
+    if capgen_api:
+        capgen_names, capgen_fns = capgen_constituent_routines(h, const_obj)
+        public_names_list += capgen_names
+        api_fn_ops += capgen_fns
+    if multi_instance:
+        api_fn_ops = [DerivedTypeDefOp(instance_type_name, component_ops)] + api_fn_ops
+    api_op = ConstituentApiOp(public_names_list, api_fn_ops)
 
     # ── USE stubs for ccpp_constituent_prop_mod ──────────────────────────
     # Module name resolved via the generic ddt_source_module mechanism
