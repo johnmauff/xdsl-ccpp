@@ -116,7 +116,7 @@
 // CHECK-NEXT:        %11 = memref.load %errflg[] : memref<i32>
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%errmsg, %errflg, %thread, %data_array) <{callee = "thread_scheme_run", operand_names = ["errmsg", "errflg", "thread", "data_array"], result_names = [], overrides = {}}> : (memref<512xi8>, memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%errmsg, %errflg, %thread, %data_array) <{callee = "thread_scheme_run", operand_names = ["errmsg", "errflg", "thread", "data_array"], result_names = []}> : (memref<512xi8>, memref<i32>, memref<i32>, memref<?x!ccpp_utils.real_kind<"kind_phys">>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errflg : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }

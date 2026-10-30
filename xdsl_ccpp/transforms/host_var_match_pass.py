@@ -30,7 +30,7 @@ def _parse_dim_names(arg_op) -> list:
     scheme_arg_op and host_arg_op at
     two sites in _check_compatibility's own dimension rank check (the
     promotion-prefix branch and the equal-rank per-dimension-name branch).
-    Not shared with validate_fir.py's own similar-looking dim_names split
+    Not shared with validate_source.py's own similar-looking dim_names split
     -- that one also lowercases and excludes digit-literal dims for a
     different (standard-name-lookup) purpose; merging would change its
     behavior.

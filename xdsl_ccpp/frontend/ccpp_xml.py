@@ -124,10 +124,6 @@ class CCPPArgumentTable(CCPPItem):
         assert isinstance(fn_arg, CCPPArgument)
         self.function_arguments[fn_arg.name] = fn_arg
 
-    def getFunctionArgument(self, arg_name):
-        """Return the `CCPPArgument` with the given name."""
-        return self.function_arguments[arg_name]
-
     def getFunctionArguments(self):
         """Return all `CCPPArgument` descriptors in declaration order."""
         return self.function_arguments.values()
@@ -286,9 +282,6 @@ class XMLSuiteBase:
 
     def __iter__(self):
         return self.children.__iter__()
-
-    def __next__(self):
-        return self.children.__next__()
 
 
 class XMLScheme(XMLSuiteBase):

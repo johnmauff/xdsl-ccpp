@@ -6,7 +6,6 @@ from __future__ import annotations
 from xdsl.dialects import arith, builtin, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
-    DictionaryAttr,
     IntegerAttr,
     StringAttr,
     i8,
@@ -384,16 +383,13 @@ class CallSequenceMixin:
             subroutine_name,
             ArrayAttr([StringAttr(n) for n in in_names]),
             ArrayAttr([]),
-            None if overrides else DictionaryAttr({}),
             in_ssa,
             [],
             # Overrides are literals of unknown type from the suite
-            # definition, kept verbatim. None (not []) when empty, to keep
-            # the legacy overrides={} property shape.
-            override_ops=(
-                [KeywordArgExprOp(k, MetadataLiteralExprOp(v)) for k, v in overrides.items()]
-                if overrides else None
-            ),
+            # definition, kept verbatim.
+            override_ops=[
+                KeywordArgExprOp(k, MetadataLiteralExprOp(v)) for k, v in (overrides or {}).items()
+            ],
         )
 
         # Only execute when errflg == 0

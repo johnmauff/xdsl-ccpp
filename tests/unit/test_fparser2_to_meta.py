@@ -1,7 +1,7 @@
 """Unit tests for fparser2_to_meta — source extraction via fparser2.
 
 Tests the full pipeline from Fortran source text to CCPP IR, then validates
-the result using compare_modules from validate_fir.
+the result using compare_modules from validate_source.
 """
 
 import pytest
@@ -9,7 +9,7 @@ import pytest
 pytest.importorskip("fparser", reason="fparser not installed")
 
 from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_source
-from xdsl_ccpp.transforms.validate_fir import Mismatch, compare_modules
+from xdsl_ccpp.transforms.validate_source import Mismatch, compare_modules
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp
 from xdsl.dialects.builtin import ModuleOp
 
@@ -44,7 +44,7 @@ end module
     tables = {op.table_name.data for op in mod.body.block.ops
               if isinstance(op, ArgumentTableOp.__class__)}
     # arg tables are inside table_properties ops — use compare_modules helper
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     tbls = _collect_arg_tables(mod)
     assert "mymod_run" in tbls
 
@@ -59,7 +59,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = _collect_arg_tables(mod)["m_run"].body.block.ops.__iter__().__next__()
     assert arg.arg_type.data == "integer"
     assert arg.intent.data == "out"
@@ -76,7 +76,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = _collect_arg_tables(mod)["m_run"].body.block.ops.__iter__().__next__()
     assert arg.arg_type.data == "real"
     assert arg.dimensions.data == 2
@@ -93,7 +93,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = _collect_arg_tables(mod)["m_run"].body.block.ops.__iter__().__next__()
     assert arg.optional is not None
 
@@ -108,7 +108,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = _collect_arg_tables(mod)["m_run"].body.block.ops.__iter__().__next__()
     assert arg.dimensions.data == 2
 
@@ -127,7 +127,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     tbls = _collect_arg_tables(mod)
     assert "m_init" in tbls
     assert "m_run" in tbls
@@ -221,7 +221,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = next(iter(_collect_arg_tables(mod)["m_run"].body.block.ops))
     assert arg.kind is not None
     assert arg.kind.data == "kind_phys"
@@ -237,7 +237,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = next(iter(_collect_arg_tables(mod)["m_run"].body.block.ops))
     assert arg.kind is not None
     assert arg.kind.data == "kind_phys"
@@ -253,7 +253,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = next(iter(_collect_arg_tables(mod)["m_run"].body.block.ops))
     assert arg.kind is None
 
@@ -305,7 +305,7 @@ contains
 end module
 """
     mod = build_meta_module_from_source(src)
-    from xdsl_ccpp.transforms.validate_fir import _collect_arg_tables
+    from xdsl_ccpp.transforms.validate_source import _collect_arg_tables
     arg = next(iter(_collect_arg_tables(mod)["m_run"].body.block.ops))
     assert arg.arg_type.data == "vmr_type"
 

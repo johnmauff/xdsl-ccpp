@@ -56,7 +56,7 @@ def test_run_normalizes_options_db_missing_host_files(tmp_path):
     same normalization `build_options_db_from_args` applies to a CLI
     invocation. `default_options_db()` documents `host_files=None` as a
     valid "no host files" config (host_files is optional -- only `suites`
-    and `scheme_files`/`meta_file` are required) -- without normalization,
+    and `scheme_files` are required) -- without normalization,
     `run_frontend()`'s `list(self.options_db["host_files"])` crashes with
     TypeError the moment a programmatic caller omits it."""
     tool = ccppMain()

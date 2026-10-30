@@ -575,7 +575,6 @@ class PhaseFunctionsMixin:
             suite_description, tgt_subroutine_postfix, physics_mode,
             emit_scheme_calls=emit_scheme_calls,
         )
-        scheme_entries = _tables.scheme_entries
         arg_tables = _tables.arg_tables
         scheme_overrides = _tables.scheme_overrides
         actual_postfixes = _tables.actual_postfixes
@@ -693,18 +692,6 @@ class PhaseFunctionsMixin:
             instance_local_name=instance_local_name,
         )
         return new_func, list(fn_sigs.values()), suite_use_stubs
-
-    def clone_func_defs(self, func_defs):
-        """Create private external declarations for a list of scheme FuncOps.
-
-        Keeps the generated IR self-contained and verifiable before linking.
-        """
-        return [
-            func.FuncOp.external(
-                fd.sym_name.data, fd.function_type.inputs, fd.function_type.outputs
-            )
-            for fd in func_defs
-        ]
 
     def _generate_lifecycle_fns(self, suite_description, suite_model) -> "_LifecycleFnsResult":
         """Generate FuncOps for the three fixed, flat lifecycle specs, plus

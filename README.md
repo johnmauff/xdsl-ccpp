@@ -338,22 +338,10 @@ ccpp_validate examples/capgen/*.F90
 
 Pass `--host-files` to enable dimension name validation against the host model registry.
 
-The tool auto-detects the best available parsing backend:
-
-| Backend | Install | Notes |
-|---------|---------|-------|
-| `fparser2` | `pip install fparser` | Pure Python, no external tools required |
-| `flang` | system LLVM or conda | Production Fortran compiler, more robust |
-
-| Check | fparser2 | Flang/FIR |
-|-------|----------|-----------|
-| Argument existence | ✅ | ✅ |
-| Type | ✅ | ✅ |
-| Rank | ✅ | ✅ |
-| Intent | ✅ | ✅ |
-| Optional flag | ✅ | ✅ |
-| Kind names | ✅ | ❌ (lowered to `f32`/`f64`) |
-| Dimension names | ✅ | ❌ (requires `--host-files`) |
+Fortran source is parsed with fparser2 (`pip install fparser`), a pure-Python
+parser that needs no external tools. It checks argument existence, type, rank,
+intent, the optional flag and kind names, and dimension names with
+`--host-files`.
 
 ### Variable Tracking
 
@@ -440,9 +428,7 @@ every compilable example — the per-example hand-written Makefiles this used
 to coexist alongside have been removed. Currently covers `nested_suite`,
 `var_compat`, `tinyddt`, `advection`, `advection_flat_host`, `kessler`,
 `nestedddt`, `chararg`, `constadv`, `constprop`, `ddthost`, `capgen`, and
-`helloworld` (every example directory except `atmospheric_physics`, which has
-nothing to compile in the first place — scheme-only Python suite
-definitions, exercised by pytest directly).
+`helloworld`.
 
 `ddthost` and `capgen` are structurally similar to `kessler` (two drivers: a
 Fortran host and a C++ host-model/chost driver, `<name>_ftn_host.exe`/
@@ -762,7 +748,6 @@ correct interface blocks; a compiled end-to-end example has not yet been written
 | `ddthost/` | DDT host variables and optional entry points; Python-defined host interface |
 | `advection/` | Columnar-chunked physics with constituent registration; column-sliced arrays |
 | `kessler/` | Kessler warm-rain microphysics; OpenACC GPU directives; four drivers: CCPP Fortran cap, hand-written Fortran, C++ BIND(C) (`--bind-c`), and C++ host model (`language = c++` in `host_cpp/*.meta`) |
-| `atmospheric_physics/` | Python suite definitions for 9 suites from [ESCOMP/atmospheric_physics](https://github.com/ESCOMP/atmospheric_physics) (CAM-SIMA's scheme library) |
 
 Each example can be driven via the XML frontend, the Python API, or both.
 
@@ -801,25 +786,6 @@ To regenerate CHECK directives after an output change:
 python3 tests/filecheck/examples/update-filecheck-test.py \
   tests/filecheck/examples/end_to_end/helloworld-xml.mlir
 ```
-
-### Parsing non-trivial suite definition files
-
-The 8 main suites from
-[ESCOMP/atmospheric_physics](https://github.com/ESCOMP/atmospheric_physics)
-(used by CAM-SIMA) are exercised as scheme-only cap generation tests — no host
-files. This validates the pipeline at real-world scale: 146 `.meta` files,
-173 `.F90` scheme sources.
-
-| Suite | Schemes | Subcycles |
-|-------|---------|-----------|
-| `adiabatic` | 1 | none |
-| `held_suarez_1994` | 6 | none |
-| `tj2016` | 8 | none |
-| `cam7` | 25 | none |
-| `kessler` | 14 | none |
-| `musica` | 7 | none |
-| `cam4` | 65 | 2 (`number_of_diagnostic_subcycles`) |
-| `cam5` | 65 | 2 (`number_of_diagnostic_subcycles`) |
 
 ### Compiled examples
 

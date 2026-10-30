@@ -141,6 +141,8 @@ class SuiteVariableModel:
 
     3. Not found; first occurrence is ``intent(in)`` or ``intent(inout)``
        → **error** — variable consumed before any scheme provides it.
+       HostVariableMatchPass reports this ("has no matching host model
+       variable"); this model does not check it again.
 
     4. Already in suite data (a prior scheme wrote it in an earlier phase or
        group) → still **SUITE_OWNED**; handled automatically because the
@@ -152,10 +154,6 @@ class SuiteVariableModel:
 
         for entry in model.suite_owned_vars():
             print(entry.local_name, entry.rank, entry.alloc_dim_std_names)
-
-        if model.errors():
-            for msg in model.errors():
-                print("ERROR:", msg)
     """
 
     # All lifecycle phase postfixes in the order they are processed.
@@ -187,7 +185,6 @@ class SuiteVariableModel:
         """
         self._std_key = std_key_fn
         self._suite_owned: dict[str, SuiteVarEntry] = {}
-        self._errors: list[str] = []
         # Bare names this suite's own schemes host-match to a MODULE-type
         # (not HOST-type) host variable -- see _process_table's Case 1 and
         # _resolve_name_collisions. Populated during _build.
@@ -257,30 +254,6 @@ class SuiteVariableModel:
         if entry is None:
             return False
         return entry.rank > 0 and not entry.is_ddt
-
-    def errors(self) -> list:
-        """Case-3 error messages: variables consumed before any scheme provides them."""
-        return list(self._errors)
-
-    def summary(self) -> str:
-        """Human-readable summary for debugging."""
-        lines = [f"SuiteVariableModel ({len(self._suite_owned)} suite-owned vars):"]
-        for e in self._suite_owned.values():
-            alloc = (
-                f"  alloc({', '.join(e.alloc_dim_std_names)})"
-                if e.alloc_dim_std_names else "  (no alloc)"
-            )
-            lines.append(
-                f"  {e.local_name}: {e.fortran_type}"
-                f"{'(kind_phys)' if e.kind == 'kind_phys' else ''}"
-                f"  rank={e.rank}{alloc}"
-                f"  first_written={e.producing_phase}"
-                f"{'/' + e.producing_group if e.producing_group else ''}"
-            )
-        if self._errors:
-            lines.append("Errors:")
-            lines.extend(f"  {e}" for e in self._errors)
-        return "\n".join(lines)
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
@@ -469,17 +442,6 @@ class SuiteVariableModel:
                 )
                 continue
 
-            # Case 3: first occurrence is intent(in/inout) with no host match
-            # and not yet in suite data.
-            # Skip if `is_interstitial` is set — the HostVariableMatchPass
-            # already detected and flagged this; we avoid double-reporting.
-            if intent in ("in", "inout") and not arg.hasAttr("is_interstitial"):
-                self._errors.append(
-                    f"Scheme '{scheme_name}' ({phase}): argument "
-                    f"'{arg.name}' (standard_name='{std_name}') has "
-                    f"intent({intent}) but has no host match and no prior "
-                    f"suite provider."
-                )
 
     @staticmethod
     def _parse_dim_names(arg) -> list:

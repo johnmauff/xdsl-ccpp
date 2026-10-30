@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from xdsl.dialects import arith, builtin, func, llvm, memref, scf
 from xdsl.dialects.builtin import (
     ArrayAttr,
-    DictionaryAttr,
     IndexType,
     IntegerAttr,
     StringAttr,
@@ -1397,7 +1396,6 @@ def _build_call_and_copy_back_ops(
             suite_callee,
             ArrayAttr([StringAttr(n) for n in call_arg_names]),
             ArrayAttr([StringAttr(n) for n in _result_names]),
-            DictionaryAttr({}),
             call_args,
             callee_output_types,
         )

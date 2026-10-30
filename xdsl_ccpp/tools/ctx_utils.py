@@ -1,15 +1,7 @@
 """Shared xDSL Context factory for xdsl_ccpp's CLI tools.
 
-Extracted after the exact same
-`_make_ctx()` -- register every standard dialect, then load CCPP/CCPPUtils
-on top -- was found duplicated verbatim across 5 CLI tool scripts
-(`ccpp_dsl.py`, `ccpp_validate_fir.py`, `ccpp_validate_source.py`,
-`fir2meta.py`, `ccpp_datatable.py`). Confirmed identical at every site
-(only one carried a docstring); a single shared factory means they can't
-independently drift the way `fir2meta.py`'s own Flang invocation once did.
-(`ccpp_validate_fir.py` was later deleted as redundant with
-`ccpp_validate_source.py --backend flang` -- task #71 -- so only 4 of the
-original 5 sites remain.)
+Register every standard dialect, then load CCPP/CCPPUtils on top -- one
+shared factory, so the CLI tools that parse CCPP IR cannot drift apart.
 """
 
 from __future__ import annotations

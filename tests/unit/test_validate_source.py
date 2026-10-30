@@ -1,15 +1,14 @@
-"""Unit tests for validate_fir comparison logic.
+"""Unit tests for validate_source comparison logic.
 
 All tests build CCPP IR programmatically — no Flang or .meta file parsing
 required.  This makes the suite fast and runnable without any external tools.
 """
 
 import pytest
-
 from xdsl.dialects.builtin import ModuleOp
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp
-from xdsl_ccpp.transforms.validate_fir import (
+from xdsl_ccpp.transforms.validate_source import (
     Mismatch,
     check_dimension_names,
     collect_standard_names,

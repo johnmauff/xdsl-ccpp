@@ -35,7 +35,7 @@
 // CHECK-NEXT:        %2 = memref.load %errcode[] : memref<i32>
 // CHECK-NEXT:        %3 = arith.cmpi eq, %2, %1 : i32
 // CHECK-NEXT:        scf.if %3 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const, %errmsg, %errcode) <{callee = "cld_liq_register", operand_names = ["dyn_const", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%dyn_const, %errmsg, %errcode) <{callee = "cld_liq_register", operand_names = ["dyn_const", "errmsg", "errcode"], result_names = []}> : (memref<?x!ccpp_utils.derived_type<"ccpp_constituent_properties_t">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
@@ -129,7 +129,7 @@
 // CHECK-NEXT:        %11 = memref.load %errcode[] : memref<i32>
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%tfreeze, %tcld, %errmsg, %errcode) <{callee = "cld_liq_init", operand_names = ["tfreeze", "tcld", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%tfreeze, %tcld, %errmsg, %errcode) <{callee = "cld_liq_init", operand_names = ["tfreeze", "tcld", "errmsg", "errcode"], result_names = []}> : (memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }
@@ -160,13 +160,13 @@
 // CHECK-NEXT:        %11 = memref.load %errcode[] : memref<i32>
 // CHECK-NEXT:        %12 = arith.cmpi eq, %11, %10 : i32
 // CHECK-NEXT:        scf.if %12 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %tcld, %temp, %qv, %ps, %cld_liq_array, %cld_liq_tend, %errmsg, %errcode) <{callee = "cld_liq_run", operand_names = ["ncol", "timestep", "tcld", "temp", "qv", "ps", "cld_liq_array", "cld_liq_tend", "errmsg", "errcode"], result_names = [], overrides = {}}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%ncol, %timestep, %tcld, %temp, %qv, %ps, %cld_liq_array, %cld_liq_tend, %errmsg, %errcode) <{callee = "cld_liq_run", operand_names = ["ncol", "timestep", "tcld", "temp", "qv", "ps", "cld_liq_array", "cld_liq_tend", "errmsg", "errcode"], result_names = []}> : (memref<i32>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<512xi8>, memref<i32>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %13 = arith.constant 0 : i32
 // CHECK-NEXT:        %14 = memref.load %errcode[] : memref<i32>
 // CHECK-NEXT:        %15 = arith.cmpi eq, %14, %13 : i32
 // CHECK-NEXT:        scf.if %15 {
-// CHECK-NEXT:          "ccpp_utils.kw_call"(%const_tend, %const, %errcode, %errmsg) <{callee = "apply_constituent_tendencies_run", operand_names = ["const_tend", "const", "errcode", "errmsg"], result_names = [], overrides = {}}> : (memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>) -> ()
+// CHECK-NEXT:          "ccpp_utils.kw_call"(%const_tend, %const, %errcode, %errmsg) <{callee = "apply_constituent_tendencies_run", operand_names = ["const_tend", "const", "errcode", "errmsg"], result_names = []}> : (memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<?x?x?x!ccpp_utils.real_kind<"kind_phys">>, memref<i32>, memref<512xi8>) -> ()
 // CHECK-NEXT:        }
 // CHECK-NEXT:        func.return %errmsg, %errcode : memref<512xi8>, memref<i32>
 // CHECK-NEXT:      }

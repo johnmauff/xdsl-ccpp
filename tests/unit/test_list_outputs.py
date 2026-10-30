@@ -344,17 +344,3 @@ class TestPyMode:
         assert "cld_suite_cap.F90" in outputs
         assert not any(o.endswith("_ccpp_cap.F90") for o in outputs)
 
-    def test_meta_file_mode_rejected(self, tmp_path):
-        tool = ccppMain()
-        options_db = tool.default_options_db()
-        meta = tmp_path / "x.mlir"
-        meta.write_text("builtin.module {}")
-        options_db.update({"suites": [f"{self.H}/hello_world_suite.xml"],
-                           "scheme_files": self.SCHEMES, "meta_file": str(meta),
-                           "list_outputs": True})
-        tool.options_db = tool._normalize_options_db(dict(options_db))
-        try:
-            tool.predict_output_filenames()
-            assert False, "expected CcppDslError"
-        except Exception as exc:
-            assert "meta-file" in str(exc)

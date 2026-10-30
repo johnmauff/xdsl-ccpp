@@ -312,7 +312,7 @@ CCPP_DEPRECATED_STD_NAMES: dict = {
 # Set once per process (by each frontend's CLI entry point) from --legacy-mode.
 # A plain module global rather than a threaded parameter: ArgumentOp is
 # constructed from dozens of call sites across three independent frontends
-# (ccpp_xml.py, py_api.py, and ccpp_dsl.py's merge_meta_files/merge_meta),
+# (ccpp_xml.py, py_api.py, and ccpp_dsl.py's merge_meta_files),
 # and only one of those (ccpp_xml.py) even runs in-process with the CLI that
 # parses the flag -- the others would need it threaded through unrelated
 # constructor signatures for no benefit.

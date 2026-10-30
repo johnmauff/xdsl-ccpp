@@ -32,37 +32,6 @@ from xdsl_ccpp.transforms.suitecap.records import (
 class SuiteOwnedMixin:
     """Suite-owned (framework) variables: references, allocation scheduling and module-scope storage."""
 
-    def generateVariableCreation(self, scheme_names, arg_tables):
-        """Allocate a memref for every unique argument across all schemes.
-
-        Where the same argument name appears in multiple schemes its type must
-        match; only one allocation is created.
-        """
-        args_required = {}
-        # Collect unique args across all schemes, asserting type consistency
-        for scheme_name in scheme_names:
-            arg_table = arg_tables[scheme_name]
-            for fn_arg in arg_table.getFunctionArguments():
-                if fn_arg.name in args_required:
-                    assert fn_arg.getAttr("type") == args_required[fn_arg.name].getAttr(
-                        "type"
-                    )
-                else:
-                    args_required[fn_arg.name] = fn_arg
-
-        alloc_ops = {}
-        # Create one AllocaOp per unique argument
-        for arg in args_required.values():
-            arg_type = arg.getAttr("type")
-            data_shape = []
-            if arg_type == "character":
-                data_shape.append(int(arg.getAttr("kind").split("=")[1]))
-
-            alloc_ops[arg.name] = memref.AllocaOp.get(
-                TypeConversions.getBaseType(arg_type), shape=data_shape
-            )
-        return alloc_ops
-
     def generateVariableInitialisations(self, data_ops):
         """Emit ops that zero-initialise errflg and clear errmsg at subroutine entry."""
         err_const = arith.ConstantOp.from_int_and_width(0, 32)

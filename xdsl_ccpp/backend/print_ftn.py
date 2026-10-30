@@ -7,7 +7,6 @@ from typing import IO, cast
 from xdsl.dialects import arith, builtin, func, llvm, math, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
-    DenseIntOrFPElementsAttr,
     Float32Type,
     Float64Type,
     FloatAttr,
@@ -989,16 +988,15 @@ class ftnPrintContext:
                     # The caller uses _ftn_dim_suffix to append '(:, :)' etc. to
                     # the variable name in the declaration.
                     return self.mlir_type_to_ftn_type(elem_t)
-                shape_str = ", ".join(str(s.data) for s in shape)
-                type_str = self.mlir_type_to_ftn_type(elem_t)
-                if not shape_str:
+                if not shape:
                     # Zero-dimensional memref — treat as a plain scalar
-                    return type_str
-                elif type_str == "character":
-                    # Character length is expressed with len= rather than dimensions
-                    return f"{type_str}(len={shape_str})"
-                else:
-                    return f"{type_str}({shape_str})"
+                    return self.mlir_type_to_ftn_type(elem_t)
+                # A static-shape array (character memrefs are handled
+                # above): its dimensions belong on the name, which this
+                # type spelling cannot express.
+                raise ValueError(
+                    f"mlir_type_to_ftn_type: no Fortran type for static-shape {type_attr}"
+                )
 
     def _elem_kind_name(self, type_attr: Attribute) -> str | None:
         """Return the Fortran kind name for the element of a real memref, or None."""
@@ -1059,11 +1057,8 @@ class ftnPrintContext:
                 return ""
 
     def attribute_value_to_str(self, attr: Attribute) -> str:
-        """Convert a value-carrying attribute to a Fortran literal string.
-
-        Handles integer, float, string, and dense element attributes.
-        Returns a diagnostic placeholder for unrecognised attribute kinds.
-        """
+        """Convert an arith.ConstantOp's value attribute (an integer, logical
+        or float) to a Fortran literal string."""
         match attr:
             case IntAttr():
                 return str(cast(IntAttr[int], attr).data)
@@ -1080,12 +1075,8 @@ class ftnPrintContext:
                 return "0.0"
             case FloatAttr(value=val):
                 return str(val.data)
-            case StringAttr() as s:
-                return f'"{s.data}"'
-            case DenseIntOrFPElementsAttr():
-                return f"{self.mlir_type_to_ftn_type(attr.get_type())} {{ {', '.join(self.attribute_value_to_str(a) for a in attr.iter_attrs())} }}"  # noqa: E501
             case _:
-                return f"<!unknown value {attr}>"
+                raise ValueError(f"attribute_value_to_str: no Fortran literal for {attr}")
 
     def _value_to_expr_str(self, val: SSAValue) -> str:
         """Return the Fortran expression string for an SSA value without printing.
@@ -1098,13 +1089,6 @@ class ftnPrintContext:
         if isa(val.owner, arith.ConstantOp):
             return self.attribute_value_to_str(val.owner.value)
         return self._get_variable_name_for(val)
-
-    def find_ret_ssa_idx(self, ret_op, ssa):
-        """Return the index of ssa in ret_op's argument list, or None."""
-        for idx, arg in enumerate(ret_op.arguments):
-            if arg == ssa:
-                return idx
-        return None
 
     def print_expr(self, op: Operation):
         """Recursively print op as an inline Fortran expression (no newline).
@@ -2624,21 +2608,13 @@ class ftnPrintContext:
         idx = 0
         seen: set[str] = set()
         printed_operand_values: set[str] = set()
-        if op.overrides is not None:
-            for name, val_attr in op.overrides.data.items():
-                if idx > 0:
-                    self.print(", ", end="", use_prefix=False)
-                self.print(f"{name}={val_attr.data}", end="", use_prefix=False)
-                seen.add(name)
-                idx += 1
-        else:
-            for r in op.override_ops_region:
-                kw_op = r.block.last_op
-                if idx > 0:
-                    self.print(", ", end="", use_prefix=False)
-                self.print(self._render_expr(kw_op), end="", use_prefix=False)
-                seen.add(kw_op.arg_name.data)
-                idx += 1
+        for r in op.override_ops_region:
+            kw_op = r.block.last_op
+            if idx > 0:
+                self.print(", ", end="", use_prefix=False)
+            self.print(self._render_expr(kw_op), end="", use_prefix=False)
+            seen.add(kw_op.arg_name.data)
+            idx += 1
         for name_attr, arg in zip(op.operand_names.data, op.args):
             name = name_attr.data
             if name not in seen:
@@ -3415,17 +3391,6 @@ class ftnPrintContext:
         """Iterate over every operation in body and dispatch it to print_op."""
         for op in body.ops:
             self.print_op(op)
-
-
-def get_modules_in_module_op(module: ModuleOp):
-    """Yield each named sub-ModuleOp directly contained in the top-level module.
-
-    The top-level module is an anonymous wrapper; the named sub-modules (one
-    per cap suite) are what get printed as individual Fortran files.
-    """
-    for op in module.body.ops:
-        if isinstance(op, builtin.ModuleOp):
-            yield op
 
 
 def print_to_ftn(

@@ -1,7 +1,7 @@
 """fparser2_to_meta — Extract CCPP dialect metadata from Fortran source via fparser2.
 
-Parallel to ``fir_to_meta`` but uses the pure-Python ``fparser`` library instead
-of Flang.  No external tools required — ``pip install fparser`` is sufficient.
+Uses the pure-Python ``fparser`` library; no external tools required —
+``pip install fparser`` is sufficient.
 
 Information extracted:
 - Argument names (from dummy argument list)
@@ -10,7 +10,7 @@ Information extracted:
 - Intent (from INTENT attribute)
 - Optional flag (from OPTIONAL attribute)
 
-Information NOT available from Fortran source text (same gaps as fir_to_meta):
+Information NOT available from Fortran source text:
 - ``standard_name`` / ``long_name``
 - ``units``
 - Kind name (only the kind token as written, not the resolved CCPP kind name)
@@ -34,14 +34,6 @@ _TYPE_MAP: dict[str, str] = {
     "logical": "logical",
     "complex": "complex",
 }
-
-
-def _fparser_available() -> bool:
-    try:
-        import fparser.two.Fortran2003  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 def _build_decl_map(scope_node, name_filter: set[str] | None) -> dict[str, dict]:
@@ -606,7 +598,7 @@ def build_meta_module_from_source(
     ``ccpp_xml.py``'s own unrecognised-``.meta``-key warning exactly -- a
     typo'd ``!$ccpp`` tag key is the same class of mistake as a typo'd
     ``.meta`` key. Safe to forward unconditionally: confirmed
-    ``validate_fir.compare_arg_tables`` never compares any tag-derived
+    ``validate_source.compare_arg_tables`` never compares any tag-derived
     field, so this has no effect on the existing scheme-vs-.meta
     validator even once real files start carrying tags.
 
