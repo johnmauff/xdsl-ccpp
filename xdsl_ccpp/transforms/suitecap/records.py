@@ -21,6 +21,42 @@ class GatherMetaFunctionSignatures(Visitor):
             self.meta_functions[func_op.sym_name.data] = func_op
 
 
+@dataclass(frozen=True)
+class PhaseSpec:
+    """One generated phase function of a suite cap or package cap.
+
+    target_postfix    -- the scheme entry points it calls (e.g. "_init");
+                         also the phase identity when it calls none.
+    generated_postfix -- suffix of the generated function's name.
+    phase_tag         -- its FN_PHASE_ATTR value (which module-level
+                         injections apply to it).
+    column_range      -- group-scoped: col_start/col_end replace the loop
+                         extent, horizontal arrays are column-sliced, and
+                         promoted schemes loop over the extra dimension.
+    emit_scheme_calls -- False for functions that only do framework setup
+                         (the suite's flat _init/_finalize, package state
+                         routines).
+    check_state       -- ccpp_suite_state value checked on entry, or None.
+    set_state         -- ccpp_suite_state value set on exit, or None.
+    suite_hooks       -- call the suite's <init>/<final> scheme.
+    package_scoped    -- a package cap's function: only package-private
+                         suite-owned names are module state (the others
+                         are dummy arguments), and a dimension's producer
+                         is any scheme that writes it before it is read,
+                         since a segment returns what its schemes write.
+    """
+
+    target_postfix: str
+    generated_postfix: str
+    phase_tag: str
+    column_range: bool
+    emit_scheme_calls: bool = True
+    check_state: str | None = None
+    set_state: str | None = None
+    suite_hooks: bool = False
+    package_scoped: bool = False
+
+
 @dataclass
 class _ArgTableResult:
     scheme_entries: list
@@ -84,7 +120,8 @@ class _CallSeqContext:
     suite_use_stubs: list
     actual_postfixes: dict
     tgt_subroutine_postfix: "str | None"
-    physics_mode: bool
+    column_range: bool
+    package_scoped: bool
     scheme_overrides: dict
     divergent_std_keys: frozenset
     arg_tables: dict

@@ -54,7 +54,7 @@ class SuiteOwnedMixin:
             _dim_var_refs, _still_pending = self._resolve_alloc_dim_var_refs(
                 _pending.alloc_dim_names, ctx.all_args, ctx.data_ops,
                 ctx.framework_ref_ops, ctx.suite_use_stubs, ctx.arg_tables,
-                resolved_producers,
+                resolved_producers, package_scoped=ctx.package_scoped,
             )
             if _still_pending is not None:
                 # Dimension produced by a later scheme; re-register under it.
@@ -90,7 +90,7 @@ class SuiteOwnedMixin:
 
     def _build_framework_var_ref(
         self, fw_arg, fw_std_key, all_args, data_ops, framework_ref_ops,
-        suite_model, physics_mode,
+        suite_model, column_range,
     ) -> tuple:
         """Build fw_arg's HostVarRefOp and register it in data_ops (under its
         bare name and the suite model's canonical local_name). In physics
@@ -138,7 +138,7 @@ class SuiteOwnedMixin:
                     _sentry.alloc_dim_std_names[0].lower() in _horiz_std_names
                 )
         _dims = _rank
-        if physics_mode and _dims >= 1 and _has_horiz_first_dim:
+        if column_range and _dims >= 1 and _has_horiz_first_dim:
             _col_begin_ssa = next(
                 (data_ops[a.name] for a in all_args.values()
                  if a.hasAttr("standard_name")
@@ -229,7 +229,7 @@ class SuiteOwnedMixin:
         self, fw_arg, fw_std_key, var_name, suite_entry, is_alloc_phase,
         suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
-        pending_only=False,
+        pending_only=False, package_scoped=False,
     ) -> None:
         """Decide whether and how fw_arg is allocated in this phase: skip if
         the scheme self-allocates, else allocate now or defer via
@@ -273,7 +273,7 @@ class SuiteOwnedMixin:
         )
         dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
             _alloc_dim_names, all_args, data_ops, framework_ref_ops,
-            suite_use_stubs, arg_tables, frozenset(),
+            suite_use_stubs, arg_tables, frozenset(), package_scoped=package_scoped,
         )
 
         if _pending_producer is not None:
@@ -332,7 +332,7 @@ class SuiteOwnedMixin:
     def _sweep_suite_owned_var_allocations(
         self, suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
         arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
-        deferred_warnings=None,
+        deferred_warnings=None, package_scoped=False,
     ) -> None:
         """Schedule allocations for suite-owned vars not yet allocated by the
         framework_vars loop (e.g. examples/constituents_dim's cwork/awork,
@@ -360,7 +360,7 @@ class SuiteOwnedMixin:
                 continue
             dim_var_refs, _pending_producer = self._resolve_alloc_dim_var_refs(
                 entry.alloc_dim_std_names, all_args, data_ops, framework_ref_ops,
-                suite_use_stubs, arg_tables, frozenset(),
+                suite_use_stubs, arg_tables, frozenset(), package_scoped=package_scoped,
             )
             if _pending_producer is not None:
                 pending_allocs.setdefault(_pending_producer, []).append(
@@ -410,10 +410,11 @@ class SuiteOwnedMixin:
         suite_use_stubs,
         suite_model,
         tgt_subroutine_postfix,
-        physics_mode,
+        column_range,
         arg_tables,
         already_scheduled_allocs=None,
         deferred_warnings=None,
+        package_scoped=False,
     ):
         """Build HostVarRefOps and LazyAllocOps for framework-managed vars.
 
@@ -438,9 +439,7 @@ class SuiteOwnedMixin:
         # dimension bounds. Skipped in _init/_register, where future-phase
         # scalars would resolve as 0-valued; scalars in the current all_args
         # are skipped so allocation waits for their producer.
-        if suite_model is not None and tgt_subroutine_postfix not in (
-            "_init", "_register", None
-        ):
+        if suite_model is not None and tgt_subroutine_postfix not in ("_init", "_register"):
             _current_std_names = {
                 a.getAttr("standard_name").lower()
                 for a in all_args.values()
@@ -466,7 +465,7 @@ class SuiteOwnedMixin:
                 _fw_std_key = _std_key(fw_arg)
                 _var_name, _suite_entry = self._build_framework_var_ref(
                     fw_arg, _fw_std_key, all_args, data_ops, framework_ref_ops,
-                    suite_model, physics_mode,
+                    suite_model, column_range,
                 )
 
                 _already_scheduled = (
@@ -475,7 +474,7 @@ class SuiteOwnedMixin:
                 )
                 _is_alloc_phase = (
                     tgt_subroutine_postfix in ("_init", "_register")
-                    or (physics_mode and not _already_scheduled)
+                    or (column_range and not _already_scheduled)
                 )
                 # _register only allocates pending-producer vars; the rest go in _init.
                 _pending_only = tgt_subroutine_postfix == "_register"
@@ -484,6 +483,7 @@ class SuiteOwnedMixin:
                     suite_model, all_args, data_ops, framework_ref_ops,
                     suite_use_stubs, arg_tables, already_scheduled_allocs,
                     pending_allocs, lazy_alloc_ops, pending_only=_pending_only,
+                    package_scoped=package_scoped,
                 )
 
                 # Tuple key by standard_name (set last, so it mirrors any slice).
@@ -495,10 +495,9 @@ class SuiteOwnedMixin:
             self._sweep_suite_owned_var_allocations(
                 suite_model, all_args, data_ops, framework_ref_ops, suite_use_stubs,
                 arg_tables, already_scheduled_allocs, pending_allocs, lazy_alloc_ops,
-                deferred_warnings=deferred_warnings,
+                deferred_warnings=deferred_warnings, package_scoped=package_scoped,
             )
 
-        if tgt_subroutine_postfix is not None:
-            _alias_canonical_data_ops(arg_tables, all_args, data_ops)
+        _alias_canonical_data_ops(arg_tables, all_args, data_ops)
 
         return framework_ref_ops, lazy_alloc_ops, pending_allocs

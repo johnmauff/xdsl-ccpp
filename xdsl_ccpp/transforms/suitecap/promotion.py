@@ -179,7 +179,7 @@ class PromotionMixin:
 
     def _resolve_alloc_dim_var_refs(
         self, alloc_dim_names, all_args, data_ops, framework_ref_ops,
-        suite_use_stubs, arg_tables, resolved_producers,
+        suite_use_stubs, arg_tables, resolved_producers, package_scoped=False,
     ) -> tuple:
         """Resolve each of alloc_dim_names to an SSA upper bound for an allocation.
 
@@ -220,7 +220,7 @@ class PromotionMixin:
             if matching is not None and (
                 # A package cap's segment returns what its schemes write first.
                 matching.getAttr("declared_intent") == "out"
-                if getattr(self, "generating_package_cap", False)
+                if package_scoped
                 and matching.hasAttr("declared_intent")
                 else matching.getAttr("ownership_kind") == ArgOwnershipKind.SuiteOwned
                 and matching.getAttr("intent") == "out"

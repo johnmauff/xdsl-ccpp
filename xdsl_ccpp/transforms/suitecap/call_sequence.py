@@ -420,7 +420,7 @@ class CallSequenceMixin:
             assert full_name in self.meta_fn_sigs
             if full_name not in fn_sigs:
                 fn_sigs[full_name] = self.meta_fn_sigs[full_name]
-            if ctx.physics_mode and self._scheme_has_promoted_args(tbl):
+            if ctx.column_range and self._scheme_has_promoted_args(tbl):
                 pdim = next(
                     (
                         arg.getAttr("promoted_dim").lower()
@@ -500,10 +500,8 @@ class CallSequenceMixin:
         )
         _lc_int = (int(loop_count) if is_literal
                    else CCPP_SUBCYCLE_UNKNOWN_LOOP_COUNT)
-        # Subcycles only loop the _run phase (matches capgen-v1); physics_mode
-        # alone is also true for the other group-scoped phases.
-        if (_lc_int > 1 and ctx.physics_mode and body_ops
-                and ctx.tgt_subroutine_postfix == "_run"):
+        # Subcycles only loop the _run phase (matches capgen-v1).
+        if _lc_int > 1 and body_ops and ctx.tgt_subroutine_postfix == "_run":
             sc_alloc = memref.AllocaOp.get(
                 TypeConversions.getBaseType("integer"), shape=[]
             )
@@ -542,7 +540,7 @@ class CallSequenceMixin:
         self,
         suite_description,
         tgt_subroutine_postfix,
-        physics_mode,
+        column_range,
         all_args,
         data_ops,
         framework_ref_ops,
@@ -550,6 +548,7 @@ class CallSequenceMixin:
         actual_postfixes,
         arg_tables,
         scheme_overrides,
+        package_scoped: bool = False,
         divergent_std_keys: frozenset = frozenset(),
         pending_allocs: dict = None,
         already_scheduled_allocs=None,
@@ -566,8 +565,6 @@ class CallSequenceMixin:
         fn_sigs = {}
         pending_allocs = pending_allocs or {}
         resolved_producers: set = set()
-        if tgt_subroutine_postfix is None:
-            return call_ops, fn_sigs
 
         call_sequence = (
             call_sequence_items
@@ -581,7 +578,8 @@ class CallSequenceMixin:
             suite_use_stubs=suite_use_stubs,
             actual_postfixes=actual_postfixes,
             tgt_subroutine_postfix=tgt_subroutine_postfix,
-            physics_mode=physics_mode,
+            column_range=column_range,
+            package_scoped=package_scoped,
             scheme_overrides=scheme_overrides,
             divergent_std_keys=divergent_std_keys,
             arg_tables=arg_tables,
