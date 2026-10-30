@@ -1,26 +1,37 @@
 from __future__ import annotations
 
+from io import StringIO
 from typing import IO
 
-from xdsl.dialects import arith, builtin, func, math, memref
+from xdsl.dialects import arith, builtin, func, math, memref, scf
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     Float32Type,
+    Float64Type,
     FloatAttr,
+    IndexType,
     IntAttr,
     IntegerAttr,
     IntegerType,
     MemRefType,
     ModuleOp,
+    i8,
 )
+from xdsl.dialects.llvm import LLVMPointerType
 from xdsl.ir import BlockArgument, SSAValue
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.backend import expr_precedence
 from xdsl_ccpp.backend.print_ftn import classify_arg_intent, wrap_paren_list
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AddressOfExprOp,
     ArrayConstructorExprOp,
+    AssignOp,
+    BlankLineOp,
     CallExprOp,
+    CastExprOp,
+    CommentOp,
+    ConditionalExprOp,
     CFunctionSigOp,
     CHostCapOp,
     CppBraceInitCallOp,
@@ -30,20 +41,29 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     CppIncludeOp,
     CppNamespaceOp,
     CppStructDefOp,
+    DdtMethodCallOp,
+    DerivedType,
     ExternCGuardOp,
     IndexExprOp,
     KindDefOp,
+    LocalVarOp,
     MemberAccessExprOp,
-    RawCppLinesOp,
+    MethodCallExprOp,
+    NullPointerExprOp,
+    OwnedArrayType,
+    OwnedStringType,
+    ReadOnlyType,
+    ReturnStmtOp,
     SliceExprOp,
     StrCmpOp,
     StringConcatExprOp,
     StringLiteralExprOp,
+    StructLiteralExprOp,
     TrimOp,
     VarRefExprOp,
 )
 from xdsl_ccpp.util.ccpp_conventions import ArgDecl, arg_attr_values, arg_decl
-from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
+from xdsl_ccpp.util.cpp_type_table import c_numeric_type
 
 # op.name -> C++ infix token, paralleling print_ftn.py's _binops. Built
 # independently (not derived from print_ftn's own table) since this file
@@ -329,6 +349,22 @@ def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) 
                 return _cpp_string_literal(o.text.data)
             case VarRefExprOp():
                 return o.var_name.data
+            case AddressOfExprOp():
+                return f"&{render(o.operand.block.last_op)}"
+            case NullPointerExprOp():
+                return "nullptr"
+            case MethodCallExprOp():
+                args = ", ".join(render(r.block.last_op) for r in o.args)
+                return f"{render_base(o.base)}.{o.method.data}({args})"
+            case StructLiteralExprOp():
+                return "{" + ", ".join(render(r.block.last_op) for r in o.fields) + "}"
+            case ConditionalExprOp():
+                cond, then, otherwise = (
+                    render(r.block.last_op) for r in (o.cond, o.then, o.otherwise)
+                )
+                return f"{cond} ? {then} : {otherwise}"
+            case CastExprOp():
+                return f"static_cast<{cpp_type_name(o.res.type)}>({render(o.value.block.last_op)})"
             case StringConcatExprOp():
                 # Two StringLiteralExprOp/char*-buffer pieces joined with
                 # '+' is not valid C++ (neither operand is a string
@@ -454,31 +490,71 @@ def _is_scalar_memref(mlir_type: object) -> bool:
     )
 
 
-def _cpp_type(mlir_type: object, intent: str) -> str:
-    """Map an MLIR type and intent string to a C++ type.
+def cpp_type_name(t: object, *, c_decl: bool = False) -> str:
+    """Spell an MLIR type as a C/C++ type: an element type by value, a
+    memref (any rank, or a static-shape field's elements) by pointer,
+    ``ReadOnlyType`` as ``const T*`` / ``const T&``, a ``DerivedType`` by
+    name (``struct X`` in a C declaration, ``c_decl``), and the owned
+    containers as ``std::string`` / ``std::vector<T>``.
+    """
+    match t:
+        case ReadOnlyType(inner=DerivedType() as inner):
+            return f"const {cpp_type_name(inner, c_decl=c_decl)}&"
+        case ReadOnlyType(inner=inner):
+            return f"const {cpp_type_name(inner, c_decl=c_decl)}"
+        case MemRefType(element_type=elem):
+            return f"{cpp_type_name(elem, c_decl=c_decl)}*"
+        case DerivedType(type_name=name):
+            return f"struct {name.data}" if c_decl else name.data
+        case OwnedStringType():
+            return "std::string"
+        case OwnedArrayType(element_type=elem):
+            return f"std::vector<{cpp_type_name(elem)}>"
+        case IntegerType(width=IntAttr(data=1)):
+            return "bool"
+        case IntegerType(width=IntAttr(data=8)):
+            return "char"
+        case IntegerType():
+            return "int"
+        case Float32Type():
+            return "float"
+        case Float64Type():
+            return "double"
+        case LLVMPointerType():
+            return "void*"
+        case IndexType():
+            return "std::size_t"
+        case _:
+            raise ValueError(f"cpp_type_name: no C++ spelling for {t}")
 
-    Character memrefs map to pass-by-value types matching the Fortran
-    BIND(C) VALUE attribute for char buffers; numeric memrefs/scalars go
-    through the shared `cpp_numeric_type` decision table
-    (`cpp_type_table.py`) that `_chost_cpp_type` also adapts onto.
+
+def _c_param_type(mlir_type: object, intent: str):
+    """The C-interop type of a BIND(C) function argument of MLIR type
+    ``mlir_type`` and ``intent``.
+
+    Character memrefs are char buffers (read-only when intent(in));
+    numeric memrefs/scalars go through the shared `c_numeric_type`
+    decision table (`cpp_type_table.py`) that `_chost_arg_type` also
+    adapts onto.
     """
     if isinstance(mlir_type, MemRefType):
         if _is_char_memref(mlir_type):
-            return "const char*" if intent == "in" else "char*"
+            buffer = MemRefType(i8, [DYNAMIC_INDEX])
+            return ReadOnlyType(buffer) if intent == "in" else buffer
         elem = mlir_type.element_type
         kind = "int" if isinstance(elem, IntegerType) else "real"
         width = 32 if isinstance(elem, Float32Type) else 64
         rank = 0 if _is_scalar_memref(mlir_type) else 1
-        return cpp_numeric_type(
+        return c_numeric_type(
             kind=kind, width=width, rank=rank, intent=intent,
             const_in_arrays=False,
         )
     if isinstance(mlir_type, IntegerType):
-        return cpp_numeric_type(kind="int", width=64, rank=0, intent=intent)
+        return c_numeric_type(kind="int", width=64, rank=0, intent=intent)
     if isinstance(mlir_type, Float32Type):
-        return cpp_numeric_type(kind="real", width=32, rank=0, intent=intent)
+        return c_numeric_type(kind="real", width=32, rank=0, intent=intent)
     # Float64Type, CCPPRealKindType, etc.
-    return cpp_numeric_type(kind="real", width=64, rank=0, intent=intent)
+    return c_numeric_type(kind="real", width=64, rank=0, intent=intent)
 
 
 def _rank_comment(mlir_type: object) -> str:
@@ -541,8 +617,8 @@ def _intent_from_arg(arg: object, decl: ArgDecl, inout_block_args: set) -> str:
     )
 
 
-def _fn_params(fn_op: func.FuncOp) -> list[tuple[str, str, str]]:
-    """Return (name, cpp_type, comment) tuples for every argument of a BIND(C) function.
+def _fn_params(fn_op: func.FuncOp) -> list[tuple]:
+    """Return (name, C-interop type, comment) tuples for every argument of a BIND(C) function.
 
     Includes both input block arguments and output (AllocaOp-result) return values,
     in the same order the Fortran printer lists them.
@@ -561,25 +637,25 @@ def _fn_params(fn_op: func.FuncOp) -> list[tuple[str, str, str]]:
                     inout_block_args.add(ret_val)
             break
 
-    params: list[tuple[str, str, str]] = []
+    params: list[tuple] = []
 
     for arg, attrs in zip(block.args, arg_attr_values(fn_op)):
         decl = arg_decl(attrs, arg.name_hint, arg.index)
         name = decl.name
         intent = _intent_from_arg(arg, decl, inout_block_args)
         comment = _rank_comment(arg.type) or _char_buffer_comment(arg.type, intent)
-        params.append((name, _cpp_type(arg.type, intent), comment))
+        params.append((name, _c_param_type(arg.type, intent), comment))
 
     for ret_val in output_rets:
         name = ret_val.name_hint or f"out_{len(params)}"
         comment = _rank_comment(ret_val.type) or _char_buffer_comment(ret_val.type, "out")
-        params.append((name, _cpp_type(ret_val.type, "out"), comment))
+        params.append((name, _c_param_type(ret_val.type, "out"), comment))
 
     return params
 
 
 def _print_cpp_params(
-    params: list[tuple[str, str, str]], output: IO[str], empty_paren: str = "(void)",
+    params: list[tuple], output: IO[str], empty_paren: str = "(void)",
     single_line: bool = False,
 ) -> None:
     """Write a parenthesized parameter list (or ``empty_paren`` when there
@@ -601,15 +677,66 @@ def _print_cpp_params(
     if not params:
         output.write(empty_paren)
         return
+    # A C prototype (one parameter per line) spells a struct "struct X".
     if single_line:
-        parts = [f"{cpp_t} {name}{comment}" for name, cpp_t, comment in params]
+        parts = [f"{cpp_type_name(t)} {name}{comment}" for name, t, comment in params]
         output.write(f"({', '.join(parts)})")
         return
     output.write("(\n")
-    for i, (name, cpp_t, comment) in enumerate(params):
+    for i, (name, t, comment) in enumerate(params):
         comma = "," if i < len(params) - 1 else " "
-        output.write(f"    {cpp_t:<16} {name}{comma}{comment}\n")
+        output.write(f"    {cpp_type_name(t, c_decl=True):<16} {name}{comma}{comment}\n")
     output.write(")")
+
+
+def _declarator(var_type) -> "tuple[str, str]":
+    """(type, name suffix) declaring a variable of ``var_type``: a
+    static-shape memref is an inline array, ``char name[129]``."""
+    if isinstance(var_type, MemRefType) and var_type.has_static_shape() and var_type.shape:
+        return (cpp_type_name(var_type.element_type),
+                "".join(f"[{d}]" for d in var_type.get_shape()))
+    return cpp_type_name(var_type), ""
+
+
+def _local_var_text(op: "LocalVarOp") -> str:
+    """A LocalVarOp's declaration, without indentation or ';'."""
+    type_str, suffix = _declarator(op.var_type)
+    if op.type_width is not None:
+        type_str = f"{type_str:<{op.type_width.value.data}}"
+    name = op.var_name.data + suffix
+    if op.size is not None:
+        return f"{type_str} {name}({expr_to_cpp_str(op.size.block.last_op)})"
+    if op.init is None and op.zero_init is None:
+        return f"{type_str} {name}"
+    if op.name_width is not None:
+        name = f"{name:<{op.name_width.value.data}}"
+    init = "{}" if op.zero_init is not None else expr_to_cpp_str(op.init.block.last_op)
+    return f"{type_str} {name} = {init}"
+
+
+def _return_type_name(op: "CFunctionSigOp") -> str:
+    """A CFunctionSigOp's result type, or void."""
+    return cpp_type_name(op.return_type) if op.return_type is not None else "void"
+
+
+def _statements(block) -> list:
+    """A block's statement ops: not its expression ops (an operand's
+    defining op, e.g. an scf.if condition's, printed where it is used) or
+    the scf.yield terminator."""
+    return [o for o in block.ops if not o.results and not isinstance(o, scf.YieldOp)]
+
+
+def _statement_text(op) -> str:
+    """One statement as a single line without indentation, for a statement
+    printed inline (``{ return x; }``, ``if (c) f();``)."""
+    if isinstance(op, CppCallStatementOp):   # inline: never wrapped
+        args = [expr_to_cpp_str(r.block.last_op) for r in op.call_args_region]
+        return f"{op.callee.data}({', '.join(args)});"
+    out = StringIO()
+    _print_cpp_op(op, out)
+    text = out.getvalue()
+    assert text.count("\n") == 1, f"not a one-line statement: {text!r}"
+    return text.strip()
 
 
 def _print_cpp_method(op: "CFunctionSigOp", output: IO[str]) -> None:
@@ -618,31 +745,26 @@ def _print_cpp_method(op: "CFunctionSigOp", output: IO[str]) -> None:
     top-level printing (the ``CFunctionSigOp`` branch of ``_print_cpp_op``
     below): never ``inline`` even if ``is_inline`` happens to be set,
     ``()`` not ``(void)`` for empty params, and a single-line body
-    (exactly one simple-statement ``RawCppLinesOp`` child) prints inline
+    (exactly one statement, e.g. a ``ReturnStmtOp``) prints inline
     on the signature's own line rather than as a multi-line brace block
     (e.g. ``bool ok() const { return code == 0; }``).
     """
     params = list(zip(
         (n.data for n in op.param_names.data),
-        (t.data for t in op.param_types.data),
+        op.param_types.data,
         (c.data for c in op.param_comments.data),
     ))
     const_suffix = " const" if (op.is_const is not None and op.is_const.value.data) else ""
-    output.write(f"    {op.return_type.data} {op.fn_name.data}")
+    output.write(f"    {_return_type_name(op)} {op.fn_name.data}")
     _print_cpp_params(params, output, empty_paren="()", single_line=True)
     output.write(const_suffix)
-    body_ops = list(op.body.block.ops)
-    body_is_single_line = (
-        len(body_ops) == 1
-        and isinstance(body_ops[0], RawCppLinesOp)
-        and len(body_ops[0].lines.data.splitlines()) == 1
-    )
-    if body_is_single_line:
-        output.write(f" {{ {body_ops[0].lines.data.strip()} }}\n")
+    statements = _statements(op.body.block)
+    if len(statements) == 1:
+        output.write(f" {{ {_statement_text(statements[0])} }}\n")
     else:
         output.write(" {\n")
-        for child in body_ops:
-            _print_cpp_op(child, output)
+        for child in op.body.block.ops:
+            _print_cpp_op(child, output, "        ")
         output.write("    }\n")
 
 
@@ -653,29 +775,33 @@ def _print_cpp_constructor(struct_name: str, op: "CppConstructorOp", output: IO[
     """
     params = list(zip(
         (n.data for n in op.param_names.data),
-        (t.data for t in op.param_types.data),
-        (d.data for d in op.param_defaults.data),
+        op.param_types.data,
+        (expr_to_cpp_str(r.block.last_op) for r in op.param_defaults),
     ))
-    param_str = ", ".join(f"{t} {n} = {d}" for n, t, d in params)
+    param_str = ", ".join(f"{cpp_type_name(t)} {n} = {d}" for n, t, d in params)
     output.write(f"    {struct_name}({param_str})\n")
     inits = ", ".join(
-        f"{m.data}({e.data})"
-        for m, e in zip(op.init_members.data, op.init_exprs.data)
+        f"{m.data}({expr_to_cpp_str(r.block.last_op)})"
+        for m, r in zip(op.init_members.data, op.init_exprs)
     )
     body_ops = list(op.body.block.ops)
     if body_ops:
         output.write(f"        : {inits} {{\n")
         for child in body_ops:
-            _print_cpp_op(child, output)
+            _print_cpp_op(child, output, "            ")
         output.write("        }\n")
     else:
         output.write(f"        : {inits} {{}}\n")
 
 
-def _print_cpp_op(op: object, output: IO[str]) -> None:
+def _print_cpp_op(op: object, output: IO[str], indent: str = "") -> None:
     """Op-dispatch printer for ``CHostCapOp.cpp_body``/``wrapper_body`` --
     this module's counterpart to ``print_ftn.py``'s ``print_op``/``print_block``.
+    Statements print at ``indent``; expression ops (they have results) print
+    where they are used, not here.
     """
+    if op.results or isinstance(op, scf.YieldOp):
+        return
     if isinstance(op, ExternCGuardOp):
         output.write("#ifdef __cplusplus\n")
         output.write('extern "C" {\n')
@@ -688,12 +814,12 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
     elif isinstance(op, CFunctionSigOp):
         params = list(zip(
             (n.data for n in op.param_names.data),
-            (t.data for t in op.param_types.data),
+            op.param_types.data,
             (c.data for c in op.param_comments.data),
         ))
         is_inline = op.is_inline is not None and op.is_inline.value.data
         prefix = "inline " if is_inline else ""
-        output.write(f"{prefix}{op.return_type.data} {op.fn_name.data}")
+        output.write(f"{prefix}{_return_type_name(op)} {op.fn_name.data}")
         # C prototypes (Stage 2, always a declaration) spell zero params as
         # "(void)"; C++ inline functions (Stage 3) spell it "()" -- is_inline
         # is exactly the Stage-2-vs-Stage-3 switch, since every Stage 2
@@ -706,7 +832,7 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
         else:
             output.write(" {\n")
             for child in op.body.block.ops:
-                _print_cpp_op(child, output)
+                _print_cpp_op(child, output, indent + "    ")
             # No trailing blank line here (unlike the declaration branch
             # above): every section in the wrapper supplies its own leading
             # separator blank instead (see cpp_interop.py's _build_chost_
@@ -717,13 +843,13 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
     elif isinstance(op, CppStructDefOp):
         output.write(f"struct {op.struct_name.data} {{\n")
         for child in op.members.block.ops:
-            _print_cpp_op(child, output)
+            _print_cpp_op(child, output, indent + "    ")
         method_ops = list(op.methods.block.ops)
         if method_ops:
             # Exactly one fixed blank line between fields and the first
             # method; any further separation between methods is baked into
-            # each method chunk's own leading text (e.g. a comment
-            # RawCppLinesOp starting with "\n"), same convention the
+            # each method chunk's own leading ops (e.g. a BlankLineOp before
+            # a CommentOp), same convention the
             # top-level namespace body already uses -- not auto-inserted
             # here, since a comment immediately preceding the method it
             # describes must NOT get a blank line of its own.
@@ -734,55 +860,81 @@ def _print_cpp_op(op: object, output: IO[str]) -> None:
                 elif isinstance(child, CFunctionSigOp):
                     _print_cpp_method(child, output)
                 else:
-                    _print_cpp_op(child, output)
+                    _print_cpp_op(child, output, indent + "    ")
         private_ops = list(op.private_members.block.ops)
         if private_ops:
             output.write("\nprivate:\n")
             for child in private_ops:
-                _print_cpp_op(child, output)
+                _print_cpp_op(child, output, indent + "    ")
         output.write("};\n")
     elif isinstance(op, CppFieldDeclOp):
-        suffix = op.array_suffix.data if op.array_suffix is not None else ""
+        type_str, suffix = _declarator(op.field_type)
         width = op.type_width.value.data if op.type_width is not None else 8
-        if op.init_expr is not None:
-            init = f" = {op.init_expr.data}"
-        elif op.init_expr_region is not None:
+        if op.init_expr_region is not None:
             init = f" = {expr_to_cpp_str(op.init_expr_region.block.last_op)}"
         else:
             init = ""
-        output.write(f"    {op.cpp_type.data:<{width}} {op.field_name.data}{suffix}{init};\n")
+        output.write(f"{indent}{type_str:<{width}} {op.field_name.data}{suffix}{init};\n")
     elif isinstance(op, CppIncludeOp):
         if op.local is not None and op.local.value.data:
             output.write(f'#include "{op.header.data}"\n')
         else:
             output.write(f"#include <{op.header.data}>\n")
-    elif isinstance(op, RawCppLinesOp):
-        for line in op.lines.data.splitlines():
-            output.write(line + "\n")
+    elif isinstance(op, CommentOp):
+        for line in op.lines.data:
+            output.write(f"{indent}// {line.data}\n")
+    elif isinstance(op, BlankLineOp):
+        output.write("\n")
+    elif isinstance(op, LocalVarOp):
+        output.write(f"{indent}{_local_var_text(op)};\n")
+    elif isinstance(op, ReturnStmtOp):
+        value = (" " + expr_to_cpp_str(op.value.block.last_op)) if op.value is not None else ""
+        stmt = f"return{value};"
+        if op.condition is not None:
+            stmt = f"if ({expr_to_cpp_str(op.condition.block.last_op)}) {stmt}"
+        output.write(f"{indent}{stmt}\n")
+    elif isinstance(op, AssignOp):
+        lhs = expr_to_cpp_str(op.lhs.block.last_op)
+        output.write(f"{indent}{lhs} = {expr_to_cpp_str(op.rhs.block.last_op)};\n")
+    elif isinstance(op, DdtMethodCallOp):
+        obj = expr_to_cpp_str(op.obj_expr_region.block.last_op)
+        if any(True for _ in op.kwargs_region):
+            raise AssertionError("print_cpp_header: C++ has no keyword-argument call syntax")
+        args = ", ".join(expr_to_cpp_str(r.block.last_op) for r in op.args_region)
+        output.write(f"{indent}{obj}.{op.method.data}({args});\n")
+    elif isinstance(op, scf.IfOp):
+        cond = expr_to_cpp_str(op.cond.owner)
+        then = _statements(op.true_region.block)
+        has_else = op.false_region.blocks and _statements(op.false_region.block)
+        if len(then) == 1 and not has_else:
+            output.write(f"{indent}if ({cond}) {_statement_text(then[0])}\n")
+        else:
+            output.write(f"{indent}if ({cond}) {{\n")
+            for child in op.true_region.block.ops:
+                _print_cpp_op(child, output, indent + "    ")
+            if has_else:
+                output.write(f"{indent}}} else {{\n")
+                for child in op.false_region.block.ops:
+                    _print_cpp_op(child, output, indent + "    ")
+            output.write(f"{indent}}}\n")
     elif isinstance(op, CppNamespaceOp):
         output.write(f"namespace {op.ns_name.data} {{\n")
         for child in op.body.block.ops:
             _print_cpp_op(child, output)
         output.write(f"}} // namespace {op.ns_name.data}\n")
     elif isinstance(op, CppCallStatementOp):
-        if op.call_args is not None:
-            call_args = [a.data for a in op.call_args.data]
-        else:
-            call_args = [expr_to_cpp_str(r.block.last_op) for r in op.call_args_region]
+        call_args = [expr_to_cpp_str(r.block.last_op) for r in op.call_args_region]
         lines = wrap_paren_list(
-            f"    {op.callee.data}(", call_args, ");", 80, "        ", cont_marker="",
+            f"{indent}{op.callee.data}(", call_args, ");", 80, indent + "    ", cont_marker="",
         )
         for line in lines:
             output.write(line + "\n")
     elif isinstance(op, CppBraceInitCallOp):
-        output.write(f"    return {op.callee.data}({{\n")
-        if op.field_values is not None:
-            values = [v.data for v in op.field_values.data]
-        else:
-            values = [expr_to_cpp_str(r.block.last_op) for r in op.field_values_region]
+        output.write(f"{indent}return {op.callee.data}({{\n")
+        values = [expr_to_cpp_str(r.block.last_op) for r in op.field_values_region]
         for name, value in zip(op.field_names.data, values):
-            output.write(f"        .{name.data}={value},\n")
-        output.write("    });\n")
+            output.write(f"{indent}    .{name.data}={value},\n")
+        output.write(f"{indent}}});\n")
     else:
         raise NotImplementedError(
             f"print_cpp_header: no printer for {type(op).__name__}"

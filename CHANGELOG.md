@@ -13320,3 +13320,50 @@ naming properties must be identifiers and the removed text properties must
 be absent (it flags 15 of `main`'s goldens). Unit-conversion tests now cover
 every argument shape with the one form. Goldens regenerated (only failing
 ones) with their headers checked against `HEAD`. pytest 1194 passed.
+
+## `cpp-text-in-ir`: the C++ host cap from ops and types, not C++ text (2026-10-29)
+
+The C++ host cap's headers (`<host>_ccpp_chost_cap.h` and the `.hpp`
+wrapper) were built partly from C++ text: `RawCppLinesOp` bodies (444 lines
+across the examples: buffer declarations, `return {errflg, errflg ? errmsg :
+""};`, `get_constituents()`, `allocate()`, section banners), C++ type strings
+on every field, parameter and return type (`const double*`, `std::string`,
+`std::vector<double>`, `const RunArgs&`), `VarRefExprOp("&errflg")` and
+`VarRefExprOp("nullptr")`. All are now ops and MLIR types; `RawCppLinesOp`
+is deleted.
+
+- Expressions: new `AddressOfExprOp` (`&x`), `NullPointerExprOp`
+  (`nullptr`, Fortran `null()`), `StructLiteralExprOp` (`{a, b}`),
+  `ConditionalExprOp` (`c ? a : b`, Fortran `merge`) and `CastExprOp`
+  (`static_cast<std::size_t>(x)` for `index`). `VarRefExprOp` now rejects a
+  name that is not an identifier. The C++ ops' text forms are removed
+  (`CppCallStatementOp.call_args`, `CppBraceInitCallOp.field_values`,
+  `CppFieldDeclOp.init_expr`); `CppConstructorOp`'s defaults and
+  initializers are expression ops.
+- Types: new `ReadOnlyType` (`const T*`/`const T&`), `OwnedArrayType`
+  (`std::vector<T>`) and `OwnedStringType` (`std::string`); otherwise
+  builtin types, a memref as a pointer, a static memref field as an inline
+  array (`char std_name[129]`, replacing `array_suffix`) and `DerivedType`
+  for structs. `CppFieldDeclOp`, `CFunctionSigOp` and `CppConstructorOp`
+  carry types; `print_cpp_header.cpp_type_name` spells them. The shared
+  decision table is `cpp_type_table.c_numeric_type`, returning a type, used
+  by both the C++ host cap and the regular `<host>_ccpp_cap.h` printer.
+- Statements: new `LocalVarOp` (initial value, zero-initialized, or an owned
+  array's size; optional column widths), `CommentOp` and `BlankLineOp`;
+  `ReturnStmtOp` takes a value. The C++ printer gained `scf.if` (one-line
+  form for a single statement), `AssignOp`, `DdtMethodCallOp`
+  (`obj.method(args);`) and `MethodCallExprOp`, and prints statements at a
+  real indentation level instead of indentation baked into text.
+
+Generated C/C++ headers (and Fortran) are byte-identical to `main`, verified
+with `cap_oracle diff` after each stage (46 identical, 6 skipped; 34 `.h`/
+`.hpp` files). The one wrapper form no example generates, `return {0, ""};`,
+is covered by a unit test.
+
+Tests: new `test_cpp_expressions.py` (expressions and statements);
+`test_cpp_type_table.py` keeps its assertions through `cpp_type_name` and
+covers the new types; `test_ir_names_are_identifiers.py` also generates the
+C++-host IR of `examples/constadv` and checks it has no text-form
+properties, no string-typed C++ types and no `raw_cpp_lines`. Goldens
+`advection-xml`/`instances_advection-xml` regenerated (`ReturnStmtOp`'s
+region segment sizes), headers checked against `HEAD`. pytest 1205 passed.

@@ -89,6 +89,7 @@ from xdsl_ccpp.dialects.ccpp_utils import SafeDeallocOp as CCPPSafeDeallocOp
 from xdsl_ccpp.dialects.ccpp_utils import ScopedBlockOp as CCPPScopedBlockOp
 from xdsl_ccpp.dialects.ccpp_utils import DoLoopOp as CCPPDoLoopOp
 from xdsl_ccpp.dialects.ccpp_utils import MetadataLiteralExprOp as CCPPMetadataLiteralExprOp
+from xdsl_ccpp.dialects.ccpp_utils import NullPointerExprOp as CCPPNullPointerExprOp
 from xdsl_ccpp.dialects.ccpp_utils import MethodCallExprOp as CCPPMethodCallExprOp
 from xdsl_ccpp.dialects.ccpp_utils import ZeroFillOp as CCPPZeroFillOp
 from xdsl_ccpp.dialects.ccpp_utils import (
@@ -1351,6 +1352,8 @@ class ftnPrintContext:
                 return self._render_value(op.value)
             case CCPPMetadataLiteralExprOp():
                 return op.text.data
+            case CCPPNullPointerExprOp():
+                return "null()"
             case CCPPMethodCallExprOp():
                 base_str = self._render_base_expr(op.base)
                 args = ", ".join(self._render_expr(r.block.last_op) for r in op.args)
@@ -1837,6 +1840,10 @@ class ftnPrintContext:
                 ev = op.errcode_var.data
                 self.print(f"if ({ev} /= 0) return")
             case CCPPReturnStmtOp():
+                if op.value is not None:
+                    raise NotImplementedError(
+                        "print_ftn: a Fortran subroutine returns no value"
+                    )
                 if op.condition is None:
                     self.print("return")
                 else:

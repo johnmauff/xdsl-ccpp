@@ -14,6 +14,7 @@ from xdsl.dialects import arith, builtin, func, llvm, memref
 from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     Float32Type,
+    IndexType,
     IntegerAttr,
     IntegerType,
     MemRefType,
@@ -23,17 +24,23 @@ from xdsl.dialects.builtin import (
     i8,
     i32,
 )
+from xdsl.dialects.llvm import LLVMPointerType
 from xdsl.passes import ModulePass
 from xdsl.utils.hints import isa
 
 from xdsl_ccpp.dialects import ccpp
 from xdsl_ccpp.dialects.ccpp_utils import (
+    AddressOfExprOp,
     AllocateOp,
     AssignOp,
+    BlankLineOp,
     CallExprOp,
     CallStatementOp,
+    CastExprOp,
     CFunctionSigOp,
     CHostCapOp,
+    CommentOp,
+    ConditionalExprOp,
     CppBraceInitCallOp,
     CppCallStatementOp,
     CppConstructorOp,
@@ -50,13 +57,19 @@ from xdsl_ccpp.dialects.ccpp_utils import (
     ExternCGuardOp,
     FortranToCStringCopyOp,
     IndexExprOp,
+    LocalVarOp,
     MemberAccessExprOp,
+    MethodCallExprOp,
     ModuleVarOp,
-    RawCppLinesOp,
-    ReturnStmtOp,
+    NullPointerExprOp,
+    OwnedArrayType,
+    OwnedStringType,
+    ReadOnlyType,
     RealKindType,
+    ReturnStmtOp,
     SliceExprOp,
     StringLiteralExprOp,
+    StructLiteralExprOp,
     VarRefExprOp,
 )
 from xdsl_ccpp.transforms.ccpp_cap import _collect_public_suite_functions
@@ -95,7 +108,10 @@ from xdsl_ccpp.util.ccpp_conventions import (
     name_local,
     real_kind_width,
 )
-from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
+from xdsl_ccpp.util.cpp_type_table import c_numeric_type
+
+# The C struct the C++ host reads constituent properties into.
+_CONSTITUENT_INFO = DerivedType("CcppConstituentInfo")
 
 # Field descriptors for ccpp_constituent_properties_t.
 # Each entry: (fortran_field_name, kind, char_len_or_None)
@@ -825,15 +841,16 @@ def _chost_callee_identities(pfn_hints, arg_attrs) -> "tuple[dict, dict]":
     return local_to_std, local_to_dim_names
 
 
-def _chost_cpp_type(ai: dict) -> str:
-    """Map a chost arg descriptor to its C++ type string.
+def _chost_arg_type(ai: dict):
+    """The C-interop type of a chost arg descriptor (an MLIR type; see
+    cpp_type_table.py).
 
-    Numeric (int/real) cases go through the shared `cpp_numeric_type`
+    Numeric (int/real) cases go through the shared `c_numeric_type`
     decision table (`cpp_type_table.py`) that `print_cpp_header.py`'s
-    `_cpp_type` also adapts onto (BACKLOG.md's `cpp-type-table-unify`).
+    `_c_param_type` also adapts onto (BACKLOG.md's `cpp-type-table-unify`).
     """
     if ai["is_ncol"] or ai["is_nz"]:
-        return "int"
+        return i32
     if ai["is_int"] and not ai["is_errflg"]:
         # Always rank-0/intent(in) by this call site's own convention --
         # every _chost_arg_info-constructed int arg is scalar (rank is
@@ -842,26 +859,32 @@ def _chost_cpp_type(ai: dict) -> str:
         # and, as today, still renders as plain "int" rather than "int*"
         # -- a pre-existing, unexercised gap this unification pass
         # preserves rather than silently changes.
-        return cpp_numeric_type(kind="int", width=64, rank=0, intent="in")
+        return c_numeric_type(kind="int", width=64, rank=0, intent="in")
     if ai["is_real"]:
         # Rank-0 real chost args are always passed by value, intent(in),
         # regardless of the scheme's own declared intent -- an existing
         # Fortran-generator convention, forced here rather than baked
         # into the shared table itself.
         real_intent = "in" if ai["rank"] == 0 else ai["intent"]
-        return cpp_numeric_type(
+        return c_numeric_type(
             kind="real", width=ai.get("real_width", 64), rank=ai["rank"],
             intent=real_intent,
         )
     if ai.get("is_logical"):
-        return "bool"
+        return i1
+    buffer = MemRefType(i8, [DYNAMIC_INDEX])   # a character buffer
     if ai["is_char"] and not ai["is_errmsg"] and not ai["is_sname"]:
-        return "const char*" if ai.get("intent") == "in" else "char*"
+        return ReadOnlyType(buffer) if ai.get("intent") == "in" else buffer
     if ai["is_sname"] or ai["is_errmsg"]:
-        return "char*"
+        return buffer
     if ai["is_errflg"]:
-        return "int*"
-    return "void*"
+        return MemRefType(i32, [])   # by pointer
+    return LLVMPointerType()
+
+
+def _writable(t):
+    """``t`` without read-only access (the State struct owns its memory)."""
+    return t.inner if isinstance(t, ReadOnlyType) else t
 
 
 # Map CCPP lifecycle names to scheme entry-point name suffixes.
@@ -1660,7 +1683,7 @@ class CPPInteropCap(ModulePass):
             proto_ops.append(CFunctionSigOp(
                 fn_name=cfn,
                 param_names=[ai["host"] for ai in visible],
-                param_types=[_chost_cpp_type(ai) for ai in visible],
+                param_types=[_chost_arg_type(ai) for ai in visible],
                 param_comments=["" for _ in visible],
                 body_ops=[],
             ))
@@ -1671,26 +1694,24 @@ class CPPInteropCap(ModulePass):
             field_ops: list = []
             for fname, fkind, flen in _CONSTITUENT_STRUCT_FIELDS:
                 if fkind == "char":
-                    field_ops.append(CppFieldDeclOp(
-                        field_name=fname, cpp_type="char", array_suffix=f"[{flen + 1}]"
-                    ))
+                    field_ops.append(CppFieldDeclOp(fname, MemRefType(i8, [flen + 1])))
                 elif fkind == "real":
-                    field_ops.append(CppFieldDeclOp(field_name=fname, cpp_type="double"))
+                    field_ops.append(CppFieldDeclOp(fname, f64))
                 else:  # logical
-                    field_ops.append(CppFieldDeclOp(field_name=fname, cpp_type="bool"))
+                    field_ops.append(CppFieldDeclOp(fname, i1))
             body_ops.append(CppIncludeOp(header="stdbool.h"))
             body_ops.append(CppStructDefOp(
-                struct_name="CcppConstituentInfo", member_ops=field_ops
+                struct_name=_CONSTITUENT_INFO.type_name.data, member_ops=field_ops
             ))
             body_ops.append(ExternCGuardOp(body_ops=[
                 CFunctionSigOp(
-                    fn_name=f"{mod_name}_nconstituents", return_type="int",
+                    fn_name=f"{mod_name}_nconstituents", return_type=i32,
                     param_names=[], param_types=[], param_comments=[], body_ops=[],
                 ),
                 CFunctionSigOp(
                     fn_name=f"{mod_name}_get_constituent_info",
                     param_names=["buf", "n"],
-                    param_types=["struct CcppConstituentInfo*", "int"],
+                    param_types=[MemRefType(_CONSTITUENT_INFO, [DYNAMIC_INDEX]), i32],
                     param_comments=["", ""], body_ops=[],
                 ),
             ]))
@@ -1713,19 +1734,10 @@ class CPPInteropCap(ModulePass):
         The fixed banner/pragma/includes are not part of this list -- 100%
         derivable from ``mod_name``, ``print_cpp_header.py``'s
         ``_cpp_wrapper_banner`` writes them directly. Everything else
-        builds from real statement ops (CppStructDefOp/CFunctionSigOp/
-        CppCallStatementOp/CppConstructorOp/CppBraceInitCallOp);
-        RawCppLinesOp remains only for comments, declarations, and returns
-        -- statement *shape* is typed, expression *content* stays opaque
-        text, same boundary used everywhere else in this codebase (a real
-        language-neutral expression IR, distinguishing operators/literals/
-        references instead of opaque text, is a separate, much larger
-        effort -- see BACKLOG.md's technical-debt section).
-
-        ``L``/``A``/``flush``/``emit`` above let not-yet-converted sections
-        interleave with already-converted ones in the right output order;
-        every section is now converted, so by the end of this function
-        every ``flush()`` call sees only comment/separator text.
+        builds from statement ops (CppStructDefOp/CFunctionSigOp/
+        CppCallStatementOp/CppConstructorOp/CppBraceInitCallOp/LocalVarOp/
+        ReturnStmtOp/DdtMethodCallOp/AssignOp/scf.if), expression ops,
+        and CommentOp/BlankLineOp for layout; no C++ text.
 
         ``fn_ctxs`` is computed once in ``_generate_chost_cap_module`` and
         shared with ``_build_chost_ftn_text``/``_build_chost_cpp_text`` --
@@ -1740,37 +1752,35 @@ class CPPInteropCap(ModulePass):
         def struct_name(lc):
             return "".join(w.capitalize() for w in lc.split("_")) + "Args"
 
-        # body_ops is the real ops list for CppNamespaceOp's body. L/A are
-        # a text buffer for comment/declaration/return lines that stay
-        # opaque text (see this function's own docstring); flush() wraps
-        # whatever's buffered into one RawCppLinesOp right before any real
-        # op is inserted via emit(), so raw text and typed ops interleave
-        # in the correct output order.
+        # body_ops is the ops list for CppNamespaceOp's body.
         body_ops: list = []
-        L: list = []
-        A = L.append
+        emit = body_ops.append
 
-        def flush():
-            if L:
-                body_ops.append(RawCppLinesOp("\n".join(L) + "\n"))
-                L.clear()
+        def blank():
+            emit(BlankLineOp())
 
-        def emit(op):
-            flush()
-            body_ops.append(op)
+        def banner(title: str):
+            """A section banner: // ── title ─────..."""
+            emit(CommentOp([f"── {title} " + "─" * max(1, 72 - len(title))]))
 
-        A("")
+        def var(name: str, result_type=None):
+            return VarRefExprOp(name, result_type=result_type)
+
+        def const(value: int, result_type=i32):
+            return arith.ConstantOp(IntegerAttr(value, result_type))
+
+        blank()
         emit(CppStructDefOp(
             "Status",
             member_ops=[
-                CppFieldDeclOp(field_name="code", cpp_type="int", type_width=11),
-                CppFieldDeclOp(field_name="message", cpp_type="std::string", type_width=11),
+                CppFieldDeclOp("code", i32, type_width=11),
+                CppFieldDeclOp("message", OwnedStringType(), type_width=11),
             ],
             is_pod=False,
             method_ops=[CFunctionSigOp(
-                fn_name="ok", return_type="bool", is_const=True,
+                fn_name="ok", return_type=i1, is_const=True,
                 param_names=[], param_types=[], param_comments=[],
-                body_ops=[RawCppLinesOp("return code == 0;")],
+                body_ops=[ReturnStmtOp(value_op=arith.CmpiOp(var("code", i32), const(0), "eq"))],
             )],
         ))
 
@@ -1785,28 +1795,34 @@ class CPPInteropCap(ModulePass):
                     all_constituent_vars_hpp.append(cv)
 
         if all_constituent_vars_hpp:
-            A("")
-            A("// ── constituent query ─────────────────────────────────────────────────────")
-            A("// CcppConstituentInfo is declared in the included .h file.")
-            A("// Use nconstituents() + get_constituents() after do_register().")
-            flush()
-            body_ops.append(RawCppLinesOp("\n"))
+            blank()
+            emit(CommentOp([
+                "── constituent query " + "─" * 53,
+                "CcppConstituentInfo is declared in the included .h file.",
+                "Use nconstituents() + get_constituents() after do_register().",
+            ]))
+            blank()
             emit(CFunctionSigOp(
-                fn_name="nconstituents", return_type="int", is_inline=True,
+                fn_name="nconstituents", return_type=i32, is_inline=True,
                 param_names=[], param_types=[], param_comments=[],
-                body_ops=[RawCppLinesOp(f"    return {mod_name}_nconstituents();")],
+                body_ops=[ReturnStmtOp(value_op=CallExprOp(f"{mod_name}_nconstituents"))],
             ))
-            A("")
+            blank()
             emit(CFunctionSigOp(
-                fn_name="get_constituents", return_type="std::vector<CcppConstituentInfo>",
+                fn_name="get_constituents", return_type=OwnedArrayType(_CONSTITUENT_INFO),
                 is_inline=True,
                 param_names=[], param_types=[], param_comments=[],
-                body_ops=[RawCppLinesOp(
-                    "    int n = nconstituents();\n"
-                    "    std::vector<CcppConstituentInfo> v(static_cast<std::size_t>(n));\n"
-                    f"    if (n > 0) {mod_name}_get_constituent_info(v.data(), n);\n"
-                    "    return v;"
-                )],
+                body_ops=[
+                    LocalVarOp("n", i32, init_op=CallExprOp("nconstituents")),
+                    LocalVarOp("v", OwnedArrayType(_CONSTITUENT_INFO),
+                               size_op=CastExprOp(var("n", i32), IndexType())),
+                    *_scf_if(arith.CmpiOp(var("n", i32), const(0), "sgt"), [
+                        CppCallStatementOp(f"{mod_name}_get_constituent_info", call_arg_ops=[
+                            MethodCallExprOp(var("v"), "data"), var("n"),
+                        ]),
+                    ]),
+                    ReturnStmtOp(value_op=var("v")),
+                ],
             ))
 
         lc_data: list = []   # (cpp_fn, struct_args) per lifecycle, for State generation
@@ -1828,29 +1844,23 @@ class CPPInteropCap(ModulePass):
             sn     = struct_name(lc)
             lc_data.append((cpp_fn, struct_args))
 
-            dashes = "─" * max(1, 72 - len(lc))
-
             # ── Section header ─────────────────────────────────────────────────
-            A("")
-            A(f"// ── {lc} {dashes}")
-            flush()
-            body_ops.append(RawCppLinesOp("\n"))
+            blank()
+            banner(lc)
+            blank()
 
             # ── Arg struct (only if there are physics args) ────────────────────
             if struct_args:
                 emit(CppStructDefOp(
                     sn,
                     member_ops=[
-                        CppFieldDeclOp(
-                            field_name=ai["host"], cpp_type=_chost_cpp_type(ai),
-                            type_width=16,
-                        )
+                        CppFieldDeclOp(ai["host"], _chost_arg_type(ai), type_width=16)
                         for ai in struct_args
                     ],
                 ))
-                body_ops.append(RawCppLinesOp("\n"))
+                blank()
                 param_names  = ["a"]
-                param_types  = [f"const {sn}&"]
+                param_types  = [ReadOnlyType(DerivedType(sn))]
             else:
                 param_names  = []
                 param_types  = []
@@ -1859,17 +1869,20 @@ class CPPInteropCap(ModulePass):
             # +1 on each: the Fortran side writes a null terminator at
             # len_trim(...)+1, which is one past the end of a buffer sized
             # exactly CCPP_*_LEN when the string fully fills it.
+            # Declared as an aligned block (type, name columns).
             fn_body_ops: list = []
+            aligned = {"type_width": 6, "name_width": 16}
             if has_sname:
-                fn_body_ops.append(RawCppLinesOp(
-                    f"    char   scheme_name[{CCPP_SCHEME_NAME_LEN + 1}]  = {{}};"
+                fn_body_ops.append(LocalVarOp(
+                    "scheme_name", MemRefType(i8, [CCPP_SCHEME_NAME_LEN + 1]), zero_init=True,
+                    **aligned,
                 ))
             if has_errmsg:
-                fn_body_ops.append(RawCppLinesOp(
-                    f"    char   errmsg[{CCPP_ERRMSG_LEN + 1}]      = {{}};"
+                fn_body_ops.append(LocalVarOp(
+                    "errmsg", MemRefType(i8, [CCPP_ERRMSG_LEN + 1]), zero_init=True, **aligned,
                 ))
             if has_errflg:
-                fn_body_ops.append(RawCppLinesOp("    int    errflg           = 0;"))
+                fn_body_ops.append(LocalVarOp("errflg", i32, init_op=const(0), **aligned))
 
             # ── C function call ────────────────────────────────────────────────
             call_arg_ops = []
@@ -1877,12 +1890,8 @@ class CPPInteropCap(ModulePass):
                 if ai["is_errmsg"]:
                     call_arg_ops.append(VarRefExprOp("errmsg"))
                 elif ai["is_errflg"]:
-                    # "&errflg" (address-of) has no dedicated expr op --
-                    # a one-off C++-only unary prefix, not worth a new op
-                    # for a single call site -- stays a verbatim-text
-                    # VarRefExprOp atom (same judgment call as other
-                    # Stage 3a/3b text-atom leaves).
-                    call_arg_ops.append(VarRefExprOp("&errflg"))
+                    # The C function takes the error flag by pointer.
+                    call_arg_ops.append(AddressOfExprOp(VarRefExprOp("errflg")))
                 elif ai["is_sname"]:
                     call_arg_ops.append(VarRefExprOp("scheme_name"))
                 else:
@@ -1890,15 +1899,18 @@ class CPPInteropCap(ModulePass):
             fn_body_ops.append(CppCallStatementOp(callee=cfn, call_arg_ops=call_arg_ops))
 
             # ── Return ─────────────────────────────────────────────────────────
+            # A Status: the error flag, and the message if it is set.
             if has_errflg and has_errmsg:
-                fn_body_ops.append(RawCppLinesOp(
-                    '    return {errflg, errflg ? errmsg : ""};'
-                ))
+                status = StructLiteralExprOp([
+                    var("errflg"),
+                    ConditionalExprOp(var("errflg"), var("errmsg"), StringLiteralExprOp("")),
+                ])
             else:
-                fn_body_ops.append(RawCppLinesOp('    return {0, ""};'))
+                status = StructLiteralExprOp([const(0), StringLiteralExprOp("")])
+            fn_body_ops.append(ReturnStmtOp(value_op=status))
 
             emit(CFunctionSigOp(
-                fn_name=cpp_fn, return_type="Status", is_inline=True,
+                fn_name=cpp_fn, return_type=DerivedType("Status"), is_inline=True,
                 param_names=param_names, param_types=param_types,
                 param_comments=[""] * len(param_names),
                 body_ops=fn_body_ops,
@@ -1918,24 +1930,20 @@ class CPPInteropCap(ModulePass):
                     state_fields.append(ai)
 
         if state_fields:
-            A("")
-            A("// ── State " + "─" * 69)
-            flush()
-            body_ops.append(RawCppLinesOp("\n"))
+            blank()
+            emit(CommentOp(["── State " + "─" * 69]))
+            blank()
 
             member_ops = []
             for ai in state_fields:
-                # Host owns the memory — strip const so allocate() and init can write
-                cpp_t = _chost_cpp_type(ai).replace("const ", "")
-                # "nullptr" has no arith/math analog (a C++-only pointer
-                # literal) -- stays a verbatim-text VarRefExprOp atom,
-                # same judgment call as CppCallStatementOp's "&errflg".
+                # Host owns the memory — writable so allocate() and init can write
+                field_t = _writable(_chost_arg_type(ai))
                 init_op = (
-                    VarRefExprOp("nullptr") if cpp_t.endswith("*")
+                    NullPointerExprOp() if isinstance(field_t, MemRefType)
                     else arith.ConstantOp(IntegerAttr.from_int_and_width(0, 32))
                 )
                 member_ops.append(CppFieldDeclOp(
-                    field_name=ai["host"], cpp_type=cpp_t, type_width=16, init_expr_op=init_op,
+                    ai["host"], field_t, type_width=16, init_expr_op=init_op,
                 ))
 
             # Constructor: initialise ncol and all is_nz scalars; other fields
@@ -1959,10 +1967,13 @@ class CPPInteropCap(ModulePass):
             if dim_scalar_fields:
                 method_ops.append(CppConstructorOp(
                     param_names=[ai["host"] for ai in dim_scalar_fields],
-                    param_types=["int"] * len(dim_scalar_fields),
-                    param_defaults=["0"] * len(dim_scalar_fields),
+                    param_types=[i32] * len(dim_scalar_fields),
+                    param_default_ops=[
+                        arith.ConstantOp(IntegerAttr.from_int_and_width(0, 32))
+                        for _ in dim_scalar_fields
+                    ],
                     init_members=[ai["host"] for ai in dim_scalar_fields],
-                    init_exprs=[ai["host"] for ai in dim_scalar_fields],
+                    init_expr_ops=[VarRefExprOp(ai["host"]) for ai in dim_scalar_fields],
                     body_ops=[],
                 ))
 
@@ -1970,32 +1981,35 @@ class CPPInteropCap(ModulePass):
             if alloc_fields:
                 allocate_body_ops = []
                 for ai in alloc_fields:
-                    _dn = ai.get("dim_ncol") or ncol_var
-                    _dz = ai.get("dim_nz")   or nz_var
-                    if ai["rank"] == 1:
-                        size_expr = f"static_cast<std::size_t>({_dn})"
-                    elif ai["rank"] == 2:
-                        size_expr = f"static_cast<std::size_t>({_dn}) * {_dz}"
-                    else:
-                        _n3 = ai.get("dim_n3") or "1"
-                        size_expr = f"static_cast<std::size_t>({_dn}) * {_dz} * {_n3}"
-                    allocate_body_ops.append(RawCppLinesOp(
-                        f"        _{ai['host']}.assign({size_expr}, 0);\n"
-                        f"        {ai['host']} = _{ai['host']}.data();"
-                    ))
-                method_ops.append(RawCppLinesOp(
-                    "\n    // Allocate all array fields from internal storage.\n"
-                    "    // Set ncol (and nz/ncnst for higher-rank arrays) before calling."
-                ))
+                    # Element count: ncol [* nz [* n3]], as a std::size_t.
+                    extents = [ai.get("dim_ncol") or ncol_var, ai.get("dim_nz") or nz_var,
+                               ai.get("dim_n3")][:ai["rank"]]
+                    size_op = CastExprOp(var(extents[0], i32), IndexType())
+                    for extent in extents[1:]:
+                        size_op = arith.MuliOp(size_op, var(extent, IndexType()))
+                    storage = f"_{ai['host']}"
+                    allocate_body_ops += [
+                        DdtMethodCallOp(obj_expr_op=var(storage), method="assign",
+                                        arg_ops=[size_op, const(0)]),
+                        AssignOp(lhs_op=var(ai["host"]),
+                                 rhs_op=MethodCallExprOp(var(storage), "data")),
+                    ]
+                method_ops += [
+                    BlankLineOp(),
+                    CommentOp([
+                        "Allocate all array fields from internal storage.",
+                        "Set ncol (and nz/ncnst for higher-rank arrays) before calling.",
+                    ]),
+                ]
                 method_ops.append(CFunctionSigOp(
-                    fn_name="allocate", return_type="void",
+                    fn_name="allocate",
                     param_names=[], param_types=[], param_comments=[],
                     body_ops=allocate_body_ops,
                 ))
                 for ai in alloc_fields:
-                    elem_t = _chost_cpp_type(ai).replace("const ", "").replace("*", "").strip()
+                    elem_t = _writable(_chost_arg_type(ai)).element_type
                     private_member_ops.append(CppFieldDeclOp(
-                        field_name=f"_{ai['host']}", cpp_type=f"std::vector<{elem_t}>",
+                        f"_{ai['host']}", OwnedArrayType(elem_t),
                     ))
 
             emit(CppStructDefOp(
@@ -2009,14 +2023,14 @@ class CPPInteropCap(ModulePass):
                 has_loop_bounds = any(
                     ai["is_col_start"] or ai["is_col_end"] for ai in sargs
                 )
-                A("")
-                flush()
+                blank()
+                state = ReadOnlyType(DerivedType("State"))
                 if has_loop_bounds:
                     param_names = ["s", "col_start", "col_end"]
-                    param_types = ["const State&", "int", "int"]
+                    param_types = [state, i32, i32]
                 else:
                     param_names = ["s"]
-                    param_types = ["const State&"]
+                    param_types = [state]
 
                 field_names    = []
                 field_value_ops = []
@@ -2030,7 +2044,7 @@ class CPPInteropCap(ModulePass):
                         field_value_ops.append(MemberAccessExprOp(VarRefExprOp("s"), ai["host"]))
 
                 emit(CFunctionSigOp(
-                    fn_name=cpp_fn, return_type="Status", is_inline=True,
+                    fn_name=cpp_fn, return_type=DerivedType("Status"), is_inline=True,
                     param_names=param_names, param_types=param_types,
                     param_comments=[""] * len(param_names),
                     body_ops=[CppBraceInitCallOp(
@@ -2038,8 +2052,7 @@ class CPPInteropCap(ModulePass):
                     )],
                 ))
 
-        A("")
-        flush()
+        blank()
 
         return [CppNamespaceOp(ns_name=ns_name, body_ops=body_ops)]
 

@@ -14,6 +14,7 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.dialects.llvm import LLVMArrayType
 from xdsl.ir import (
+    Attribute,
     Block,
     Dialect,
     Operation,
@@ -185,6 +186,38 @@ class DerivedType(ParametrizedAttribute, TypeAttribute):
 
     def __init__(self, type_name: str | StringAttr):
         super().__init__(_coerce_str_attr(type_name))
+
+
+@irdl_attr_definition
+class ReadOnlyType(ParametrizedAttribute, TypeAttribute):
+    """Read-only access to a value of type ``inner``: a pointer or derived
+    type the callee may not modify (C++ ``const T*`` / ``const T&``)."""
+
+    name = "ccpp_utils.readonly"
+    inner: Attribute = param_def()
+
+    def __init__(self, inner: Attribute):
+        super().__init__(inner)
+
+
+@irdl_attr_definition
+class OwnedArrayType(ParametrizedAttribute, TypeAttribute):
+    """An owned, resizable one-dimensional array of ``element_type`` (C++
+    ``std::vector<T>``, a Fortran allocatable array)."""
+
+    name = "ccpp_utils.owned_array"
+    element_type: Attribute = param_def()
+
+    def __init__(self, element_type: Attribute):
+        super().__init__(element_type)
+
+
+@irdl_attr_definition
+class OwnedStringType(ParametrizedAttribute, TypeAttribute):
+    """An owned, resizable character string (C++ ``std::string``, a Fortran
+    ``character(len=:), allocatable``)."""
+
+    name = "ccpp_utils.owned_string"
 
 
 @irdl_op_definition
@@ -1792,11 +1825,11 @@ class CFunctionSigOp(IRDLOperation):
           {body}
         }
 
-    ``param_names``/``param_types``/``param_comments`` are parallel
-    ``ArrayAttr[StringAttr]`` (``param_comments`` entries may be empty
-    strings), matching ``print_cpp_header.py``'s own pre-existing
-    ``_fn_params`` tuple shape so retrofitting its callers is close to
-    mechanical.
+    ``param_names``/``param_types``/``param_comments`` are parallel arrays
+    (``param_comments`` entries may be empty strings). The types are MLIR
+    types -- an element type passed by value, a memref passed by pointer,
+    a ``ReadOnlyType``, a ``DerivedType`` -- which ``print_cpp_header.py``'s
+    ``cpp_type_name`` spells; ``return_type`` likewise, absent for none.
 
     ``is_const`` (Stage 3): a trailing ``const`` qualifier, for a member
     function nested inside a ``CppStructDefOp.methods`` region (e.g.
@@ -1809,28 +1842,29 @@ class CFunctionSigOp(IRDLOperation):
     name = "ccpp_utils.c_function_sig"
 
     fn_name         = prop_def(StringAttr)
-    return_type     = prop_def(StringAttr)
+    return_type     = opt_prop_def(TypeAttribute)   # absent: no result
     is_inline       = opt_prop_def(BoolAttr)
     is_const        = opt_prop_def(BoolAttr)
     param_names     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    param_types     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    param_types     = prop_def(ArrayAttr)   # ArrayAttr[TypeAttribute]
     param_comments  = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
     body            = region_def("single_block")
 
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, fn_name: str, param_names: "list[str]", param_types: "list[str]",
+        self, fn_name: str, param_names: "list[str]", param_types: list,
         param_comments: "list[str]", body_ops: list,
-        return_type: str = "void", is_inline: bool = False, is_const: bool = False,
+        return_type=None, is_inline: bool = False, is_const: bool = False,
     ):
         props: dict = {
             "fn_name":        StringAttr(fn_name),
-            "return_type":    StringAttr(return_type),
             "param_names":    ArrayAttr([StringAttr(n) for n in param_names]),
-            "param_types":    ArrayAttr([StringAttr(t) for t in param_types]),
+            "param_types":    ArrayAttr(list(param_types)),
             "param_comments": ArrayAttr([StringAttr(c) for c in param_comments]),
         }
+        if return_type is not None:
+            props["return_type"] = return_type
         if is_inline:
             props["is_inline"] = BoolAttr.from_bool(True)
         if is_const:
@@ -1844,7 +1878,7 @@ class CppFieldDeclOp(IRDLOperation):
 
     Emits::
 
-        {cpp_type:<{width}} {field_name}{array_suffix}{ = init_expr};
+        {type:<{width}} {field_name}{array_suffix}{ = init_expr};
 
     where ``width = type_width`` if given, else ``8`` (the pad-plus-
     mandatory-space formula below is byte-identical to Stage 2's own
@@ -1855,41 +1889,29 @@ class CppFieldDeclOp(IRDLOperation):
     separating space for any type name >= 9 chars, never triggered
     before Stage 3 passes wider type strings).
 
-    ``array_suffix`` (e.g. ``"[129]"``) is opaque text, same
-    declaration-stays-text convention used everywhere else in this
-    codebase for this kind of trailing shape annotation. ``init_expr``
-    (e.g. ``"nullptr"``, ``"0"``, for a default member initializer) has
-    the same lang-neutral-expr-ir Stage 3b structured alternative as
-    the other ops in this round -- pass ``init_expr_op`` instead.
+    ``field_type`` is an MLIR type (see ``CFunctionSigOp``); a
+    static-shape memref, e.g. ``memref<129xi8>``, is an inline array
+    (``char name[129]``). A default member initializer is an expression op
+    (``init_expr_op``, e.g. ``NullPointerExprOp`` or an ``arith``
+    constant).
     """
 
     name = "ccpp_utils.cpp_field_decl"
     field_name   = prop_def(StringAttr)
-    cpp_type     = prop_def(StringAttr)
-    array_suffix = opt_prop_def(StringAttr)
-    init_expr    = opt_prop_def(StringAttr)
+    field_type   = prop_def(TypeAttribute)
     init_expr_region = opt_region_def("single_block")
     type_width   = opt_prop_def(IntegerAttr)
 
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, field_name: str, cpp_type: str,
-        array_suffix: "str | None" = None, init_expr: "str | None" = None,
+        self, field_name: str, field_type,
         type_width: "int | None" = None, *, init_expr_op=None,
     ):
-        if init_expr is not None and init_expr_op is not None:
-            raise ValueError(
-                "CppFieldDeclOp: pass at most one of init_expr or init_expr_op"
-            )
-        props: dict = {"field_name": StringAttr(field_name), "cpp_type": StringAttr(cpp_type)}
-        if array_suffix is not None:
-            props["array_suffix"] = StringAttr(array_suffix)
-        init_region = None
-        if init_expr is not None:
-            props["init_expr"] = StringAttr(init_expr)
-        elif init_expr_op is not None:
-            init_region = _single_op_region([init_expr_op])
+        props: dict = {"field_name": StringAttr(field_name), "field_type": field_type}
+        init_region = (
+            _single_op_region([init_expr_op]) if init_expr_op is not None else None
+        )
         if type_width is not None:
             props["type_width"] = IntegerAttr.from_int_and_width(type_width, 32)
         super().__init__(properties=props, regions=[init_region])
@@ -1995,28 +2017,15 @@ class CppCallStatementOp(IRDLOperation):
     name = "ccpp_utils.cpp_call_statement"
 
     callee    = prop_def(StringAttr)
-    call_args = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr]
-    # lang-neutral-expr-ir Stage 3b: structured alternative to call_args,
-    # pass call_arg_ops= instead.
-    call_args_region = var_region_def("single_block")
+    call_args_region = var_region_def("single_block")   # expression ops
 
     traits = traits_def(NoTerminator())
 
-    def __init__(
-        self, callee: str, call_args: "list[str] | None" = None,
-        *, call_arg_ops: "list | None" = None,
-    ):
-        if call_args is not None and call_arg_ops is not None:
-            raise ValueError(
-                "CppCallStatementOp: pass at most one of call_args or call_arg_ops"
-            )
-        props: dict = {"callee": StringAttr(callee)}
-        if call_arg_ops is not None:
-            call_args_regions = [_single_op_region([a]) for a in call_arg_ops]
-        else:
-            props["call_args"] = ArrayAttr([StringAttr(a) for a in (call_args or [])])
-            call_args_regions = []
-        super().__init__(properties=props, regions=[call_args_regions])
+    def __init__(self, callee: str, *, call_arg_ops: list):
+        super().__init__(
+            properties={"callee": StringAttr(callee)},
+            regions=[[_single_op_region([a]) for a in call_arg_ops]],
+        )
 
 
 @irdl_op_definition
@@ -2039,32 +2048,19 @@ class CppBraceInitCallOp(IRDLOperation):
     name = "ccpp_utils.cpp_brace_init_call"
 
     callee        = prop_def(StringAttr)
-    field_names   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] -- struct member names, not exprs
-    field_values  = opt_prop_def(ArrayAttr)   # legacy ArrayAttr[StringAttr]
-    # lang-neutral-expr-ir Stage 3b: structured alternative to
-    # field_values, pass field_value_ops= instead.
-    field_values_region = var_region_def("single_block")
+    field_names   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr] -- struct member names
+    field_values_region = var_region_def("single_block")   # expression ops
 
     traits = traits_def(NoTerminator())
 
-    def __init__(
-        self, callee: str, field_names: "list[str]",
-        field_values: "list[str] | None" = None, *, field_value_ops: "list | None" = None,
-    ):
-        if field_values is not None and field_value_ops is not None:
-            raise ValueError(
-                "CppBraceInitCallOp: pass at most one of field_values or field_value_ops"
-            )
-        props: dict = {
-            "callee":      StringAttr(callee),
-            "field_names": ArrayAttr([StringAttr(n) for n in field_names]),
-        }
-        if field_value_ops is not None:
-            field_values_regions = [_single_op_region([v]) for v in field_value_ops]
-        else:
-            props["field_values"] = ArrayAttr([StringAttr(v) for v in (field_values or [])])
-            field_values_regions = []
-        super().__init__(properties=props, regions=[field_values_regions])
+    def __init__(self, callee: str, field_names: "list[str]", *, field_value_ops: list):
+        super().__init__(
+            properties={
+                "callee":      StringAttr(callee),
+                "field_names": ArrayAttr([StringAttr(n) for n in field_names]),
+            },
+            regions=[[_single_op_region([v]) for v in field_value_ops]],
+        )
 
 
 @irdl_op_definition
@@ -2090,49 +2086,32 @@ class CppConstructorOp(IRDLOperation):
     name = "ccpp_utils.cpp_constructor"
 
     param_names    = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    param_types    = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    param_defaults = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    param_types    = prop_def(ArrayAttr)   # ArrayAttr[TypeAttribute]
     init_members   = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
-    init_exprs     = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+    param_defaults = var_region_def("single_block")   # one expression op per param
+    init_exprs     = var_region_def("single_block")   # one expression op per member
     body           = region_def("single_block")
 
+    irdl_options = (AttrSizedRegionSegments(),)
     traits = traits_def(NoTerminator())
 
     def __init__(
-        self, param_names: "list[str]", param_types: "list[str]",
-        param_defaults: "list[str]", init_members: "list[str]",
-        init_exprs: "list[str]", body_ops: list,
+        self, param_names: "list[str]", param_types: list,
+        param_default_ops: list, init_members: "list[str]",
+        init_expr_ops: list, body_ops: list,
     ):
         super().__init__(
             properties={
                 "param_names":    ArrayAttr([StringAttr(n) for n in param_names]),
-                "param_types":    ArrayAttr([StringAttr(t) for t in param_types]),
-                "param_defaults": ArrayAttr([StringAttr(d) for d in param_defaults]),
+                "param_types":    ArrayAttr(list(param_types)),
                 "init_members":   ArrayAttr([StringAttr(m) for m in init_members]),
-                "init_exprs":     ArrayAttr([StringAttr(e) for e in init_exprs]),
             },
-            regions=[Region([Block(body_ops)])],
+            regions=[
+                [_single_op_region([d]) for d in param_default_ops],
+                [_single_op_region([e]) for e in init_expr_ops],
+                Region([Block(body_ops)]),
+            ],
         )
-
-
-@irdl_op_definition
-class RawCppLinesOp(IRDLOperation):
-    """Escape hatch for C++ content not yet converted to structured ops.
-
-    Holds raw C++ text (one or more lines, newline-separated), printed
-    verbatim by ``print_cpp_header.py`` with no added indentation or
-    punctuation: comments, section-header banners, local buffer
-    declarations, simple ``return``/one-off ``if (...) foo();`` lines.
-    Language syntax in the middle layer, to be replaced by ops (BACKLOG
-    ``cpp-text-in-ir``); do not add new uses.
-    """
-
-    name = "ccpp_utils.raw_cpp_lines"
-
-    lines = prop_def(StringAttr)
-
-    def __init__(self, text: str):
-        super().__init__(properties={"lines": StringAttr(text)})
 
 
 @irdl_op_definition
@@ -2318,10 +2297,161 @@ class VarRefExprOp(IRDLOperation):
     res = opt_result_def()
 
     def __init__(self, var_name: str, result_type=None):
+        if not _IDENTIFIER.match(var_name):
+            raise ValueError(f"VarRefExprOp: {var_name!r} is not an identifier")
         super().__init__(
             properties={"var_name": StringAttr(var_name)},
             result_types=[result_type] if result_type is not None else [None],
         )
+
+
+@irdl_op_definition
+class AddressOfExprOp(IRDLOperation):
+    """The address of a variable, for a C function taking a pointer to it
+    (C++ ``&x``)."""
+
+    name = "ccpp_utils.address_of_expr"
+    operand = region_def("single_block")
+    res = opt_result_def()
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, operand_op, result_type=None):
+        super().__init__(
+            regions=[_single_op_region([operand_op])],
+            result_types=[result_type] if result_type is not None else [None],
+        )
+
+
+@irdl_op_definition
+class NullPointerExprOp(IRDLOperation):
+    """The null pointer (C++ ``nullptr``, Fortran ``null()``)."""
+
+    name = "ccpp_utils.null_pointer_expr"
+    res = opt_result_def()
+
+    def __init__(self, result_type=None):
+        super().__init__(result_types=[result_type] if result_type is not None else [None])
+
+
+@irdl_op_definition
+class StructLiteralExprOp(IRDLOperation):
+    """A value of a struct type given field by field, in declaration order
+    (C++ ``{a, b}``)."""
+
+    name = "ccpp_utils.struct_literal_expr"
+    fields = var_region_def("single_block")
+    res = opt_result_def()
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, field_ops: list, result_type=None):
+        super().__init__(
+            regions=[[_single_op_region([f]) for f in field_ops]],
+            result_types=[result_type] if result_type is not None else [None],
+        )
+
+
+@irdl_op_definition
+class ConditionalExprOp(IRDLOperation):
+    """``then`` if ``cond`` holds, else ``otherwise`` (C++ ``c ? a : b``,
+    Fortran ``merge(a, b, c)``)."""
+
+    name = "ccpp_utils.conditional_expr"
+    cond = region_def("single_block")
+    then = region_def("single_block")
+    otherwise = region_def("single_block")
+    res = opt_result_def()
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, cond_op, then_op, otherwise_op, result_type=None):
+        super().__init__(
+            regions=[_single_op_region([cond_op]), _single_op_region([then_op]),
+                     _single_op_region([otherwise_op])],
+            result_types=[result_type] if result_type is not None else [None],
+        )
+
+
+@irdl_op_definition
+class CastExprOp(IRDLOperation):
+    """``value`` converted to ``result_type`` (e.g. ``index``, an array
+    extent: C++ ``static_cast<std::size_t>(x)``)."""
+
+    name = "ccpp_utils.cast_expr"
+    value = region_def("single_block")
+    res = result_def()
+
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, value_op, result_type):
+        super().__init__(
+            regions=[_single_op_region([value_op])], result_types=[result_type],
+        )
+
+
+@irdl_op_definition
+class LocalVarOp(IRDLOperation):
+    """A local variable declaration with an optional initial value.
+
+    One of: ``init_op`` (an expression), ``zero_init`` (every element
+    zero), or ``size_op`` (an owned array of that many elements). For a
+    static-shape memref type the variable is an inline array. ``type_width``
+    and ``name_width`` pad the type and name columns, for aligned blocks of
+    declarations.
+    """
+
+    name = "ccpp_utils.local_var"
+    var_name   = prop_def(StringAttr)
+    var_type   = prop_def(TypeAttribute)
+    zero_init  = opt_prop_def(BoolAttr)
+    type_width = opt_prop_def(IntegerAttr)
+    name_width = opt_prop_def(IntegerAttr)
+    init = opt_region_def("single_block")
+    size = opt_region_def("single_block")
+
+    irdl_options = (AttrSizedRegionSegments(),)
+    traits = traits_def(NoTerminator())
+
+    def __init__(self, var_name: str, var_type, *, init_op=None, zero_init: bool = False,
+                 size_op=None, type_width: "int | None" = None,
+                 name_width: "int | None" = None):
+        if not _IDENTIFIER.match(var_name):
+            raise ValueError(f"LocalVarOp: {var_name!r} is not an identifier")
+        if (init_op is not None) + zero_init + (size_op is not None) > 1:
+            raise ValueError("LocalVarOp: pass at most one of init_op, zero_init, size_op")
+        props: dict = {"var_name": StringAttr(var_name), "var_type": var_type}
+        if zero_init:
+            props["zero_init"] = BoolAttr.from_bool(True)
+        if type_width is not None:
+            props["type_width"] = IntegerAttr.from_int_and_width(type_width, 32)
+        if name_width is not None:
+            props["name_width"] = IntegerAttr.from_int_and_width(name_width, 32)
+        super().__init__(properties=props, regions=[
+            _single_op_region([init_op]) if init_op is not None else None,
+            _single_op_region([size_op]) if size_op is not None else None,
+        ])
+
+
+@irdl_op_definition
+class CommentOp(IRDLOperation):
+    """Comment lines in generated source; each entry is one line's text."""
+
+    name = "ccpp_utils.comment"
+    lines = prop_def(ArrayAttr)   # ArrayAttr[StringAttr]
+
+    def __init__(self, lines: "list[str]"):
+        super().__init__(properties={"lines": ArrayAttr([StringAttr(t) for t in lines])})
+
+
+@irdl_op_definition
+class BlankLineOp(IRDLOperation):
+    """An empty line in generated source, separating sections."""
+
+    name = "ccpp_utils.blank_line"
+
+    def __init__(self):
+        super().__init__()
 
 
 @irdl_op_definition
@@ -3034,24 +3164,29 @@ class ErrorPropagateOp(IRDLOperation):
 
 @irdl_op_definition
 class ReturnStmtOp(IRDLOperation):
-    """A Fortran RETURN statement in generated source (not func.ReturnOp,
-    which ends a generated function and carries its outputs).
+    """A return statement in generated source (not func.ReturnOp, which
+    ends a generated function and carries its outputs).
 
     Prints as ``return``, or with condition_op (an i1 expression)::
 
         if ({condition}) return
+
+    value_op (C++ only so far) is the returned value: ``return {value};``.
     """
 
     name = "ccpp_utils.return_stmt"
     condition = opt_region_def("single_block")
+    value = opt_region_def("single_block")
 
+    irdl_options = (AttrSizedRegionSegments(),)
     traits = traits_def(NoTerminator())
 
-    def __init__(self, condition_op=None):
+    def __init__(self, condition_op=None, *, value_op=None):
         cond_region = (
             _single_op_region([condition_op]) if condition_op is not None else None
         )
-        super().__init__(regions=[cond_region])
+        value_region = _single_op_region([value_op]) if value_op is not None else None
+        super().__init__(regions=[cond_region, value_region])
 
 
 @irdl_op_definition
@@ -3299,7 +3434,6 @@ CCPPUtils = Dialect(
         CppCallStatementOp,
         CppBraceInitCallOp,
         CppConstructorOp,
-        RawCppLinesOp,
         CHostCapOp,
         CapVarRefOp,
         KindCastOp,
@@ -3310,6 +3444,14 @@ CCPPUtils = Dialect(
         ValueExprOp,
         MetadataLiteralExprOp,
         MethodCallExprOp,
+        AddressOfExprOp,
+        NullPointerExprOp,
+        StructLiteralExprOp,
+        ConditionalExprOp,
+        CastExprOp,
+        LocalVarOp,
+        CommentOp,
+        BlankLineOp,
         MemberAccessExprOp,
         IndexExprOp,
         SliceExprOp,
@@ -3333,5 +3475,5 @@ CCPPUtils = Dialect(
         CamSuiteDispatchOp,
         CamSuiteSchemeListOp,
     ],
-    [RealKindType, DerivedType],
+    [RealKindType, DerivedType, ReadOnlyType, OwnedArrayType, OwnedStringType],
 )

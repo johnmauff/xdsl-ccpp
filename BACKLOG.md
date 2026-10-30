@@ -67,7 +67,6 @@ measured data, and will drift as items are reassessed.
 | `gpu-sync-intent-aware` | 2-4 days | S |
 | `cap-oracle-ci` | 3-6 days (committed input fixtures or a CAM-SIMA checkout in CI; a ccpp_framework checkout for `capgen`) | S |
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
-| `cpp-text-in-ir` | 5-10 days | M |
 | `gpu-debug-text` | 2-4 days | S |
 | `active-condition-ir` | 3-6 days (parser for `active` expressions and member subscripts, tests, convert `ActiveCheckOp` and DDT-member `HostVarRefOp`s and their identity keys) | S |
 | `printer-trailing-whitespace` | <1 day | XS |
@@ -1740,6 +1739,7 @@ opportunistically.
 - `raw-fortran-in-ir` — resolved 2026-10-29. CHANGELOG.md L13162.
 - `fortran-decls-as-text` — resolved 2026-10-29. CHANGELOG.md L13210.
 - `fortran-exprs-as-text` — resolved 2026-10-29. CHANGELOG.md L13259.
+- `cpp-text-in-ir` — resolved 2026-10-29. CHANGELOG.md L13324.
 - `active-condition-ir` — **Expressions from `.meta` files are Fortran
   text.** Two kinds: a host variable's `active` attribute, such as
   `(flag_a .and. n > 0)` (`suitecap/active.py` `_resolve_active_condition`
@@ -1752,12 +1752,6 @@ opportunistically.
   hand-written parser with `filename:line` errors, like `parse_meta_file`)
   into `arith` comparisons/logic, index/slice and reference ops, so passes
   can inspect them and other printers can spell them.
-- `cpp-text-in-ir` — **C++ syntax in the middle layer.** `cpp_interop.py`
-  builds the C++ host cap partly from `RawCppLinesOp` and C++ text
-  (`static_cast<...>`, `return {errflg, ...}`, `std::vector<...>`): the
-  same problem for the C++ backend. Once `VarRefExprOp('&errflg')` (64 in
-  the C++ caps) is gone, make `VarRefExprOp` reject a non-identifier name,
-  as `MemberAccessExprOp` does.
 - `gpu-debug-text` — **GPU debug instrumentation as text.**
   `gpu_debug_print_pass.py` builds `GPUDebugPrintOp`s from `!$acc
   parallel present(...)`/`write(*,*)` text. Use the `Acc*` ops and a
@@ -1768,9 +1762,9 @@ opportunistically.
   dispatcher's `errflg = 1` ends in trailing whitespace (21 times in a
   Kessler cap). Harmless; FileCheck ignores it.
 
-To re-measure the first three: scan the transformed IR's string properties
+To re-measure the first two: scan the transformed IR's string properties
 (`tests/unit/test_ir_names_are_identifiers.py` does this for the
-completed_ir goldens) and the string literals (not docstrings) of
+completed_ir goldens and a C++-host example) and the string literals (not docstrings) of
 `xdsl_ccpp/transforms/` for Fortran/C++ syntax (`::`, `intent(`,
 `.true.`, `/=`, statement keywords, intrinsic calls, `!$`), excluding the
 frontends that parse Fortran input (`fparser2_to_meta`, `fir_to_meta`,

@@ -1,19 +1,24 @@
-"""The transformed IR carries no Fortran expression text (fortran-exprs-as-text):
-scan the completed_ir FileCheck goldens -- the IR every example's pipeline
-produces before printing -- and check that the properties naming a variable,
-member, method or kind hold plain identifiers, and that the removed text
-properties are gone.
+"""The transformed IR carries no Fortran or C++ text (fortran-exprs-as-text,
+cpp-text-in-ir): scan the completed_ir FileCheck goldens -- the IR every
+example's pipeline produces before printing -- and the IR of a C++-host
+example (constadv; no golden covers the C++ host cap), and check that the
+properties naming a variable, member, method or kind hold plain
+identifiers, and that the removed text properties are gone.
 
 Two known exceptions, tracked in BACKLOG.md as active-condition-ir:
 ActiveCheckOp.condition_expr and HostVarRefOp.member_name, both expressions
-copied from .meta files. VarRefExprOp's own constructor can't enforce an
-identifier yet: the C++ cap still passes '&errflg' (cpp-text-in-ir).
+copied from .meta files. (VarRefExprOp's constructor also rejects a
+non-identifier name; this scan catches the other ops.)
 """
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+_REPO = Path(__file__).parents[2]
 
 _GOLDENS = sorted(
     (Path(__file__).parents[1] / "filecheck" / "examples" / "completed_ir").glob("*.mlir")
@@ -57,6 +62,17 @@ _REMOVED_PROPS = {
     "lazy_alloc": ("kind_name", "init_value"),
     "module_var": ("init_value",),
     "ddt_component_decl": ("init_value",),
+    "cpp_call_statement": ("call_args",),
+    "cpp_brace_init_call": ("field_values",),
+    "cpp_field_decl": ("cpp_type", "array_suffix", "init_expr"),
+}
+
+# C++ ops whose types must be MLIR types, not strings.
+_TYPED_PROPS = {
+    "cpp_field_decl": ("field_type",),
+    "c_function_sig": ("return_type", "param_types"),
+    "cpp_constructor": ("param_types",),
+    "local_var": ("var_type",),
 }
 
 _OP = re.compile(r'"ccpp_utils\.([a-z_]+)"')
@@ -105,3 +121,48 @@ def test_the_scan_sees_the_ops():
     seen = {op for golden in _GOLDENS for op, _ in _ops_with_props(golden)}
     assert {"var_ref_expr", "member_access_expr", "cap_var_ref", "module_var",
             "ddt_method_call", "allocate", "lazy_alloc"} <= seen
+
+
+@pytest.fixture(scope="module")
+def chost_ir(tmp_path_factory) -> Path:
+    """The transformed IR of examples/constadv with a C++ host."""
+    example = _REPO / "examples" / "constadv"
+    meta = subprocess.run(
+        [sys.executable, "-m", "xdsl_ccpp.frontend.ccpp_xml",
+         "--suites", str(example / "constadv_suite.xml"),
+         "--scheme-files", str(example / "constadv.meta"),
+         "--host-files", ",".join(str(example / "host_cpp" / f) for f in (
+             "constadv_host_mod.meta", "constadv_host_sub.meta"))],
+        cwd=_REPO, capture_output=True, text=True, check=True,
+    ).stdout
+    passes = ("generate-meta-cap,generate-meta-kinds,generate-host-match,"
+              "generate-arg-ownership,generate-suite-cap,generate-ccpp-cap{bind_c=true},"
+              "generate-cpp-cap,generate-kinds,strip-ccpp")
+    ir = subprocess.run(
+        [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_opt", "-p", passes, "-t", "mlir"],
+        input=meta, cwd=_REPO, capture_output=True, text=True, check=True,
+    ).stdout
+    path = tmp_path_factory.mktemp("chost") / "constadv.mlir"
+    path.write_text(ir)
+    return path
+
+
+def test_cpp_host_ir_has_no_text(chost_ir):
+    seen = {op for op, _ in _ops_with_props(chost_ir)}
+    assert {"c_function_sig", "cpp_field_decl", "local_var", "cpp_call_statement"} <= seen
+    test_names_are_identifiers(chost_ir)
+    test_removed_text_properties_are_gone(chost_ir)
+    text = chost_ir.read_text()
+    assert '"ccpp_utils.raw_cpp_lines"' not in text
+    bad = []
+    for line in text.splitlines():
+        op = _OP.search(line)
+        props = _PROPS.search(line)
+        if not (op and props):
+            continue
+        for key in _TYPED_PROPS.get(op.group(1), ()):
+            # A string-valued type, or a string element of a type list (a
+            # derived type's quoted name is inside <...>, not an element).
+            if re.search(rf'\b{key} = (\[([^\]]*?, )?)?"', props.group(1)):
+                bad.append(f"{op.group(1)}.{key}")
+    assert not bad, f"C++ types given as text: {bad}"

@@ -1,7 +1,8 @@
-"""Unit tests for the shared `cpp_numeric_type` decision table
+"""Unit tests for the shared `c_numeric_type` decision table
 (`cpp_type_table.py`) and the two preserved per-caller quirks that sit on
-top of it in `_chost_cpp_type`/`_cpp_type` (BACKLOG.md's
-`cpp-type-table-unify`).
+top of it in `_chost_arg_type`/`_c_param_type` (BACKLOG.md's
+`cpp-type-table-unify`). The table returns MLIR types; the assertions
+spell them with `print_cpp_header.cpp_type_name`.
 
 No FileCheck golden exercises this table directly in isolation -- real
 suites only reach it through whichever of the two real/int argument
@@ -10,8 +11,17 @@ pins down the table's own rules, plus the two call sites' adapter-level
 overrides, independent of any particular example suite.
 """
 
-from xdsl_ccpp.transforms.cpp_interop import ChostArgInfo, _chost_cpp_type
-from xdsl_ccpp.util.cpp_type_table import cpp_numeric_type
+from xdsl_ccpp.backend.print_cpp_header import cpp_type_name
+from xdsl_ccpp.transforms.cpp_interop import ChostArgInfo, _chost_arg_type
+from xdsl_ccpp.util.cpp_type_table import c_numeric_type
+
+
+def cpp_numeric_type(**kwargs) -> str:
+    return cpp_type_name(c_numeric_type(**kwargs))
+
+
+def _chost_cpp_type(ai) -> str:
+    return cpp_type_name(_chost_arg_type(ai))
 
 
 class TestCppNumericType:
@@ -32,8 +42,8 @@ class TestCppNumericType:
     def test_array_in_const_policy_is_explicit_per_caller(self):
         """The one real behavioral divergence between the two existing
         functions: an intent(in) ARRAY gets a const pointer under
-        `_chost_cpp_type`'s own settled convention (const_in_arrays=True,
-        the default) but not under `_cpp_type`'s (const_in_arrays=False)."""
+        `_chost_arg_type`'s own settled convention (const_in_arrays=True,
+        the default) but not under `_c_param_type`'s (const_in_arrays=False)."""
         assert cpp_numeric_type(
             kind="real", width=64, rank=1, intent="in",
         ) == "const double*"
@@ -43,7 +53,7 @@ class TestCppNumericType:
 
 
 class TestChostCppTypePreservedQuirks:
-    """`_chost_cpp_type` forces specific (rank, intent) pairs into the
+    """`_chost_arg_type` forces specific (rank, intent) pairs into the
     shared table rather than ever passing the arg's own raw values for
     int, and only for real at rank 0 -- both are pre-existing,
     deliberately-preserved conventions of this call site, not something
@@ -72,3 +82,41 @@ class TestChostCppTypePreservedQuirks:
         assert _chost_cpp_type(ai_scalar) == "int"
         ai_array = ChostArgInfo(is_int=True, is_errflg=False, rank=2, intent="out")
         assert _chost_cpp_type(ai_array) == "int"
+
+
+class TestCppTypeName:
+    """`cpp_type_name` spells the C-interop types the C++ host cap uses."""
+
+    def test_structs_containers_and_read_only_access(self):
+        from xdsl.dialects.builtin import DYNAMIC_INDEX, MemRefType, f64, i1, i8, i32
+
+        from xdsl_ccpp.dialects.ccpp_utils import (
+            DerivedType,
+            OwnedArrayType,
+            OwnedStringType,
+            ReadOnlyType,
+        )
+
+        info = DerivedType("CcppConstituentInfo")
+        assert cpp_type_name(ReadOnlyType(DerivedType("State"))) == "const State&"
+        assert cpp_type_name(ReadOnlyType(MemRefType(i8, [DYNAMIC_INDEX]))) == "const char*"
+        assert cpp_type_name(MemRefType(i32, [])) == "int*"
+        assert cpp_type_name(MemRefType(info, [DYNAMIC_INDEX]), c_decl=True) == (
+            "struct CcppConstituentInfo*"
+        )
+        assert cpp_type_name(OwnedArrayType(info)) == "std::vector<CcppConstituentInfo>"
+        assert cpp_type_name(OwnedArrayType(f64)) == "std::vector<double>"
+        assert cpp_type_name(OwnedStringType()) == "std::string"
+        assert cpp_type_name(i1) == "bool"
+
+    def test_static_shape_field_is_an_inline_array(self):
+        from io import StringIO
+
+        from xdsl.dialects.builtin import MemRefType, i8
+
+        from xdsl_ccpp.backend.print_cpp_header import _print_cpp_op
+        from xdsl_ccpp.dialects.ccpp_utils import CppFieldDeclOp
+
+        out = StringIO()
+        _print_cpp_op(CppFieldDeclOp("std_name", MemRefType(i8, [129])), out)
+        assert out.getvalue().split() == ["char", "std_name[129];"]
