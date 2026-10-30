@@ -896,7 +896,7 @@
 // CHECK-NEXT:              }, {
 // CHECK-NEXT:                %7 = arith.constant true
 // CHECK-NEXT:              }) : () -> ()
-// CHECK-NEXT:              "ccpp_utils.return_stmt"() : () -> ()
+// CHECK-NEXT:              "ccpp_utils.return_stmt"() {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
 // CHECK-NEXT:            }
 // CHECK-NEXT:          }
 // CHECK-NEXT:          %8 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
@@ -952,7 +952,7 @@
 // CHECK-NEXT:                  }, {
 // CHECK-NEXT:                    %14 = arith.constant true
 // CHECK-NEXT:                  }) : () -> ()
-// CHECK-NEXT:                  "ccpp_utils.return_stmt"() : () -> ()
+// CHECK-NEXT:                  "ccpp_utils.return_stmt"() {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
 // CHECK-NEXT:                }
 // CHECK-NEXT:              }) : () -> ()
 // CHECK-NEXT:            }
@@ -966,7 +966,7 @@
 // CHECK-NEXT:            }) {regionSegmentSizes = array<i32: 1, 0>} : () -> i1
 // CHECK-NEXT:            %2 = arith.constant true
 // CHECK-NEXT:            %3 = arith.xori %1, %2 : i1
-// CHECK-NEXT:          }) : () -> ()
+// CHECK-NEXT:          }) {regionSegmentSizes = array<i32: 1, 0>} : () -> ()
 // CHECK-NEXT:          "ccpp_utils.safe_dealloc"() ({
 // CHECK-NEXT:            "ccpp_utils.member_access_expr"() <{member = "lc_dyn_const"}> ({
 // CHECK-NEXT:              "ccpp_utils.index_expr"() ({

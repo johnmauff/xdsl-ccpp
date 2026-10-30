@@ -1072,7 +1072,7 @@
 // CHECK-NEXT:            }, {
 // CHECK-NEXT:              %6 = arith.constant true
 // CHECK-NEXT:            }) : () -> ()
-// CHECK-NEXT:            "ccpp_utils.return_stmt"() : () -> ()
+// CHECK-NEXT:            "ccpp_utils.return_stmt"() {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
 // CHECK-NEXT:          }
 // CHECK-NEXT:          %7 = "ccpp_utils.call_expr"() <{callee = "allocated"}> ({
 // CHECK-NEXT:            "ccpp_utils.var_ref_expr"() <{var_name = "lc_dyn_const"}> : () -> ()
@@ -1105,7 +1105,7 @@
 // CHECK-NEXT:                }, {
 // CHECK-NEXT:                  %12 = arith.constant true
 // CHECK-NEXT:                }) : () -> ()
-// CHECK-NEXT:                "ccpp_utils.return_stmt"() : () -> ()
+// CHECK-NEXT:                "ccpp_utils.return_stmt"() {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
 // CHECK-NEXT:              }
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }
@@ -1140,7 +1140,7 @@
 // CHECK-NEXT:                }, {
 // CHECK-NEXT:                  %18 = arith.constant true
 // CHECK-NEXT:                }) : () -> ()
-// CHECK-NEXT:                "ccpp_utils.return_stmt"() : () -> ()
+// CHECK-NEXT:                "ccpp_utils.return_stmt"() {regionSegmentSizes = array<i32: 0, 0>} : () -> ()
 // CHECK-NEXT:              }
 // CHECK-NEXT:            }) : () -> ()
 // CHECK-NEXT:          }

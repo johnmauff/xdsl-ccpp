@@ -11,8 +11,7 @@ than one language.
 
 Do not hardcode language constructs in transforms:
 
-- no raw-text statement ops (no new `RawCppLinesOp`; don't reintroduce the
-  removed `RawFortranLinesOp`);
+- no raw-text statement ops;
 - no syntax inside the string fields of typed ops: `AssignOp("x", ".true.")`,
   `"integer, intent(in) :: n"`, `"size(x)"`, `"n + 1"`, `"if (...) return"`,
   `"!$acc enter data ..."`, `"real(x, kind_phys)"`;
@@ -30,6 +29,9 @@ op and its printer case rather than emitting text.
 
 Before calling such work done, scan the string literals of `xdsl_ccpp/transforms/` for
 target syntax (`::`, `intent(`, `.true.`, `/=`, statement keywords, intrinsic calls,
-`!$`) instead of trusting a count of one op class. Known remaining text is tracked in
-`BACKLOG.md` (`active-condition-ir`, `cpp-text-in-ir`, `gpu-debug-text`); don't add to
-it. `tests/unit/test_ir_names_are_identifiers.py` checks the IR's naming properties.
+`!$`) instead of trusting a count of one op class.
+
+Some Fortran and C++ syntax still appears as strings in `xdsl_ccpp/transforms/`. Each
+known case is an open item in `BACKLOG.md`. Don't write new code that does this. If you
+find a case that isn't in `BACKLOG.md`, add it there as a new item.
+`tests/unit/test_ir_names_are_identifiers.py` checks the IR's naming properties.
