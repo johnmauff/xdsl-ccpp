@@ -556,16 +556,12 @@ def _generate_constituent_api(
     _host_constituents = (
         "host_constituents", memref.MemRefType(_props, [DYNAMIC_INDEX]), "in", ("target",),
     )
-    if capgen_api:
-        # CAM callers use (host_constituents, errcode, errmsg) positional order;
-        # preserve it so existing callers that don't use keyword args still compile.
-        rc_args = [_host_constituents, ("errcode", _int, "out", ()),
-                   ("errmsg", _errmsg, "out", ())]
-    else:
-        rc_args = [_host_constituents, ("errmsg", _errmsg, "out", ()),
-                   ("errcode", _int, "out", ())]
-        if multi_instance:
-            rc_args += [*_instance_args, (ninstances_local_name, _int, "in", ())]
+    # One argument order for every host (CAM-SIMA's cam_comp.F90 passes
+    # errcode/errmsg by keyword).
+    rc_args = [_host_constituents, ("errmsg", _errmsg, "out", ()),
+               ("errcode", _int, "out", ())]
+    if multi_instance:
+        rc_args += [*_instance_args, (ninstances_local_name, _int, "in", ())]
     rc_body_ops: list = [ClearErrStateOp("errcode", "errmsg")]
     if multi_instance:
         rc_body_ops.extend(_scf_if(

@@ -69,6 +69,8 @@ measured data, and will drift as items are reassessed.
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
+| `capgen-api-qmin` | 2-4 days (pass the constituent object's minimum values to the run phase instead of recomputing them per call; CAM caps change, needs a CAM-SIMA regression) | S |
+| `generic-suite-schemes` | 1-2 days (emit `ccpp_physics_suite_schemes` for every host; example caps gain a routine) | XS |
 | `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
@@ -1795,3 +1797,16 @@ diagnostic messages and single-token metadata keys.
   section in the CAM-SIMA style, move the example scripts to
   `export_suite`, deprecate then remove `emit_ir`, and decide whether the
   standalone script path stays supported. Found by `dead-code-coverage`.
+- `capgen-api-qmin` — **The capgen-API run adapter recomputes constituent
+  minimums on every call.** With `--capgen-api` (formerly `--cam-host`),
+  `{host}_ccpp_physics_run` allocates `lc_qmin`, calls `minimum()` for every
+  constituent, passes the array to `ccpp_physics_run`, and deallocates it
+  (`CamQminPreambleOp`/`CamQminPostambleOp`, ccpp_cap.py). Original capgen
+  passes `cam_constituents_obj%vars_minvalue` directly. Pass the stored
+  minimums instead; this changes the run interface and CAM's caps. Found in
+  `suite-cap-mode-flags` (B0 audit).
+- `generic-suite-schemes` — **`ccpp_physics_suite_schemes` is generated only
+  for the capgen-API host.** It is part of capgen-v1's standard API
+  (capgen/generator), but xdsl-ccpp emits it only with `--capgen-api`
+  (`CamSuiteSchemeListOp`). Make it part of the generic host cap. Found in
+  `suite-cap-mode-flags` (B0 audit).

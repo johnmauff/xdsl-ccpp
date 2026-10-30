@@ -4,9 +4,10 @@ Copilot PR #97 comment (line 850): the unified implementation has no automated
 coverage for capgen_api=True.  All existing FileCheck fixtures exercise
 ConstituentApiOp without --capgen-api; no test invokes CCPPCAP(capgen_api=True).
 
-Tests here cover the three CAM-specific invariants called out in that comment:
-  1. CAM positional signature in register_constituents: (host_constituents,
-     errcode, errmsg) -- NOT the non-CAM order (errmsg, errcode).
+Tests here cover the --capgen-api invariants:
+  1. register_constituents has the same signature for every host:
+     (host_constituents, errmsg, errcode); CAM-SIMA passes errcode/errmsg
+     by keyword.
   2. register body calls ccpp_initialize_constituent_ptr (not
      ccpp_scheme_utils_set_constituents).
   3. gather_constituents and update_constituents subroutines are emitted and
@@ -110,20 +111,14 @@ _UPDATE_FN   = "Test_ccpp_update_constituents"
 
 
 class TestCamHostRegisterConstituentsSignature:
-    def test_cam_positional_arg_order(self, run_host_match, ccpp_context):
-        """register_constituents must declare (host_constituents, errcode, errmsg)
-        in that order -- the CAM calling convention.  The non-CAM order is
-        (host_constituents, errmsg, errcode); regressing this means integer and
-        character arguments swap positions at every CAM call site."""
+    def test_same_arg_order_as_every_host(self, run_host_match, ccpp_context):
+        """register_constituents declares (host_constituents, errmsg, errcode),
+        the order every other host gets; CAM-SIMA's only call
+        (cam_comp.F90) passes errcode and errmsg by keyword."""
         fortran = _fortran_output(run_host_match, ccpp_context)
         body = _fn_body(fortran, _REGISTER_FN)
         sig = _unwrapped(body.split("implicit none")[0])
-        errcode_pos = sig.index("errcode")
-        errmsg_pos = sig.index("errmsg")
-        assert errcode_pos < errmsg_pos, (
-            f"CAM register_constituents: errcode must precede errmsg in arg list; "
-            f"got: {sig!r}"
-        )
+        assert sig.index("errmsg") < sig.index("errcode"), sig
 
     def test_cam_uses_initialize_constituent_ptr(self, run_host_match, ccpp_context):
         """register_constituents body must call ccpp_initialize_constituent_ptr
