@@ -1,8 +1,8 @@
-"""validate_fir — Cross-validate CCPP .meta metadata against Fortran source (via FIR).
+"""validate_source — Cross-validate CCPP .meta metadata against Fortran source.
 
 Provides a pure comparison function that takes two CCPP metadata ModuleOps —
-one loaded from ``.meta`` files, one extracted from Fortran source via the
-``fir-to-meta`` pass — and returns a list of :class:`Mismatch` objects
+one loaded from ``.meta`` files, one extracted from Fortran source by
+``fparser2_to_meta`` — and returns a list of :class:`Mismatch` objects
 describing every discrepancy.
 
 Fields compared per argument:

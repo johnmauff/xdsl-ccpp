@@ -6,7 +6,6 @@ import shlex
 import subprocess
 import sys
 
-from xdsl.dialects import builtin
 from xdsl.parser import Parser
 from xdsl.printer import Printer
 
@@ -139,13 +138,6 @@ class ccppMain:
             choices=[0, 1, 2],
             default=1,
             help="Verbosity level: 0=quiet, 1=normal, 2=detailed (default: 1)",
-        )
-        parser.add_argument(
-            "--meta-file",
-            default=None,
-            help="Optional metadata MLIR file (e.g. from fir2meta) whose "
-            "ccpp.table_properties are merged into the ccpp module before "
-            "the optimizer runs",
         )
         parser.add_argument(
             "--directive",
@@ -394,8 +386,8 @@ class ccppMain:
         else:
             if not options_db.get("suites"):
                 raise ValueError("--suites is required (or use --py)")
-            if not options_db.get("scheme_files") and not options_db.get("meta_file"):
-                raise ValueError("--scheme-files is required (or provide --meta-file)")
+            if not options_db.get("scheme_files"):
+                raise ValueError("--scheme-files is required")
 
         # coerce_list_option() accepts either a comma-joined string (the
         # CLI contract -- stripping each entry so a space after a comma,
@@ -417,8 +409,6 @@ class ccppMain:
         )
         if options_db.get("py"):
             all_inputs.append(options_db["py"])
-        if options_db.get("meta_file"):
-            all_inputs.append(options_db["meta_file"])
         for f in all_inputs:
             if not os.path.exists(f):
                 raise FileNotFoundError(f"Input file not found: '{f}'")
@@ -456,8 +446,7 @@ class ccppMain:
         metacharacters and duplicated the same "build cmd -> verbose-log
         -> execute" shape repeatedly. subprocess.run([...])
         with an explicit stdout redirect closes both gaps at once, matching
-        the pattern ccpp_validate_source.py/fir2meta.py/flang_utils.py already
-        use elsewhere in this same tools/ directory.
+        the pattern used elsewhere in this same tools/ directory.
 
         label -- short, human-readable stage name (e.g. "Running CCPP
         frontend"), matching each call site's own prior print_verbose_message
@@ -606,57 +595,6 @@ class ccppMain:
             f"  -> Merged {count} table_properties block(s)",
         )
 
-    def merge_meta(self, mlir_file):
-        """Append ``ccpp.table_properties`` from the ``--meta-file`` into *mlir_file*.
-
-        The metadata file (produced by ``fir2meta``) contains a top-level
-        ``builtin.module`` wrapping a ``builtin.module @ccpp_meta`` that holds
-        one or more ``ccpp.table_properties`` ops.  This method extracts those
-        ops and appends them to the top-level module of *mlir_file* so that
-        the subsequent ``generate-meta-cap`` pass sees them alongside the ops
-        from the ``.meta`` scheme files.
-        """
-        meta_path = self.options_db["meta_file"]
-        self.print_verbose_message(
-            f"Merging metadata from '{meta_path}'",
-            f"Merging ccpp.table_properties from '{meta_path}' into '{mlir_file}'",
-        )
-
-        ctx = make_ccpp_context()
-        with open(mlir_file) as f:
-            ccpp_module = Parser(ctx, f.read()).parse_op()
-
-        with open(meta_path) as f:
-            meta_module = Parser(make_ccpp_context(), f.read()).parse_op()
-
-        # Extract ccpp.table_properties from the first sub-module in meta_module
-        table_props = []
-        for child in meta_module.body.block.ops:
-            if not isinstance(child, builtin.ModuleOp):
-                continue
-            for op in list(child.body.block.ops):
-                if isinstance(op, TablePropertiesOp):
-                    op.detach()
-                    table_props.append(op)
-            break  # only the first sub-module
-
-        if not table_props:
-            self.print_verbose_message(
-                f"Warning: no ccpp.table_properties found in '{meta_path}'"
-            )
-            return
-
-        for prop in table_props:
-            ccpp_module.body.block.add_op(prop)
-
-        with open(mlir_file, "w") as f:
-            Printer(stream=f).print_op(ccpp_module)
-            f.write("\n")
-
-        self.print_verbose_message(
-            f"  -> Merged {len(table_props)} table_properties block(s)",
-        )
-
     def validate_fortran_sources(self) -> None:
         """Cross-validate each scheme's .meta file against its real Fortran
         signature, mirroring capgen-v1's own check_fortran_against_metadata.
@@ -667,7 +605,7 @@ class ccppMain:
         signatures via fparser2 (fparser2_to_meta.py), applying --preproc-defs
         first (fortran_preprocess.py -- fparser itself has no CPP-evaluation
         capability), and compare against the .meta-declared signature via
-        validate_fir.compare_modules.
+        validate_source.compare_modules.
 
         Diagnostic only, currently warn-only: mismatches are printed to
         stderr, never raised, and any failure to load or parse a given
@@ -682,7 +620,7 @@ class ccppMain:
 
         from xdsl_ccpp.transforms.fortran_preprocess import parse_preproc_defines
         from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_file
-        from xdsl_ccpp.transforms.validate_fir import compare_modules
+        from xdsl_ccpp.transforms.validate_source import compare_modules
         from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
 
         preproc_defs = parse_preproc_defines(self.options_db.get("preproc_defs"))
@@ -1060,16 +998,12 @@ class ccppMain:
         _build_cheap_metadata_module()'s raw, pre-MetaCAP module, with no
         pass execution needed at all for this one.
 
-        Supports --py (via _build_py_metadata_module); does not support
-        --meta-file, matching predict_output_filenames.
+        Supports --py (via _build_py_metadata_module).
         """
         from xdsl_ccpp.tools.ccpp_datatable import (
             _collect_dependencies,
             _collect_table_properties,
         )
-
-        if self.options_db.get("meta_file"):
-            raise CcppDslError("--list-dependencies does not support --meta-file")
 
         module = self._build_cheap_metadata_module()
         table_props = _collect_table_properties(module)
@@ -1116,18 +1050,12 @@ class ccppMain:
 
         --py (python frontend): suite names come from running the suite
         script's frontend only (_build_py_metadata_module) -- no codegen.
-        Does not support --meta-file (fir2meta merge): no wired-in example
-        uses it, and it would require parsing a second MLIR file just to
-        learn names this prediction is meant to stay cheap by avoiding.
         """
         from xdsl.utils.hints import isa
 
         from xdsl_ccpp.dialects.ccpp import SuiteOp
         from xdsl_ccpp.frontend.ccpp_xml import XMLSuite
         from xdsl_ccpp.transforms.util.cap_shared import derive_camel_case_name
-
-        if self.options_db.get("meta_file"):
-            raise CcppDslError("--list-outputs does not support --meta-file")
 
         package_names: list = []
         if self.options_db.get("py"):
@@ -1296,8 +1224,8 @@ class ccppMain:
         except (ValueError, FileNotFoundError) as e:
             raise CcppDslError(str(e)) from e
 
-        # Set once, before any ArgumentOp is constructed (merge_meta_files/
-        # merge_meta build ops in-process; run_frontend/run_py_frontend
+        # Set once, before any ArgumentOp is constructed (merge_meta_files
+        # builds ops in-process; run_frontend/run_py_frontend
         # forward the flag to their own subprocess below).
         set_legacy_mode(self.options_db.get("legacy_mode", False))
 
@@ -1344,8 +1272,6 @@ class ccppMain:
             self.merge_meta_files(mlir_file)
         else:
             mlir_file = self.run_frontend(tmp_dir)
-        if self.options_db.get("meta_file"):
-            self.merge_meta(mlir_file)
         self.validate_fortran_sources()
         self._check_memory_space_mismatch(mlir_file)
         wants_cpp = bool(self.options_db.get("bind_c") or self._host_lang_cpp())

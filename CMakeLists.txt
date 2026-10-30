@@ -18,10 +18,7 @@ project(xdsl_ccpp_examples LANGUAGES NONE)
 # per-example hand-written Makefiles (and the Makefile-driven
 # compile-tests.yml CI workflow) have been removed; this repo-wide CMake
 # build superseded them once every example that has anything to compile was
-# ported over. examples/atmospheric_physics is the only example directory
-# with no CMakeLists.txt, because it has nothing to compile at all (scheme-
-# only Python suite definitions, exercised by pytest directly, not a
-# Makefile/executable in the first place).
+# ported over.
 #
 # Wired in: examples/nested_suite, examples/var_compat, examples/tinyddt,
 # examples/advection, examples/advection_flat_host, examples/kessler,

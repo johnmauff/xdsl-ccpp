@@ -811,16 +811,6 @@ def _suite_fn_groups_for(lc: str, suite_name: str, suite_descriptions: dict) -> 
     return [(f"{suite_name}{SUITE_FN_INFIX}_{lc}", None)]
 
 
-def _suite_fns_for(lc: str, suite_name: str, suite_descriptions: dict) -> list:
-    """Return the list of suite cap function names for a given lifecycle.
-
-    Unchanged signature/behavior from before chost-identity-collision --
-    now a thin projection of _suite_fn_groups_for so the two name-
-    building rules can never drift apart.
-    """
-    return [name for name, _grp in _suite_fn_groups_for(lc, suite_name, suite_descriptions)]
-
-
 def _chost_callee_identities(pfn_hints, arg_attrs) -> "tuple[dict, dict]":
     """(local_to_std, local_to_dim_names) for a suite cap function's dummy
     arguments: the standard and dimension names the suite cap records on

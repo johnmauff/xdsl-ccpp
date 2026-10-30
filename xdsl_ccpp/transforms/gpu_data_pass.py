@@ -595,27 +595,26 @@ class GPUDataPass(ModulePass):
                 first_if = gpu_calls[0][0]
                 last_if  = gpu_calls[-1][0]
                 copyin_refs = sorted(refs, key=lambda a: value_name(a) or "")
-                if copyin_refs:
-                    if self.directive == "omp":
-                        Rewriter.insert_op(
-                            OmpTargetDataBeginOp(tofrom=copyin_refs),
-                            InsertPoint.before(first_if),
-                        )
-                        Rewriter.insert_op(
-                            OmpTargetDataEndOp(),
-                            InsertPoint.after(last_if),
-                        )
-                    else:  # acc (default)
-                        # copy(), not copyin() + copyout() of the same
-                        # vars: a var may appear in only one data clause.
-                        Rewriter.insert_op(
-                            AccDataBeginOp(copy=copyin_refs),
-                            InsertPoint.before(first_if),
-                        )
-                        Rewriter.insert_op(
-                            AccDataEndOp(),
-                            InsertPoint.after(last_if),
-                        )
+                if self.directive == "omp":
+                    Rewriter.insert_op(
+                        OmpTargetDataBeginOp(tofrom=copyin_refs),
+                        InsertPoint.before(first_if),
+                    )
+                    Rewriter.insert_op(
+                        OmpTargetDataEndOp(),
+                        InsertPoint.after(last_if),
+                    )
+                else:  # acc (default)
+                    # copy(), not copyin() + copyout() of the same
+                    # vars: a var may appear in only one data clause.
+                    Rewriter.insert_op(
+                        AccDataBeginOp(copy=copyin_refs),
+                        InsertPoint.before(first_if),
+                    )
+                    Rewriter.insert_op(
+                        AccDataEndOp(),
+                        InsertPoint.after(last_if),
+                    )
 
         # --- device constituent views: a copy() region per call ---
         self._emit_constituent_view_copies(calls, meta_data, arg_by_std)

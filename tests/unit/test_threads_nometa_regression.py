@@ -22,7 +22,7 @@ pytest.importorskip("fparser", reason="fparser not installed")
 
 from xdsl_ccpp.tools.ccpp_validate_source import _load_meta_file
 from xdsl_ccpp.transforms.fparser2_to_meta import build_meta_module_from_file
-from xdsl_ccpp.transforms.validate_fir import compare_modules
+from xdsl_ccpp.transforms.validate_source import compare_modules
 
 
 def test_threads_nometa_matches_threads_hand_authored_meta():

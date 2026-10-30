@@ -7,12 +7,10 @@ from xdsl_ccpp.dialects.ccpp import CCPP
 from xdsl_ccpp.dialects.ccpp_utils import CCPPUtils
 from xdsl_ccpp.transforms.ccpp_cap import CCPPCAP
 from xdsl_ccpp.transforms.cpp_interop import CPPInteropCap
-from xdsl_ccpp.transforms.fir_to_meta import FIRToMeta
 from xdsl_ccpp.transforms.flatten_composites import FlattenComposites
 from xdsl_ccpp.transforms.lower_packages import LowerPackages
 from xdsl_ccpp.transforms.package_scope import ScopePackages
 from xdsl_ccpp.transforms.generate_kinds import GenerateKinds
-from xdsl_ccpp.transforms.lower_ccpp_utils import LowerCCPPUtils
 from xdsl_ccpp.transforms.strip_ccpp import StripCCPP
 from xdsl_ccpp.transforms.suite_cap import SuiteCAP
 from xdsl_ccpp.transforms.suite_kinds import MetaKind
@@ -37,8 +35,6 @@ class CCPPOptMain(xDSLOptMain):
         self.register_pass("generate-meta-kinds", lambda: MetaKind)
         self.register_pass("generate-kinds", lambda: GenerateKinds)
         self.register_pass("strip-ccpp", lambda: StripCCPP)
-        self.register_pass("lower-ccpp-utils", lambda: LowerCCPPUtils)
-        self.register_pass("fir-to-meta", lambda: FIRToMeta)
         self.register_pass("generate-gpu-data", lambda: GPUDataPass)
         self.register_pass("generate-gpu-debug-prints", lambda: GPUDebugPrintPass)
         self.register_pass("generate-scheme-io-capture", lambda: SchemeIOCapturePass)

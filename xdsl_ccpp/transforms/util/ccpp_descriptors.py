@@ -129,9 +129,6 @@ class XMLSuiteBase:
     def __iter__(self):
         return self.children.__iter__()
 
-    def __next__(self):
-        return self.children.__next__()
-
     def addChild(self, child):
         """Append a child node to this suite/group."""
         self.children.append(child)
@@ -373,7 +370,6 @@ class BuildSchemeDescription(Visitor):
         self.schemes = {}
         # Transient state used while building the tree
         self.current_group = None
-        self.current_scheme = None
 
     def traverse_suite_op(self, suite_op: ccpp.SuiteOp):
         """Build an `XMLSuite` from one `ccpp.SuiteOp` node.
@@ -435,15 +431,3 @@ class BuildSchemeDescription(Visitor):
                 if op.arg_overrides is not None:
                     overrides = {k: v.data for k, v in op.arg_overrides.data.items()}
                 self.current_group.addChild(XMLScheme(op.scheme_name.data, overrides))
-
-    def traverse_scheme_op(self, scheme_op: ccpp.SchemeOp):
-        """Build an `XMLScheme` leaf from one `ccpp.SchemeOp` node.
-
-        Stores the result in ``self.current_scheme`` for the parent traversal
-        method to pick up.  Any ``arg_overrides`` property on the op is
-        threaded through as a plain ``{name: literal_str}`` dict.
-        """
-        overrides = {}
-        if scheme_op.arg_overrides is not None:
-            overrides = {k: v.data for k, v in scheme_op.arg_overrides.data.items()}
-        self.current_scheme = XMLScheme(scheme_op.scheme_name.data, overrides)

@@ -72,14 +72,8 @@ python3 examples/helloworld/helloworld_py.py \
 | `generate-gpu-data` | Insert OpenACC/OpenMP directives at the suite_cap level for unmatched device variables |
 | `generate-gpu-debug-prints` | Opt-in GPU-residency debug prints (only emitted with `--gpu-debug-prints`) — reports whether a variable/slice is actually present and correctly sized on the device at a given point in a run |
 | `strip-ccpp` | Remove CCPP dialect ops, leaving standard MLIR |
-| `fir-to-meta` | Generate CCPP metadata (`table_properties`/`arg_table`/`arg`) from Flang FIR MLIR — an alternative to parsing `.meta` files, used standalone by `xdsl_ccpp/tools/fir2meta.py` and the `ccpp_validate_source.py` tool, not part of the `ccpp_xdsl` generation pipeline |
-| `lower-ccpp-utils` | Lower remaining `ccpp_utils` dialect ops (`strcmp`, `set_string`, `write_errmsg`, `host_var_ref`, etc.) to plain `arith`/`memref`/`llvm`, for consumers needing fully-lowered standard MLIR rather than printed Fortran text |
 
 Pass options are set with `{key=value}` syntax, e.g. `generate-ccpp-cap{bind_c=true}`.
-
-`fir-to-meta` and `lower-ccpp-utils` are standalone, special-purpose passes — neither
-appears in `ccpp_dsl.py`'s `_build_pipeline` or the example pass lists below, since they
-serve separate tools/consumers rather than the main XML/Python-frontend → Fortran flow.
 
 The `ccpp_xdsl` driver builds its own pass list automatically (see
 `_build_pipeline` in `xdsl_ccpp/tools/ccpp_dsl.py`) rather than using a fixed
@@ -238,6 +232,23 @@ python -m xdsl_ccpp.tools.cap_oracle capgen CASE_DIR...
   revisions read the example inputs from the working tree.
 - A full aux_sima set (about 90 built cases, 29 distinct) takes about 2
   minutes for `diff` and 1 minute for `capgen` on a login node.
+
+## Finding code nothing runs
+
+`xdsl_ccpp/tools/code_coverage.py` measures, with coverage.py, which code
+the generator runs for the same inputs as `cap_oracle` and which code only
+the tests run. It uses `coverage` and, for `--vulture`, `vulture`, both in
+the `dev` extra.
+
+```bash
+python -m xdsl_ccpp.tools.code_coverage run --out DIR [--examples build] [--no-tests] CASE_DIR...
+python -m xdsl_ccpp.tools.code_coverage report DIR [--vulture]
+```
+
+`DIR/report.md` lists each file's coverage, the functions only the tests
+run, the functions nothing runs, and blocks of generator-run functions that
+no case reaches. These are candidates, not verdicts: error paths and unused
+options are legitimate, so read each one before removing it.
 
 ---
 

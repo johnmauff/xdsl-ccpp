@@ -36,22 +36,15 @@ import argparse
 import sys
 
 from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp
-from xdsl_ccpp.transforms.validate_fir import Mismatch, compare_arg_tables
+from xdsl_ccpp.transforms.validate_source import Mismatch, compare_arg_tables
 from xdsl_ccpp.util.ccpp_conventions import (
     CCPP_ERRFLG_LOCAL,
     CCPP_ERRMSG_LEN,
     CCPP_ERRMSG_LOCAL,
 )
+from xdsl_ccpp.util.optional_deps import fparser_available
 
 _CHECKED_NAMES = {CCPP_ERRMSG_LOCAL, CCPP_ERRFLG_LOCAL}
-
-
-def _fparser_available() -> bool:
-    try:
-        import fparser.two.Fortran2003  # noqa: F401
-        return True
-    except ImportError:
-        return False
 
 
 def _dims_attr(rank: int) -> str:
@@ -128,7 +121,7 @@ def main() -> None:
     parser.add_argument("f90_files", nargs="+", metavar="FILE.F90")
     args = parser.parse_args()
 
-    if not _fparser_available():
+    if not fparser_available():
         print(
             "Error: fparser is not installed.\n  Install via:  pip install fparser",
             file=sys.stderr,

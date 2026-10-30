@@ -1,6 +1,6 @@
 """Unit tests for ccppMain.validate_fortran_sources -- the production-path
 wiring of the Fortran-vs-.meta cross-validation phase (fparser2_to_meta.py +
-validate_fir.py + the same-stem/same-directory pairing convention from
+validate_source.py + the same-stem/same-directory pairing convention from
 ccpp_validate_source.py), with CPP preprocessing (fortran_preprocess.py)
 applied before extraction.
 

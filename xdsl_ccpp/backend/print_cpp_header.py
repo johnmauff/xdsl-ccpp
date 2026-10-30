@@ -177,10 +177,8 @@ def _cpp_literal_str(attr: object) -> str:
             return "0.0"
         case FloatAttr(value=val):
             return str(val.data)
-        case builtin.StringAttr() as s:
-            return _cpp_string_literal(s.data)
         case _:
-            return f"<!unknown value {attr}>"
+            raise ValueError(f"_cpp_literal_str: no C++ literal for {attr}")
 
 
 def expr_to_cpp_str(op: object, variables: "dict[SSAValue, str] | None" = None) -> str:
@@ -537,7 +535,7 @@ def _c_param_type(mlir_type: object, intent: str):
     ``mlir_type`` and ``intent``.
 
     Character memrefs are char buffers (read-only when intent(in));
-    numeric memrefs/scalars go through the shared `c_numeric_type`
+    numeric memrefs go through the shared `c_numeric_type`
     decision table (`cpp_type_table.py`) that `_chost_arg_type` also
     adapts onto.
     """
@@ -553,12 +551,7 @@ def _c_param_type(mlir_type: object, intent: str):
             kind=kind, width=width, rank=rank, intent=intent,
             const_in_arrays=False,
         )
-    if isinstance(mlir_type, IntegerType):
-        return c_numeric_type(kind="int", width=64, rank=0, intent=intent)
-    if isinstance(mlir_type, Float32Type):
-        return c_numeric_type(kind="real", width=32, rank=0, intent=intent)
-    # Float64Type, CCPPRealKindType, etc.
-    return c_numeric_type(kind="real", width=64, rank=0, intent=intent)
+    raise ValueError(f"_c_param_type: a BIND(C) argument is a memref, not {mlir_type}")
 
 
 def _rank_comment(mlir_type: object) -> str:

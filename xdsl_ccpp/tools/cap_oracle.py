@@ -101,9 +101,11 @@ def read_example_calls(build_dir: str) -> list[ExampleCall]:
     return calls
 
 
-def generate(src_tree: str, case: "CamCase | ExampleCall", out_dir: str) -> tuple[bool, str]:
-    """Generate <case>'s caps with the xdsl-ccpp in <src_tree>.
-    Returns (success, the end of stderr)."""
+def generate(src_tree: str, case: "CamCase | ExampleCall", out_dir: str,
+             extra_path: tuple[str, ...] = ()) -> tuple[bool, str]:
+    """Generate <case>'s caps with the xdsl-ccpp in <src_tree>, with
+    <extra_path> after it on PYTHONPATH (code_coverage.py's measurement
+    hook). Returns (success, the end of stderr)."""
     os.makedirs(out_dir, exist_ok=True)
     if isinstance(case, ExampleCall):
         args = [*case.args, "-o", out_dir, "--tempdir", os.path.join(out_dir, "tmp"),
@@ -111,7 +113,7 @@ def generate(src_tree: str, case: "CamCase | ExampleCall", out_dir: str) -> tupl
         cwd, path = case.cwd, (src_tree,)
     else:
         args, cwd, path = generator_args(case, out_dir), src_tree, (src_tree, *case.python_path)
-    env = dict(os.environ, PYTHONPATH=os.pathsep.join(path))
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join((*path, *extra_path)))
     proc = subprocess.run(
         [sys.executable, "-m", "xdsl_ccpp.tools.ccpp_dsl", *args],
         cwd=cwd, env=env, capture_output=True, text=True,

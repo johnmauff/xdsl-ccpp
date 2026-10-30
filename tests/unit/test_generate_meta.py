@@ -10,20 +10,13 @@ from xdsl_ccpp.tools.ccpp_generate_meta import (
     generate_meta_for_file,
     meta_from_module,
 )
+from xdsl_ccpp.util.optional_deps import fparser_available
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _fparser_available() -> bool:
-    try:
-        import fparser.two.Fortran2003  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
 requires_fparser = pytest.mark.skipif(
-    not _fparser_available(),
+    not fparser_available(),
     reason="fparser not installed — skipping Fortran-source tests",
 )
 

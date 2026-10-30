@@ -31,6 +31,7 @@ from xdsl_ccpp.transforms.util.cap_shared import (
     FRAMEWORK_STD_NAME_TO_CAP_VAR,
     SUITE_ARG_INTENT,
     SUITE_ARG_NAME,
+    SUITE_ARG_OPTIONAL,
     SUITE_ARG_STD_NAME,
     CapVarRef,
     SchemeArgsByStd,
@@ -454,40 +455,49 @@ def _generate_lifecycle_fn(
                         )
                         _g.attributes["module"] = StringAttr(_ddt_mod)
                         all_host_global_ops.append(_g)
-                elif n_dyn > 0:
-                    # Dynamic-dim alloca requires size operands per MLIR rules.
-                    # Use zero index constants as placeholders — these are
-                    # allocatable args whose storage is managed by the callee.
-                    zero_idx = arith.ConstantOp(
-                        IntegerAttr(0, IndexType()), IndexType()
-                    )
-                    alloc_op = memref.AllocaOp.get(
-                        elem_type, shape=shape,
-                        dynamic_sizes=[zero_idx.result] * n_dyn,
-                    )
-                    mark_allocatable_local(alloc_op, f"lc_{arg_name}")
-                    hoisted_alloc_ops.append(zero_idx)
-                    # Ensure the DDT type's module appears in the USE list.
-                    if isinstance(elem_type, DerivedType):
-                        _ddt_mod = _CCPP_DDT_MODS.get(elem_type.type_name.data)
-                        if _ddt_mod:
-                            _key = (elem_type.type_name.data, _ddt_mod)
-                            if _key not in seen_host_globals:
-                                seen_host_globals.add(_key)
-                                _g = llvm.GlobalOp(
-                                    llvm.LLVMArrayType.from_size_and_type(1, i8),
-                                    elem_type.type_name.data,
-                                    "external",
-                                )
-                                _g.attributes["module"] = StringAttr(_ddt_mod)
-                                all_host_global_ops.append(_g)
-                    hoisted_alloc_ops.append(alloc_op)
-                    call_inputs.append(alloc_op.memref)
                 else:
-                    alloc_op = memref.AllocaOp.get(elem_type, shape=shape)
-                    name_local(alloc_op, f"lc_{arg_name}")
-                    hoisted_alloc_ops.append(alloc_op)
-                    call_inputs.append(alloc_op.memref)
+                    # A local the scheme only writes (intent(out)); a read
+                    # would see an uninitialized value.
+                    if intent in ("in", "inout") and not attrs.get(SUITE_ARG_OPTIONAL):
+                        raise ValueError(
+                            f"{suite_callee}: argument '{arg_name}' (standard_name "
+                            f"'{std_name}') is intent({intent}) but has no host "
+                            f"variable or framework source"
+                        )
+                    if n_dyn > 0:
+                        # Dynamic-dim alloca requires size operands per MLIR rules.
+                        # Use zero index constants as placeholders — these are
+                        # allocatable args whose storage is managed by the callee.
+                        zero_idx = arith.ConstantOp(
+                            IntegerAttr(0, IndexType()), IndexType()
+                        )
+                        alloc_op = memref.AllocaOp.get(
+                            elem_type, shape=shape,
+                            dynamic_sizes=[zero_idx.result] * n_dyn,
+                        )
+                        mark_allocatable_local(alloc_op, f"lc_{arg_name}")
+                        hoisted_alloc_ops.append(zero_idx)
+                        # Ensure the DDT type's module appears in the USE list.
+                        if isinstance(elem_type, DerivedType):
+                            _ddt_mod = _CCPP_DDT_MODS.get(elem_type.type_name.data)
+                            if _ddt_mod:
+                                _key = (elem_type.type_name.data, _ddt_mod)
+                                if _key not in seen_host_globals:
+                                    seen_host_globals.add(_key)
+                                    _g = llvm.GlobalOp(
+                                        llvm.LLVMArrayType.from_size_and_type(1, i8),
+                                        elem_type.type_name.data,
+                                        "external",
+                                    )
+                                    _g.attributes["module"] = StringAttr(_ddt_mod)
+                                    all_host_global_ops.append(_g)
+                        hoisted_alloc_ops.append(alloc_op)
+                        call_inputs.append(alloc_op.memref)
+                    else:
+                        alloc_op = memref.AllocaOp.get(elem_type, shape=shape)
+                        name_local(alloc_op, f"lc_{arg_name}")
+                        hoisted_alloc_ops.append(alloc_op)
+                        call_inputs.append(alloc_op.memref)
 
         # ── Verify argument count matches callee signature ─────────────────
         _assert_call_arg_count_matches_signature(

@@ -4,7 +4,6 @@ from xdsl.dialects.builtin import (
     DYNAMIC_INDEX,
     ArrayAttr,
     BoolAttr,
-    DictionaryAttr,
     IntegerAttr,
     IntegerType,
     MemRefType,
@@ -529,17 +528,12 @@ class KeywordCallOp(IRDLOperation):
         callee:         The called subroutine name.
         operand_names:  Scheme parameter names for each SSA operand, in order.
         result_names:   Scheme parameter names for each SSA result, in order.
-        overrides:      Compile-time literal overrides: {arg_name → value_str}.
+
+    ``override_ops`` holds the compile-time overrides, one
+    ``KeywordArgExprOp`` per overridden argument.
 
     The printer deduplicates inout arguments (which appear in both operands
     and results) using a seen-names set.
-
-    lang-neutral-expr-ir Stage 5 adds a structured alternative to
-    ``overrides``: pass ``override_ops`` (a list of ``KeywordArgExprOp``,
-    reusing that existing op rather than inventing a new dict-shaped one --
-    each entry's ``arg_name``/value region carries exactly the same
-    information as one ``overrides`` dict entry) instead. At most one of
-    the two may be given.
     """
 
     name = "ccpp_utils.kw_call"
@@ -547,7 +541,6 @@ class KeywordCallOp(IRDLOperation):
     callee = prop_def(StringAttr)
     operand_names = prop_def(ArrayAttr)
     result_names = prop_def(ArrayAttr)
-    overrides = opt_prop_def(DictionaryAttr)
     override_ops_region = var_region_def("single_block")
 
     args = var_operand_def()
@@ -560,31 +553,19 @@ class KeywordCallOp(IRDLOperation):
         callee: str | StringAttr,
         operand_names: ArrayAttr,
         result_names: ArrayAttr,
-        overrides: "DictionaryAttr | None",
         args: list,
         out_types: list,
         *,
         override_ops: "list | None" = None,
     ):
-        if overrides is not None and override_ops is not None:
-            raise ValueError(
-                "KeywordCallOp: pass at most one of overrides or override_ops"
-            )
-        callee = _coerce_str_attr(callee)
-        props: dict = {
-            "callee": callee,
-            "operand_names": operand_names,
-            "result_names": result_names,
-        }
-        if override_ops is not None:
-            override_regions = [_single_op_region([o]) for o in override_ops]
-        else:
-            props["overrides"] = overrides if overrides is not None else DictionaryAttr({})
-            override_regions = []
         super().__init__(
             operands=[args],
-            properties=props,
-            regions=[override_regions],
+            properties={
+                "callee": _coerce_str_attr(callee),
+                "operand_names": operand_names,
+                "result_names": result_names,
+            },
+            regions=[[_single_op_region([o]) for o in override_ops or []]],
             result_types=[out_types],
         )
 

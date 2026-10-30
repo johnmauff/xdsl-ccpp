@@ -69,7 +69,7 @@ measured data, and will drift as items are reassessed.
 | `cap-oracle-kessler-capgen` | 1-2 days | XS |
 | `suite-cap-mode-flags` | 10-20 days (separate the products the suite-cap generator builds under `physics_mode`/`emit_scheme_calls`/package-cap/instances/CAM flags) | L |
 | `split-large-generators` | 10-20 days, opportunistic (the five 350-900-line generator functions) | L |
-| `dead-code-coverage` | 2-4 days for the coverage run and report; reviewing and removing what it finds is sized per finding | S |
+| `py-api-docs-current-style` | 2-4 days (README Python-API section rewrite, `emit_ir` deprecation, in-repo example scripts and the goldens that run them) | S |
 | `active-pointer-association` | 4-8 days (pointer wrapper types or typed local pointers, call-site association/nullify, transform temps as targets, the non-optional guard, regenerate var_compat/instances/advection goldens, compile and run the examples) | S-M |
 | `gpu-port-rrtmgp-wrapper-schemes` | 12-20 days (21 schemes, most manipulating rte-rrtmgp objects; McICA reproducibility) | L |
 | `gpu-port-scheme-checklist` | tracking table only; the work is sized in the three `gpu-port-*` rows | -- |
@@ -715,8 +715,8 @@ Those three proposals target a different repo (`NCAR/atmospheric_physics`),
 not this one -- unlike `direct-fortran-ingest` above, which is squarely
 about this repo's own `ccpp_dsl.py`. Section 5's own architecture review
 found most of the xdsl_ccpp-side
-plumbing this would need (the `fparser2_to_meta.py`/`fir_to_meta.py`
-extractors, `ArgumentOp`'s already-optional `standard_name`/`units`/
+plumbing this would need (the `fparser2_to_meta.py`
+extractor, `ArgumentOp`'s already-optional `standard_name`/`units`/
 `memory_space` properties, `ccpp_generate_meta.py`'s stub generation)
 already exists. `README.md`'s "Metadata Skeleton Generation" section
 links here as a "Future direction" callout.
@@ -1281,7 +1281,7 @@ nothing in CI ever executes generated OpenACC: the gnu/intel jobs ignore
 - `acc-meta-residency-check` — **Static `.meta` vs `!$acc` residency
   consistency check.** `ccpp_dsl.py`'s `validate_fortran_sources` already
   pairs each `--scheme-files` `.meta` with its `.F90` and runs
-  `validate_fir.compare_modules`, which compares type/rank/intent/
+  `validate_source.compare_modules`, which compares type/rank/intent/
   optional/kind/extra args but not `memory_space`. Extend it to compare
   each argument's declared `memory_space` with what the routine's own
   `!$acc present(...)`/`deviceptr(...)` clauses imply (the derivation
@@ -1748,8 +1748,8 @@ To re-measure target-language text in the IR: scan the transformed IR's string p
 completed_ir goldens and a C++-host example) and the string literals (not docstrings) of
 `xdsl_ccpp/transforms/` for Fortran/C++ syntax (`::`, `intent(`,
 `.true.`, `/=`, statement keywords, intrinsic calls, `!$`), excluding the
-frontends that parse Fortran input (`fparser2_to_meta`, `fir_to_meta`,
-`fortran_preprocess`, `validate_fir`, `module_dependency_resolver`),
+frontends that parse Fortran input (`fparser2_to_meta`,
+`fortran_preprocess`, `validate_source`, `module_dependency_resolver`),
 diagnostic messages and single-token metadata keys.
 - `suite-cap-mode-flags` — **One generator, several products.** The
   suite-cap generator branches on `instance_local_name` (71 uses),
@@ -1764,20 +1764,7 @@ diagnostic messages and single-token metadata keys.
   Split by responsibility when touched. Related: comments and docstrings
   often narrate history (review rounds, earlier fix attempts) rather than
   describe the current design; trim them in the same edits.
-- `dead-code-coverage` — **Find dead code with a coverage run.** Measure
-  which code in `xdsl_ccpp/` the generator actually runs, using
-  `coverage.py` with branch coverage, behind an opt-in flag (e.g. an
-  environment variable) so normal runs are unchanged. `ccpp_opt` runs its
-  passes in a subprocess and `cap_oracle` runs parallel jobs, so coverage
-  must follow subprocesses and combine the per-process data files. Measure
-  two inputs separately, the `cap_oracle` runs and the pytest suite, and
-  report whole functions and branches in three groups: run by the oracle
-  (live in CAM-SIMA), run only by tests (a feature CAM-SIMA doesn't use, or
-  dead code a test keeps alive), and run by nothing (removal candidates).
-  Then check each candidate by reading the code: unreached is not the same
-  as dead (error paths, unused options), and the result depends on which
-  cases the oracle covers. `vulture`, a static check for unreferenced
-  functions and attributes, can complement it.
+- `dead-code-coverage` — resolved 2026-10-30. CHANGELOG.md L13467.
 - `active-pointer-association` — **Pass `active`-gated optional
   arguments by pointer association, as capgen-v1 does.** xdsl-ccpp wraps
   the scheme call in one `ActiveCheckOp` per distinct condition and emits a
@@ -1794,3 +1781,17 @@ diagnostic messages and single-token metadata keys.
   errflg/errmsg and returns. xdsl-ccpp has no such guard. Build it from
   `scf.if`, `PointerAssignOp` and `NullifyPointerOp`; host variables must
   then be `target`s. Changes var_compat, instances and advection output.
+- `py-api-docs-current-style` — **The documented Python API is the old
+  style.** README's Python API section teaches `@ccpp_scheme`,
+  `ccpp_scheme_from_meta` and `emit_ir`; CAM-SIMA's suites-py use
+  `ccpp_scheme_ref`, `ccpp_composite`, `ccpp_package`, `forLoop` and
+  `export_suite`. `emit_ir` is documented in py_api as the older name for
+  `export_suite` but is still used by the README and the in-repo example
+  scripts (`examples/{helloworld,advection,ddthost}/..._py.py`, run by the
+  `-py` FileCheck goldens). `ccpp_scheme_from_source` and the script-side
+  `--scheme-files` loading run only when a suite script is executed
+  directly, never through `ccpp_dsl --py` (which merges the `.meta` files
+  itself); only `test_py_api_composition.py` calls them. Rewrite the README
+  section in the CAM-SIMA style, move the example scripts to
+  `export_suite`, deprecate then remove `emit_ir`, and decide whether the
+  standalone script path stays supported. Found by `dead-code-coverage`.

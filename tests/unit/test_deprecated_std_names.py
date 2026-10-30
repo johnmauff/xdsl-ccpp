@@ -8,7 +8,7 @@ default; `--legacy-mode` (`set_legacy_mode`/`is_legacy_mode`, in
 `ccpp_conventions.py`) downgrades this to the original warning and preserves
 full support. `ArgumentOp.__init__` (`xdsl_ccpp/dialects/ccpp.py`) is the
 single shared construction point used by every frontend (`ccpp_xml.py`,
-`py_api.py`, `fir_to_meta.py`, `fparser2_to_meta.py`), so the check lives
+`py_api.py`, `fparser2_to_meta.py`), so the check lives
 there, backed by `ccpp_conventions.py`'s `CCPP_DEPRECATED_STD_NAMES` map /
 `deprecated_std_name_warning`.
 """

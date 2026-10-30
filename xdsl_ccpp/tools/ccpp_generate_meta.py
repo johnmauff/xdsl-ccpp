@@ -34,7 +34,7 @@ from xdsl_ccpp.dialects.ccpp import ArgumentOp, ArgumentTableOp, TableProperties
 
 # ArgumentOp properties emitted generically below, in a fixed, stable order
 # (real .meta field order varies per file and isn't semantically significant
-# -- validate_fir.compare_modules compares by field, not text order) --
+# -- validate_source.compare_modules compares by field, not text order) --
 # deliberately excludes properties set only by later pipeline passes
 # (host-matching, ownership classification: model_var_*, ownership_kind,
 # is_promoted, promoted_dim, is_interstitial), which ArgumentOp.KNOWN_PROPS

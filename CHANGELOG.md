@@ -13463,3 +13463,72 @@ transformed IR of every example and CAM case has no expression text left
 `.meta` default value, `stdbool.h`). New tests: `test_meta_expr.py`,
 `test_active_condition_ops.py`, `test_host_var_ref_members.py`. pytest:
 1266 passed.
+
+## `dead-code-coverage`: measure what the generator runs, remove what nothing needs (2026-10-30)
+
+New tool `xdsl_ccpp/tools/code_coverage.py` (`run`, `report`; DEVELOPERS.md
+"Finding code nothing runs"; `coverage` and `vulture` added to the `dev` extra). It measures, with
+coverage.py and branch coverage, which code the generator runs -- the
+`cap_oracle` inputs (built CAM-SIMA cases, recorded example calls) plus the
+FileCheck tests, whose RUN lines are the generator's pipelines on every
+example -- separately from the unit tests, following every child Python
+process through a run-only `sitecustomize.py`. `report` sorts functions into
+run by the generator / only by tests / by nothing, lists unreached blocks of
+generator-run functions, and optionally adds vulture's findings.
+`cap_oracle.generate` takes extra PYTHONPATH entries for it.
+
+First run (46 generations + pytest): 16,367 statements, 72% run by the
+generator, 87% by generator or tests; 99 functions run by nothing, 171 only
+by tests, 84 unreached blocks. Each candidate was read and classified (dead,
+unexercised feature, error path, protocol), then decided by the maintainer.
+
+Removed:
+- Dead code: `SuiteOwnedMixin.generateVariableCreation`,
+  `print_ftn.find_ret_ssa_idx` and `get_modules_in_module_op`,
+  `BuildSchemeDescription.traverse_scheme_op` and `current_scheme`,
+  `cpp_interop._suite_fns_for`, `PhaseFunctionsMixin.clone_func_defs`, the
+  frontend `CCPPArgumentTable.getFunctionArgument`, both (broken)
+  `XMLSuiteBase.__next__`, an always-true guard in `gpu_data_pass`, an unused
+  local in `phase_functions`. Most were early-prototype mechanisms outgrown by
+  real CCPP needs (host-owned data, real names, nested subcycles, Fortran use
+  association).
+- `KeywordCallOp.overrides`, the last text-form override path (always empty;
+  `override_ops` is the only form). 10 completed_ir goldens lose
+  `overrides = {}`.
+- The `lower-ccpp-utils` pass (lowered 5 of ~96 ccpp_utils ops; no user).
+- The flang path: `fir2meta`, the `fir-to-meta` pass, `flang_utils`,
+  `ccpp_validate`'s flang backend (now fparser2-only), and
+  `ccpp_dsl --meta-file`/`merge_meta`, whose only producer was `fir2meta`.
+- `SuiteVariableModel`'s case-3 errors, `errors()` and `summary()`: never
+  read, and measured to fire 1,243 times on valid inputs (framework
+  variables, host block arguments, constants); host-variable matching already
+  rejects a truly missing input.
+- 11 orphaned Python suite scripts (`examples/atmospheric_physics/`,
+  `kessler_py.py`, `capgen_py.py`) and the README section that claimed they
+  were tested.
+
+Consolidated / hardened:
+- One `fparser_available` (`xdsl_ccpp/util/optional_deps.py`) instead of four
+  copies.
+- `validate_fir.py` renamed `validate_source.py` (the `.meta`-vs-source
+  comparison the fparser2 path uses).
+- Printers raise instead of printing silently or wrongly: an unknown constant
+  (Fortran and C++), a static-shape non-character array type, a non-memref
+  BIND(C) argument.
+- `lifecycle_cap` raises when a lifecycle argument read as intent(in/inout)
+  has no host or framework source, instead of passing an uninitialized local.
+
+Kept on review (unexercised but wanted): `MemberAccessExprOp.via`, power
+rendering, C++ printer cases for unbuilt shapes, rank promotion,
+`_is_multi_thread_host`, `ccpp_validate`, `ccpp_validate_driver`,
+`ccpp_prebuild`. `is_horizontal_dimension` (and all of `ccpp_conventions`
+and `py_api`) is imported by CAM-SIMA, so this repo's coverage alone cannot
+show it dead. The untracked-call-result fallback in `print_ftn` is live
+(ddthost's discarded `vmr`/`ntimes` outputs). Logged
+`py-api-docs-current-style` for the README's old-style Python API section and
+`emit_ir`.
+
+Result: `xdsl_ccpp/` is 1,572 lines smaller (1,893 excluding the new tool),
+plus 1,384 lines of example scripts. `cap_oracle diff` against `main`:
+identical for all 46 generations. pytest: 1267 passed (one `--meta-file`
+test removed).

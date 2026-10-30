@@ -15,6 +15,8 @@ dev = [
     "ruff",
     "filecheck",
     "pytest",
+    "coverage",
+    "vulture",
 ]
 validate = [
     "fparser",
@@ -23,7 +25,6 @@ validate = [
 [project.scripts]
 ccpp_xdsl = "xdsl_ccpp.tools.ccpp_dsl:main"
 ccpp_prebuild = "xdsl_ccpp.tools.ccpp_prebuild:main"
-fir2meta = "xdsl_ccpp.tools.fir2meta:main"
 ccpp_validate = "xdsl_ccpp.tools.ccpp_validate_source:main"
 ccpp_validate_driver = "xdsl_ccpp.tools.ccpp_validate_driver:main"
 ccpp_track_variables = "xdsl_ccpp.tools.ccpp_track_variables:main"
