@@ -5,7 +5,9 @@ frontend, transforms, and backend.  Import from here rather than duplicating
 literals throughout the codebase.
 """
 
+import contextlib
 import re
+import sys
 from typing import NamedTuple
 
 from xdsl.dialects import builtin
@@ -343,6 +345,92 @@ def deprecated_std_name_warning(std_name: str) -> str | None:
     return (
         f"standard_name '{std_name}' is deprecated -- use '{replacement}' instead "
     )
+
+
+# Verbosity of generator messages for this process: 0 quiet, 1 normal (the
+# default), 2 detailed. Set by each frontend's entry point from --verbose,
+# like set_legacy_mode.
+_VERBOSITY = 1
+
+
+def set_verbosity(level: int) -> None:
+    """Set this process's message verbosity (0, 1 or 2)."""
+    global _VERBOSITY
+    _VERBOSITY = int(level)
+
+
+def verbosity() -> int:
+    """This process's message verbosity (0 quiet, 1 normal, 2 detailed)."""
+    return _VERBOSITY
+
+
+# Deprecated standard names accepted under --legacy-mode, recorded where each
+# ArgumentOp is built (one per argument, per standard or dimension name) and
+# printed once per process by report_deprecated_uses, so the list can be
+# summarised. Each record: (deprecated name, .meta file, argument name).
+_DEPRECATED_USES: list[tuple[str, str, str]] = []
+_DEPRECATION_SOURCE = ""
+
+
+@contextlib.contextmanager
+def deprecation_source(path: str):
+    """Attribute the deprecated names recorded in this block to *path*."""
+    global _DEPRECATION_SOURCE
+    previous, _DEPRECATION_SOURCE = _DEPRECATION_SOURCE, path
+    try:
+        yield
+    finally:
+        _DEPRECATION_SOURCE = previous
+
+
+@contextlib.contextmanager
+def deprecation_records_discarded():
+    """Drop the deprecated names recorded in this block, for code that builds
+    ArgumentOps from .meta files another step already reports (the
+    Fortran-vs-.meta check)."""
+    kept = len(_DEPRECATED_USES)
+    try:
+        yield
+    finally:
+        del _DEPRECATED_USES[kept:]
+
+
+def record_deprecated_use(arg_name: str, std_name: str) -> None:
+    """Record that *arg_name* uses the deprecated *std_name* (--legacy-mode)."""
+    _DEPRECATED_USES.append((std_name.lower(), _DEPRECATION_SOURCE, arg_name))
+
+
+def deprecated_use_report(level: int) -> list[str]:
+    """The lines report_deprecated_uses prints at *level*: none at 0; one
+    line per deprecated name at 1; at 2, that line followed by the arguments
+    grouped by .meta file."""
+    if level <= 0:
+        return []
+    lines = []
+    for name in dict.fromkeys(n for n, _, _ in _DEPRECATED_USES):
+        uses = [(src, arg) for n, src, arg in _DEPRECATED_USES if n == name]
+        files = list(dict.fromkeys(src for src, _ in uses))
+        where = f"{len(uses)} uses in {len(files)} .meta files"
+        hint = "" if level >= 2 else "; --verbose 2 lists them"
+        lines.append(
+            f"Warning(LEGACY): {deprecated_std_name_warning(name).strip()} "
+            f"({where}{hint})"
+        )
+        if level >= 2:
+            for src in files:
+                args = [arg for s, arg in uses if s == src]
+                counts = {a: args.count(a) for a in dict.fromkeys(args)}
+                listed = ", ".join(a if c == 1 else f"{a} (x{c})" for a, c in counts.items())
+                lines.append(f"  {src or '<unknown file>'}: {listed}")
+    return lines
+
+
+def report_deprecated_uses() -> None:
+    """Print the deprecated names recorded so far (at this process's
+    verbosity) to stderr, and forget them."""
+    for line in deprecated_use_report(_VERBOSITY):
+        print(line, file=sys.stderr)
+    _DEPRECATED_USES.clear()
 
 # ── Unit conversion table ────────────────────────────────────────────────────
 # Maps (scheme_units, host_units) → (to_scheme, to_host), each an

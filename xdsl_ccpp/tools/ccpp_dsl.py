@@ -20,7 +20,12 @@ from xdsl_ccpp.dialects.ccpp import (
 )
 from xdsl_ccpp.frontend.ccpp_xml import ccppXML, parse_meta_file
 from xdsl_ccpp.tools.ctx_utils import make_ccpp_context
-from xdsl_ccpp.util.ccpp_conventions import set_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import (
+    deprecation_records_discarded,
+    report_deprecated_uses,
+    set_legacy_mode,
+    set_verbosity,
+)
 from xdsl_ccpp.util.options_db import coerce_list_option
 
 
@@ -33,7 +38,8 @@ def _validate_fortran_source(meta_path: str, f90_path: str, preproc_defs) -> str
     from xdsl_ccpp.transforms.validate_source import compare_modules
 
     err = io.StringIO()
-    with contextlib.redirect_stderr(err):
+    # The frontend reports the .meta files' deprecated standard names.
+    with contextlib.redirect_stderr(err), deprecation_records_discarded():
         meta_module = _load_meta_file(meta_path)
         if meta_module is None:
             return err.getvalue()  # host/module-type .meta, or failed to load (already warned)
@@ -593,6 +599,7 @@ class ccppMain:
             cmd += ["--host-files", ",".join(host_files)]
         if self.options_db.get("legacy_mode"):
             cmd.append("--legacy-mode")
+        cmd += ["--verbose", str(self.options_db["verbose"])]
 
         self.run_pipeline_stage(cmd, mlir_out, "Running CCPP frontend")
         self.post_stage_check(mlir_out)
@@ -608,6 +615,7 @@ class ccppMain:
             # script); it scans sys.argv for this token directly, mirroring
             # ccpp_param()'s existing sys.argv-scanning convention.
             cmd.append("--legacy-mode")
+        cmd.append(f"--verbose={self.options_db['verbose']}")
 
         self.run_pipeline_stage(cmd, mlir_out, "Running Python frontend")
         self.post_stage_check(mlir_out)
@@ -663,6 +671,7 @@ class ccppMain:
         with open(mlir_file, "w") as f:
             Printer(stream=f).print_op(ccpp_module)
             f.write("\n")
+        report_deprecated_uses()
 
         self.print_verbose_message(
             f"  -> Merged {count} table_properties block(s)",
@@ -1338,6 +1347,7 @@ class ccppMain:
         # builds ops in-process; run_frontend/run_py_frontend
         # forward the flag to their own subprocess below).
         set_legacy_mode(self.options_db.get("legacy_mode", False))
+        set_verbosity(self.options_db.get("verbose", 1))
 
         if self.options_db.get("list_outputs"):
             outputs = self.predict_output_filenames()

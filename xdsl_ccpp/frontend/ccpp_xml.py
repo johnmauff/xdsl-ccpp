@@ -20,7 +20,13 @@ from xdsl_ccpp.frontend.meta_expr import (
     parse_active_expr,
     parse_local_name,
 )
-from xdsl_ccpp.util.ccpp_conventions import parse_kind_spec_value, set_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import (
+    deprecation_source,
+    parse_kind_spec_value,
+    report_deprecated_uses,
+    set_legacy_mode,
+    set_verbosity,
+)
 from xdsl_ccpp.util.ccpp_item import CCPPArgument, CCPPItem, CCPPType
 from xdsl_ccpp.util.options_db import coerce_list_option
 
@@ -607,6 +613,16 @@ class ccppXML:
                  "own --legacy-mode flag when this frontend is spawned as a subprocess.",
         )
 
+        parser.add_argument(
+            "--verbose",
+            type=int,
+            choices=[0, 1, 2],
+            default=1,
+            help="Verbosity of the --legacy-mode warnings: 0 none, 1 one line per "
+                 "deprecated standard name (default), 2 also every argument using "
+                 "it, by .meta file. Forwarded from ccpp_dsl.py's own --verbose.",
+        )
+
     def build_options_db_from_args(self, args):
         """Normalise parsed CLI args into a plain dict with list values.
 
@@ -697,25 +713,27 @@ class ccppXML:
             A `TablePropertiesOp` representing the complete metadata for one scheme.
         """
         tables = []
-        # Build an ArgumentTableOp for each entry point in the metadata file
-        for table in meta.arg_tables:
-            args = []
-            # Build an ArgumentOp for each argument in this entry point
-            for fn_arg in table.getFunctionArguments():
-                unknown = set(fn_arg.getAttrs().keys()) - ArgumentOp.KNOWN_PROPS
-                if unknown:
-                    print(
-                        f"Warning: argument '{fn_arg.name}' in "
-                        f"'{table.getAttr('name')}' has unrecognised keys: "
-                        f"{sorted(unknown)}",
-                        file=sys.stderr,
+        # Build an ArgumentTableOp for each entry point in the metadata file;
+        # deprecated standard names (--legacy-mode) are reported per file.
+        with deprecation_source(meta_file_path):
+            for table in meta.arg_tables:
+                args = []
+                # Build an ArgumentOp for each argument in this entry point
+                for fn_arg in table.getFunctionArguments():
+                    unknown = set(fn_arg.getAttrs().keys()) - ArgumentOp.KNOWN_PROPS
+                    if unknown:
+                        print(
+                            f"Warning: argument '{fn_arg.name}' in "
+                            f"'{table.getAttr('name')}' has unrecognised keys: "
+                            f"{sorted(unknown)}",
+                            file=sys.stderr,
+                        )
+                    args.append(
+                        ArgumentOp(fn_arg.name, fn_arg.getAttr("type"), fn_arg.getAttrs())
                     )
-                args.append(
-                    ArgumentOp(fn_arg.name, fn_arg.getAttr("type"), fn_arg.getAttrs())
+                tables.append(
+                    ArgumentTableOp(table.getAttr("name"), str(table.getAttr("type")), args)
                 )
-            tables.append(
-                ArgumentTableOp(table.getAttr("name"), str(table.getAttr("type")), args)
-            )
         resolved_module = (
             meta.table_properties.getAttr("module_name")
             if meta.table_properties.hasAttr("module_name")
@@ -788,6 +806,7 @@ class ccppXML:
 
         # Set before any ArgumentOp is constructed below.
         set_legacy_mode(self.options_db.get("legacy_mode", False))
+        set_verbosity(self.options_db.get("verbose", 1))
 
         for suite_file in self.options_db["suites"]:
             ir_ops.append(self.build_suite_ir(XMLSuite(suite_file)))
@@ -811,6 +830,7 @@ class ccppXML:
                 ir_ops.append(self.build_meta_ir(c, source_module=stem,
                                                  meta_file_path=host_file))
 
+        report_deprecated_uses()
         module = ModuleOp(ir_ops)
 
         print(module)

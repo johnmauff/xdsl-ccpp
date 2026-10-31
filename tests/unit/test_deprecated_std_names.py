@@ -19,7 +19,10 @@ from xdsl_ccpp.dialects.ccpp import ArgumentOp
 from xdsl_ccpp.util.ccpp_conventions import (
     deprecated_std_name_warning,
     is_legacy_mode,
+    report_deprecated_uses,
     set_legacy_mode,
+    set_verbosity,
+    verbosity,
 )
 
 
@@ -144,13 +147,20 @@ class TestArgumentOpRejectsByDefault:
 
 class TestArgumentOpAcceptsUnderLegacyMode:
     """With --legacy-mode on, the legacy name must still parse successfully
-    (a warning, not a rejection) -- the original, pre-default-flip behavior."""
+    (a warning, not a rejection) -- the original, pre-default-flip behavior.
+    The warning is recorded when the op is built and printed by
+    report_deprecated_uses (the frontend calls it once)."""
 
     @pytest.fixture(autouse=True)
     def _legacy_mode(self):
+        # The report prints at the process's verbosity, which another test's
+        # ccppMain().run(verbose=0) may have left at 0.
+        previous = verbosity()
         set_legacy_mode(True)
+        set_verbosity(1)
         yield
         set_legacy_mode(False)
+        set_verbosity(previous)
 
     def test_is_legacy_mode_reports_enabled(self):
         assert is_legacy_mode() is True
@@ -161,6 +171,7 @@ class TestArgumentOpAcceptsUnderLegacyMode:
             {"type": "integer", "standard_name": "horizontal_loop_extent",
              "dimensions": "()", "intent": "in"},
         )
+        report_deprecated_uses()  # recorded at construction, reported once
         err = capsys.readouterr().err
         assert "horizontal_loop_extent" in err
         assert "horizontal_dimension" in err
@@ -172,6 +183,7 @@ class TestArgumentOpAcceptsUnderLegacyMode:
              "dimensions": "(horizontal_loop_extent, vertical_layer_dimension)",
              "intent": "inout"},
         )
+        report_deprecated_uses()  # recorded at construction, reported once
         err = capsys.readouterr().err
         assert "horizontal_loop_extent" in err
 
@@ -182,6 +194,7 @@ class TestArgumentOpAcceptsUnderLegacyMode:
              "dimensions": "(ccpp_constant_one:horizontal_loop_extent, vertical_interface_dimension)",
              "intent": "inout"},
         )
+        report_deprecated_uses()  # recorded at construction, reported once
         err = capsys.readouterr().err
         assert "horizontal_loop_extent" in err
 
@@ -191,6 +204,7 @@ class TestArgumentOpAcceptsUnderLegacyMode:
             {"type": "integer", "standard_name": "number_of_openmp_threads",
              "dimensions": "()", "intent": "in"},
         )
+        report_deprecated_uses()  # recorded at construction, reported once
         err = capsys.readouterr().err
         assert "number_of_openmp_threads" in err
         assert "number_of_threads" in err

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
 from enum import StrEnum, auto
 from typing import ClassVar
@@ -34,7 +33,11 @@ from xdsl.irdl import (
 from xdsl.traits import NoTerminator
 from xdsl.utils.hints import isa
 
-from xdsl_ccpp.util.ccpp_conventions import deprecated_std_name_warning, is_legacy_mode
+from xdsl_ccpp.util.ccpp_conventions import (
+    deprecated_std_name_warning,
+    is_legacy_mode,
+    record_deprecated_use,
+)
 
 
 class TableTypeKind(StrEnum):
@@ -582,7 +585,9 @@ class ArgumentOp(IRDLOperation):
         # own strict posture -- whether declared as the arg's own
         # standard_name or as one of its dimension names. --legacy-mode
         # downgrades this to a warning and preserves full support (matches
-        # capgen-v1's own --legacy-mode flag).
+        # capgen-v1's own --legacy-mode flag); the warning is recorded and
+        # reported once by the frontend (report_deprecated_uses), at its
+        # --verbose level.
         _checked_std_names = []
         if "standard_name" in properties:
             _checked_std_names.append(properties["standard_name"].data)
@@ -592,10 +597,7 @@ class ArgumentOp(IRDLOperation):
             _warning = deprecated_std_name_warning(_std_name)
             if _warning is not None:
                 if is_legacy_mode():
-                    print(
-                        f"Warning(LEGACY): arg '{arg_name.data}': {_warning} ",
-                        file=sys.stderr,
-                    )
+                    record_deprecated_use(arg_name.data, _std_name)
                 else:
                     raise ValueError(
                         f"arg '{arg_name.data}': {_warning}. Pass --legacy-mode "
