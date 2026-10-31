@@ -16,7 +16,10 @@ from xdsl_ccpp.dialects.ccpp_utils import (
 )
 from xdsl_ccpp.transforms.util.cap_shared import (
     directive_op,
+    Touch,
+    arg_overwrites,
     arg_writes,
+    call_section,
     emit_coalesced_updates,
     merge_adjacent_updates,
     find_diverged_capscratch_vars,
@@ -170,7 +173,7 @@ class GPUDataPass(ModulePass):
         return call_op.callee.root_reference.data
 
     def _get_diverged_args(self, scheme_name, table_name, meta_data, diverged_vars):
-        """Return {local_name: (category, host_var, standard name, writes)} for every arg in this
+        """Return {local_name: (category, host_var, standard name, writes, overwrites)} for every arg in this
         scheme's <table_name> argument table whose model_var_name is in
         diverged_vars.
 
@@ -198,7 +201,7 @@ class GPUDataPass(ModulePass):
             )
             category = "present" if scheme_space == "device" else "update"
             result[arg.name] = (category, host_var, arg.getAttr("standard_name").lower() if arg.hasAttr("standard_name") else None,
-                                arg_writes(arg))
+                                arg_writes(arg), arg_overwrites(arg))
         return result
 
     def _get_diverged_capscratch_args(self, scheme_name, table_name, meta_data, diverged_capscratch_vars):
@@ -444,19 +447,24 @@ class GPUDataPass(ModulePass):
 
         The block argument to sync is the one with the args' standard name.
         """
-        touches: dict = {}  # host_var -> ordered [(op, category, standard name, writes), ...]
+        # host_var -> ordered [(op, local name, category, standard name, writes, overwrites), ...]
+        touches: dict = {}
         for call_op, scheme_name, table_name in calls:
-            for category, host_var, std, writes in self._get_diverged_args(
+            for local_name, (category, host_var, std, writes, overwrites) in self._get_diverged_args(
                 scheme_name, table_name, meta_data, diverged_vars
-            ).values():
-                touches.setdefault(host_var, []).append((call_op, category, std, writes))
+            ).items():
+                touches.setdefault(host_var, []).append(
+                    (call_op, local_name, category, std, writes, overwrites)
+                )
 
         resolved: dict = {}
         for host_var, touch_list in touches.items():
-            ref = _ref((std for _, _, std, _ in touch_list), arg_by_std)
-            resolved[host_var] = (
-                ref, [(call_op, category, writes) for call_op, category, _, writes in touch_list]
-            )
+            ref = _ref((t[3] for t in touch_list), arg_by_std)
+            resolved[host_var] = (ref, [
+                Touch(call_op, category, writes, overwrites,
+                      call_section(call_op, local_name, ref))
+                for call_op, local_name, category, _, writes, overwrites in touch_list
+            ])
         return resolved
 
     def _process_diverged_capscratch_vars(self, calls, meta_data, diverged_capscratch_vars, arg_by_std):

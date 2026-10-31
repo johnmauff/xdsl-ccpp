@@ -53,6 +53,7 @@ measured data, and will drift as items are reassessed.
 | `ccpp-opt-small-speedups` | 1-2 days (skip the pre-pipeline verify; the `getAttr`/`_find_loop_upper_bound` hot spots; function-level imports in hot loops) | XS |
 | `in-process-pipeline` | 5-10 days (frontend + passes in one process; design for global state, `sys.exit` error paths, CLI-driven tests/goldens) | M |
 | `suite-owned-framework-var` | 1-2 days (exclude framework cap variables such as the constituent tendencies from the suite-owned sweep) | XS |
+| `cpu-cap-acc-updates` | 1-2 days (emit suite-owned and segment syncs only with `--directive`, or guard them; caps of CPU builds change) | XS |
 | `cam-autogen-repeat-generation` | <1 day (fix and regression test done locally; open the upstream PR) | XS |
 | `acc-meta-residency-check` | 2-4 days; now the first stage of `acc-derive-memory-space` (counted in its row) | S |
 | `gpu-ci` | 10-20 days engineering (once a GPU runner is chosen -- the infrastructure decision itself is unquantifiable) | M-L |
@@ -189,6 +190,7 @@ separately), CHANGELOG.md L5850.
 | `ccpp-opt-small-speedups` | Small `ccpp_opt` speed-ups left after `generator-speed` (under 1 s on cam4 together) | XS; found 2026-10-31 | -- |
 | `in-process-pipeline` | Run the frontend and `ccpp_opt` passes in one process: removes the MLIR text round trip (~2 s of cam4's 6.6 s) | M; found 2026-10-31 | -- |
 | `suite-owned-framework-var` | The suite cap declares an unused, never-allocated module array for the framework's constituent tendencies (`ptend_q`, microp_aero_bam) and warns about it | XS; found 2026-10-31 | -- |
+| `cpu-cap-acc-updates` | CPU builds' suite caps contain unguarded `!$acc update` directives for suite-owned variables (inert, and not merged) | XS; found 2026-10-31 | -- |
 | `cam-autogen-repeat-generation` | CAM-SIMA's `cam_autogen.py` regenerates the caps at `buildlib` and `case.run` after `buildnml` already did | XS; cause found and fixed locally 2026-10-31 (verified on s39a); upstream PR to ESCOMP/CAM-SIMA `development` pending | -- |
 
 **ID: `xml-unknown-element-silent-drop`. Resolved (2026-10-20)** — `frontend/ccpp_xml.py` now raises `ValueError` for any unhandled suite-XML element (`<time_split>`/`<process_split>`/`<subcol>` or a typo); capgen-v1's own copy of the bug remains upstream.
@@ -442,6 +444,21 @@ of which `ccpp_opt` 4.1 s: MLIR parse ~1.2, passes ~1.6 -- `suite_cap`
   hot loops.
 Profile with a scratch `sitecustomize` cProfile hook (see the
 `generator-speed` CHANGELOG entry); scale cProfile times by ~0.38 for cam4.
+
+**`cpu-cap-acc-updates`** -- found 2026-10-31 (`gpu-sync-intent-aware`
+stage 2). `suitecap/gpu.py` (`_inject_suite_owned_gpu_update`,
+`_inject_segment_interface_gpu_update`) calls `emit_coalesced_updates("acc", ...)`
+whatever the build's `--directive` is, so the suite (and package) caps of
+CPU builds carry `!$acc update self/device(...)` directives for suite-owned
+variables: e.g. 17 in the CPU Kessler FPHYStest cap, not inside `#ifdef
+USE_GPU` (unlike the same caps' `!$acc declare create`, which is). They are
+inert (CPU builds do not compile OpenACC), but noise, and they diverge from
+the GPU caps: `merge_adjacent_updates` runs in `generate-gpu-data`, which
+CPU builds skip, so these stay unmerged. Fix: emit them only when a
+directive is set (and with that directive, so `--directive omp` gets
+OpenMP), or guard them like `declare create`; the merge question then goes
+away. Changes CPU caps (comments only), so check with cap_oracle and one
+CPU Kessler run.
 
 **`suite-owned-framework-var`** -- found 2026-10-31 in the
 `generation-error-output` survey. Generating microp_aero_bam prints
