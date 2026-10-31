@@ -15,12 +15,20 @@ Usage::
 
 """
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from xdsl_ccpp.tools.ccpp_opt import VERIFY_EACH_PASS_ENV
+
 REPO_ROOT = Path(__file__).parent.parent
+
+# Tests verify the IR after every pass (ccpp_opt --verify-each-pass), so a
+# pass that leaves invalid IR is caught at that pass; the RUN lines' and the
+# generator's ccpp_opt subprocesses inherit this.
+os.environ.setdefault(VERIFY_EACH_PASS_ENV, "1")
 
 
 def pytest_collect_file(parent, file_path):

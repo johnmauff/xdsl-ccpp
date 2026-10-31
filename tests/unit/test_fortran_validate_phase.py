@@ -171,3 +171,56 @@ class TestGracefulSkips:
         m.options_db = {}
         m.validate_fortran_sources()
         assert capsys.readouterr().err == ""
+
+
+class TestJobs:
+    """--jobs N compares the pairs in N processes; the warnings must come
+    out exactly as with one process, in --scheme-files order."""
+
+    def _bad_pairs(self, tmp_path):
+        meta_paths = []
+        # Later files are larger, so the pool (largest first) starts them
+        # first: the output order must still follow --scheme-files.
+        for i, name in enumerate(["first_scheme", "second_scheme", "third_scheme"]):
+            meta_paths.append(_write_pair(
+                tmp_path,
+                name,
+                f"""\
+[ccpp-table-properties]
+  name = {name}
+  type = scheme
+[ccpp-arg-table]
+  name = {name}_run
+  type = scheme
+[ flag ]
+  standard_name = some_flag
+  units = 1
+  dimensions = ()
+  type = integer
+  intent = out
+""",
+                f"""\
+module {name}
+contains
+  subroutine {name}_run(flag)
+    real, intent(out) :: flag
+{"    flag = 0.0" + chr(10) * (1 + 50 * i)}
+  end subroutine
+end module
+""",
+            ))
+        return meta_paths
+
+    def _stderr(self, meta_paths, jobs, capsys):
+        m = ccppMain()
+        m.options_db = {"scheme_files": meta_paths, "preproc_defs": [], "jobs": jobs}
+        m.validate_fortran_sources()
+        return capsys.readouterr().err
+
+    def test_parallel_output_matches_serial(self, tmp_path, capsys):
+        meta_paths = self._bad_pairs(tmp_path)
+        serial = self._stderr(meta_paths, 1, capsys)
+        assert serial.count("type mismatch") == 3
+        positions = [serial.index(n) for n in ("first_scheme", "second_scheme", "third_scheme")]
+        assert positions == sorted(positions)
+        assert self._stderr(meta_paths, 3, capsys) == serial
